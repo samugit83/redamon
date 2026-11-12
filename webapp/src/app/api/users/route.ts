@@ -109,16 +109,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(EMAIL_TAKEN, { status: 409 })
     }
 
+    if (rbacFlags().identity && body.requirePasswordChange !== undefined && typeof body.requirePasswordChange !== 'boolean') {
+      return NextResponse.json(
+        { error: 'requirePasswordChange must be true or false', code: 'invalid_field', field: 'requirePasswordChange' },
+        { status: 400 },
+      )
+    }
+    // Identity switch on (ID-17): a password the admin chooses for someone else is temporary
+    // unless the admin says otherwise; the account changes it at its first sign-in.
+    const temporary = Boolean(password) && rbacFlags().identity && body.requirePasswordChange !== false
+
     const data = {
       name,
       email: storedEmail,
       ...(password ? { password: await hashPassword(password) } : {}),
       ...((role === 'admin' || role === 'standard') ? { role } : {}),
+      ...(temporary ? { mustChangePassword: true } : {}),
     }
     const created = (user: { id: string; email: string; role: string }): UserAuditFields => ({
       action: 'user.create',
       targetId: user.id,
-      after: { email: user.email, role: user.role, passwordless: !password },
+      after: { email: user.email, role: user.role, passwordless: !password, ...(temporary ? { mustChangePassword: true } : {}) },
     })
 
     let user

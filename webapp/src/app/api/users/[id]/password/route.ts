@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { hashPassword } from '@/lib/auth'
+import { createToken, hashPassword } from '@/lib/auth'
 import { getSession } from '@/lib/session'
 import { writeAudit } from '@/lib/audit'
 import { internalError } from '@/lib/routeErrors'
@@ -12,6 +12,7 @@ import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { requireRootPower } from '@/lib/authz/rootPowers'
 import { rbacFlags } from '@/lib/authz/flags'
+import { setLoginCookie } from '@/lib/loginCookie'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -27,11 +28,18 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { newPassword, currentPassword, stepUpPassword } = await request.json()
+    const { newPassword, currentPassword, stepUpPassword, requirePasswordChange } = await request.json()
 
     const check = validateNewPassword(typeof newPassword === 'string' ? newPassword : '')
     if (!check.ok) {
       return NextResponse.json({ error: check.message, code: check.code }, { status: 400 })
+    }
+    const identity = rbacFlags().identity
+    if (identity && requirePasswordChange !== undefined && typeof requirePasswordChange !== 'boolean') {
+      return NextResponse.json(
+        { error: 'requirePasswordChange must be true or false', code: 'invalid_field', field: 'requirePasswordChange' },
+        { status: 400 },
+      )
     }
 
     const isAdmin = session.role === 'admin'
@@ -75,8 +83,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // Identity switch on: the policy in force (the instance minimum, the deny list and the two
     // rules), judged against the address of the account the password is for.
-    if (rbacFlags().identity) {
-      const account = await prisma.user.findUnique({ where: { id }, select: { email: true } })
+    const account = identity
+      ? await prisma.user.findUnique({ where: { id }, select: { email: true, mustChangePassword: true, sessionVersion: true } })
+      : null
+    if (identity) {
       const full = validateNewPassword(newPassword, await passwordPolicyInForce(), { email: account?.email })
       if (!full.ok) {
         return NextResponse.json({ error: full.message, code: full.code }, { status: 400 })
@@ -84,6 +94,16 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     const hashed = await hashPassword(newPassword)
+    // Identity switch on (ID-17): a password an admin sets for someone else is temporary unless
+    // the admin says otherwise; flagging also raises the session version, so a cookie from before
+    // the flag (without `pwc`) ends and the person signs in again into the change page. The
+    // account's own change clears the flag. Off: Phase 1's write of the password alone.
+    const requireChange = identity && !isSelf && requirePasswordChange !== false
+    const data = !identity
+      ? { password: hashed }
+      : requireChange
+        ? { password: hashed, mustChangePassword: true, sessionVersion: { increment: 1 } }
+        : { password: hashed, mustChangePassword: false }
 
     // Any password change revokes every MCP personal access token. An admin can
     // reset another user's password without knowing the current one (above), so
@@ -91,10 +111,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // transaction as the password write: a half-applied reset would be worse
     // than either outcome.
     const [, revoked] = await prisma.$transaction([
-      prisma.user.update({
-        where: { id },
-        data: { password: hashed },
-      }),
+      prisma.user.update({ where: { id }, data }),
       prisma.mcpAccessToken.updateMany({
         where: { userId: id, revokedAt: null },
         data: { revokedAt: new Date() },
@@ -117,10 +134,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     await writeUserAudit(request, session, {
       action: isSelf ? 'user.password_changed' : 'user.credentials_reset',
       targetId: id,
-      after: { revokedMcpTokens: revoked.count },
+      after: { revokedMcpTokens: revoked.count, ...(requireChange ? { mustChangePassword: true } : {}) },
     })
 
-    return NextResponse.json({ success: true, revokedMcpTokens: revoked.count })
+    const response = NextResponse.json({ success: true, revokedMcpTokens: revoked.count })
+    // A forced change done: this browser's cookie drops the must-change claim (same version),
+    // so the person goes on without signing in again; any other cookie with the claim now
+    // disagrees with the account and signs in again (session.ts).
+    if (isSelf && account?.mustChangePassword) {
+      setLoginCookie(response, request, await createToken(id, session.role, account.sessionVersion))
+    }
+    return response
   } catch (error) {
     return internalError(error, 'Failed to change password')
   }

@@ -48,6 +48,8 @@ export default function UsersPage() {
   const [currentPassword, setCurrentPassword] = useState('')
   // The acting admin's own password, for a reset of another admin (step-up).
   const [stepUpPassword, setStepUpPassword] = useState('')
+  // Identity switch on: a password set for someone else is temporary unless unticked (step 2.8).
+  const [requireChange, setRequireChange] = useState(true)
 
   const wantsPasswordChange = searchParams.get('changePassword') === 'true'
 
@@ -74,6 +76,7 @@ export default function UsersPage() {
     setRole('standard')
     setCurrentPassword('')
     setStepUpPassword('')
+    setRequireChange(true)
     setFormError('')
     setFormSuccess('')
   }
@@ -120,6 +123,7 @@ export default function UsersPage() {
         password: password || undefined,
         role,
         ...(rootCreatesAdmin ? { stepUpPassword } : {}),
+        ...(authUser?.rbac?.identity === true && password ? { requirePasswordChange: requireChange } : {}),
       })
       closeModal()
     } catch (err: unknown) {
@@ -156,9 +160,11 @@ export default function UsersPage() {
         userId: modal.userId,
         data: isOwnRow
           ? { newPassword: password, currentPassword }
-          : modal.targetIsAdmin
-            ? { newPassword: password, stepUpPassword }
-            : { newPassword: password },
+          : {
+              newPassword: password,
+              ...(modal.targetIsAdmin ? { stepUpPassword } : {}),
+              ...(authUser?.rbac?.identity === true ? { requirePasswordChange: requireChange } : {}),
+            },
       })
       setFormSuccess('Password updated')
       setPassword('')
@@ -443,6 +449,9 @@ export default function UsersPage() {
               />
             </div>
           )}
+          {password && identity && (
+            <RequireChangeField id="create-user-require-change" checked={requireChange} onChange={setRequireChange} />
+          )}
           <div className={styles.field}>
             <label className={styles.label} htmlFor="create-user-role">Role</label>
             <select id="create-user-role" className={styles.select} value={role} onChange={e => setRole(e.target.value)}>
@@ -527,6 +536,9 @@ export default function UsersPage() {
               autoComplete="new-password"
             />
           </div>
+          {identity && modal.type === 'password' && !setOwnRow && (
+            <RequireChangeField id="set-password-require-change" checked={requireChange} onChange={setRequireChange} />
+          )}
           {setAnotherAdmin && (
             <div className={styles.field}>
               <label className={styles.label} htmlFor="set-password-step-up">Your password</label>
@@ -592,6 +604,21 @@ export default function UsersPage() {
         }}
         onClose={closeModal}
       />
+    </div>
+  )
+}
+
+/** "Require a change at first sign-in": the person replaces the password the admin chose (step 2.8). */
+function RequireChangeField({ id, checked, onChange }: { id: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className={styles.field}>
+      <label className={styles.checkboxLabel} htmlFor={id}>
+        <input id={id} type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} aria-describedby={`${id}-hint`} />
+        {' '}Require a change at first sign-in
+      </label>
+      <span id={`${id}-hint`} className={styles.hint}>
+        Until then the person can only reach the page that changes it.
+      </span>
     </div>
   )
 }

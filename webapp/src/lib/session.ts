@@ -30,11 +30,14 @@ type CookieStore = Awaited<ReturnType<typeof cookies>>
 /**
  * Whether the account still accepts this login token. The session version is compared
  * strictly whatever the identity switch (a token without one is version 0), so raising it
- * signs the account out everywhere; the status counts only with the switch on.
+ * signs the account out everywhere. The status and the must-change claim count only with the
+ * switch on: a cookie whose `pwc` disagrees with the account (flagged without a version bump,
+ * or the flag cleared from another browser) signs in again, into the right flow.
  */
-function tokenAccepted(sv: number, principal: Principal): boolean {
-  if (sv !== principal.sessionVersion) return false
-  return !rbacFlags().identity || principal.status === 'active'
+function tokenAccepted(token: { sv: number; pwc?: true }, principal: Principal): boolean {
+  if (token.sv !== principal.sessionVersion) return false
+  if (!rbacFlags().identity) return true
+  return principal.status === 'active' && (token.pwc === true) === principal.mustChangePassword
 }
 
 /**
@@ -73,8 +76,8 @@ export async function getSession({ fresh = false }: SessionOptions = {}): Promis
   // A cached account may predate the change that made this token valid (a sign-in after a
   // version bump in another process, an account enabled again): a refusal stands only on an
   // account read from the database, so only a cached answer is read again (DV-25).
-  if (cached && !tokenAccepted(payload.sv, cached)) principal = await loadPrincipal(payload.sub, { fresh: true })
-  if (!principal || !tokenAccepted(payload.sv, principal)) return refuse(cookieStore)
+  if (cached && !tokenAccepted(payload, cached)) principal = await loadPrincipal(payload.sub, { fresh: true })
+  if (!principal || !tokenAccepted(payload, principal)) return refuse(cookieStore)
   const session = { userId: principal.id, role: principal.role }
   rememberSessionPrincipal(session, principal)
   return session

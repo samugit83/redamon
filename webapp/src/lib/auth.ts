@@ -37,11 +37,12 @@ function isSessionVersion(v: unknown): v is number {
 /**
  * The login token. `sv` is the account's session version when it signed in: the session
  * helpers refuse the token once the account's version moves on, which signs it out of
- * every browser at once.
+ * every browser at once. `pwc: 1` (identity switch on) says the account must change its
+ * password: the middleware holds the browser on the change page without a database read.
  */
-export async function createToken(userId: string, role: string, sv = 0): Promise<string> {
+export async function createToken(userId: string, role: string, sv = 0, { pwc = false }: { pwc?: boolean } = {}): Promise<string> {
   if (!isSessionVersion(sv)) throw new Error('A session version is a whole number from 0')
-  return new SignJWT({ sub: userId, role, sv })
+  return new SignJWT({ sub: userId, role, sv, ...(pwc ? { pwc: 1 } : {}) })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(TOKEN_EXPIRY)
@@ -51,15 +52,16 @@ export async function createToken(userId: string, role: string, sv = 0): Promise
 /**
  * The claims of a valid login token. A token minted before the session version existed
  * (and the Playwright helper's `{sub, role}`) is version 0; a version that is present but
- * not a whole number from 0 makes the token invalid.
+ * not a whole number from 0 makes the token invalid, and so does a `pwc` other than 1.
  */
-export async function verifyToken(token: string): Promise<{ sub: string; role: string; sv: number } | null> {
+export async function verifyToken(token: string): Promise<{ sub: string; role: string; sv: number; pwc?: true } | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret())
     if (!payload.sub || !payload.role) return null
     const sv = payload.sv === undefined ? 0 : payload.sv
     if (!isSessionVersion(sv)) return null
-    return { sub: payload.sub, role: payload.role as string, sv }
+    if (payload.pwc !== undefined && payload.pwc !== 1) return null
+    return { sub: payload.sub, role: payload.role as string, sv, ...(payload.pwc === 1 ? { pwc: true as const } : {}) }
   } catch {
     return null
   }

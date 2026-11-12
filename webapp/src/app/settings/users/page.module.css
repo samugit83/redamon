@@ -188,6 +188,15 @@
   color: var(--text-tertiary);
 }
 
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
 .modalActions {
   display: flex;
   gap: var(--space-2);

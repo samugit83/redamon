@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyPassword, createToken, AUTH_COOKIE_NAME, UNMATCHABLE_PASSWORD_HASH } from '@/lib/auth'
+import { verifyPassword, createToken, UNMATCHABLE_PASSWORD_HASH } from '@/lib/auth'
 import { findSignInAccount, recordSignIn } from '@/lib/authz/accountEmail'
 import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rbacFlags } from '@/lib/authz/flags'
 import { writeAudit } from '@/lib/audit'
 import { getClientMeta } from '@/lib/requestMeta'
 import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
-import { isSecureRequest } from '@/lib/cookieSecurity'
+import { setLoginCookie } from '@/lib/loginCookie'
+import { flagShortPasswordAtSignIn } from '@/lib/authz/mustChange'
 import { internalError } from '@/lib/routeErrors'
 
 export async function POST(request: NextRequest) {
@@ -75,26 +76,33 @@ export async function POST(request: NextRequest) {
     })
 
     await recordSignIn(user.id)
+
+    // Identity switch on: an account whose password must change signs in into the change page
+    // only (the `pwc` claim, read by the middleware). The flag comes from the sign-in row, or is
+    // set now by Root's short-password prompt, which also raises the version.
+    let sessionVersion = user.sessionVersion
+    let mustChange = identity && user.mustChangePassword
+    if (identity && !mustChange) {
+      const raised = await flagShortPasswordAtSignIn(user.id, password)
+      if (raised !== null) {
+        sessionVersion = raised
+        mustChange = true
+      }
+    }
     invalidatePrincipal(user.id)
 
     // The token carries the version the account holds now: raising it later signs this
     // browser out, together with every other one.
-    const token = await createToken(user.id, user.role, user.sessionVersion)
+    const token = await createToken(user.id, user.role, sessionVersion, { pwc: mustChange })
 
     const response = NextResponse.json({
       id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
+      ...(mustChange ? { mustChangePassword: true } : {}),
     })
-
-    response.cookies.set(AUTH_COOKIE_NAME, token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: isSecureRequest(request), // S12: Secure over HTTPS, else plain HTTP works
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60, // 7 days
-    })
+    setLoginCookie(response, request, token)
 
     return response
   } catch (error) {

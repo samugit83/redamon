@@ -50,7 +50,11 @@
  *   - every new password meets Phase 1's policy (12 characters, 72 bytes): no instance minimum,
  *     no deny list, no email or repeated-character rule, and no instance row is read;
  *   - /api/auth/password-policy answers 404 to everyone and reads nothing (the forms keep
- *     Phase 1's floor and show no policy text).
+ *     Phase 1's floor and show no policy text);
+ *   - no must-change: sign-in signs no `pwc` claim and reads no short-password setting, an
+ *     admin's reset or a new account's password sets no flag and raises no version, the
+ *     middleware lets a `pwc` cookie (minted while the switch was on) go anywhere, and the
+ *     session helpers compare neither the claim nor the flag.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
@@ -110,16 +114,26 @@ const IDENTITY_READERS: string[] = [
   'scripts/reset-password.mjs',
   'scripts/set-root.mjs',
   // Login: the session version it signs (compared whatever the switch) and the last-login
-  // time it writes whatever the switch; status / must-change are read for later steps.
+  // time it writes whatever the switch; status and must-change (pwc) only with the switch on.
   'src/app/api/auth/login/route.ts',
+  // Step 2.8: an admin's reset flags the account and raises its version, an own change clears
+  // the flag, only with the switch on; off, the Phase 1 write of the password alone.
+  'src/app/api/users/[id]/password/route.ts',
   // Step 2.6: a role change raises the session version only with the switch on (its
   // identity path); off, the Phase 1 path writes the role alone.
   'src/app/api/users/[id]/route.ts',
+  // Step 2.8: a new account with a temporary password is flagged only with the switch on.
+  'src/app/api/users/route.ts',
   'src/lib/authz/accountEmail.ts',
   // Disable, enable, revoke sessions (step 2.3): reached only through routes that answer 404
   // with the switch off, except enable, which stays open to restore an account disabled
   // while the switch was on.
   'src/lib/authz/accountStatus.ts',
+  // Step 2.8: flags a short password at sign-in, reached only with the switch on.
+  'src/lib/authz/mustChange.ts',
+  // Step 2.8: reads no column; it names the 403 code `must_change_password`, which the
+  // middleware answers only with the switch on.
+  'src/lib/authz/mustChangeGate.ts',
   // Step 2.8: the instance password minimum and the sign-in prompt, read only with the switch on.
   'src/lib/authz/passwordPolicyInForce.ts',
   // Reads every identity field of the account; the cache only with the switch on.
@@ -377,5 +391,32 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.8)', () => {
     const { GET } = await import('@/app/api/auth/password-policy/route')
     expect((await GET()).status).toBe(404)
     expect(findUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.8): no must-change', () => {
+  test('a pwc cookie goes anywhere through the middleware', async () => {
+    setFlagsForTests({ identity: false })
+    const { middleware } = await import('@/middleware')
+    const cookie = await createToken('member-1', 'standard', 0, { pwc: true })
+    for (const path of ['/graph', '/api/projects']) {
+      const res = await middleware(new NextRequest(`http://redamon.test${path}`, { headers: { cookie: `redamon-auth=${cookie}` } }))
+      expect(res.status, path).toBe(200)
+      expect(res.headers.get('location'), path).toBeNull()
+    }
+  })
+
+  test('the session helpers compare neither the claim nor the flag', async () => {
+    setFlagsForTests({ identity: false })
+    findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id, email: `${where.id}@e2e.local`, role: 'standard', password: 'hash', createdAt: new Date(0),
+      legacyGrants: [], status: 'active', sessionVersion: 0, mustChangePassword: true,
+    }))
+    authCookie = await createToken('member-1', 'standard', 0)
+    expect(await getSession()).toEqual({ userId: 'member-1', role: 'standard' })
+    authCookie = await createToken('member-1', 'standard', 0, { pwc: true })
+    expect(await getSession()).toEqual({ userId: 'member-1', role: 'standard' })
+    expect(clearedCookies).toEqual([])
+    findUnique.mockImplementation(anyAccount)
   })
 })

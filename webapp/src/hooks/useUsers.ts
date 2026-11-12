@@ -47,6 +47,8 @@ export interface CreateUserData {
   password?: string
   role?: string
   stepUpPassword?: string
+  /** Identity switch on: the password is temporary, changed at the first sign-in (default true). */
+  requirePasswordChange?: boolean
 }
 
 // Create a new user
@@ -96,6 +98,8 @@ export interface ChangePasswordData {
   newPassword: string
   currentPassword?: string
   stepUpPassword?: string
+  /** Identity switch on, someone else's password: changed at the next sign-in (default true). */
+  requirePasswordChange?: boolean
 }
 
 async function changePassword(userId: string, data: ChangePasswordData): Promise<void> {

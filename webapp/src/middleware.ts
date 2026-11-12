@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { jwtVerify } from 'jose'
 import { constantTimeEqual } from './lib/constantTimeEqual'
+import { rbacFlags } from './lib/authz/flags'
+import { MUST_CHANGE_CODE, MUST_CHANGE_MESSAGE, MUST_CHANGE_PAGE, mustChangeAllows } from './lib/authz/mustChangeGate'
 
 const AUTH_COOKIE_NAME = 'redamon-auth'
 
@@ -139,13 +141,15 @@ function getSecret() {
   return new TextEncoder().encode(secret)
 }
 
-async function verifyJwt(token: string): Promise<{ sub: string; role: string } | null> {
+async function verifyJwt(token: string): Promise<{ sub: string; role: string; pwc: boolean } | null> {
   try {
     const secret = getSecret()
     if (!secret) return null
     const { payload } = await jwtVerify(token, secret)
     if (!payload.sub || !payload.role) return null
-    return { sub: payload.sub, role: payload.role as string }
+    // As lib/auth.ts verifyToken: a must-change claim other than 1 makes the token invalid.
+    if (payload.pwc !== undefined && payload.pwc !== 1) return null
+    return { sub: payload.sub, role: payload.role as string, pwc: payload.pwc === 1 }
   } catch {
     return null
   }
@@ -224,6 +228,15 @@ export async function middleware(request: NextRequest) {
     const response = NextResponse.redirect(new URL('/login', request.url))
     response.cookies.delete(AUTH_COOKIE_NAME)
     return response
+  }
+
+  // Step 2.8 (identity switch on): an account whose password must change reaches only the
+  // change page and what it needs. The handlers compare the claim with the account (session.ts).
+  if (payload.pwc && rbacFlags().identity && !mustChangeAllows(request.method, pathname, payload.sub)) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: MUST_CHANGE_MESSAGE, code: MUST_CHANGE_CODE }, { status: 403 })
+    }
+    return NextResponse.redirect(new URL(MUST_CHANGE_PAGE, request.url))
   }
 
   // Inject user info into request headers for downstream API routes
