@@ -183,7 +183,7 @@ Additional properties present on this node type, not yet described:
 - cpe (string): CPE string from Nmap (e.g. "cpe:/a:vsftpd:vsftpd:2.3.4")
 - nmap_scanned (boolean): true if Nmap has probed this port
 - A Port with source "nmap" was missed by the port scan and confirmed open by Nmap, which created it
-- passive_only (boolean): true on a Port only Shodan or InternetDB reported (set on create); naabu and masscan set it false when they find the same port, nmap on every open port it reports (on the Port of the protocol it scanned), httpx on the TCP port it gets an HTTP answer from, and GVM on the port (of its protocol) it detects a service on. Absent on ports written before the mark
+- passive_only (boolean): true on a Port only Shodan or InternetDB reported (set on create); naabu and masscan set it false when they find the same port, nmap on every open port it reports (on the Port of the protocol it scanned), httpx on the TCP port it gets an HTTP answer from (on the name's address whose port scan has that port open, not always the address httpx names), and GVM on the port (of its protocol) it detects a service on. Absent on ports written before the mark
 Additional properties present on this node type, not yet described:
 - ip_address (string)
 
