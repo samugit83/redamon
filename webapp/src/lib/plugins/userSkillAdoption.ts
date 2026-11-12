@@ -4,7 +4,8 @@ import { writeAudit } from '@/lib/audit'
 import { normalizeUserToggleMap, UserSkillError } from '@/lib/userSkills'
 import { suggestVersionName } from '@/lib/userSkillNames'
 import {
-  USER_SKILL_AUDIT_TARGET, contentSha256, createUserSkillTx, lockUserSkills, originPair, startLineageTx, type AuditActor,
+  USER_SKILL_AUDIT_TARGET, contentSha256, createUserSkillTx, lockUserSkills, originPair, refuseSkillWriteWhileActingAs,
+  startLineageTx, type AuditActor,
 } from '@/lib/userSkillWrites'
 import { auditPlugin } from './audit'
 import { POINT_PERMISSION } from './extensionPoints'
@@ -100,6 +101,8 @@ function isCheckViolation(e: unknown): boolean {
 }
 
 export async function adoptUserSkillVersion(input: AdoptInput): Promise<AdoptResult> {
+  // Saving it writes the owner's skills: never by an admin acting as the owner (step 3.14).
+  await refuseSkillWriteWhileActingAs(input.ownerId, input.actor)
   let outcome: {
     skill: { id: string; name: string; content: string; version: number | null }
     pluginId: string

@@ -9,6 +9,7 @@ import { routeNotFound } from '@/lib/authz/accountStatus'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { adminTargetGate } from '@/lib/authz/rootPowers'
 import { requireSessionPermission } from '@/lib/authz/adminPermission'
+import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
 import { privateJson, withInviteErrors } from '@/lib/authz/invites'
@@ -61,6 +62,8 @@ export const POST = withInviteErrors('credentials reset', 'Could not reset the c
   }
   const protectedRoot = await rootProtectedRefusal(request, session, id, 'reset_credentials')
   if (protectedRoot) return protectedRoot
+  const actingAs = await refuseWhileActingAs({ session, targetUserId: id }, 'change_password')
+  if (actingAs) return actingAs
 
   const body = parsed.body
   const mode = body.mode

@@ -25,6 +25,7 @@ import { now } from '@/lib/authz/clock'
 import type { RootGuardRefusal } from '@/lib/authz/adminSet'
 import { requireSessionPermission, sessionHolds } from '@/lib/authz/adminPermission'
 import { forbiddenResponse } from '@/lib/authz/guards'
+import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
 import type { Session } from '@/lib/session'
 
 interface RouteParams {
@@ -382,6 +383,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       && !(!role && !name && !email && (await actsAsAccount(session, id, { fresh: true })))) {
       return forbiddenResponse('users:edit')
     }
+    // The sign-in email of the account acted as stays its own (§4.7).
+    if (typeof email === 'string' && email) {
+      const actingAs = await refuseWhileActingAs({ session, targetUserId: id }, 'change_email')
+      if (actingAs) return actingAs
+    }
 
     // Identity switch on: nobody else edits Root, and Root keeps the admin role.
     const demotion = role === 'standard'
@@ -477,6 +483,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
         { status: 400 }
       )
     }
+    const actingAs = await refuseWhileActingAs({ session, targetUserId: id }, 'delete_account')
+    if (actingAs) return actingAs
 
     // Self-deletion is refused above, so an admin target is another admin.
     const target = await prisma.user.findUnique({ where: { id }, select: { email: true, role: true } })

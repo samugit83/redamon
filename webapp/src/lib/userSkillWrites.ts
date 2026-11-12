@@ -17,6 +17,7 @@ import type { Prisma, UserAttackSkill } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { auditActorOf } from '@/lib/auditActor'
+import { actingAsOwnerRefusal } from '@/lib/authz/actAsRefusals'
 import {
   DESCRIPTION_MAX_CHARS, MAX_CONTENT_SIZE, MAX_ENABLED_USER_SKILLS_PER_PROJECT, MAX_SKILLS_PER_BATCH,
   MAX_SKILLS_PER_USER, UserSkillError, normalizeUserToggleMap, type BatchItemRefusal,
@@ -56,6 +57,15 @@ export function auditActorFor(sessionUserId: string | null | undefined, ownerId:
     ...(actor.onBehalfOfUserId ? { onBehalfOf: actor.onBehalfOfUserId } : {}),
     source: actor.actorId ? source : 'system',
   }
+}
+
+/**
+ * Writing the skills of the account an admin acts as is refused on every path here (step 3.14,
+ * IM-08; permissions switch on): 403 `not_while_acting_as`, audited, before the lock is taken.
+ */
+export async function refuseSkillWriteWhileActingAs(ownerId: string, actor: AuditActor): Promise<void> {
+  const refusal = await actingAsOwnerRefusal(ownerId, actor.actorId, 'write_agent_skills')
+  if (refusal) throw new UserSkillError(403, refusal.code, refusal.error, { action: refusal.action })
 }
 
 /** What a list or a write answers with; the text is fetched on its own (download, review). */
@@ -153,6 +163,7 @@ function withOwner(actor: AuditActor, after: Record<string, unknown>) {
 }
 
 export async function createUserSkill(input: CreateUserSkillInput, actor: AuditActor) {
+  await refuseSkillWriteWhileActingAs(input.userId, actor)
   const skill = await prisma.$transaction(async (tx) => {
     await lockUserSkills(tx, input.userId)
     return createUserSkillTx(tx, input)
@@ -262,6 +273,7 @@ export async function createUserSkillsBatch(
   actor: AuditActor,
 ): Promise<BatchResult> {
   const { userId, items, enableInProjectId } = input
+  await refuseSkillWriteWhileActingAs(userId, actor)
   if (!Array.isArray(items) || items.length < 1 || items.length > MAX_SKILLS_PER_BATCH) {
     throw new UserSkillError(400, 'batch_invalid', `Send 1 to ${MAX_SKILLS_PER_BATCH} skills.`)
   }
@@ -402,6 +414,7 @@ export interface UpdateUserSkillInput {
 }
 
 export async function updateUserSkill(input: UpdateUserSkillInput, actor: AuditActor) {
+  await refuseSkillWriteWhileActingAs(input.userId, actor)
   const { before, after } = await prisma.$transaction(async (tx) => {
     await lockUserSkills(tx, input.userId)
     const existing = await tx.userAttackSkill.findFirst({ where: { id: input.skillId, userId: input.userId } })
@@ -466,6 +479,7 @@ export async function pendingProposalCount(userId: string, skillId: string): Pro
 }
 
 export async function deleteUserSkill(input: { userId: string; skillId: string }, actor: AuditActor) {
+  await refuseSkillWriteWhileActingAs(input.userId, actor)
   const result = await prisma.$transaction(async (tx) => {
     await lockUserSkills(tx, input.userId)
     const existing = await tx.userAttackSkill.findFirst({ where: { id: input.skillId, userId: input.userId } })
@@ -527,6 +541,7 @@ export async function startLineageTx(tx: Tx, skill: { id: string; lineageRootId:
  * sees that revocation does not quarantine it again, while a later one still can.
  */
 export async function releaseUserSkill(input: { userId: string; skillId: string }, actor: AuditActor) {
+  await refuseSkillWriteWhileActingAs(input.userId, actor)
   const skill = await prisma.$transaction(async (tx) => {
     await lockUserSkills(tx, input.userId)
     const existing = await tx.userAttackSkill.findFirst({ where: { id: input.skillId, userId: input.userId } })

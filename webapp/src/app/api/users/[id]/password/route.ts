@@ -16,6 +16,7 @@ import { requireRootPower } from '@/lib/authz/rootPowers'
 import { rbacFlags } from '@/lib/authz/flags'
 import { sessionHolds } from '@/lib/authz/adminPermission'
 import { forbiddenResponse } from '@/lib/authz/guards'
+import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
 import { setLoginCookie } from '@/lib/loginCookie'
 import { issueLoginToken } from '@/lib/authz/sessionLifetime'
 import { parseReason, reasonRequired, resetCredentials, resetStatusRefusal } from '@/lib/authz/resetCredentials'
@@ -59,6 +60,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // Setting another account's password is resetting its credentials.
     if (!isSelf && !(await sessionHolds(session, 'users:reset_credentials', { fresh: true }))) {
       return forbiddenResponse('users:reset_credentials')
+    }
+    // The password of the account acted as stays its own (§4.7), whoever may reset it otherwise.
+    if (!isSelf) {
+      const actingAs = await refuseWhileActingAs({ session, targetUserId: id }, 'change_password')
+      if (actingAs) return actingAs
     }
 
     // Identity switch on (step 2.10): a password set for someone else is a credentials reset.
