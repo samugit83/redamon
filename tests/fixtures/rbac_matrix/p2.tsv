@@ -21,3 +21,30 @@ p2-sv-admin-users-list-control	2.2	admin_a	GET	/api/users	-	200;has=rbac-member-
 p2-sv-admin-users-list-revoked	2.2	admin_a_revoked	GET	/api/users	-	401	req:ID-21
 p2-sv-admin-users-create-control	2.2	admin_a	POST	/api/users	{}	400	req:ID-21 req:ID-22
 p2-sv-admin-users-create-revoked	2.2	admin_a_revoked	POST	/api/users	{}	403	req:ID-21 req:ID-22
+#
+# ---- step 2.3: account status: disable, enable, sign out everywhere ----
+# No row changes an account: each sends what the route refuses after its checks (another
+# admin's account, the own account, an unknown id, a body that is not JSON), or enables an
+# account that is already active (200 "changed":false). With the identity switch off disable,
+# revoke-sessions and revoke-all do not exist (404 before any check) and enable stays open.
+# The stateful flow (disable, the old cookie and the sign-in refused, enable, revoke) is
+# tests/rbac_account_status_live.sh.
+p2-disable-off	2.3	admin_a	POST	/api/users/${MEMBER_C_ID}/disable	{}	404	req:ID-13 identity:off
+p2-disable-off-member	2.3	member_a	POST	/api/users/${MEMBER_C_ID}/disable	{}	404	req:ID-13 identity:off
+p2-revoke-sessions-off	2.3	admin_a	POST	/api/users/${MEMBER_C_ID}/revoke-sessions	{}	404	req:ID-21 identity:off
+p2-revoke-all-off	2.3	member_a	POST	/api/auth/sessions/revoke-all	{}	404	req:ID-21 identity:off
+p2-disable-anon	2.3	anon	POST	/api/users/${MEMBER_C_ID}/disable	{}	401	req:ID-13
+p2-disable-member-refused	2.3	member_a	POST	/api/users/${MEMBER_C_ID}/disable	{}	403;has=users:disable	req:ID-13 identity:on
+p2-disable-admin-target	2.3	admin_a	POST	/api/users/${ADMIN_B_ID}/disable	{}	403;has=root_only	req:ID-13 identity:on
+p2-disable-own-account	2.3	admin_a	POST	/api/users/${ADMIN_A_ID}/disable	{}	400;has=own_account	req:ID-13 identity:on
+p2-disable-unknown	2.3	admin_a	POST	/api/users/rbac-no-such-account/disable	{}	404;has=user_not_found	req:ID-13 identity:on
+p2-disable-not-json	2.3	admin_a	POST	/api/users/${MEMBER_C_ID}/disable	-	415	req:ID-13 identity:on
+p2-revoke-sessions-member-refused	2.3	member_a	POST	/api/users/${MEMBER_C_ID}/revoke-sessions	{}	403;has=users:revoke_sessions	req:ID-21 identity:on
+p2-revoke-sessions-admin-target	2.3	admin_a	POST	/api/users/${ADMIN_B_ID}/revoke-sessions	{}	403;has=root_only	req:ID-21 identity:on
+p2-revoke-sessions-own-account	2.3	admin_a	POST	/api/users/${ADMIN_A_ID}/revoke-sessions	{}	400;has=revoke-all	req:ID-21 identity:on
+p2-revoke-sessions-not-json	2.3	admin_a	POST	/api/users/${MEMBER_C_ID}/revoke-sessions	-	415	req:ID-21 identity:on
+p2-revoke-all-not-json	2.3	member_a	POST	/api/auth/sessions/revoke-all	-	415	req:ID-21 identity:on
+p2-revoke-all-anon	2.3	anon	POST	/api/auth/sessions/revoke-all	{}	401	req:ID-21
+p2-enable-active-member	2.3	admin_a	POST	/api/users/${MEMBER_C_ID}/enable	{}	200;has="changed":false	req:ID-13
+p2-enable-member-refused	2.3	member_a	POST	/api/users/${MEMBER_C_ID}/enable	{}	403;has=users:disable	req:ID-13
+p2-enable-anon	2.3	anon	POST	/api/users/${MEMBER_C_ID}/enable	{}	401	req:ID-13
