@@ -11,7 +11,7 @@ import { SignJWT } from 'jose'
 
 vi.stubEnv('AUTH_SECRET', 'b'.repeat(64))
 
-import { middleware, pluginPagesCsp } from './middleware'
+import { middleware, pluginPagesCsp, invitePagesCsp } from './middleware'
 
 async function token(): Promise<string> {
   return new SignJWT({ sub: 'user-1', role: 'standard' })
@@ -64,5 +64,32 @@ describe('the policy', () => {
     expect(dev).toContain("script-src 'self' 'unsafe-inline' 'unsafe-eval';")
     vi.stubEnv('NODE_ENV', 'production')
     expect(dev.replace(" 'unsafe-eval'", '')).toBe(pluginPagesCsp())
+  })
+})
+
+describe('the invite page (step 2.9)', () => {
+  const anonymous = (path: string) => middleware(new NextRequest(`http://localhost:3000${path}`))
+  // The environment, not setFlagsForTests: this file runs as a production build.
+
+  test('CSP lets the page boot: the strict policy of the plugin pages, on the page and the link, not on its API', async () => {
+    vi.stubEnv('RBAC_IDENTITY_ENABLED', 'true')
+    expect(invitePagesCsp()).toBe(pluginPagesCsp())
+    for (const path of ['/invite', '/invite/some-token']) {
+      expect((await anonymous(path)).headers.get('content-security-policy'), path).toBe(invitePagesCsp())
+    }
+    expect((await anonymous('/api/invite/state')).headers.get('content-security-policy')).toBeNull()
+  })
+
+  test("the policy runs Next's inline bootstrap from this origin and loads nothing third-party", () => {
+    const policy = invitePagesCsp()
+    expect(policy).toContain("script-src 'self' 'unsafe-inline'")
+    expect(policy).toContain("connect-src 'self'")
+    expect(policy).toContain("form-action 'self'")
+    expect(policy).not.toMatch(/https?:|\*/)
+  })
+
+  test('switch off: no invite header (the path is not public)', async () => {
+    vi.stubEnv('RBAC_IDENTITY_ENABLED', 'false')
+    expect((await anonymous('/invite')).headers.get('content-security-policy')).toBeNull()
   })
 })

@@ -48,8 +48,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
-/** Pages a signed-out browser may stay on: the middleware's public pages. */
-const SIGNED_OUT_PAGES = ['/login']
+/** Pages a signed-out browser may stay on: the middleware's public pages (`/invite`: step 2.9). */
+const SIGNED_OUT_PAGES = ['/login', '/invite']
 
 function onSignedOutPage(pathname: string): boolean {
   return SIGNED_OUT_PAGES.some(p => pathname === p || pathname.startsWith(p + '/'))

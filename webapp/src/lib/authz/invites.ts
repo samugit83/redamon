@@ -24,6 +24,8 @@ import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
 import { userAuditEntry } from '@/lib/userAudit'
+import { isSecureRequest } from '@/lib/cookieSecurity'
+import { safeErrorCode } from '@/lib/routeErrors'
 import type { Session } from '@/lib/session'
 import { emailTakenByAnother, normalizeEmail } from './accountEmail'
 import { now } from './clock'
@@ -334,4 +336,154 @@ export async function cancelInvite(request: NextRequest, session: Session, userI
   if (refused) return refused
   invalidatePrincipal(userId)
   return NextResponse.json({ id: userId, cancelled: true })
+}
+
+// --- The public side (switch on): open a link, read its state, accept it ---------------------
+
+/**
+ * Wraps an invite route like `withRouteErrors` (`{error, code}` 500), but its log line carries
+ * only the error's code: a Prisma error quotes its query's values, which here are a token hash or
+ * a new password's hash.
+ */
+export function withInviteErrors<A extends unknown[]>(
+  what: string,
+  message: string,
+  handler: (...args: A) => Promise<Response>,
+): (...args: A) => Promise<Response> {
+  return async (...args: A) => {
+    try {
+      return await handler(...args)
+    } catch (err) {
+      const code = safeErrorCode(err)
+      console.error(`[rbac] ${what} failed code=${code}`)
+      return privateJson({ error: message, code }, 500)
+    }
+  }
+}
+
+export function setInviteCookie(response: NextResponse, request: NextRequest, value: string): void {
+  response.cookies.set(INVITE_COOKIE_NAME, value, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isSecureRequest(request),
+    path: INVITE_COOKIE_PATH,
+    maxAge: INVITE_COOKIE_MAX_AGE,
+  })
+}
+
+export function clearInviteCookie(response: NextResponse, request: NextRequest): void {
+  response.cookies.set(INVITE_COOKIE_NAME, '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isSecureRequest(request),
+    path: INVITE_COOKIE_PATH,
+    maxAge: 0,
+  })
+}
+
+/** The open link the request's invite cookie names, or null. */
+export async function linkFromCookie(request: NextRequest): Promise<OpenLink | null> {
+  const id = await readInviteCookie(request.cookies.get(INVITE_COOKIE_NAME)?.value)
+  return id ? findLinkById(id) : null
+}
+
+/** 410 `invite_invalid`, the cookie cleared: the one answer for every link that does not work. */
+export function invalidLinkResponse(request: NextRequest): NextResponse {
+  const res = privateJson(INVALID_LINK, 410)
+  clearInviteCookie(res, request)
+  return res
+}
+
+class LinkGone extends Error {
+  constructor() {
+    super('link gone')
+    this.name = 'LinkGone'
+  }
+}
+
+export interface AcceptedAccount {
+  id: string
+  name: string
+  email: string
+  role: string
+  sessionVersion: number
+}
+
+/**
+ * Uses the link and sets the password, in one transaction with the audit row: the link is
+ * marked used only if it is still open, and the account changed only if it is still what the
+ * link was made for, so two accepts of one link make one sign-in. A reset raises the session
+ * version (every older cookie ends). The account's other open links are cancelled. Null when
+ * the link stopped working meanwhile.
+ */
+export async function acceptLink(link: OpenLink, passwordHash: string): Promise<AcceptedAccount | null> {
+  const at = now()
+  const reset = link.kind === 'reset'
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const used = await tx.userInvite.updateMany({
+        where: { id: link.id, usedAt: null, cancelledAt: null, expiresAt: { gt: at } },
+        data: { usedAt: at },
+      })
+      if (used.count !== 1) throw new LinkGone()
+      const changed = await tx.user.updateMany({
+        where: { id: link.userId, status: ACCOUNT_STATUS_FOR[link.kind] },
+        data: {
+          password: passwordHash,
+          status: 'active',
+          mustChangePassword: false,
+          passwordOnHold: '',
+          lastLoginAt: at,
+          ...(reset ? { sessionVersion: { increment: 1 } } : {}),
+        },
+      })
+      if (changed.count !== 1) throw new LinkGone()
+      await tx.userInvite.updateMany({
+        where: { userId: link.userId, usedAt: null, cancelledAt: null },
+        data: { cancelledAt: at },
+      })
+      const user = await tx.user.findUnique({
+        where: { id: link.userId },
+        select: { id: true, name: true, email: true, role: true, sessionVersion: true },
+      })
+      if (!user) throw new LinkGone()
+      await writeAuditTx(tx, {
+        actorId: user.id,
+        actorEmail: user.email,
+        action: reset ? 'user.reset_link_used' : 'user.invite_accepted',
+        targetType: 'user',
+        targetId: user.id,
+        after: reset ? { kind: link.kind, sessionVersion: user.sessionVersion } : { kind: link.kind },
+        source: 'api',
+      })
+      return user
+    })
+  } catch (err) {
+    if (err instanceof LinkGone) return null
+    throw err
+  }
+}
+
+/**
+ * Cancels a link that took too many failed accepts, with `user.invite_locked` in the same
+ * transaction; the operator learns it from that row and the `[rbac]` line.
+ */
+export async function lockLink(link: OpenLink, failedAccepts: number): Promise<void> {
+  const locked = await prisma.$transaction(async (tx) => {
+    const { count } = await tx.userInvite.updateMany({
+      where: { id: link.id, usedAt: null, cancelledAt: null },
+      data: { cancelledAt: now() },
+    })
+    if (count !== 1) return false
+    await writeAuditTx(tx, {
+      actorId: null,
+      action: 'user.invite_locked',
+      targetType: 'user',
+      targetId: link.userId,
+      after: { kind: link.kind, failedAccepts },
+      source: 'api',
+    })
+    return true
+  })
+  if (locked) console.warn(`[rbac] invite link locked user=${link.userId} kind=${link.kind} after ${failedAccepts} failed accepts`)
 }

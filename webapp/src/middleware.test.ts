@@ -307,3 +307,55 @@ describe('the /plugins page', () => {
     expect(res.headers.get('location')).toContain('/login')
   })
 })
+
+/* ------------------------------------------------------------------ */
+/*  Invite links (step 2.9): public only while the identity switch is on */
+/* ------------------------------------------------------------------ */
+
+describe('invite public (step 2.9)', () => {
+  const on = async () => (await import('./lib/authz/flags')).setFlagsForTests({ identity: true })
+  const off = async () => (await import('./lib/authz/flags')).setFlagsForTests({ identity: false })
+
+  test.each(['/invite', '/invite/some-token', '/api/invite/state', '/api/invite/accept'])(
+    'switch on: %s passes with no cookie, no referrer',
+    async (path) => {
+      await on()
+      const res = await middleware(makeRequest(path))
+      expect(res.status).toBe(200)
+      expect(res.headers.get('location')).toBeNull()
+      expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+      await off()
+    },
+  )
+
+  test('switch on: a client cannot hand the handler a user id', async () => {
+    await on()
+    const res = await middleware(makeRequest('/api/invite/state', { headers: { 'x-user-id': 'admin-1', 'x-user-role': 'admin' } }))
+    // The headers the handler receives are exactly this list (Next.js request override).
+    const forwarded = res.headers.get('x-middleware-override-headers')
+    expect(forwarded).not.toBeNull()
+    expect(forwarded!.split(',')).not.toContain('x-user-id')
+    expect(forwarded!.split(',')).not.toContain('x-user-role')
+    expect(res.headers.get('x-middleware-request-x-user-id')).toBeNull()
+    expect(res.headers.get('x-middleware-request-x-user-role')).toBeNull()
+    await off()
+  })
+
+  test.each(['/invitex', '/inviter/x', '/api/invites', '/api/invite-state', '/api/users/invite'])(
+    'switch on: %s is not public',
+    async (path) => {
+      await on()
+      const res = await middleware(makeRequest(path))
+      expect(res.status === 401 || res.headers.get('location')?.endsWith('/login')).toBe(true)
+      await off()
+    },
+  )
+
+  test('switch off: the invite paths are like any unknown path (sign-in redirect, 401)', async () => {
+    await off()
+    const page = await middleware(makeRequest('/invite/some-token'))
+    expect(page.headers.get('location')).toBe('http://localhost:3000/login')
+    expect((await middleware(makeRequest('/api/invite/state'))).status).toBe(401)
+    expect((await middleware(makeRequest('/invite'))).headers.get('location')).toBe('http://localhost:3000/login')
+  })
+})

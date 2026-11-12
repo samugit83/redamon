@@ -58,6 +58,9 @@
  *
  * Step 2.9 adds invite links and the public page that accepts them. With the switch off:
  *   - the admin invite routes (invite, resend, cancel) answer 404 to everyone and read nothing;
+ *   - /invite, /invite/<token> and /api/invite/* are not public: signed out they get the sign-in
+ *     redirect or 401 like any unknown path; signed in, the link and the API answer 404, read
+ *     nothing and set no cookie, and the page does not exist.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
@@ -119,6 +122,9 @@ const IDENTITY_READERS: string[] = [
   // Login: the session version it signs (compared whatever the switch) and the last-login
   // time it writes whatever the switch; status and must-change (pwc) only with the switch on.
   'src/app/api/auth/login/route.ts',
+  // Step 2.9: signs the person in with the session version the accept left, after a 404 with
+  // the switch off.
+  'src/app/api/invite/accept/route.ts',
   // Step 2.8: an admin's reset flags the account and raises its version, an own change clears
   // the flag, only with the switch on; off, the Phase 1 write of the password alone.
   'src/app/api/users/[id]/password/route.ts',
@@ -443,6 +449,43 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.9)', () => {
       expect((await invite(post())).status).toBe(404)
       expect((await resend(post(), params)).status).toBe(404)
       expect((await cancel(post(), params)).status).toBe(404)
+    }
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.9): no public invite page', () => {
+  test('the invite paths are like any unknown path at the middleware', async () => {
+    setFlagsForTests({ identity: false })
+    const { middleware } = await import('@/middleware')
+    for (const path of ['/invite', '/invite/some-token']) {
+      const res = await middleware(new NextRequest(`http://redamon.test${path}`))
+      expect(res.headers.get('location'), path).toBe('http://redamon.test/login')
+      expect(res.headers.get('content-security-policy'), path).toBeNull()
+    }
+    for (const path of ['/api/invite/state', '/api/invite/accept']) {
+      expect((await middleware(new NextRequest(`http://redamon.test${path}`))).status, path).toBe(401)
+    }
+  })
+
+  test('signed in, the link and the invite API answer 404, read nothing and set no cookie', async () => {
+    setFlagsForTests({ identity: false })
+    const { GET: link } = await import('@/app/invite/[token]/route')
+    const { GET: state } = await import('@/app/api/invite/state/route')
+    const { POST: accept } = await import('@/app/api/invite/accept/route')
+    const { signInviteCookie } = await import('./invites')
+    const cookie = `redamon-auth=${await createToken('member-1', 'standard')}; redamon-invite=${await signInviteCookie('invite-1')}`
+    const get = (path: string) => new NextRequest(`http://redamon.test${path}`, { headers: { cookie } })
+    const responses = [
+      await link(get('/invite/some-token'), { params: Promise.resolve({ token: 'some-token' }) }),
+      await state(get('/api/invite/state')),
+      await accept(new NextRequest('http://redamon.test/api/invite/accept', {
+        method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'x'.repeat(20) }),
+      })),
+    ]
+    for (const res of responses) {
+      expect(res.status).toBe(404)
+      expect(res.headers.getSetCookie()).toEqual([])
     }
     expect(findUnique).not.toHaveBeenCalled()
   })

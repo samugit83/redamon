@@ -16,6 +16,11 @@ const AUTH_COOKIE_NAME = 'redamon-auth'
 // the OUTBOUND plugin-admin routes (/api/mcp/manifest|reload|test) public too.
 const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/api/health', '/api/version/check', '/api/global/tunnel-config/sync', '/api/mcp-server']
 
+// Invite links (step 2.9): the page a link opens and its API are sessionless while
+// RBAC_IDENTITY_ENABLED is on; with it off they do not exist and answer as any unknown path
+// (sign-in redirect, 401). Matched as PUBLIC_PATHS are, so '/invitex' is not public.
+const INVITE_PUBLIC_PATHS = ['/invite', '/api/invite']
+
 // Plugin platform routes that authenticate with their own credential and no cookie:
 // plugin code calls the Gateway with a call token, the runner fetches its run list with
 // the runner key. Their handlers never honour X-Internal-Key, getSession or the
@@ -135,6 +140,15 @@ export function pluginPagesCsp(): string {
   ].join('; ')
 }
 
+/**
+ * The invite page's policy (`/invite`, `/invite/<token>`): a signed-out browser holding a
+ * one-time link, so the same strict policy as the plugin pages, which still lets the Next.js
+ * bootstrap run; the page loads nothing from another origin.
+ */
+export function invitePagesCsp(): string {
+  return pluginPagesCsp()
+}
+
 function getSecret() {
   const secret = process.env.AUTH_SECRET
   if (!secret || secret === 'changeme') return null
@@ -161,6 +175,17 @@ export async function middleware(request: NextRequest) {
   // Allow public paths
   if (PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'))) {
     return NextResponse.next()
+  }
+  if (rbacFlags().identity && INVITE_PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + '/'))) {
+    // No session here: user headers can only be the caller's own.
+    const headers = new Headers(request.headers)
+    headers.delete('x-user-id')
+    headers.delete('x-user-role')
+    const response = NextResponse.next({ request: { headers } })
+    // The token is in the address until the route trades it for a cookie: never sent on.
+    response.headers.set('Referrer-Policy', 'no-referrer')
+    if (!pathname.startsWith('/api/')) response.headers.set('Content-Security-Policy', invitePagesCsp())
+    return response
   }
   if (TOKEN_AUTH_PREFIXES.some(p => pathname.startsWith(p))) {
     // No session on these routes: user headers can only be the caller's own.

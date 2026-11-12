@@ -108,6 +108,16 @@ describe('AuthProvider session hydrate', () => {
     expect(replaceMock).not.toHaveBeenCalled()
   })
 
+  test('on the invite page (step 2.9) a 401 stays there: the person has no session yet', async () => {
+    for (const path of ['/invite', '/invite/some-token']) {
+      onPage(path)
+      fetchMock.mockResolvedValue(new Response(JSON.stringify(SESSION_ENDED), { status: 401 }))
+      await hydrate()
+      cleanup()
+    }
+    expect(replaceMock).not.toHaveBeenCalled()
+  })
+
   test('an outage or a session that reads never leaves the page', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'down', code: 'P1001' }), { status: 500 }))
     await hydrate()

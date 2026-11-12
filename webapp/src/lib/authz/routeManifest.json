@@ -126,6 +126,8 @@
   {"path":"/api/internal/triage-runs/[runId]/heartbeat","guard":"internal","methods":["POST"]},
   {"path":"/api/internal/triage-runs/[runId]/publish","guard":"internal","methods":["POST"]},
   {"path":"/api/internal/triage-runs/[runId]/remediations","guard":"internal","methods":["POST"]},
+  {"path":"/api/invite/accept","guard":"public","methods":["POST"],"note":"sessionless at the middleware only while RBAC_IDENTITY_ENABLED is on (INVITE_PUBLIC_PATHS; off it is not public, and the handler answers 404); the handler takes only the signed 30-minute invite cookie naming an open link, same-origin JSON; the password meets the policy in force, five failed accepts cancel the link (user.invite_locked); signs the person in; any link that does not work 410 invite_invalid (ID-14, ID-15, step 2.9)"},
+  {"path":"/api/invite/state","guard":"public","methods":["GET"],"note":"sessionless at the middleware only while RBAC_IDENTITY_ENABLED is on (INVITE_PUBLIC_PATHS; off it is not public, and the handler answers 404); reads only the signed invite cookie: a working link answers its account's name and address, kind, expiry and the password policy in force, anything else {valid: false} (ID-15, step 2.9)"},
   {"path":"/api/job-queue/[id]/cancel","guard":"project","methods":["POST"]},
   {"path":"/api/job-queue/[id]/reconfirm","guard":"project","methods":["POST"]},
   {"path":"/api/js-recon/[projectId]/custom-files","guard":"project","methods":["GET","POST","DELETE"]},
