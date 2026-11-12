@@ -26,7 +26,7 @@ bl-login-wrong-password	0.5	anon	POST	/api/auth/login	{"email":"${MEMBER_C_EMAIL
 bl-me-owner	0.5	member_a	GET	/api/auth/me	-	200;has=${MEMBER_A_ID}	-
 bl-me-admin	0.5	admin_a	GET	/api/auth/me	-	200;has=${ADMIN_A_ID}	-
 # /api/auth/me names the signed-in account, never the act-as target
-bl-me-actas	0.5	admin_a_as_member_a	GET	/api/auth/me	-	200;has=${ADMIN_A_ID};lacks=${MEMBER_A_ID}	-
+bl-me-actas	0.5	admin_a_as_member_a	GET	/api/auth/me	-	200;has=${ADMIN_A_ID};lacks=${MEMBER_A_ID}	superseded-by:p3
 bl-me-anon	0.5	anon	GET	/api/auth/me	-	401	-
 #
 # ---- projects ----

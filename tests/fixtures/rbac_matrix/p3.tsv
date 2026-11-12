@@ -41,3 +41,60 @@ p3-escalation-perms-unknown-set	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permi
 p3-escalation-perms-not-json	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permissions	-	415	req:ID-26 permissions:on
 p3-escalation-perms-xo	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permissions	{"sets":["builtin:no-access"]}	403;has=cross_origin	req:ID-26 permissions:on origin:https://rbac-other-site.example
 p3-escalation-disable-admin-fulladmin	3.11	admin_a	POST	/api/users/${ADMIN_B_ID}/disable	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 req:PE-09 permissions:on
+#
+# ---- step 3.12: /api/auth/me names the permissions in force ----
+# Every account's answer carries `capabilities` (the ids can() decides with) and `flags`; under act-as a
+# member permission counts only when both people hold it, an administration one is the admin's. With
+# RBAC_PERMISSIONS_ENABLED on an admin's answer also names whom it acts as (`actingAs`), which is why
+# baseline.tsv's bl-me-actas is superseded here by an off and an on row.
+p3-me-member	3.12	member_a	GET	/api/auth/me	-	200;has="capabilities":[";has="flags":{;lacks="users:read"	req:PE-21 req:UI-01
+p3-me-admin	3.12	admin_a	GET	/api/auth/me	-	200;has="users:read";has="platform:plugins"	req:PE-21 req:UI-01
+p3-me-usermgr	3.12	usermgr	GET	/api/auth/me	-	200;has="users:read";lacks="platform:plugins";lacks="admins:manage"	req:PE-21 req:PE-29 permissions:on
+p3-me-usermgr-off	3.12	usermgr	GET	/api/auth/me	-	200;has="platform:plugins"	req:PE-21 req:PE-27 permissions:off
+p3-me-analyst	3.12	analyst	GET	/api/auth/me	-	200;has="recon:read";lacks="recon:scan";lacks="agent:chat"	req:PE-21 req:PE-29 permissions:on
+p3-me-actas-off	3.12	admin_a_as_member_a	GET	/api/auth/me	-	200;has=${ADMIN_A_ID};lacks=${MEMBER_A_ID}	req:PE-27 permissions:off
+p3-me-actas-on	3.12	admin_a_as_member_a	GET	/api/auth/me	-	200;has=${ADMIN_A_ID};has="actingAs":{"id":"${MEMBER_A_ID}";has="users:read"	req:IM-05 req:PE-21 permissions:on
+p3-me-actas-analyst	3.12	admin_a_as_analyst	GET	/api/auth/me	-	200;has="users:read";has="recon:read";lacks="recon:scan"	req:IM-02 req:PE-21 permissions:on
+p3-me-actas-analyst-off	3.12	admin_a_as_analyst	GET	/api/auth/me	-	200;has="recon:scan"	req:PE-27 permissions:off
+#
+# ---- step 3.13: the sets a new account starts with ----
+# `sets` on an invite or a create follows the assignment rules: a set holding an exploitation approval,
+# sessions or Kali exec takes the creator's own password, an unknown set is refused. Nothing is
+# created: the invite names an address already in use, which the switch-off twin answers (the key is
+# ignored there, as any unknown key was), and the create is refused before its write. A creator
+# without users:assign_permissions naming a set (no seeded admin profile is one) is proved by
+# initialSets' route tests.
+p3-sets-invite-stepup	3.13	usermgr	POST	/api/users/invite	{"name":"RBAC Copy","email":"RBAC-MEMBER-C@E2E.LOCAL","sets":["builtin:red-team-operator"]}	403;has=step_up_required	req:ID-28 req:ID-25 permissions:on
+p3-sets-invite-off	3.13	usermgr	POST	/api/users/invite	{"name":"RBAC Copy","email":"RBAC-MEMBER-C@E2E.LOCAL","sets":["builtin:red-team-operator"]}	409;has=email_taken	req:ID-28 req:PE-27 identity:on permissions:off
+p3-sets-invite-unknown	3.13	admin_a	POST	/api/users/invite	{"name":"RBAC Copy","email":"RBAC-MEMBER-C@E2E.LOCAL","sets":["rbac-no-such-set"]}	400;has=unknown_set	req:ID-28 permissions:on
+p3-sets-create-stepup	3.13	usermgr	POST	/api/users	{"name":"RBAC Never Created","email":"rbac-never-created@e2e.local","sets":["builtin:red-team-operator"]}	403;has=step_up_required	req:ID-28 req:ID-25 permissions:on
+#
+# ---- step 3.16: the exit criteria of the permission engine ----
+# One seeded account per built-in set (e2e-rbac-seed.mjs: analyst = Read-only analyst, operator = Recon
+# operator, usermgr = an admin on User manager) is refused by the permission, or the rule, its body
+# names; a switch-off twin keeps today's answer. Nothing is started or written: an allowed request is
+# one the route refuses after its checks (a bogus mode, a missing field). A project the account cannot
+# see answers 404 before any permission is weighed. The approval refusal itself happens on the agent
+# socket (tests/rbac_approval_cap_live.sh, E2E P3-05): here, the permissions the ticket's cap is read
+# from. A token call to start_recon is E2E P3-02/P3-06: the analyst cannot mint one at all, and a
+# minted scope the owner cannot use is refused at the mint.
+p3-exit-analyst-scan-start	3.16	analyst	POST	/api/recon/${PANALYST_ID}/start	{"mode":"rbac-bogus"}	403;has=recon:scan	req:PE-29 permissions:on
+p3-exit-analyst-scan-start-off	3.16	analyst	POST	/api/recon/${PANALYST_ID}/start	{"mode":"rbac-bogus"}	400;has=Invalid mode	req:PE-27 permissions:off
+p3-exit-analyst-scan-other	3.16	analyst	POST	/api/recon/${PA_ID}/start	{"mode":"rbac-bogus"}	404;lacks=recon:scan	req:PE-23 req:PE-29
+p3-exit-analyst-ticket	3.16	analyst	POST	/api/agent/ws-ticket	{"projectId":"${PANALYST_ID}","sessionId":"rbac-probe-exit"}	403;has=agent:chat;lacks="ticket"	req:PE-29 permissions:on
+p3-exit-analyst-ticket-off	3.16	analyst	POST	/api/agent/ws-ticket	{"projectId":"${PANALYST_ID}","sessionId":"rbac-probe-exit"}	200;has="ticket":"	req:PE-27 permissions:off
+p3-exit-analyst-mcp-mint	3.16	analyst	POST	/api/users/${ANALYST_ID}/mcp-tokens	{"scopes":["recon:scan"]}	403;has=self:mcp_tokens	req:PE-20 req:PE-29 permissions:on
+p3-exit-analyst-mcp-mint-off	3.16	analyst	POST	/api/users/${ANALYST_ID}/mcp-tokens	{"scopes":["recon:scan"]}	400;has=A token name is required	req:PE-27 permissions:off
+p3-exit-operator-mcp-scope	3.16	operator	POST	/api/users/${OPERATOR_ID}/mcp-tokens	{"name":"rbac-never","scopes":["kali:exec"]}	403;has="scope":"kali:exec";has=agent:kali_exec	req:PE-20 permissions:on
+p3-exit-usermgr-plugin-install	3.16	usermgr	POST	/api/plugins/rbac-no-such-plugin/install	{}	403;has=platform:plugins	req:PE-29 req:PE-31 permissions:on
+p3-exit-usermgr-plugin-install-off	3.16	usermgr	POST	/api/plugins/rbac-no-such-plugin/install	{}	400;has=invalid_request;lacks=admin_required	req:PE-27 permissions:off
+p3-exit-usermgr-edit-admin	3.16	usermgr	PUT	/api/users/${ADMIN_B_ID}	{"name":"RBAC never applied"}	403;has=root_only	req:PE-08 req:PE-29 identity:on
+p3-exit-usermgr-disable-admin	3.16	usermgr	POST	/api/users/${ADMIN_B_ID}/disable	{}	403;has=root_only	req:PE-08 req:PE-29 identity:on
+p3-exit-usermgr-promote	3.16	usermgr	PUT	/api/users/${MEMBER_C_ID}	{"role":"admin"}	403;has=root_only	req:PE-08 req:PE-09 identity:on
+p3-exit-operator-approvals	3.16	operator	GET	/api/auth/me	-	200;has="recon:scan";lacks="agent:approve_phase";lacks="agent:approve_dangerous"	req:SH-34 req:PE-29 permissions:on
+p3-exit-operator-approvals-off	3.16	operator	GET	/api/auth/me	-	200;has="agent:approve_phase";has="agent:approve_dangerous"	req:SH-34 req:PE-27 permissions:off
+p3-escalation-usermgr-grant-unheld	3.16	usermgr	PUT	/api/users/${MEMBER_C_ID}/permissions	{"overrides":[{"permission":"platform:kali_terminal","effect":"grant"}]}	403;has=not_held;has=platform:kali_terminal	req:PE-10 req:PE-11 permissions:on
+p3-escalation-usermgr-own	3.16	usermgr	PUT	/api/users/${USERMGR_ID}/permissions	{"adminProfileId":"builtin:full-admin"}	400;has=own_account	req:PE-03 permissions:on
+p3-escalation-usermgr-sets-create	3.16	usermgr	POST	/api/admin/permission-sets	{"name":"rbac-never","permissions":[]}	403;has=roles:manage	req:PE-11 permissions:on
+p3-escalation-usermgr-admin-profile	3.16	usermgr	PUT	/api/users/${ADMIN_B_ID}/permissions	{"adminProfileId":"builtin:user-manager"}	403;has=root_only	req:PE-08 req:PE-09 permissions:on
+p3-escalation-member-own-sets	3.16	member_a	PUT	/api/users/${MEMBER_A_ID}/permissions	{"sets":["builtin:red-team-operator"]}	400;has=own_account	req:PE-03 permissions:on
