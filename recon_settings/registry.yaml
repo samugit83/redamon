@@ -1693,7 +1693,11 @@ fields:
     mcp: settable
     group: not-tuning
     meaning: >-
-      Disable following redirects
+      Disables following redirects (arjun --disable-redirects). Forced on in IP
+      mode and while roeExcludedHosts is non-empty: Arjun's first request to a URL
+      follows redirects and every later GET and POST for that URL goes where it
+      landed, which can be an excluded host or an address off the target list,
+      and Arjun has no same-host mode.
   arjunEnabled:
     tool: arjun
     runtime_key: "ARJUN_ENABLED"
@@ -2649,7 +2653,10 @@ fields:
     group: not-tuning
     meaning: >-
       Follows a redirect rather than recording it, which can turn one request into
-      several.
+      several (ffuf -r). Forced off in IP mode and while roeExcludedHosts is
+      non-empty: ffuf follows a redirect to any host and has no same-host mode, so
+      an admitted target's redirect would send every word on to an excluded host
+      or an address off the target list.
   ffufJevBasePaths:
     tool: ffuf
     runtime_key: "FFUF_JEV_BASE_PATHS"
@@ -4037,7 +4044,11 @@ fields:
     group: not-tuning
     meaning: >-
       Follows a redirect to its destination rather than recording the redirect
-      itself.
+      itself (httpx -fr). Same host only (-fhr) when a session is attached, in IP
+      mode and while roeExcludedHosts is non-empty, because a redirect from an
+      admitted host can name an excluded host or an address off the target list:
+      a URL that redirects to another host then keeps its own answer (the 3xx and
+      its Location), not the other host's page.
   httpxIncludeResponse:
     tool: httpx
     runtime_key: "HTTPX_INCLUDE_RESPONSE"
@@ -4338,9 +4349,10 @@ fields:
     mcp: settable
     group: not-tuning
     meaning: >-
-      Whether httpx records this attribute while probing. Each probe adds work per
-      host, and several add requests beyond the first, so the set of probes
-      decides both how much the scan learns and how loud it is.
+      httpx -tls-probe: also probes the names the TLS certificate of each probed
+      host lists. Forced off in IP mode and while roeExcludedHosts is non-empty,
+      since those names can include an excluded host or one off the target list;
+      httpxProbeTlsGrab still reads the certificate.
   httpxProbeWordCount:
     tool: httpx
     runtime_key: "HTTPX_PROBE_WORD_COUNT"
@@ -6298,7 +6310,13 @@ fields:
     stealth: { set: false }
     group: not-tuning
     meaning: >-
-      Run NSE vuln scripts
+      Runs the NSE vuln scripts (nmap --script vuln). In IP mode and while
+      roeExcludedHosts is non-empty the set is `vuln and not
+      http-cross-domain-policy` and nmap runs with -n: with no reverse-DNS name
+      for the target, nmap's HTTP library follows a redirect only to the target
+      address, while http-cross-domain-policy follows redirects to any host by a
+      rule of its own. The NSE requests then send the address, not the PTR name,
+      as Host.
   nmapTimeout:
     tool: nmap
     runtime_key: "NMAP_TIMEOUT"
@@ -6500,7 +6518,12 @@ fields:
     meaning: >-
       Follows a redirect while running a template rather than matching on the
       redirect itself. A template that expects its payload to land on the final
-      page needs this; one matching a redirect header does not.
+      page needs this; one matching a redirect header does not. nuclei
+      -follow-redirects; same host only (-follow-host-redirects) in IP mode and
+      while roeExcludedHosts is non-empty, in both vuln-scan passes and the
+      takeover templates, and when a session is attached. The same-host flag also
+      holds a template that sets its own redirects: true. Off, no flag is passed,
+      and such a template still follows its redirects to any host.
   nucleiHeadless:
     tool: nuclei
     runtime_key: "NUCLEI_HEADLESS"
