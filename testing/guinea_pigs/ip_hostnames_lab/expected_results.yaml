@@ -565,10 +565,12 @@ rows:
         step: widen_without_authorization
         result: refused
         "true": true
+      # The MCP transport hands the client the refusal text, not the error code
+      # (authorization_required is pinned in scopeTools.test.ts), so the text is checked.
       - id: widening_refusal_names_the_authorization
         step: widen_without_authorization
         result: text
-        contains: [authorization_required]
+        contains: ["needs a record of what authorized", "`authorization`"]
       - id: widening_with_authorization_accepted
         step: widen_with_authorization
         result: ok
