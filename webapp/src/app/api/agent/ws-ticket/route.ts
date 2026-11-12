@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthzIdentity } from '@/lib/session'
+import { getAuthzIdentity, type AuthzIdentity } from '@/lib/session'
 import { requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { createWsTicket } from '@/lib/auth'
 import { assertGraphNotActivating } from '@/lib/activationLock'
 import { withRouteErrors } from '@/lib/routeErrors'
@@ -11,8 +12,16 @@ import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools
 import { agentTicketCap } from '@/lib/authz/agentCap'
 import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 
+/** The signed-in person, read fresh, when the effective user may see the project a terminal ticket names. */
+async function terminalIdentity(projectId: string): Promise<AuthzIdentity | NextResponse> {
+  const identity = await getAuthzIdentity({ fresh: true })
+  if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const access = await requireProjectAccess({ userId: (identity.actingAs ?? identity.principal).id }, projectId)
+  return access instanceof NextResponse ? access : identity
+}
+
 const TERMINAL_REFUSED =
-  'The Kali terminal is open to administrators and to accounts that kept it at the upgrade.'
+  'The Kali terminal is open to whoever holds platform:kali_terminal, and to accounts that kept it at the upgrade.'
 
 // POST /api/agent/ws-ticket  { projectId, sessionId, socket }
 //
@@ -32,13 +41,11 @@ const TERMINAL_REFUSED =
 // An `agent` ticket also carries `cap` (step 3.9b): which of the approval permissions
 // the agent enforces the person holds on the project, under act-as only those both the
 // admin and the account acted as hold (authz/agentCap.ts).
+//
+// Each socket is its permission on the ticket's project (step 3.9), read fresh: the chat
+// `agent:chat`, CypherFix triage `triage:run`, CypherFix CodeFix `codefix:run`. The terminal
+// needs the project (the effective user's, as for every socket) and its platform tool below.
 export const POST = withRouteErrors('Could not issue a ticket for the agent connection', async (request: NextRequest) => {
-  const identity = await getAuthzIdentity({ fresh: true })
-  if (!identity) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-  const eff = { userId: (identity.actingAs ?? identity.principal).id }
-
   const body = await request.json().catch(() => ({}))
   const projectId = String(body.projectId ?? body.project_id ?? '')
   const sessionId = String(body.sessionId ?? body.session_id ?? '')
@@ -56,9 +63,15 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
     )
   }
 
-  // The effective user must own the project the ticket is scoped to.
-  const access = await requireProjectAccess(eff, projectId)
-  if (access instanceof NextResponse) return access
+  const identity = socket === 'agent'
+    ? await requirePermission(request, 'agent:chat', { projectId, fresh: true })
+    : socket === 'cypherfix-triage'
+      ? await requirePermission(request, 'triage:run', { projectId, fresh: true })
+      : socket === 'cypherfix-codefix'
+        ? await requirePermission(request, 'codefix:run', { projectId, fresh: true })
+        : await terminalIdentity(projectId)
+  if (identity instanceof NextResponse) return identity
+  const eff = { userId: (identity.actingAs ?? identity.principal).id }
 
   let actor: string | undefined
   let actorEmail: string | null = null

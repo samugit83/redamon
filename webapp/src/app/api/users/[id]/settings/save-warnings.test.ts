@@ -34,8 +34,11 @@ vi.mock('@/lib/prisma', () => ({
       deleteMany: vi.fn(),
       upsert: vi.fn(),
     },
+    // The tunnel gate reads the account getSession answered (sharedToolAccess, step 3.9).
+    user: { findUnique: async ({ where }: { where: { id: string } }) => { const s = await mockGetSession(); return s && s.userId === where.id ? { id: s.userId, email: `${s.userId}@e2e.local`, role: s.role, password: 'x', createdAt: new Date(0), legacyGrants: [] } : null } },
   },
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: vi.fn().mockResolvedValue(null),
   isInternalRequest: vi.fn().mockReturnValue(false),

@@ -104,7 +104,7 @@ const drive = (fail: () => Promise<Response>) => async (url: string) =>
 describe('agent never answered', () => {
   test('refused: 503 agent_unreachable with the errno, never "fetch failed"', async () => {
     answer = async () => { throw refused() }
-    const res = await sessions.GET()
+    const res = await sessions.GET(new NextRequest('http://x/api/agent/sessions'))
     expect(res.status).toBe(503)
     const body = await res.json()
     expect(body).toEqual({ error: 'Failed to fetch sessions', code: 'agent_unreachable', cause: 'ECONNREFUSED' })
@@ -122,7 +122,7 @@ describe('agent never answered', () => {
     vi.stubEnv('AGENT_API_URL', '')
     vi.stubEnv('NEXT_PUBLIC_AGENT_API_URL', '')
     answer = async () => jsonResponse(200, { sessions: [] })
-    await sessions.GET()
+    await sessions.GET(new NextRequest('http://x/api/agent/sessions'))
     expect(calls[0]).toBe('http://agent:8080/sessions')
   })
 })

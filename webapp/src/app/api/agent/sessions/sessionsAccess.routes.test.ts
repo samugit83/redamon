@@ -20,6 +20,7 @@ const mockConversations = vi.fn()
 const mockWriteAudit = vi.fn()
 const mockAgentFetch = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
 vi.mock('@/lib/session', () => ({
   requireSession: (...a: unknown[]) => mockRequireSession(...a),
   getEffectiveUser: (...a: unknown[]) => mockEffectiveUser(...a),
@@ -111,7 +112,7 @@ describe('GET /api/agent/sessions', () => {
   test("a member gets their own project's sessions and no job", async () => {
     signedIn(principal('member-a'))
     agent()
-    const res = await listSessions()
+    const res = await listSessions(new NextRequest('http://x/api/agent/sessions'))
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.sessions.map((s: { id: number }) => s.id)).toEqual([1])
@@ -123,7 +124,7 @@ describe('GET /api/agent/sessions', () => {
     for (const who of [principal('holder', 'standard', ['shell_sessions']), principal('admin-a', 'admin')]) {
       signedIn(who)
       agent()
-      const body = await (await listSessions()).json()
+      const body = await (await listSessions(new NextRequest('http://x/api/agent/sessions'))).json()
       expect(body.sessions.map((s: { id: number }) => s.id)).toEqual([1, 2, 3])
       expect(body.jobs).toHaveLength(1)
     }
@@ -132,7 +133,7 @@ describe('GET /api/agent/sessions', () => {
   test('no session: 401 and no agent call', async () => {
     const { NextResponse } = await import('next/server')
     mockRequireSession.mockResolvedValue(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
-    expect((await listSessions()).status).toBe(401)
+    expect((await listSessions(new NextRequest('http://x/api/agent/sessions'))).status).toBe(401)
     expect(mockAgentFetch).not.toHaveBeenCalled()
   })
 
@@ -141,7 +142,7 @@ describe('GET /api/agent/sessions', () => {
     mockEffectiveUser.mockResolvedValue({ userId: 'm' })
     mockLoadPrincipal.mockRejectedValue(Object.assign(new Error('db down: secret'), { code: 'P1001' }))
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const res = await listSessions()
+    const res = await listSessions(new NextRequest('http://x/api/agent/sessions'))
     err.mockRestore()
     expect(res.status).toBe(500)
     expect(JSON.stringify(await res.json())).not.toContain('secret')
@@ -151,7 +152,7 @@ describe('GET /api/agent/sessions', () => {
   test('an agent failure is passed on as before', async () => {
     signedIn(principal('member-a'))
     mockAgentFetch.mockResolvedValue(json({ error: 'Session manager refused the agent\'s credential', code: 'session_manager_unauthorized' }, 502))
-    const res = await listSessions()
+    const res = await listSessions(new NextRequest('http://x/api/agent/sessions'))
     expect(res.status).toBe(502)
   })
 })

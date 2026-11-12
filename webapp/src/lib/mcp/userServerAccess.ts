@@ -2,12 +2,13 @@
  * Who may run which MCP Tool Plugin servers (step 1.9). Server side only.
  *
  * A stdio server runs its command inside the agent container, which holds every
- * tenant's data and the master secrets, so only an administrator's (role read from
- * the database) is saved, tested or handed to the agent (NF-14, OQ-48; Phase 3
- * replaces the role with `platform:agent_mcp`). No legacy grant, no escape hatch.
+ * tenant's data and the master secrets, so only the servers of an account holding
+ * platform:agent_mcp (read from the database; every admin with RBAC_PERMISSIONS_ENABLED
+ * off) are saved, tested or handed to the agent (NF-14, OQ-48, step 3.9). No legacy
+ * grant, no escape hatch.
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { loadPrincipal } from '@/lib/authz/principal'
+import { accountHolds } from '@/lib/authz/adminPermission'
 import { writeAudit } from '@/lib/audit'
 import { actorFields, auditActorOf, signedInActor } from '@/lib/auditActor'
 import { isInternalRequest } from '@/lib/session'
@@ -16,10 +17,12 @@ import {
   isStdioServer,
 } from '@/lib/mcp/schema'
 
-/** Whether the account `userId` may own stdio servers that run. A gone account may not. */
+/**
+ * Whether the account `userId` may own stdio servers that run: the OWNER's permission, not the
+ * caller's, since the agent runs the owner's servers. A gone account may not.
+ */
 export async function ownerRunsStdio(userId: string): Promise<boolean> {
-  const owner = await loadPrincipal(userId)
-  return owner?.role === 'admin'
+  return accountHolds(userId, 'platform:agent_mcp')
 }
 
 /** The signed-in account behind a request, for the audit row; null for the internal key. */

@@ -26,6 +26,7 @@ vi.mock('@/lib/prisma', () => ({
     apiKeyRotationConfig: { findMany: (...a: unknown[]) => h.rotationFindMany(...a) },
   },
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: (...a: unknown[]) => h.requireUserAccess(...a),
   isInternalRequest: () => false,

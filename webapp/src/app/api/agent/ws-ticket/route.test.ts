@@ -26,6 +26,7 @@ const mockWriteAudit = vi.fn()
 const mockCutoff = vi.fn()
 const mockAgentCap = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overAuthzIdentity()))
 vi.mock('@/lib/session', () => ({
   getAuthzIdentity: (...a: unknown[]) => mockGetAuthzIdentity(...a),
   getSession: (...a: unknown[]) => mockGetSession(...a),
@@ -205,7 +206,7 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
     const res = await POST(terminal())
     expect(res.status).toBe(403)
     expect(await res.json()).toEqual({
-      error: 'The Kali terminal is open to administrators and to accounts that kept it at the upgrade.',
+      error: 'The Kali terminal is open to whoever holds platform:kali_terminal, and to accounts that kept it at the upgrade.',
       code: 'forbidden',
       permission: 'platform:kali_terminal',
     })

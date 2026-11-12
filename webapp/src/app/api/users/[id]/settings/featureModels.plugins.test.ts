@@ -30,6 +30,7 @@ vi.mock('@/lib/prisma', () => ({
     $executeRawUnsafe: vi.fn(),
   },
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: (...a: unknown[]) => m.requireUserAccess(...a),
   isInternalRequest: (...a: unknown[]) => m.isInternal(...a),

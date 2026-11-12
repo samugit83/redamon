@@ -41,7 +41,7 @@ const HOLDS_ALL: Capabilities = Object.freeze({
 function context(permission: PermissionId, effective: EffectiveUser, project: { id: string; userId: string } | null): PermissionContext {
   return {
     session: { userId: effective.userId, role: 'standard' },
-    principal: null,
+    principal: { id: effective.userId, role: 'standard' },
     actingAs: null,
     effective,
     permission,
@@ -179,4 +179,29 @@ export async function overSelfService(): Promise<typeof import('@/lib/authz/self
       return null
     },
   } as unknown as typeof import('@/lib/authz/selfService')
+}
+
+/**
+ * For a test that doubles `getAuthzIdentity` of '@/lib/session' (and `requireProjectAccess` of
+ * '@/lib/access' when the route names a project), of a route that reads the person through the
+ * guard (the WebSocket ticket, step 3.9): no identity answers the 401, the project check is that
+ * helper's answer, and the context carries the identity the double answers, holding every
+ * permission, as an owner on *Default member* does.
+ */
+export function overAuthzIdentity(): Promise<Guards> {
+  return withDouble(async (_request: Request, permission: PermissionId, opts: RequirePermissionOptions = {}) => {
+    assertKnownPermission(permission)
+    const { getAuthzIdentity } = await import('@/lib/session')
+    const identity = await getAuthzIdentity(opts.fresh ? { fresh: true } : {})
+    if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const effective = { userId: (identity.actingAs ?? identity.principal).id }
+    let project: { id: string; userId: string } | null = null
+    if ('projectId' in opts) {
+      const access = await import('@/lib/access')
+      const allowed: unknown = await access.requireProjectAccess(effective, opts.projectId ?? '')
+      if (isResponse(allowed)) return asNextResponse(allowed)
+      project = (allowed as { project?: { id: string; userId: string } } | null)?.project ?? { id: opts.projectId ?? '', userId: effective.userId }
+    }
+    return { ...context(permission, effective, project), session: identity.session, principal: identity.principal, actingAs: identity.actingAs }
+  })
 }

@@ -20,6 +20,7 @@ import { loadPrincipal } from '@/lib/authz/principal'
 import { scannerJobRefusalForLiveProject } from '@/lib/authz/jobCredential'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { sessionHolds } from '@/lib/authz/adminPermission'
+import { requireSelfPermission } from '@/lib/authz/selfService'
 import { type SaveWarning } from './saveWarnings'
 import { rbacFlags } from '@/lib/authz/flags'
 import { changedCaptureFields, changedTunnelFields, parseCapturePatch } from '@/lib/sharedInstanceSettings'
@@ -42,17 +43,16 @@ const MOVED_TO_INSTANCE_SETTINGS =
   'The tunnel and TrafficMind settings are instance settings: change them in the Tunneling section or the TrafficMind settings, not in your own settings.'
 
 /**
- * Whether the signed-in account may change the instance tunnel (HD-06, F-05): an admin,
- * the member who kept the `tunnels` legacy grant, or a pre-upgrade account under the
- * escape hatch. `record: false` asks without counting a use of that hatch. The PUT decides on
- * a `fresh` read, so a demoted admin or a removed grant never changes the instance's tunnel.
+ * Whether the signed-in account may change the instance tunnel (HD-06, F-05): whoever holds
+ * platform:tunnels (every admin and the member who kept the `tunnels` legacy grant with
+ * RBAC_PERMISSIONS_ENABLED off), or a pre-upgrade account under the escape hatch
+ * (sharedTools.ts). `record: false` asks without counting a use of that hatch. The PUT decides
+ * on a `fresh` read, so a demoted admin or a removed grant never changes the instance's tunnel.
  */
 async function tunnelAccess(record: boolean, { fresh = false }: { fresh?: boolean } = {}): Promise<{ access: SharedToolAccess; actor: AuditActor }> {
   const session = await getSession({ fresh })
   if (!session) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
   const actor = auditActorOf(sessionActor(session))
-  // getSession read the role from the database: an admin needs no second read.
-  if (session.role === 'admin') return { access: { allowed: true, via: 'admin' }, actor }
   const principal = await loadPrincipal(session.userId, { fresh })
   if (!principal) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
   return { access: await sharedToolAccess(principal, 'tunnels', { record }), actor }
@@ -318,6 +318,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // internal caller, may write them (HD-23).
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
+    // Storing the account's own keys and their rotation (§5.3). Reading them stays the account's:
+    // every screen that asks which keys are set or which model a feature uses reads this row.
+    const refused = await requireSelfPermission(request, id, 'self:api_keys')
+    if (refused) return refused
 
     // Same-origin JSON whatever the identity switch (ID-26, step 2.12): the row holds this
     // account's keys and, with the switch off, the instance's tunnel and capture policy.

@@ -53,6 +53,8 @@ export interface RouteCase {
    * instance permission checked with no project (project create, import).
    */
   projectId?: string | null
+  /** The route asks for a fresh read (`{fresh: true}`, a critical path such as the WebSocket ticket). */
+  fresh?: boolean
   /** Runs before the request: the rows a route reads before its guard, in `h.models`. */
   arrange?: (h: RouteCaseState) => void
 }
@@ -167,7 +169,8 @@ export function describeRoutePermissions(family: string, cases: RouteCase[], h: 
 
     for (const c of cases) {
       const projectId = c.projectId === undefined ? OWNED_PROJECT : c.projectId
-      const guardArgs = projectId === null ? [c.permission] : [c.permission, { projectId }]
+      const options = { ...(projectId === null ? {} : { projectId }), ...(c.fresh ? { fresh: true } : {}) }
+      const guardArgs = Object.keys(options).length ? [c.permission, options] : [c.permission]
       test(`${c.route} refused without ${c.permission}: 403 naming it, nothing past the guard runs`, async () => {
         const { res, guard } = await run(h, c, denying(OWNER, c.permission))
         expect(res?.status).toBe(403)

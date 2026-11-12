@@ -27,10 +27,12 @@ vi.mock('@/lib/prisma', () => ({
       upsert: (...a: unknown[]) => h.upsert(...a),
     },
     apiKeyRotationConfig: { findMany: vi.fn().mockResolvedValue([]), deleteMany: vi.fn(), upsert: vi.fn() },
-    user: { findUnique: vi.fn(async () => null) },
+    // The tunnel gate reads the account getSession answered (sharedToolAccess, step 3.9).
+    user: { findUnique: async ({ where }: { where: { id: string } }) => { const s = await h.getSession(); return s && s.userId === where.id ? { id: s.userId, email: `${s.userId}@e2e.local`, role: s.role, password: 'x', createdAt: new Date(0), legacyGrants: [] } : null } },
     auditLog: { findFirst: vi.fn(async () => null), create: vi.fn(async () => ({})) },
   },
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: vi.fn().mockResolvedValue(null),
   isInternalRequest: vi.fn(() => false),

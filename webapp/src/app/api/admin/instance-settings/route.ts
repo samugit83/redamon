@@ -8,6 +8,7 @@ import { secretReentryResponse, settingsEndpointChange, settingsSecretReentry } 
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { sessionHolds } from '@/lib/authz/adminPermission'
 import { rootOnlyRefusal, rootStanding, type RootStanding } from '@/lib/authz/rootPowers'
+import { accountTypeOf } from '@/lib/authz/root'
 import {
   changedSecurityPolicyFields, parseSecurityPolicyPatch, securityPolicyView,
 } from '@/lib/instanceSecurityPolicy'
@@ -30,12 +31,15 @@ import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
  * 404, as before it existed, and the user settings route keeps them.
  *
  * The person is the one signed in, read fresh for a write (T3), never the account an admin
- * acts as (F-15): an admin acting as a member saves here under their own name. An admin
- * changes everything, the capture fields only holding platform:traffic_capture (every admin
- * with RBAC_PERMISSIONS_ENABLED off; this is the only TrafficMind write with the identity
- * switch on); the tunnel also the member holding the `tunnels` legacy grant, or a
- * pre-upgrade account under REDAMON_SHARED_TOOLS_COMPAT (HD-06, T27; owner question OQ-R3,
- * default (a)), who sees and changes only the tunnel. Secrets are answered masked.
+ * acts as (F-15): an admin acting as a member saves here under their own name. Each group is
+ * its permission's, whoever holds it (step 3.9): the tunnel platform:tunnels, through
+ * sharedToolAccess so the member holding the `tunnels` legacy grant (until step 3.15's
+ * conversion, then its override) and a pre-upgrade account under REDAMON_SHARED_TOOLS_COMPAT
+ * keep it (HD-06, T27; owner question OQ-R3, default (a)); the capture, egress and SCA fields
+ * platform:traffic_capture (this is the only TrafficMind write with the identity switch on).
+ * With RBAC_PERMISSIONS_ENABLED off every admin holds both. A person sees only the groups they
+ * hold; anyone holding none, and no administrator account, is refused. Secrets are answered
+ * masked.
  *
  * A PUT changes only what differs from the stored values (a masked secret keeps the stored
  * one), keeps the user settings route's rules for the tunnel (a new chisel URL needs its auth
@@ -44,8 +48,9 @@ import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
  * the capture proxy follows its switch and spawn-time knobs, the sandbox takes the tunnel.
  *
  * The security policy (password policy, session and link lifetimes, impersonation settings,
- * public base URL; step 2.6) is the confirmed Root's: admins read it, a change by anyone else is
- * 403 `root_only`, and Root changes it with its password. A value sent unchanged needs neither.
+ * public base URL; step 2.6) is the confirmed Root's: every administrator account reads it
+ * (it is not a platform tool), a change by anyone else is 403 `root_only`, and Root changes it
+ * with its password. A value sent unchanged needs neither.
  */
 
 const TUNNEL_STRINGS = ['ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
@@ -69,41 +74,46 @@ function notReady(): NextResponse {
 
 interface Access {
   session: Session
-  principal: Principal | null
+  principal: Principal
+  /** An administrator account (Root is one): reads the security policy. */
+  admin: boolean
+  /** platform:traffic_capture: the capture, egress and SCA fields. */
   capture: boolean
+  /** platform:tunnels, or the escape hatch: the tunnel fields. */
   tunnels: SharedToolAccess
 }
 
 async function access(fresh: boolean): Promise<Access | NextResponse> {
   const session = await getSession({ fresh })
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  // getSession read the role from the database: an admin needs no second read.
-  if (session.role === 'admin') {
-    return { session, principal: null, capture: true, tunnels: { allowed: true, via: 'admin' } }
-  }
   const principal = await loadPrincipal(session.userId, { fresh })
-  const tunnels = principal
-    ? await sharedToolAccess(principal, 'tunnels', { record: false })
-    : { allowed: false, via: null }
-  if (!tunnels.allowed) {
-    return forbidden('Only an administrator changes the instance settings.', 'instance:settings')
+  if (!principal) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const tunnels = await sharedToolAccess(principal, 'tunnels', { record: false })
+  const capture = await sessionHolds(session, 'platform:traffic_capture', { fresh })
+  const admin = accountTypeOf(principal, null) === 'admin'
+  if (!admin && !capture && !tunnels.allowed) {
+    return forbidden('Only whoever holds the instance tunnel or the traffic capture opens the instance settings.', 'platform:tunnels')
   }
-  return { session, principal, capture: false, tunnels }
+  return { session, principal, admin, capture, tunnels }
 }
 
 const ROOT_ONLY_POLICY = 'Only Root can change the instance security policy.'
 
-/** What a browser sees: the secrets masked, the capture part and the security policy only for an admin. */
+/** What a browser sees: the secrets masked, each group only for whoever holds it, the security policy for an admin. */
 function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings: SaveWarning[] = []) {
   return {
-    tunnelsEnabled: row.tunnelsEnabled,
-    ngrokAuthtoken: maskSecret(row.ngrokAuthtoken),
-    chiselServerUrl: row.chiselServerUrl,
-    chiselAuth: maskSecret(row.chiselAuth),
+    ...(a.tunnels.allowed
+      ? {
+          tunnelsEnabled: row.tunnelsEnabled,
+          ngrokAuthtoken: maskSecret(row.ngrokAuthtoken),
+          chiselServerUrl: row.chiselServerUrl,
+          chiselAuth: maskSecret(row.chiselAuth),
+        }
+      : {}),
     ...(a.capture ? Object.fromEntries(CAPTURE_FIELDS.map((f) => [f, row[f]])) : {}),
-    canManageTunnels: true,
+    canManageTunnels: a.tunnels.allowed,
     canManageCapture: a.capture,
-    ...(a.capture
+    ...(a.admin
       ? { securityPolicy: securityPolicyView(row as unknown as Record<string, unknown>), canManageSecurityPolicy: standing === 'confirmed' }
       : {}),
     ...(warnings.length ? { warnings } : {}),
@@ -116,7 +126,7 @@ export const GET = withRouteErrors('Could not read the instance settings', async
   if (a instanceof NextResponse) return a
   const row = await instanceSettingsInForce()
   if (!row) return notReady()
-  return NextResponse.json(view(row, a, a.capture ? await rootStanding(a.session.userId) : 'none'))
+  return NextResponse.json(view(row, a, a.admin ? await rootStanding(a.session.userId) : 'none'))
 })
 
 export const PUT = withRouteErrors('Could not save the instance settings', async (request: NextRequest) => {
@@ -145,13 +155,16 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   const tunnelChanges = changedTunnelFields(stored, body)
   const capturePatch = parseCapturePatch(body, sanitizeBodyRules)
   const captureChanges = changedCaptureFields(stored, capturePatch, body)
-  if (captureChanges.length && !(a.capture && await sessionHolds(a.session, 'platform:traffic_capture', { fresh: true }))) {
-    return forbidden('Only an administrator changes the TrafficMind settings.', 'platform:traffic_capture', {
+  if (tunnelChanges.length && !a.tunnels.allowed) {
+    return forbidden('Only whoever holds platform:tunnels changes the instance tunnel.', 'platform:tunnels', { fields: tunnelChanges })
+  }
+  if (captureChanges.length && !a.capture) {
+    return forbidden('Only whoever holds platform:traffic_capture changes the TrafficMind settings.', 'platform:traffic_capture', {
       fields: captureChanges,
     })
   }
   const policyChanges = changedSecurityPolicyFields(stored, policy.patch)
-  const standing = a.capture || policyChanges.length ? await rootStanding(a.session.userId) : 'none'
+  const standing = a.admin || policyChanges.length ? await rootStanding(a.session.userId) : 'none'
   if (policyChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_POLICY)
 
   // A new chisel URL must come with its auth typed again (HD-24), and re-pointing a
@@ -174,7 +187,7 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   }
   for (const f of policyChanges) data[f] = policy.patch[f]
   // A use of the escape hatch is recorded only when it changes something.
-  if (tunnelChanges.length && a.tunnels.via === 'compat' && a.principal) {
+  if (tunnelChanges.length && a.tunnels.via === 'compat') {
     await sharedToolAccess(a.principal, 'tunnels')
   }
 

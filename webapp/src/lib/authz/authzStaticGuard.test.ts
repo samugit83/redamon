@@ -47,7 +47,6 @@ const OWN_ACCOUNT = 'the account the path names is the signed-in one: an account
 const PATH_ROW = "a per-user row of the account requireUserAccess / requireOwnBrowserRequest let in, not a project's owner"
 const SKILL_OWNER_PROJECT = "the project whose toggles name the skill owner's own skills (the agent loads the project owner's user skills, so only the owner's project can switch them on), not any project the person sees"
 const CAPTURE_TENANT = 'the capture rows of a project carry its owner as tenant (ingest writes it), filtered after the project guard'
-const SHARED_TOOL = 'a shared-tool short-circuit before sharedToolAccess (sharedTools.ts); the platform permission replaces both with the platform routes'
 
 interface Allowed {
   reason: string
@@ -56,15 +55,6 @@ interface Allowed {
 }
 
 const ALLOWED: Record<string, Allowed> = {
-  'src/app/api/admin/instance-settings/route.ts::role_admin': {
-    reason: 'the administrator account answers the instance settings: the tunnel short-circuit before sharedToolAccess (sharedTools.ts), and ' +
-      "every admin's read of the capture part and the security policy (capture: true). The capture write also asks platform:traffic_capture: " +
-      'with the identity switch on it is the only TrafficMind write (users/[id]/settings answers 409 moved_to_instance_settings). Step 3.9 ' +
-      'replaces the short-circuit and the read with the platform permissions',
-    lines: [
-      "if (session.role === 'admin') {",
-    ],
-  },
   'src/app/api/auth/act-as/route.ts::role_admin': {
     reason: `the target's ${ACCOUNT_TYPE}: acting as another admin is Root's (rootPowers.ts)`,
     lines: [
@@ -87,12 +77,6 @@ const ALLOWED: Record<string, Allowed> = {
     reason: "the caller's own mute-rule presets: a per-user row (rowOwner.ts)",
     lines: [
       'where: ownerScope(eff),',
-    ],
-  },
-  'src/app/api/nuclei-templates/route.ts::role_admin': {
-    reason: SHARED_TOOL,
-    lines: [
-      "if (session.role === 'admin') return { allowed: true, via: 'admin' }",
     ],
   },
   'src/app/api/presets/[id]/route.ts::row_owner_helper': {
@@ -247,12 +231,6 @@ const ALLOWED: Record<string, Allowed> = {
       'if (eff.userId !== id) return refused',
     ],
   },
-  'src/app/api/users/[id]/settings/route.ts::role_admin': {
-    reason: SHARED_TOOL,
-    lines: [
-      "if (session.role === 'admin') return { access: { allowed: true, via: 'admin' }, actor }",
-    ],
-  },
   'src/app/api/users/[id]/tradecraft-resources/[resourceId]/refresh/route.ts::find_by_id_and_owner': {
     reason: `the path's account's own tradecraft resource, looked up by id and that account: ${PATH_ROW}`,
     lines: [
@@ -313,12 +291,6 @@ const ALLOWED: Record<string, Allowed> = {
     reason: "MCP lists the projects its token user owns: every MCP project tool needs the owner level (mcpAuth.ts assertMcpProjectAccess)",
     lines: [
       'where: { userId: ctx.token.userId },',
-    ],
-  },
-  'src/lib/mcp/userServerAccess.ts::role_admin': {
-    reason: "whether a stdio server's owner runs it: the owner's admin account type until the platform routes check platform:agent_mcp",
-    lines: [
-      "return owner?.role === 'admin'",
     ],
   },
   'src/lib/plugins/userSkillAdoption.ts::find_by_id_and_owner': {

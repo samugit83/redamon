@@ -59,6 +59,7 @@ let session: { userId: string; role: string } | null = { userId: 'u1', role: 'ad
 let internal = false
 // Ownership is exercised separately in settings.access.test.ts; here we stub the
 // guard open so these tests stay focused on the tunnel logic.
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: vi.fn().mockResolvedValue(null),
   isInternalRequest: vi.fn(() => internal),

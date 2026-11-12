@@ -9,7 +9,7 @@ import { declaredBodyTooLarge } from '@/lib/roe/upload'
 import { internalError } from '@/lib/routeErrors'
 import { getEffectiveUser, requireSession, type Session } from '@/lib/session'
 import { loadPrincipal } from '@/lib/authz/principal'
-import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
+import { SHARED_TOOL_PERMISSIONS, sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { requirePermission } from '@/lib/authz/guards'
 import { writeAudit } from '@/lib/audit'
 import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
@@ -18,7 +18,7 @@ import { ownershipOf, templatesRoot, type TemplateOwnership } from '@/lib/nuclei
 const TEMPLATES_PATH = templatesRoot()
 const MAX_FILE_SIZE = 1 * 1024 * 1024 // 1 MB
 
-const MANAGE_ALL = 'platform:nuclei_templates_all'
+const MANAGE_ALL = SHARED_TOOL_PERMISSIONS.nuclei_templates_all
 const DENIED: SharedToolAccess = { allowed: false, via: null }
 
 // ---------------------------------------------------------------------------
@@ -113,11 +113,11 @@ async function readCaller(): Promise<Caller | NextResponse> {
 
 /**
  * Whether the signed-in account (never the acted-as one) may change every template:
- * an admin, or a pre-upgrade account under the escape hatch. `record: false` asks
+ * platform:nuclei_templates (every admin with RBAC_PERMISSIONS_ENABLED off), or a
+ * pre-upgrade account under the escape hatch (sharedTools.ts). `record: false` asks
  * without counting a use of that hatch.
  */
 async function managesAll(session: Session, record: boolean): Promise<SharedToolAccess> {
-  if (session.role === 'admin') return { allowed: true, via: 'admin' }
   const principal = await loadPrincipal(session.userId)
   if (!principal) return DENIED
   return sharedToolAccess(principal, 'nuclei_templates_all', { record })

@@ -20,10 +20,11 @@ interface Stopper {
 
 /**
  * Whose agent runs a press stops (HD-07). Stopping every user's runs on the shared
- * instance is a shared tool: an admin, or a pre-upgrade account under the escape hatch,
- * keeps it; anyone else stops only their own runs. The signed-in account is judged, as
- * the database holds it now. Only an admin can act as someone, and an admin takes the
- * global stop, so the user a member's stop names is always the effective user too.
+ * instance is a shared tool, platform:emergency_stop (sharedTools.ts: every admin with
+ * RBAC_PERMISSIONS_ENABLED off, a profile or an override holding it with it on, or a
+ * pre-upgrade account under the escape hatch); anyone else stops only the runs of the
+ * signed-in account, judged as the database holds it now. Under act-as that is the admin's
+ * own runs: only a custom admin profile can act as someone without holding the global stop.
  */
 async function stopper(record: boolean): Promise<Stopper | NextResponse> {
   const session = await requireSession()

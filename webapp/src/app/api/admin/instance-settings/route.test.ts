@@ -191,7 +191,7 @@ describe('who', () => {
     await signIn('member')
     for (const res of [await get(), await put({ tunnelsEnabled: true, captureProxyEnabled: false })]) {
       expect(res.status).toBe(403)
-      expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'instance:settings' })
+      expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'platform:tunnels' })
     }
     expect(h.instance).toEqual(instanceRow())
   })
@@ -464,5 +464,77 @@ describe('the capture write asks platform:traffic_capture (permissions switch on
     await signIn('admin-um')
     expect((await put({ captureProxyEnabled: true })).status).toBe(200)
     expect(h.instance!.captureProxyEnabled).toBe(true)
+  })
+})
+
+describe('each group is its platform permission\'s, whoever holds it (permissions switch on, step 3.9)', () => {
+  const override = (permission: string) => ({ permissionSets: [], permissionOverrides: [{ permission, effect: 'grant', expiresAt: null, reason: 'runs it' }] })
+  beforeEach(() => {
+    setFlagsForTests({ identity: true, permissions: true })
+    clearCapabilityCachesForTests()
+    account('admin-um', 'admin', { adminProfileId: 'builtin:user-manager', permissionSets: [], permissionOverrides: [] })
+    account('admin-po', 'admin', { adminProfileId: 'builtin:platform-operator', permissionSets: [], permissionOverrides: [] })
+    account('member-cap', 'standard', override('platform:traffic_capture'))
+    account('member-tunnels', 'standard', override('platform:tunnels'))
+    h.instance = instanceRow({ captureProxyEnabled: false })
+  })
+
+  test('a User manager reads the security policy only: no tunnel, no capture, and a tunnel change is 403 platform:tunnels', async () => {
+    await signIn('admin-um')
+    const body = await (await get()).json()
+    expect(body).toMatchObject({ canManageTunnels: false, canManageCapture: false })
+    expect(body.securityPolicy).toBeDefined()
+    expect(body).not.toHaveProperty('ngrokAuthtoken')
+    expect(body).not.toHaveProperty('captureProxyEnabled')
+    const res = await put({ tunnelsEnabled: true })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'platform:tunnels', fields: ['tunnelsEnabled'] })
+    expect(h.instance).toEqual(instanceRow({ captureProxyEnabled: false }))
+    expect(changes()).toEqual([])
+  })
+
+  test('a Platform operator reads and changes the tunnel and the capture', async () => {
+    await signIn('admin-po')
+    const body = await (await get()).json()
+    expect(body).toMatchObject({ canManageTunnels: true, canManageCapture: true, ngrokAuthtoken: expect.stringMatching(/1234$/) })
+    expect((await put({ tunnelsEnabled: true })).status).toBe(200)
+    expect(h.instance!.tunnelsEnabled).toBe(true)
+  })
+
+  test('a member holding platform:traffic_capture through an override reads and changes only the capture', async () => {
+    await signIn('member-cap')
+    const body = await (await get()).json()
+    expect(body).toMatchObject({ canManageTunnels: false, canManageCapture: true, captureProxyEnabled: false })
+    expect(body).not.toHaveProperty('securityPolicy')
+    expect(body).not.toHaveProperty('chiselServerUrl')
+    expect((await put({ captureProxyEnabled: true })).status).toBe(200)
+    expect(h.instance!.captureProxyEnabled).toBe(true)
+    const res = await put({ tunnelsEnabled: true })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ permission: 'platform:tunnels' })
+  })
+
+  test('a member holding platform:tunnels through an override changes the tunnel, recorded as the override', async () => {
+    await signIn('member-tunnels')
+    const body = await (await get()).json()
+    expect(body).toMatchObject({ canManageTunnels: true, canManageCapture: false })
+    expect(body).not.toHaveProperty('captureProxyEnabled')
+    expect((await put({ tunnelsEnabled: true })).status).toBe(200)
+    expect(h.instance!.tunnelsEnabled).toBe(true)
+    expect(JSON.stringify(changes())).toContain('override')
+  })
+
+  test("the legacy holder keeps the tunnel until step 3.15's conversion, then it lapses (OQ-R3 (a))", async () => {
+    account('member-tun', 'standard', { legacyGrants: ['tunnels'], permissionSets: [], permissionOverrides: [] })
+    await signIn('member-tun')
+    expect((await get()).status).toBe(200)
+    h.audit.push({ action: 'system.rbac_legacy_overrides_backfill', createdAt: new Date('2026-11-12T10:00:00Z') })
+    const { clearLegacyConversionCacheForTests } = await import('@/lib/authz/legacyOverrides')
+    clearLegacyConversionCacheForTests()
+    clearCapabilityCachesForTests()
+    clearPrincipalCacheForTests()
+    const res = await get()
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'platform:tunnels' })
   })
 })

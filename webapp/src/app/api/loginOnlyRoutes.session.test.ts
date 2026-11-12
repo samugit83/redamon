@@ -118,8 +118,9 @@ describe('the former login-only routes read the account first', () => {
     const paths = ROUTES.map(r => r.path)
     expect(paths).toHaveLength(19)
     const byPath = new Map(ROUTE_MANIFEST.map(e => [e.path, e.guard]))
-    // Two read the account through a stronger guard since step 1.9 (HD-03, HD-15).
-    const stronger: Record<string, string> = { '/api/mcp/reload': 'admin-jwt', '/api/mcp/manifest': 'effective-user' }
+    // The MCP reload reads the account through a stronger guard since step 1.9 (HD-03, HD-15); the
+    // MCP manifest asks self:mcp_servers through requirePermission, a session guard (step 3.9).
+    const stronger: Record<string, string> = { '/api/mcp/reload': 'admin-jwt' }
     expect(paths.filter(p => byPath.get(p) !== (stronger[p] ?? 'session'))).toEqual([])
     expect(byPath.get('/api/global/tunnel-config')).toBe('internal')
   })

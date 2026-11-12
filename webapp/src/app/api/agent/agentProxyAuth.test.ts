@@ -147,7 +147,7 @@ const CASES: Case[] = [
   // Its first agent call reads the folder's import record (the mock has none).
   { name: 'workspace import-url resync', agentPath: '/workspace/properties',
     call: () => wsImportResync.POST(json('/x', { projectId: 'p1', path: 'uploads/r' })) },
-  { name: 'sessions list', agentPath: '/sessions', call: () => sessions.GET() },
+  { name: 'sessions list', agentPath: '/sessions', call: () => sessions.GET(new NextRequest('http://x/api/agent/sessions')) },
   { name: 'session interact', agentPath: '/sessions/1/interact', call: () => sessionInteract.POST(json('/x', { command: 'id' }), idParams('1')) },
   { name: 'session kill', agentPath: '/sessions/1/kill', call: () => sessionKill.POST(new NextRequest(`${BASE}/x`, { method: 'POST' }), idParams('1')) },
   { name: 'msf job kill', agentPath: '/jobs/1/kill', call: () => jobKill.POST(new NextRequest(`${BASE}/x`, { method: 'POST' }), idParams('1')) },

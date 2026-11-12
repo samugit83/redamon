@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
   requireSession: vi.fn(),
   loadPrincipal: vi.fn(),
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overAuthzIdentity()))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   getSession: (...a: unknown[]) => h.getSession(...a),
   getEffectiveUser: (...a: unknown[]) => h.getEffectiveUser(...a),

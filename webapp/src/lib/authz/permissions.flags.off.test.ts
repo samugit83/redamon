@@ -251,6 +251,9 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
       'src/lib/authz/permissionSetAdmin.ts',
       // Step 3.4: selects the assignments and overrides only with the switch on.
       'src/lib/authz/principal.ts',
+      // Step 3.9: whether a shared-tool caller passed an account read with its sets, only with the
+      // switch on (off, Phase 1's rule reads the role and the legacy grants alone).
+      'src/lib/authz/sharedTools.ts',
       // Step 3.15: the review reads the holders' overrides only with the switch on.
       'src/lib/authz/updateReview.ts',
       // Step 3.11: an account's sets and overrides, read and written only through a route that

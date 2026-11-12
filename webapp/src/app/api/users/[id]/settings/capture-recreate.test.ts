@@ -40,6 +40,7 @@ vi.mock('@/lib/prisma', () => ({
 const caller = vi.hoisted(() => ({
   internal: true, scanner: false, session: { userId: 'admin-1', role: 'admin' } as { userId: string; role: string },
 }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
 vi.mock('@/lib/session', () => ({
   requireUserAccess: (...a: unknown[]) => mockRequireUserAccess(...a),
   isInternalRequest: () => caller.internal,
