@@ -2510,8 +2510,10 @@ def run_domain_recon(target: str, bruteforce: bool = False,
 
     # =====================================================================
     # GROUP 3.6 — TLS certificate grab (tlsx)
-    # Depends on: merged port_scan data. Runs BEFORE http_probe so SAN-derived
-    # hostnames become probe targets, and before GROUP 6 so vhost_sni can use them.
+    # Depends on: merged port_scan data. Runs BEFORE http_probe so the SAN names
+    # merge_discovered_hostnames admits (the group's scope, RoE, not wildcard-only)
+    # get their DNS and port_scan rows here (_late_names) and GROUP 4 probes them;
+    # before GROUP 6 so vhost_sni can read tlsx's SAN lists.
     # Sequential (not a fan-out peer) because the SAN injection mutates shared
     # state GROUP 4 reads.
     # =====================================================================

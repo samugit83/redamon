@@ -2,8 +2,9 @@
 
 Runs one TLS handshake per already-open, non-HTTP port and captures the
 certificate + posture, filling the gap httpx leaves (httpx only grabs certs on
-the 5 HTTPS ports it dials). Runs BEFORE http_probe so SAN-derived hostnames
-become probe targets, and before vhost so it can feed SNI candidates.
+the 5 HTTPS ports it dials). Runs BEFORE http_probe so that, in a domain run,
+the in-scope SAN names the pipeline merges (recon/main.py GROUP 3.6) get ports
+and are probed by httpx, and before vhost so its SAN lists feed SNI candidates.
 
 tlsx is a compiled Go binary run as a sibling container through the broker
 socket, matching every other ProjectDiscovery tool in the pipeline.
