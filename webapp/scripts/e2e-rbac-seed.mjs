@@ -104,11 +104,14 @@ try {
   })
 
   // A disabled streamable_http server whose bearer is a known fake: the matrix
-  // proves where it is (and is not) returned whole.
+  // proves where it is (and is not) returned whole. Written as a save through the
+  // route stores it (mcpServerSchema's defaults filled in): the list route returns
+  // rows as stored, and the MCP Tool Plugins tab reads `tools` and `default_phases`.
   const mcpServers = [{
     id: 'rbac-fake-server', name: 'rbac fake server', description: '', enabled: false,
-    transport: 'streamable_http', url: 'http://127.0.0.1:9/mcp',
-    auth: { type: 'bearer', token: FAKES.A_MCP_BEARER },
+    transport: 'streamable_http', default_phases: ['informational', 'exploitation', 'post_exploitation'], tags: [],
+    url: 'http://127.0.0.1:9/mcp', headers: {}, auth: { type: 'bearer', token: FAKES.A_MCP_BEARER },
+    connect_timeout: 60, read_timeout: 600, args: [], env: {}, encoding: 'utf-8', tools: [],
   }]
   await prisma.userSettings.upsert({
     where: { userId: memberA },
