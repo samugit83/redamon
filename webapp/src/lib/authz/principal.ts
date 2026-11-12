@@ -88,17 +88,24 @@ export function principalCacheTtl(): number {
  */
 export async function loadPrincipal(userId: string, { fresh = false }: LoadPrincipalOptions = {}): Promise<Principal | null> {
   if (!userId) return null
-  const ttl = principalCacheTtl()
-  if (ttl > 0 && !fresh) {
-    const hit = cache.get(userId)
-    if (hit && hit.expiresAt > now().getTime()) return hit.principal
+  if (!fresh) {
+    const hit = cachedPrincipal(userId)
+    if (hit) return hit
   }
+  const ttl = principalCacheTtl()
   const startedAt = generation
   const principal = await readPrincipal(userId)
   // A fresh read that finds no account must not leave an older entry answering for it.
   if (!principal) cache.delete(userId)
   else if (ttl > 0 && startedAt === generation) remember(principal, ttl)
   return principal
+}
+
+/** The account this process holds for `userId` within the bound, or null. Reads nothing. */
+export function cachedPrincipal(userId: string): Principal | null {
+  if (principalCacheTtl() <= 0) return null
+  const hit = cache.get(userId)
+  return hit && hit.expiresAt > now().getTime() ? hit.principal : null
 }
 
 /** A writer in this process changed the account: its next read goes to the database. */

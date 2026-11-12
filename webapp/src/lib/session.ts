@@ -2,7 +2,7 @@ import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken, verifyActAsToken, AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from './auth'
 import { constantTimeEqual } from './constantTimeEqual'
-import { loadPrincipal, principalCacheTtl, type LoadPrincipalOptions, type Principal } from './authz/principal'
+import { cachedPrincipal, loadPrincipal, type LoadPrincipalOptions, type Principal } from './authz/principal'
 import { rememberSessionPrincipal } from './authz/sessionPrincipal'
 import { rbacFlags } from './authz/flags'
 import { internalError } from './routeErrors'
@@ -64,12 +64,12 @@ export async function getSession({ fresh = false }: SessionOptions = {}): Promis
   if (!token) return null
   const payload = await verifyToken(token)
   if (!payload) return refuse(cookieStore)
-  let principal = await loadPrincipal(payload.sub, { fresh })
+  const cached = fresh ? null : cachedPrincipal(payload.sub)
+  let principal = cached ?? (await loadPrincipal(payload.sub, { fresh }))
   // A cached account may predate the change that made this token valid (a sign-in after a
-  // version bump in another process, an account enabled again): refuse only on a fresh read.
-  if (principal && !tokenAccepted(payload.sv, principal) && !fresh && principalCacheTtl() > 0) {
-    principal = await loadPrincipal(payload.sub, { fresh: true })
-  }
+  // version bump in another process, an account enabled again): a refusal stands only on an
+  // account read from the database, so only a cached answer is read again (DV-25).
+  if (cached && !tokenAccepted(payload.sv, cached)) principal = await loadPrincipal(payload.sub, { fresh: true })
   if (!principal || !tokenAccepted(payload.sv, principal)) return refuse(cookieStore)
   const session = { userId: principal.id, role: principal.role }
   rememberSessionPrincipal(session, principal)

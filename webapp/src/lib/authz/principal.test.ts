@@ -464,6 +464,17 @@ describe('the cache seen from the session (identity switch on)', () => {
     expect(findUnique).not.toHaveBeenCalled()
   })
 
+  test.each([
+    ['an older session version', { sessionVersion: 1 }],
+    ['a disabled account', { status: 'disabled' }],
+  ])('a refusal on a cold cache costs one query: only a cached answer is read again (DV-25): %s', async (_, over) => {
+    db.set('u1', row(over))
+    jar.auth = await createToken('u1', 'admin', 0)
+    expect(await getSession()).toBeNull()
+    expect(findUnique).toHaveBeenCalledTimes(1)
+    expect(jar.deleted).toEqual(['redamon-auth'])
+  })
+
   test('a re-enabled account is not refused by a stale disabled entry', async () => {
     db.set('u1', row({ status: 'disabled' }))
     jar.auth = await createToken('u1', 'admin')
