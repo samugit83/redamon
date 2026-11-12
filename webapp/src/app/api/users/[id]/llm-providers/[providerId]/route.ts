@@ -104,11 +104,16 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    // Its endpoint, type and keys decide where the account's keys and prompts go: never while
-    // acting as it (§4.7). A name, model or reasoning change stays allowed.
+    // Its endpoint, type, keys and Extra Headers values (provider secrets, secretEndpointRebind.ts)
+    // decide where the account's keys and prompts go: never while acting as it (§4.7). A name, model
+    // or reasoning change, a masked header kept or a header removed stays allowed.
     const typesKey = ['apiKey', 'awsAccessKeyId', 'awsSecretKey', 'awsBearerToken']
       .some((f) => typeof body[f] === 'string' && body[f] !== '' && !isMaskedSecret(body[f]))
-    if (typesKey || llmProviderEndpointChange(existing, body)) {
+    const storedHeaders = (existing.defaultHeaders ?? {}) as Record<string, unknown>
+    const typesHeader = body.defaultHeaders !== null && typeof body.defaultHeaders === 'object'
+      && Object.entries(body.defaultHeaders as Record<string, unknown>)
+        .some(([name, v]) => typeof v === 'string' && v !== '' && !isMaskedSecret(v) && v !== storedHeaders[name])
+    if (typesKey || typesHeader || llmProviderEndpointChange(existing, body)) {
       const actingAs = await refuseWhileActingAsOn(id, 'change_llm_endpoint')
       if (actingAs) return actingAs
     }

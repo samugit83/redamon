@@ -118,6 +118,13 @@ import { POST as resetCredentials } from '@/app/api/users/[id]/reset-credentials
 import { POST as mintToken } from '@/app/api/users/[id]/mcp-tokens/route'
 
 const db = () => h.db as AccountDb
+/** The self-service rows the Prisma mock adds to the account database. */
+type SelfServiceRows = {
+  userSettings: { findUnique: (a: unknown) => Promise<unknown> }
+  userTradecraftResource: { findFirst: (a: unknown) => Promise<unknown> }
+  userLlmProvider: { findFirst: (a: unknown) => Promise<unknown> }
+}
+const rows = () => h.db as unknown as SelfServiceRows
 const ADMIN_PW = 'admin-one-passphrase'
 const ADMIN_HASH = bcrypt.hashSync(ADMIN_PW, 4)
 
@@ -302,6 +309,7 @@ describe('the self-service catalogs of the account acted as (a passwordless mana
     ['add an LLM provider', () => createProvider(req('POST', { providerType: 'openai_compatible', name: 'p', baseUrl: 'https://evil.e2e.test/v1', apiKey: 'sk-x' }), params('member-1')), 'change_llm_endpoint'],
     ["change an LLM provider's endpoint", () => editProvider(req('PUT', { baseUrl: 'https://evil.e2e.test/v1', apiKey: 'sk-new' }), p2('member-1', { providerId: 'prov-1' })), 'change_llm_endpoint'],
     ["change an LLM provider's key", () => editProvider(req('PUT', { apiKey: 'sk-new' }), p2('member-1', { providerId: 'prov-1' })), 'change_llm_endpoint'],
+    ["add a header value to an LLM provider (a provider secret)", () => editProvider(req('PUT', { defaultHeaders: { Authorization: 'Bearer fake-e2e' } }), p2('member-1', { providerId: 'prov-1' })), 'change_llm_endpoint'],
     ['add an outbound MCP server', () => addMcpServer(req('POST', { name: 'm', transport: 'http', url: 'https://evil.e2e.test/mcp' }), params('member-1')), 'add_mcp_server'],
     ["re-point an MCP server", () => editMcpServer(req('PUT', { name: 's', transport: 'http', url: 'https://evil.e2e.test/mcp', enabled: false }), p2('member-1', { serverId: 'srv-1' })), 'change_mcp_endpoint'],
   ]
@@ -309,6 +317,21 @@ describe('the self-service catalogs of the account acted as (a passwordless mana
   test.each(cases)('%s: 403 not_while_acting_as, audited, nothing written', async (_name, call, action) => {
     await as('admin-1', 'member-1')
     await expectRefused(await call(), action)
+  })
+
+  test("a provider's header changed to a new value is refused; a masked one kept, or one removed, is not", async () => {
+    await as('admin-1', 'member-1')
+    const stored = {
+      id: 'prov-1', userId: 'member-1', providerType: 'openai_compatible', name: 'p', baseUrl: 'https://llm.e2e.test/v1',
+      apiKey: 'sk-fake-key', defaultHeaders: { Authorization: 'Bearer stored-e2e', 'X-Team': 'red' },
+    }
+    vi.spyOn(rows().userLlmProvider, 'findFirst').mockResolvedValue(stored as never)
+    const edit = (defaultHeaders: Record<string, string>) => editProvider(req('PUT', { defaultHeaders }), p2('member-1', { providerId: 'prov-1' }))
+    await expectRefused(await edit({ Authorization: 'Bearer other-e2e', 'X-Team': '••••••••' }), 'change_llm_endpoint')
+    const before = refusals().length
+    expect((await edit({ Authorization: '••••••••', 'X-Team': '••••••••' })).status).toBe(500)
+    expect((await edit({ Authorization: '••••••••' })).status).toBe(500)
+    expect(refusals()).toHaveLength(before)
   })
 
   test("a provider's name change stays allowed: it reaches the write", async () => {
@@ -381,8 +404,8 @@ describe('using the GitHub token of the account acted as (re-sync, tradecraft): 
   test('a resource with its own token stored is the account\'s token too', async () => {
     agentCalls.n = 0
     await as('admin-1', 'member-1')
-    vi.spyOn(db().userSettings, 'findUnique').mockResolvedValue(null as never)
-    vi.spyOn(db().userTradecraftResource, 'findFirst').mockResolvedValue(
+    vi.spyOn(rows().userSettings, 'findUnique').mockResolvedValue(null as never)
+    vi.spyOn(rows().userTradecraftResource, 'findFirst').mockResolvedValue(
       { id: 'tc-1', userId: 'member-1', url: 'https://github.com/e2e-org/notes', githubTokenOverride: 'ghp_fake_override', llmModel: 'm' } as never)
     await expectRefused(await verifyTradecraft(req('POST', {}), resource), 'use_github_token')
     expect(agentCalls.n).toBe(0)
@@ -393,7 +416,7 @@ describe('using the GitHub token of the account acted as (re-sync, tradecraft): 
     await as('admin-1', 'member-1')
     expect((await created({}, '?skipVerify=true')).status).toBe(500)
     expect((await created({ githubTokenOverride: 'ghp_typed_now' })).status).toBe(500)
-    vi.spyOn(db().userSettings, 'findUnique').mockResolvedValue({ githubAccessToken: '' } as never)
+    vi.spyOn(rows().userSettings, 'findUnique').mockResolvedValue({ githubAccessToken: '' } as never)
     await verifyTradecraft(req('POST', {}), resource)
     expect(agentCalls.n).toBe(1)
     expect(refusals()).toEqual([])
