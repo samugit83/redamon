@@ -1169,6 +1169,8 @@ def run_ffuf(config: dict) -> None:
         target_domains,
         discovered_base_paths,
         FFUF_PARALLELISM,
+        settings=settings,
+        recon_data=recon_data,
     )
     print(f"[+][Partial Recon] FFuf discovered {len(ffuf_results)} endpoints")
 

@@ -19,7 +19,7 @@ import time
 from recon.helpers.subprocess_helpers import run_with_heartbeat
 from recon.helpers.resource_enum.classification import classify_endpoint
 import tempfile
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
@@ -183,6 +183,9 @@ def run_ffuf_discovery(
     allowed_hosts: set,
     discovered_base_paths: Optional[List[str]] = None,
     parallelism: int = 3,
+    *,
+    settings: Optional[Mapping] = None,
+    recon_data: Optional[Mapping] = None,
 ) -> Tuple[List[Dict], Dict]:
     """
     Run FFuf directory fuzzer against target URLs.
@@ -208,10 +211,19 @@ def run_ffuf_discovery(
         follow_redirects: Follow HTTP redirects
         allowed_hosts: Set of in-scope hostnames
         discovered_base_paths: Base paths discovered by crawlers to fuzz under
+        settings, recon_data: the run's; under redirects_contained (RoE
+            exclusions, IP mode) follow_redirects is turned off
 
     Returns:
         Tuple of (results_list, {"external_domains": [...]})
     """
+    from recon.helpers.resource_enum.katana_helpers import redirects_contained
+    if follow_redirects and redirects_contained(settings, recon_data):
+        # ffuf -r follows a redirect to any host (Go's default client), so an
+        # admitted target's 302 sends every matching word on to a host the run
+        # refused. ffuf has no same-host mode.
+        follow_redirects = False
+        print("[*][FFuf] Redirects not followed: RoE exclusions or the IP target list are in force")
     print(f"\n[*][FFuf] Running FFuf directory fuzzer...")
     print(f"[*][FFuf] Wordlist: {wordlist}")
     print(f"[*][FFuf] Threads: {threads}")

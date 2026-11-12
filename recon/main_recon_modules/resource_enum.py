@@ -1283,6 +1283,8 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 target_domains,
                 discovered_base_paths,
                 FFUF_PARALLELISM,
+                settings=settings,
+                recon_data=recon_data,
             )
 
             if ffuf_results:

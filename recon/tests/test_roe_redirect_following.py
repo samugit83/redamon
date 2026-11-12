@@ -501,3 +501,80 @@ def test_partial_arjun_hands_arjun_its_settings(monkeypatch):
         parameter_discovery.run_arjun(config)
     assert seen["urls"] == [f"https://{WWW}/search"]
     assert seen["kwargs"]["settings"]["ROE_EXCLUDED_HOSTS"] == [EDGE]
+
+
+# --------------------------------------------------------------------------
+# FFuf: -r (opt-in) follows a redirect to any host
+# --------------------------------------------------------------------------
+
+def _ffuf_cmds(monkeypatch, settings, recon_data=None, follow=True) -> list:
+    """run_ffuf_discovery with ffuf's process faked; returns every argv.
+    Checked in the recon image against a loopback 302 to another host: with
+    -r ffuf sent each word on to it, without -r nothing."""
+    from types import SimpleNamespace
+    from recon.helpers.resource_enum import ffuf_helpers
+    cmds = []
+
+    def run(cmd, **_k):
+        cmds.append(cmd)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(ffuf_helpers, "run_with_heartbeat", run)
+    monkeypatch.setattr("helpers.proxy_routing.get_capture_routing", lambda *_a, **_k: (None, None))
+    ffuf_helpers.run_ffuf_discovery(
+        [f"http://{ADMITTED_IP}"], "/wordlists/w.txt", 10, 0, 5, 60, [200], [], "", [],
+        False, 1, False, [], follow, {ADMITTED_IP}, None, 1,
+        settings=settings, recon_data=recon_data)
+    assert cmds, "run_ffuf_discovery never started ffuf"
+    return cmds
+
+
+@pytest.mark.parametrize("entry", [f"{EXCLUDED_IP}/32", EDGE])
+def test_ffuf_follows_no_redirect_under_roe_exclusions(monkeypatch, capsys, entry):
+    for cmd in _ffuf_cmds(monkeypatch, _roe(entry), DOMAIN_RECON):
+        assert "-r" not in cmd
+    assert "[*][FFuf] Redirects not followed" in capsys.readouterr().out
+
+
+def test_ffuf_follows_no_redirect_in_ip_mode(monkeypatch):
+    recon = {"metadata": {"ip_mode": True, "expanded_ips": [ADMITTED_IP]}}
+    for cmd in _ffuf_cmds(monkeypatch, {}, recon):
+        assert "-r" not in cmd
+
+
+@pytest.mark.parametrize("settings", INACTIVE)
+def test_ffuf_follow_redirects_unchanged_without_an_exclusion(monkeypatch, settings):
+    for cmd in _ffuf_cmds(monkeypatch, settings, DOMAIN_RECON):
+        assert cmd.count("-r") == 1
+
+
+def test_ffuf_without_follow_redirects_stays_without(monkeypatch):
+    for cmd in _ffuf_cmds(monkeypatch, {}, None, follow=False):
+        assert "-r" not in cmd
+
+
+def test_resource_enum_ffuf_follows_no_redirect_under_roe_exclusions(monkeypatch):
+    from types import SimpleNamespace
+    from recon.helpers.resource_enum import ffuf_helpers
+    from recon.main_recon_modules import resource_enum
+    cmds = []
+
+    def run(cmd, **_k):
+        cmds.append(cmd)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    for name in ("pull_katana_docker_image", "pull_hakrawler_docker_image",
+                 "pull_gau_docker_image", "pull_zap_ajax_docker_image"):
+        monkeypatch.setattr(resource_enum, name, lambda *_a, **_k: True, raising=False)
+    monkeypatch.setattr(resource_enum, "is_docker_installed", lambda: True)
+    monkeypatch.setattr(resource_enum, "is_docker_running", lambda: True)
+    monkeypatch.setattr(ffuf_helpers, "run_with_heartbeat", run)
+    monkeypatch.setattr("helpers.proxy_routing.get_capture_routing", lambda *_a, **_k: (None, None))
+    resource_enum.run_resource_enum(copy.deepcopy(DOMAIN_RECON), settings=dict(
+        _roe(EDGE), KATANA_ENABLED=False, HAKRAWLER_ENABLED=False, JSLUICE_ENABLED=False,
+        FFUF_ENABLED=True, FFUF_FOLLOW_REDIRECTS=True, ZAP_AJAX_SPIDER_ENABLED=False,
+        GAU_ENABLED=False, PARAMSPIDER_ENABLED=False, KITERUNNER_ENABLED=False,
+        OPENAPI_ENABLED=False, ARJUN_ENABLED=False))
+    assert cmds, "run_resource_enum never ran FFuf"
+    for cmd in cmds:
+        assert "-r" not in cmd
