@@ -634,7 +634,7 @@ Webapp server-side routes under `webapp/src/app/api/` (all behind `middleware.ts
 | Route group | Examples | Auth / validation |
 |-------------|----------|-------------------|
 | Auth | `/api/auth/login`, `/logout`, `/me` | Public login; bcrypt compare → JWT cookie |
-| Public allowlist | `/api/health`, `/api/version/check`, `/api/global/tunnel-config/sync` | **Unauthenticated by design** |
+| Public allowlist | `/api/health`, `/api/version/check`; `/api/global/tunnel-config/sync`; `/api/mcp-server`; with `RBAC_IDENTITY_ENABLED` on, `/invite` and `/api/invite/*` | No session cookie. The first two are **unauthenticated by design**; the sync takes only the sandbox's `TUNNEL_AUTH_TOKEN` bearer, the MCP server a personal access token, the invite paths a one-time invite link |
 | Scan orchestration | `/api/recon|gvm|trufflehog|github-hunt|ai-attack-surface/[projectId]/*` (start/stop/status/logs) | JWT; proxied with `X-Orchestrator-Key` |
 | Agent | `/api/agent/command-whisperer`, `/api/agent/sessions/*`, `/api/agent/workspace/*` | JWT; agent proxy (no auth header to agent) |
 | Graph | `/api/graph`, `/api/graph-views/*` | JWT; Neo4j basic auth server-side |
@@ -677,7 +677,7 @@ Webapp server-side routes under `webapp/src/app/api/` (all behind `middleware.ts
 | On-demand Ollama judge | AI-attack-surface scan launch | Ref-counted lease; torn down at zero leases (`local_llm_manager.py`) |
 | KB-refresh sidecar | `--profile kb-refresh`, opt-in | Sleep-loop scheduler: daily NVD, weekly ExploitDB/Nuclei, monthly GTFOBins/LOLBAS (`docker-compose.yml`) |
 | MSF / Nuclei auto-update | `MSF_AUTO_UPDATE` / `NUCLEI_AUTO_UPDATE` env on kali boot | Pulls external content into the worker |
-| Tunnel-config sync | Worker boot → webapp push to `:8015` | Worker calls unauthenticated `/api/global/tunnel-config/sync`; webapp pushes config |
+| Tunnel-config sync | Worker boot → webapp push to `:8015` | Worker calls `/api/global/tunnel-config/sync` with the `TUNNEL_AUTH_TOKEN` bearer (sent on stdin; 401 otherwise); webapp pushes config |
 | CodeFix / Triage agents | Operator-initiated code fix | Clone GitHub repo (token via `GIT_ASKPASS`); **build/test (`github_bash`) runs in an isolated per-job sandbox** via `docker exec` (agent → webapp → orchestrator), not in the agent; commit stages **only approved files** (no `git add -A`); push refused to default/`main`/`master` (`cypherfix_codefix/`, `scanners/codefix_sandbox/`) |
 | LangGraph checkpointer | Every agent/fireteam step | Persists agent state to PostgreSQL (`PERSISTENT_CHECKPOINTER=true`) |
 | Plugin workers | A user's plugin action | Started by the runner's supervisor, one process per plugin version under its own UID; killed on timeout or limit; reach the stack only through the proxy |
@@ -776,7 +776,9 @@ The webapp middleware (`webapp/src/middleware.ts`) enforces the JWT cookie on ev
 - `/api/auth/login`, `/api/auth/logout`
 - `/api/health`
 - `/api/version/check`
-- `/api/global/tunnel-config/sync`
+- `/api/global/tunnel-config/sync` (the sandbox's `TUNNEL_AUTH_TOKEN` bearer instead of a cookie)
+- `/api/mcp-server` (a personal access token instead of a cookie)
+- with `RBAC_IDENTITY_ENABLED` on, `/invite`, `/invite/<token>` and `/api/invite/*` (an invite or reset link)
 - static assets (`/_next/*`, `/favicon*`, `/logo.png`, `/js_logo.png`)
 
 Every other `/api/*` route requires a valid `redamon-auth` JWT cookie. The `X-Internal-Key` / `X-Scanner-Key` service headers (cleared by nginx at the edge) are accepted only from internal callers on the Docker network.
