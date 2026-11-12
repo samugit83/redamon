@@ -33,7 +33,7 @@ const OFF = { compat: false, legacyGrantsPending: 0 }
 
 describe('banner only while compat is on', () => {
   test('compat on: the red banner names the switch, for an admin', () => {
-    render(<AdminBanners isAdmin rbac={{ compat: true, legacyGrantsPending: 0 }} pathname="/graph" />)
+    render(<AdminBanners adminAccount rbac={{ compat: true, legacyGrantsPending: 0 }} pathname="/graph" />)
     const banner = screen.getByRole('status', { name: 'Compatibility mode is on' })
     expect(banner.textContent).toContain('REDAMON_SHARED_TOOLS_COMPAT')
     expect(banner.textContent).toMatch(/created before the upgrade/)
@@ -41,17 +41,17 @@ describe('banner only while compat is on', () => {
   })
 
   test('compat off: no banner', () => {
-    const { container } = render(<AdminBanners isAdmin rbac={OFF} pathname="/graph" />)
+    const { container } = render(<AdminBanners adminAccount rbac={OFF} pathname="/graph" />)
     expect(container.textContent).toBe('')
   })
 
   test('a member never sees it, whatever reaches the page', () => {
-    const { container } = render(<AdminBanners isAdmin={false} rbac={{ compat: true, legacyGrantsPending: 3 }} pathname="/graph" />)
+    const { container } = render(<AdminBanners adminAccount={false} rbac={{ compat: true, legacyGrantsPending: 3 }} pathname="/graph" />)
     expect(container.textContent).toBe('')
   })
 
   test('no rbac block (an older answer, or still loading): no banner', () => {
-    const { container } = render(<AdminBanners isAdmin rbac={undefined} pathname="/graph" />)
+    const { container } = render(<AdminBanners adminAccount rbac={undefined} pathname="/graph" />)
     expect(container.textContent).toBe('')
   })
 
@@ -65,31 +65,31 @@ describe('banner only while compat is on', () => {
 
 describe('the legacy review banner', () => {
   test('links to the review card while grants are pending', () => {
-    render(<AdminBanners isAdmin rbac={{ compat: false, legacyGrantsPending: 3 }} pathname="/graph" />)
+    render(<AdminBanners adminAccount rbac={{ compat: false, legacyGrantsPending: 3 }} pathname="/graph" />)
     const banner = screen.getByRole('status', { name: 'Legacy access waits for review' })
     expect(banner.textContent).toMatch(/3 legacy grants from the previous version wait for your review/)
     expect(screen.getByRole('link', { name: 'Review on the Users page' })).toHaveAttribute('href', '/settings/users#legacy-access')
   })
 
   test('hidden on the Users page itself, where the card is', () => {
-    const { container } = render(<AdminBanners isAdmin rbac={{ compat: false, legacyGrantsPending: 3 }} pathname="/settings/users" />)
+    const { container } = render(<AdminBanners adminAccount rbac={{ compat: false, legacyGrantsPending: 3 }} pathname="/settings/users" />)
     expect(container.textContent).toBe('')
   })
 
   test('a count that could not be read (null) shows no review banner', () => {
-    const { container } = render(<AdminBanners isAdmin rbac={{ compat: false, legacyGrantsPending: null }} pathname="/graph" />)
+    const { container } = render(<AdminBanners adminAccount rbac={{ compat: false, legacyGrantsPending: null }} pathname="/graph" />)
     expect(container.textContent).toBe('')
   })
 
   test('both banners together', () => {
-    render(<AdminBanners isAdmin rbac={{ compat: true, legacyGrantsPending: 1 }} pathname="/graph" />)
+    render(<AdminBanners adminAccount rbac={{ compat: true, legacyGrantsPending: 1 }} pathname="/graph" />)
     expect(screen.getByRole('status', { name: 'Compatibility mode is on' })).toBeInTheDocument()
     expect(screen.getByText(/1 legacy grant from the previous version waits for your review/)).toBeInTheDocument()
   })
 
   test('a decision elsewhere makes it read /api/auth/me again', async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ id: 'a', role: 'admin', rbac: OFF }), { status: 200 }))
-    render(<AdminBanners isAdmin rbac={{ compat: false, legacyGrantsPending: 2 }} pathname="/graph" />)
+    render(<AdminBanners adminAccount rbac={{ compat: false, legacyGrantsPending: 2 }} pathname="/graph" />)
     expect(screen.getByRole('status', { name: 'Legacy access waits for review' })).toBeInTheDocument()
     await act(async () => { window.dispatchEvent(new Event(LEGACY_GRANTS_CHANGED_EVENT)) })
     await waitFor(() => expect(screen.queryByRole('status', { name: 'Legacy access waits for review' })).toBeNull())
@@ -97,7 +97,7 @@ describe('the legacy review banner', () => {
   })
 
   test('a member never asks /api/auth/me again', async () => {
-    render(<AdminBanners isAdmin={false} rbac={undefined} pathname="/graph" />)
+    render(<AdminBanners adminAccount={false} rbac={undefined} pathname="/graph" />)
     await act(async () => { window.dispatchEvent(new Event(LEGACY_GRANTS_CHANGED_EVENT)) })
     expect(fetchMock).not.toHaveBeenCalled()
   })

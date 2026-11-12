@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Plus, Pencil, Trash2, Loader2, Eye, EyeOff, Upload, Download, Swords, RotateCw, Copy, Check, ExternalLink, ChevronDown, ChevronRight, Info, BookOpen, Server, KeyRound } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
-import { useAuth } from '@/providers/AuthProvider'
 import { useVersionCheck } from '@/hooks/useVersionCheck'
 // Shared with the inline shortcuts the scan sections render, so a key cannot be
 // described one way here and another way on the card that asks for it.
@@ -217,7 +216,6 @@ function chatImportSummary(data: { imported?: number; message?: string; skippedB
 
 export default function SettingsPage() {
   const { userId } = useProject()
-  const { isAdmin } = useAuth()
   const { alertError, alert: showAlert, confirm: showConfirm } = useAlertModal()
   const toast = useToast()
 

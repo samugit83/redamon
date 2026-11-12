@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   alertError: vi.fn(),
   dangerConfirm: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
+  // What the signed-in person holds (hooks/useCan.ts); empty = a member.
+  granted: new Set<string>(),
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
@@ -29,6 +31,7 @@ vi.mock('@/hooks/useUsers', () => ({
   useCreateUser: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useDeleteUser: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
+vi.mock('@/hooks/useCan', () => ({ useCan: (p: string) => h.granted.has(p), useRbacFlags: () => null }))
 vi.mock('@/providers/ProjectProvider', () => ({
   useProject: () => ({ userId: 'u1', setUserId: vi.fn(), setCurrentProject: vi.fn() }),
 }))
@@ -57,6 +60,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   h.projects = { data: undefined, isLoading: false, error: null, refetch: vi.fn() }
   h.dangerConfirm.mockResolvedValue(true)
+  h.granted = new Set()
 })
 afterEach(cleanup)
 
@@ -101,5 +105,39 @@ describe('deleting a project', () => {
     fireEvent.click(screen.getByRole('button', { name: 'delete Alpha' }))
     await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith('Project deleted'))
     expect(h.alertError).not.toHaveBeenCalled()
+  })
+})
+
+/** The user bar is the user directory's (UI-03, step 3.12): each control follows its permission. */
+describe('the user bar', () => {
+  const ADMIN = ['users:read', 'users:impersonate', 'users:create', 'users:delete']
+
+  test('member sees no user bar on the projects page', () => {
+    h.projects.data = []
+    render(<ProjectsPage />)
+    expect(screen.queryByText('User:')).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'User' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /New User/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Delete selected user' })).toBeNull()
+    // The project actions stay.
+    expect(screen.getByText('New Project')).toBeInTheDocument()
+  })
+
+  test('an admin sees the user select, New User and Delete user', () => {
+    h.granted = new Set(ADMIN)
+    h.projects.data = []
+    render(<ProjectsPage />)
+    expect(screen.getByRole('combobox', { name: 'User' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: /New User/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete selected user' })).toBeInTheDocument()
+  })
+
+  test('each control follows its own permission: reading the directory alone shows a select that cannot switch', () => {
+    h.granted = new Set(['users:read'])
+    h.projects.data = []
+    render(<ProjectsPage />)
+    expect(screen.getByRole('combobox', { name: 'User' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /New User/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Delete selected user' })).toBeNull()
   })
 })

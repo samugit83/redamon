@@ -46,8 +46,6 @@ export interface AuthUser {
 export interface AuthContextValue {
   user: AuthUser | null
   isLoading: boolean
-  /** @deprecated The account type is not a permission: use `useCan` (hooks/useCan.ts). */
-  isAdmin: boolean
   /** `user.capabilities` as a set; empty until read, and when the server could not resolve it. */
   capabilities: ReadonlySet<PermissionId>
   flags: Readonly<RbacFlags> | null
@@ -146,7 +144,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         user,
         isLoading,
-        isAdmin: user?.role === 'admin',
         capabilities,
         flags: user?.flags ?? null,
         sessionError,

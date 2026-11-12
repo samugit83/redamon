@@ -18,7 +18,6 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/settings',
 }))
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'user-1' }) }))
-vi.mock('@/providers/AuthProvider', () => ({ useAuth: () => ({ isAdmin: false }) }))
 
 // The real hook throws outside <AlertProvider>; mock the deep path and the barrel.
 const alertSpies = vi.hoisted(() => ({

@@ -18,7 +18,7 @@ import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import React from 'react'
 import { ToastProvider } from '@/components/ui/Toast/Toast'
 
-const who = vi.hoisted(() => ({ isAdmin: false }))
+const who = vi.hoisted(() => ({ admin: false }))
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn(), prefetch: vi.fn() }))
 
 vi.mock('next/navigation', () => ({
@@ -34,11 +34,12 @@ vi.mock('next/link', () => ({
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'user-1' }) }))
 vi.mock('@/providers/AuthProvider', () => ({
   useAuth: () => ({
-    user: { id: 'user-1', name: 'U', email: 'u@e2e.local', role: who.isAdmin ? 'admin' : 'standard' },
-    isAdmin: who.isAdmin,
+    user: { id: 'user-1', name: 'U', email: 'u@e2e.local', role: who.admin ? 'admin' : 'standard' },
     isLoading: false,
   }),
 }))
+// An admin holds every administration permission, a member none (hooks/useCan.ts).
+vi.mock('@/hooks/useCan', () => ({ useCan: () => who.admin, useRbacFlags: () => null }))
 const alertSpies = vi.hoisted(() => ({
   alert: vi.fn(async () => {}),
   alertError: vi.fn(async () => {}),
@@ -72,7 +73,7 @@ let answers: Record<string, unknown>
 const fetchMock = vi.fn()
 
 beforeEach(() => {
-  who.isAdmin = false
+  who.admin = false
   answers = {
     [`GET ${BASE}/settings`]: { tunnelsEnabled: false, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', rotationConfigs: {}, canManageTunnels: false },
     [`GET ${BASE}/settings/api-usage`]: { enabled: true, report: null, running: null, runBy: null, activity: null, tracked: [] },
@@ -106,7 +107,7 @@ describe('a member sees a notice where something changed for them', () => {
   })
 
   test('and no admin card, banner or admin request anywhere', async () => {
-    const banners = render(<AdminBanners isAdmin={false} rbac={{ compat: true, legacyGrantsPending: 4 }} pathname="/graph" />)
+    const banners = render(<AdminBanners adminAccount={false} rbac={{ compat: true, legacyGrantsPending: 4 }} pathname="/graph" />)
     expect(banners.container.textContent).toBe('')
     banners.unmount()
     const users = render(<UsersPage />)
@@ -118,7 +119,7 @@ describe('a member sees a notice where something changed for them', () => {
 
 describe('single-operator install sees nothing', () => {
   test('the admin\'s Tunneling section has the controls and no notice', async () => {
-    who.isAdmin = true
+    who.admin = true
     answers[`GET ${BASE}/settings`] = { ...(answers[`GET ${BASE}/settings`] as object), canManageTunnels: true }
     render(<ToastProvider><SettingsPage /></ToastProvider>)
     expect(await screen.findByPlaceholderText('e.g. http://your-vps.com:9090')).toBeInTheDocument()
@@ -130,8 +131,8 @@ describe('single-operator install sees nothing', () => {
   })
 
   test('no banner, and the Users page shows only the users: no review card, no update card', async () => {
-    who.isAdmin = true
-    const banners = render(<AdminBanners isAdmin rbac={{ compat: false, legacyGrantsPending: 0 }} pathname="/graph" />)
+    who.admin = true
+    const banners = render(<AdminBanners adminAccount rbac={{ compat: false, legacyGrantsPending: 0 }} pathname="/graph" />)
     expect(banners.container.textContent).toBe('')
     banners.unmount()
     render(<UsersPage />)

@@ -19,6 +19,8 @@ const USERS = [
 vi.mock('@/providers/ProjectProvider', () => ({
   useProject: () => ({ userId: state.userId, setUserId: vi.fn(), setCurrentProject: vi.fn(), userSwitchError: null }),
 }))
+// An admin: the user switcher (users:impersonate) and Manage Users (users:read).
+vi.mock('@/hooks/useCan', () => ({ useCan: () => true, useRbacFlags: () => null }))
 vi.mock('@/providers/AuthProvider', () => ({
   useAuth: () => ({
     user: {
@@ -29,7 +31,7 @@ vi.mock('@/providers/AuthProvider', () => ({
         ...(state.identity ? { identity: true, root: { email: 'ada@x.z', confirmed: true, chosenAt: null } } : {}),
       },
     },
-    isAdmin: true, logout: vi.fn(), sessionError: null,
+    logout: vi.fn(), sessionError: null,
   }),
 }))
 vi.mock('@/hooks/useUsers', () => ({ useUsers: () => ({ data: USERS }) }))

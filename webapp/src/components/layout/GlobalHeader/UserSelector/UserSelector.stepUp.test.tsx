@@ -16,8 +16,10 @@ const h = vi.hoisted(() => ({
 vi.mock('@/providers/ProjectProvider', () => ({
   useProject: () => ({ userId: h.userId, setUserId: h.setUserId, setCurrentProject: h.setCurrentProject, userSwitchError: null }),
 }))
+// An admin: the user switcher (users:impersonate) and Manage Users (users:read).
+vi.mock('@/hooks/useCan', () => ({ useCan: () => true, useRbacFlags: () => null }))
 vi.mock('@/providers/AuthProvider', () => ({
-  useAuth: () => ({ user: { id: 'admin-1', name: 'Ada Admin' }, isAdmin: true, logout: vi.fn(), sessionError: null }),
+  useAuth: () => ({ user: { id: 'admin-1', name: 'Ada Admin' }, logout: vi.fn(), sessionError: null }),
 }))
 vi.mock('@/hooks/useUsers', () => ({
   useUsers: () => ({

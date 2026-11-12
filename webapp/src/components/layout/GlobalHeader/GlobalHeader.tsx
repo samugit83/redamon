@@ -12,12 +12,14 @@ import { ProjectSelector } from './ProjectSelector'
 import { UserSelector } from './UserSelector'
 import { AdminBanners } from '@/components/admin/CompatBanner'
 import { useAuth } from '@/providers/AuthProvider'
+import { useCan } from '@/hooks/useCan'
 import { useProject } from '@/providers/ProjectProvider'
 import styles from './GlobalHeader.module.css'
 
 export function GlobalHeader() {
   const pathname = usePathname()
-  const { isAdmin, user } = useAuth()
+  const { user } = useAuth()
+  const canReadUsers = useCan('users:read')
   const { projectId } = useProject()
 
   const coreNav: Array<{ label: string; href: string; icon: ReactNode; isNew?: boolean }> = [
@@ -29,7 +31,7 @@ export function GlobalHeader() {
     { label: 'Insights', href: '/insights', icon: <TrendingUp size={14} /> },
     // TrafficMind table view is visible to everyone (view captured traffic for
     // their project). Only the TrafficMind *settings* (egress guard, master
-    // switch) are admin-only, gated in Global Settings.
+    // switch) need platform:traffic_capture, gated on the /traffic page.
     { label: 'TrafficMind', href: '/traffic', icon: <Network size={14} /> },
     { label: 'Plugins', href: '/plugins', icon: <Puzzle size={14} /> },
     { label: 'Reports', href: '/reports', icon: <FileText size={14} /> },
@@ -73,7 +75,7 @@ export function GlobalHeader() {
           <span>Projects</span>
         </Link>
 
-        {isAdmin && (
+        {canReadUsers && (
           <Link
             href="/settings/users"
             className={`${styles.navItem} ${pathname === '/settings/users' ? styles.navItemActive : ''}`}
@@ -118,7 +120,8 @@ export function GlobalHeader() {
         </Link>
       </div>
     </header>
-    <AdminBanners isAdmin={isAdmin} rbac={user?.rbac} pathname={pathname} />
+    {/* /api/auth/me sends `rbac` to administrator accounts only. */}
+    <AdminBanners adminAccount={user?.rbac !== undefined} rbac={user?.rbac} pathname={pathname} />
     </>
   )
 }

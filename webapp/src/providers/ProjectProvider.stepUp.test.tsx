@@ -8,7 +8,9 @@ import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/re
 import type { ApiError } from '@/lib/apiError'
 
 // One object across renders, as in the app: the provider's effects depend on it.
-const AUTH = vi.hoisted(() => ({ user: { id: 'admin' }, isLoading: false, isAdmin: true }))
+const AUTH = vi.hoisted(() => ({ user: { id: 'admin' }, isLoading: false, canSwitchUser: true }))
+// Whether the signed-in person may act as others (users:impersonate, hooks/useCan.ts).
+vi.mock('@/hooks/useCan', () => ({ useCan: () => AUTH.canSwitchUser, useRbacFlags: () => null }))
 vi.mock('@/providers/AuthProvider', () => ({ useAuth: () => AUTH }))
 vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),

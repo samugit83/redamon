@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Network, PanelRightOpen, Copy, Settings } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
-import { useAuth } from '@/providers/AuthProvider'
+import { useCan } from '@/hooks/useCan'
 import { Drawer, useToast, useAlertModal, WikiInfoButton } from '@/components/ui'
 import { TrafficCaptureStatus } from '@/components/traffic/TrafficCaptureStatus'
 import { TrafficMindSettingsModal } from '@/components/traffic/TrafficMindSettingsModal'
@@ -64,7 +64,7 @@ function toCurl(d: TrafficDetail): string {
 
 export default function TrafficPage() {
   const { projectId, userId, currentProject, isLoading: projectLoading } = useProject()
-  const { isAdmin } = useAuth()
+  const canManageCapture = useCan('platform:traffic_capture')
   const router = useRouter()
   const toast = useToast()
 
@@ -194,14 +194,17 @@ export default function TrafficPage() {
         {total > 0 && (
           <button className={styles.clearBtn} onClick={handleDeleteAllMatching}>Delete all matching</button>
         )}
-        {isAdmin && (
-          <button className={styles.settingsBtn} onClick={() => setSettingsOpen(true)} title="TrafficMind global settings (admin)">
+        {canManageCapture && (
+          <button className={styles.settingsBtn} onClick={() => setSettingsOpen(true)} title="TrafficMind global settings">
             <Settings size={15} /> Settings
           </button>
         )}
       </div>
 
-      <TrafficMindSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} userId={userId} />
+      {/* Mounted only for platform:traffic_capture: it reads the global capture settings on open. */}
+      {canManageCapture && (
+        <TrafficMindSettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} userId={userId} />
+      )}
 
       {/* Filters */}
       <div className={styles.filters}>

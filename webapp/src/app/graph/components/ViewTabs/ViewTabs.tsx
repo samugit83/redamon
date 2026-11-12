@@ -4,6 +4,7 @@ import { memo, useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { CalendarClock, GitCompare, Waypoints, Table2, Terminal, Shield, Search, Download, Loader2, SquareTerminal, Filter, Plus, Trash2, X, ChevronDown, Code, Target, Zap, Flag, Key, Server, Boxes, LockKeyhole, Bug, Network, Mail, ShieldAlert, Package, PackageSearch, History, Layers, Bot, Radiation, Swords, Droplets, DoorOpen, ListOrdered, EyeOff, SlidersHorizontal } from 'lucide-react'
 import { Toggle } from '@/components/ui'
+import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { AUTO_2D_THRESHOLD } from '../GraphCanvas'
 import styles from './ViewTabs.module.css'
 
@@ -259,6 +260,11 @@ export const ViewTabs = memo(function ViewTabs({
   onToggleRender,
   nodeCount = 0,
 }: ViewTabsProps) {
+  // The raw Kali terminal is platform:kali_terminal's (its ticket route decides). With the
+  // REDAMON_SHARED_TOOLS_COMPAT escape hatch on, an older account may still open it without the
+  // permission, so the tab stays and the ticket route answers.
+  const canOpenTerminal = useCan('platform:kali_terminal')
+  const sharedToolsCompat = useRbacFlags()?.sharedToolsCompat === true
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [tableMenuOpen, setTableMenuOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -660,15 +666,17 @@ export const ViewTabs = memo(function ViewTabs({
             <span className={styles.badge}>{sessionCount}</span>
           )}
         </button>
-        <button
-          role="tab"
-          aria-selected={activeView === 'terminal'}
-          className={`${styles.tab} ${activeView === 'terminal' ? styles.tabActive : ''}`}
-          onClick={() => onViewChange('terminal')}
-        >
-          <SquareTerminal size={14} />
-          <span>RedAmon Terminal</span>
-        </button>
+        {(canOpenTerminal || sharedToolsCompat) && (
+          <button
+            role="tab"
+            aria-selected={activeView === 'terminal'}
+            className={`${styles.tab} ${activeView === 'terminal' ? styles.tabActive : ''}`}
+            onClick={() => onViewChange('terminal')}
+          >
+            <SquareTerminal size={14} />
+            <span>RedAmon Terminal</span>
+          </button>
+        )}
         {/* Navigates to the dedicated AI Attack Surface page (not a graph view). */}
         <Link href="/ai-attack-surface" className={styles.tab}>
           <Swords size={14} />

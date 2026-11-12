@@ -9,7 +9,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 // effects depend on the router, the search params and the signed-in user, and a
 // fresh object per render re-runs them forever.
 const h = vi.hoisted(() => ({
-  isAdmin: true,
+  canManageUsers: true,
   search: new URLSearchParams(''),
   router: { push: () => {}, replace: () => {} },
   admin: { id: 'admin-1' },
@@ -22,8 +22,10 @@ vi.mock('next/navigation', () => ({
   useRouter: () => h.router,
   useSearchParams: () => h.search,
 }))
+// The page's permissions (hooks/useCan.ts): all of them for an admin here, none for a member.
+vi.mock('@/hooks/useCan', () => ({ useCan: () => h.canManageUsers, useRbacFlags: () => null }))
 vi.mock('@/providers/AuthProvider', () => ({
-  useAuth: () => ({ user: h.isAdmin ? h.admin : h.member, isAdmin: h.isAdmin, isLoading: false }),
+  useAuth: () => ({ user: h.canManageUsers ? h.admin : h.member, isLoading: false }),
 }))
 vi.mock('@/hooks/useUsers', () => ({
   useUsers: () => ({
@@ -50,7 +52,7 @@ function type(input: HTMLInputElement, value: string) {
 }
 
 beforeEach(() => {
-  h.isAdmin = true
+  h.canManageUsers = true
   h.search = new URLSearchParams('')
   h.createUser.mockReset().mockResolvedValue({})
   h.changePassword.mockReset().mockResolvedValue(undefined)
@@ -117,7 +119,7 @@ describe('set password modal (admin)', () => {
 
 describe('change own password modal (member)', () => {
   function openOwn() {
-    h.isAdmin = false
+    h.canManageUsers = false
     h.search = new URLSearchParams('changePassword=true')
     render(<UsersPage />)
   }

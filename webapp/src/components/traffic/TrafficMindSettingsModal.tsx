@@ -10,9 +10,9 @@
  * while acting as a member (step 2.4, F-15).
  *
  * There is a single shared capture proxy, so these are GLOBAL settings: a change
- * applies to every user and project and the last save wins. Admin-only (the
- * opener gates on isAdmin; the settings route also strips capture writes from
- * non-admins).
+ * applies to every user and project and the last save wins. Needs
+ * platform:traffic_capture (the /traffic page mounts it only then; the settings
+ * route also strips capture writes from anyone without it).
  *
  * Save model: the whole global config is batched behind ONE Apply button. Every
  * control mutates local state only; Apply PUTs the changed fields in a single

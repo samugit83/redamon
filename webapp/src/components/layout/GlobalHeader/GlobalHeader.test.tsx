@@ -13,7 +13,9 @@ import React from 'react'
 /* ------------------------------------------------------------------ */
 
 let mockPathname = '/graph'
-let mockIsAdmin = true
+let mockAdmin = true
+// What an admin holds here (hooks/useCan.ts); a member holds none of these.
+let mockGranted = new Set<string>(['users:read'])
 
 vi.mock('next/navigation', () => ({
   usePathname: () => mockPathname,
@@ -48,12 +50,16 @@ vi.mock('./UserSelector', () => ({
 
 vi.mock('@/providers/AuthProvider', () => ({
   useAuth: () => ({
-    user: { id: 'test-user', name: 'Test Admin', email: 'admin@test.com', role: mockIsAdmin ? 'admin' : 'standard' },
+    user: { id: 'test-user', name: 'Test Admin', email: 'admin@test.com', role: mockAdmin ? 'admin' : 'standard' },
     isLoading: false,
-    isAdmin: mockIsAdmin,
     login: vi.fn(),
     logout: vi.fn(),
   }),
+}))
+
+vi.mock('@/hooks/useCan', () => ({
+  useCan: (permission: string) => mockAdmin && mockGranted.has(permission),
+  useRbacFlags: () => null,
 }))
 
 vi.mock('@/providers/ProjectProvider', () => ({
@@ -87,7 +93,8 @@ function getLogoLink() {
 
 beforeEach(() => {
   mockPathname = '/graph'
-  mockIsAdmin = true
+  mockAdmin = true
+  mockGranted = new Set(['users:read'])
 })
 
 afterEach(() => {
@@ -208,7 +215,7 @@ describe('GlobalHeader – Plugins button', () => {
   })
 
   test('shown to every signed-in user, not only admins', () => {
-    mockIsAdmin = false
+    mockAdmin = false
     render(<GlobalHeader />)
     expect(pluginsLink()).not.toBeNull()
     expect(screen.queryByRole('link', { name: /^users$/i })).toBeNull()
@@ -228,5 +235,29 @@ describe('GlobalHeader – Plugins button', () => {
     mockPathname = '/plugins'
     render(<GlobalHeader />)
     expect(screen.getByRole('link', { name: /^projects$/i }).className).not.toContain('navItemActive')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  The Users link follows users:read (step 3.12, UI-01)                */
+/* ------------------------------------------------------------------ */
+
+describe('GlobalHeader – Users link', () => {
+  const usersLink = () => screen.queryByRole('link', { name: /^users$/i })
+
+  test('shown with users:read, linking to the Users page', () => {
+    render(<GlobalHeader />)
+    expect(usersLink()?.getAttribute('href')).toBe('/settings/users')
+  })
+
+  test('an admin whose profile lacks users:read gets no Users link; nor does a member', () => {
+    mockGranted = new Set()
+    render(<GlobalHeader />)
+    expect(usersLink()).toBeNull()
+    cleanup()
+    mockGranted = new Set(['users:read'])
+    mockAdmin = false
+    render(<GlobalHeader />)
+    expect(usersLink()).toBeNull()
   })
 })

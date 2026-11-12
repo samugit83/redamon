@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import { ChevronDown, Users, LogOut, KeyRound, UserRound } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
 import { useAuth } from '@/providers/AuthProvider'
+import { useCan } from '@/hooks/useCan'
 import { useUsers } from '@/hooks/useUsers'
 import { useGuardedRouter, useNavigationGuard } from '@/context/NavigationGuardContext'
 import { useErrorToast } from '@/hooks/useErrorToast'
@@ -19,7 +20,9 @@ export function UserSelector() {
   const [stepUpTarget, setStepUpTarget] = useState<{ id: string; name: string } | null>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const { userId, setUserId, setCurrentProject, userSwitchError } = useProject()
-  const { user: authUser, isAdmin, logout, sessionError } = useAuth()
+  const { user: authUser, logout, sessionError } = useAuth()
+  const canSwitchUser = useCan('users:impersonate')
+  const canReadUsers = useCan('users:read')
   const { data: users } = useUsers()
   // Both providers sit above the toast layer, so their failures are shown here.
   useErrorToast(userSwitchError, 'User not switched')
@@ -122,7 +125,7 @@ export function UserSelector() {
 
       {isOpen && (
         <div className={styles.dropdown}>
-          {isAdmin ? (
+          {canSwitchUser ? (
             <>
               <div className={styles.header}>
                 <span className={styles.headerTitle}>Users</span>
@@ -171,10 +174,12 @@ export function UserSelector() {
                     My account
                   </button>
                 )}
-                <button className={styles.footerButton} onClick={handleManageUsers}>
-                  <Users size={12} />
-                  Manage Users
-                </button>
+                {canReadUsers && (
+                  <button className={styles.footerButton} onClick={handleManageUsers}>
+                    <Users size={12} />
+                    Manage Users
+                  </button>
+                )}
                 <button className={styles.logoutButton} onClick={handleLogout}>
                   <LogOut size={12} />
                   Logout
@@ -205,6 +210,12 @@ export function UserSelector() {
               </div>
 
               <div className={styles.footer}>
+                {canReadUsers && (
+                  <button className={styles.footerButton} onClick={handleManageUsers}>
+                    <Users size={12} />
+                    Manage Users
+                  </button>
+                )}
                 <button className={styles.logoutButton} onClick={handleLogout}>
                   <LogOut size={12} />
                   Logout

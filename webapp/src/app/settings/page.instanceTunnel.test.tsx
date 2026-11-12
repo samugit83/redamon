@@ -15,7 +15,6 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/settings',
 }))
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'user-1' }) }))
-vi.mock('@/providers/AuthProvider', () => ({ useAuth: () => ({ isAdmin: true }) }))
 
 const alertSpies = vi.hoisted(() => ({
   alert: vi.fn(async () => {}),

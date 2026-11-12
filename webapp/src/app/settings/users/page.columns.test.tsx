@@ -17,7 +17,7 @@ const h = vi.hoisted(() => ({
   search: new URLSearchParams(''),
   router: { push: vi.fn(), replace: vi.fn() },
   me: { id: 'admin-1' } as Record<string, unknown>,
-  isAdmin: true,
+  canManageUsers: true,
   list: { data: [] as unknown[] | undefined, isLoading: false, error: null as Error | null },
   refetch: vi.fn(),
   create: vi.fn(),
@@ -28,8 +28,10 @@ vi.mock('next/navigation', () => ({
   useRouter: () => h.router,
   useSearchParams: () => h.search,
 }))
+// The page's permissions (hooks/useCan.ts): all of them for an admin here, none for a member.
+vi.mock('@/hooks/useCan', () => ({ useCan: () => h.canManageUsers, useRbacFlags: () => null }))
 vi.mock('@/providers/AuthProvider', () => ({
-  useAuth: () => ({ user: h.me, isAdmin: h.isAdmin, isLoading: false }),
+  useAuth: () => ({ user: h.me, isLoading: false }),
 }))
 vi.mock('@/hooks/useUsers', () => ({
   useUsers: () => ({ ...h.list, refetch: h.refetch }),
@@ -107,7 +109,7 @@ function actionsOf(name: string): string[] {
 
 beforeEach(() => {
   h.list = { data: rows(), isLoading: false, error: null }
-  h.isAdmin = true
+  h.canManageUsers = true
   h.refetch.mockReset()
   h.create.mockReset().mockResolvedValue({})
   h.router.push.mockReset()
@@ -249,7 +251,7 @@ describe('states', () => {
 
   test('denied: a member is sent to the graph and sees no list', () => {
     as('admin-on')
-    h.isAdmin = false
+    h.canManageUsers = false
     renderPage()
     expect(h.router.push).toHaveBeenCalledWith('/graph')
     expect(screen.queryByRole('table')).toBeNull()

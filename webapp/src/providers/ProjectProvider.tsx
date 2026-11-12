@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { useAuth } from './AuthProvider'
+import { useCan } from '@/hooks/useCan'
 import { type ProjectSummary, toProjectSummary } from '@/lib/projectSummary'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
 
@@ -46,19 +47,23 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
-  const { user: authUser, isLoading: authLoading, isAdmin } = useAuth()
+  const { user: authUser, isLoading: authLoading, refresh: refreshSession } = useAuth()
+  // Acting as another account is `users:impersonate`'s (the act-as route asks it).
+  const canSwitchUser = useCan('users:impersonate')
+  // The id, not the object: reading the session again (after a switch) must not reconcile again.
+  const authUserId = authUser?.id ?? null
 
   // Sync userId with auth state + reconcile the server act-as cookie.
   useEffect(() => {
     if (authLoading) return
-    if (!authUser) return
+    if (!authUserId) return
     let cancelled = false
 
-    if (isAdmin) {
-      // Admin: restore the saved impersonation target (or own id).
+    if (canSwitchUser) {
+      // Restore the saved impersonation target (or own id).
       const savedUserId = localStorage.getItem(STORAGE_KEY_USER)
-      const target = savedUserId && savedUserId !== authUser.id ? savedUserId : null
-      setUserIdState(target || authUser.id)
+      const target = savedUserId && savedUserId !== authUserId ? savedUserId : null
+      setUserIdState(target || authUserId)
       // Make the server-side impersonation match, THEN allow loads.
       ;(async () => {
         try {
@@ -76,8 +81,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             // admin's own id and forget the stale selection.
             if (!resp.ok) {
               localStorage.removeItem(STORAGE_KEY_USER)
-              if (!cancelled) setUserIdState(authUser.id)
+              if (!cancelled) setUserIdState(authUserId)
               await fetch('/api/auth/act-as', { method: 'DELETE' }).catch(() => {})
+            } else {
+              // The session read at load may predate the cookie: what may be used while acting differs.
+              await refreshSession?.()
             }
           } else {
             await fetch('/api/auth/act-as', { method: 'DELETE' })
@@ -88,13 +96,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         if (!cancelled) setImpersonationSynced(true)
       })()
     } else {
-      // Standard user: always locked to own id; no impersonation cookie.
-      setUserIdState(authUser.id)
-      localStorage.setItem(STORAGE_KEY_USER, authUser.id)
+      // Anyone who may not act as others: always locked to own id; no impersonation cookie.
+      setUserIdState(authUserId)
+      localStorage.setItem(STORAGE_KEY_USER, authUserId)
       setImpersonationSynced(true)
     }
     return () => { cancelled = true }
-  }, [authUser, authLoading, isAdmin])
+  }, [authUserId, authLoading, canSwitchUser, refreshSession])
 
   // Initialize from URL or localStorage (after impersonation is reconciled)
   useEffect(() => {
@@ -149,8 +157,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [searchParams, router, pathname])
 
   const setUserId = useCallback(async (id: string | null, opts?: { stepUpPassword?: string }): Promise<ApiError | null> => {
-    // Standard users cannot switch users
-    if (!isAdmin && authUser) {
+    // Only an account that may act as others switches users.
+    if (!canSwitchUser && authUser) {
       setUserIdState(authUser.id)
       return null
     }
@@ -168,6 +176,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(STORAGE_KEY_USER, id)
       setUserSwitchError(null)
       setUserIdState(id)
+      // What may be used follows the act-as cookie (/api/auth/me answers it).
+      void refreshSession?.()
       return null
     }
     // Persist the UI hint immediately; the localStorage value is NOT trusted for
@@ -218,9 +228,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         }
       }
       setUserIdState(impersonated ? id : (authUser?.id ?? null))
+      // What may be used follows the act-as cookie just set or cleared (/api/auth/me answers it).
+      void refreshSession?.()
     }
     return refusal
-  }, [isAdmin, authUser])
+  }, [canSwitchUser, authUser, refreshSession])
 
   return (
     <ProjectContext.Provider value={{

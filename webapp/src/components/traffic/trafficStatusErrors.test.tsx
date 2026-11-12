@@ -10,7 +10,6 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }))
 
-vi.mock('@/providers/AuthProvider', () => ({ useAuth: () => ({ isAdmin: false }) }))
 vi.mock('@/components/ui', () => ({
   useToast: () => toast,
   Toggle: ({ checked, onChange, disabled, ...rest }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; 'aria-label'?: string }) => (

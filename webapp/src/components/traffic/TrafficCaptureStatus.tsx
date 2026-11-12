@@ -1,15 +1,15 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useAuth } from '@/providers/AuthProvider'
+import { useCan } from '@/hooks/useCan'
 import { fetchJson, errorMessage } from '@/lib/apiError'
 
 /**
  * Read-only per-project TrafficMind capture-routing status for the /traffic page
  * top bar. It shows whether capture routing is on for the current project, but
- * does NOT change it: enabling/disabling capture is done in Global Settings >
- * TrafficMind (admin-only), so this is display-only. When disabled it points the
- * operator there.
+ * does NOT change it: enabling/disabling capture is done in the TrafficMind
+ * settings (platform:traffic_capture), so this is display-only. When disabled it
+ * tells anyone without that permission to ask an administrator.
  */
 export function TrafficCaptureStatus({
   projectId,
@@ -22,7 +22,7 @@ export function TrafficCaptureStatus({
   // A failed read is not "Disabled": that told the operator to ask an admin to
   // enable a capture that may well be on.
   const [loadError, setLoadError] = useState<string | null>(null)
-  const { isAdmin } = useAuth()
+  const canManageCapture = useCan('platform:traffic_capture')
 
   useEffect(() => {
     let cancelled = false
@@ -50,7 +50,7 @@ export function TrafficCaptureStatus({
         Traffic capture{projectName ? <> for <strong style={{ color: 'var(--text-primary)' }}>{projectName}</strong></> : null}:{' '}
         <strong style={{ color: on ? 'var(--success, #30a46c)' : 'var(--danger, #e5484d)' }}>{on ? 'Enabled' : 'Disabled'}</strong>
       </span>
-      {!on && !isAdmin && (
+      {!on && !canManageCapture && (
         <span style={{ color: 'var(--text-tertiary)' }}>
           Ask an administrator to enable it.
         </span>

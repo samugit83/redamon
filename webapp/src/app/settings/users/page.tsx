@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/providers/AuthProvider'
+import { useCan } from '@/hooks/useCan'
 import { useUsers, useCreateUser, useDeleteUser, useChangePassword } from '@/hooks/useUsers'
 import { Modal } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
@@ -13,6 +14,7 @@ import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { InviteRowActions, InviteUserModal } from '@/components/admin/InviteUserModal'
 import { ResetCredentialsModal } from '@/components/admin/ResetCredentialsModal'
+import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import { ACCOUNT_TYPE_LABEL, IdentityLabel, accountTypeFor, type AccountType } from '@/components/auth/IdentityLabel'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
@@ -31,7 +33,11 @@ type ModalState =
 export default function UsersPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { user: authUser, isAdmin, isLoading: authLoading } = useAuth()
+  const { user: authUser, isLoading: authLoading } = useAuth()
+  // The page is the user directory's; each action shows only to whoever holds its permission.
+  const canReadUsers = useCan('users:read')
+  const canCreateUsers = useCan('users:create')
+  const canDeleteUsers = useCan('users:delete')
   const { data: users, isLoading, error: usersError, refetch: refetchUsers } = useUsers()
   const createUser = useCreateUser()
   const deleteUser = useDeleteUser()
@@ -68,12 +74,12 @@ export default function UsersPage() {
     }
   }, [wantsPasswordChange, authUser, router])
 
-  // Redirect non-admin to graph (unless they came for password change)
+  // Redirect anyone who may not read the directory to graph (unless they came for password change)
   useEffect(() => {
-    if (!authLoading && !isAdmin && !wantsPasswordChange && modal.type !== 'changeOwn') {
+    if (!authLoading && !canReadUsers && !wantsPasswordChange && modal.type !== 'changeOwn') {
       router.push('/graph')
     }
-  }, [authLoading, isAdmin, wantsPasswordChange, modal, router])
+  }, [authLoading, canReadUsers, wantsPasswordChange, modal, router])
 
   function resetForm() {
     setName('')
@@ -229,8 +235,8 @@ export default function UsersPage() {
     }
   }
 
-  // Show change password modal for standard users
-  if (!isAdmin && modal.type === 'changeOwn') {
+  // Show change password modal for anyone without the directory
+  if (!canReadUsers && modal.type === 'changeOwn') {
     return (
       <div className={styles.page}>
         <Modal isOpen onClose={closeModal} title="Change Password" size="small">
@@ -289,7 +295,7 @@ export default function UsersPage() {
     )
   }
 
-  if (!isAdmin) return null
+  if (!canReadUsers) return null
 
   const setOwnRow = modal.type === 'password' && modal.userId === authUser?.id
   const setAnotherAdmin = modal.type === 'password' && !setOwnRow && modal.targetIsAdmin
@@ -315,7 +321,7 @@ export default function UsersPage() {
     <div className={styles.page}>
       <div className={styles.header}>
         <h1 className={styles.title}>User Management</h1>
-        {identity ? (
+        {!canCreateUsers ? null : identity ? (
           // Step 2.9 (ID-36): a link is the default, so the admin never knows a working password.
           <div className={styles.actions}>
             <button className="primaryButton" onClick={() => openModal({ type: 'invite' })}>
@@ -337,6 +343,8 @@ export default function UsersPage() {
 
       {isLoading ? (
         <div className={styles.empty} role="status">Loading users...</div>
+      ) : forbiddenPermission(usersError) ? (
+        <ForbiddenNotice permission={forbiddenPermission(usersError)!} />
       ) : usersError ? (
         <div className={styles.errorState}>
           <div className={styles.error} role="alert">{usersError.message}</div>
@@ -433,7 +441,7 @@ export default function UsersPage() {
                         Reset credentials
                       </button>
                     )}
-                    {user.id !== authUser?.id && (user.role !== 'admin' || manageAdmins) && (
+                    {canDeleteUsers && user.id !== authUser?.id && (user.role !== 'admin' || manageAdmins) && (
                       <button
                         className={`${styles.actionButton} ${styles.deleteButton}`}
                         onClick={() => openModal({

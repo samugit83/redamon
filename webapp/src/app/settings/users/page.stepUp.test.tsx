@@ -20,8 +20,10 @@ vi.mock('next/navigation', () => ({
   useRouter: () => h.router,
   useSearchParams: () => h.search,
 }))
+// The page's permissions (hooks/useCan.ts): an admin holding every user permission.
+vi.mock('@/hooks/useCan', () => ({ useCan: () => true, useRbacFlags: () => null }))
 vi.mock('@/providers/AuthProvider', () => ({
-  useAuth: () => ({ user: h.admin, isAdmin: true, isLoading: false }),
+  useAuth: () => ({ user: h.admin, isLoading: false }),
 }))
 const USERS = [
   { id: 'admin-1', name: 'Ada Admin', email: 'ada@x.z', role: 'admin', hasPassword: true, _count: { projects: 0 } },

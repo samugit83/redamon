@@ -17,15 +17,19 @@ const h = vi.hoisted(() => ({
   detail: {} as Record<string, unknown>,
   mutateAsync: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+  // What the signed-in person holds (hooks/useCan.ts); empty = a member.
+  granted: new Set<string>(),
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('@/providers/ProjectProvider', () => ({
   useProject: () => ({ projectId: 'p1', userId: 'u1', currentProject: { name: 'P' }, isLoading: false }),
 }))
-vi.mock('@/providers/AuthProvider', () => ({ useAuth: () => ({ isAdmin: false }) }))
 vi.mock('@/components/traffic/TrafficCaptureStatus', () => ({ TrafficCaptureStatus: () => null }))
-vi.mock('@/components/traffic/TrafficMindSettingsModal', () => ({ TrafficMindSettingsModal: () => null }))
+vi.mock('@/components/traffic/TrafficMindSettingsModal', () => ({
+  TrafficMindSettingsModal: ({ isOpen }: { isOpen: boolean }) => <div data-testid="capture-settings" data-open={String(isOpen)} />,
+}))
+vi.mock('@/hooks/useCan', () => ({ useCan: (p: string) => h.granted.has(p), useRbacFlags: () => null }))
 vi.mock('@/components/ui', () => ({
   Drawer: ({ isOpen, children }: { isOpen: boolean; children: ReactNode }) => (isOpen ? <div>{children}</div> : null),
   useToast: () => h.toast,
@@ -58,6 +62,7 @@ beforeEach(() => {
   h.list = { data: { rows: [], total: 0, page: 0, pageSize: 50 }, isLoading: false, isError: false, error: null }
   h.facets = { data: { tools: [], hosts: [], runs: [], sessions: [] }, isError: false, error: null }
   h.detail = { data: undefined, isLoading: false, isError: false, error: null }
+  h.granted = new Set()
 })
 afterEach(cleanup)
 
@@ -95,5 +100,22 @@ describe('TrafficPage failures', () => {
     render(<TrafficPage />)
     fireEvent.click(screen.getByLabelText('Open request/response detail'))
     expect(screen.getByText('Could not load this transaction: Failed to load transaction (ENOENT · HTTP 500)')).toBeTruthy()
+  })
+})
+
+/** The TrafficMind settings are platform:traffic_capture's (step 3.12, UI-03). */
+describe('TrafficPage settings', () => {
+  test('traffic modal not mounted without the permission, and no Settings button', () => {
+    render(<TrafficPage />)
+    expect(screen.queryByRole('button', { name: /Settings/ })).toBeNull()
+    expect(screen.queryByTestId('capture-settings')).toBeNull()
+  })
+
+  test('with platform:traffic_capture: the button opens the mounted modal', () => {
+    h.granted = new Set(['platform:traffic_capture'])
+    render(<TrafficPage />)
+    expect(screen.getByTestId('capture-settings').getAttribute('data-open')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: /Settings/ }))
+    expect(screen.getByTestId('capture-settings').getAttribute('data-open')).toBe('true')
   })
 })

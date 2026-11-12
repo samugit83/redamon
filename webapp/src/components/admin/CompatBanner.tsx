@@ -36,7 +36,8 @@ export function LegacyReviewBanner({ pending }: { pending: number }) {
 }
 
 interface AdminBannersProps {
-  isAdmin: boolean
+  /** The signed-in account is an administrator account (Root or an admin): the banners are theirs. */
+  adminAccount: boolean
   rbac: AdminNotices | undefined
   pathname: string
 }
@@ -47,12 +48,12 @@ interface AdminBannersProps {
  * transfer one (step 2.6, identity switch on) while an offer waits for Root or its recipient. A
  * decision on the Users page fires LEGACY_GRANTS_CHANGED_EVENT, and the count is read again then.
  */
-export function AdminBanners({ isAdmin, rbac, pathname }: AdminBannersProps) {
+export function AdminBanners({ adminAccount, rbac, pathname }: AdminBannersProps) {
   const [notices, setNotices] = useState<AdminNotices | undefined>(rbac)
   useEffect(() => { setNotices(rbac) }, [rbac])
 
   useEffect(() => {
-    if (!isAdmin) return
+    if (!adminAccount) return
     let live = true
     const refresh = () => {
       fetch('/api/auth/me', { cache: 'no-store' })
@@ -66,9 +67,9 @@ export function AdminBanners({ isAdmin, rbac, pathname }: AdminBannersProps) {
       live = false
       window.removeEventListener(LEGACY_GRANTS_CHANGED_EVENT, refresh)
     }
-  }, [isAdmin])
+  }, [adminAccount])
 
-  if (!isAdmin || !notices) return null
+  if (!adminAccount || !notices) return null
   const pending = notices.legacyGrantsPending ?? 0
   const showReview = pending > 0 && pathname !== '/settings/users'
   const showRoot = notices.root === null || (notices.root !== undefined && !notices.root.confirmed)

@@ -8,7 +8,7 @@ import { describe, test, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 
 const h = vi.hoisted(() => ({
-  isAdmin: true,
+  canManageUsers: true,
   search: new URLSearchParams(''),
   router: { push: () => {}, replace: () => {} },
   admin: { id: 'admin-1', email: 'rbac-admin-long@e2e.local' },
@@ -23,8 +23,10 @@ vi.mock('next/navigation', () => ({
   useRouter: () => h.router,
   useSearchParams: () => h.search,
 }))
+// The page's permissions (hooks/useCan.ts): all of them for an admin here, none for a member.
+vi.mock('@/hooks/useCan', () => ({ useCan: () => h.canManageUsers, useRbacFlags: () => null }))
 vi.mock('@/providers/AuthProvider', () => ({
-  useAuth: () => ({ user: h.isAdmin ? h.admin : h.member, isAdmin: h.isAdmin, isLoading: false }),
+  useAuth: () => ({ user: h.canManageUsers ? h.admin : h.member, isLoading: false }),
 }))
 vi.mock('@/hooks/useUsers', () => ({
   useUsers: () => ({
@@ -44,7 +46,7 @@ const passwordInputs = (): HTMLInputElement[] => Array.from(document.body.queryS
 const type = (input: HTMLInputElement, value: string) => fireEvent.change(input, { target: { value } })
 
 beforeEach(() => {
-  h.isAdmin = true
+  h.canManageUsers = true
   h.search = new URLSearchParams('')
   h.policyStatus = 200
   h.createUser.mockReset().mockResolvedValue({})
@@ -83,7 +85,7 @@ describe('the policy next to every password field', () => {
   })
 
   test('change own password (member): the new password field is described by the policy', async () => {
-    h.isAdmin = false
+    h.canManageUsers = false
     h.search = new URLSearchParams('changePassword=true')
     render(<UsersPage />)
     await waitFor(() => expect(screen.getByLabelText('New Password')).toHaveAccessibleDescription(TEXT))

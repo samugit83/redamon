@@ -23,7 +23,7 @@ const dialog = () => within(screen.getByRole('dialog'))
 let offer: Record<string, unknown> | null = null
 
 function show() {
-  render(<AlertProvider><AdminBanners isAdmin rbac={ON} pathname="/graph" /></AlertProvider>)
+  render(<AlertProvider><AdminBanners adminAccount rbac={ON} pathname="/graph" /></AlertProvider>)
 }
 
 beforeEach(() => {
@@ -131,8 +131,8 @@ describe('nothing shown', () => {
   })
 
   test('switch off, or a member: nothing is even asked', async () => {
-    render(<AdminBanners isAdmin rbac={{ compat: false, legacyGrantsPending: 0 }} pathname="/graph" />)
-    render(<AdminBanners isAdmin={false} rbac={ON} pathname="/graph" />)
+    render(<AdminBanners adminAccount rbac={{ compat: false, legacyGrantsPending: 0 }} pathname="/graph" />)
+    render(<AdminBanners adminAccount={false} rbac={ON} pathname="/graph" />)
     await new Promise((r) => setTimeout(r, 10))
     expect(fetchMock.mock.calls.filter((c) => c[0] === '/api/root/transfer')).toEqual([])
   })

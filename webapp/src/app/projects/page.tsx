@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { useProjects, useDeleteProject, type ProjectListItem } from '@/hooks/useProjects'
 import { useUsers, useCreateUser, useDeleteUser } from '@/hooks/useUsers'
 import { useProject } from '@/providers/ProjectProvider'
+import { useCan } from '@/hooks/useCan'
 import { ProjectCard } from '@/components/projects/ProjectCard'
 import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
@@ -19,6 +20,11 @@ export default function ProjectsPage() {
   const { userId, setUserId, setCurrentProject } = useProject()
   const { alertError, dangerConfirm } = useAlertModal()
   const toast = useToast()
+  // The user bar is the directory's (UI-03): members never see it.
+  const canReadUsers = useCan('users:read')
+  const canSwitchUser = useCan('users:impersonate')
+  const canCreateUsers = useCan('users:create')
+  const canDeleteUsers = useCan('users:delete')
   const [showUserModal, setShowUserModal] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [newUserName, setNewUserName] = useState('')
@@ -139,41 +145,49 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      <div className={styles.userSelector}>
-        <div className={styles.userSelectorLabel}>
-          <Users size={14} />
-          <span>User:</span>
-        </div>
-        <select
-          className="select"
-          value={userId || ''}
-          onChange={(e) => setUserId(e.target.value || null)}
-        >
-          <option value="">Select a user</option>
-          {users?.map((user) => (
-            <option key={user.id} value={user.id}>
-              {user.name} ({user.email})
-            </option>
-          ))}
-        </select>
-        <button
-          className="secondaryButton"
-          onClick={() => setShowUserModal(true)}
-        >
-          <Plus size={12} />
-          New User
-        </button>
-        {userId && (
-          <button
-            className="iconButton"
-            onClick={handleDeleteUser}
-            disabled={deleteUserMutation.isPending}
-            title="Delete selected user"
+      {canReadUsers && (
+        <div className={styles.userSelector}>
+          <div className={styles.userSelectorLabel}>
+            <Users size={14} />
+            <span>User:</span>
+          </div>
+          <select
+            className="select"
+            aria-label="User"
+            value={userId || ''}
+            onChange={(e) => setUserId(e.target.value || null)}
+            disabled={!canSwitchUser}
+            title={canSwitchUser ? undefined : 'Acting as another user needs the users:impersonate permission'}
           >
-            <Trash2 size={14} />
-          </button>
-        )}
-      </div>
+            <option value="">Select a user</option>
+            {users?.map((user) => (
+              <option key={user.id} value={user.id}>
+                {user.name} ({user.email})
+              </option>
+            ))}
+          </select>
+          {canCreateUsers && (
+            <button
+              className="secondaryButton"
+              onClick={() => setShowUserModal(true)}
+            >
+              <Plus size={12} />
+              New User
+            </button>
+          )}
+          {canDeleteUsers && userId && (
+            <button
+              className="iconButton"
+              onClick={handleDeleteUser}
+              disabled={deleteUserMutation.isPending}
+              title="Delete selected user"
+              aria-label="Delete selected user"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      )}
 
       {isLoading ? (
         <div className={styles.loading}>Loading...</div>
@@ -230,7 +244,7 @@ export default function ProjectsPage() {
         />
       )}
 
-      {showUserModal && (
+      {canCreateUsers && showUserModal && (
         <div className={styles.modalOverlay} onClick={() => setShowUserModal(false)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <h2 className={styles.modalTitle}>Create New User</h2>

@@ -28,7 +28,7 @@ const UNCONFIRMED = { email: 'root@e2e.local', confirmed: false, chosenAt: '2026
 
 describe('RootBanner', () => {
   test('unconfirmed: names Root, the day it was chosen and the host command', () => {
-    render(<AdminBanners isAdmin rbac={{ ...BASE, root: UNCONFIRMED }} pathname="/graph" />)
+    render(<AdminBanners adminAccount rbac={{ ...BASE, root: UNCONFIRMED }} pathname="/graph" />)
     const banner = screen.getByRole('status', { name: 'Root was chosen automatically' })
     expect(banner.textContent).toContain('Root is root@e2e.local, chosen automatically on 2026-11-12.')
     expect(banner.textContent).toContain('./redamon.sh set-root <email>')
@@ -41,7 +41,7 @@ describe('RootBanner', () => {
   })
 
   test('none: says the instance has no Root and how the host names one', () => {
-    render(<AdminBanners isAdmin rbac={{ ...BASE, root: null }} pathname="/graph" />)
+    render(<AdminBanners adminAccount rbac={{ ...BASE, root: null }} pathname="/graph" />)
     const banner = screen.getByRole('status', { name: 'This instance has no Root' })
     expect(banner.textContent).toContain('This instance has no Root')
     expect(banner.textContent).toContain('./redamon.sh set-root <email>')
@@ -49,22 +49,22 @@ describe('RootBanner', () => {
 
   test('confirmed → no banner', () => {
     const { container } = render(
-      <AdminBanners isAdmin rbac={{ ...BASE, root: { ...UNCONFIRMED, confirmed: true, chosenAt: null } }} pathname="/graph" />)
+      <AdminBanners adminAccount rbac={{ ...BASE, root: { ...UNCONFIRMED, confirmed: true, chosenAt: null } }} pathname="/graph" />)
     expect(container.textContent).toBe('')
   })
 
   test('members never see it, whatever reaches the page', () => {
-    const { container } = render(<AdminBanners isAdmin={false} rbac={{ ...BASE, root: null }} pathname="/graph" />)
+    const { container } = render(<AdminBanners adminAccount={false} rbac={{ ...BASE, root: null }} pathname="/graph" />)
     expect(container.textContent).toBe('')
   })
 
   test('switch off (no root field) or a Root that could not be read: nothing', () => {
-    const { container } = render(<AdminBanners isAdmin rbac={{ compat: false, legacyGrantsPending: 0 }} pathname="/graph" />)
+    const { container } = render(<AdminBanners adminAccount rbac={{ compat: false, legacyGrantsPending: 0 }} pathname="/graph" />)
     expect(container.textContent).toBe('')
   })
 
   test('it shares the slot with the compat banner, and is a status line, not a dialog', () => {
-    render(<AdminBanners isAdmin rbac={{ ...BASE, compat: true, root: UNCONFIRMED }} pathname="/graph" />)
+    render(<AdminBanners adminAccount rbac={{ ...BASE, compat: true, root: UNCONFIRMED }} pathname="/graph" />)
     expect(screen.getByRole('status', { name: 'Compatibility mode is on' })).toBeTruthy()
     expect(screen.getByRole('status', { name: 'Root was chosen automatically' })).toBeTruthy()
     expect(screen.queryByRole('dialog')).toBeNull()
