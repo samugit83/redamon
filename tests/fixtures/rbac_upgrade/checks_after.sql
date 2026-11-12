@@ -24,3 +24,23 @@ SELECT after->>'files', after->>'rowsCreated'
 
 \echo == nuclei templates (rows, instance rows)
 SELECT count(*), count(*) FILTER (WHERE owner_user_id IS NULL) FROM nuclei_templates;
+
+-- The identity columns arrive with the defaults that mean "as before": every account
+-- active, version 0, no forced change, nothing on hold, no notices; no instance row and
+-- no invite until a later backfill or an admin writes one; no audit row gains a value.
+\echo == identity columns (email, status, session version, must change, last login set, admin profile set, password on hold, notices) [step 2.1]
+SELECT email, status, session_version, must_change_password, last_login_at IS NOT NULL,
+       admin_profile_id IS NOT NULL, password_on_hold <> '', pending_notices::text
+  FROM users ORDER BY created_at, email;
+
+\echo == identity tables (instance settings rows, invite rows)
+SELECT (SELECT count(*) FROM instance_settings), (SELECT count(*) FROM user_invites);
+
+\echo == audit columns set (on behalf of, project, permission, actor email, act-as reason, duration, ended by)
+SELECT (SELECT count(*) FROM audit_log WHERE on_behalf_of_user_id IS NOT NULL),
+       (SELECT count(*) FROM audit_log WHERE project_id IS NOT NULL),
+       (SELECT count(*) FROM audit_log WHERE permission IS NOT NULL),
+       (SELECT count(*) FROM audit_log WHERE actor_email IS NOT NULL),
+       (SELECT count(*) FROM act_as_audit WHERE reason IS NOT NULL),
+       (SELECT count(*) FROM act_as_audit WHERE duration_minutes IS NOT NULL),
+       (SELECT count(*) FROM act_as_audit WHERE ended_by IS NOT NULL);

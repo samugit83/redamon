@@ -52,7 +52,117 @@ model User {
   // admins review them. Read by src/lib/authz/sharedTools.ts.
   legacyGrants  String[]          @default([]) @map("legacy_grants")
 
+  // Account state (RBAC identity). The defaults are what an account was before these
+  // columns existed, so existing rows and an old copy during a deploy behave as before.
+  status             String    @default("active")   // active | invited | disabled
+  // A login token carries the version it was issued with (`sv`); raising this signs
+  // the account out of every browser on its next request.
+  sessionVersion     Int       @default(0) @map("session_version")
+  mustChangePassword Boolean   @default(false) @map("must_change_password")
+  lastLoginAt        DateTime? @map("last_login_at")
+  // The admin profile narrowing what this admin may do; null = a full admin.
+  adminProfileId     String?   @map("admin_profile_id")
+  // A disabled account's bcrypt hash, put back on enable. `password` is '' while
+  // disabled, so the previous release, which never reads `status`, refuses it too.
+  passwordOnHold     String    @default("") @map("password_on_hold")
+  // One-time notices shown to the account at its next sign-in.
+  pendingNotices     Json      @default("[]") @map("pending_notices")
+  invites            UserInvite[]
+
   @@map("users")
+}
+
+/// Instance-wide settings: one row, id "instance". Until a backfill creates it from
+/// the values in force, it does not exist and the user rows stay in force. The moved
+/// tunnel and capture values are also kept mirrored in the user rows, so a downgrade
+/// still finds the current values. Accounts are named by plain id, never a foreign
+/// key: deleting one never cascades into, or is blocked by, this row.
+model InstanceSettings {
+  id                          String    @id @default("instance")
+  rootUserId                  String?   @map("root_user_id")
+  rootConfirmedAt             DateTime? @map("root_confirmed_at")
+  rootAssignedBy              String?   @map("root_assigned_by")      // automatic | host | transfer | install
+  pendingRootTransferTo       String?   @map("pending_root_transfer_to")
+  pendingRootTransferExpires  DateTime? @map("pending_root_transfer_expires")
+  passwordMinLength           Int       @default(12) @map("password_min_length")
+  passwordAskChangeIfShort    Boolean   @default(false) @map("password_ask_change_if_short")
+  // Session and link lifetimes: placeholders until the owner answers OQ-38.
+  memberSessionTtlHours       Int       @default(168) @map("member_session_ttl_hours")
+  adminSessionTtlHours        Int       @default(12) @map("admin_session_ttl_hours")
+  adminIdleMinutes            Int       @default(60) @map("admin_idle_minutes")
+  inviteTtlHours              Int       @default(168) @map("invite_ttl_hours")
+  resetTtlHours               Int       @default(4) @map("reset_ttl_hours")
+  publicBaseUrl               String?   @map("public_base_url")
+  // Placeholder until the owner answers OQ-32.
+  impersonationMaxMinutes     Int       @default(720) @map("impersonation_max_minutes")
+  impersonationReasonRequired Boolean   @default(false) @map("impersonation_reason_required")
+  impersonationNotifyTarget   Boolean   @default(true) @map("impersonation_notify_target")
+  defaultMemberSetId          String?   @map("default_member_set_id")
+  sharingPolicy               Json      @default("{}") @map("sharing_policy")
+  directoryVisible            Boolean   @default(false) @map("directory_visible")
+  quotas                      Json      @default("{}")
+  // Null keeps every audit row; placeholder until the owner answers OQ-40.
+  auditRetentionDays          Int?      @map("audit_retention_days")
+
+  // Moved from UserSettings: same columns, types and defaults as there, so the
+  // backfill copies each value unchanged. The *SourceUserId fields name the user row
+  // each group was copied from.
+  tunnelsEnabled  Boolean  @default(false) @map("tunnels_enabled")
+  ngrokAuthtoken  String   @default("") @map("ngrok_authtoken")
+  chiselServerUrl String   @default("") @map("chisel_server_url")
+  chiselAuth      String   @default("") @map("chisel_auth")
+  tunnelSourceUserId String? @map("tunnel_source_user_id")
+
+  captureProxyEnabled       Boolean @default(true)  @map("capture_proxy_enabled")
+  captureProxyPort          Int     @default(8888)  @map("capture_proxy_port")
+  captureProxyScope         String  @default("both") @map("capture_proxy_scope")   // recon | agent | both
+  captureProxyStoreBodies   Boolean @default(true)  @map("capture_proxy_store_bodies")
+  captureProxyMaxBodyKb     Int     @default(64)    @map("capture_proxy_max_body_kb")
+  captureProxyRetentionDays Int     @default(14)    @map("capture_proxy_retention_days")
+  captureProxyRedactSecrets Boolean @default(true)  @map("capture_proxy_redact_secrets")
+  captureProxyPassiveDetect Boolean @default(true)  @map("capture_proxy_passive_detect")
+  captureProxyStoreReqBodies  Boolean @default(true) @map("capture_proxy_store_req_bodies")
+  captureProxyStoreRespBodies Boolean @default(true) @map("capture_proxy_store_resp_bodies")
+  captureProxyMaxStoreMb      Int     @default(5)    @map("capture_proxy_max_store_mb")
+  captureProxyBodyRules       Json    @default("{}") @map("capture_proxy_body_rules")
+  captureEgressBlockEmptyHost     Boolean @default(true) @map("capture_egress_block_empty_host")
+  captureEgressBlockHardGuardrail Boolean @default(true) @map("capture_egress_block_hard_guardrail")
+  captureEgressFailClosed         Boolean @default(true) @map("capture_egress_fail_closed")
+  captureEgressBlockUnresolvable  Boolean @default(true) @map("capture_egress_block_unresolvable")
+  captureEgressBlockPrivate       Boolean @default(true) @map("capture_egress_block_private")
+  captureEgressBlockLoopback      Boolean @default(true) @map("capture_egress_block_loopback")
+  captureEgressBlockLinkLocal     Boolean @default(true) @map("capture_egress_block_link_local")
+  captureEgressBlockCgnat         Boolean @default(true) @map("capture_egress_block_cgnat")
+  captureEgressBlockReserved      Boolean @default(true) @map("capture_egress_block_reserved")
+  captureEgressBlockMulticast     Boolean @default(true) @map("capture_egress_block_multicast")
+  captureEgressBlockUnspecified   Boolean @default(true) @map("capture_egress_block_unspecified")
+  scaIntelIgnoreSuffixes String @default("oastify.com,oast.fun,mburpcollab.com,canarytokens.com,pipedream.net") @map("sca_intel_ignore_suffixes")
+  captureSourceUserId String? @map("capture_source_user_id")
+
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedById String?  @map("updated_by_id")
+
+  @@map("instance_settings")
+}
+
+/// A one-time invite or password-reset link. Only the sha256 of the token is stored
+/// (the token is high-entropy random, as McpAccessToken's). A link is spent when
+/// usedAt or cancelledAt is set, or once expiresAt has passed.
+model UserInvite {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind        String                                    // invite | reset
+  tokenHash   String    @unique @map("token_hash")
+  expiresAt   DateTime  @map("expires_at")
+  usedAt      DateTime? @map("used_at")
+  cancelledAt DateTime? @map("cancelled_at")
+  createdById String    @map("created_by_id")
+  reason      String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, kind])
+  @@map("user_invites")
 }
 
 /// A personal access token for the INBOUND MCP server (/api/mcp-server), which
@@ -2161,9 +2271,18 @@ model AuditLog {
   after      Json?
   source     String   @default("api")                  // "api" | "ui" | "admin" | "system"
   createdAt  DateTime @default(now()) @map("created_at")
+  // actorId is always the real signed-in person; under act-as the account acted as
+  // goes here.
+  onBehalfOfUserId String? @map("on_behalf_of_user_id")
+  projectId        String? @map("project_id")
+  permission       String?                             // the permission the action used, when one applies
+  // The actor's email when the row was written, so the row still names a person after
+  // the account is deleted; audit retention removes it (OQ-31).
+  actorEmail       String? @map("actor_email")
 
   @@index([targetType, targetId, createdAt])
   @@index([actorId, createdAt])
+  @@index([projectId, createdAt])
   @@map("audit_log")
 }
 
@@ -2176,6 +2295,9 @@ model ActAsAudit {
   event        String                                  // "start" | "end"
   source       String   @default("api")                // "api" | "self-clear"
   createdAt    DateTime @default(now()) @map("created_at")
+  reason          String?
+  durationMinutes Int?    @map("duration_minutes")
+  endedBy         String? @map("ended_by")             // who or what ended the session, on an end row
 
   @@index([adminId, createdAt])
   @@index([targetUserId, createdAt])

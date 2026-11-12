@@ -26,3 +26,10 @@ upg-member-a@e2e.local|kali_terminal,shell_sessions
 0|0
 == nuclei templates (rows, instance rows)
 0|0
+== identity columns (email, status, session version, must change, last login set, admin profile set, password on hold, notices) [step 2.1]
+upg-admin-a@e2e.local|active|0|f|f|f|f|[]
+upg-member-a@e2e.local|active|0|f|f|f|f|[]
+== identity tables (instance settings rows, invite rows)
+0|0
+== audit columns set (on behalf of, project, permission, actor email, act-as reason, duration, ended by)
+0|0|0|0|0|0|0

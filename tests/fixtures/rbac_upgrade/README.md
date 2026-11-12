@@ -9,7 +9,7 @@ user, host, scan result or secret is in any file here.
 | `<scenario>.sql` | a full dump (schema and data, `pg_dump --no-owner`), loadable alone into an empty Postgres 16 database |
 | `seed/<scenario>.sql` | the synthetic rows of the scenario, the only hand-written part of its dump |
 | `checks.sql` | the scenario checks (`psql -At`, `\|` between fields), run on the fixture and after every startup list |
-| `checks_after.sql` | what the upgrade adds by design (legacy grants, Nuclei template owners, their markers), run after every startup list only |
+| `checks_after.sql` | what the upgrade adds by design (legacy grants, Nuclei template owners, their markers, the identity columns and tables at their defaults), run after every startup list only |
 | `expected/<scenario>.out` | what `checks.sql` prints on the scenario's dump |
 | `expected/<scenario>.after.out` | what `checks.sql` then `checks_after.sql` must print after the new image's startup list |
 
