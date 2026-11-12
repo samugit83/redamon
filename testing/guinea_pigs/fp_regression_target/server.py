@@ -631,6 +631,13 @@ SHODAN_HOSTS = {
                                 "data": "", "_shodan": {"module": "https"},
                                 "vulns": {"CVE-2023-44487": {"cvss": 7.5, "verified": False}}}]}
        for n in (31, 32)},
+    # S-22: .49 serves 80 and 8081; naabu scans 22,80,443 in the --s22 project,
+    # so Port 8081 comes from this record alone (passive_only) until a partial
+    # Nmap or Httpx answers on it. No CVE: the case is the port, not a finding.
+    f"{NET}.49": {"org": "Example Hosting Ltd", "isp": "Example Hosting Ltd", "tags": [], "ports": [80, 8081],
+                  "vulns": [],
+                  "data": [{"port": 8081, "transport": "tcp", "product": "nginx", "version": "1.25.2",
+                            "data": "HTTP/1.1 200 OK\r\nServer: nginx", "_shodan": {"module": "http"}}]},
     # The nested-wildcard lab's web1, scanned in domain mode (plan 11): a PTR name
     # under nwlab.test that no zone has.
     "192.88.99.60": {"org": "Example Hosting Ltd", "isp": "Example Hosting Ltd", "tags": [], "ports": [443],

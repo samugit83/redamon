@@ -32,6 +32,7 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --probefail --no-triage --no-reset   # R-21: .40 (then --tls-state / --httpx-fail reruns)
     python3 e2e_fp.py --secchk --no-triage --no-reset      # L-20 SMTP, L-21 login forms, L-7 (.48 -> .21)
     python3 e2e_fp.py --redis-nohttp --no-triage --no-reset   # R-22: .39 on 6379 alone, no live URL
+    python3 e2e_fp.py --s22 --no-triage --no-reset          # S-22: .49:8081 from the Shodan stub only
     python3 e2e_fp.py --fanout --no-triage --no-reset      # R-31: every Phase A tool at once (run it 3x)
     python3 e2e_fp.py --r14 --no-triage --no-reset         # R-14: source maps off the scanned host
     python3 e2e_fp.py --graphql --no-triage --no-reset     # R-7 / R-42: GraphQL rate and graphql-cop gates
@@ -39,6 +40,7 @@ Priority Board and waits for that. Prints PROJECT_ID=<id> for validate_e2e.py.
     python3 e2e_fp.py --ceiling --no-triage --log-timestamps --log free.log --watch-nmap free.nmap   # R-8
     python3 e2e_fp.py --rerun <id> --no-triage --set '{"roeGlobalMaxRps": 2}' --log-timestamps \
         --log capped.log --watch-nmap capped.nmap                      # R-8 under a 2 rps ceiling
+    #  (add --watch-argv <file> to either for the httpx / WCVS argv rows, CEILING_ARGV=<file>)
     python3 e2e_fp.py --rerun <id> --vhost-drop-bare --cache-state stall ...   # R-46 / R-23 on the main project
     python3 e2e_fp.py --prefix e2e-audit- ...   # name prefix for the created project
 
@@ -327,6 +329,22 @@ def redis_state(mode="open"):
         return json.loads(resp.read())
 
 
+# S-22 (with the Shodan stub): .49 serves 80 and 8081, the stub reports both,
+# naabu scans 22,80,443. .14's Shodan-only 22 is closed (FD5-01 stays passive).
+S22_TARGETS = [f"{NET}.49", f"{NET}.14"]
+S22_SETTINGS = {
+    **SETTINGS,
+    "scanModules": ["port_scan", "http_probe"],
+    "naabuCustomPorts": "22,80,443",
+    "shodanEnabled": True,
+    "katanaEnabled": False, "vhostSniEnabled": False, "jsReconEnabled": False,
+    "webCachePoisonEnabled": False,
+    # The partial Nmap's -sV is the confirmation; the NSE vuln scripts against the
+    # lab's Python servers outlast nmap's host timeout and record nothing.
+    "nmapScriptScan": False,
+}
+
+
 # R-22 runs as its own project: .39 scanned on 6379 alone, so httpx finds no
 # live URL and the active scans are skipped; the port checks must still run.
 REDIS_NOHTTP_SETTINGS = {
@@ -456,9 +474,10 @@ CEILING_SETTINGS = {
 
 
 def watch_procs(pattern, path, stop):
-    """Record every host process whose command starts with `pattern` (the
-    recon container's nmap runs are host processes) while the run lasts:
-    first and last time seen and the full command, as JSON lines in `path`."""
+    """Record every host process whose command starts with `pattern` (a prefix,
+    or a tuple of them: the recon container's nmap runs, and the httpx and WCVS
+    containers' entrypoints, are host processes) while the run lasts: first and
+    last time seen and the full command, as JSON lines in `path`."""
     seen = {}
     while not stop.is_set():
         out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True).stdout
@@ -720,6 +739,9 @@ def main():
     ap.add_argument("--redis", action="store_true", help="create the R-24 Redis project (.39)")
     ap.add_argument("--redis-mode", choices=("open", "delay", "auth"), default="open",
                     help="what .39 answers to PING for this run (reset to open after)")
+    ap.add_argument("--s22", action="store_true",
+                    help="create the S-22 project (.49 with 8081 known from the Shodan stub only, .14; "
+                         "then partial Nmap / Httpx on graph targets)")
     ap.add_argument("--redis-nohttp", action="store_true",
                     help="create the R-22 project (.39 on 6379 alone: no live URL, port checks still run)")
     ap.add_argument("--probefail", action="store_true",
@@ -745,6 +767,8 @@ def main():
                     help="prefix each line of --log with Docker's timestamp")
     ap.add_argument("--watch-nmap", metavar="PATH",
                     help="record every nmap process of the run (command, first/last seen) as JSON lines")
+    ap.add_argument("--watch-argv", metavar="PATH",
+                    help="record every httpx and WCVS process of the run (their argv, R-8 B-R8c) as JSON lines")
     ap.add_argument("--stealth", action="store_true",
                     help="create the R-10 stealth project (.22, .37; partial runs with partial_fp.py)")
     ap.add_argument("--cache-state", choices=("open", "stall"), default="open",
@@ -760,7 +784,7 @@ def main():
     if args.disposition_decide:
         disposition_decide(args.disposition_decide)
         return
-    if args.ip_ownership or args.ip_ownership_stealth or args.ip_ownership_nwlab:
+    if args.ip_ownership or args.ip_ownership_stealth or args.ip_ownership_nwlab or args.s22:
         require_shodan_stub()
     if args.ip_ownership_nwlab:
         nwlab_routing_gate()
@@ -771,7 +795,7 @@ def main():
     else:
         kind = (" (RoE, R-3/R-32)" if args.roe else " (R-29 per-origin endpoints)" if args.r29 else
                 " (R-43 GraphQL scope)" if args.r43 else " (R-19 Nuclei throttle)" if args.nuclei_throttle else
-                " (R-24 Redis)" if args.redis else " (R-22 Redis, no HTTP)" if args.redis_nohttp else
+                " (S-22 passive port)" if args.s22 else " (R-24 Redis)" if args.redis else " (R-22 Redis, no HTTP)" if args.redis_nohttp else
                 " (R-21 probe failures)" if args.probefail else " (security checks)" if args.secchk else
                 " (R-31 fan-out)" if args.fanout else " (R-14 source maps)" if args.r14 else
                 " (R-7/R-42 GraphQL)" if args.graphql else " (R-10 stealth)" if args.stealth else
@@ -784,6 +808,7 @@ def main():
         targets, settings = ((ROE_TARGETS, {**ROE_SETTINGS, **roe_window(True)}) if args.roe else
                              (R29_TARGETS, R29_SETTINGS) if args.r29 else
                              (R43_TARGETS, R43_SETTINGS) if args.r43 else
+                             (S22_TARGETS, S22_SETTINGS) if args.s22 else
                              (NUCLEI_THROTTLE_TARGETS, NUCLEI_THROTTLE_SETTINGS) if args.nuclei_throttle else
                              (REDIS_TARGETS, REDIS_SETTINGS) if args.redis else
                              (REDIS_TARGETS, REDIS_NOHTTP_SETTINGS) if args.redis_nohttp else
@@ -860,6 +885,11 @@ def main():
         if args.watch_nmap:
             procs = threading.Thread(target=watch_procs, args=("nmap ", args.watch_nmap, stop), daemon=True)
             procs.start()
+        argv_watch = None
+        if args.watch_argv:
+            argv_watch = threading.Thread(target=watch_procs, args=(("httpx ", "/wcvs "), args.watch_argv, stop),
+                                          daemon=True)
+            argv_watch.start()
         if args.httpx_fail:
             watcher = threading.Thread(target=httpx_fail_watch, args=(project_id, stop), daemon=True)
             watcher.start()
@@ -872,6 +902,8 @@ def main():
                 watcher.join(timeout=30)
             if procs:
                 procs.join(timeout=10)
+            if argv_watch:
+                argv_watch.join(timeout=10)
         print("[+] recon finished:", json.dumps(final)[:600], flush=True)
         if tail:
             time.sleep(3)

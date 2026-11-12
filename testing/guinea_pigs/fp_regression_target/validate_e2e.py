@@ -49,7 +49,9 @@ open|delay|auth` after each run of the --redis project (R-24). `--roe` and
 Round 3 (README.md step 15): `--passive-fd1 kept|orphan|cdn` on a second
 --passive-cves project (F-D1, D1-ORPHAN), `--fd5 snapshot|after` around each
 partial port writer (F-D5 / R-26), `--ceiling free|capped` on the --ceiling
-project (R-8; CEILING_NMAP names the --watch-nmap file).
+project (R-8; CEILING_NMAP names the --watch-nmap file, CEILING_ARGV the
+--watch-argv file, CEILING_FP where `free` stores the favicon/JARM hashes `capped`
+compares).
 
 Every check is read-only Cypher through query_graph (tenant-scoped by the
 server) and prints PASS / FAIL with what the graph actually holds. Exit 0 only
@@ -63,7 +65,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mcp_client as mcp  # noqa: E402
 
-USAGE = ("usage: validate_e2e.py <projectId> [--js-count | --js-count-equals <n> | --http-layer"
+USAGE = ("usage: validate_e2e.py <projectId> [--s22 full|nmap|httpx | --js-count | --js-count-equals <n> | --http-layer"
          " | --passive-cves baseline|partial|unscanned|off | --js-coverage first | --js-coverage capped <n>"
          " | --vhost-origin | --coverage stamps|clean|lost | --coverage import <originalProjectId>"
          " | --disposition before|decided | --disposition-stored before|decided|http-layer"
@@ -1233,8 +1235,12 @@ def r14js_checks(since, log_path):
     check("R14J-05", not vendor, f"requests on .21 (RoE-excluded) during the run: {[ln for _, ln in vendor][:3]} "
                                  f"(expect none: an excluded host gets no request)")
     log = _log_text(log_path)
-    check("R14J-02", "blocked (RoE exclusion)" in log and "[-][RoE] js_recon: not sent to" in log,
-          "recon log: 'blocked (RoE exclusion)' and '[-][RoE] js_recon: not sent to ...'")
+    # JS Recon refuses .21 either at its admission gate (the URL itself) or on a
+    # redirect hop of a bundle it fetched; since Katana stopped following
+    # redirects under RoE exclusions (B-KATANA) the first is the usual one.
+    roe_line = [ln for ln in log.splitlines() if ln.startswith("[-][RoE] js_recon: not sent to") and f"{NET}.21" in ln]
+    check("R14J-02", roe_line or "blocked (RoE exclusion)" in log,
+          "recon log: '[-][RoE] js_recon: not sent to ... .21' or a download hop 'blocked (RoE exclusion)'")
     moved = q("""MATCH (f:JsReconFinding) WHERE f.source_url CONTAINS 'r14js.'
                  RETURN f.finding_type AS t, f.source_url AS u""")
     eps = q(f"""MATCH (e:Endpoint) WHERE e.path = '/api/r14js/moved' RETURN e.baseurl AS b""")
@@ -1422,6 +1428,46 @@ def _run_duration():
         return None, last.get("status")
 
 
+def _argv_runs(path):
+    """httpx and WCVS processes of the run (e2e_fp.py --watch-argv): (tool, cmd)."""
+    rows = [json.loads(ln) for ln in open(path)] if path and os.path.exists(path) else []
+    return [("wcvs" if r["cmd"].startswith("/wcvs") else "httpx", r["cmd"]) for r in rows]
+
+
+def _fingerprints():
+    """The stored favicon hashes (on Endpoints) and JARM hashes (on Certificates)."""
+    fav = q("""MATCH (e:Endpoint) WHERE e.favicon_hash IS NOT NULL
+               RETURN coalesce(e.baseurl, '') + coalesce(e.path, '') AS k, toString(e.favicon_hash) AS v""")
+    jarm = q("""MATCH (c:Certificate) WHERE c.jarm IS NOT NULL RETURN c.cert_key AS k, c.jarm AS v""")
+    return {"favicon": {r["k"]: r["v"] for r in fav}, "jarm": {r["k"]: r["v"] for r in jarm}}
+
+
+def _sender(line):
+    """Who sent a lab event: the User-Agent of an HTTP request, else the kind of
+    connection (a TLS handshake, a Redis or SMTP command) on that host's role."""
+    import re
+    m = re.search(r" ua=(\S+)", line)
+    if m and m.group(1) != "-":
+        return "ua:" + m.group(1)
+    role = line.split("]", 1)[0].lstrip("[")
+    if "TLS handshake" in line:
+        return f"tls:{role}"
+    return f"conn:{role}"
+
+
+def _per_sender_seconds(events):
+    """{sender: (most events in one calendar second, that second)}."""
+    counts = {}
+    for t, _, ln in events:
+        key = (_sender(ln), int(t))
+        counts[key] = counts.get(key, 0) + 1
+    worst = {}
+    for (sender, sec), n in counts.items():
+        if n > worst.get(sender, (0, 0))[0]:
+            worst[sender] = (n, sec)
+    return worst
+
+
 def ceiling_checks(stage, since, log_path, nmap_path=None, rps=2.0):
     """R-8 (B-R8a, B-R8b1, B-R8b2a, B-R8b2b, B-FD2-3): the --ceiling project with no
     ceiling (`free`), then under roeGlobalMaxRps 2 (`capped`)."""
@@ -1450,6 +1496,28 @@ def ceiling_checks(stage, since, log_path, nmap_path=None, rps=2.0):
         check("CF-04", "[-][Kiterunner] Not run" not in log, "Kiterunner not refused with no ceiling")
         if rl:
             print("RATE_FINDING_IDS=" + ",".join(sorted(r["id"] for r in rl)))
+        argv = _argv_runs(os.environ.get("CEILING_ARGV"))
+        if os.environ.get("CEILING_ARGV"):
+            hx = [c for t, c in argv if t == "httpx" and " -l " in f" {c} "]
+            wc = [c for t, c in argv if t == "wcvs"]
+            import re
+
+            def threads(cmd):
+                m = re.search(r" -t (\d+)( |$)", f" {cmd}")
+                return int(m.group(1)) if m else 0
+            # The memory governor may lower the thread counts (httpx's 50, WCVS's
+            # 10) on a busy host; with no ceiling they stay above the paced 1.
+            check("CF-05", hx and all(all(f" {a} " in f" {c} " for a in ("-retries 2", "-rl 50", "-favicon", "-jarm"))
+                                      and threads(c) > 1 for c in hx)
+                  and (not wc or all(threads(c) > 1 for c in wc)),
+                  f"no ceiling: httpx argv -t >1 -retries 2 -rl 50 -favicon -jarm "
+                  f"({len(hx)} run(s): {[c[:160] for c in hx][:2]}); WCVS -t >1 ({[c[:120] for c in wc][:2]})")
+        check("CF-06", not any(x in log for x in ("rps RoE ceiling: one URL at a time",
+                                                   "not collected while the", "WCVS paced to the")),
+              "no ceiling: none of the B-R8c pacing lines")
+        if os.environ.get("CEILING_FP"):
+            json.dump(_fingerprints(), open(os.environ["CEILING_FP"], "w"), indent=1)
+            print(f"[*] stored favicon/JARM hashes written to {os.environ['CEILING_FP']}")
         return
     if stage != "capped":
         sys.exit(USAGE)
@@ -1504,6 +1572,44 @@ def ceiling_checks(stage, since, log_path, nmap_path=None, rps=2.0):
               f"the no_rate_limiting finding(s) of the free run kept, not re-checked: {rl}")
     else:
         print("INFO  CE-10 not checked: no no_rate_limiting finding to keep (no login URL discovered)")
+    # B-R8c: each sender on its own stays within the ceiling per calendar second;
+    # one more is allowed where a redirect hop lands on a second boundary.
+    worst = _per_sender_seconds(paced)
+    over = {k: v for k, v in worst.items() if v[0] > rps}
+    check("CE-11", paced and all(n <= rps + 1 for n, _ in worst.values()),
+          f"per-sender busiest calendar second: {dict(sorted(worst.items(), key=lambda kv: -kv[1][0])[:8])} "
+          f"(expect <= {rps:g}, +1 for a redirect hop at a second boundary; above {rps:g}: {over})")
+    check("CE-12", f"[*][httpx] Paced to the {rps:g} rps RoE ceiling: one URL at a time, -rl 1, -delay 1000ms, "
+                   f"no retries" in log
+          and f"[-][httpx] JARM and favicon not collected while the {rps:g} rps RoE ceiling is in force" in log,
+          "log: [*][httpx] Paced to the ceiling ... ; [-][httpx] JARM and favicon not collected ...")
+    wcvs_ran = "[CachePoison]" in log and "WCVS" in log
+    check("CE-13", not wcvs_ran or f"[*][CachePoison] WCVS paced to the {rps:g} rps RoE ceiling: one thread, -rr 1"
+          in log, "log: [*][CachePoison] WCVS paced to the ceiling: one thread, -rr 1")
+    if os.environ.get("CEILING_ARGV"):
+        import re
+        argv = _argv_runs(os.environ.get("CEILING_ARGV"))
+        hx = [c for t, c in argv if t == "httpx" and " -l " in f" {c} "]
+        wc = [c for t, c in argv if t == "wcvs"]
+        check("CE-14", hx and all(all(f" {a} " in f" {c} " for a in ("-t 1", "-retries 0", "-rl 1", "-delay 1000ms"))
+                                  and " -favicon" not in c and " -jarm" not in c for c in hx)
+              and (not wc or all(" -t 1 " in f" {c} " and re.search(r" -rr 1(\.0+)?( |$)", c) for c in wc)),
+              f"httpx argv -t 1 -retries 0 -rl 1 -delay 1000ms, no -favicon/-jarm "
+              f"({len(hx)} run(s): {[c[:200] for c in hx][:2]}); WCVS -t 1 -rr 1 ({[c[:160] for c in wc][:2]})")
+    fp_gaps = {g.get("source") for g in _gaps(module="http_probe")}
+    check("CE-15", {"httpx_jarm", "httpx_favicon"} <= fp_gaps,
+          f"coverage gaps of module http_probe: {sorted(s for s in fp_gaps if s)} (expect httpx_jarm, httpx_favicon)")
+    if os.environ.get("CEILING_FP") and os.path.exists(os.environ["CEILING_FP"]):
+        before, after = json.load(open(os.environ["CEILING_FP"])), _fingerprints()
+        if not before["favicon"] and not before["jarm"]:
+            print("INFO  CE-16 not checked: the free run stored no favicon or JARM hash to keep "
+                  "(no HTTPS web host with a favicon among the ceiling hosts)")
+            return
+        lost = {kind: sorted(k for k in before[kind] if before[kind][k] != after[kind].get(k))
+                for kind in ("favicon", "jarm")}
+        check("CE-16", not lost["favicon"] and not lost["jarm"],
+              f"stored hashes the capped run changed or dropped: {lost} "
+              f"(before: {len(before['favicon'])} favicon, {len(before['jarm'])} JARM)")
 
 
 def epai_checks(stage, path, host=None):
@@ -1562,6 +1668,34 @@ def upload_sink_checks(name):
                  RETURN f.source_url AS u, collect(s.title) AS sinks""")
     check("UP-01", rows and any(r["sinks"] for r in rows), f"uploaded bundle's js_file node and its sinks: {rows}")
 
+
+def s22_checks(stage):
+    """S-22: a port the Shodan stub alone reports (.49:8081, naabu on 22,80,443) is
+    passive_only after the full run; a partial Nmap or Httpx that gets an answer on
+    it turns that false. .14's Shodan-only 22 is closed and stays passive (FD5-01)."""
+    rows = q(f"""MATCH (i:IP)-[:HAS_PORT]->(p:Port) WHERE i.address IN ['{NET}.49', '{NET}.14']
+                 RETURN i.address + ':' + toString(p.number) AS k, p.passive_only AS po,
+                        p.nmap_scanned AS ns, p.product AS product, p.source AS src""")
+    port = {r["k"]: r for r in rows}
+    p8081, p22 = port.get(f"{NET}.49:8081"), port.get(f"{NET}.14:22")
+    print(f"PORTS={json.dumps(rows)}")
+    if stage == "full":
+        check("S22-01", p8081 and p8081["po"] is True,
+              f".49:8081 known from Shodan only, passive_only true: {p8081}")
+        check("S22-02", port.get(f"{NET}.49:80") and port[f"{NET}.49:80"]["po"] is not True,
+              f".49:80 scanned open, not passive: {port.get(f'{NET}.49:80')}")
+    elif stage == "nmap":
+        # nmap -sV may name no product for the lab server (an empty string): the
+        # confirmation is nmap_scanned on an open port, which clears passive_only.
+        check("S22-03", p8081 and p8081["po"] is False and p8081["ns"] is True and p8081["product"] is not None,
+              f"partial Nmap answered on .49:8081: passive_only false, nmap_scanned, product recorded: {p8081}")
+    elif stage == "httpx":
+        check("S22-04", p8081 and p8081["po"] is False,
+              f"partial Httpx answered on .49:8081: passive_only false: {p8081}")
+    else:
+        sys.exit(USAGE)
+    check("S22-05", p22 and p22["po"] is True, f".14:22 is closed and stays passive_only (FD5-01): {p22}")
+
 if len(sys.argv) > 2:
     if sys.argv[2] == "--probefail" and len(sys.argv) in (5, 6):
         probefail_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)
@@ -1602,6 +1736,9 @@ if len(sys.argv) > 2:
     if sys.argv[2] == "--ceiling" and len(sys.argv) in (5, 6):
         ceiling_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) >= 6 else None,
                        os.environ.get("CEILING_NMAP"))
+        sys.exit(report())
+    if sys.argv[2] == "--s22" and len(sys.argv) == 4:
+        s22_checks(sys.argv[3])
         sys.exit(report())
     if sys.argv[2] == "--epai" and len(sys.argv) in (5, 6):
         epai_checks(sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else None)

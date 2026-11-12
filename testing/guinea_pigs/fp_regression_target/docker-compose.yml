@@ -255,6 +255,15 @@ services:
     environment: { ROLE: sso, PORTS: "80,443", TLS_PORTS: "443" }
     networks: { fp_lab: { ipv4_address: 192.88.94.48 } }
 
+  # S-22: a page on 80 and on 8081. The Shodan stub reports both ports; the
+  # --s22 project's naabu scans 22,80,443 only, so 8081 is known from Shodan
+  # alone until a partial Nmap or Httpx confirms it.
+  fp-passive8081:
+    <<: *lab
+    container_name: redamon-fp-passive8081
+    environment: { ROLE: plainjs, PORTS: "80,8081" }
+    networks: { fp_lab: { ipv4_address: 192.88.94.49 } }
+
   # A GraphQL server for the rate cap and graphql-cop's gates (R-7, R-42).
   fp-graphql:
     <<: *lab

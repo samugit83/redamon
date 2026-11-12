@@ -6,7 +6,7 @@ Every case that must stay silent sits next to one that must still fire, so a
 green run proves both halves.
 
 ```bash
-docker compose up -d --build        # thirty-five hosts on 192.88.94.0/24, no host ports
+docker compose up -d --build        # the lab hosts on 192.88.94.0/24, no host ports
 docker compose down
 ```
 
@@ -328,6 +328,23 @@ the host.
     CEILING_NMAP=capped.nmap python3 validate_e2e.py <id> --ceiling capped <RUN_START> capped.log
     ```
 
+    B-R8c adds argv and fingerprint rows to both stages: run each with `--watch-argv
+    <file>` (the httpx and WCVS processes) and validate with `CEILING_ARGV=<file>
+    CEILING_FP=fp.json` (`free` stores the favicon/JARM hashes there, `capped` compares).
+
+    S-22 (Shodan stub): `.49` serves 80 and 8081, the stub reports both, naabu scans
+    22,80,443, so 8081 is known from Shodan alone.
+
+    ```bash
+    python3 e2e_fp.py --s22 --no-triage --no-reset
+    python3 validate_e2e.py <id> --s22 full                 # 8081 passive_only true
+    python3 partial_fp.py <id> Nmap
+    python3 validate_e2e.py <id> --s22 nmap                 # false, nmap_scanned, product
+    python3 e2e_fp.py --rerun <id> --no-triage --no-reset   # passive again
+    python3 partial_fp.py <id> Httpx
+    python3 validate_e2e.py <id> --s22 httpx                # false
+    ```
+
     `--target-ips` changes the address list through the project form's PUT (MCP keeps it
     fixed). `/_lab/shodan?cdn=<ips>` makes the stub tag those IPs `cdn` for the run. The
     ceiling checks count every request, TLS handshake, Redis and SMTP command the lab hosts
@@ -425,6 +442,7 @@ the host.
 | `.10`, `.13`, `.14` | a second passive-CVE project: `.10` leaves the target IPs (`--target-ips`), then the stub tags `.13` `cdn` | FD1-01..FD1-07 | `.10`'s two Shodan CVEs are kept with no `stale_since` and no IP node; `.13`/`.14` are re-checked; the log says the source prunes only the hosts it re-checked; once tagged, `.13`'s CVE is pruned while `.14`'s is refreshed |
 | `.10` | the Priority Board on that project after `.10` left (`triage_fp.mjs`) | D1O-01/02 | each kept `.10` CVE has reach 0.5 with "no longer among this run's targets", a tier below T2 and model v3.11.0; the CVEs on IPs still in the run are not read as left |
 | `.14`, `.32` | partial Nmap (custom 80,443), httpx (typed `.14`:22) and tlsx (custom port) after a full run; partial Masscan too, though in the lab it finds no default interface and measures nothing | FD5-01..FD5-04 | Shodan-only Port 22 on `.14` stays `passive_only`; every Port sits under its own IP; `.32` keeps `is_cdn` cloudflare; no port the lab does not serve appears (a typed port on an IP nmap gave up on is written as given, and listed) |
+| `.49`, `.14` | S-22 project (`--s22`, Shodan stub): `.49` serves 80 and 8081, the stub reports both, naabu scans 22,80,443 | S22-01..05 | Port 8081 is `passive_only` after the full run and turns false when a partial Nmap (with `nmap_scanned` and a product) or a partial Httpx answers on it; `.14`'s closed 22 stays passive |
 | `.10`, `.15`, `.20`, `.39`, `.40`, `.42`, `.45`, `.47` | every in-process requester, nmap at parallelism 5 and Kiterunner (`--ceiling`), with no ceiling, then under `roeGlobalMaxRps` 2 | CF-01..04, CE-01..10 | no ceiling: Phase A fans out, nmap runs 5 IPs at once with no `--max-rate`, the login burst seeds `no_rate_limiting`; under 2 rps: no 0.9-s window holds more than 2 lab requests/handshakes/commands (nmap's own -sV/NSE traffic aside), the pacing, Phase A, nmap and skip log lines, one nmap at a time each with `--max-rate 2`, Kiterunner not run, gaps for `no_rate_limiting` and Kiterunner, the earlier `no_rate_limiting` finding kept |
 
 ## Not covered here
