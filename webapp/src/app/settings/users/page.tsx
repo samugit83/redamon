@@ -11,13 +11,14 @@ import { WhatChangedCard } from '@/components/admin/WhatChangedCard'
 import { AccountStatusActions, AccountStatusBadge } from '@/components/admin/AccountStatusActions'
 import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
-import { validateNewPassword } from '@/lib/authz/passwordPolicy'
+import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
+import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import styles from './page.module.css'
 
 type ModalState =
   | { type: 'none' }
   | { type: 'create' }
-  | { type: 'password'; userId: string; userName: string; targetIsAdmin: boolean }
+  | { type: 'password'; userId: string; userName: string; userEmail: string; targetIsAdmin: boolean }
   | { type: 'delete'; userId: string; userName: string }
   | { type: 'deleteAdmin'; userId: string; userName: string }
   | { type: 'changeOwn' }
@@ -30,6 +31,9 @@ export default function UsersPage() {
   const createUser = useCreateUser()
   const deleteUser = useDeleteUser()
   const changePasswordMutation = useChangePassword()
+  // The policy in force (identity switch on); null keeps Phase 1's floor and shows no text.
+  const passwordPolicy = usePasswordPolicy()
+  const policyInForce = passwordPolicy ?? BASE_PASSWORD_POLICY
 
   const [modal, setModal] = useState<ModalState>({ type: 'none' })
   const [formError, setFormError] = useState('')
@@ -91,7 +95,7 @@ export default function UsersPage() {
       return
     }
     if (password) {
-      const check = validateNewPassword(password)
+      const check = validateNewPassword(password, policyInForce, { email })
       if (!check.ok) {
         setFormError(check.message)
         return
@@ -126,7 +130,8 @@ export default function UsersPage() {
   async function handleSetPassword() {
     setFormError('')
     setFormSuccess('')
-    const check = validateNewPassword(password)
+    if (modal.type !== 'password') return
+    const check = validateNewPassword(password, policyInForce, { email: modal.userEmail })
     if (!check.ok) {
       setFormError(check.message)
       return
@@ -136,7 +141,6 @@ export default function UsersPage() {
       return
     }
 
-    if (modal.type !== 'password') return
     const isOwnRow = modal.userId === authUser?.id
     if (isOwnRow && !currentPassword) {
       setFormError('Current password is required')
@@ -173,7 +177,7 @@ export default function UsersPage() {
       setFormError('Current password is required')
       return
     }
-    const check = validateNewPassword(password)
+    const check = validateNewPassword(password, policyInForce, { email: authUser?.email })
     if (!check.ok) {
       setFormError(check.message)
       return
@@ -219,31 +223,39 @@ export default function UsersPage() {
             {formError && <div className={styles.error}>{formError}</div>}
             {formSuccess && <div className={styles.success}>{formSuccess}</div>}
             <div className={styles.field}>
-              <label className={styles.label}>Current Password</label>
+              <label className={styles.label} htmlFor="change-own-current">Current Password</label>
               <input
+                id="change-own-current"
                 type="password"
                 className={styles.input}
                 value={currentPassword}
                 onChange={e => setCurrentPassword(e.target.value)}
+                autoComplete="current-password"
                 autoFocus
               />
             </div>
             <div className={styles.field}>
-              <label className={styles.label}>New Password</label>
+              <label className={styles.label} htmlFor="change-own-new">New Password</label>
               <input
+                id="change-own-new"
                 type="password"
                 className={styles.input}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
+                autoComplete="new-password"
+                aria-describedby={passwordPolicy ? 'change-own-policy' : undefined}
               />
+              {passwordPolicy && <span id="change-own-policy" className={styles.hint}>{passwordPolicy.description}</span>}
             </div>
             <div className={styles.field}>
-              <label className={styles.label}>Confirm New Password</label>
+              <label className={styles.label} htmlFor="change-own-confirm">Confirm New Password</label>
               <input
+                id="change-own-confirm"
                 type="password"
                 className={styles.input}
                 value={confirmPassword}
                 onChange={e => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
               />
             </div>
             <div className={styles.modalActions}>
@@ -341,7 +353,8 @@ export default function UsersPage() {
                       <button
                         className={styles.actionButton}
                         onClick={() => openModal({
-                          type: 'password', userId: user.id, userName: user.name, targetIsAdmin: user.role === 'admin',
+                          type: 'password', userId: user.id, userName: user.name, userEmail: user.email,
+                          targetIsAdmin: user.role === 'admin',
                         })}
                       >
                         Set Password
@@ -404,20 +417,25 @@ export default function UsersPage() {
             />
           </div>
           <div className={styles.field}>
-            <label className={styles.label}>Password</label>
+            <label className={styles.label} htmlFor="create-user-password">Password</label>
             <input
+              id="create-user-password"
               type="password"
               className={styles.input}
               value={password}
               onChange={e => setPassword(e.target.value)}
               placeholder="Leave empty for passwordless user"
+              autoComplete="new-password"
+              aria-describedby={passwordPolicy ? 'create-user-password-hint create-user-password-policy' : 'create-user-password-hint'}
             />
-            <span className={styles.hint}>Passwordless users can only be accessed via admin switching</span>
+            <span id="create-user-password-hint" className={styles.hint}>Passwordless users can only be accessed via admin switching</span>
+            {passwordPolicy && <span id="create-user-password-policy" className={styles.hint}>{passwordPolicy.description}</span>}
           </div>
           {password && (
             <div className={styles.field}>
-              <label className={styles.label}>Confirm Password</label>
+              <label className={styles.label} htmlFor="create-user-confirm">Confirm Password</label>
               <input
+                id="create-user-confirm"
                 type="password"
                 className={styles.input}
                 value={confirmPassword}
@@ -494,7 +512,9 @@ export default function UsersPage() {
               onChange={e => setPassword(e.target.value)}
               autoComplete="new-password"
               autoFocus={!setOwnRow}
+              aria-describedby={passwordPolicy ? 'set-password-policy' : undefined}
             />
+            {passwordPolicy && <span id="set-password-policy" className={styles.hint}>{passwordPolicy.description}</span>}
           </div>
           <div className={styles.field}>
             <label className={styles.label} htmlFor="set-password-confirm">Confirm Password</label>

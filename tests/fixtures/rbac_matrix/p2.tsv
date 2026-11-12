@@ -108,3 +108,14 @@ p2-transfer-not-json	2.6	admin_a	POST	/api/root/transfer	-	415	req:ID-07 identit
 p2-transfer-read-admin	2.6	admin_a	GET	/api/root/transfer	-	200;has="offer":null	req:ID-07 identity:on
 p2-transfer-accept-none	2.6	admin_a	POST	/api/root/transfer/accept	{"stepUpPassword":"not-the-rbac-password"}	409;has=no_transfer_offer	req:ID-07 identity:on
 p2-transfer-cancel-none	2.6	admin_a	POST	/api/root/transfer/cancel	{}	409;has=no_transfer_offer	req:ID-07 identity:on
+# ---- step 2.8: the configurable password policy ----
+# With the identity switch on every new password meets the policy in force (the instance minimum,
+# the deny list, not the account's email, not one repeated character). Each row is refused after
+# the authorization check, so nothing changes; with the switch off the same requests would set the
+# password, so they run only with it on. Off, the policy route answers 404.
+p2-pwpolicy-read	2.8	member_a	GET	/api/auth/password-policy	-	200;has="rules":true;has="maxBytes":72	req:ID-20 identity:on
+p2-pwpolicy-anon	2.8	anon	GET	/api/auth/password-policy	-	401	req:ID-20
+p2-pwpolicy-off	2.8	member_a	GET	/api/auth/password-policy	-	404	req:ID-20 identity:off
+p2-pwpolicy-create-common	2.8	admin_a	POST	/api/users	{"name":"RBAC Policy","email":"rbac-policy@e2e.local","password":"PasswordPassword"}	400;has=password_common	req:ID-20 identity:on
+p2-pwpolicy-reset-email	2.8	admin_a	PUT	/api/users/${MEMBER_C_ID}/password	{"newPassword":"rbac-member-c@e2e.local"}	400;has=password_is_email	req:ID-20 identity:on
+p2-pwpolicy-own-repeated	2.8	member_b	PUT	/api/users/${MEMBER_B_ID}/password	{"newPassword":"zzzzzzzzzzzzzzzz","currentPassword":"${RBAC_PASSWORD}"}	400;has=password_repeated	req:ID-20 identity:on

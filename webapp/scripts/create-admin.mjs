@@ -16,7 +16,9 @@
  * A reset also makes a disabled or invited account usable again (its password is
  * empty, so it is always a reset): status active, no held hash, no forced change.
  * The host operator is the trust anchor. Every change commits with its audit rows
- * (source 'system'), or nothing does.
+ * (source 'system'), or nothing does. A new password meets the one password policy
+ * (lib/passwordRules.mjs; identity switch on: the instance minimum, the deny list, not
+ * the account's email, not one repeated character), as the webapp's forms do.
  *
  * Exit codes: 0 done, 1 bad input or failure, 3 member not promoted.
  */
@@ -24,6 +26,8 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { ensureInstanceSettingsRow } from './backfill-rbac-instance-settings.mjs'
+import { identitySwitchOn } from './backfill-rbac-instance-settings.mjs'
+import { checkNewPassword, passwordPolicyFromDatabase } from './lib/passwordRules.mjs'
 
 const name = process.env.ADMIN_NAME
 const email = process.env.ADMIN_EMAIL
@@ -35,12 +39,12 @@ if (!name || !email || !password) {
   process.exit(1)
 }
 
-// The floor of src/lib/authz/passwordPolicy.ts, repeated because this standalone
-// script cannot import TypeScript; passwordPolicy.drift.test.ts keeps them equal.
-const MIN_PASSWORD_LENGTH = 12
-
-if ([...password].length < MIN_PASSWORD_LENGTH) {
-  console.error(`ERROR: Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+// The policy of src/lib/authz/passwordPolicy.ts through its script twin: Phase 1's floor and
+// byte bound before anything is read; the policy in force (identity switch on: the instance
+// minimum, the deny list and the two rules) before a new password is written.
+const base = checkNewPassword(password)
+if (!base.ok) {
+  console.error(`ERROR: ${base.message}`)
   process.exit(1)
 }
 
@@ -90,12 +94,24 @@ async function claimRootIfNone(tx, userId) {
        OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = instance_settings.root_user_id))`) > 0
 }
 
+// True (and says why) when the policy in force refuses the password for this account. The
+// unchanged password of an existing admin is never judged: nothing new is written then.
+function refusedByPolicy(policy, accountEmail) {
+  const check = checkNewPassword(password, policy, { email: accountEmail })
+  if (check.ok) return false
+  console.error(`ERROR: ${check.message}. Nothing was changed.`)
+  return true
+}
+
 let exitCode = 0
 try {
   const { account, ambiguous } = await findAccount(email)
+  const policy = await passwordPolicyFromDatabase(prisma, { identity: identitySwitchOn() })
 
   if (ambiguous) {
     console.error(`ERROR: several accounts differ only in case from "${email}"; type one of them exactly`)
+    exitCode = 1
+  } else if (!account && refusedByPolicy(policy, email)) {
     exitCode = 1
   } else if (!account) {
     const hash = await bcrypt.hash(password, 12)
@@ -123,6 +139,8 @@ try {
       await prisma.user.update({ where: { id: account.id }, data: { name } })
     }
     console.log(`Admin user "${name}" <${account.email}> already has this password; nothing else changed (MCP tokens kept).`)
+  } else if (refusedByPolicy(policy, account.email)) {
+    exitCode = 1
   } else {
     const promote = account.role !== 'admin'
     const hash = await bcrypt.hash(password, 12)

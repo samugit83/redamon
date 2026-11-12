@@ -4,6 +4,7 @@ import { hashPassword } from '@/lib/auth'
 import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
+import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
 import { userAuditEntry, writeUserAudit, type UserAuditFields } from '@/lib/userAudit'
 import { writeAuditTx } from '@/lib/audit'
@@ -89,9 +90,13 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // An empty or absent password makes a passwordless (managed) account.
+    // An empty or absent password makes a passwordless (managed) account. Phase 1's floor
+    // answers before the policy in force is read (identity switch on: the instance minimum,
+    // the deny list and the new account's own address).
     if (password !== undefined && password !== null && password !== '') {
-      const check = validateNewPassword(typeof password === 'string' ? password : '')
+      const pw = typeof password === 'string' ? password : ''
+      let check = validateNewPassword(pw)
+      if (check.ok) check = validateNewPassword(pw, await passwordPolicyInForce(), { email })
       if (!check.ok) {
         return NextResponse.json({ error: check.message, code: check.code }, { status: 400 })
       }

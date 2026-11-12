@@ -8,13 +8,16 @@
  *   docker compose exec -T -e RESET_EMAIL=... -e RESET_PASSWORD=... webapp node scripts/reset-password.mjs
  *
  * It never changes the role: PROMOTE_ADMIN is refused with exit 2. Promoting a
- * member is create-admin's job, and only with FORCE_PROMOTE=1.
+ * member is create-admin's job, and only with FORCE_PROMOTE=1. The new password meets
+ * the one password policy (lib/passwordRules.mjs), as the webapp's forms do.
  *
  * Exit codes: 0 done, 1 bad input, unknown account or failure, 2 PROMOTE_ADMIN set.
  */
 
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { identitySwitchOn } from './backfill-rbac-instance-settings.mjs'
+import { checkNewPassword, passwordPolicyFromDatabase } from './lib/passwordRules.mjs'
 
 const email = process.env.RESET_EMAIL
 const password = process.env.RESET_PASSWORD
@@ -32,12 +35,12 @@ if (!email || !password) {
   process.exit(1)
 }
 
-// The floor of src/lib/authz/passwordPolicy.ts, repeated because this standalone
-// script cannot import TypeScript; passwordPolicy.drift.test.ts keeps them equal.
-const MIN_PASSWORD_LENGTH = 12
-
-if ([...password].length < MIN_PASSWORD_LENGTH) {
-  console.error(`ERROR: Password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+// The policy of src/lib/authz/passwordPolicy.ts through its script twin: Phase 1's floor and
+// byte bound before anything is read; the policy in force (identity switch on: the instance
+// minimum, the deny list and the two rules) once the account is known.
+const base = checkNewPassword(password)
+if (!base.ok) {
+  console.error(`ERROR: ${base.message}`)
   process.exit(1)
 }
 
@@ -65,6 +68,14 @@ try {
     console.error(`ERROR: No user found with email "${email}"`)
     exitCode = 1
   } else {
+    const policy = await passwordPolicyFromDatabase(prisma, { identity: identitySwitchOn() })
+    const check = checkNewPassword(password, policy, { email: user.email })
+    if (!check.ok) {
+      console.error(`ERROR: ${check.message}. Nothing was changed.`)
+      exitCode = 1
+    }
+  }
+  if (user && exitCode === 0) {
     const hash = await bcrypt.hash(password, 12)
     // As users/[id]/password/route.ts: a reset must not leave live sessions or
     // programmatic credentials behind, and a half-applied one is worse than either

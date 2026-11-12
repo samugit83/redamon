@@ -19,6 +19,9 @@
 #   floor, and revokes the account's MCP tokens in the password transaction.
 #   Both find an account the way sign-in does (exact email, else the one account
 #   equal to it ignoring case) and write an audit row with source 'system'.
+#   Both apply the one password policy (scripts/lib/passwordRules.mjs): with the identity
+#   switch on the instance minimum (a missing table reads as the floor), the deny list,
+#   not the account's email, not one repeated character; off, the floor alone.
 #   A host reset ends every session of the account (session version + 1) and makes a
 #   disabled or invited account usable again. A new admin is the confirmed Root when
 #   the instance has none; set-root moves Root (both accounts signed out, the new
@@ -89,7 +92,7 @@ run_script() {
   local -a envs=(-e "RBAC_TEST_SCHEMA=$S")
   while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=(-e "$1"); shift; done
   [ "${1:-}" = "--" ] && shift
-  OUT=$( (cd webapp/scripts && tar -cf - ./*.mjs) | docker compose exec -T "${envs[@]}" webapp sh -c "$SCHEMA_URL"'
+  OUT=$( (cd webapp/scripts && tar -cf - ./*.mjs ./lib) | docker compose exec -T "${envs[@]}" webapp sh -c "$SCHEMA_URL"'
 d=$(mktemp -d /app/scripts/.rbac-scripts-test.XXXXXX) || exit 97
 tar -xf - -C "$d" || { rm -rf "$d"; exit 97; }
 DATABASE_URL="$u" node "$d/$0.mjs" "$@"; rc=$?
@@ -492,6 +495,45 @@ expect_eq "exactly one of them is the confirmed Root" "1|true|install" \
 expect_eq "one Root assignment is audited" "1" \
   "$(q "select count(*) from $S.audit_log where action = 'root.set_by_host'
         and target_id in (select id from $S.users where email in ($RACE))")"
+
+# -------------------------------------------------------------------------------
+echo
+echo "-- policy: with the identity switch on, the instance minimum, the deny list and the two rules --"
+add_user "${P}pol" "$E-policy-long@e2e.local" standard "$(bhash "$PW_M")"
+POL_HASH=$(hash_of "${P}pol")
+q "update $S.instance_settings set password_min_length = 16 where id = 'instance'" >/dev/null
+reset_pol() { run_script reset-password "RBAC_IDENTITY_ENABLED=$1" "RESET_EMAIL=$E-policy-long@e2e.local" "RESET_PASSWORD=$2"; }
+reset_pol true 'quiet-orchid-77'
+expect_eq "reset-password refuses a password under the instance minimum" "1" "$RC"
+expect_has "...naming the instance minimum" "at least 16 characters" "$OUT"
+reset_pol true 'PasswordPassword'
+expect_eq "reset-password refuses a password of the deny list, ignoring case" "1" "$RC"
+expect_has "...saying it is too common" "too common" "$OUT"
+reset_pol true "$E-POLICY-LONG"
+expect_eq "reset-password refuses the account's email local part" "1" "$RC"
+expect_has "...naming the email rule" "not be your email address" "$OUT"
+reset_pol true 'zzzzzzzzzzzzzzzz'
+expect_eq "reset-password refuses one repeated character" "1" "$RC"
+expect_eq "nothing was changed by the four refusals" "$POL_HASH|0|" "$(hash_of "${P}pol")|$(sv_of "${P}pol")|$(audits "${P}pol")"
+run_script create-admin RBAC_IDENTITY_ENABLED=true "ADMIN_NAME=Policy" "ADMIN_EMAIL=$E-policy-admin@e2e.local" "ADMIN_PASSWORD=PasswordPassword"
+expect_eq "create-admin refuses a deny-listed password for a new admin, creating nothing" "1|" \
+  "$RC|$(id_of "$E-policy-admin@e2e.local")"
+SV_RA=$(sv_of "${P}ra")
+run_script create-admin RBAC_IDENTITY_ENABLED=true "ADMIN_NAME=Policy" "ADMIN_EMAIL=$E-root-a@e2e.local" "ADMIN_PASSWORD=quiet-orchid-77"
+expect_eq "create-admin refuses an existing admin's new password under the instance minimum" "1|$SV_RA|admin" \
+  "$RC|$(sv_of "${P}ra")|$(role_of "${P}ra")"
+reset_pol false 'PasswordPassword'
+expect_eq "with the switch off the floor alone applies (a deny-listed password is accepted)" "0|true" \
+  "$RC|$(bcheck 'PasswordPassword' "$(hash_of "${P}pol")")"
+reset_pol true 'Correct-orchid-paddle'
+expect_eq "a password meeting the policy is set" "0|true" "$RC|$(bcheck 'Correct-orchid-paddle' "$(hash_of "${P}pol")")"
+q "alter table $S.instance_settings rename to instance_settings_hidden" >/dev/null
+reset_pol true 'Quiet-orchid-7'
+expect_eq "without the instance_settings table the minimum reads as the floor" "0" "$RC"
+reset_pol true 'Password1234'
+expect_eq "...and the deny list still applies" "1" "$RC"
+q "alter table $S.instance_settings_hidden rename to instance_settings" >/dev/null
+q "update $S.instance_settings set password_min_length = 12 where id = 'instance'" >/dev/null
 
 # -------------------------------------------------------------------------------
 echo

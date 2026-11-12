@@ -73,6 +73,7 @@
   {"path":"/api/auth/login","guard":"public","methods":["POST"]},
   {"path":"/api/auth/logout","guard":"public","methods":["POST"]},
   {"path":"/api/auth/me","guard":"session","methods":["GET"]},
+  {"path":"/api/auth/password-policy","guard":"session","methods":["GET"],"note":"404 with RBAC_IDENTITY_ENABLED off; any signed-in account, also one that must change its password: the password policy in force (instance minimum, deny list and rules) for the forms (ID-20, step 2.8)"},
   {"path":"/api/auth/sessions/revoke-all","guard":"session","methods":["POST"]},
   {"path":"/api/community-skills","guard":"session","methods":["GET"]},
   {"path":"/api/conversations","guard":"project","methods":["GET","POST"]},

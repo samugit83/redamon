@@ -5,6 +5,7 @@ import { getSession } from '@/lib/session'
 import { writeAudit } from '@/lib/audit'
 import { internalError } from '@/lib/routeErrors'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
+import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
 import { checkStepUp, requireStepUp } from '@/lib/authz/stepUp'
 import { writeUserAudit } from '@/lib/userAudit'
 import { invalidatePrincipal } from '@/lib/authz/principal'
@@ -69,6 +70,16 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           ? await requireRootPower(request, session, stepUpPassword, 'Only Root can reset another admin\'s password.')
           : await requireStepUp(request, stepUpPassword)
         if (refusal) return refusal
+      }
+    }
+
+    // Identity switch on: the policy in force (the instance minimum, the deny list and the two
+    // rules), judged against the address of the account the password is for.
+    if (rbacFlags().identity) {
+      const account = await prisma.user.findUnique({ where: { id }, select: { email: true } })
+      const full = validateNewPassword(newPassword, await passwordPolicyInForce(), { email: account?.email })
+      if (!full.ok) {
+        return NextResponse.json({ error: full.message, code: full.code }, { status: 400 })
       }
     }
 

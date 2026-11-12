@@ -46,6 +46,12 @@
  *   - a role change raises no session version;
  *   - the Root transfer routes answer 404 to everyone, as before they existed, and read nothing.
  *
+ * Step 2.8 makes the password policy configurable. With the switch off:
+ *   - every new password meets Phase 1's policy (12 characters, 72 bytes): no instance minimum,
+ *     no deny list, no email or repeated-character rule, and no instance row is read;
+ *   - /api/auth/password-policy answers 404 to everyone and reads nothing (the forms keep
+ *     Phase 1's floor and show no policy text).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */
@@ -99,6 +105,8 @@ const IDENTITY_READERS: string[] = [
   // only with the switch on.
   'scripts/check-root.mjs',
   'scripts/create-admin.mjs',
+  // Step 2.8: the instance password minimum, read by the host scripts only with the switch on.
+  'scripts/lib/passwordRules.mjs',
   'scripts/reset-password.mjs',
   'scripts/set-root.mjs',
   // Login: the session version it signs (compared whatever the switch) and the last-login
@@ -112,6 +120,8 @@ const IDENTITY_READERS: string[] = [
   // with the switch off, except enable, which stays open to restore an account disabled
   // while the switch was on.
   'src/lib/authz/accountStatus.ts',
+  // Step 2.8: the instance password minimum and the sign-in prompt, read only with the switch on.
+  'src/lib/authz/passwordPolicyInForce.ts',
   // Reads every identity field of the account; the cache only with the switch on.
   'src/lib/authz/principal.ts',
   // Step 2.5: the Root, read only with the switch on (off: no Root, nothing read).
@@ -347,6 +357,25 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.6)', () => {
       await accept(post({ stepUpPassword: 'x' })),
       await cancel(post({})),
     ]) expect(res.status).toBe(404)
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.8)', () => {
+  // The Prisma double has no instanceSettings table: a read of it would throw.
+  test("the policy in force is Phase 1's and no instance row is read", async () => {
+    setFlagsForTests({ identity: false })
+    const { passwordPolicyInForce } = await import('./passwordPolicyInForce')
+    expect(await passwordPolicyInForce()).toEqual({ minLength: 12, rules: false, askChangeIfShort: false })
+    const { validateNewPassword } = await import('./passwordPolicy')
+    expect(validateNewPassword('password1234', await passwordPolicyInForce())).toEqual({ ok: true })
+  })
+
+  test('the password policy route answers 404 to everyone and reads nothing', async () => {
+    setFlagsForTests({ identity: false })
+    authCookie = await createToken('member-1', 'standard')
+    const { GET } = await import('@/app/api/auth/password-policy/route')
+    expect((await GET()).status).toBe(404)
     expect(findUnique).not.toHaveBeenCalled()
   })
 })
