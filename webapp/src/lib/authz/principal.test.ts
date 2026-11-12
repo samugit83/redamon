@@ -181,6 +181,16 @@ describe('the principal cache (identity switch on)', () => {
     expect(findUnique).not.toHaveBeenCalled()
   })
 
+  test('a fresh read that finds no account drops the stale entry', async () => {
+    await loadPrincipal('u1')
+    // Deleted by another copy: nothing told this process.
+    db.delete('u1')
+    expect(await loadPrincipal('u1', { fresh: true })).toBeNull()
+    findUnique.mockClear()
+    expect(await loadPrincipal('u1')).toBeNull()
+    expect(findUnique).toHaveBeenCalledTimes(1)
+  })
+
   test('invalidate drops the entry', async () => {
     await loadPrincipal('u1')
     db.set('u1', row({ role: 'standard' }))
@@ -421,6 +431,14 @@ describe('the cache seen from the session (identity switch on)', () => {
     t += 1
     expect(await getSession()).toBeNull()
     expect(jar.deleted).toEqual(['redamon-auth'])
+  })
+
+  test('an account a critical path found deleted is gone for the next request too', async () => {
+    jar.auth = await createToken('u1', 'admin')
+    expect(await getSession()).not.toBeNull()
+    db.delete('u1')
+    expect(await getSession({ fresh: true })).toBeNull()
+    expect(await getSession()).toBeNull()
   })
 
   test('a writer in this process makes the next request see the change', async () => {

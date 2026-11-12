@@ -95,7 +95,9 @@ export async function loadPrincipal(userId: string, { fresh = false }: LoadPrinc
   }
   const startedAt = generation
   const principal = await readPrincipal(userId)
-  if (ttl > 0 && principal && startedAt === generation) remember(principal, ttl)
+  // A fresh read that finds no account must not leave an older entry answering for it.
+  if (!principal) cache.delete(userId)
+  else if (ttl > 0 && startedAt === generation) remember(principal, ttl)
   return principal
 }
 
