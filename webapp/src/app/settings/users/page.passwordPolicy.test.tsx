@@ -1,8 +1,9 @@
 /**
  * Settings > Users and the configurable password policy (step 2.8, ID-20): every password
  * field shows the policy in force (/api/auth/password-policy) and the form refuses what the
- * server would, with the server's message, sending nothing. With the identity switch off the
- * route answers 404: no policy text, Phase 1's floor only.
+ * server would, with the server's message, sending nothing. The page asks for it only with the
+ * identity switch on (/api/auth/me `flags`, step 3.13): off, the route would answer 404 and the
+ * browser log an error on every load, so nothing is asked: no policy text, Phase 1's floor only.
  */
 import { describe, test, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
@@ -11,8 +12,8 @@ const h = vi.hoisted(() => ({
   canManageUsers: true,
   search: new URLSearchParams(''),
   router: { push: () => {}, replace: () => {} },
-  admin: { id: 'admin-1', email: 'rbac-admin-long@e2e.local' },
-  member: { id: 'member-1', email: 'rbac-member-long@e2e.local' },
+  admin: { id: 'admin-1', email: 'rbac-admin-long@e2e.local', flags: { identity: true } },
+  member: { id: 'member-1', email: 'rbac-member-long@e2e.local', flags: { identity: true } },
   createUser: vi.fn(),
   changePassword: vi.fn(),
   fetch: vi.fn(),
@@ -47,6 +48,7 @@ const type = (input: HTMLInputElement, value: string) => fireEvent.change(input,
 
 beforeEach(() => {
   h.canManageUsers = true
+  h.admin.flags = { identity: true }
   h.search = new URLSearchParams('')
   h.policyStatus = 200
   h.createUser.mockReset().mockResolvedValue({})
@@ -91,9 +93,11 @@ describe('the policy next to every password field', () => {
     await waitFor(() => expect(screen.getByLabelText('New Password')).toHaveAccessibleDescription(TEXT))
   })
 
-  test('switch off (404): no policy text, Phase 1\'s floor only', async () => {
-    h.policyStatus = 404
-    await openSet()
+  test('switch off: the policy is not asked (no 404 in the console); no policy text, Phase 1\'s floor only', async () => {
+    h.admin.flags = { identity: false }
+    render(<UsersPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
+    expect(h.fetch).not.toHaveBeenCalledWith('/api/auth/password-policy')
     expect(screen.queryByText(TEXT)).not.toBeInTheDocument()
     const [next, confirm] = passwordInputs()
     type(next, 'password1234')

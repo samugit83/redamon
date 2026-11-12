@@ -51,7 +51,7 @@ export default function UsersPage() {
   const deleteUser = useDeleteUser()
   const changePasswordMutation = useChangePassword()
   // The policy in force (identity switch on); null keeps Phase 1's floor and shows no text.
-  const passwordPolicy = usePasswordPolicy()
+  const passwordPolicy = usePasswordPolicy(authUser?.flags?.identity === true)
   const policyInForce = passwordPolicy ?? BASE_PASSWORD_POLICY
 
   const [modal, setModal] = useState<ModalState>({ type: 'none' })

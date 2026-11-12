@@ -46,7 +46,8 @@ const puts = () => h.fetch.mock.calls.filter((c) => (c[1] as RequestInit | undef
 beforeEach(() => {
   h.search = new URLSearchParams('')
   h.auth = {
-    user: { id: 'member-1', email: 'rbac-member-long@e2e.local', name: 'Member', role: 'standard' },
+    // The policy is asked only with the identity switch on (/api/auth/me `flags`, step 3.13).
+    user: { id: 'member-1', email: 'rbac-member-long@e2e.local', name: 'Member', role: 'standard', flags: { identity: true } },
     isLoading: false,
     sessionError: null,
   }
@@ -164,14 +165,10 @@ describe('states', () => {
     expect(screen.queryByLabelText('New password')).not.toBeInTheDocument()
   })
 
-  test('no policy from the server (switch off): Phase 1 floor, no policy text', async () => {
-    h.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/api/auth/password-policy') return new Response('{}', { status: 404 })
-      if (init?.method === 'PUT') return new Response(JSON.stringify(h.putBody), { status: 200 })
-      throw new Error(`unexpected fetch ${url}`)
-    })
+  test('switch off: the policy is not asked (no 404 in the console); Phase 1 floor, no policy text', async () => {
+    h.auth = { ...h.auth, user: { ...h.auth.user!, flags: { identity: false } } }
     renderPage()
-    await waitFor(() => expect(h.fetch).toHaveBeenCalledWith('/api/auth/password-policy'))
+    expect(h.fetch).not.toHaveBeenCalled()
     expect(screen.getByLabelText('New password')).not.toHaveAccessibleDescription(TEXT)
     fill('old', 'elevenchars')
     fireEvent.click(screen.getByRole('button', { name: 'Change password' }))

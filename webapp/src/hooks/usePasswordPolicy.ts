@@ -10,12 +10,18 @@ export interface PasswordPolicyView extends PasswordPolicy {
 
 /**
  * The password policy in force (GET /api/auth/password-policy), or null while it loads and
- * when the server gives none: with the identity switch off the route answers 404 and the forms
- * keep Phase 1's floor with no policy text. The server applies the policy whatever this says.
+ * when there is none. `identityOn` is the identity switch as /api/auth/me reports it (`flags`):
+ * off, the route answers 404, which the browser logs as an error on every page load, so it is not
+ * asked and the forms keep Phase 1's floor with no policy text. The server applies the policy
+ * whatever this says.
  */
-export function usePasswordPolicy(): PasswordPolicyView | null {
+export function usePasswordPolicy(identityOn: boolean): PasswordPolicyView | null {
   const [policy, setPolicy] = useState<PasswordPolicyView | null>(null)
   useEffect(() => {
+    if (!identityOn) {
+      setPolicy(null)
+      return
+    }
     let live = true
     fetch('/api/auth/password-policy')
       .then((res) => (res.ok ? res.json() : null))
@@ -25,6 +31,6 @@ export function usePasswordPolicy(): PasswordPolicyView | null {
       })
       .catch(() => {})
     return () => { live = false }
-  }, [])
+  }, [identityOn])
   return policy
 }

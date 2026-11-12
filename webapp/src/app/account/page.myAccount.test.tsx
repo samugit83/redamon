@@ -30,7 +30,7 @@ vi.mock('@/hooks/useUsers', () => ({ useUsers: () => ({ data: h.users, isLoading
 import AccountPage from './page'
 
 const member = (over: Record<string, unknown> = {}) =>
-  ({ id: 'member-1', email: 'marco@e2e.local', name: 'Marco', role: 'standard', accountType: 'member', ...over })
+  ({ id: 'member-1', email: 'marco@e2e.local', name: 'Marco', role: 'standard', accountType: 'member', flags: { identity: true }, ...over })
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
 function renderPage() {
@@ -229,13 +229,15 @@ describe('while the password must change', () => {
 
 describe('switch off: the step 2.8 page', () => {
   test('the password form alone; no activity, profile or sign-out', async () => {
-    h.auth.user = member({ accountType: undefined })
+    h.auth.user = member({ accountType: undefined, flags: { identity: false } })
     renderPage()
     expect(screen.getByLabelText('Current password')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Profile' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Sign out everywhere' })).toBeNull()
     expect(screen.queryByRole('region', { name: 'My activity' })).toBeNull()
-    await waitFor(() => expect(calls('/api/auth/password-policy')).toHaveLength(1))
+    // Step 3.13: off, the policy route answers 404 (an error in the console): not asked.
+    await new Promise((r) => setTimeout(r, 10))
+    expect(calls('/api/auth/password-policy')).toEqual([])
     expect(calls('/api/account/activity')).toEqual([])
   })
 })

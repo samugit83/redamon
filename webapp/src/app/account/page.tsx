@@ -24,7 +24,7 @@ import styles from './page.module.css'
 export default function AccountPage() {
   const { user, isLoading, sessionError } = useAuth()
   const forced = useSearchParams().get('changePassword') === '1'
-  const policy = usePasswordPolicy()
+  const policy = usePasswordPolicy(user?.flags?.identity === true)
   const { alert } = useAlertModal()
 
   const [current, setCurrent] = useState('')
