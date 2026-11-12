@@ -143,7 +143,7 @@ finding prune for that run.
 
 | Parameter | Type | Default | httpx Flag | Description |
 |-----------|------|---------|------------|-------------|
-| `HTTPX_FOLLOW_REDIRECTS` | `bool` | `True` | `-fr` | Follow HTTP 301/302/307/308 redirects. Essential for modern web apps. With session headers attached, `-fhr` (same host only) is used instead, so the session never follows a redirect to another host. An IP-mode run always uses `-fhr`, so a redirect never takes httpx off the target IPs. |
+| `HTTPX_FOLLOW_REDIRECTS` | `bool` | `True` | `-fr` | Follow HTTP 301/302/307/308 redirects. Essential for modern web apps. With session headers attached, `-fhr` (same host only) is used instead, so the session never follows a redirect to another host. An IP-mode run always uses `-fhr`, so a redirect never takes httpx off the target IPs. A run with RoE exclusions in force uses it too (`[*][httpx] Redirects followed on the same host only: RoE exclusions are in force`): an admitted host's redirect into an excluded one is not followed, and the URL keeps its own answer (its 3xx, `final_url` the URL itself), not the excluded host's page. |
 | `HTTPX_MAX_REDIRECTS` | `int` | `10` | `-maxr` | Maximum redirect chain length. Prevents infinite redirect loops. |
 
 **Why Follow Redirects?**
@@ -274,7 +274,7 @@ These options extract basic HTTP response information with **minimal performance
 
 | Parameter | Type | Default | httpx Flag | What It Does | Speed Impact |
 |-----------|------|---------|------------|--------------|--------------|
-| `HTTPX_PROBE_TLS_INFO` | `bool` | `True` | `-tls-probe` | Basic TLS info: version, cipher suite. Not passed in IP mode, where it would request the certificate's names (`[-][httpx] TLS probing: off in IP mode`); `-tls-grab` (its own setting) still reads the certificate | ⚡ **Medium** |
+| `HTTPX_PROBE_TLS_INFO` | `bool` | `True` | `-tls-probe` | Basic TLS info: version, cipher suite. Not passed in IP mode or while RoE exclusions are in force, where it would request the names the certificate lists, an excluded one included (`[-][httpx] TLS probing: off in IP mode` / `off while RoE exclusions are in force`); `-tls-grab` (its own setting) still reads the certificate, and in a domain run its names still join as late names, each admitted on its own | ⚡ **Medium** |
 | `HTTPX_PROBE_TLS_GRAB` | `bool` | `True` | `-tls-grab` | Full certificate extraction | ⚠️ **SLOW** |
 
 **TLS_INFO extracts:**
@@ -960,7 +960,7 @@ docker run --rm --net=host \
   -timeout 10 \
   -retries 2 \
   -rl 50 \                   # Rate limit
-  -fr \                      # Follow redirects (-fhr with session headers)
+  -fr \                      # Follow redirects (-fhr with session headers, in IP mode, under RoE exclusions)
   -maxr 10 \                 # Max redirects
   -sc \                      # Status code
   -cl \                      # Content length
@@ -973,7 +973,7 @@ docker run --rm --net=host \
   -td \                      # Tech detect
   -ip \                      # IP address
   -cname \                   # CNAME records
-  -tls-probe \               # TLS info
+  -tls-probe \               # TLS info (not in IP mode, not under RoE exclusions)
   -tls-grab \                # TLS certificate
   -favicon \                 # Favicon hash
   -jarm \                    # JARM fingerprint

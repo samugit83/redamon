@@ -190,6 +190,25 @@ Hakrawler's `-subs` and limits the form fetch to same-host redirects (see
 Full and partial runs alike; with no exclusion outside IP mode, every argv and
 fetch is as configured (`recon/tests/test_crawler_redirects_roe.py`).
 
+**Arjun and FFuf redirects:** under the same condition neither fuzzer follows a
+redirect, since each would follow one to any host and has no same-host mode.
+Arjun 2.2.7's first request to a URL (`stable_request()`) follows redirects and
+returns the URL it landed on, and every later GET and POST for that target goes
+there. So `run_arjun_discovery` (`recon/helpers/resource_enum/arjun_helpers.py`)
+adds `--disable-redirects` whatever `ARJUN_DISABLE_REDIRECTS` says and logs
+`[*][Arjun] Redirects not followed: RoE exclusions or the IP target list are in
+force`. In the full pipeline its URLs also pass `admit_urls` (module `arjun`), as
+Nuclei's do, because crawler endpoints can name any host they saw; a partial
+run's graph and typed URLs were admitted before, so its list is kept as given.
+ffuf `-r` follows a redirect with Go's default client, so `run_ffuf_discovery`
+(`recon/helpers/resource_enum/ffuf_helpers.py`) drops `-r` when
+`FFUF_FOLLOW_REDIRECTS` is on and logs `[*][FFuf] Redirects not followed: RoE
+exclusions or the IP target list are in force`. Both take the run (`settings`,
+`recon_data`), from `resource_enum` and from partial Arjun and FFuf. The cost:
+neither tests what a redirect leads to, on the same host or not. With no
+exclusion outside IP mode, both argvs and Arjun's URL list are unchanged
+(`recon/tests/test_roe_redirect_following.py`).
+
 ---
 
 ### 3. Filtering
@@ -461,6 +480,18 @@ logs `[-][Kiterunner] Not run: kr cannot hold the N rps RoE ceiling`, returns no
 endpoints, and records a coverage gap entry (`resource_enum` / `kiterunner`),
 never a switch-off. Kiterunner writes Endpoint assets, not findings, so the gap
 keeps nothing from the prune. With no ceiling the command is unchanged.
+
+**Redirects:** kr v1.0.2 follows up to 3 redirects by default (`--max-redirects`,
+`scan` and `brute` alike), to any host. So under the same condition as Katana's
+`-dr` (`redirects_contained`: RoE exclusions, or IP mode's target list),
+`run_kiterunner_discovery` (`recon/helpers/resource_enum/kiterunner_helpers.py`)
+passes `--max-redirects 0` and logs `[*][Kiterunner] Redirects not followed: RoE
+exclusions or the IP target list are in force`, so an admitted target's 302 into
+an excluded host does not get every route sent on to it. It takes the run
+(`settings`, `recon_data`), from `resource_enum` and from partial Kiterunner. With
+no exclusion outside IP mode the argv is unchanged
+(`recon/tests/test_roe_redirect_following.py`). The method-detection probe runs
+httpx without `-fr`, so it follows no redirect in any mode.
 
 The method-detection probes (OPTIONS, then one httpx run per method) run in
 containers named `kiterunner-methods-<run id>-<8 hex>`, killed by that name at

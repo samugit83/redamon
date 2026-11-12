@@ -1068,11 +1068,12 @@ filter (`metadata.expanded_ips`; the admission helpers in
 `subdomain_filter` and `ip_to_hostname`, so no tool is handed a real name by
 GROUP 1. A reverse-DNS answer is evidence, never a scope entry: its own A/AAAA
 can point anywhere. httpx follows redirects with `-fhr` and no `-tls-probe`,
-nuclei with `-follow-host-redirects`, JS recon only to admitted hosts, origin
-discovery is skipped, GVM takes the IPs only, and nmap runs with `-n`. In IP mode
-the NSE vuln set leaves out `http-cross-domain-policy` (`--script "vuln and not
-http-cross-domain-policy"`), because that script follows a redirect off the
-target address on its own.
+nuclei with `-follow-host-redirects`, Katana, Kiterunner, Arjun and FFuf follow
+none, Hakrawler crawls each seed's own host, JS recon follows them only to
+admitted hosts, origin discovery is skipped, GVM takes the IPs only, and nmap
+runs with `-n`. In IP mode the NSE vuln set leaves out `http-cross-domain-policy`
+(`--script "vuln and not http-cross-domain-policy"`), because that script
+follows a redirect off the target address on its own.
 
 What happens to the names seen on the IPs is the project's **Hostnames on target
 IPs** policy (`IP_HOSTNAME_MODE` and six more `IP_HOSTNAME_*` settings, validated

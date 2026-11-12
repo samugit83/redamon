@@ -502,6 +502,24 @@ can carry an address a passive source added. Each refusal is logged once as
 `[-][RoE] <tool>: not sent to ...` and noted under the coverage source
 `roe_excluded`. With no exclusion in force every target list is unchanged.
 
+**NSE redirects under RoE exclusions and in IP mode.** The NSE http scripts
+follow a redirect through `http.lua`, whose default rule allows any host in the
+domain of the target's reverse-DNS (PTR) name, and `--exclude` does not bind NSE
+(nmap 7.93, the recon image's). So while any RoE exclusion is in force, and in IP
+mode, `build_nmap_command` (`recon/main_recon_modules/nmap_scan.py`) adds `-n`,
+which leaves the target no name, so the rule allows only the same IP literal.
+With `NMAP_SCRIPT_SCAN` on it also passes `--script "vuln and not
+http-cross-domain-policy"` (`NSE_SCRIPTS_SAME_HOST`) instead of `--script vuln`:
+`http-cross-domain-policy` hands `http.get` a redirect rule of its own (three
+hops, no host rule). Under exclusions the run logs `[*][Nmap] NSE redirects kept
+on the target address (-n, no http-cross-domain-policy): RoE exclusions are in
+force`. The NSE requests then carry the address, not the PTR name, as `Host`. No
+stored field changes: the XML parser keys hosts by the run's own
+`ip_to_hostnames` map and never reads nmap's hostnames. A partial run reads the
+exclusions from `metadata.roe`. Domain mode with no exclusion keeps
+`--script vuln` and no `-n` (`recon/tests/test_roe_redirect_following.py`,
+`recon/tests/test_nmap_ip_mode_no_dns.py`).
+
 ### Docker Command Structure
 
 What `build_naabu_command()` produces with the default settings:

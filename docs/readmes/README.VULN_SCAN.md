@@ -438,7 +438,7 @@ The AI-in-pipeline switch (`AI_IN_PIPELINE`) turns `NUCLEI_AI_TAGS`, `NUCLEI_AI_
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `NUCLEI_SYSTEM_RESOLVERS` | `bool` | `True` | Use system DNS resolvers |
-| `NUCLEI_FOLLOW_REDIRECTS` | `bool` | `True` | Follow HTTP redirects (same-host only when session headers are attached) |
+| `NUCLEI_FOLLOW_REDIRECTS` | `bool` | `True` | Follow HTTP redirects (`-follow-redirects`). Same host only (`-follow-host-redirects`) when session headers are attached, and in IP mode or while RoE exclusions are in force, in both passes and the takeover templates (`[*][Nuclei] Redirects followed on the same host only: RoE exclusions are in force`); that flag also holds a template's own `redirects: true` to the same host. Off, no flag is passed and a template with `redirects: true` follows its redirects to any host |
 | `NUCLEI_MAX_REDIRECTS` | `int` | `10` | Maximum redirects to follow |
 | `NUCLEI_SCAN_ALL_IPS` | `bool` | `False` | Also scan `http(s)://<ip>` for every resolved IP no other target URL covers |
 | `NUCLEI_INTERACTSH` | `bool` | `True` | Enable OOB testing (blind vulns); always off when session headers are attached, since callbacks go to a third-party collector |
@@ -652,7 +652,7 @@ The module's own functions live in `recon/main_recon_modules/vuln_scan.py`; the 
 
 ---
 
-### `build_nuclei_command(targets_file, output_file, docker_image, ..., force_dast_pass=False, auth_headers=None, container_name=None, max_host_error=0) -> List[str]`
+### `build_nuclei_command(targets_file, output_file, docker_image, ..., force_dast_pass=False, auth_headers=None, container_name=None, max_host_error=0, ip_mode=False, roe_exclusions=False) -> List[str]`
 
 **Purpose:** Constructs the nuclei Docker CLI command for one pass. The keyword arguments mirror the settings above.
 
@@ -687,6 +687,7 @@ docker run --rm --net=host --name redamon-nuclei-detection-<id> \
 
 - `force_dast_pass=True` adds `-dast` and drops every tag and template filter, which would otherwise empty-intersect with the DAST template set.
 - `auth_headers` become `-H` flags; with them, redirects use `-follow-host-redirects` and `-no-interactsh` is forced.
+- `ip_mode=True` or `roe_exclusions=True` also switches redirects to `-follow-host-redirects`. The target list is admitted, but a target's redirect is not, and nuclei follows it inside its client before any scope check. `run_vuln_scan` passes `roe_exclusions` from `admission_context(settings, recon_data).excluded`, so a partial run reads the exclusions from `metadata.roe`; `_run_nuclei_takeover` reads them from its settings.
 - When HTTP traffic capture is on and reachable, `-proxy <capture proxy>` and an `X-Redamon-Ctx` header are added.
 
 ---
