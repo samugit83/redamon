@@ -5016,6 +5016,111 @@ async def _profile_auth_base(project_id: str, txn: dict) -> dict:
         return {}
 
 
+# The IP-mode target check of a replay or browser send (design §10, decision
+# D-21): the shared capture proxy holds no project and no target list, and kali
+# sends straight out when the proxy is down, so this prepare step is the one
+# place that knows both the origin host and the project's targets.
+_IP_MODE_REFUSALS = {
+    "no_current_resolution": "it resolves to no address now",
+    "never_scannable_address": "it is or resolves to a loopback, link-local, unspecified or multicast address",
+    "resolves_outside_targets": "it is or resolves to an address outside the project's target IPs",
+    "roe_excluded": "the rules of engagement exclude it",
+}
+
+import threading  # noqa: E402
+from collections import OrderedDict  # noqa: E402
+
+# Every send of a proxy_brain run asks for the same target list, and a /16
+# takes about a third of a second to build (recon's target_admission.target_set
+# memoises it for the same reason). Built once per distinct list, off the event
+# loop, never changed after it is built; a few lists cover the live projects.
+_IP_MODE_TARGET_SETS: "OrderedDict[tuple, object]" = OrderedDict()
+_IP_MODE_TARGET_SETS_LOCK = threading.Lock()
+_IP_MODE_TARGET_SETS_MAX = 8
+
+# After a failed project read, the check decides from the last settings load
+# for this long instead of reading again: a hung webapp would otherwise cost
+# every send and every browser action the read's 10 s timeout. Longer than
+# that timeout, short enough that a recovered webapp is read again soon.
+_PROJECT_READ_RETRY_S = 15.0
+_PROJECT_READ_RETRY_AT: dict = {}
+
+
+async def _ip_mode_target_set(entries) -> "TargetSet":
+    """The project's target list as a TargetSet, memoised by the list."""
+    from recon_settings.ip_hostnames import TargetSet
+    key = tuple(str(e) for e in entries or ())
+    with _IP_MODE_TARGET_SETS_LOCK:
+        cached = _IP_MODE_TARGET_SETS.get(key)
+        if cached is not None:
+            _IP_MODE_TARGET_SETS.move_to_end(key)
+            return cached
+    built = await asyncio.to_thread(TargetSet.from_entries, list(key))
+    with _IP_MODE_TARGET_SETS_LOCK:
+        _IP_MODE_TARGET_SETS[key] = built
+        while len(_IP_MODE_TARGET_SETS) > _IP_MODE_TARGET_SETS_MAX:
+            _IP_MODE_TARGET_SETS.popitem(last=False)
+    return built
+
+
+async def _resolve_origin_host(host: str) -> list:
+    """The origin host's live A/AAAA answer, canonical and sorted (the scope id
+    of a link-local answer dropped, so the rule refuses it as link-local)."""
+    import socket
+    from recon_settings.ip_hostnames import canonical_ip
+    infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    return sorted({canonical_ip(str(info[4][0]).split("%")[0]) for info in infos})
+
+
+async def _ip_mode_send_refusal(project_id: str, host) -> Optional[str]:
+    """Why a send to `host` is refused in an IP-mode project, or None.
+
+    Every address the host resolves to now must be a target IP that the RoE
+    does not exclude (recon_settings.ip_hostnames.address_verdict, the rule the
+    pipeline selects names with); an IP-literal origin must be one itself. Not
+    an IP-mode project: None, the domain-mode path is unchanged.
+    """
+    import ipaddress
+    from auth_profile import is_roe_excluded
+    from project_settings import seen_project_ip_mode
+    from recon_settings.engagement import derive_roe_enabled
+    from recon_settings.ip_hostnames import address_verdict, canonical_ip
+
+    project = None
+    if time.monotonic() >= _PROJECT_READ_RETRY_AT.get(project_id, 0.0):
+        try:
+            project = await _cached_project(project_id)
+            _PROJECT_READ_RETRY_AT.pop(project_id, None)
+        except Exception:  # noqa: BLE001 - decided below, from the last settings load
+            _PROJECT_READ_RETRY_AT[project_id] = time.monotonic() + _PROJECT_READ_RETRY_S
+    if project is None:
+        # A project this process last loaded in IP mode stays on its targets
+        # (refused: the list is unknown); one never loaded here, or loaded in
+        # domain mode, keeps the domain-mode path.
+        return "the project's target IPs could not be read" if seen_project_ip_mode(project_id) else None
+    if not project.get("ipMode"):
+        return None
+    name = str(host or "").strip().strip("[]").lower().rstrip(".")
+    if not name:
+        return "the origin transaction has no host"
+    roe = (project.get("roeExcludedHosts") or []) if derive_roe_enabled(project) else []
+    try:
+        addresses = [canonical_ip(ipaddress.ip_address(name))]
+    except ValueError:
+        if roe and is_roe_excluded(name, roe):
+            return f"{name}: {_IP_MODE_REFUSALS['roe_excluded']}"
+        try:
+            addresses = await _resolve_origin_host(name)
+        except (OSError, UnicodeError):
+            addresses = []
+    reason = address_verdict(addresses, await _ip_mode_target_set(project.get("targetIps") or []))
+    if reason is None and roe and any(is_roe_excluded(a, roe) for a in addresses):
+        reason = "roe_excluded"
+    if reason is None:
+        return None
+    return f"{name} ({', '.join(addresses) or 'no address'}): {_IP_MODE_REFUSALS[reason]}"
+
+
 def _replay_budget() -> int:
     try:
         return max(1, int(os.environ.get("TRAFFIC_REPLAY_BUDGET", "1000") or "1000"))
@@ -5179,6 +5284,10 @@ async def traffic_replay(body: TrafficReplayRequest, run_cred: Optional[dict] = 
     txn = await fetch_transaction(str(body.id))
     if not txn:
         return JSONResponse(status_code=404, content={"error": "origin transaction not found (or not in your project)"})
+    not_a_target = await _ip_mode_send_refusal(claims["project_id"], txn.get("host"))
+    if not_a_target:
+        return JSONResponse(status_code=403, content={"error": f"replay refused: {not_a_target}",
+                                                      "code": "not_a_target"})
 
     # Sign the replay lineage tag (source=agent, is_replay, origin_id) so the
     # ingest attributes the re-captured row from the VERIFIED tag, not the body.
@@ -5317,6 +5426,12 @@ async def traffic_browser(body: TrafficBrowserRequest, run_cred: Optional[dict] 
                           f"{origin_scheme}://{origin_host}:{pin_port})")})
     elif body.action not in ("open", "interact", "eval"):
         return JSONResponse(status_code=400, content={"error": f"unknown browser action {body.action!r}"})
+    # Every action can make the page request its origin again, and the origin
+    # host can resolve elsewhere since the last one, so each is checked.
+    not_a_target = await _ip_mode_send_refusal(claims["project_id"], origin_host)
+    if not_a_target:
+        return JSONResponse(status_code=403, content={"error": f"browser refused: {not_a_target}",
+                                                      "code": "not_a_target"})
 
     # Per-session action budget. EVERY action costs one unit, INCLUDING `open`:
     # each open launches a real chromium, so an unbudgeted open would let a loop

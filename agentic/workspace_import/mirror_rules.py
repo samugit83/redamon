@@ -12,6 +12,11 @@ its own exclusions.
   engagement dates or time window; ROE_GLOBAL_MAX_RPS caps the rate to each
   target host. With stealth mode: one request at a time, at most one a second.
 - Any other public host keeps the mirror's own rules (decision Q12).
+
+An IP-mode project's targets are its addresses, plus in record_filter /
+scan_all the hostnames a scan selected that its current policy admits (read
+from the graph by load_settings): pacing and the window apply to both. These
+rules pace a copy; they never decide what may be copied.
 """
 from __future__ import annotations
 
@@ -25,7 +30,8 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from auth_profile import is_roe_excluded
-from project_settings import fetch_agent_settings
+from project_settings import (IP_HOSTNAMES_SCANNED_KEY, fetch_agent_settings, scanned_hostnames_in_scope,
+                              scans_ip_hostnames)
 from workspace_import import mirror
 from workspace_import.errors import ImportFailure
 
@@ -45,6 +51,18 @@ async def load_settings(project_id: str) -> dict:
         raise ImportFailure("settings_unavailable") from None
     if not isinstance(settings, dict):
         raise ImportFailure("settings_unavailable")
+    if scans_ip_hostnames(settings.get):
+        # A scanned name nobody can read would be paced as a non-target: the
+        # copy fails closed like the settings fetch, never runs on a guess.
+        from orchestrator_helpers.nodes.initialize_node import read_scanned_hostnames
+        user_id = settings.get("PROJECT_USER_ID")
+        if not user_id:
+            raise ImportFailure("settings_unavailable")
+        try:
+            names = await read_scanned_hostnames(user_id, project_id)
+        except Exception:
+            raise ImportFailure("settings_unavailable") from None
+        settings[IP_HOSTNAMES_SCANNED_KEY] = scanned_hostnames_in_scope(names, settings.get)
     return settings
 
 
@@ -85,15 +103,18 @@ def _target_networks(settings: dict) -> list:
 
 def scope_check(settings: dict) -> Callable[[str], bool]:
     """host -> is it one of the project's targets (a scope domain or one of
-    its subdomains; in IP mode, a literal address within TARGET_IPS)."""
+    its subdomains; in IP mode, a literal address within TARGET_IPS or a
+    scanned hostname load_settings bound)."""
     if settings.get("IP_MODE"):
         nets = _target_networks(settings)
+        names = frozenset(settings.get(IP_HOSTNAMES_SCANNED_KEY) or ())
 
         def in_ip_scope(host: str) -> bool:
+            host = (host or "").strip("[]").lower().rstrip(".")
             try:
-                address = ipaddress.ip_address(host.strip("[]"))
+                address = ipaddress.ip_address(host)
             except ValueError:
-                return False
+                return host in names
             return any(address in n for n in nets)
         return in_ip_scope
 

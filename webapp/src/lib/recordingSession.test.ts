@@ -123,6 +123,17 @@ describe('defaultRecordingScope', () => {
     expect(defaultRecordingScope({ ipMode: true, targetIps: ['10.0.0.5'] })).toEqual(['10.0.0.5'])
   })
 
+  // D-22: the recording scope is the auth scope, and credentials never go to a
+  // hostname scanned on the target IPs (it may move after the scan). The agent's
+  // auth_scope_patterns and recon's default_scope_hosts pin the same rule.
+  test.each(['ip_only', 'record_only', 'record_filter', 'scan_all'])(
+    'ip mode records the target IPs only, whatever the hostname mode (%s)', mode => {
+      expect(defaultRecordingScope({
+        ipMode: true, targetIps: ['10.0.0.5', '192.0.2.0/24'], targetDomain: 'example.com',
+        ipHostnameMode: mode, ipHostnameInclude: ['*.example.com'], ipHostnameScanAllConfirmed: true,
+      })).toEqual(['10.0.0.5', '192.0.2.0/24'])
+    })
+
   test('empty project → empty scope (fail-safe)', () => {
     expect(defaultRecordingScope({})).toEqual([])
   })

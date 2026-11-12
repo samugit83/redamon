@@ -176,3 +176,39 @@ def test_a_malformed_soft_verdict_blocks_at_session_start():
     truthy = AsyncMock(return_value={'allowed': 'false', 'reason': 'garbled'})
     result, _ = _run_state({}, soft=truthy, **_webapp(SAFE, AGENT_GUARDRAIL_ENABLED=True))
     assert result['_guardrail_blocked'] is True
+
+
+# --- IP mode (design §10, I-2): the include entries get the hard guardrail ----
+
+IP = {'IP_MODE': True, 'TARGET_IPS': ['192.0.2.10'], '_SETTINGS_SOURCE': 'api', 'AGENT_GUARDRAIL_ENABLED': False}
+
+
+def test_ip_mode_checks_the_include_entries_and_a_blocked_one_ends_the_session():
+    result, soft = _run_state({}, **IP, IP_HOSTNAME_MODE='record_filter',
+                              IP_HOSTNAME_INCLUDE=['*.example.com', '*.agency.gov.uk'])
+    assert result['_guardrail_blocked'] is True
+    assert result['task_complete'] is True
+    assert '`agency.gov.uk`' in result['messages'][0].content
+    soft.assert_not_awaited()
+
+
+def test_ip_mode_checks_the_include_entries_in_every_hostname_mode():
+    # As the webapp and the orchestrator do: a rescope to record_filter would
+    # scan under a list nobody wrote again.
+    for mode in ('ip_only', 'record_only', 'scan_all'):
+        result, _ = _run_state({}, **IP, IP_HOSTNAME_MODE=mode, IP_HOSTNAME_INCLUDE=['www.whitehouse.gov'])
+        assert result['_guardrail_blocked'] is True, mode
+
+
+def test_ip_mode_with_safe_include_entries_proceeds():
+    result, _ = _run_state({}, **IP, IP_HOSTNAME_MODE='record_filter', IP_HOSTNAME_INCLUDE=['*.example.com'])
+    assert not result.get('_guardrail_blocked')
+
+
+def test_an_ip_mode_rescope_to_a_blocked_include_entry_ends_a_running_session():
+    safe, _ = _run_state({}, **IP, IP_HOSTNAME_MODE='record_filter', IP_HOSTNAME_INCLUDE=['*.example.com'])
+    state = {'_scope_signature': safe['_scope_signature'], 'execution_trace': TRACE}
+    result, _ = _run_state(state, **IP, IP_HOSTNAME_MODE='record_filter',
+                           IP_HOSTNAME_INCLUDE=['*.example.com', 'portal.agency.gov.uk'])
+    assert result['_guardrail_blocked'] is True
+    assert '`portal.agency.gov.uk`' in result['messages'][0].content

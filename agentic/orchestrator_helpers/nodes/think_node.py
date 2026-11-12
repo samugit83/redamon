@@ -217,6 +217,36 @@ def build_system_message_content(system_prompt: str, llm, anthropic_caching: boo
     return content
 
 
+def scope_guardrail_section() -> str:
+    """The SCOPE GUARDRAIL block of the system prompt, or '' when there is no
+    scope to show and the guardrail is off.
+
+    The prompt is the only control on which hosts the agent's tools target (the
+    guardrails judge the project, not each call), so the scope itself is listed
+    whenever there is one; an EXACT project's limits exist nowhere else in the
+    agent's view. An IP-mode project lists its target entries and what a
+    hostname on them is in its hostname mode (compact_scope_text).
+    """
+    from project_settings import compact_scope_text
+    scope_text = compact_scope_text()
+    if not scope_text and not get_setting('AGENT_GUARDRAIL_ENABLED', True):
+        return ''
+    section = (
+        "\n\n## SCOPE GUARDRAIL\n\n"
+        "You must ONLY operate against the project's configured target domain/IPs. "
+        "Never scan, exploit, probe, or interact with domains or IPs outside the authorized scope. "
+        "If the user asks you to target something outside the project scope, refuse and explain why."
+    )
+    if scope_text:
+        section += (
+            "\n\nIn scope:\n" + scope_text + "\n\n"
+            "Nothing else is in scope. A Domain node in the graph names the organisation "
+            "(the registrable domain) and is not automatically in scope: neither it nor a "
+            "host under it is a target unless the list above covers it."
+        )
+    return section
+
+
 async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_creds, streaming_callbacks=None, graph_view_cyphers=None) -> dict:
     """
     Core ReAct reasoning node.
@@ -650,26 +680,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     if get_setting('STEALTH_MODE', False):
         logger.info(f"[{user_id}/{project_id}/{session_id}] STEALTH MODE active — injected stealth rules into prompt")
 
-    # Scope guardrail. The prompt is the only control on which hosts the agent's
-    # tools target (the guardrails judge the project, not each call), so the
-    # scope itself is listed whenever there is one; an EXACT project's limits
-    # exist nowhere else in the agent's view.
-    from project_settings import compact_scope_text
-    _scope_text = compact_scope_text()
-    if _scope_text or get_setting('AGENT_GUARDRAIL_ENABLED', True):
-        system_prompt += (
-            "\n\n## SCOPE GUARDRAIL\n\n"
-            "You must ONLY operate against the project's configured target domain/IPs. "
-            "Never scan, exploit, probe, or interact with domains or IPs outside the authorized scope. "
-            "If the user asks you to target something outside the project scope, refuse and explain why."
-        )
-        if _scope_text:
-            system_prompt += (
-                "\n\nIn scope:\n" + _scope_text + "\n\n"
-                "Nothing else is in scope. A Domain node in the graph names the organisation "
-                "(the registrable domain) and is not automatically in scope: neither it nor a "
-                "host under it is a target unless the list above covers it."
-            )
+    system_prompt += scope_guardrail_section()
 
     # Rules of Engagement injection
     if get_setting('ROE_ENABLED', False):

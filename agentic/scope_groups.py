@@ -13,15 +13,32 @@ are then read the way 7.1.0 wrote them. A legacy group's `hosts` list is never
 read as an auth scope: it holds `*.x` tokens.
 
 Stdlib only: the agent image carries no PSL package, and this is imported on
-the guardrail path.
+the guardrail path. recon_settings.ip_hostnames is stdlib too: it is the one
+hostname rule every service shares (invariant I-5), baked into the agent image.
+
+An IP-mode project has no scope groups: its scope is the target IPs, plus, in
+record_filter / scan_all, the hostnames a scan selected on them that the
+project's current policy still admits (design §6.3, §10).
 """
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from typing import Iterable, Optional
 
+from recon_settings.ip_hostnames import MODES as IP_HOSTNAME_MODES
+from recon_settings.ip_hostnames import matches, normalize_host, normalize_name, parse_entries, split_wildcard
+
 _HOST_CHARSET = re.compile(r'^[a-z0-9.-]+$')
+
+#: At most this many scanned hostnames in the system prompt, plus the total:
+#: the names come from DNS, certificates and third-party indexes, text the
+#: target influences, so the prompt carries a bounded, charset-checked list.
+MAX_PROMPT_HOSTNAMES = 50
+#: Target entries listed in the prompt. Entries, not addresses: a /24 is one.
+MAX_PROMPT_TARGET_ENTRIES = 100
+_SCANNING_MODES = ('record_filter', 'scan_all')
 
 
 def clean_host(value) -> str:
@@ -231,10 +248,23 @@ def intersect_explicit_scope(explicit: Iterable[str], patterns: list[str]) -> li
 
 
 def scope_signature(groups: list[dict], ip_mode: bool = False,
-                    target_ips: Iterable[str] = ()) -> str:
-    """A canonical string that changes exactly when the scope does."""
+                    target_ips: Iterable[str] = (), ip_hostname_policy: Optional[dict] = None,
+                    ip_hostnames: Iterable[str] = ()) -> str:
+    """A canonical string that changes exactly when the scope does.
+
+    In IP mode with `ip_hostname_policy` (the seven policy fields) it also
+    covers the policy and the scanned hostnames the policy admits, so a policy
+    edit or a scan that selected new names re-runs a session's guardrails.
+    """
     if ip_mode:
-        return 'ip|' + ','.join(sorted(_dedupe(str(i).strip() for i in target_ips or ())))
+        signature = 'ip|' + ','.join(sorted(_dedupe(str(i).strip() for i in target_ips or ())))
+        if ip_hostname_policy is None:
+            return signature
+        # Entry order is not scope: a reordered include list is the same policy.
+        policy = {k: sorted(map(str, v)) if isinstance(v, (list, tuple)) else v
+                  for k, v in ip_hostname_policy.items()}
+        return (signature + '|policy|' + json.dumps(policy, sort_keys=True, default=str)
+                + '|names|' + ','.join(sorted(set(ip_hostnames or ()))))
     parts: set[str] = set()
     for g in groups:
         if g['mode'] == 'enumerate':
@@ -267,4 +297,101 @@ def compact_scope_text(groups: list[dict], max_hosts: int = 15, max_lines: int =
             lines.append(f"- only {', '.join(shown)}{more}")
     if len(groups) > max_lines:
         lines.append(f"- (+{len(groups) - max_lines} more scope groups)")
+    return '\n'.join(lines)
+
+
+def ip_hostname_mode(raw) -> str:
+    """The stored hostname mode, or the strictest one when it is not a mode."""
+    return raw if raw in IP_HOSTNAME_MODES else 'ip_only'
+
+
+def ip_hostname_include_bases(include) -> list[str]:
+    """The base name of each include entry (`*.x`, `*x` and `x` all give x), as
+    the webapp's ipHostnameIncludeBases: the hard guardrail's names. A refused
+    entry is named too, so a malformed one cannot hide a blocked name."""
+    if not isinstance(include, (list, tuple)):
+        return []
+    return _dedupe(split_wildcard(normalize_host(e))[1] if isinstance(e, str) else '' for e in include)
+
+
+def ip_soft_guardrail_names(mode, include) -> list[str]:
+    """The include bases the LLM guardrail judges: record_filter only, the one
+    mode that scans under them, and only the ones that are hostnames (a refused
+    entry is the hard guardrail's and the webapp's to refuse)."""
+    if ip_hostname_mode(mode) != 'record_filter':
+        return []
+    return [n for n in ip_hostname_include_bases(include) if normalize_name(n) == n]
+
+
+def admitted_ip_hostnames(names: Iterable[str], mode, include, exclude) -> list[str]:
+    """The scanned names the project's CURRENT policy admits (design §6.3), as
+    the webapp's admittedByCurrentPolicy: a narrowing, a restored Scan Timeline
+    version or a failed out_of_policy marker can leave a name marked scanned
+    that the policy no longer wants. scan_all admits every name, record_filter
+    those include - exclude matches, the other modes none; a filter that does
+    not parse admits none. Canonical spelling (a name that is not one is
+    dropped), sorted."""
+    mode = ip_hostname_mode(mode)
+    if mode not in _SCANNING_MODES:
+        return []
+    clean = sorted({n for n in map(normalize_name, names or ()) if n})
+    if mode == 'scan_all':
+        return clean
+    include_patterns, bad_include = parse_entries(include)
+    exclude_patterns, bad_exclude = parse_entries(exclude)
+    if bad_include or bad_exclude:
+        return []
+    return [n for n in clean if matches(n, include_patterns, exclude_patterns).included]
+
+
+def compact_ip_scope_text(target_ips: Iterable[str], mode, scanned: Iterable[str],
+                          max_entries: int = MAX_PROMPT_TARGET_ENTRIES,
+                          max_names: int = MAX_PROMPT_HOSTNAMES) -> Optional[str]:
+    """An IP-mode project's scope as prompt lines, or None without a target.
+
+    The target list as stored (a CIDR stays one entry), then what a hostname
+    on those addresses is in this mode. `scanned` is read only in record_filter
+    and scan_all; the caller passes the names the current policy admits, and
+    each is checked here again (normalize_name): the names are text the target
+    influences, and nothing that is not a hostname reaches the prompt.
+    """
+    entries = _dedupe(str(i).strip() for i in target_ips or () if i is not None)
+    if not entries:
+        return None
+    shown = entries[:max_entries]
+    more = f" (+{len(entries) - len(shown)} more entries)" if len(shown) < len(entries) else ''
+    lines = ["- these IP addresses and ranges, as configured (a range covers the addresses in it): "
+             + ', '.join(shown) + more]
+    mode = ip_hostname_mode(mode)
+    if mode == 'ip_only':
+        lines.append(
+            "- no hostname. This project tests the addresses only and never looked up the names "
+            "hosted on them. Connect by IP address; never send a hostname as the Host header or "
+            "TLS SNI, and do not resolve or search for names to find more targets.")
+        return '\n'.join(lines)
+    if mode == 'record_only':
+        lines.append(
+            "- no hostname. Hostnames seen on these addresses (certificates, reverse DNS, passive "
+            "DNS) are recorded in the graph as ExternalDomain nodes for reference only: they are "
+            "not targets. Connect by IP address; never send a recorded hostname as the Host "
+            "header or TLS SNI.")
+        return '\n'.join(lines)
+    names = sorted({n for n in map(normalize_name, scanned or ()) if n})
+    if not names:
+        lines.append(
+            "- no hostname yet: no scan has selected one on these addresses. Connect by IP "
+            "address; the hostnames recorded in the graph (ExternalDomain nodes) are not "
+            "targets: never send one as the Host header or TLS SNI.")
+        return '\n'.join(lines)
+    listed = names[:max_names]
+    count = (f"{len(names)} in total, the first {len(listed)} shown" if len(listed) < len(names)
+             else f"{len(names)} in total")
+    lines.append(f"- these hostnames, which resolved only to the addresses above at the last scan "
+                 f"({count}): " + ', '.join(listed))
+    lines.append(
+        "  DNS can change: before using one, re-check it with `dig +short A <name>` and "
+        "`dig +short AAAA <name>`, and use it only while every address it returns is listed "
+        "above; if any address is elsewhere, do not use it. Any other hostname, including the "
+        "ExternalDomain nodes recorded in the graph, is not a target: never send it as the Host "
+        "header or TLS SNI.")
     return '\n'.join(lines)

@@ -249,5 +249,68 @@ class InScopeTargets(MirrorBase):
                          mirror_mod.CONCURRENCY)
 
 
+class IpModeScannedHostnames(unittest.TestCase):
+    """In record_filter / scan_all an IP-mode project's targets are its
+    addresses AND the names a scan selected that its current policy admits, so
+    the window, the rate cap and stealth's pace apply to both (design §10).
+    The rules decide pacing, not admission: any other host keeps the mirror's
+    own rules."""
+
+    KEY = "IP_HOSTNAMES_SCANNED"
+    M4 = dict(IP_MODE=True, TARGET_IPS=["203.0.113.0/24"], IP_HOSTNAME_MODE="record_filter",
+              IP_HOSTNAME_INCLUDE=["*.example.test"], IP_HOSTNAME_EXCLUDE=["old.example.test"],
+              PROJECT_USER_ID="u1")
+
+    def _load(self, reader, **kw):
+        import importlib
+        node = importlib.import_module("orchestrator_helpers.nodes.initialize_node")
+        answer = settings(**{**self.M4, **kw})
+        with mock.patch.object(mirror_rules, "fetch_agent_settings", lambda *_a, **_kw: dict(answer)), \
+             mock.patch.object(node, "_query_scanned_hostnames", reader):
+            return asyncio.run(mirror_rules.load_settings("p1"))
+
+    def test_a_scanned_name_is_a_target_for_pacing_and_the_window(self):
+        cfg = settings(**self.M4, ROE_ENABLED=True, ROE_GLOBAL_MAX_RPS=2,
+                       **{self.KEY: ["app.example.test"]}, **WINDOW)
+        check = mirror_rules.scope_check(cfg)
+        self.assertTrue(check("app.example.test"))
+        self.assertTrue(check("APP.example.test."))
+        self.assertTrue(check("203.0.113.9"))
+        self.assertFalse(check("recorded.example.test"))
+        now = {"t": NOW}
+        rules = mirror_rules.rules_for("https://docs.other.test/", cfg, now_utc=NOW, clock=lambda: now["t"])
+        self.assertEqual(rules.gap_for("app.example.test"), 0.5)
+        self.assertEqual(rules.gap_for("recorded.example.test"), mirror_mod.SAME_HOST_GAP_SEC)
+        now["t"] = NOW.replace(hour=20)
+        self.assertFalse(rules.request_allowed("app.example.test"))
+        self.assertTrue(rules.request_allowed("recorded.example.test"))
+        with self.assertRaises(ImportFailure):
+            mirror_rules.rules_for("https://app.example.test/", cfg, now_utc=NOW.replace(hour=20))
+        stealth = dict(cfg, ROE_ENABLED=False, STEALTH_MODE=True)
+        self.assertEqual(mirror_rules.rules_for("https://app.example.test/", stealth, now_utc=NOW).concurrency, 1)
+
+    def test_load_settings_binds_the_names_the_current_policy_admits(self):
+        reader = mock.MagicMock(return_value=["app.example.test", "old.example.test", "shop.example.org"])
+        cfg = self._load(reader)
+        self.assertEqual(reader.call_args.args[-2:], ("u1", "p1"))
+        self.assertEqual(cfg[self.KEY], ["app.example.test"])
+        self.assertEqual(self._load(reader, IP_HOSTNAME_MODE="scan_all")[self.KEY],
+                         ["app.example.test", "old.example.test", "shop.example.org"])
+
+    def test_the_modes_that_scan_no_name_never_read_the_graph(self):
+        reader = mock.MagicMock(return_value=["app.example.test"])
+        for kw in ({"IP_HOSTNAME_MODE": "ip_only"}, {"IP_HOSTNAME_MODE": "record_only"},
+                   {"IP_MODE": False, "TARGET_DOMAIN": "example.test"}):
+            self.assertNotIn(self.KEY, self._load(reader, **kw))
+        reader.assert_not_called()
+
+    def test_an_unreadable_graph_fails_closed(self):
+        for reader, kw in ((mock.MagicMock(side_effect=OSError("neo4j down")), {}),
+                           (mock.MagicMock(return_value=[]), {"PROJECT_USER_ID": ""})):
+            with self.assertRaises(ImportFailure) as ctx:
+                self._load(reader, **kw)
+            self.assertEqual(ctx.exception.code, "settings_unavailable")
+
+
 if __name__ == "__main__":
     unittest.main()

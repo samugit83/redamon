@@ -4,6 +4,8 @@ Target Guardrail — LLM-based check to prevent targeting unauthorized domains/I
 Blocks well-known public websites, government domains, major tech companies, etc.
 For IP mode: resolves public IPs via reverse DNS, then checks resolved hostnames.
 Private/RFC1918 IPs are auto-allowed. Unresolvable public IPs are auto-allowed.
+An IP-mode project that scans hostnames under include entries has those names
+judged in a second call (check_target_allowed).
 """
 
 import asyncio
@@ -143,14 +145,26 @@ async def check_target_allowed(
             allowed") and invite one aggregate verdict, so one blocked domain
             among twenty could be waved through.
 
+    IPs AND domains (an IP-mode project that scans hostnames under its include
+    entries) are judged by two calls, the IPs first, then the domains when the
+    IPs pass: each prompt judges one kind of target, and neither stands in for
+    the other. Each call goes through _invoke_guardrail, so a loop model's
+    failure in either is raised at once, never retried.
+
     Returns:
         {"allowed": bool, "reason": str}
     """
     if target_ips is None:
         target_ips = []
+    domains = [d.strip() for d in (target_domains or []) if isinstance(d, str) and d.strip()]
+    if target_ips and (domains or target_domain):
+        verdict = await _check_ips(llm, target_ips)
+        if verdict.get("allowed") is not True:
+            return verdict
+    elif target_ips:
+        return await _check_ips(llm, target_ips)
 
     # --- Multi-domain mode (Domain batch) ---
-    domains = [d.strip() for d in (target_domains or []) if isinstance(d, str) and d.strip()]
     if domains:
         if len(domains) == 1:
             return await _check_domain(llm, domains[0])
@@ -159,8 +173,11 @@ async def check_target_allowed(
     # --- Domain mode ---
     if target_domain:
         return await _check_domain(llm, target_domain)
+    return await _check_ips(llm, target_ips)
 
-    # --- IP mode ---
+
+async def _check_ips(llm: Any, target_ips: list[str]) -> dict[str, Any]:
+    """IP mode: private targets pass, public ones are judged by their PTR names."""
     if not target_ips:
         return {"allowed": True, "reason": "No targets specified"}
 

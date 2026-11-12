@@ -103,6 +103,33 @@ class TestAgentAuthScope:
         assert _run("10.0.0.5", p) == {"Cookie": "sid=abc"}
         assert _run("10.0.0.6", p) == {}
 
+    def test_a_hostname_mode_never_widens_the_ip_scope(self):
+        # D-22: credentials go to the target IPs only, in every hostname mode. A
+        # name the run scanned may move to another address after the scan, and
+        # the session would follow it there.
+        for mode in ("ip_only", "record_only", "record_filter", "scan_all"):
+            p = _project(ipMode=True, targetIps=["10.0.0.0/30"], targetDomain="",
+                         ipHostnameMode=mode, ipHostnameInclude=["*.example.test"],
+                         ipHostnameScanAllConfirmed=True)
+            assert _run("10.0.0.1", p) == {"Cookie": "sid=abc"}, mode
+            assert _run("app.example.test", p) == {}, mode
+            assert _run("example.test", p) == {}, mode
+
+    def test_the_session_auth_scope_of_an_m4_project_is_its_target_ips(self):
+        import project_settings
+        import scope_groups
+
+        token = project_settings._settings_ctx.set({
+            "IP_MODE": True, "TARGET_IPS": ["10.0.0.5", "10.0.1.0/24"], "IP_HOSTNAME_MODE": "record_filter",
+            "IP_HOSTNAME_INCLUDE": ["*.example.test"], "IP_HOSTNAME_EXCLUDE": []})
+        try:
+            project_settings.bind_ip_hostnames_scanned(["app.example.test"])
+            assert project_settings.ip_hostnames_scanned() == ["app.example.test"]
+            assert project_settings.auth_scope_patterns() == ["10.0.0.5", "10.0.1.0/24"]
+        finally:
+            project_settings._settings_ctx.reset(token)
+        assert scope_groups.auth_scope_patterns([], ip_mode=True, target_ips=["10.0.0.5"]) == ["10.0.0.5"]
+
     def test_no_profile_means_no_headers(self):
         assert _run("app.example.test", _project(authProfile=None)) == {}
 

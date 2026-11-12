@@ -322,3 +322,23 @@ class TestOpenApiScope:
         with mock.patch("recon.main_recon_modules.ip_filter.is_address_safe_to_scan", return_value=True):
             discovery._discover({"domain": "other.test"}, settings, [], [], result)
         assert [d["code"] for d in result["diagnostics"]] == ["invalid_scope"]
+
+
+class TestIpModeAuthScope:
+    """D-22: an IP-mode project's session goes to its target IPs only, in every
+    hostname mode. A scanned name never receives the credentials: it may move
+    to another address after the scan. The agent (auth_scope_patterns) and the
+    webapp (defaultRecordingScope) pin the same rule."""
+
+    PROFILE = {"authType": "cookie", "authValue": "sid=abc"}
+
+    @pytest.mark.parametrize("mode", ["ip_only", "record_only", "record_filter", "scan_all"])
+    def test_the_scope_is_the_target_ips(self, mode):
+        from recon.helpers.auth_profile import auth_header_lines, default_scope_hosts
+        settings = {"IP_MODE": True, "TARGET_IPS": ["203.0.113.0/24", "198.51.100.7"],
+                    "IP_HOSTNAME_MODE": mode, "IP_HOSTNAME_INCLUDE": ["*.example.test"],
+                    "IP_HOSTNAME_SCAN_ALL_CONFIRMED": True, "TARGET_DOMAIN": "example.test"}
+        assert default_scope_hosts(settings) == ["203.0.113.0/24", "198.51.100.7"]
+        assert auth_header_lines(self.PROFILE, "203.0.113.9", settings) == ["Cookie: sid=abc"]
+        assert auth_header_lines(self.PROFILE, "app.example.test", settings) == []
+        assert auth_header_lines(self.PROFILE, "example.test", settings) == []
