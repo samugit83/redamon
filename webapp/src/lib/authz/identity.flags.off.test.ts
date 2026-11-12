@@ -148,6 +148,10 @@ const IDENTITY_READERS: string[] = [
   'scripts/create-admin.mjs',
   // Step 2.8: the instance password minimum, read by the host scripts only with the switch on.
   'scripts/lib/passwordRules.mjs',
+  // Step 2.13: the upgrade preview reads the Root and whether an admin saved the instance row,
+  // read-only, for its report alone; the switch changes only the lines printed, never the exit
+  // status (both sections are `affects: false`).
+  'scripts/rbac-upgrade-preview.mjs',
   'scripts/reset-password.mjs',
   'scripts/set-root.mjs',
   // Login: the session version it signs (compared whatever the switch) and the last-login
