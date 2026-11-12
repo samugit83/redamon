@@ -8,7 +8,7 @@ import { useAlertModal } from '@/components/ui'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { readApiError, toApiError } from '@/lib/apiError'
-import { ActivitySection, ProfileSection, SessionsSection } from './AccountSections'
+import { ActivitySection, MyPermissionsSection, ProfileSection, SessionsSection } from './AccountSections'
 import styles from './page.module.css'
 
 /**
@@ -17,8 +17,9 @@ import styles from './page.module.css'
  * `?changePassword=1` and every other API answers 403, so only the password form shows; the
  * password route then re-issues the login cookie without the must-change claim, so a full
  * navigation goes on into the app. With the identity switch on (the session then carries an
- * account type) the page also holds the profile, the sessions and My activity; off, the
- * password form alone, as step 2.8 built it.
+ * account type) the page also holds the profile, the sessions and My activity, and with the
+ * permissions switch on My permissions (step 3.13); off, the password form alone, as step 2.8
+ * built it.
  */
 export default function AccountPage() {
   const { user, isLoading, sessionError } = useAuth()
@@ -161,6 +162,7 @@ export default function AccountPage() {
         </form>
       </section>
       {full && <SessionsSection account={account} />}
+      {full && account.flags?.permissions === true && <MyPermissionsSection account={account} />}
       {full && <ActivitySection />}
     </main>
   )

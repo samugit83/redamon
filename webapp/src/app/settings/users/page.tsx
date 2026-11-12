@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/providers/AuthProvider'
-import { useCan } from '@/hooks/useCan'
+import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { useUsers, useCreateUser, useDeleteUser, useChangePassword } from '@/hooks/useUsers'
 import { Modal } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
@@ -14,6 +14,8 @@ import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { InviteRowActions, InviteUserModal } from '@/components/admin/InviteUserModal'
 import { ResetCredentialsModal } from '@/components/admin/ResetCredentialsModal'
+import { UserPermissionsPanel } from '@/components/admin/UserPermissionsPanel'
+import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
 import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import { ACCOUNT_TYPE_LABEL, IdentityLabel, accountTypeFor, type AccountType } from '@/components/auth/IdentityLabel'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
@@ -28,6 +30,7 @@ type ModalState =
   | { type: 'reset'; userId: string; userName: string; userEmail: string; targetIsAdmin: boolean }
   | { type: 'delete'; userId: string; userName: string }
   | { type: 'deleteAdmin'; userId: string; userName: string }
+  | { type: 'permissions'; userId: string; userName: string; userEmail: string }
   | { type: 'changeOwn' }
 
 export default function UsersPage() {
@@ -38,6 +41,11 @@ export default function UsersPage() {
   const canReadUsers = useCan('users:read')
   const canCreateUsers = useCan('users:create')
   const canDeleteUsers = useCan('users:delete')
+  // Step 3.13: the permission panel, with the permissions switch on; an admin's is Root's or an
+  // admins:manage holder's (the panel's API decides which admins).
+  const permissionsOn = useRbacFlags()?.permissions === true
+  const canAssignMembers = useCan('users:assign_permissions')
+  const canManageAdmins = useCan('admins:manage')
   const { data: users, isLoading, error: usersError, refetch: refetchUsers } = useUsers()
   const createUser = useCreateUser()
   const deleteUser = useDeleteUser()
@@ -63,6 +71,8 @@ export default function UsersPage() {
   const [requireChange, setRequireChange] = useState(true)
   // Identity switch on, someone else's password: a reset, whose reason the person reads (step 2.10).
   const [reason, setReason] = useState('')
+  // Permissions switch on: the set a new member starts with (step 3.13, ID-28).
+  const [setChoice, setSetChoice] = useState<InitialSetChoice>(NO_INITIAL_SET)
 
   const wantsPasswordChange = searchParams.get('changePassword') === 'true'
 
@@ -91,6 +101,7 @@ export default function UsersPage() {
     setStepUpPassword('')
     setRequireChange(true)
     setReason('')
+    setSetChoice(NO_INITIAL_SET)
     setFormError('')
     setFormSuccess('')
   }
@@ -129,6 +140,12 @@ export default function UsersPage() {
       setFormError('Enter your password to create an admin')
       return
     }
+    // The picker shows for a member only; an admin's sets are set afterwards in its panel.
+    const setFields = role === 'standard' ? initialSetFields(setChoice) : {}
+    if ('error' in setFields) {
+      setFormError(setFields.error)
+      return
+    }
 
     try {
       await createUser.mutateAsync({
@@ -138,6 +155,7 @@ export default function UsersPage() {
         role,
         ...(rootCreatesAdmin ? { stepUpPassword } : {}),
         ...(authUser?.rbac?.identity === true && password ? { requirePasswordChange: requireChange } : {}),
+        ...setFields,
       })
       closeModal()
     } catch (err: unknown) {
@@ -307,6 +325,12 @@ export default function UsersPage() {
   // Identity switch on (step 2.11, ID-31): a dialog acting on an account names it by email and type.
   const targetId = identity && (modal.type === 'password' || modal.type === 'delete') ? modal.userId : null
   const modalTarget = targetId ? users?.find(u => u.id === targetId) ?? null : null
+  // Nobody changes their own permissions, nor Root's (step 3.11); My account lists one's own.
+  const mayAssign = (u: { id: string; role: string; email: string }) => {
+    if (!permissionsOn || u.id === authUser?.id) return false
+    const type = accountTypeFor(u, authUser?.rbac?.root)
+    return type === 'member' ? canAssignMembers : type === 'admin' && canManageAdmins
+  }
   const targetLabel = modalTarget && (
     <p className={styles.hint}>
       <IdentityLabel
@@ -451,6 +475,15 @@ export default function UsersPage() {
                         Delete
                       </button>
                     )}
+                    {mayAssign(user) && (
+                      <button
+                        className={styles.actionButton}
+                        aria-label={`Permissions of ${user.name}`}
+                        onClick={() => openModal({ type: 'permissions', userId: user.id, userName: user.name, userEmail: user.email })}
+                      >
+                        Permissions
+                      </button>
+                    )}
                     {confirmedRoot && user.id === authUser?.id && (
                       <RootTransferAction selfId={user.id} users={users} className={styles.actionButton} />
                     )}
@@ -471,7 +504,22 @@ export default function UsersPage() {
         </table>
       )}
 
-      <InviteUserModal isOpen={modal.type === 'invite'} onClose={closeModal} onInvited={() => void refetchUsers?.()} />
+      <InviteUserModal isOpen={modal.type === 'invite'} onClose={closeModal} onInvited={() => void refetchUsers?.()} selfId={authUser?.id} />
+
+      <Modal
+        isOpen={modal.type === 'permissions'}
+        onClose={closeModal}
+        title={`Permissions - ${modal.type === 'permissions' ? modal.userName : ''}`}
+        size="large"
+      >
+        {modal.type === 'permissions' && authUser && (
+          <UserPermissionsPanel
+            user={{ id: modal.userId, name: modal.userName, email: modal.userEmail }}
+            selfId={authUser.id}
+            onChanged={() => void refetchUsers?.()}
+          />
+        )}
+      </Modal>
 
       {modal.type === 'reset' && (
         <ResetCredentialsModal
@@ -548,6 +596,9 @@ export default function UsersPage() {
             </select>
             {!manageAdmins && <span className={styles.hint}>Only Root creates admin accounts.</span>}
           </div>
+          {role === 'standard' && (
+            <InitialSetPicker idPrefix="create-user" selfId={authUser?.id} value={setChoice} onChange={setSetChoice} />
+          )}
           {createsAdminWithPassword && (
             <div className={styles.field}>
               <label className={styles.label} htmlFor="create-user-step-up">Your password</label>

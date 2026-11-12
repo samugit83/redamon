@@ -5,15 +5,19 @@ import Link from 'next/link'
 import { useAlertModal } from '@/components/ui'
 import { IdentityLabel, type AccountType } from '@/components/auth/IdentityLabel'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
+import { EffectivePermissions } from '@/components/admin/EffectivePermissions'
+import { permissionsUrl, setInForceText, type AccountPermissionsView } from '@/components/admin/permissionModel'
+import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import { useUsers } from '@/hooks/useUsers'
-import { readApiError, toApiError } from '@/lib/apiError'
+import { fetchJson, readApiError, toApiError } from '@/lib/apiError'
 import type { AuthUser } from '@/providers/AuthProvider'
 import styles from './page.module.css'
 
 /**
  * The My account sections that exist with the identity switch on (step 2.11, UI-09): who the
  * account is, its name and sign-in email (the email with its current password, ID-30), "Sign out
- * everywhere", its MCP tokens, Root's transfer, and "My activity".
+ * everywhere", its MCP tokens, Root's transfer, "My activity", and with the permissions switch on
+ * "My permissions" (step 3.13).
  */
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
@@ -314,6 +318,74 @@ export function ActivitySection() {
             </li>
           ))}
         </ul>
+      )}
+    </section>
+  )
+}
+
+/**
+ * My permissions (step 3.13; UI-09, PE-16, UI-12): the sets in force, the overrides with their
+ * expiry and reason, and every permission held with why (`GET /api/users/<own id>/permissions`,
+ * which the account itself always reads). Under act-as the real person's own. Loading, error with
+ * Retry, denied and "holds nothing" states.
+ */
+export function MyPermissionsSection({ account }: { account: AuthUser }) {
+  const [state, setState] = useState<
+    | { kind: 'loading' }
+    | { kind: 'error'; message: string; permission: string | null }
+    | { kind: 'ready'; view: AccountPermissionsView }
+  >({ kind: 'loading' })
+
+  const load = useCallback(async () => {
+    setState({ kind: 'loading' })
+    try {
+      const view = await fetchJson<AccountPermissionsView>(permissionsUrl(account.id), undefined, 'Could not read your permissions')
+      setState({ kind: 'ready', view })
+    } catch (err) {
+      const error = toApiError(err, 'Could not read your permissions')
+      setState({ kind: 'error', message: error.message, permission: forbiddenPermission(error) })
+    }
+  }, [account.id])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  return (
+    <section className={styles.section} aria-labelledby="account-permissions-title">
+      <h2 id="account-permissions-title" className={styles.sectionTitle}>My permissions</h2>
+      {state.kind === 'loading' && <p className={styles.state} role="status">Loading your permissions…</p>}
+      {state.kind === 'error' && (state.permission ? <ForbiddenNotice permission={state.permission} /> : (
+        <>
+          <div className={styles.error} role="alert">{state.message}</div>
+          <div className={styles.actions}>
+            <button type="button" className="secondaryButton" onClick={() => void load()}>Retry</button>
+          </div>
+        </>
+      ))}
+      {state.kind === 'ready' && (
+        <>
+          <p className={styles.hint}>
+            {state.view.accountType === 'root'
+              ? 'You are Root: you hold every permission.'
+              : `In force: ${state.view.sets.map(setInForceText).join('; ') || 'nothing'}.`}
+            {' '}An administrator changes them; ask one if you need something you do not hold.
+          </p>
+          {state.view.assignment.overrides.length > 0 && (
+            <ul className={styles.activity} aria-label="My overrides">
+              {state.view.assignment.overrides.map((o) => (
+                <li key={o.permission} className={styles.activityItem}>
+                  <span>
+                    {o.effect === 'grant' ? 'Granted' : 'Denied'} <code>{o.permission}</code>
+                    {o.expiresAt ? ` until ${when(o.expiresAt)}` : ', no expiry'}
+                    {o.reason ? `: ${o.reason}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <EffectivePermissions explain={state.view.explain} emptyText="You hold no permission." />
+        </>
       )}
     </section>
   )

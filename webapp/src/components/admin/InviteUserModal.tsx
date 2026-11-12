@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from 'react'
 import { CopyButton, Modal, useOptionalAlertModal } from '@/components/ui'
 import { fetchJson, toApiError } from '@/lib/apiError'
+import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from './InitialSetPicker'
 import styles from '@/app/settings/users/page.module.css'
 
 /** A link as the invite routes answer it: shown once, never stored by the page. */
@@ -56,16 +57,20 @@ interface ModalProps {
   onClose: () => void
   /** An account was created: the list must be read again. */
   onInvited: () => void
+  /** The signed-in person, whose permissions decide the sets they may choose (step 3.13). */
+  selfId?: string
 }
 
 /**
  * "Invite user", the default way to add a person with the identity switch on (ID-36): the
  * admin gives a name and an address and gets a link; the person chooses their own password, so
- * the admin never knows a working one. The account is always a member.
+ * the admin never knows a working one. The account is always a member. With the permissions
+ * switch on, a person who assigns sets also chooses the one it starts with (ID-28).
  */
-export function InviteUserModal({ isOpen, onClose, onInvited }: ModalProps) {
+export function InviteUserModal({ isOpen, onClose, onInvited, selfId }: ModalProps) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
+  const [setChoice, setSetChoice] = useState<InitialSetChoice>(NO_INITIAL_SET)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<InviteLink | null>(null)
@@ -73,6 +78,7 @@ export function InviteUserModal({ isOpen, onClose, onInvited }: ModalProps) {
   function close() {
     setName('')
     setEmail('')
+    setSetChoice(NO_INITIAL_SET)
     setError('')
     setResult(null)
     onClose()
@@ -86,12 +92,17 @@ export function InviteUserModal({ isOpen, onClose, onInvited }: ModalProps) {
       setError('Name and email are required')
       return
     }
+    const fields = initialSetFields(setChoice)
+    if ('error' in fields) {
+      setError(fields.error)
+      return
+    }
     setBusy(true)
     try {
       const answer = await fetchJson<InviteLink>('/api/users/invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), email: email.trim() }),
+        body: JSON.stringify({ name: name.trim(), email: email.trim(), ...fields }),
       }, 'Could not invite the user')
       setResult({ link: answer.link, expiresAt: answer.expiresAt, localhostWarning: answer.localhostWarning })
       onInvited()
@@ -132,6 +143,7 @@ export function InviteUserModal({ isOpen, onClose, onInvited }: ModalProps) {
               The person gets a member account and chooses their own password through the link.
             </span>
           </div>
+          <InitialSetPicker idPrefix="invite-user" selfId={selfId} value={setChoice} onChange={setSetChoice} />
           <div className={styles.modalActions}>
             <button type="button" className={styles.actionButton} onClick={close}>Cancel</button>
             <button type="submit" className="primaryButton" disabled={busy}>

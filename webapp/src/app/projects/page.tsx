@@ -9,6 +9,7 @@ import { useUsers, useCreateUser, useDeleteUser } from '@/hooks/useUsers'
 import { useProject } from '@/providers/ProjectProvider'
 import { useCan } from '@/hooks/useCan'
 import { ProjectCard } from '@/components/projects/ProjectCard'
+import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
 import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import { errorMessage } from '@/lib/apiError'
@@ -29,6 +30,8 @@ export default function ProjectsPage() {
   const [showImportModal, setShowImportModal] = useState(false)
   const [newUserName, setNewUserName] = useState('')
   const [newUserEmail, setNewUserEmail] = useState('')
+  // Permissions switch on: the set the new member starts with (step 3.13, ID-28).
+  const [newUserSet, setNewUserSet] = useState<InitialSetChoice>(NO_INITIAL_SET)
 
   const { data: users, isLoading: usersLoading } = useUsers()
   const { data: projects, isLoading: projectsLoading, error: projectsError, refetch } = useProjects(userId || undefined)
@@ -69,15 +72,22 @@ export default function ProjectsPage() {
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault()
+    const setFields = initialSetFields(newUserSet)
+    if ('error' in setFields) {
+      alertError(setFields.error)
+      return
+    }
     try {
       const user = await createUserMutation.mutateAsync({
         name: newUserName,
-        email: newUserEmail
+        email: newUserEmail,
+        ...setFields,
       })
       setUserId(user.id)
       setShowUserModal(false)
       setNewUserName('')
       setNewUserEmail('')
+      setNewUserSet(NO_INITIAL_SET)
       toast.success('User created')
     } catch (error) {
       alertError(error instanceof Error ? error.message : 'Failed to create user')
@@ -271,6 +281,7 @@ export default function ProjectsPage() {
                   required
                 />
               </div>
+              <InitialSetPicker idPrefix="projects-create-user" value={newUserSet} onChange={setNewUserSet} />
               <div className={styles.modalActions}>
                 <button
                   type="button"

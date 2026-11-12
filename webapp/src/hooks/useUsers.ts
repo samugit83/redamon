@@ -53,6 +53,8 @@ export interface CreateUserData {
   stepUpPassword?: string
   /** Identity switch on: the password is temporary, changed at the first sign-in (default true). */
   requirePasswordChange?: boolean
+  /** Permissions switch on: the member sets the account starts with (step 3.13); none, the instance default. */
+  sets?: string[]
 }
 
 // Create a new user
