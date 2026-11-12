@@ -984,8 +984,9 @@ def _collect_subdomains(recon_data: dict, settings: Optional[dict] = None) -> li
 
     A group's recon file narrows that (§4.6): the scan root only when it is a
     target, an EXACT group's listed hosts and nothing else. IP mode's synthetic
-    root is never a name to check. The RoE applies in every mode, partial runs
-    (which pass a `domains` list and skip the group scope) included.
+    root is never a name to check. A partial run passes a `domains` list and
+    skips the group scope, but each of its roots is still checked only when
+    its group includes the root (L-22). The RoE applies in every mode.
     """
     from recon.helpers.recon_scope import recon_scope
     scope = recon_scope(recon_data)
@@ -994,6 +995,7 @@ def _collect_subdomains(recon_data: dict, settings: Optional[dict] = None) -> li
     roots = recon_data.get("domains")
     if not isinstance(roots, list) or not roots:
         roots = [recon_data.get("domain") or recon_data.get("metadata", {}).get("target", "")]
+    left_out = _roots_left_out(recon_data, roots, scope)
     for root in roots:
         if isinstance(root, str) and root.strip():
             names.add(root.strip().lower())
@@ -1021,7 +1023,7 @@ def _collect_subdomains(recon_data: dict, settings: Optional[dict] = None) -> li
         if scope.admits(h) if scope.mode else any(h.endswith("." + r) for r in root_names):
             names.add(h)
 
-    names = {n for n in names if not n.startswith("ip-targets.")}
+    names = {n for n in names if not n.startswith("ip-targets.") and n.strip(".") not in left_out}
     if scope.mode and not isinstance(recon_data.get("domains"), list):
         if scope.exact:
             names |= set(scope.targets())
@@ -1049,6 +1051,31 @@ def _collect_subdomains(recon_data: dict, settings: Optional[dict] = None) -> li
                                       names={n: known.get(n, []) for n in sorted(names)},
                                       module="takeover", resolves_names=True).names)
     return list(names)
+
+
+def _roots_left_out(recon_data: dict, roots, scope) -> set:
+    """The roots whose own group leaves Include Root off: no name to check.
+
+    The group is the one the graph writers read (scope_groups_by_root: the
+    dict's scope_groups, else the partial run's, which _prepare_scope records),
+    so the takeover scan never checks a root they would skip. A root with no
+    group follows the dict's include_root_domain, on unless explicitly off, as
+    the builders' legacy flag does. IP mode has its own rule
+    (_ip_mode_selected).
+    """
+    if scope.ip_mode:
+        return set()
+    from graph_db.mixins.recon.scope import scope_groups_by_root
+    groups = scope_groups_by_root(recon_data)
+    left_out = set()
+    for root in roots:
+        name = str(root or "").strip().strip(".").lower()
+        if not name:
+            continue
+        group = groups.get(name)
+        if not (bool(group.get("include_root")) if group is not None else scope.include_root):
+            left_out.add(name)
+    return left_out
 
 
 def _ip_mode_selected(recon_data: dict, names) -> set:
