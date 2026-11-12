@@ -16,6 +16,7 @@ ONE BaseURL per service, MANY Endpoints per BaseURL.
 """
 import json
 import hashlib
+import ipaddress
 import re
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
@@ -73,6 +74,90 @@ def _asn_label(value) -> str | None:
     return f"AS{match.group(0)}" if match else None
 
 
+def _ip_key(value) -> str:
+    try:
+        return ipaddress.ip_address(str(value).strip().strip("[]")).compressed
+    except ValueError:
+        return str(value or "").strip().lower()
+
+
+def _host_key(value) -> str:
+    return str(value or "").strip().lower().rstrip(".")
+
+
+def _as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _answer_addresses(recon_data: dict):
+    """Return ``(host, port, reported_ip) -> [address, ...]``: the addresses an
+    httpx answer on host:port is written under (Port, Service, SERVES_URL).
+
+    For a name with several addresses httpx's address is not the one it
+    connected to. Measured on httpx v1.12: `host` is the name, so the parser
+    falls back to `a[0]`, the first resolved address; `host_ip` is kept per
+    name and a concurrent probe of the name's other port overwrites it; and
+    when the first address refuses the port httpx connects to the next one
+    and still names the first. In a domain run the port scan's details name
+    the address each port is open on (S-20): when the port is open on other
+    addresses of the name and not on the reported one, the answer goes to
+    those. The reported address stays when it has the port, when no address
+    has it in the port data, when the details name no address, when the run
+    does not know it as one of the name's, and in IP mode.
+    """
+    if _as_dict(recon_data.get("metadata")).get("ip_mode"):
+        return lambda host, port, reported: [reported]
+
+    open_on: dict = {}
+    known: dict = {}
+    by_host = _as_dict(_as_dict(recon_data.get("port_scan")).get("by_host"))
+    for name, entry in by_host.items():
+        details = [d for d in _as_dict(entry).get("port_details") or [] if isinstance(d, dict)]
+        if not any(d.get("ip") for d in details):
+            continue
+        host = _host_key(name)
+        own = entry.get("ip")
+        addresses = known.setdefault(host, set())
+        if own:
+            addresses.add(_ip_key(own))
+        for d in details:
+            address = d.get("ip") or own
+            if not address:
+                continue
+            addresses.add(_ip_key(address))
+            if str(d.get("protocol") or "tcp").lower() != "tcp":
+                continue
+            try:
+                port = int(d.get("port"))
+            except (TypeError, ValueError):
+                continue
+            open_on.setdefault((host, port), {}).setdefault(_ip_key(address), address)
+
+    dns = _as_dict(recon_data.get("dns"))
+    entries = dict(_as_dict(dns.get("subdomains")))
+    if isinstance(recon_data.get("domain"), str):
+        entries.setdefault(recon_data["domain"], _as_dict(dns.get("domain")))
+    for name, entry in entries.items():
+        host = _host_key(name)
+        if host not in known:
+            continue
+        ips = _as_dict(_as_dict(entry).get("ips"))
+        for address in list(ips.get("ipv4") or []) + list(ips.get("ipv6") or []):
+            if address:
+                known[host].add(_ip_key(address))
+
+    def addresses(host, port, reported):
+        found = open_on.get((_host_key(host), port))
+        if not reported or not found:
+            return [reported]
+        reported_key = _ip_key(reported)
+        if reported_key in found or reported_key not in known.get(_host_key(host), ()):
+            return [reported]
+        return list(found.values())
+
+    return addresses
+
+
 class HttpMixin:
     def update_graph_from_http_probe(self, recon_data: dict, user_id: str, project_id: str) -> dict:
         """
@@ -124,6 +209,7 @@ class HttpMixin:
             by_url = http_probe_data.get("by_url", {})
             wappalyzer = http_probe_data.get("wappalyzer", {})
             all_technologies = wappalyzer.get("all_technologies", {})
+            answer_addresses = _answer_addresses(recon_data)
 
             # Process each URL
             for url, url_info in by_url.items():
@@ -344,14 +430,15 @@ class HttpMixin:
                     # Create relationship: Service -[:SERVES_URL]-> BaseURL
                     # BaseURLs are served by HTTP/HTTPS services running on ports
                     if host:
-                        resolved_ip = url_info.get("ip")
                         # Extract actual port from URL (e.g., http://example.com:8080)
                         # Only use default ports (80/443) if no explicit port in URL
                         parsed_url = urlparse(url)
                         port_number = parsed_url.port or (443 if scheme == "https" else 80)
                         default_service_name = "https" if scheme == "https" else "http"
 
-                        if resolved_ip:
+                        for resolved_ip in answer_addresses(host, port_number, url_info.get("ip")):
+                            if not resolved_ip:
+                                continue
                             # Check if a service already exists for this port/IP (from port scan)
                             # If so, reuse it instead of creating a duplicate with different name
                             existing_service = session.run(
