@@ -1,0 +1,43 @@
+# Live RBAC route matrix: Phase 3 (permissions). Each step adds the rows of the behaviour it
+# changes; a row of an earlier file whose answer a step changes is tagged superseded-by:p3 there.
+# Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
+#
+# id	since	actor	method	path	body	expect	tags
+#
+# ---- step 3.11: sets, overrides and admin profiles; hierarchy and no-escalation ----
+# With RBAC_PERMISSIONS_ENABLED off the routes do not exist (404). With it on, rbac-admin-a is a
+# Full admin (no profile: no admins:manage, no admin_profiles:manage, no instance:settings) and
+# never Root, so every row that could change something is refused before any write: Root's
+# powers (admin profiles, the instance default, another admin) answer root_only, a member answers
+# 403 naming the permission, and the "allowed" rows send what the route refuses after its checks
+# (an administration right in a member set or an override, a cross-tenant grant without the
+# password, an unknown set, a built-in). The stateful flows (creating, editing, deleting, a
+# removal signing the account out, admins:manage over a strict subset) are proved by the route
+# tests of step 3.11 against the in-memory database.
+p3-escalation-sets-off	3.11	admin_a	GET	/api/admin/permission-sets	-	404	req:PE-11 permissions:off
+p3-escalation-profiles-off	3.11	admin_a	GET	/api/admin/admin-profiles	-	404	req:PE-07 permissions:off
+p3-escalation-user-perms-off	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permissions	{"sets":["builtin:no-access"]}	404	req:PE-10 permissions:off
+p3-escalation-sets-anon	3.11	anon	GET	/api/admin/permission-sets	-	401	req:PE-11
+p3-escalation-sets-list	3.11	admin_a	GET	/api/admin/permission-sets	-	200;has=builtin:default-member;has=instanceDefaultSetId	req:PE-07 permissions:on
+p3-escalation-sets-list-member	3.11	member_a	GET	/api/admin/permission-sets	-	403;has=roles:manage	req:PE-11 permissions:on
+p3-escalation-sets-create-member	3.11	member_a	POST	/api/admin/permission-sets	{"name":"rbac-never","permissions":[]}	403;has=roles:manage	req:PE-11 permissions:on
+p3-escalation-sets-create-admin-perm	3.11	admin_a	POST	/api/admin/permission-sets	{"name":"rbac-never","permissions":["users:read"]}	400;has=wrong_kind	req:PE-11 req:PE-30 permissions:on
+p3-escalation-sets-create-xo	3.11	admin_a	POST	/api/admin/permission-sets	{"name":"rbac-never","permissions":[]}	403;has=cross_origin	req:ID-26 permissions:on origin:https://rbac-other-site.example
+p3-escalation-builtin-edit	3.11	admin_a	PUT	/api/admin/permission-sets/builtin:default-member	{"name":"rbac-never"}	409;has=builtin_read_only	req:PE-07 permissions:on
+p3-escalation-builtin-delete	3.11	admin_a	DELETE	/api/admin/permission-sets/builtin:no-access	-	409;has=builtin_read_only	req:PE-17 permissions:on
+p3-escalation-default-rootonly	3.11	admin_a	PUT	/api/admin/permission-sets/builtin:no-access	{"instanceDefault":true,"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-17 req:ID-03 permissions:on
+p3-escalation-profiles-list	3.11	admin_a	GET	/api/admin/admin-profiles	-	403;has=admin_profiles:manage	req:PE-07 permissions:on
+p3-escalation-profiles-create	3.11	admin_a	POST	/api/admin/admin-profiles	{"name":"rbac-never","permissions":["users:read"],"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-07 req:ID-03 permissions:on
+p3-escalation-perms-own-read	3.11	member_a	GET	/api/users/${MEMBER_A_ID}/permissions	-	200;has="accountType":"member";has=explain	req:PE-16 permissions:on
+p3-escalation-perms-member-read	3.11	member_a	GET	/api/users/${MEMBER_C_ID}/permissions	-	403;has=users:assign_permissions	req:PE-10 permissions:on
+p3-escalation-perms-admin-read	3.11	admin_a	GET	/api/users/${MEMBER_C_ID}/permissions	-	200;has=explain	req:PE-10 permissions:on
+p3-escalation-perms-admin-target-read	3.11	admin_a	GET	/api/users/${ADMIN_B_ID}/permissions	-	403;has=root_only	req:PE-08 permissions:on
+p3-escalation-perms-own-put	3.11	admin_a	PUT	/api/users/${ADMIN_A_ID}/permissions	{"sets":["builtin:no-access"]}	400;has=own_account	req:PE-03 permissions:on
+p3-escalation-perms-member-assigns	3.11	member_a	PUT	/api/users/${MEMBER_C_ID}/permissions	{"sets":["builtin:no-access"]}	403;has=users:assign_permissions	req:PE-10 permissions:on
+p3-escalation-perms-admin-target	3.11	admin_a	PUT	/api/users/${ADMIN_B_ID}/permissions	{"adminProfileId":"builtin:user-manager","stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 req:PE-09 permissions:on
+p3-escalation-perms-admin-override	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permissions	{"overrides":[{"permission":"users:read","effect":"grant"}]}	400;has=admin_permission_override	req:PE-30 permissions:on
+p3-escalation-perms-crosstenant-stepup	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permissions	{"overrides":[{"permission":"platform:kali_terminal","effect":"grant"}]}	403;has=step_up_required	req:ID-25 permissions:on
+p3-escalation-perms-unknown-set	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permissions	{"sets":["rbac-no-such-set"]}	400;has=unknown_set	req:PE-17 permissions:on
+p3-escalation-perms-not-json	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permissions	-	415	req:ID-26 permissions:on
+p3-escalation-perms-xo	3.11	admin_a	PUT	/api/users/${MEMBER_C_ID}/permissions	{"sets":["builtin:no-access"]}	403;has=cross_origin	req:ID-26 permissions:on origin:https://rbac-other-site.example
+p3-escalation-disable-admin-fulladmin	3.11	admin_a	POST	/api/users/${ADMIN_B_ID}/disable	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 req:PE-09 permissions:on

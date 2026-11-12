@@ -197,7 +197,11 @@ the webapp's switch is so and is a SKIP otherwise: with the switch off a refused
 `session_ended`. `permissions:on` / `permissions:off` do the same for `RBAC_PERMISSIONS_ENABLED`,
 which reads off while the identity switch is off, as in the webapp; the equivalence check of the
 permission engine (PE-28) runs `baseline p1 p2` with the identity switch on, once with the
-permissions switch on and once off, and expects the same results. The runner's tag handling has a
+permissions switch on and once off, and expects the same results. `p3.tsv`'s `p3-escalation-*`
+rows (step 3.11) check the permission management routes: 404 with the permissions switch off, and
+with it on every refusal of a Full admin or a member (Root's powers, a missing permission, an
+administration right in a set or an override, a cross-tenant grant without the password) before
+any write. The runner's tag handling has a
 hermetic suite, `tests/rbac_matrix_runner_test.sh` (stubbed `docker` and `curl`, in the gate). Every
 non-GET row sends the webapp's own `Origin`, as a browser does; a row tagged
 `origin:<url>` sends that one instead, so `p2.tsv`'s `p2-xo-*` rows play a page of another site
