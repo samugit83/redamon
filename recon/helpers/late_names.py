@@ -42,7 +42,8 @@ def give_dns(combined_result: dict, names: list, settings: dict, lookup=None) ->
     """Store each name's records and A/AAAA in dns.subdomains, keeping the
     entry's `source`. Returns the names that resolved to an address. An
     address the scanner may never probe (loopback, private, metadata) drops
-    the name, as discovery's guard does."""
+    the name, as discovery's guard does, and so does, under RoE IP or CIDR
+    entries, an answer holding an excluded address (_roe_refused)."""
     settings = settings or {}
     names = [n for n in dict.fromkeys(names or []) if isinstance(n, str) and n]
     if not names or not settings.get("DNS_ENABLED", True):
@@ -61,6 +62,9 @@ def give_dns(combined_result: dict, names: list, settings: dict, lookup=None) ->
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="late-dns") as pool:
         answers = dict(zip(names, pool.map(lambda n: _safe(lookup, n), names)))
     subs = _dns_subdomains(combined_result)
+    routable = {n: _ips(a) for n, a in answers.items()
+                if isinstance(a, dict) and not any(is_non_routable_ip(x) for x in _ips(a))}
+    refused = _roe_refused(combined_result, settings, subs, routable)
     resolved = []
     for name in names:
         answer = answers.get(name)
@@ -69,6 +73,9 @@ def give_dns(combined_result: dict, names: list, settings: dict, lookup=None) ->
         addresses = _ips(answer)
         if any(is_non_routable_ip(a) for a in addresses):
             print(f"[!][Scope] Dropped late name {name} -> {addresses}: never a scan target")
+            subs.pop(name, None)
+            continue
+        if name in refused:
             subs.pop(name, None)
             continue
         entry = subs.setdefault(name, {})
@@ -83,6 +90,36 @@ def give_dns(combined_result: dict, names: list, settings: dict, lookup=None) ->
         if addresses:
             resolved.append(name)
     return resolved
+
+
+def _roe_refused(combined_result: dict, settings: dict, subs: dict, answers: dict) -> set:
+    """The names whose answer (``{name: addresses}``) the admission gate
+    refuses, in domain mode with RoE IP or CIDR entries: any excluded address
+    refuses the name whole, noted roe_excluded under the source that offered
+    it.
+
+    merge_discovered_hostnames admitted each name on its own getaddrinfo
+    answer, but this lookup's answer is the one stored, read by every later
+    target builder and written as the name's RESOLVES_TO, and it can differ.
+    A name with no address stores nothing excluded: the builders' gate judges
+    it. IP mode never comes here (give_pinned).
+    """
+    if ((combined_result.get("metadata") or {}).get("ip_mode")):
+        return set()
+    from recon.helpers.target_admission import admission_context, admit_targets
+    if not admission_context(settings, combined_result).ip_rules:
+        return set()
+    by_source: dict = {}
+    for name, addresses in answers.items():
+        if addresses:
+            source = (subs.get(name) or {}).get("source") or "late_names"
+            by_source.setdefault(source, {})[name] = addresses
+    refused = set()
+    for source, offered in by_source.items():
+        admission = admit_targets(settings, combined_result, names=offered, module=source,
+                                  resolves_names=True)
+        refused.update(n for n in offered if n not in admission.names)
+    return refused
 
 
 def _safe(fn, *args):
