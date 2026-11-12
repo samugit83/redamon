@@ -9,6 +9,13 @@ import { cleanupRbac, loginAs, seedRbac, type RbacSeed } from './rbacUsers'
  * Settings; a member without it sees the tunnel's status and who manages it, with no
  * controls; an admin keeps the controls. No browser session reads the credentials.
  *
+ * With RBAC_IDENTITY_ENABLED on (step 2.4, OQ-R3 (a)) the tunnel is an instance setting:
+ * the same people change it in the Tunneling section's own form (/api/admin/instance-settings),
+ * and the account's settings row is no longer where it is stored. The spec reads which one
+ * applies from the holder's settings (`sharedSettingsAt`). On the instance it changes the
+ * instance's own tunnel, so it skips unless that tunnel is unconfigured (no ngrok token, no
+ * chisel URL), and leaves it unconfigured again.
+ *
  * Seeds its own synthetic accounts and removes them afterwards. The grant is set by SQL,
  * as the upgrade backfill records it. The chisel URL typed is a closed local port and
  * tunnels stay disabled, so the save pushes only the stop config the sandbox already
@@ -42,32 +49,47 @@ test.afterAll(() => {
   cleanupRbac()
 })
 
-async function storedChiselUrl(page: Page, userId: string): Promise<string> {
+const INSTANCE_SETTINGS = '/api/admin/instance-settings'
+
+/** Whether the tunnel lives in the instance settings (the identity switch on), per the account's settings. */
+async function tunnelAtInstance(page: Page, userId: string): Promise<boolean> {
   const res = await page.request.get(`/api/users/${userId}/settings`)
-  return ((await res.json()) as { chiselServerUrl?: string }).chiselServerUrl ?? ''
+  return ((await res.json()) as { sharedSettingsAt?: string }).sharedSettingsAt === 'instance'
 }
 
-async function saveChiselUrl(page: Page, value: string): Promise<void> {
+async function storedTunnel(page: Page, userId: string, atInstance: boolean): Promise<{ chiselServerUrl: string; ngrokAuthtoken: string }> {
+  const res = await page.request.get(atInstance ? INSTANCE_SETTINGS : `/api/users/${userId}/settings`)
+  const body = (await res.json()) as { chiselServerUrl?: string; ngrokAuthtoken?: string }
+  return { chiselServerUrl: body.chiselServerUrl ?? '', ngrokAuthtoken: body.ngrokAuthtoken ?? '' }
+}
+
+async function saveChiselUrl(page: Page, value: string, atInstance: boolean): Promise<void> {
   await page.getByPlaceholder(URL_PLACEHOLDER).fill(value)
-  await page.getByRole('button', { name: 'Save Settings' }).click()
+  await page.getByRole('button', { name: atInstance ? 'Save tunnel settings' : 'Save Settings' }).click()
   // "Saved, but not applied" when the sandbox is unreachable: the row is written either way.
-  await expect(page.getByText(/Settings saved|Saved, but not applied/).first()).toBeVisible()
+  await expect(page.getByText(/Settings saved|Tunnel settings saved|Saved, but not applied/).first()).toBeVisible()
 }
 
 test('a legacy holder still changes the tunnel in the UI', async ({ page }) => {
   await loginAs(page, 'MEMBER_A')
   const status = await (await page.request.get('/api/agent/tunnel-status')).json() as Record<string, { active?: boolean }>
   test.skip(Object.values(status).some(s => s?.active), 'a live tunnel is up: a tunnel save would push the stop config')
+  const atInstance = await tunnelAtInstance(page, seed.MEMBER_A_ID)
+  if (atInstance) {
+    const current = await storedTunnel(page, seed.MEMBER_A_ID, true)
+    test.skip(current.chiselServerUrl !== '' || current.ngrokAuthtoken !== '', "the instance's tunnel is configured: the spec would replace it")
+  }
+  const chiselUrl = async () => (await storedTunnel(page, seed.MEMBER_A_ID, atInstance)).chiselServerUrl
 
   await page.goto('/settings?tab=keys')
   await expect(page.getByLabel('Enable tunnels')).toBeVisible()
   await expect(page.getByText(MANAGED_TEXT)).toHaveCount(0)
 
-  await saveChiselUrl(page, FAKE_CHISEL)
-  await expect.poll(() => storedChiselUrl(page, seed.MEMBER_A_ID)).toBe(FAKE_CHISEL)
+  await saveChiselUrl(page, FAKE_CHISEL, atInstance)
+  await expect.poll(chiselUrl).toBe(FAKE_CHISEL)
 
-  await saveChiselUrl(page, '')
-  await expect.poll(() => storedChiselUrl(page, seed.MEMBER_A_ID)).toBe('')
+  await saveChiselUrl(page, '', atInstance)
+  await expect.poll(chiselUrl).toBe('')
 })
 
 test('a member without the grant sees the status and who manages it, and cannot read the credentials', async ({ page }) => {
