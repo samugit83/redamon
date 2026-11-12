@@ -11,6 +11,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { ProjectSelector } from './ProjectSelector'
 import { UserSelector } from './UserSelector'
 import { AdminBanners } from '@/components/admin/CompatBanner'
+import { ActAsBannerSlot } from '@/components/auth/ActAsBanner'
 import { useAuth } from '@/providers/AuthProvider'
 import { useCan } from '@/hooks/useCan'
 import { useProject } from '@/providers/ProjectProvider'
@@ -120,6 +121,8 @@ export function GlobalHeader() {
         </Link>
       </div>
     </header>
+    {/* While an admin acts as someone (permissions switch on, step 3.14): on every page. */}
+    <ActAsBannerSlot />
     {/* /api/auth/me sends `rbac` to administrator accounts only. */}
     <AdminBanners adminAccount={user?.rbac !== undefined} rbac={user?.rbac} pathname={pathname} />
     </>

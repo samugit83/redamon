@@ -1,0 +1,52 @@
+/* The act-as banner (step 3.14): a full-width strip under the header, like the admin banners, on every page. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-4);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
+  border-bottom: 1px solid var(--status-warning);
+  flex-shrink: 0;
+}
+
+.icon {
+  flex-shrink: 0;
+}
+
+.text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+}
+
+.sep {
+  opacity: 0.6;
+}
+
+.stop {
+  flex-shrink: 0;
+  padding: var(--space-0-5) var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.stop:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.stop:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}

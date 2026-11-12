@@ -3,9 +3,10 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { useAuth } from './AuthProvider'
-import { useCan } from '@/hooks/useCan'
+import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { type ProjectSummary, toProjectSummary } from '@/lib/projectSummary'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
+import { ActAsDialog, type ActAsDialogTarget } from '@/components/auth/ActAsDialog'
 
 export type { ProjectSummary } from '@/lib/projectSummary'
 
@@ -18,8 +19,12 @@ interface ProjectContextValue {
    * Switch the effective user. Acting as another admin needs `stepUpPassword` (the
    * signed-in admin's own); a refused one resolves the error and changes nothing, so
    * the dialog that asked can ask again. Resolves null on success.
+   *
+   * With RBAC_PERMISSIONS_ENABLED on (step 3.14) every impersonation takes a reason, a duration
+   * and the admin's password: without `stepUpPassword` this opens the act-as dialog (named by
+   * `target` when the caller knows the account) and resolves when it closes, null when cancelled.
    */
-  setUserId: (id: string | null, opts?: { stepUpPassword?: string }) => Promise<ApiError | null>
+  setUserId: (id: string | null, opts?: SetUserIdOptions) => Promise<ApiError | null>
   isLoading: boolean
   /**
    * Why the last user switch was refused (the effective user stayed the admin's
@@ -27,6 +32,15 @@ interface ProjectContextValue {
    * shows the message.
    */
   userSwitchError: ApiError | null
+}
+
+export interface SetUserIdOptions {
+  stepUpPassword?: string
+  /** Permissions switch on: why and for how long (the act-as dialog sends them). */
+  reason?: string
+  durationMinutes?: number
+  /** Permissions switch on: how the dialog names the account, when the caller knows it. */
+  target?: ActAsDialogTarget
 }
 
 const ProjectContext = createContext<ProjectContextValue | null>(null)
@@ -50,6 +64,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const { user: authUser, isLoading: authLoading, refresh: refreshSession } = useAuth()
   // Acting as another account is `users:impersonate`'s (the act-as route asks it).
   const canSwitchUser = useCan('users:impersonate')
+  // Permissions switch on (step 3.14): the server says whom the admin acts as (/api/auth/me
+  // `actingAs`), with a time limit the browser must not outlive, so nothing is restored here.
+  const serverOwned = useRbacFlags()?.permissions === true
+  const actingAsId = authUser?.actingAs?.id ?? null
+  // The act-as dialog waiting for an answer, and who is waiting for its outcome.
+  const [actAsRequest, setActAsRequest] = useState<{ target: ActAsDialogTarget; settle: (r: ApiError | null) => void } | null>(null)
   // The id, not the object: reading the session again (after a switch) must not reconcile again.
   const authUserId = authUser?.id ?? null
 
@@ -59,7 +79,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (!authUserId) return
     let cancelled = false
 
-    if (canSwitchUser) {
+    if (serverOwned) {
+      // No silent restore (IM-02): a selection a previous version remembered is dropped.
+      localStorage.removeItem(STORAGE_KEY_USER)
+      setUserIdState(actingAsId ?? authUserId)
+      setImpersonationSynced(true)
+    } else if (canSwitchUser) {
       // Restore the saved impersonation target (or own id).
       const savedUserId = localStorage.getItem(STORAGE_KEY_USER)
       const target = savedUserId && savedUserId !== authUserId ? savedUserId : null
@@ -102,7 +127,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setImpersonationSynced(true)
     }
     return () => { cancelled = true }
-  }, [authUserId, authLoading, canSwitchUser, refreshSession])
+  }, [authUserId, authLoading, canSwitchUser, refreshSession, serverOwned, actingAsId])
 
   // Initialize from URL or localStorage (after impersonation is reconciled)
   useEffect(() => {
@@ -156,12 +181,46 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
   }, [searchParams, router, pathname])
 
-  const setUserId = useCallback(async (id: string | null, opts?: { stepUpPassword?: string }): Promise<ApiError | null> => {
+  /** Permissions switch on: start (from the dialog) or stop an impersonation; the server holds it. */
+  const switchOnServer = useCallback(async (id: string | null, opts?: SetUserIdOptions): Promise<ApiError | null> => {
+    if (!authUser) return null
+    const other = id && id !== authUser.id ? id : null
+    if (other && opts?.stepUpPassword === undefined) {
+      return new Promise<ApiError | null>((settle) => {
+        setActAsRequest({ target: opts?.target ?? { id: other, name: '', email: other }, settle })
+      })
+    }
+    try {
+      const resp = other
+        ? await fetch('/api/auth/act-as', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetUserId: other, stepUpPassword: opts?.stepUpPassword, reason: opts?.reason, durationMinutes: opts?.durationMinutes,
+          }),
+        })
+        : await fetch('/api/auth/act-as', { method: 'DELETE' })
+      if (!resp.ok) return await readApiError(resp, other ? 'Could not switch user' : 'Could not stop acting as this user')
+    } catch (e) {
+      return toApiError(e, other ? 'Could not switch user' : 'Could not stop acting as this user')
+    }
+    setUserSwitchError(null)
+    setUserIdState(other ?? authUser.id)
+    // The previous account's project is not the new one's.
+    setCurrentProjectState(null)
+    localStorage.removeItem(STORAGE_KEY_PROJECT)
+    // The banner, the switcher and what may be used follow the cookie (/api/auth/me answers it).
+    await refreshSession?.()
+    return null
+  }, [authUser, refreshSession])
+
+  const setUserId = useCallback(async (id: string | null, opts?: SetUserIdOptions): Promise<ApiError | null> => {
     // Only an account that may act as others switches users.
     if (!canSwitchUser && authUser) {
       setUserIdState(authUser.id)
       return null
     }
+    if (serverOwned) return switchOnServer(id, opts)
     if (opts?.stepUpPassword !== undefined && id && id !== authUser?.id) {
       try {
         const resp = await fetch('/api/auth/act-as', {
@@ -232,7 +291,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       void refreshSession?.()
     }
     return refusal
-  }, [canSwitchUser, authUser, refreshSession])
+  }, [canSwitchUser, authUser, refreshSession, serverOwned, switchOnServer])
+
+  const closeActAs = useCallback(() => {
+    actAsRequest?.settle(null)
+    setActAsRequest(null)
+  }, [actAsRequest])
 
   return (
     <ProjectContext.Provider value={{
@@ -245,6 +309,20 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       userSwitchError,
     }}>
       {children}
+      {serverOwned && (
+        <ActAsDialog
+          isOpen={actAsRequest !== null}
+          target={actAsRequest?.target ?? null}
+          maxMinutes={authUser?.impersonation?.maxMinutes ?? 720}
+          reasonRequired={authUser?.impersonation?.reasonRequired ?? false}
+          onConfirm={async ({ reason, durationMinutes, password }) => {
+            if (!actAsRequest) return
+            const refusal = await switchOnServer(actAsRequest.target.id, { stepUpPassword: password, reason, durationMinutes })
+            if (refusal) throw refusal
+          }}
+          onClose={closeActAs}
+        />
+      )}
     </ProjectContext.Provider>
   )
 }

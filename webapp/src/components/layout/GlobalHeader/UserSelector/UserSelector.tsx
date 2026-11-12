@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import { ChevronDown, Users, LogOut, KeyRound, UserRound } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
 import { useAuth } from '@/providers/AuthProvider'
-import { useCan } from '@/hooks/useCan'
+import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { useUsers } from '@/hooks/useUsers'
 import { useGuardedRouter, useNavigationGuard } from '@/context/NavigationGuardContext'
 import { useErrorToast } from '@/hooks/useErrorToast'
@@ -23,6 +23,9 @@ export function UserSelector() {
   const { user: authUser, logout, sessionError } = useAuth()
   const canSwitchUser = useCan('users:impersonate')
   const canReadUsers = useCan('users:read')
+  // Permissions switch on (step 3.14): every switch goes through the act-as dialog (reason,
+  // duration, password), which the project provider opens; the step-up prompt below is Phase 2's.
+  const viaDialog = useRbacFlags()?.permissions === true
   const { data: users } = useUsers()
   // Both providers sit above the toast layer, so their failures are shown here.
   useErrorToast(userSwitchError, 'User not switched')
@@ -40,11 +43,18 @@ export function UserSelector() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const handleSelectUser = async (user: { id: string; name: string; role?: string }) => {
+  const handleSelectUser = async (user: { id: string; name: string; role?: string; email?: string }) => {
     if (user.id !== userId) {
       // Switching user resets project context and reloads data - confirm first
       // if a dirty form would lose edits.
       if (guard?.hasGuards() && !(await guard.confirmAllGuards())) return
+      if (viaDialog) {
+        setIsOpen(false)
+        const other = user.id !== authUser?.id
+        // The provider clears the project once the switch happened; a cancelled dialog changes nothing.
+        await setUserId(user.id, other ? { target: { id: user.id, name: user.name, email: user.email ?? '', accountType: typeOf(user) } } : undefined)
+        return
+      }
       if (user.role === 'admin' && user.id !== authUser?.id) {
         setStepUpTarget({ id: user.id, name: user.name })
         setIsOpen(false)
