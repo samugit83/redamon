@@ -273,8 +273,9 @@ provider's 120 s read timeout does not cut it. `GET /__calls` lists which turn a
 
 The scripts in `testing/e2e/scripts/stub-llm-scripts/` (guardrail and router turns are `repeat`):
 `approval.json` asks for the exploitation phase (the phase approval prompt), then completes;
-`kali-shell-env.json` calls `kali_shell` with `env | grep -cE '...'` (a tool confirmation first),
-then completes; `long-run.json` answers its first think turn after 120 s. To use one, start the
+`kali-shell-env.json` calls `kali_shell` with `env | grep -cE '...' || true` (a tool confirmation
+first; `|| true` because a non-zero exit makes `kali_shell` report an error without the count), then
+completes; `long-run.json` answers its first think turn after 120 s. To use one, start the
 stub on the address the agent reaches the host by (`docker exec redamon-agent getent hosts
 host.docker.internal`), register it as an `openai_compatible` provider of the project's owner
 (`http://host.docker.internal:<port>/v1`) and set the project's `agentOpenaiModel` to

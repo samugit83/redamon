@@ -234,7 +234,9 @@ test('the agent scripts say what their runs need', () => {
 
   const [call, done] = think(loadScript(join(HERE, 'stub-llm-scripts', 'kali-shell-env.json')))
   assert.equal(call.tool_name, 'kali_shell')
-  assert.equal(call.tool_args.command, "env | grep -cE 'SCANNER_API_KEY|MCP_AUTH_TOKEN|TUNNEL_AUTH_TOKEN'")
+  // `|| true`: grep -c exits 1 on zero matches, and kali_shell turns any non-zero exit into
+  // an error that drops stdout, so the expected count "0" would never reach the run.
+  assert.equal(call.tool_args.command, "env | grep -cE 'SCANNER_API_KEY|MCP_AUTH_TOKEN|TUNNEL_AUTH_TOKEN' || true")
   assert.equal(done.action, 'complete')
 
   const long = loadScript(join(HERE, 'stub-llm-scripts', 'long-run.json'))

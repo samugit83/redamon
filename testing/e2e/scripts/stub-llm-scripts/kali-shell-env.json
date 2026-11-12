@@ -17,14 +17,14 @@
     }
   },
   {
-    "note": "First think turn: count the stack secrets visible in the sandbox (kali_shell is a dangerous tool, so a tool confirmation comes first when the project asks for one).",
+    "note": "First think turn: count the stack secrets visible in the sandbox (kali_shell is a dangerous tool, so a tool confirmation comes first when the project asks for one). `|| true` because grep -c exits 1 on zero matches and kali_shell reports a non-zero exit as an error without its output, so the expected 0 would never show.",
     "match": "what is your next action",
     "content": {
       "thought": "Scripted stub: check which stack secrets the sandbox environment exposes.",
       "reasoning": "Scripted turn of kali-shell-env.json: one kali_shell call.",
       "action": "use_tool",
       "tool_name": "kali_shell",
-      "tool_args": { "command": "env | grep -cE 'SCANNER_API_KEY|MCP_AUTH_TOKEN|TUNNEL_AUTH_TOKEN'" },
+      "tool_args": { "command": "env | grep -cE 'SCANNER_API_KEY|MCP_AUTH_TOKEN|TUNNEL_AUTH_TOKEN' || true" },
       "updated_todo_list": []
     }
   },
