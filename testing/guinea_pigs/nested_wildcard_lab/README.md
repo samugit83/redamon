@@ -16,6 +16,11 @@ and on `192.88.99.50-79`. **Scan nothing else from this harness.**
 | `labdns` (CoreDNS) | `192.88.99.53` | authoritative for `nwlab.test` and `nwlab-two.test` only; every other name is REFUSED, so it never recurses |
 | `web1` (nginx) | `192.88.99.60` | every `nwlab.test` vhost on 80 + 443 |
 | `web2` (nginx) | `192.88.99.61` | every `nwlab-two.test` vhost on 80 + 443 |
+| `web3` (nginx) | `192.88.99.62` | `edge` and `mixed` on 80 + 443: the address the `FULL` scenario's Rules of Engagement exclude |
+| `web4` (nginx) | `192.88.99.63` | `plain.nwlab.test`, **HTTP only** (nothing on 443); its bare-IP root 302s to `edge` |
+| `web5` (nginx) | `192.88.99.64` | X of `two.nwlab.test` (80, 443); its bare-IP :80 root 302s to `www.nwlab-two.test` |
+| `web6` (nginx) | `192.88.99.65` | Y of `two.nwlab.test` (443, 8443, an FTP-style banner on 21); its bare-IP :443 root 302s to `169.254.169.254` |
+| `pcap2`..`pcap5` (tcpdump) | web2..web5's network namespace | every IPv4 packet web2..web5 receive, in `out/pcap/` |
 
 Every vhost returns `<h1>{host}</h1>` from a fixed map (never from the Host
 header), so httpx results are per host and no host-header reflection appears.
@@ -64,6 +69,43 @@ whose systemd-resolved has DNSSEC off: see Lab limitations.
 
 - `https://api.nwlab.test/` loads `/static/app.js`, which references `https://js-only.v2.api.nwlab.test/x` (inside `*.api`) and `https://cdn.nwlab.test/lib.js` (a sibling outside it).
 - `https://api.nwlab.test/openapi.json` and `https://www.nwlab.test/openapi.json` are two small OpenAPI 3 documents with distinct paths, for two partial OpenAPI runs on scan roots of the same org at the same time.
+
+### E2E-B hosts: Rules of Engagement and per-address ports
+
+The `FULL` scenario runs the whole pipeline on `*.nwlab.test` with the Rules of
+Engagement excluding `192.88.99.62/32` and the name `shop.nwlab.test`. Each
+name below is a must-stay-silent case next to one that must fire.
+
+| Name | Records | Must hold |
+|---|---|---|
+| `edge` | A → web3 only | never probed by any tool: no packet reaches web3, no asset or finding names it |
+| `mixed` | A → web2 **and** web3 | a name with any excluded address is never sent by name (no Host or SNI `mixed` on web2 either); web2 is still checked as a bare address |
+| `ghost` | CNAME → `gone.nwlab-two.test` (NXDOMAIN) | a name with no address under an IP/CIDR exclusion is refused and kept "not checked" |
+| `shop` | A → web1 (only in web1's certificate SANs) | excluded by name: discovered through the SANs, never requested (R-1) |
+| `plain` | A → web4 (80 only) | checked on :80 (Basic auth over HTTP fires), never connected on 443, never "unreachable" |
+| `two` | A → web5 (X) and web6 (Y) | 80 under X only, 8443 and 21 under Y only, 443 under both; the banner on 21 is read on Y and never tried on X |
+| web4/web5/web6 bare IPs | 302 to `edge`, to `www.nwlab-two.test` (outside the project) and to `169.254.169.254` | a direct-IP check records the redirect and sends none of the three hops |
+| `api` page | links `https://v1.api.nwlab.test/` and `https://shop.nwlab.test/` | an EXACT group's crawl requests neither (S-9); `shop` is also the RoE case above |
+
+`check_lab_traffic.py --since <RUN_START> --expect excluded` asserts the
+traffic half from web1..web6's access logs (one line per request with its
+Host and SNI) and the captures: a SYN or a TLS handshake leaves no log line,
+only a packet. A kernel `connect()` SYN carries TCP timestamps and a port
+scanner's raw SYN does not, which tells a check's probe of a closed port from
+the port scan's own. `--expect control` is the must-fire half: a run without
+the exclusion reaches web3 and `mixed`, which proves the capture sees it.
+
+`lab_toggle.sh` switches a host for the next run through a runtime include
+under `out/extra/` (the tracked configuration never changes):
+`plain-fixed` / `plain-auth` (the Basic auth finding goes away / comes back),
+`x8443 on|off` (X of `two` listens on 8443 too, for a partial Nmap), and
+`dmarc drop|fixed|off`, which recreates `labdns` from a tracked Corefile variant:
+`_dmarc.nwlab-two.test` goes unanswered / `nwlab-two.test` publishes a DMARC
+record / the default zones (scenario `SECDNS`, R-24).
+
+Under an IP or CIDR exclusion naabu is handed addresses only, so naabu works
+in `FULL` although it cannot resolve a lab name (Lab limitations). masscan
+stays off there too.
 
 ### Scenario `WC`: wildcard DNS under a scan root (plan 08)
 
@@ -184,6 +226,9 @@ limitation here, never fixed by changing product code.
 | `compare_snapshots.py` | Diff two snapshots as sets, ignoring measured run-to-run variance (`--volatile`) and reporting intended changes (`--allow`) separately. Exit 1 on any unexpected difference. |
 | `nwlab_mcp.py` | A minimal inbound-MCP client (token from `MCP_SERVER_TOKEN_LAB`). |
 | `run_scan.py` | One full recon of a lab project through MCP `start_recon`: the routing gate first, the container log followed into `recon.log`, `get_recon_status` polled once a minute, then a snapshot. `--resume` follows a scan already running. |
+| `create_scenario.py` | Create one scenario's project over MCP from `expected_results.yaml` (`internal`), then print its `preflight_scope_check`. |
+| `check_lab_traffic.py` | The E2E-B traffic assertions over one run's window (access logs + captures). |
+| `lab_toggle.sh` | Per-run host switches (`plain-fixed`, `x8443 on`), through runtime includes. |
 | `expected_results.yaml` + `validate_nested_wildcards.py` | The scenario expectations once nested wildcards ship, asserted through MCP `query_graph` (needs `graph:cypher`): `validate_nested_wildcards.py U3 <projectId>` prints PASS/FAIL per check. |
 
 The token and passwords are read from `.env` inside each command and never printed.

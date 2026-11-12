@@ -305,3 +305,257 @@ scenarios:
         cypher: "MATCH (d:Domain {name:'nwlab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'wildcard_control' AS v"
         equals: [false]
     common: true
+
+  FULL:
+    title: >-
+      The full pipeline on the lab zone with the Rules of Engagement on (E2E-B,
+      R-1, R-2, R-33, R-48, S-20..S-22, S-28). One ENUMERATE group *.nwlab.test
+      with its root and the E2E-B names as seeds; nearly every tool at its
+      default. The RoE exclude 192.88.99.62/32 (web3: all of edge, half of
+      mixed) and the name shop.nwlab.test, which arrives only through web1's
+      certificate SANs. Under an IP/CIDR exclusion naabu is handed addresses
+      only, so the lab's naabu works here (its own resolvers never see a lab
+      name). masscan stays off: it bypasses the kernel route (README). The
+      traffic half (nothing reached web3, no name with an excluded address sent
+      anywhere, plain never probed on 443) is check_lab_traffic.py --expect
+      excluded over the run's window.
+    create:
+      domainBatchHosts:
+        - "*.nwlab.test"
+        - nwlab.test
+        - www.nwlab.test
+        - api.nwlab.test
+        - edge.nwlab.test
+        - mixed.nwlab.test
+        - plain.nwlab.test
+        - two.nwlab.test
+        - ghost.nwlab.test
+      settings:
+        <<: *lab
+        naabuEnabled: true
+        roeExcludedHosts: ["192.88.99.62/32", "shop.nwlab.test"]
+        subdomainTakeoverEnabled: true
+        baddnsEnabled: true
+        tlsxIncludeHttpPorts: true
+        graphqlSecurityEnabled: true
+        webCachePoisonEnabled: true
+        webCachePoisonTimeout: 600
+        vhostSniEnabled: true
+        vhostSniUseDefaultWordlist: false
+        vhostSniCustomWordlist: vhost-only.nwlab.test
+        vhostSniUseGraphCandidates: true
+    checks:
+      - id: domains_are_the_org
+        cypher: "MATCH (d:Domain) RETURN d.name AS v"
+        equals: [nwlab.test]
+      # R-2 / R-1 must stay silent: no asset or finding names an excluded host
+      - id: no_port_on_the_excluded_address
+        cypher: "MATCH (i:IP {address:'192.88.99.62'})-[:HAS_PORT]->(p:Port) RETURN p.number AS v"
+        count: 0
+      - id: no_baseurl_for_an_excluded_name_or_address
+        cypher: "MATCH (b:BaseURL) RETURN DISTINCT b.host AS v"
+        disjoint: [shop.nwlab.test, edge.nwlab.test, mixed.nwlab.test, ghost.nwlab.test, 192.88.99.62]
+      - id: no_endpoint_on_an_excluded_host
+        cypher: "MATCH (b:BaseURL)-[:HAS_ENDPOINT]->(e:Endpoint) WHERE b.host IN ['shop.nwlab.test','edge.nwlab.test','mixed.nwlab.test','192.88.99.62'] RETURN b.host + e.path AS v"
+        count: 0
+      - id: no_finding_names_an_excluded_host
+        cypher: "MATCH (v) WHERE (v:Vulnerability OR v:Secret OR v:JsReconFinding) WITH v, [k IN keys(v) WHERE k IN ['url','host','hostname','target','target_ip','matched_at','base_url','source_url','ip','domain'] | toString(v[k])] AS f WHERE any(x IN f WHERE x CONTAINS 'shop.nwlab.test' OR x CONTAINS 'edge.nwlab.test' OR x CONTAINS 'mixed.nwlab.test' OR x CONTAINS '192.88.99.62') RETURN v.id AS v"
+        count: 0
+      - id: no_certificate_from_the_excluded_address
+        cypher: "MATCH (c:Certificate) WHERE any(n IN coalesce(c.san, []) WHERE n IN ['edge.nwlab.test','mixed.nwlab.test']) OR coalesce(c.subject_cn,'') = 'edge.nwlab.test' RETURN c.cert_key AS v"
+        count: 0
+      - id: no_vhost_test_on_the_excluded_address
+        cypher: "MATCH (i:IP {address:'192.88.99.62'}) WHERE i.vhost_sni_tested IS NOT NULL RETURN i.address AS v"
+        count: 0
+      - id: the_refusals_are_a_roe_excluded_gap
+        cypher: "MATCH (d:Domain {name:'nwlab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'roe_excluded' AS v"
+        "true": true
+      # ... beside the hosts that must fire
+      - id: allowed_hosts_scanned
+        cypher: "MATCH (b:BaseURL) RETURN DISTINCT b.host AS v"
+        superset: [nwlab.test, www.nwlab.test, api.nwlab.test, plain.nwlab.test, two.nwlab.test]
+      # R-33: names only web1's certificate holds are probed (the SAN feedback)
+      - id: certificate_san_names_probed
+        cypher: "MATCH (b:BaseURL) RETURN DISTINCT b.host AS v"
+        superset: [admin.v1.api.nwlab.test, internal.v1.api.nwlab.test]
+      # S-20 / S-21: every port under the address that serves it
+      - id: no_port_under_a_foreign_address
+        cypher: "MATCH (i:IP)-[:HAS_PORT]->(p:Port) WHERE p.ip_address IS NOT NULL AND p.ip_address <> i.address RETURN i.address + ':' + toString(p.number) AS v"
+        count: 0
+      - id: port_8443_only_under_Y
+        cypher: "MATCH (i:IP)-[:HAS_PORT]->(p:Port {number: 8443}) RETURN i.address AS v"
+        equals: [192.88.99.65]
+      - id: port_21_only_under_Y
+        cypher: "MATCH (i:IP)-[:HAS_PORT]->(p:Port {number: 21}) RETURN i.address AS v"
+        equals: [192.88.99.65]
+      - id: port_80_of_two_only_under_X
+        cypher: "MATCH (i:IP)-[:HAS_PORT]->(p:Port {number: 80}) WHERE i.address IN ['192.88.99.64','192.88.99.65'] RETURN i.address AS v"
+        equals: [192.88.99.64]
+      - id: port_443_under_both_X_and_Y
+        cypher: "MATCH (i:IP)-[:HAS_PORT]->(p:Port {number: 443}) WHERE i.address IN ['192.88.99.64','192.88.99.65'] RETURN i.address AS v"
+        equals: [192.88.99.64, 192.88.99.65]
+      # S-28 / R-48: the HTTP-only host is checked on 80 and never called unreachable
+      - id: plain_basic_auth_over_http_found
+        cypher: "MATCH (v:Vulnerability {source:'security_check', type:'basic_auth_no_tls'}) RETURN v.url AS v"
+        superset: ["http://plain.nwlab.test/"]
+      - id: plain_never_skipped_as_unreachable
+        cypher: "MATCH (d:Domain {name:'nwlab.test'}) UNWIND coalesce(d.recon_skipped_hosts, []) AS h WITH h WHERE h STARTS WITH 'plain.nwlab.test' OR h STARTS WITH '192.88.99.63' RETURN h AS v"
+        count: 0
+      - id: self_signed_hosts_still_get_security_checks
+        cypher: "MATCH (v:Vulnerability {source:'security_check'}) WHERE v.url STARTS WITH 'https://' AND v.url CONTAINS '.nwlab.test' RETURN v.url AS v"
+        superset: ["https://www.nwlab.test"]
+      - id: a_refused_certificate_is_a_graphql_gap_only
+        cypher: "MATCH (d:Domain {name:'nwlab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'TLS certificate refused' AS v"
+        "true": true
+    common: true
+
+  SECDNS:
+    title: >-
+      Org DNS checks on the dirty org (W2-SECDNS: R-24, R-36). Run 1 (default
+      zones): SPF and DMARC missing, each once with `domain`, and the zone
+      transfer the lab DNS allows for nwlab-two.test (an AXFR to ns1's address,
+      in labdns's log). Run 2 after `lab_toggle.sh dmarc drop` (the _dmarc
+      query unanswered): DMARC_KEPT_ON_NO_ANSWER. Run 3 after `lab_toggle.sh
+      dmarc fixed`: DMARC_PRUNED. The SPF and AXFR rows hold on every run.
+    create:
+      targetDomain: nwlab-two.test
+      subdomainList: [".", "www."]
+      settings:
+        <<: *lab
+        scanModules: [domain_discovery, http_probe, vuln_scan]
+        nucleiEnabled: false
+    checks:
+      - id: spf_missing_once_with_its_domain
+        cypher: "MATCH (v:Vulnerability {source:'security_check', type:'spf_missing'}) RETURN coalesce(v.domain, '') AS v"
+        equals: [nwlab-two.test]
+      - id: zone_transfer_found_on_the_org_that_allows_it
+        cypher: "MATCH (d:Domain)-[:HAS_VULNERABILITY]->(v:Vulnerability {source:'security_check', type:'zone_transfer'}) RETURN d.name AS v"
+        equals: [nwlab-two.test]
+    common: true
+
+  SECDNS-RUN1:
+    title: SECDNS after run 1 (default zones)
+    checks:
+      - id: dmarc_missing_once_with_its_domain
+        cypher: "MATCH (v:Vulnerability {source:'security_check', type:'dmarc_missing'}) RETURN coalesce(v.domain, '') AS v"
+        equals: [nwlab-two.test]
+      - id: no_dmarc_gap_when_dns_answered
+        cypher: "MATCH (d:Domain {name:'nwlab-two.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'dmarc_missing' AS v"
+        equals: [false]
+
+  SECDNS-DROP:
+    title: SECDNS after run 2 (the _dmarc query goes unanswered)
+    checks:
+      - id: dmarc_missing_kept_on_no_answer
+        cypher: "MATCH (v:Vulnerability {source:'security_check', type:'dmarc_missing'}) RETURN coalesce(v.domain, '') AS v"
+        equals: [nwlab-two.test]
+      - id: the_unanswered_check_is_a_security_check_gap
+        cypher: "MATCH (d:Domain {name:'nwlab-two.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'dmarc_missing' AS v"
+        "true": true
+
+  SECDNS-FIXED:
+    title: SECDNS after run 3 (nwlab-two.test publishes DMARC)
+    checks:
+      - id: dmarc_missing_pruned
+        cypher: "MATCH (v:Vulnerability {source:'security_check', type:'dmarc_missing'}) RETURN v.id AS v"
+        count: 0
+      - id: no_dmarc_gap_once_answered
+        cypher: "MATCH (d:Domain {name:'nwlab-two.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS 'dmarc_missing' AS v"
+        equals: [false]
+
+  R37:
+    title: >-
+      Security checks with every DNS check switched off (R-37), on the HTTP-only
+      plain.nwlab.test (S-28). Run 1: Basic auth over HTTP fires. Run 2 after
+      `lab_toggle.sh plain-fixed`: R37-FIXED, the finding is pruned (switched-off
+      DNS checks no longer cut the whole security_check source). The RoE
+      exclusion of web3 only makes naabu take addresses.
+    create:
+      targetDomain: nwlab.test
+      subdomainList: [plain.]
+      settings:
+        <<: *lab
+        naabuEnabled: true
+        roeExcludedHosts: ["192.88.99.62/32"]
+        scanModules: [domain_discovery, port_scan, http_probe, vuln_scan]
+        nucleiEnabled: false
+        securityCheckSpfMissing: false
+        securityCheckDmarcMissing: false
+        securityCheckDnssecMissing: false
+        securityCheckZoneTransfer: false
+    checks:
+      - id: basic_auth_over_http_on_plain
+        cypher: "MATCH (v:Vulnerability {source:'security_check', type:'basic_auth_no_tls'}) RETURN v.url AS v"
+        equals: ["http://plain.nwlab.test/"]
+      - id: plain_never_called_unreachable
+        cypher: "MATCH (d:Domain) UNWIND coalesce(d.recon_skipped_hosts, []) AS h WITH h WHERE h STARTS WITH 'plain.nwlab.test' OR h STARTS WITH '192.88.99.63' RETURN h AS v"
+        count: 0
+    common: true
+
+  R37-FIXED:
+    title: R37 after run 2 (plain no longer asks for Basic auth)
+    checks:
+      - id: the_fixed_finding_is_pruned
+        cypher: "MATCH (v:Vulnerability {source:'security_check', type:'basic_auth_no_tls'}) RETURN v.url AS v"
+        count: 0
+      - id: no_security_check_source_cut
+        cypher: "MATCH (d:Domain {name:'nwlab.test'}) RETURN coalesce(d.recon_coverage_gaps, '') CONTAINS '\"source\": \"security_check\"' AS v"
+        equals: [false]
+
+  RCTRL:
+    title: >-
+      The must-fire control for the RoE cases (B-FD2, B-SECCHK-ROE): edge and
+      mixed with NO exclusion are probed (check_lab_traffic.py --expect control),
+      which also gives the graph an edge BaseURL. Then `roeExcludedHosts:
+      ["192.88.99.62/32"]` and the partial runs from the graph (B-FD2-PARTIAL):
+      web3 must stay silent and no new Endpoint or BaseURL appears for edge or
+      mixed (RCTRL-PARTIAL).
+    create:
+      targetDomain: nwlab.test
+      subdomainList: [www., edge., mixed.]
+      settings:
+        <<: *lab
+        scanModules: [domain_discovery, http_probe, resource_enum, vuln_scan]
+        nucleiTags: [tech]
+        subdomainTakeoverEnabled: true
+    checks:
+      - id: edge_and_mixed_probed_without_the_exclusion
+        cypher: "MATCH (b:BaseURL) RETURN DISTINCT b.host AS v"
+        superset: [edge.nwlab.test, mixed.nwlab.test, www.nwlab.test]
+    common: true
+
+  S9:
+    title: >-
+      An EXACT group's crawl stays on its listed hosts (S-9): only api.nwlab.test
+      is listed, its page links v1.api (an unlisted child) and shop (a sibling).
+      After the full run, a partial Hakrawler must request neither (web1's log),
+      and the recon log says "Listed hosts only (exact scope): subdomain crawling
+      off". The control is S9-ENUM.
+    create:
+      targetDomain: nwlab.test
+      subdomainList: [api.]
+      settings:
+        <<: *lab
+        scanModules: [domain_discovery, http_probe, resource_enum]
+        hakrawlerEnabled: true
+        hakrawlerIncludeSubs: true
+    checks:
+      - id: only_the_listed_host_scanned
+        cypher: "MATCH (b:BaseURL) WHERE b.host ENDS WITH 'nwlab.test' RETURN DISTINCT b.host AS v"
+        equals: [api.nwlab.test]
+    common: true
+
+  S9-ENUM:
+    title: The S-9 control, an ENUMERATE group on *.api with its root (the crawl may reach v1.api)
+    create:
+      domainBatchHosts: ["*.api.nwlab.test", api.nwlab.test]
+      settings:
+        <<: *lab
+        scanModules: [domain_discovery, http_probe, resource_enum]
+        hakrawlerEnabled: true
+        hakrawlerIncludeSubs: true
+    checks:
+      - id: the_root_is_scanned
+        cypher: "MATCH (b:BaseURL) RETURN DISTINCT b.host AS v"
+        superset: [api.nwlab.test]
+    common: true

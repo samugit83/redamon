@@ -1,0 +1,31 @@
+# Variant of Corefile for R-24 run 2; selected by NWLAB_COREFILE (lab_toggle.sh).
+# Authoritative only. There is no `.` block and no `forward`, so a query for any
+# other name is REFUSED: the lab DNS can never resolve, or leak, a real name.
+
+nwlab.test:53 {
+    file /etc/coredns/nwlab.test.zone
+    log
+    errors
+}
+
+nwlab-two.test:53 {
+    file /etc/coredns/nwlab-two.test.zone
+    # AXFR is allowed here and refused for nwlab.test. Recon's zone-transfer
+    # check never sends a packet today (it hands dnspython a hostname), so no
+    # AXFR finding is expected; this zone is the target for a future fix.
+    transfer {
+        to *
+    }
+    log
+    errors
+}
+
+# R-24 run 2 (lab_toggle.sh dmarc drop): every query for _dmarc.nwlab-two.test
+# goes unanswered, so the DMARC check gets no verdict. CoreDNS hands a name to
+# the server block with the longest matching zone, so nothing else changes.
+_dmarc.nwlab-two.test:53 {
+    erratic {
+        drop 1
+    }
+    log
+}

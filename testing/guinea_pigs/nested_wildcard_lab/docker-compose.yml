@@ -9,6 +9,11 @@
 #   labdns  192.88.99.53   nwlab.test + nwlab-two.test zones; answers nothing else
 #   web1    192.88.99.60   every nwlab.test vhost, HTTP + HTTPS
 #   web2    192.88.99.61   every nwlab-two.test vhost, HTTP + HTTPS
+#   web3    192.88.99.62   edge + mixed: the address the FULL scenario's RoE excludes
+#   web4    192.88.99.63   plain (HTTP only); its bare-IP root 302s to edge
+#   web5    192.88.99.64   two (X: 80, 443); its bare-IP :80 root 302s off the project
+#   web6    192.88.99.65   two (Y: 443, 8443, banner on 21); bare-IP :443 302s to 169.254.169.254
+#   pcap2..pcap5           every packet web2..web5 receive, in out/pcap/ (check_lab_traffic.py)
 #
 # WHY 192.88.99.0/24: recon's Python SSRF guard (is_url_safe_to_probe,
 # recon/main_recon_modules/ip_filter.py) rejects loopback, RFC1918 and every
@@ -37,7 +42,8 @@ services:
     <<: *caps
     image: coredns/coredns:1.11.3@sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e
     container_name: redamon-nwlab-dns
-    command: ["-conf", "/etc/coredns/Corefile"]
+    # NWLAB_COREFILE picks a variant for one run (lab_toggle.sh dmarc ...).
+    command: ["-conf", "/etc/coredns/${NWLAB_COREFILE:-Corefile}"]
     # A directory bind, not a file bind: a file is bound by inode, so an edited
     # zone would be invisible until the container is recreated.
     volumes:
@@ -79,6 +85,98 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
+
+  # Rules of Engagement and per-address port cases (README "E2E-B hosts"). The
+  # runtime includes under out/extra/ are written by lab_toggle.sh.
+  web3:
+    <<: *caps
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: redamon-nwlab-web3
+    volumes:
+      - ./nginx/web3:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      sc_lab:
+        ipv4_address: 192.88.99.62
+
+  web4:
+    <<: *caps
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: redamon-nwlab-web4
+    volumes:
+      - ./nginx/web4:/etc/nginx/conf.d:ro
+      - ./out/extra/web4:/etc/nginx/extra:ro
+    networks:
+      sc_lab:
+        ipv4_address: 192.88.99.63
+
+  web5:
+    <<: *caps
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: redamon-nwlab-web5
+    volumes:
+      - ./nginx/web5:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./out/extra/web5:/etc/nginx/extra:ro
+    networks:
+      sc_lab:
+        ipv4_address: 192.88.99.64
+
+  web6:
+    <<: *caps
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: redamon-nwlab-web6
+    volumes:
+      - ./nginx/web6.nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/web6:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      sc_lab:
+        ipv4_address: 192.88.99.65
+
+  # Every packet the host receives, except ARP: a SYN that never became a
+  # request (a port probe) or a TLS handshake with its SNI leaves no access-log
+  # line, only a packet. Each shares its host's network namespace. -Q in:
+  # received only; -p: no promiscuous mode (no NET_ADMIN); -U: written per
+  # packet; -Z root: keep writing into the bind mount. A restart moves the old
+  # capture aside. The snap length keeps a TLS ClientHello's SNI.
+  pcap2: &pcap
+    build: ./tools
+    image: nwlab-tools:local
+    container_name: redamon-nwlab-pcap2
+    network_mode: "service:web2"
+    cap_add: [NET_RAW]
+    restart: unless-stopped
+    mem_limit: 64m
+    pids_limit: 32
+    cpus: 0.25
+    depends_on: [web2]
+    environment: { CAP: web2 }
+    command: ["sh", "-c",
+              "mv -f /pcap/$$CAP.pcap /pcap/$$CAP.prev.pcap 2>/dev/null; exec tcpdump -i eth0 -p -Q in -U -n -s 1024 -Z root -w /pcap/$$CAP.pcap not arp"]
+    volumes:
+      - ./out/pcap:/pcap
+
+  pcap3:
+    <<: *pcap
+    container_name: redamon-nwlab-pcap3
+    network_mode: "service:web3"
+    depends_on: [web3]
+    environment: { CAP: web3 }
+
+  pcap4:
+    <<: *pcap
+    container_name: redamon-nwlab-pcap4
+    network_mode: "service:web4"
+    depends_on: [web4]
+    environment: { CAP: web4 }
+
+  pcap5:
+    <<: *pcap
+    container_name: redamon-nwlab-pcap5
+    network_mode: "service:web5"
+    depends_on: [web5]
+    environment: { CAP: web5 }
 
 networks:
   sc_lab:

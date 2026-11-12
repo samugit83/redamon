@@ -43,7 +43,16 @@ gen_cert web2 nwlab-two.test \
 gen_cert wild wild.nwlab.test \
     "DNS:wild.nwlab.test,DNS:real.wild.nwlab.test,DNS:admin.wild.nwlab.test,DNS:dev.wild.nwlab.test,DNS:vpn.wild.nwlab.test,DNS:staging.wild.nwlab.test"
 
-docker compose up -d
+# E2E-B hosts: web3 is the RoE-excluded address of edge and mixed; web5 and
+# web6 are the two addresses of two.nwlab.test.
+gen_cert web3 edge.nwlab.test "DNS:edge.nwlab.test,DNS:mixed.nwlab.test"
+gen_cert two two.nwlab.test "DNS:two.nwlab.test"
+
+# Runtime state, gitignored: the captures and lab_toggle.sh's includes. Made
+# here so Docker never creates them root-owned.
+mkdir -p out/pcap out/extra/web4 out/extra/web5
+
+docker compose up -d --build
 
 echo "[*] Routing gate (must name a br- device, never the uplink):"
 if ip route get 192.88.99.60 | grep -q ' dev br-'; then

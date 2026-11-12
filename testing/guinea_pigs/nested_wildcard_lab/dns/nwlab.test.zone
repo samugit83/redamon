@@ -2,7 +2,7 @@
 ; the org. Every A record points at web1 unless noted. Not DNSSEC-signed.
 $ORIGIN nwlab.test.
 $TTL 60
-@                   IN SOA  ns1.nwlab.test. hostmaster.nwlab.test. 2026102501 3600 600 86400 60
+@                   IN SOA  ns1.nwlab.test. hostmaster.nwlab.test. 2026111201 3600 600 86400 60
 @                   IN NS   ns1.nwlab.test.
 @                   IN A    192.88.99.60
 @                   IN MX   10 mail.nwlab.test.
@@ -41,3 +41,18 @@ a.b.c.d             IN A    192.88.99.60
 wild                IN A    192.88.99.60
 *.wild              IN A    192.88.99.60
 real.wild           IN A    192.88.99.61
+
+; Rules of Engagement cases (E2E-B; the FULL scenario excludes 192.88.99.62/32).
+; edge lives only on the excluded web3; mixed has one allowed address (web2) and
+; the excluded one; ghost is a dangling CNAME with no address at all.
+edge                IN A    192.88.99.62
+mixed               IN A    192.88.99.61
+mixed               IN A    192.88.99.62
+ghost               IN CNAME gone.nwlab-two.test.
+; HTTP-only: web4 listens on 80 alone, and its bare-IP root 302s to edge.
+plain               IN A    192.88.99.63
+; one name, two hosts with different ports: X = web5 (80, 443), Y = web6
+; (443, 8443, and an FTP-style banner on 21). Every port must stay under the
+; address that serves it.
+two                 IN A    192.88.99.64
+two                 IN A    192.88.99.65

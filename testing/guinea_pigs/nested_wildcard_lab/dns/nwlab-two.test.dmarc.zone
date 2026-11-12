@@ -1,0 +1,17 @@
+; R-24 run 3 variant of nwlab-two.test.zone: the same records plus a DMARC
+; policy. nwlab-two.test - the "dirty" organisation: no SPF, ownership TXT only
+; at the api scan root. Every A record points at web2. Not DNSSEC-signed.
+$ORIGIN nwlab-two.test.
+$TTL 60
+@                   IN SOA  ns1.nwlab-two.test. hostmaster.nwlab-two.test. 2026102001 3600 600 86400 60
+@                   IN NS   ns1.nwlab-two.test.
+@                   IN A    192.88.99.61
+ns1                 IN A    192.88.99.53
+_redamon-verify.api IN TXT  "redamon-verify=nwlab-token"
+_dmarc              IN TXT  "v=DMARC1; p=reject"
+
+www                 IN A    192.88.99.61
+portal              IN A    192.88.99.61
+api                 IN A    192.88.99.61
+v1.api              IN A    192.88.99.61
+v2.api              IN A    192.88.99.61
