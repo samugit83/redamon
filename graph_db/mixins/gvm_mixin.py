@@ -213,7 +213,10 @@ class GvmMixin:
             session.run(
                 """
                 MERGE (p:Port {number: $port_number, protocol: $protocol, ip_address: $ip_addr, user_id: $user_id, project_id: $project_id})
-                SET p.state = 'open',
+                SET p.state = 'open', p.passive_only = false,
+                    // GVM's own scan found a service here: a port only a
+                    // passive feed had reported is now an active hit. The
+                    // protocol is in the MERGE key, so the other one is not.
                     // K20: GVM Ports had no `source`, so nothing could tell a
                     // port an ACTIVE scan confirmed from one a passive
                     // intelligence feed merely reported. Reachability reads
