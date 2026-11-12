@@ -39,6 +39,12 @@
  *     another admin acts as after Phase 1; the boot backfill still chooses the Root;
  *   - /api/auth/me carries no account type and no Root.
  *
+ * Step 2.6 makes managing admins, the security policy and the Root transfer the confirmed Root's
+ * powers. With the switch off:
+ *   - nobody holds them and nothing reads the Root for them: every admin keeps the Phase 1
+ *     rules (rootOnlyAdmins.test.ts runs each route with the switch off);
+ *   - a role change raises no session version.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
  */
@@ -97,6 +103,9 @@ const IDENTITY_READERS: string[] = [
   // Login: the session version it signs (compared whatever the switch) and the last-login
   // time it writes whatever the switch; status / must-change are read for later steps.
   'src/app/api/auth/login/route.ts',
+  // Step 2.6: a role change raises the session version only with the switch on (its
+  // identity path); off, the Phase 1 path writes the role alone.
+  'src/app/api/users/[id]/route.ts',
   'src/lib/authz/accountEmail.ts',
   // Disable, enable, revoke sessions (step 2.3): reached only through routes that answer 404
   // with the switch off, except enable, which stays open to restore an account disabled
@@ -304,6 +313,19 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.5)', () => {
       expect(await rootProtectedRefusal(request, { userId: 'admin-1', role: 'admin' }, 'admin-2', attempted)).toBeNull()
     }
     expect(await rootProtectedRefusal(request, { userId: 'admin-1', role: 'admin' }, 'admin-1', 'role_change', { self: true })).toBeNull()
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_IDENTITY_ENABLED off (step 2.6)', () => {
+  // The Prisma double has no instanceSettings table: a read of it would throw.
+  test("no Root power is held or looked up: the gates answer Phase 1's way and read nothing", async () => {
+    setFlagsForTests({ identity: false })
+    const { rootStanding, adminTargetGate } = await import('./rootPowers')
+    expect(await rootStanding('admin-1')).toBe('none')
+    const request = new NextRequest('http://redamon.test/api/x', { method: 'POST' })
+    expect(await adminTargetGate(request, { userId: 'admin-1', role: 'admin' }, 'admin-2', undefined, 'x'))
+      .toEqual({ adminTarget: false })
     expect(findUnique).not.toHaveBeenCalled()
   })
 })

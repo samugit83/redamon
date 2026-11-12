@@ -253,12 +253,14 @@ describe('Root on its own account', () => {
 })
 
 describe('only the account the row names, while it is an admin, is Root', () => {
-  test('a Root id that names no account protects nobody: Phase 1 rules (step-up) apply', async () => {
+  // Step 2.6 (PE-08, by design): acting as an admin became the confirmed Root's power, so
+  // with no Root the answer is root_only instead of Phase 1's step-up; still no protection.
+  test('a Root id that names no account protects nobody: no root_protected, no refusal row', async () => {
     db().seedInstance({ rootUserId: 'gone', rootAssignedBy: 'automatic' })
     await signIn('admin-2')
     const res = await startActAs(req('POST', { targetUserId: ROOT }))
     expect(res.status).toBe(403)
-    expect((await res.json()).code).toBe('step_up_required')
+    expect((await res.json()).code).toBe('root_only')
     expect(db().audit()).toEqual([])
   })
 

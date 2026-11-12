@@ -9,6 +9,8 @@ import { checkStepUp, requireStepUp } from '@/lib/authz/stepUp'
 import { writeUserAudit } from '@/lib/userAudit'
 import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
+import { requireRootPower } from '@/lib/authz/rootPowers'
+import { rbacFlags } from '@/lib/authz/flags'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -59,10 +61,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       const rootRefusal = await rootProtectedRefusal(request, session, id, 'reset_password')
       if (rootRefusal) return rootRefusal
       // An admin resetting another admin takes over that account: the acting
-      // admin's own password first. A member's reset needs none.
+      // admin's own password first, and with the identity switch on only the
+      // confirmed Root may (step 2.6). A member's reset needs none.
       const target = await prisma.user.findUnique({ where: { id }, select: { role: true } })
       if (target?.role === 'admin') {
-        const refusal = await requireStepUp(request, stepUpPassword)
+        const refusal = rbacFlags().identity
+          ? await requireRootPower(request, session, stepUpPassword, 'Only Root can reset another admin\'s password.')
+          : await requireStepUp(request, stepUpPassword)
         if (refusal) return refusal
       }
     }

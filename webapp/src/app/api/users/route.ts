@@ -5,7 +5,10 @@ import { getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
-import { writeUserAudit } from '@/lib/userAudit'
+import { userAuditEntry, writeUserAudit, type UserAuditFields } from '@/lib/userAudit'
+import { writeAuditTx } from '@/lib/audit'
+import { rbacFlags } from '@/lib/authz/flags'
+import { requireRootPower } from '@/lib/authz/rootPowers'
 
 const EMAIL_TAKEN = { error: 'A user with this email already exists', code: 'email_taken' } as const
 
@@ -72,6 +75,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { name, email, password, role } = body
 
+    // Identity switch on: an admin account is the confirmed Root's to create, with its password.
+    const makesAdmin = role === 'admin' && rbacFlags().identity
+    if (makesAdmin) {
+      const refusal = await requireRootPower(request, session, body.stepUpPassword, 'Only Root can create an admin account.')
+      if (refusal) return refusal
+    }
+
     if (!name || !email || typeof email !== 'string') {
       return NextResponse.json(
         { error: 'Name and email are required' },
@@ -94,20 +104,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(EMAIL_TAKEN, { status: 409 })
     }
 
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email: storedEmail,
-        ...(password ? { password: await hashPassword(password) } : {}),
-        ...((role === 'admin' || role === 'standard') ? { role } : {}),
-      }
-    })
-
-    await writeUserAudit(request, session, {
+    const data = {
+      name,
+      email: storedEmail,
+      ...(password ? { password: await hashPassword(password) } : {}),
+      ...((role === 'admin' || role === 'standard') ? { role } : {}),
+    }
+    const created = (user: { id: string; email: string; role: string }): UserAuditFields => ({
       action: 'user.create',
       targetId: user.id,
       after: { email: user.email, role: user.role, passwordless: !password },
     })
+
+    let user
+    if (makesAdmin) {
+      // A Root action: the account and its row commit together, or neither does (AU-05).
+      user = await prisma.$transaction(async (tx) => {
+        const row = await tx.user.create({ data })
+        await writeAuditTx(tx, await userAuditEntry(request, session, created(row)))
+        return row
+      })
+    } else {
+      user = await prisma.user.create({ data })
+      await writeUserAudit(request, session, created(user))
+    }
 
     return NextResponse.json({
       id: user.id,

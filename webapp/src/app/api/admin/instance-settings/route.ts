@@ -6,6 +6,10 @@ import { loadPrincipal, type Principal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { secretReentryResponse, settingsEndpointChange, settingsSecretReentry } from '@/lib/authz/secretEndpointRebind'
 import { requireStepUp } from '@/lib/authz/stepUp'
+import { rootOnlyRefusal, rootStanding, type RootStanding } from '@/lib/authz/rootPowers'
+import {
+  changedSecurityPolicyFields, parseSecurityPolicyPatch, securityPolicyView,
+} from '@/lib/instanceSecurityPolicy'
 import { auditActorOf, sessionActor } from '@/lib/auditActor'
 import { sanitizeBodyRules } from '@/lib/captureBodyRules'
 import { readJsonBody } from '@/lib/jsonBody'
@@ -35,6 +39,10 @@ import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
  * typed again, HD-24, and the person's password, ID-25), mirrors each changed group into a
  * user row, audits `instance.settings_changed` with the field names, then applies the change:
  * the capture proxy follows its switch and spawn-time knobs, the sandbox takes the tunnel.
+ *
+ * The security policy (password policy, session and link lifetimes, impersonation settings,
+ * public base URL; step 2.6) is the confirmed Root's: admins read it, a change by anyone else is
+ * 403 `root_only`, and Root changes it with its password. A value sent unchanged needs neither.
  */
 
 const TUNNEL_STRINGS = ['ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
@@ -80,8 +88,10 @@ async function access(fresh: boolean): Promise<Access | NextResponse> {
   return { session, principal, capture: false, tunnels }
 }
 
-/** What a browser sees: the secrets masked, the capture part only for an admin. */
-function view(row: InstanceSettings, a: Access, warnings: SaveWarning[] = []) {
+const ROOT_ONLY_POLICY = 'Only Root can change the instance security policy.'
+
+/** What a browser sees: the secrets masked, the capture part and the security policy only for an admin. */
+function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings: SaveWarning[] = []) {
   return {
     tunnelsEnabled: row.tunnelsEnabled,
     ngrokAuthtoken: maskSecret(row.ngrokAuthtoken),
@@ -90,6 +100,9 @@ function view(row: InstanceSettings, a: Access, warnings: SaveWarning[] = []) {
     ...(a.capture ? Object.fromEntries(CAPTURE_FIELDS.map((f) => [f, row[f]])) : {}),
     canManageTunnels: true,
     canManageCapture: a.capture,
+    ...(a.capture
+      ? { securityPolicy: securityPolicyView(row as unknown as Record<string, unknown>), canManageSecurityPolicy: standing === 'confirmed' }
+      : {}),
     ...(warnings.length ? { warnings } : {}),
   }
 }
@@ -100,7 +113,7 @@ export const GET = withRouteErrors('Could not read the instance settings', async
   if (a instanceof NextResponse) return a
   const row = await instanceSettingsInForce()
   if (!row) return notReady()
-  return NextResponse.json(view(row, a))
+  return NextResponse.json(view(row, a, a.capture ? await rootStanding(a.session.userId) : 'none'))
 })
 
 export const PUT = withRouteErrors('Could not save the instance settings', async (request: NextRequest) => {
@@ -117,6 +130,10 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
       return NextResponse.json({ error: `${f} must be text`, code: 'invalid_field', field: f }, { status: 400 })
     }
   }
+  const policy = parseSecurityPolicyPatch(body)
+  if ('error' in policy) {
+    return NextResponse.json({ error: policy.error.message, code: 'invalid_field', field: policy.error.field }, { status: 400 })
+  }
 
   const row = await instanceSettingsInForce()
   if (!row) return notReady()
@@ -130,17 +147,20 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
       fields: captureChanges,
     })
   }
+  const policyChanges = changedSecurityPolicyFields(stored, policy.patch)
+  const standing = a.capture || policyChanges.length ? await rootStanding(a.session.userId) : 'none'
+  if (policyChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_POLICY)
 
   // A new chisel URL must come with its auth typed again (HD-24), and re-pointing a
   // configured tunnel takes the person's password (ID-25); before anything is written.
   const reentry = settingsSecretReentry(stored, body)
   if (reentry) return secretReentryResponse(reentry)
-  if (settingsEndpointChange(stored, body)) {
+  if (settingsEndpointChange(stored, body) || policyChanges.length) {
     const refused = await requireStepUp(request, body.stepUpPassword)
     if (refused) return refused
   }
 
-  if (!tunnelChanges.length && !captureChanges.length) return NextResponse.json(view(row, a))
+  if (!tunnelChanges.length && !captureChanges.length && !policyChanges.length) return NextResponse.json(view(row, a, standing))
 
   const data: Record<string, unknown> = {}
   for (const f of tunnelChanges) {
@@ -149,6 +169,7 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   for (const f of captureChanges) {
     data[f] = f === 'captureProxyEnabled' ? Boolean(body.captureProxyEnabled) : capturePatch[f]
   }
+  for (const f of policyChanges) data[f] = policy.patch[f]
   // A use of the escape hatch is recorded only when it changes something.
   if (tunnelChanges.length && a.tunnels.via === 'compat' && a.principal) {
     await sharedToolAccess(a.principal, 'tunnels')
@@ -170,5 +191,5 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     const tunnelWarning = await pushTunnelConfig(saved)
     if (tunnelWarning) warnings.push(tunnelWarning)
   }
-  return NextResponse.json(view(saved, a, warnings))
+  return NextResponse.json(view(saved, a, standing, warnings))
 })

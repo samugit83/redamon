@@ -9,10 +9,15 @@ import { isLoopModel } from '@/lib/agentInTheLoop'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from '@/lib/authz/adminSet'
-import { writeUserAudit } from '@/lib/userAudit'
+import { userAuditEntry, writeUserAudit, type UserAuditFields } from '@/lib/userAudit'
+import { writeAuditTx } from '@/lib/audit'
 import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rootProtectedAnswer, rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { rbacFlags } from '@/lib/authz/flags'
+import { lockedInstanceRoot } from '@/lib/authz/root'
+import { requireRootPower, rootOnlyRefusal } from '@/lib/authz/rootPowers'
+import type { RootGuardRefusal } from '@/lib/authz/adminSet'
+import type { Session } from '@/lib/session'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -36,20 +41,20 @@ type AuditedFields = { name?: string | null; email?: string | null; role?: strin
 /**
  * `user.update` (name, email) and `user.role_changed`, each only for the fields this
  * request wrote that really changed. The remembered model defaults are preferences
- * the project form saves often, not account administration: no row.
+ * the project form saves often, not account administration: no row. A role change that
+ * raised the session version (identity switch on) records the new version.
  */
-async function auditUserEdit(
-  request: NextRequest,
-  session: { userId: string; role: string },
+function userEditRows(
   id: string,
   written: Record<string, string>,
   before: AuditedFields | null,
-  after: AuditedFields,
-): Promise<void> {
+  after: AuditedFields & { sessionVersion?: number },
+): UserAuditFields[] {
   const changed = (k: keyof AuditedFields) => k in written && (before?.[k] ?? null) !== (after[k] ?? null)
   const fields = (['name', 'email'] as const).filter(changed)
+  const rows: UserAuditFields[] = []
   if (fields.length > 0) {
-    await writeUserAudit(request, session, {
+    rows.push({
       action: 'user.update',
       targetId: id,
       before: Object.fromEntries(fields.map(k => [k, before?.[k] ?? null])),
@@ -57,21 +62,119 @@ async function auditUserEdit(
     })
   }
   if (changed('role')) {
-    await writeUserAudit(request, session, {
+    rows.push({
       action: 'user.role_changed',
       targetId: id,
       before: { role: before?.role ?? null },
-      after: { role: after.role ?? null },
+      after: { role: after.role ?? null, ...(after.sessionVersion !== undefined ? { sessionVersion: after.sessionVersion } : {}) },
     })
   }
+  return rows
+}
+
+async function auditUserEdit(
+  request: NextRequest,
+  session: Session,
+  id: string,
+  written: Record<string, string>,
+  before: AuditedFields | null,
+  after: AuditedFields,
+): Promise<void> {
+  for (const row of userEditRows(id, written, before, after)) await writeUserAudit(request, session, row)
 }
 
 /**
  * Identity switch on: the guard's transaction also takes the Root lock and reads the Root
- * again, so a Root chosen or moved since this request's check is never demoted or deleted.
+ * again, so a Root chosen or moved since this request's check is never demoted or deleted;
+ * `needsRoot` when the action is Root's power (step 2.6), which is checked again there too.
  */
-function rootRecheck(session: { userId: string }) {
-  return rbacFlags().identity ? { root: { actorId: session.userId } } : {}
+function rootRecheck(session: { userId: string }, needsRoot = false) {
+  return rbacFlags().identity ? { root: { actorId: session.userId, needsRoot } } : {}
+}
+
+const ROOT_ONLY_EDIT = 'Only Root can make an admin, or change, demote or delete another admin account.'
+
+/** The answer to a write the Root re-check refused inside its transaction. */
+async function rootGuardAnswer(
+  request: NextRequest, session: Session, id: string, refused: RootGuardRefusal, attempted: 'role_change' | 'edit' | 'delete',
+): Promise<NextResponse> {
+  if (refused === 'root_only') return rootOnlyRefusal('none', ROOT_ONLY_EDIT)
+  return rootProtectedAnswer(request, session, id, attempted)
+}
+
+/** What the browser gets: never the session version. */
+function publicUser<T extends { sessionVersion?: number }>(user: T): Omit<T, 'sessionVersion'> {
+  const { sessionVersion: _sessionVersion, ...rest } = user
+  return rest
+}
+
+/**
+ * PUT with the identity switch on (step 2.6, ID-03, PE-08, T5). Promoting a member, and any
+ * change to another admin's account, is the confirmed Root's power with its password; an admin
+ * acts on members and on its own account (its own demotion included, under the last-admin
+ * rule). A role change raises the account's session version in the same transaction as the role
+ * and its audit rows (written fail closed), so the role a cookie was signed for never outlives
+ * it; the transaction holds the Root lock and checks Root again.
+ */
+async function updateWithIdentity(
+  request: NextRequest, session: Session, id: string, data: Record<string, string>, stepUpPassword: unknown,
+): Promise<NextResponse> {
+  const target = await prisma.user.findUnique({ where: { id }, select: { role: true } })
+  if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  const roleChange = 'role' in data && data.role !== target.role
+  const otherAdmin = id !== session.userId && target.role === 'admin'
+  const needsRoot = otherAdmin || (roleChange && data.role === 'admin')
+  if (needsRoot) {
+    const refusal = await requireRootPower(request, session, stepUpPassword, ROOT_ONLY_EDIT)
+    if (refusal) return refusal
+  }
+  const select = { ...USER_SELECT, sessionVersion: true } as const
+  const attempted = roleChange ? 'role_change' : 'edit'
+
+  if (!roleChange && !needsRoot) {
+    const before = ('name' in data || 'email' in data)
+      ? await prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
+      : null
+    const user = await prisma.user.update({ where: { id }, data, select: USER_SELECT })
+    invalidatePrincipal(id)
+    await auditUserEdit(request, session, id, data, before, user)
+    return NextResponse.json(user)
+  }
+
+  const writeEdit = async (tx: Prisma.TransactionClient, before: AuditedFields | null) => {
+    const bump = 'role' in data && data.role !== before?.role
+    const user = await tx.user.update({
+      where: { id }, data: (bump ? { ...data, sessionVersion: { increment: 1 } } : data) as Prisma.UserUpdateInput, select,
+    })
+    for (const row of userEditRows(id, data, before, bump ? user : publicUser(user))) {
+      await writeAuditTx(tx, await userAuditEntry(request, session, row))
+    }
+    return user
+  }
+
+  if (roleChange && data.role === 'standard') {
+    const result = await withLastAdminGuard(id, (tx, before) => writeEdit(tx, before), rootRecheck(session, needsRoot))
+    if (!result.ok) {
+      if (result.refused) return rootGuardAnswer(request, session, id, result.refused, attempted)
+      return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
+    }
+    invalidatePrincipal(id)
+    return NextResponse.json(publicUser(result.value))
+  }
+
+  type Outcome = { refused: RootGuardRefusal } | { missing: true } | { user: Awaited<ReturnType<typeof writeEdit>> }
+  const result = await prisma.$transaction(async (tx): Promise<Outcome> => {
+    const root = await lockedInstanceRoot(tx)
+    if (root && root.userId === id && id !== session.userId) return { refused: 'root_protected' }
+    if (needsRoot && !(root && root.userId === session.userId && root.confirmed)) return { refused: 'root_only' }
+    const before = await tx.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
+    if (!before) return { missing: true }
+    return { user: await writeEdit(tx, before) }
+  })
+  if ('refused' in result) return rootGuardAnswer(request, session, id, result.refused, attempted)
+  if ('missing' in result) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  invalidatePrincipal(id)
+  return NextResponse.json(publicUser(result.user))
 }
 
 /** Another admin's account changes hands only with the acting admin's own password. */
@@ -195,6 +298,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json(EMAIL_TAKEN, { status: 409 })
     }
 
+    if (rbacFlags().identity) return await updateWithIdentity(request, session, id, data, stepUpPassword)
+
     if (data.role !== 'standard') {
       const before = ('name' in data || 'email' in data || 'role' in data)
         ? await prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
@@ -215,7 +320,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       user: await tx.user.update({ where: { id }, data, select: USER_SELECT }),
     }), rootRecheck(session))
     if (!result.ok) {
-      if (result.refused) return rootProtectedAnswer(request, session, id, 'role_change')
+      if (result.refused) return rootGuardAnswer(request, session, id, result.refused, 'role_change')
       return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
     }
     invalidatePrincipal(id)
@@ -261,18 +366,22 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const rootRefusal = await rootProtectedRefusal(request, session, id, 'delete')
     if (rootRefusal) return rootRefusal
     const targetIsAdmin = target?.role === 'admin'
+    // Identity switch on: deleting an admin is the confirmed Root's power (step 2.6).
+    const rootPower = targetIsAdmin && rbacFlags().identity
     if (targetIsAdmin) {
       const body = await request.json().catch(() => null)
-      const refusal = await requireStepUp(request, body?.stepUpPassword)
+      const refusal = rootPower
+        ? await requireRootPower(request, session, body?.stepUpPassword, 'Only Root can delete an admin account.')
+        : await requireStepUp(request, body?.stepUpPassword)
       if (refusal) return refusal
     }
 
     // The teardown below cannot be undone, so a deletion the last-admin rule
     // refuses is refused before it; the delete itself checks again under the lock.
     if (targetIsAdmin) {
-      const allowed = await withLastAdminGuard(id, async () => undefined, rootRecheck(session))
+      const allowed = await withLastAdminGuard(id, async () => undefined, rootRecheck(session, rootPower))
       if (!allowed.ok) {
-        if (allowed.refused) return rootProtectedAnswer(request, session, id, 'delete')
+        if (allowed.refused) return rootGuardAnswer(request, session, id, allowed.refused, 'delete')
         return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
       }
     }
@@ -331,9 +440,9 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     if (targetIsAdmin) {
       // The deleter is an admin, but a concurrent demotion of the deleter could
       // leave nobody: the same locked check as a demotion.
-      const result = await withLastAdminGuard(id, deleteAccount, rootRecheck(session))
+      const result = await withLastAdminGuard(id, deleteAccount, rootRecheck(session, rootPower))
       if (!result.ok) {
-        if (result.refused) return rootProtectedAnswer(request, session, id, 'delete')
+        if (result.refused) return rootGuardAnswer(request, session, id, result.refused, 'delete')
         return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
       }
       templatesReassigned = result.value

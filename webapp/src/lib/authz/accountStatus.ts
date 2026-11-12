@@ -10,9 +10,10 @@
  * MCP token is revoked. Enabling puts the held password back, unless a password was set while
  * the account was disabled, which then stays.
  *
- * Who acts on whom (§4.8, D-02): admins act on members. An admin target needs Root, whose path
- * step 2.6 opens (`adminTarget`); until then it is refused with `root_only`. Disabling runs in
- * the last-admin guard, so even Root can never disable the last admin with a password.
+ * Who acts on whom (§4.8, D-02): admins act on members. An admin target is the confirmed Root's
+ * (step 2.6): its route checks Root's power and password and passes `adminTarget`; without it an
+ * admin target is refused with `root_only`. Disabling runs in the last-admin guard, so even Root
+ * can never disable the last admin with a password.
  */
 import { NextResponse, type NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
@@ -33,7 +34,7 @@ import { rootProtectedAnswer } from './rootProtection'
 export type StatusPermission = 'users:disable' | 'users:revoke_sessions'
 
 export interface StatusOptions {
-  /** Root's path (step 2.6): another admin may be the target. */
+  /** Root's path (step 2.6): another admin may be the target; the route checked Root's power. */
   adminTarget?: boolean
 }
 

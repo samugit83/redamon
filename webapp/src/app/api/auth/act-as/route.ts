@@ -8,6 +8,8 @@ import { withRouteErrors } from '@/lib/routeErrors'
 import { requireStepUp } from '@/lib/authz/stepUp'
 import { presentedActAs } from '@/lib/userAudit'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
+import { requireRootPower } from '@/lib/authz/rootPowers'
+import { rbacFlags } from '@/lib/authz/flags'
 
 // Impersonation ("switch user") is an ADMIN-only, server-authorized act. The
 // client can no longer decide "which user am I" via a localStorage value: the
@@ -55,9 +57,12 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
   const rootRefusal = await rootProtectedRefusal(request, admin, targetUserId, 'act_as')
   if (rootRefusal) return rootRefusal
   // Acting as another admin borrows that admin's account: the acting admin's own
-  // password first, like a reset of it.
+  // password first, like a reset of it. With the identity switch on only the confirmed
+  // Root may, until Phase 3's impersonation rules (step 2.6).
   if (target.role === 'admin') {
-    const refusal = await requireStepUp(request, body?.stepUpPassword)
+    const refusal = rbacFlags().identity
+      ? await requireRootPower(request, admin, body?.stepUpPassword, 'Only Root can act as another admin.')
+      : await requireStepUp(request, body?.stepUpPassword)
     if (refusal) return refusal
   }
 
