@@ -1,11 +1,12 @@
 /**
  * The project layer of the policy (feature document §4.2, §6.1): how far a person may go on one
- * project. `can()` asks it for every permission that acts on a project; the owner helpers of
- * access.ts, triageClient.ts, mcpAuth.ts and the plugin platform delegate to it (step 3.6).
+ * project. `can()` asks it for every permission that acts on a project, and the owner helpers of
+ * access.ts, triageClient.ts, mcpAuth.ts and the plugin platform delegate to it, so one function
+ * decides who sees a project.
  *
- * Owner-only in Phase 3: the owner sees the project and holds every level; anyone else, and a
- * project that does not exist, get the same null, so the caller answers 404 for both
- * (anti-enumeration). Phase 4 adds shares, with their levels and toggles.
+ * Owner-only, since a project has no members: the owner sees the project and holds every level;
+ * anyone else, and a project that does not exist, get the same null, so the caller answers 404
+ * for both and a stranger cannot tell that a project exists.
  *
  * The person is the effective user: under act-as, the account acted as (`getEffectiveUser`).
  * One read by primary key; a failed read throws, it never reads as access.
@@ -20,7 +21,7 @@ export interface ProjectAccessSubject {
 
 export interface ProjectAccess {
   project: { id: string; userId: string }
-  /** `owner` is the only level until Phase 4 adds shares. */
+  /** `owner` is the only level: a project has no members to hold a lesser one. */
   level: 'owner'
 }
 
@@ -37,7 +38,8 @@ export async function projectAccess(subject: ProjectAccessSubject, projectId: st
 
 /**
  * Whether the access reaches the level a permission needs (§5 legend). The owner reaches every
- * level; any other access reaches none until Phase 4 writes the table for shares (fail closed).
+ * level; any other access reaches none, so a kind of access added without its own level table
+ * fails closed.
  */
 export function meetsLevel(access: ProjectAccess, _needed: ProjectLevel): boolean {
   return access.level === 'owner'
