@@ -18,6 +18,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({
 }))
 
 // Ownership is covered by the BOLA + live E2E tests; stub the guard open here.
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: vi.fn().mockResolvedValue(null) }))
 
 let statResult: { isFile: () => boolean; size: number } | null = null

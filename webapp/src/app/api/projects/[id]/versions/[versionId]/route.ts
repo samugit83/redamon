@@ -10,8 +10,8 @@
  * unpinned first. Both are destructive-confirmed in the UI and audited here.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { requireVersionInProject } from '@/lib/scanVersionAccess'
 import { sanitizeVersionLabel } from '@/lib/scanVersionLabel'
 import { writeAudit } from '@/lib/audit'
@@ -24,10 +24,9 @@ interface RouteParams {
 export const PATCH = withRouteErrors('Failed to update version', async (request: NextRequest, { params }: RouteParams) => {
   const { id, versionId } = await params
 
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'scan:versions', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
   const version = await requireVersionInProject(id, versionId)
   if (version instanceof NextResponse) return version
 
@@ -76,13 +75,12 @@ export const PATCH = withRouteErrors('Failed to update version', async (request:
   }
 })
 
-export const DELETE = withRouteErrors('Failed to delete version', async (_request: NextRequest, { params }: RouteParams) => {
+export const DELETE = withRouteErrors('Failed to delete version', async (request: NextRequest, { params }: RouteParams) => {
   const { id, versionId } = await params
 
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'scan:versions_delete', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
   const version = await requireVersionInProject(id, versionId)
   if (version instanceof NextResponse) return version
 

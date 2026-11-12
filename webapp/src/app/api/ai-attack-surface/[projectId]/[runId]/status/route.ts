@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
 
@@ -14,10 +14,10 @@ const UNAVAILABLE = 'AI Gauntlet status unavailable'
 // GET /api/ai-attack-surface/{projectId}/{runId}/status
 // The orchestrator answers `idle` itself for a run it does not know, so any
 // failure here is a real one: a synthetic idle would make a live run look stopped.
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   const { projectId, runId } = await params
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'recon:read', { projectId })
+  if (auth instanceof NextResponse) return auth
   let response: Response
   try {
     response = await orchestratorFetch(

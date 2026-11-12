@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { getEffectiveUser } from '@/lib/session'
 import { recordScanStart } from '@/lib/scanTimeline'
 import { currentRoeTextSha256 } from '@/lib/engagement'
@@ -27,8 +27,8 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'scan:gvm', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     // S-4: held from the activation check through the orchestrator's answer
     // (startUnderGraphLock), since the run writes the live graph.

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { internalError } from '@/lib/routeErrors'
 
@@ -10,10 +10,10 @@ interface RouteParams {
 // GET /api/ai-attack-surface/{projectId}/targets
 // The §2 node picker: selectable AI endpoints (chat/completion) recon annotated,
 // enriched with the context the request template is built from (§2.3).
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   const { projectId } = await params
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'recon:read', { projectId })
+  if (auth instanceof NextResponse) return auth
   const session = getGraphSession()
   try {
     const res = await session.run(

@@ -11,7 +11,7 @@
  * (POST .../activate).
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { requireVersionInProject } from '@/lib/scanVersionAccess'
 import { loadSnapshot, snapshotToGraphPayload } from '@/lib/scanSnapshot'
 import { readLiveGraph } from '@/app/api/graph/liveRead'
@@ -21,13 +21,11 @@ interface RouteParams {
   params: Promise<{ id: string; versionId: string }>
 }
 
-export const GET = withRouteErrors('Failed to read version graph', async (_request: NextRequest, { params }: RouteParams) => {
+export const GET = withRouteErrors('Failed to read version graph', async (request: NextRequest, { params }: RouteParams) => {
   const { id, versionId } = await params
 
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'recon:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
 
   // Anti-IDOR: the version id is client-supplied and must belong to this project.
   const version = await requireVersionInProject(id, versionId)

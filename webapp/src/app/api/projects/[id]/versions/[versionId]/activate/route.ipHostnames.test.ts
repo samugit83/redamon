@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   invalidate: vi.fn(),
 }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: async () => ({ userId: 'operator' }),
   requireProjectAccess: async () => ({ project: { id: 'p1', userId: 'owner' } }),

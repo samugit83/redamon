@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { recordRunStopped } from '@/lib/scanTimeline'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
@@ -13,10 +13,10 @@ interface RouteParams {
 const FAILED = 'Failed to stop AI Gauntlet scan'
 
 // POST /api/ai-attack-surface/{projectId}/{runId}/stop
-export async function POST(_request: NextRequest, { params }: RouteParams) {
+export async function POST(request: NextRequest, { params }: RouteParams) {
   const { projectId, runId } = await params
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'scan:ai_attack', { projectId })
+  if (auth instanceof NextResponse) return auth
   let response: Response
   try {
     response = await orchestratorFetch(

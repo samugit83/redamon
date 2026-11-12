@@ -6,8 +6,8 @@
  *                                    ("Save current as a version", Section 5)
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { writeAudit } from '@/lib/audit'
 import {
   captureGraphSnapshot,
@@ -26,12 +26,10 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-export const GET = withRouteErrors('Failed to list versions', async (_request: NextRequest, { params }: RouteParams) => {
+export const GET = withRouteErrors('Failed to list versions', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'recon:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
 
   try {
     // A project that predates the Scan Timeline gets its v1 (= the live graph)
@@ -90,10 +88,9 @@ export const GET = withRouteErrors('Failed to list versions', async (_request: N
 
 export const POST = withRouteErrors('Failed to save the current graph as a version', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'scan:versions', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
 
   // S-4: held from the checks through the rotate, so neither a scan start nor an
   // activation can change the graph or the current version in between.

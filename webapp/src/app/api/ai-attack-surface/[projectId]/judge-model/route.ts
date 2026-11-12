@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { upstreamFailure } from '@/lib/routeErrors'
 
@@ -25,10 +25,10 @@ const unavailable = (reason: string, status = 503, extra: Record<string, unknown
 // /local-llm/status), so the page starts from the backend's model rather than
 // a literal of its own. Only the model name is passed on: the status also
 // carries the container id, the base URL and the pulled models.
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   const { projectId } = await params
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'recon:read', { projectId })
+  if (auth instanceof NextResponse) return auth
   let response: Response
   try {
     response = await orchestratorFetch(

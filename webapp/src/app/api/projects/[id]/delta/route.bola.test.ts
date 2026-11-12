@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   describeWriters: vi.fn(),
 }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => h.requireEff(),
   requireProjectAccess: (...a: unknown[]) => h.requireProjectAccess(...a),

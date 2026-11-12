@@ -1,5 +1,5 @@
-import { NextRequest } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
 
@@ -14,8 +14,8 @@ const FAILED = 'Failed to connect to AI Gauntlet log stream'
 // GET /api/ai-attack-surface/{projectId}/{runId}/logs - proxy the SSE stream.
 export async function GET(request: NextRequest, { params }: RouteParams) {
   const { projectId, runId } = await params
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'recon:read', { projectId })
+  if (auth instanceof NextResponse) return auth
 
   let response: Response
   try {

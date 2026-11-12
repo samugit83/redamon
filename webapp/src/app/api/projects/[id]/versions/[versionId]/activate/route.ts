@@ -19,8 +19,8 @@
  * bytes are untouched), so re-running the activation simply rebuilds X.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
 import { requireVersionInProject, type OwnedVersion } from '@/lib/scanVersionAccess'
 import { writeAudit } from '@/lib/audit'
 import {
@@ -44,13 +44,12 @@ interface RouteParams {
   params: Promise<{ id: string; versionId: string }>
 }
 
-export const POST = withRouteErrors('Activation failed', async (_request: NextRequest, { params }: RouteParams) => {
+export const POST = withRouteErrors('Activation failed', async (request: NextRequest, { params }: RouteParams) => {
   const { id, versionId } = await params
 
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'scan:versions', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const eff = auth.effective
 
   // Anti-IDOR: never activate a version that belongs to another project.
   const target = await requireVersionInProject(id, versionId)

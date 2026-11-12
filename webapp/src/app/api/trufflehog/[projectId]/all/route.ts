@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { reconcileRunScanJobs } from '@/lib/scanTimeline'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
@@ -23,8 +23,8 @@ interface RouteParams {
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'recon:read', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     // Never an empty list on failure: "no runs" would let a caller treat a
     // source that is still writing findings as finished.

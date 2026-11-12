@@ -10,6 +10,7 @@ import { NextRequest } from 'next/server'
 
 const h = vi.hoisted(() => ({ run: vi.fn(), close: vi.fn() }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: async () => null }))
 vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: h.run, close: h.close }) }))
 

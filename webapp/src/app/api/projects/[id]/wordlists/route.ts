@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import { mkdir, readdir, stat, unlink, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import path from 'path'
-import { guardProject } from '@/lib/access'
 import { declaredBodyTooLarge } from '@/lib/roe/upload'
 import { internalError } from '@/lib/routeErrors'
 
@@ -54,11 +54,11 @@ async function listWordlists(projectId: string) {
 }
 
 // GET /api/projects/[id]/wordlists -- list uploaded wordlists
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const denied = await guardProject(id)
-    if (denied) return denied
+    const auth = await requirePermission(request, 'recon:read', { projectId: id })
+    if (auth instanceof NextResponse) return auth
     const wordlists = await listWordlists(id)
     return NextResponse.json({ wordlists })
   } catch (error) {
@@ -70,8 +70,8 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const denied = await guardProject(id)
-    if (denied) return denied
+    const auth = await requirePermission(request, 'scan:uploads', { projectId: id })
+    if (auth instanceof NextResponse) return auth
     const lengthProblem = declaredBodyTooLarge(request, MAX_FILE_SIZE)
     if (lengthProblem) return lengthProblem
 
@@ -126,8 +126,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
-    const denied = await guardProject(id)
-    if (denied) return denied
+    const auth = await requirePermission(request, 'scan:uploads', { projectId: id })
+    if (auth instanceof NextResponse) return auth
     const name = request.nextUrl.searchParams.get('name')
 
     if (!name) {

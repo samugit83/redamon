@@ -22,6 +22,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({
 
 const findUnique = vi.fn()
 vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: (...a: unknown[]) => findUnique(...a) } } }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: vi.fn().mockResolvedValue(null) }))
 vi.mock('@/lib/scanTimeline', () => ({
   reconcileRunScanJobs: vi.fn().mockResolvedValue(undefined),

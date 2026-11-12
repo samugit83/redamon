@@ -24,11 +24,15 @@ const WEBAPP = join(__dirname, '..', '..', '..')
 const WAVE_A: readonly RegExp[] = [
   /^\/api\/recon\//,
   /^\/api\/job-queue\//,
-  /^\/api\/projects\/\[id\]\/(queue|schedules)(\/|$)/,
+  /^\/api\/(gvm|github-hunt|trufflehog|supply-chain|ai-attack-surface|js-recon)\//,
+  /^\/api\/projects\/\[id\]\/(queue|schedules|versions|delta|supply-chain-batch|wordlists)(\/|$)/,
 ]
 
 /** Routes of these families that answer every signed-in account, and why (3.9 gives them `permission: null`). */
-const SESSION_ONLY: Readonly<Record<string, string>> = {}
+const SESSION_ONLY: Readonly<Record<string, string>> = {
+  '/api/gvm/available': 'whether this install runs the GVM stack: an instance fact the scan tab reads to show or hide itself, no project data',
+  '/api/js-recon/trufflehog/available': 'whether the TruffleHog image is present: an instance fact the JS recon tab reads, no project data',
+}
 
 const HANDLER_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 

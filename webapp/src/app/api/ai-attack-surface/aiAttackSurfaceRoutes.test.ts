@@ -24,6 +24,7 @@ vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: (...a: unknow
 
 // Ownership is covered by the BOLA + live E2E tests; stub the guard open here so
 // these tests stay focused on the route's neo4j/data behavior.
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: vi.fn().mockResolvedValue(null) }))
 
 const targetsRoute = await import('./[projectId]/targets/route')

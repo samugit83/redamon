@@ -1,6 +1,6 @@
 /**
  * Scan Queue Phase 6 - create a supply-chain org batch. Project-scoped, so
- * guardProject runs FIRST. Enumerates the GitHub org's repos and, in ONE
+ * the project check (scan:supply_chain) runs FIRST. Enumerates the GitHub org's repos and, in ONE
  * transaction, writes the batch, its items, and one supply_chain_repo JobQueue row
  * per repo (priority -10, below manual and scheduled). The dispatcher runs them.
  *
@@ -14,9 +14,9 @@
  * Enterprise token is never sent to api.github.com and vice versa.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
-import { guardProject } from '@/lib/access'
 import { getEffectiveUser } from '@/lib/session'
 import { settingsFingerprint, envelopeForKind } from '@/lib/jobQueue'
 import { listOwnerRepos, isValidGitRef, GithubEnumError } from '@/lib/github/orgRepos'
@@ -32,8 +32,8 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id: projectId } = await params
-    const denied = await guardProject(projectId)
-    if (denied) return denied
+    const auth = await requirePermission(request, 'scan:supply_chain', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     const eff = await getEffectiveUser()
     if (!eff?.userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

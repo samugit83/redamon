@@ -19,6 +19,7 @@ const h = vi.hoisted(() => {
   return { root, guard: vi.fn() }
 })
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: (...a: unknown[]) => h.guard(...a) }))
 
 import { GET, POST, DELETE } from './route'

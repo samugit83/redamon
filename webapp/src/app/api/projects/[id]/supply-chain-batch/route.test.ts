@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   listOwnerRepos: vi.fn(),
 }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: (...a: unknown[]) => h.guardProject(...a) }))
 vi.mock('@/lib/session', () => ({ getEffectiveUser: () => h.effectiveUser() }))
 vi.mock('@/lib/prisma', () => ({

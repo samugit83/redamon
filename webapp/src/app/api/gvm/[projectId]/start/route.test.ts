@@ -37,6 +37,7 @@ vi.mock('fs', async orig => ({
   ...(await orig<typeof import('fs')>()),
   existsSync: (...a: unknown[]) => h.existsSync(...a),
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({
   guardProject: (...a: unknown[]) => h.guard(...a),
   requireEffectiveUser: vi.fn().mockResolvedValue({ userId: 'u1' }),

@@ -43,12 +43,17 @@ describe('every project-scoped Scan Timeline route proves project ownership', ()
     expect(files.length).toBeGreaterThanOrEqual(6)
   })
 
+  // Step 3.8: the routes ask requirePermission on their project, whose check is the same
+  // projectAccess() rule requireEffectiveUser + requireProjectAccess made; every handler names it.
   test.each(PROJECT_SCOPED.flatMap(d => routeFiles(d).map(f => [path.relative(API, f), f] as const)))(
-    '%s calls requireEffectiveUser + requireProjectAccess',
+    '%s checks the project in every handler (requirePermission with its projectId)',
     (_rel, file) => {
       const src = readFileSync(file, 'utf8')
-      expect(src).toContain('requireEffectiveUser')
-      expect(src).toContain('requireProjectAccess')
+      const handlers = src.split(/^export (?:async function|const) (?:GET|HEAD|POST|PUT|PATCH|DELETE)\b/m).slice(1)
+      expect(handlers.length).toBeGreaterThan(0)
+      for (const handler of handlers) {
+        expect(handler).toMatch(/requirePermission\(\s*\w+,\s*'[a-z_]+:[a-z_]+',\s*\{\s*projectId\b/)
+      }
     }
   )
 })

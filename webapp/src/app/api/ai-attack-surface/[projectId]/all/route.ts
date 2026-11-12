@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { reconcileRunScanJobs } from '@/lib/scanTimeline'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
@@ -16,10 +16,10 @@ const UNAVAILABLE = 'AI Gauntlet runs unavailable'
 // An orchestrator that cannot answer is a 503/504, never an empty list: the page
 // re-attaches to an in-flight run from this list, and `runs: []` would read as
 // "nothing running" and let a relaunch hit the orchestrator's 409.
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   const { projectId } = await params
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'recon:read', { projectId })
+  if (auth instanceof NextResponse) return auth
   let response: Response
   try {
     response = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}/ai-attack-surface/${projectId}/all`, {

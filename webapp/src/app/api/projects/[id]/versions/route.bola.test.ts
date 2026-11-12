@@ -23,6 +23,7 @@ const mockCreate = vi.fn()
 const mockTransaction = vi.fn()
 const mockRotate = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => mockRequireEff(),
   requireProjectAccess: (...a: unknown[]) => mockRequireProjectAccess(...a),

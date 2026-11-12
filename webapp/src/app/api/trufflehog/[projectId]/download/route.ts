@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { readFile, readdir } from 'fs/promises'
 import path from 'path'
@@ -56,8 +56,8 @@ async function findRunFiles(projectId: string): Promise<string[]> {
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'recon:read', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     const project = await prisma.project.findUnique({
       where: { id: projectId },
@@ -108,8 +108,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 export async function HEAD(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'recon:read', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     const files = await findRunFiles(projectId)
     return new NextResponse(null, { status: files.length > 0 ? 200 : 404 })

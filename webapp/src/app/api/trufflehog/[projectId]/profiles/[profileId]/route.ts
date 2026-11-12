@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { Prisma } from '@prisma/client'
 import { getTrufflehogSource, rejectTrufflehogSecretFields } from '@/lib/trufflehogSources'
@@ -12,8 +12,8 @@ interface RouteParams {
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId, profileId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'scan:secrets', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     // Scoped to the project, not just the id: a profile id from another project
     // must 404, not update.
@@ -56,8 +56,8 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId, profileId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'scan:secrets', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     const profile = await prisma.trufflehogScanProfile.findFirst({
       where: { id: profileId, projectId },

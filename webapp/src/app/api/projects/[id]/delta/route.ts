@@ -12,7 +12,7 @@
  * Read-only: nothing is written, and no snapshot content is logged.
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { SCOPE_SELECT, currentScanRoots } from '@/lib/scanCoverage'
@@ -36,10 +36,8 @@ interface SideDescriptor {
 export const GET = withRouteErrors('Failed to compute the delta', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
 
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, id)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'recon:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
 
   const sp = request.nextUrl.searchParams
   // Anti-IDOR: a version id in `from`/`to` must belong to THIS project.

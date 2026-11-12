@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { reconcileScanJobStatus } from '@/lib/scanTimeline'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
@@ -14,8 +14,8 @@ interface RouteParams {
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'recon:read', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     // An orchestrator that does not answer leaves the scan's state unknown. It
     // used to be reported as a synthetic "idle", which made a running scan look
