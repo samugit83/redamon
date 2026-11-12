@@ -180,6 +180,19 @@ function emptyServer(): MCPServer {
   }
 }
 
+/**
+ * A listed server as the table and the editor read it. The list route returns rows as
+ * stored and the schema's defaults apply only on save, so a row written by a script or
+ * an older version can lack the two lists read here without a guard.
+ */
+function withListDefaults(srv: MCPServer): MCPServer {
+  return {
+    ...srv,
+    tools: Array.isArray(srv.tools) ? srv.tools : [],
+    default_phases: Array.isArray(srv.default_phases) ? srv.default_phases : [...PHASES],
+  }
+}
+
 function transportIcon(t: Transport) {
   if (t === 'stdio') return <Terminal size={14} />
   return <Globe size={14} />
@@ -241,7 +254,7 @@ export default function McpServersTab({ userId, onDirtyChange }: Props) {
       const r = await fetch(`/api/users/${userId}/mcp`)
       if (r.ok) {
         const data = await r.json()
-        setServers(Array.isArray(data.servers) ? data.servers : [])
+        setServers(Array.isArray(data.servers) ? data.servers.map(withListDefaults) : [])
         setStdioAllowed(data.stdioAllowed !== false)
         setLoadError(null)
       } else {

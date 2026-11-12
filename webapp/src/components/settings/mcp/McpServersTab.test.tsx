@@ -82,6 +82,23 @@ describe('list', () => {
     expect(await screen.findByText('Probe')).toBeInTheDocument()
     expect(screen.queryByRole('alert')).toBeNull()
   })
+
+  test('a stored server without its lists renders and opens for editing', async () => {
+    // The list route returns rows as stored; a row written by a script or an older
+    // version can lack `tools` and `default_phases` (the schema's defaults apply only on save).
+    const { tools: _t, default_phases: _p, tags: _g, args: _a, env: _e, headers: _h, ...bare } = SERVER
+    answers.list = json(200, { servers: [{ ...bare, transport: 'streamable_http', url: 'http://127.0.0.1:9/mcp', command: undefined }] })
+    render(<McpServersTab userId="u1" />)
+    const row = (await screen.findByText('Probe')).closest('tr') as HTMLElement
+    expect(within(row).getByText('0')).toBeInTheDocument()
+
+    fireEvent.click(within(row).getByTitle('Edit'))
+    await screen.findByText('Edit MCP Tool Plugin: probe')
+    expect(screen.getByText(/No tools yet/)).toBeInTheDocument()
+    const phases = within(screen.getByText(/^default phases/).closest('label') as HTMLElement).getAllByRole('checkbox')
+    expect(phases.map((box) => [box.parentElement?.textContent, (box as HTMLInputElement).checked]))
+      .toEqual([['informational', true], ['exploitation', true], ['post_exploitation', true]])
+  })
 })
 
 describe('Enable toggle', () => {
