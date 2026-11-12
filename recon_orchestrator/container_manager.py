@@ -1644,9 +1644,11 @@ class ContainerManager:
 
     def sweep_trufflehog_stages(self, root: Optional[str] = None) -> int:
         """At startup: delete the stage dirs whose run has no live recon or
-        partial-recon container. Runs survive an orchestrator restart and are
-        re-adopted, so a live run's dir is spared; when the containers cannot
-        be listed nothing is deleted."""
+        partial-recon container. A scan outlives an orchestrator restart but
+        the new process does not adopt it, so liveness comes from the daemon's
+        container list, not the state dicts: a run whose container is neither
+        exited nor dead keeps its dir. When the containers cannot be listed
+        nothing is deleted."""
         try:
             live = set()
             for prefix in ("redamon-recon-", "redamon-partial-recon-"):

@@ -3,8 +3,9 @@
 A run stages copies of a target's JavaScript in /tmp/redamon/js_recon_th_<run>_<8 hex>
 and removes them itself; when its container is killed at the stop grace or
 crashes, the orchestrator removes them where it reaps the run's tools, at run
-completion, and in a startup sweep that spares every run still alive (runs
-survive an orchestrator restart and are re-adopted). Availability is an
+completion, and in a startup sweep that spares every run whose container the
+daemon still lists as live (a run outlives an orchestrator restart without
+being adopted, so the startup state dicts are empty). Availability is an
 uncached image lookup for the webapp's form.
 """
 import os

@@ -751,7 +751,8 @@ async def lifespan(app: FastAPI):
     # local-fixture sources find an empty directory rather than a guessed one.
     container_manager.trufflehog_scan_targets = _host_mounts.get("/app/scan_targets", "")
     # Copies of target JS a JS Recon run left behind (its container was killed
-    # or crashed); a live, re-adopted run keeps its own.
+    # or crashed). A scan outlives an orchestrator restart without being
+    # adopted, so a run the daemon still lists as live keeps its own.
     await container_manager._run_blocking(container_manager.sweep_trufflehog_stages)
     reaper = asyncio.create_task(_ai_attack_reaper())
     capture_reconciler = asyncio.create_task(_capture_config_reconcile())
