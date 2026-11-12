@@ -597,7 +597,7 @@ Hakrawler scope filtering works at two levels:
 | Level | Mechanism | Description |
 |-------|-----------|-------------|
 | **Crawl scope** | `-subs` flag | If `INCLUDE_SUBS=True`, Hakrawler follows links to subdomains of the target. Forced off on an EXACT (listed-hosts) group, in full and partial runs; a partial run passes one flag for every seed, so one EXACT group in it turns it off for the whole run. Also forced off while any RoE exclusion is in force and in IP mode (`redirects_contained`): `-subs` widens the only filter hakrawler applies before a request, so it would follow a link or a redirect into an excluded sibling; without it hakrawler stays on the seed's host, same-host redirects included. The log says `[*][Hakrawler] Seed hosts only (RoE exclusions or the IP target list are in force): subdomain crawling off` |
-| **Output scope** | Hostname exact match | After crawling, results are filtered against `target_domains` set (from http_probe). URLs with hostnames not in scope are captured as `ExternalDomain` nodes instead of `Endpoint` nodes |
+| **Output scope** | Hostname exact match | After crawling, results are filtered against `target_domains` set (from http_probe). URLs with hostnames not in scope are recorded as external domains instead of `Endpoint` nodes: an `ExternalDomain` when the host is under none of the project's scan roots; a host under a scan root becomes neither an `ExternalDomain` nor a Subdomain, it only links to a Subdomain the graph already holds, so a link never adds a name the run did not admit |
 
 ### 3. What Hakrawler Finds
 
@@ -606,7 +606,7 @@ Hakrawler scope filtering works at two levels:
 | **DOM links** | `<a href="...">`, `<link>`, `<script src>` | Links that JS-rendered crawlers may miss |
 | **Form actions** | `<form action="/submit">` | POST endpoints for parameter fuzzing |
 | **Asset references** | CSS imports, image URLs, font files | Reveals directory structure |
-| **Subdomain links** | Links pointing to `api.example.com` | Discovers related subdomains |
+| **Subdomain links** | Links pointing to `api.example.com` | Shows links between the project's hosts; a linked name is never added as a Subdomain (see Output scope) |
 | **External domains** | Links to third-party services | Maps external dependencies |
 
 ### 4. Stealth Mode
@@ -638,7 +638,7 @@ jsluice sends HTTP requests to download each JS file from the target, then analy
 2. **Download**: Fetches JS files to a temporary directory (`/tmp/redamon/jsluice_<pid>/`)
 3. **Analyze URLs**: Runs `jsluice urls` to extract embedded URLs and API endpoints
 4. **Analyze Secrets**: Runs `jsluice secrets` to detect API keys, tokens, credentials
-5. **Scope filter**: Extracted URLs are filtered against `allowed_hosts`; out-of-scope URLs become `ExternalDomain` nodes
+5. **Scope filter**: Extracted URLs are filtered against `allowed_hosts`; an out-of-scope host becomes an `ExternalDomain` when it is under none of the project's scan roots, and otherwise only links to a Subdomain the graph already holds (never a new one)
 6. **Cleanup**: Temporary files are deleted in a `finally` block
 
 ### 3. What jsluice Finds

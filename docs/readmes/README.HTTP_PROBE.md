@@ -173,10 +173,14 @@ counts, headers, body or TLS certificate (Go reports the final connection's).
 JARM, the IP, CNAME, ASN and CDN are measured on the requested host and stay.
 The foreign host becomes an external-domain entry (`source:
 "http_probe_redirect"`, `redirect_from_url` = the in-scope URL), which
-`run_http_probe` returns as `http_probe.external_domains` and the pipeline writes
-as an `ExternalDomain`. When neither host is in scope the entry is dropped and
-counted in `summary.filtered_out_of_scope`. `HTTPX_FOLLOW_REDIRECTS` stays on by
-default: with the chain stored, nothing needs the pre-redirect page itself.
+`run_http_probe` returns as `http_probe.external_domains`. The pipeline writes it
+as an `ExternalDomain` only when it is under none of the project's scan roots; a
+host under a scan root that the run did not admit (an EXACT group's unlisted
+name, say) becomes neither an `ExternalDomain` nor a Subdomain: it only links to
+a Subdomain the graph already holds. When neither host is in scope the entry is
+dropped and counted in `summary.filtered_out_of_scope`. `HTTPX_FOLLOW_REDIRECTS`
+stays on by default: with the chain stored, nothing needs the pre-redirect page
+itself.
 
 **What "in scope" means** (`is_host_in_scope()`): a subdomain of a scan root
 (the root itself only when it is a target); for an EXACT scope group or a
@@ -1114,7 +1118,7 @@ docker run --rm --net=host \
 - A URL counts as live when it answered with a status below 500.
 - `summary.total_urls_probed` counts the parsed results; `scan_metadata.total_urls_probed` the URLs sent.
 - `body` is not stored (see [Response Content Inclusion](#8-response-content-inclusion)).
-- `update_graph_from_http_probe` (`graph_db/mixins/recon/http_mixin.py`) writes the result to the graph.
+- `update_graph_from_http_probe` (`graph_db/mixins/recon/http_mixin.py`) writes the result to the graph. httpx does not always name the address it connected to on a name with several addresses, so in a domain run an answer goes (Port, Service, `SERVES_URL`) to the name's address whose port scan has that port open, not always to the `ip` httpx names; IP mode keeps httpx's address.
 
 ---
 
