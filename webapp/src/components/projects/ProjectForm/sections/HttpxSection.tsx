@@ -291,7 +291,7 @@ export function HttpxSection({ data, updateField, onRun }: HttpxSectionProps) {
             <div className={styles.toggleRow}>
               <div>
                 <span className={styles.toggleLabel}>TLS Information</span>
-                <p className={styles.toggleDescription}>Certificate issuer, expiry, and cipher suite details</p>
+                <p className={styles.toggleDescription}>Also probes the hostnames each TLS certificate lists (-tls-probe). Forced off in IP mode and while RoE excluded hosts are set, since those names can be excluded or off the target list.</p>
               </div>
               <Toggle
                 checked={data.httpxProbeTlsInfo}
