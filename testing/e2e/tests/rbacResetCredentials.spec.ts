@@ -61,7 +61,9 @@ test('P2-08: a reset link with a reason signs the member out; the notice is show
     await expect(dialog.getByRole('radio', { name: 'Send a reset link' })).toBeChecked()
     await dialog.getByLabel('Reason').fill(REASON)
     await dialog.getByRole('button', { name: 'Reset credentials' }).click()
-    const link = await dialog.getByLabel('Reset link').inputValue()
+    // A role and an exact name: getByLabel('Reset link') also matches the "Send a reset link" radio
+    // (still shown while the request runs) and the "Copy the reset link" button.
+    const link = await dialog.getByRole('textbox', { name: 'Reset link', exact: true }).inputValue()
     const path = new URL(link).pathname
     expect(path).toMatch(/^\/invite\/[A-Za-z0-9_-]{43}$/)
     await dialog.getByRole('button', { name: 'Done' }).click()

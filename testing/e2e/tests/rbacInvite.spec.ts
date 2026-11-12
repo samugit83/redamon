@@ -39,7 +39,8 @@ test('P2-06: an admin invites, the person accepts the link in a browser of their
     await dialog.getByLabel('Name').fill('RBAC Invitee')
     await dialog.getByLabel('Email').fill(INVITEE)
     await dialog.getByRole('button', { name: 'Create the invite link' }).click()
-    const link = await dialog.getByLabel('Invite link').inputValue()
+    // A role and an exact name: getByLabel('Invite link') also matches the "Copy the invite link" button.
+    const link = await dialog.getByRole('textbox', { name: 'Invite link', exact: true }).inputValue()
     const path = new URL(link).pathname
     const token = path.split('/').pop()!
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
