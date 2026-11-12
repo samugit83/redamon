@@ -266,12 +266,22 @@ docker run --rm --net=host \
   -u file:/targets/targets.txt \   # batch input: one URL per line
   -gr -gp /output/ \               # generate JSON report into /output
   -v 1 -t <concurrency> \          # verbosity, threads
-  [-rr <rps>] [-ch <header>] \     # optional rate cap, custom cache header
+  [-rr <rps>] [-ch <header>] \     # optional rate cap (one for the whole process), custom cache header
   -stime \                         # skip time-based cache detection (FP-prone)
   [-st dos,deception,css]          # SAFETY skips (see below)
 ```
 
 - `--net=host` so loopback/lab targets are reachable from the sibling container.
+- `-rr` is one `golang.org/x/time/rate` limiter (burst 1) shared by every thread and
+  URL, not a per-host rate. Under an RoE rate ceiling C (`ROE_GLOBAL_MAX_RPS`)
+  `run_wcvs` sets `-t 1` and `-rr` to `wcvs_ceiling_rate(C)` (C − 1 for C ≥ 2,
+  1 / (2 + 1/C) below 2, rounded down to a thousandth), or to
+  `WEB_CACHE_POISON_MAX_RPS_PER_HOST` when that is lower. On a cache that answers
+  with an `Age` header WCVS's cache-buster checks take a token, sleep 2 s and
+  only then send, so the delayed request leaves together with the next token's;
+  the rate leaves room for that pair. The run logs
+  `[*][CachePoison] WCVS paced to the 2 rps RoE ceiling: one thread, -rr 1`. With
+  no ceiling the command is unchanged.
 - `get_host_path()` translates `/tmp/redamon` container paths to host paths for the
   bind mounts.
 - Targets and report live under `/tmp/redamon/.cache_scan/<run_id>/`; the directory is
@@ -651,7 +661,7 @@ Naming convention: `web_cache_poison_*` (DB column) → `webCachePoison*`
 | `…_TIMEOUT_PER_REQ` | `10` | native confirmation per-request timeout (s) |
 | `…_CONCURRENCY` | `10` | WCVS threads (breadth sweep) |
 | `…_CONFIRM_WORKERS` | `6` | native confirmation parallel workers - URLs tested concurrently (1 = sequential, max 16); bounds in-flight requests (speed + stealth) |
-| `…_MAX_RPS_PER_HOST` | `0` | rate cap (0 = unlimited) |
+| `…_MAX_RPS_PER_HOST` | `0` | WCVS `-rr`: one rate for the whole WCVS process, all threads and URLs, despite the name (0 = unlimited); under an RoE ceiling WCVS runs at the lower of this and `wcvs_ceiling_rate(C)` |
 | `…_MIN_CONFIDENCE` | `0.8` | finding gate (keeps Confirmed + Strong) |
 | `…_ALLOW_FRAMEWORK_PACKS` | `true` | Next.js/Nuxt/Remix hypothesis packs |
 | `…_ALLOW_DECEPTION` | `true` | web-cache-deception techniques |

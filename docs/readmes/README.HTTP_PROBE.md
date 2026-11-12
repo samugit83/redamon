@@ -103,6 +103,8 @@ All parameters are set in the webapp project settings (stored in PostgreSQL) and
 
 At scan start the engagement ceiling caps `HTTPX_RATE_LIMIT`, the memory governor can lower `HTTPX_THREADS` and `BANNER_GRAB_THREADS`, and stealth mode sets `HTTPX_RATE_LIMIT = 2` and `HTTPX_THREADS = 1` and turns off `HTTPX_PROBE_FAVICON`, `HTTPX_PROBE_JARM` and `BANNER_GRAB_ENABLED`.
 
+**Under an RoE rate ceiling C** (`ROE_GLOBAL_MAX_RPS`) the cap alone does not hold httpx: its limiter counts only each URL's main request, in fixed one-second windows. So `httpx_ceiling_pacing()` builds the command with `-t 1`, `-retries 0`, `-rl max(1, floor(C/2))` (never above `HTTPX_RATE_LIMIT`) and `-delay ceil(2000/C)ms`, without `-favicon` and `-jarm`, and `httpx_budget()` adds the delay to the run's time budget. The run logs `[*][httpx] Paced to the 2 rps RoE ceiling: one URL at a time, -rl 1, -delay 1000ms, no retries` (plus `; its redirect hops take no token of httpx's limiter and can exceed it` with `HTTPX_FOLLOW_REDIRECTS` on) and `[-][httpx] JARM and favicon not collected while the 2 rps RoE ceiling is in force: httpx's limiter does not count their requests`, and records coverage gaps `httpx_jarm` and `httpx_favicon` (module `http_probe`) for the probes the project had on. The graph writers skip absent values, so a hash an earlier run stored is kept. The banner grab connects in-process, so each of its connections takes a slot of recon's request clock (`request_pacer`). With no ceiling the command is unchanged and the banner grab never touches the clock.
+
 ---
 
 ### 1. Core Configuration
@@ -114,7 +116,7 @@ At scan start the engagement ceiling caps `HTTPX_RATE_LIMIT`, the memory governo
 | `HTTPX_THREADS` | `int` | `50` | `-t` | Number of concurrent HTTP requests. Higher = faster but uses more CPU/memory. |
 | `HTTPX_TIMEOUT` | `int` | `10` | `-timeout` | Seconds to wait for each HTTP response before giving up. |
 | `HTTPX_RETRIES` | `int` | `2` | `-retries` | Number of retry attempts for failed/timeout requests. |
-| `HTTPX_RATE_LIMIT` | `int` | `50` | `-rl` | Maximum requests per second. Lower = more stealthy. |
+| `HTTPX_RATE_LIMIT` | `int` | `50` | `-rl` | Maximum requests per second, held in fixed one-second windows (a window's requests can all leave at its start) and counting only each URL's main request: retries, redirect hops, the favicon fetch and JARM's handshakes take no token. Lower = more stealthy. |
 
 **Thread Tuning Guide:**
 
@@ -324,8 +326,8 @@ The certificate fields feed the TLS-hygiene security checks (see [README.VULN_SC
 
 | Parameter | Type | Default | httpx Flag | What It Does | Speed Impact |
 |-----------|------|---------|------------|--------------|--------------|
-| `HTTPX_PROBE_FAVICON` | `bool` | `True` | `-favicon` | Calculates MMH3 hash of favicon.ico | ⚡ **Medium** (extra HTTP request) |
-| `HTTPX_PROBE_JARM` | `bool` | `True` | `-jarm` | JARM TLS fingerprint | ⚠️ **VERY SLOW** |
+| `HTTPX_PROBE_FAVICON` | `bool` | `True` | `-favicon` | Calculates MMH3 hash of favicon.ico. Not sent under an RoE ceiling (coverage gap `httpx_favicon`; a stored hash is kept) | ⚡ **Medium** (extra HTTP request) |
+| `HTTPX_PROBE_JARM` | `bool` | `True` | `-jarm` | JARM TLS fingerprint. Not sent under an RoE ceiling (coverage gap `httpx_jarm`; a stored hash is kept) | ⚠️ **VERY SLOW** |
 | `HTTPX_PROBE_HASH` | `str` | `"sha256"` | `-hash` | Hash of response body | ⚡ **Medium** |
 
 #### Favicon Hashing
@@ -556,9 +558,12 @@ BANNER_GRAB_MAX_LENGTH = 1000
 For every open port in `port_scan.by_host` that is not in
 `BANNER_GRAB_SKIP_PORTS` (every port in `HTTP_PORTS` and `HTTPS_PORTS`, plus
 9090 and 8800, which httpx already probes), `grab_banner_for_target()` connects
-to the host's IP (`socket.create_connection`, so an IPv6 address is reached
-too), reads what the service sends first, sends the port's probe if nothing
-came, and retries over TLS on 993, 995, 465, 636 and 990. Targets the RoE
+to the address the port detail names, else the host's IP
+(`socket.create_connection`, so an IPv6 address is reached too): a domain
+run's name on two addresses is reached on each port at the address it was
+found on, and each detail takes only its own address's banner. It reads what
+the service sends first, sends the port's probe if nothing came, and retries
+over TLS on 993, 995, 465, 636 and 990. Targets the RoE
 excludes are never connected to (see
 [RoE admission of the target list](#roe-admission-of-the-target-list)).
 `identify_service()` matches the banner against `SERVICE_PATTERNS`.

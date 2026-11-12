@@ -84,8 +84,8 @@ RETURN collect(DISTINCT b.url) AS hosts
     {
         "name": "port_hosts",
         "description": "open ports, and whether an active scanner found them",
-        # `passive_only = false` is the port scan's or nmap's mark: it beats the
-        # source of a Port a passive provider happened to create first.
+        # `passive_only = false`, set by the port scan, nmap, httpx and GVM,
+        # beats the source of a Port a passive provider happened to create first.
         "query": """
 MATCH (ip:IP {user_id: $userId, project_id: $projectId})-[:HAS_PORT]->(p:Port)
 WHERE toLower(coalesce(p.state, 'open')) = 'open'

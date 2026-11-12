@@ -93,7 +93,7 @@ The `resource_enum.py` module provides comprehensive endpoint discovery and clas
 | **Method Detection** | OPTIONS probe detects allowed HTTP methods (GET, POST, PUT, DELETE) |
 | **Dead Endpoint Filtering** | Filters out endpoints that don't respond (404, 500, timeout) |
 | **JavaScript Parsing** | Discovers endpoints in JavaScript files |
-| **Form Extraction** | Parses HTML forms for POST endpoints |
+| **Form Extraction** | Parses HTML forms for POST endpoints. Under an RoE rate ceiling each page fetch, and each redirect hop, waits for its slot of the ceiling |
 | **Parameter Extraction** | Extracts query and body parameters |
 | **Type Inference** | Infers parameter data types (integer, email, URL, etc.) |
 | **Endpoint Classification** | Categorizes endpoints (auth, api, admin, file_access, etc.) |
@@ -1250,6 +1250,13 @@ reported (3xx ones included) with urllib. While any RoE exclusion is in force or
 the project scans by IP (`redirects_contained`), it follows a redirect only to
 the host the request went to; a refused hop ends that fetch, which is skipped
 like any other failed one. Otherwise it follows redirects as urllib does.
+
+The fetch is sequential, and under an RoE rate ceiling (`ROE_GLOBAL_MAX_RPS`)
+every request the opener sends takes a slot of recon's request clock
+(`request_pacer`) first, each redirect hop included, since urllib sends a hop
+through the opener again; a refused hop is never sent and takes none. A `429`
+pushes the next slot of every in-process requester back by its `Retry-After`.
+With no ceiling the pacer is inert and the requests are unchanged.
 
 ### Extracted Form Information
 

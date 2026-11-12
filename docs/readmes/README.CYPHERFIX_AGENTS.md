@@ -276,7 +276,16 @@ two kinds.
 
 **Project fact sets**, read once per run: which hosts are live, which ports an
 active scan found, which packages are actually served, what the agent proved,
-which hosts appear in threat intelligence, which assets are sensitive.
+which hosts appear in threat intelligence, which assets are sensitive, and what
+the run skipped (a tripped breaker). The `skipped_hosts` query returns the
+coverage record's keys whole, and `build_project_facts` splits them: a
+`host:port` or `[v6]:port` key goes to `ProjectFacts.skipped_ports` and leaves
+only the findings on that host and port "unknown: reachable now"; a bare host
+key, or one whose port does not parse, goes to `skipped_hosts` and covers the
+whole host. A finding's port is its `target_port`, else the port its host
+spelling names, a URL's scheme default included, as `circuit_breaker.host_key`
+keys it; a finding on the host itself, with no port, is covered only by a bare
+host key (`score_model._skipped`, since `SCORE_MODEL_VERSION` v3.12.0).
 
 **One row per finding**, per label, using `COUNT {}` / `EXISTS {}` subqueries
 rather than `OPTIONAL MATCH` chains. That shape is the point: the old queries
@@ -358,9 +367,9 @@ leaves the ranking entirely rather than being demoted to a small number that
 still sorts above something real. `gone` needs evidence of absence: the
 `gone_hosts` fact reads `RESOLVES_TO` from each label's own end (Subdomain ->
 IP, so an IP is gone only when no Subdomain resolves to it) and leaves out every
-host on an org `Domain`'s `recon_skipped_hosts`, normalised as
-`circuit_breaker.hostname_of` does for the prune: a host the run did not
-re-check is unknown, not gone.
+host with any key on an org `Domain`'s `recon_skipped_hosts`, port stripped as
+`circuit_breaker.hostname_of` strips it for the prune: a host the run did not
+re-check, even on one port, is unknown, not gone.
 
 **Agent proof has a confidence floor.** A `ChainFinding` proves the finding it
 `CONFIRMS` only when `coalesce(toInteger(cf.confidence), 80) >= 70`

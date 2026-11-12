@@ -419,6 +419,12 @@ write back only what they measured (`measured_port_data`): Nmap the custom ports
 still open, httpx the typed targets' ports that answered, tlsx none of the
 graph's own ports. The writer lowers `Port.passive_only` only for a port its
 caller saw, so a Shodan-only port does not turn into an actively found one.
+nmap, httpx and GVM lower it too, in a full and a partial run alike:
+`update_graph_from_nmap` on every open port nmap reports on an address, on the
+Port of the protocol it scanned (a TCP answer says nothing of UDP),
+`update_graph_from_http_probe` on the TCP Port it got an HTTP answer from, and
+`update_graph_from_gvm_scan` on the Port of the protocol it detected a service
+on. A Port no active tool reported keeps its mark.
 
 **One CDN list.** `recon/helpers/cdn_ranges.py` is the single source every module
 reads for "is this a CDN edge?": edge prefixes for Cloudflare, Fastly, CloudFront,
@@ -555,17 +561,20 @@ docker run --rm \
           {
             "port": 80,
             "protocol": "tcp",
-            "service": "http"
+            "service": "http",
+            "ip": "93.184.216.34"
           },
           {
             "port": 443,
             "protocol": "tcp",
-            "service": "https"
+            "service": "https",
+            "ip": "93.184.216.34"
           },
           {
             "port": 11434,
             "protocol": "tcp",
             "service": "ollama",
+            "ip": "93.184.216.34",
             "ai_service": {
               "name": "ollama",
               "category": "ai-runtime",
@@ -617,6 +626,8 @@ docker run --rm \
 ```
 
 - `scan_type` is the type that actually ran; `scan_type_fallback` is true when a SYN scan was retried as CONNECT.
+- In a domain run every naabu and masscan port detail names the address it was found on (`ip`), one detail per address and port, so a name on two addresses keeps each address's ports apart: the graph writer puts a detail under its own `ip` (else under the entry's `ip`, the first address). The entry's `ports` lists every address's port numbers, which is what httpx builds its targets from. IP mode, whose `by_host` is keyed by address, has no detail `ip`. The readers keep the split: `merge_port_scan_results` (`recon/main.py`) folds masscan into naabu one detail per address and port, a name found after the port scan gets one detail per address and port, copied from that address's own (`recon/helpers/late_names.py`), and the banner grab and the tlsx enrichment of the port details read each detail's own `ip`.
+- nmap's newly confirmed ports (`new_open_ports`, `recon/helpers/nmap_merge.py`) are judged per address: a port the name lists only for its other address is still new on this one, it joins every entry that spans the address (tagged with it when the entry's details are), and nmap's versions go to the detail on nmap's own address.
 - `ai_service` appears only on ports the AI port catalogue (`recon/helpers/ai_signal_catalog.py`) knows. Ports the catalogue marks ambiguous (e.g. 8000, 8080) are not annotated here.
 - When Masscan also ran, `merge_port_scan_results()` adds its hosts, ports and hostnames, sets `scan_metadata.scanners` to `["naabu", "masscan"]`, and recomputes `summary` (without `ai_ports_annotated`). When only Masscan ran, its payload becomes `port_scan` as it is.
 
