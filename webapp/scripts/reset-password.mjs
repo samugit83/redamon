@@ -1,5 +1,9 @@
 /**
- * Reset a user's password and revoke the account's MCP tokens, in one transaction.
+ * Reset a user's password, end every session of the account (session version + 1),
+ * revoke its MCP tokens and cancel its open invite and reset links, in one
+ * transaction with the audit rows (source 'system'). A disabled or invited account
+ * becomes usable again: status active, no held hash, no forced change (the host
+ * operator is the trust anchor).
  * Called from redamon.sh reset-password via:
  *   docker compose exec -T -e RESET_EMAIL=... -e RESET_PASSWORD=... webapp node scripts/reset-password.mjs
  *
@@ -39,12 +43,19 @@ if ([...password].length < MIN_PASSWORD_LENGTH) {
 
 const prisma = new PrismaClient()
 
+async function audit(tx, action, targetId, before, after) {
+  console.info(`[audit] ${action} actor=- target=user:${targetId} source=system`)
+  await tx.auditLog.create({
+    data: { actorId: null, action, targetType: 'user', targetId, before, after, source: 'system' },
+  })
+}
+
 let exitCode = 0
 try {
   // The account lookup of src/lib/authz/accountEmail.ts findSignInAccount (see
   // create-admin.mjs): exact email first, else the one case-insensitive match.
   const rows = await prisma.$queryRaw`
-    SELECT id, name, email FROM users WHERE lower(email) = lower(${email})`
+    SELECT id, name, email, status FROM users WHERE lower(email) = lower(${email})`
   const user = rows.find(r => r.email === email) ?? (rows.length === 1 ? rows[0] : null)
 
   if (!user && rows.length > 1) {
@@ -55,36 +66,35 @@ try {
     exitCode = 1
   } else {
     const hash = await bcrypt.hash(password, 12)
-    // As users/[id]/password/route.ts: a reset must not leave live programmatic
-    // credentials behind, and a half-applied one is worse than either outcome.
-    const [, revoked] = await prisma.$transaction([
-      prisma.user.update({ where: { id: user.id }, data: { password: hash } }),
-      prisma.mcpAccessToken.updateMany({
+    // As users/[id]/password/route.ts: a reset must not leave live sessions or
+    // programmatic credentials behind, and a half-applied one is worse than either
+    // outcome.
+    const { revoked, cancelledLinks } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        UPDATE users SET password = ${hash}, session_version = session_version + 1, status = 'active',
+          password_on_hold = '', must_change_password = false, updated_at = now()
+        WHERE id = ${user.id}`
+      const revoked = await tx.mcpAccessToken.updateMany({
         where: { userId: user.id, revokedAt: null },
         data: { revokedAt: new Date() },
-      }),
-    ])
-
-    // The row shape of src/lib/audit.ts writeAudit, source 'system', no actor: the
-    // host operator is not an account. Best effort, as there.
-    console.info(`[audit] user.credentials_reset actor=- target=user:${user.id} source=system`)
-    try {
-      await prisma.auditLog.create({
-        data: {
-          actorId: null,
-          action: 'user.credentials_reset',
-          targetType: 'user',
-          targetId: user.id,
-          after: { revokedMcpTokens: revoked.count },
-          source: 'system',
-        },
       })
-    } catch (e) {
-      console.error('[audit] failed to persist user.credentials_reset:', e.message)
-    }
+      const cancelledLinks = await tx.$executeRaw`
+        UPDATE user_invites SET cancelled_at = now()
+        WHERE user_id = ${user.id} AND used_at IS NULL AND cancelled_at IS NULL AND expires_at > now()`
+      // The rows of src/lib/audit.ts writeAuditTx, source 'system', no actor: the
+      // host operator is not an account.
+      if (user.status !== 'active') {
+        await audit(tx, 'user.enabled_by_host', user.id, { status: user.status }, { status: 'active' })
+      }
+      await audit(tx, 'user.credentials_reset', user.id, undefined,
+        { revokedMcpTokens: revoked.count, ...(cancelledLinks ? { cancelledLinks } : {}) })
+      return { revoked, cancelledLinks }
+    })
 
     console.log(`Password updated for "${user.name}" <${user.email}>.`)
-    console.log(`MCP tokens revoked: ${revoked.count}.`)
+    if (user.status !== 'active') console.log(`The account was ${user.status}; it is active again.`)
+    console.log(`Signed out everywhere. MCP tokens revoked: ${revoked.count}.`)
+    if (cancelledLinks) console.log(`Open invite and reset links cancelled: ${cancelledLinks}.`)
   }
 } catch (err) {
   console.error('ERROR: Failed to reset password:', err.message)

@@ -3,12 +3,20 @@
  * Called from redamon.sh _prompt_and_create_admin() and deploy.sh bootstrap_admin() via:
  *   docker compose exec -T -e ADMIN_NAME=... -e ADMIN_EMAIL=... -e ADMIN_PASSWORD=... [-e FORCE_PROMOTE=1] webapp node scripts/create-admin.mjs
  *
- * - a new email: creates an admin (email stored lowercase, like POST /api/users);
- * - an existing admin: sets the new password and revokes its MCP tokens in one
- *   transaction; the unchanged password writes nothing, because deploy.sh re-runs
- *   this with the .env admin on every init and must not cut that admin's tokens;
+ * - a new email: creates an admin (email stored lowercase, like POST /api/users),
+ *   which is the instance's confirmed Root when it has none (fresh install, deploy
+ *   init);
+ * - an existing admin: sets the new password, ends every session of the account
+ *   (session version + 1), revokes its MCP tokens and cancels its open invite and
+ *   reset links in one transaction; the unchanged password writes nothing, because
+ *   deploy.sh re-runs this with the .env admin on every init and must not cut that
+ *   admin's tokens;
  * - an existing member: refused with exit 3 and nothing written, unless
- *   FORCE_PROMOTE=1, which promotes it, sets the password and revokes its tokens.
+ *   FORCE_PROMOTE=1, which promotes it and resets it as above.
+ * A reset also makes a disabled or invited account usable again (its password is
+ * empty, so it is always a reset): status active, no held hash, no forced change.
+ * The host operator is the trust anchor. Every change commits with its audit rows
+ * (source 'system'), or nothing does.
  *
  * Exit codes: 0 done, 1 bad input or failure, 3 member not promoted.
  */
@@ -43,7 +51,7 @@ const prisma = new PrismaClient()
 // Prisma's mode: 'insensitive', which is ILIKE (`_` and `%` are wildcards).
 async function findAccount(typed) {
   const rows = await prisma.$queryRaw`
-    SELECT id, name, email, password, role FROM users WHERE lower(email) = lower(${typed})`
+    SELECT id, name, email, password, role, status FROM users WHERE lower(email) = lower(${typed})`
   const account = rows.find(r => r.email === typed) ?? (rows.length === 1 ? rows[0] : null)
   return { account, ambiguous: !account && rows.length > 1 }
 }
@@ -57,17 +65,28 @@ async function samePassword(plain, hash) {
   }
 }
 
-// The row shape of src/lib/audit.ts writeAudit with source 'system' and no actor:
-// the host operator is not an account. Best effort, as there.
-async function audit(action, targetId, before, after) {
+// The row of src/lib/audit.ts writeAuditTx with source 'system' and no actor (the
+// host operator is not an account), inside the change's transaction.
+async function audit(tx, action, targetId, before, after) {
   console.info(`[audit] ${action} actor=- target=user:${targetId} source=system`)
-  try {
-    await prisma.auditLog.create({
-      data: { actorId: null, action, targetType: 'user', targetId, before, after, source: 'system' },
-    })
-  } catch (e) {
-    console.error(`[audit] failed to persist ${action}:`, e.message)
-  }
+  await tx.auditLog.create({
+    data: { actorId: null, action, targetType: 'user', targetId, before, after, source: 'system' },
+  })
+}
+
+// The new admin becomes the confirmed Root when the instance has none: no Root id,
+// or one naming no account. The lock (set-root.mjs takes it too) makes the check
+// below run after any other claim committed, so two at once leave one Root; it is a
+// statement of its own because a statement only sees rows committed before it began.
+async function claimRootIfNone(tx, userId) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('rbac-root'))`
+  return (await tx.$executeRaw`
+    INSERT INTO instance_settings (id, root_user_id, root_confirmed_at, root_assigned_by, updated_at)
+    VALUES ('instance', ${userId}, now(), 'install', now())
+    ON CONFLICT (id) DO UPDATE SET root_user_id = EXCLUDED.root_user_id, root_confirmed_at = now(),
+      root_assigned_by = 'install', updated_at = now()
+    WHERE instance_settings.root_user_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = instance_settings.root_user_id)`) > 0
 }
 
 let exitCode = 0
@@ -79,11 +98,20 @@ try {
     exitCode = 1
   } else if (!account) {
     const hash = await bcrypt.hash(password, 12)
-    const created = await prisma.user.create({
-      data: { name, email: email.toLowerCase(), password: hash, role: 'admin' },
+    const [{ rootTable }] = await prisma.$queryRaw`
+      SELECT to_regclass('instance_settings') IS NOT NULL AS "rootTable"`
+    const { created, root } = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: { name, email: email.toLowerCase(), password: hash, role: 'admin' },
+      })
+      await audit(tx, 'user.create', created.id, undefined, { email: created.email, role: 'admin', passwordless: false })
+      const root = rootTable && await claimRootIfNone(tx, created.id)
+      if (root) await audit(tx, 'root.set_by_host', created.id, undefined, { rootUserId: created.id, rule: 'install' })
+      return { created, root }
     })
-    await audit('user.create', created.id, undefined, { email: created.email, role: 'admin', passwordless: false })
     console.log(`Admin user "${name}" <${created.email}> created successfully.`)
+    if (root) console.log('It is the instance\'s Root (confirmed): there was none.')
+    if (!rootTable) console.log('Root not recorded: this database has no instance_settings table yet.')
   } else if (account.role !== 'admin' && !forcePromote) {
     console.error(
       `REFUSED: "${account.email}": account exists as a member; set FORCE_PROMOTE=1 to promote it. Nothing was changed.`,
@@ -97,27 +125,38 @@ try {
   } else {
     const promote = account.role !== 'admin'
     const hash = await bcrypt.hash(password, 12)
-    // A new password must not leave live programmatic credentials behind, and a
-    // token minted as a member would act as an admin after the promotion: same
+    // A new password must not leave live sessions or programmatic credentials behind,
+    // and a token minted as a member would act as an admin after the promotion: same
     // transaction as the write, as users/[id]/password/route.ts does.
-    const [, revoked] = await prisma.$transaction([
-      prisma.user.update({
-        where: { id: account.id },
-        data: { password: hash, name, ...(promote ? { role: 'admin' } : {}) },
-      }),
-      prisma.mcpAccessToken.updateMany({
+    const { revoked, cancelledLinks } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        UPDATE users SET password = ${hash}, name = ${name}, role = 'admin',
+          session_version = session_version + 1, status = 'active', password_on_hold = '',
+          must_change_password = false, updated_at = now()
+        WHERE id = ${account.id}`
+      const revoked = await tx.mcpAccessToken.updateMany({
         where: { userId: account.id, revokedAt: null },
         data: { revokedAt: new Date() },
-      }),
-    ])
-    if (promote) await audit('user.role_changed', account.id, { role: account.role }, { role: 'admin' })
-    await audit('user.credentials_reset', account.id, undefined, { revokedMcpTokens: revoked.count })
+      })
+      const cancelledLinks = await tx.$executeRaw`
+        UPDATE user_invites SET cancelled_at = now()
+        WHERE user_id = ${account.id} AND used_at IS NULL AND cancelled_at IS NULL AND expires_at > now()`
+      if (account.status !== 'active') {
+        await audit(tx, 'user.enabled_by_host', account.id, { status: account.status }, { status: 'active' })
+      }
+      if (promote) await audit(tx, 'user.role_changed', account.id, { role: account.role }, { role: 'admin' })
+      await audit(tx, 'user.credentials_reset', account.id, undefined,
+        { revokedMcpTokens: revoked.count, ...(cancelledLinks ? { cancelledLinks } : {}) })
+      return { revoked, cancelledLinks }
+    })
     console.log(
       promote
         ? `Member "${name}" <${account.email}> promoted to admin (FORCE_PROMOTE); password set.`
         : `Password reset for admin "${name}" <${account.email}>.`,
     )
-    console.log(`MCP tokens revoked: ${revoked.count}.`)
+    if (account.status !== 'active') console.log(`The account was ${account.status}; it is active again.`)
+    console.log(`Signed out everywhere. MCP tokens revoked: ${revoked.count}.`)
+    if (cancelledLinks) console.log(`Open invite and reset links cancelled: ${cancelledLinks}.`)
   }
 } catch (err) {
   console.error('ERROR: Failed to create admin user:', err.message)
