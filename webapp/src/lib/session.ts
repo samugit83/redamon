@@ -236,7 +236,7 @@ export function isScannerRequest(request: NextRequest): boolean {
   return constantTimeEqual(key, expected)
 }
 
-export type UserAccessMode = 'read' | 'write'
+export type UserAccessMode = 'read' | 'write' | 'revoke'
 
 const OWN_ACCOUNT_ONLY =
   "Only the account itself can change this. An administrator can read another account's settings (secrets masked), but not change them."
@@ -269,13 +269,17 @@ export async function requireAccountWrite(targetUserId: string): Promise<NextRes
 /**
  * Ownership gate for user-scoped secret/data routes (settings, llm-providers,
  * tradecraft, skills, MCP servers and tokens). Internal-key callers (the agent +
- * scanners) pass in both modes.
+ * scanners) pass in every mode.
  *  - `read`: the account itself or the user directory (`users:read`, every admin
  *    with the permissions switch off). Every secret these routes return is masked
  *    for a browser caller, so an admin's read never sees one.
  *  - `write`: requireAccountWrite. The admin write bypass is gone: an admin cannot
  *    change another account, through act-as or not, except a passwordless managed
  *    account it is acting as.
+ *  - `revoke`: the account itself or `users:revoke_sessions` (every admin with the
+ *    permissions switch off), which revokes another account's MCP tokens (§5.1): an
+ *    MCP token reached on another account to narrow or delete it during an incident
+ *    (HD-23's one exception), never by the directory read alone.
  *
  * These routes expose or mutate a user's plaintext secrets (STRIDE I1). Returns null
  * when allowed, or a 401/403 NextResponse the caller must return.
@@ -291,8 +295,9 @@ export async function requireUserAccess(
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  if (session.userId !== targetUserId && !(await sessionHolds(session, 'users:read'))) {
-    return forbiddenResponse('users:read')
+  const permission = mode === 'revoke' ? 'users:revoke_sessions' : 'users:read'
+  if (session.userId !== targetUserId && !(await sessionHolds(session, permission))) {
+    return forbiddenResponse(permission)
   }
   return null
 }

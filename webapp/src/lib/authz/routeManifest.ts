@@ -32,9 +32,11 @@ export const GUARD_CLASSES = [
   /** The caller must own the conversation (`requireConversationAccess`, `...BySession`). */
   'conversation',
   /**
-   * The user the path names. Reads: that user or an admin, secrets masked (`requireUserAccess` read).
-   * Writes: that user's own session, the internal key, or an admin acting as a passwordless managed
-   * account (`requireUserAccess` write, `requireAccountWrite`, `requireOwnBrowserRequest`).
+   * The user the path names. Reads: that user or the user directory (`users:read`), secrets masked
+   * (`requireUserAccess` read). Writes: that user's own session, the internal key, or an admin acting as
+   * a passwordless managed account (`requireUserAccess` write, `requireAccountWrite`,
+   * `requireOwnBrowserRequest`). Another account's MCP token narrowed or deleted: `users:revoke_sessions`
+   * (`requireUserAccess` revoke).
    */
   'user',
   /**
@@ -393,7 +395,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/users/[id]/llm-providers/[providerId]/test', guard: 'user', methods: ['POST'] },
   { path: '/api/users/[id]/mcp', guard: 'user', methods: ['GET', 'POST'] },
   { path: '/api/users/[id]/mcp-tokens', guard: 'user', methods: ['GET', 'POST'], sameOrigin: true },
-  { path: '/api/users/[id]/mcp-tokens/[tokenId]', guard: 'user', methods: ['PATCH', 'DELETE'], sameOrigin: true, note: 'read rule: an admin may delete or narrow another account\'s token (audited), except Root\'s with RBAC_IDENTITY_ENABLED on (403 root_protected); a rename or a profile-only change needs the write rule; widening is self-only with step-up' },
+  { path: '/api/users/[id]/mcp-tokens/[tokenId]', guard: 'user', methods: ['PATCH', 'DELETE'], sameOrigin: true, note: 'revoke rule (requireUserAccess revoke): whoever holds users:revoke_sessions, every admin with RBAC_PERMISSIONS_ENABLED off, may delete or narrow another account\'s token (audited), except Root\'s with RBAC_IDENTITY_ENABLED on (403 root_protected); a rename or a profile-only change needs the write rule; widening is self-only with step-up' },
   { path: '/api/users/[id]/mcp/[serverId]', guard: 'user', methods: ['PUT', 'DELETE'] },
   { path: '/api/users/[id]/password', guard: 'user', methods: ['PUT'], sameOrigin: true, note: 'inline check: the session user (with the current password) or users:reset_credentials; resetting another admin needs step-up, and with RBAC_IDENTITY_ENABLED on only the confirmed Root may (step 2.6); with it on the password meets the policy in force, a reset of someone else is temporary unless requirePasswordChange is false (step 2.8) and is a credentials reset: reason when the account signed in before, session version raised, tokens revoked, open links cancelled, a notice, user.credentials_reset in one transaction (step 2.10); the own change clears the flag and re-issues the login cookie (step 2.8)' },
   { path: '/api/users/[id]/permissions', guard: 'session', methods: ['GET', 'PUT'], permission: 'users:assign_permissions', sameOrigin: true, note: '404 with RBAC_PERMISSIONS_ENABLED off; the signed-in account, never one acted as; GET of the own account always; otherwise hierarchy.ts canManage: users:assign_permissions on a member, Root or admins:manage over a strict subset on an admin, nobody on Root; PUT never on oneself, same-origin JSON, gives only permissions the person holds (PE-03, PE-10), step-up for an admin target or a cross-tenant, approval, sessions or Kali exec grant, a removal raises the session version and closes the sockets (step 3.11)' },

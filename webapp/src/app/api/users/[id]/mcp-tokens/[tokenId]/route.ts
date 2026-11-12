@@ -7,10 +7,11 @@
  *
  * The rule an edit is judged by is DIRECTION, not field:
  *  - a change that NARROWS the token's capability (drop a scope, earlier expiry,
- *    "expire now") is open to an admin on another account, exactly like DELETE
- *    below: taking power away is a safe privilege during an incident, and both are
- *    audited with the real admin as the actor (HD-23's one exception), except on
- *    Root's tokens (identity switch on: `root_protected`, as DELETE). A profile
+ *    "expire now") is open on another account to whoever holds users:revoke_sessions
+ *    (every admin with the permissions switch off), exactly like DELETE below: taking
+ *    power away is a safe privilege during an incident, and both are audited with the
+ *    real admin as the actor (HD-23's one exception), except on Root's tokens
+ *    (identity switch on: `root_protected`, as DELETE). A profile
  *    switch riding along is allowed with it: the profile is a label, never an
  *    authorization input, and switching it in the UI re-ticks the scopes.
  *  - a rename or a profile change on its own is the account's write rule
@@ -77,9 +78,9 @@ const sameExpiry = (a: Date | null, b: Date | null) =>
 
 export const PATCH = withRouteErrors('Could not update the token', async (request: NextRequest, { params }: RouteParams) => {
   const { id, tokenId } = await params
-  // The read rule lets an admin reach another account's token to narrow it; every
+  // The revoke rule lets a revoker reach another account's token to narrow it; every
   // other edit is checked against the write rule below, once its direction is known.
-  const denied = await requireUserAccess(request, id, { mode: 'read' }) ?? await rootTokensRefusal(request, id, 'edit_mcp_token')
+  const denied = await requireUserAccess(request, id, { mode: 'revoke' }) ?? await rootTokensRefusal(request, id, 'edit_mcp_token')
   if (denied) return denied
 
   // Same-origin JSON whatever the identity switch (ID-26, step 2.12).
@@ -158,8 +159,8 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
   const session = await getSession()
 
   if (widened) {
-    // Judged on the REAL identity, like minting: requireUserAccess above
-    // carries the admin bypass, which must not extend to adding power.
+    // Judged on the REAL identity, like minting: the revoke rule above lets a
+    // revoker in on another account, which must not extend to adding power.
     if (!session || session.userId !== id) {
       return NextResponse.json(
         {
@@ -237,9 +238,9 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
 
 export const DELETE = withRouteErrors('Could not delete the token', async (request: NextRequest, { params }: RouteParams) => {
   const { id, tokenId } = await params
-  // The read rule on purpose: an admin revokes another account's token during an
-  // incident (HD-23's one exception), never Root's. The audit row names the real admin.
-  const denied = await requireUserAccess(request, id, { mode: 'read' }) ?? await rootTokensRefusal(request, id, 'delete_mcp_token')
+  // A revoker deletes another account's token during an incident (HD-23's one exception),
+  // never Root's. The audit row names the real admin.
+  const denied = await requireUserAccess(request, id, { mode: 'revoke' }) ?? await rootTokensRefusal(request, id, 'delete_mcp_token')
   if (denied) return denied
   // No body to check: a browser form cannot send a DELETE.
   if (!sameOrigin(request)) return crossOriginResponse(request)

@@ -400,7 +400,7 @@ const ALLOWED: Record<string, Allowed> = {
     reason: OWN_ACCOUNT,
     lines: [
       'if (session.userId === targetUserId) return null',
-      "if (session.userId !== targetUserId && !(await sessionHolds(session, 'users:read'))) {",
+      'if (session.userId !== targetUserId && !(await sessionHolds(session, permission))) {',
     ],
   },
   'src/lib/session.ts::role_admin': {
