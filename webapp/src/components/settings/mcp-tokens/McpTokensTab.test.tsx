@@ -906,3 +906,35 @@ describe('the Agent Onboarding entry points', () => {
     ).toBeTruthy()
   })
 })
+
+describe('scopes the owner cannot grant (step 3.10, permissions switch on)', () => {
+  // The row's own label wraps its checkbox; the scope code is the row's <code>.
+  const box = (scope: string) =>
+    [...document.querySelectorAll('label')]
+      .find(l => l.querySelector('code')?.textContent === scope)!.querySelector('input') as HTMLInputElement
+
+  test('a new token never ticks one, and its box is disabled with the reason', async () => {
+    vi.stubGlobal('fetch', mockFetch({
+      tokens: { tokens: [], features: { agentInTheLoop: false }, ungrantableScopes: { 'kali:exec': ['agent:kali_exec'] } },
+    }))
+    render(<McpTokensTab userId="owner" />)
+    await waitFor(() => expect(screen.getByText('New token').closest('button')).not.toBeDisabled())
+    fireEvent.click(screen.getByText('New token'))
+
+    expect(box('recon:read').checked).toBe(true)
+    expect(box('kali:exec').checked).toBe(false)
+    expect(box('kali:exec').disabled).toBe(true)
+    expect(box('kali:exec').closest('label')!.textContent).toContain('agent:kali_exec')
+  })
+
+  test('without limits (switch off) the default ticks are today\'s', async () => {
+    vi.stubGlobal('fetch', mockFetch({ tokens: { tokens: [] } }))
+    render(<McpTokensTab userId="owner" />)
+    await waitFor(() => expect(screen.getByText('New token').closest('button')).not.toBeDisabled())
+    fireEvent.click(screen.getByText('New token'))
+
+    expect(box('kali:exec').checked).toBe(true)
+    expect(box('kali:exec').disabled).toBe(false)
+    expect(screen.queryByText(/limited by your permissions/i)).toBeNull()
+  })
+})

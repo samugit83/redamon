@@ -334,6 +334,13 @@
   line-height: 1.55;
 }
 
+/* Why a scope cannot be granted: the owner's permissions, not the token. */
+.scopeLimit {
+  color: var(--warning-text, #b45309);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
 .formActions {
   display: flex;
   justify-content: flex-end;

@@ -139,6 +139,13 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
   // and its profile are not offered.
   const [loopOn, setLoopOn] = useState(false)
   const profileList = PROFILE_LIST.filter(p => profileOffered(p.id, loopOn))
+  // The scopes this account cannot grant and why (permissions switch on; absent off). A profile
+  // or the defaults never tick one, and the checklist shows it disabled with the reason.
+  const [scopeLimits, setScopeLimits] = useState<Partial<Record<McpScope, readonly string[]>> | undefined>(undefined)
+  const grantable = useCallback(
+    (list: McpScope[]) => (scopeLimits ? list.filter(s => scopeLimits[s] === undefined) : list),
+    [scopeLimits],
+  )
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -221,6 +228,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
       const data = await r.json()
       setTokens(Array.isArray(data.tokens) ? data.tokens : [])
       setLoopOn(data.features?.agentInTheLoop === true)
+      setScopeLimits(data.ungrantableScopes && typeof data.ungrantableScopes === 'object' ? data.ungrantableScopes : undefined)
     } catch (e) {
       // Never a silent empty list: that reads as "you have no tokens" and
       // prompts a duplicate mint.
@@ -252,15 +260,15 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
   const resetForm = useCallback(() => {
     setName('')
     setProfile(DEFAULT_PROFILE)
-    setScopes([...DEFAULT_MCP_SCOPES])
+    setScopes(grantable([...DEFAULT_MCP_SCOPES]))
     setExpiresInDays(MCP_DEFAULT_EXPIRY_DAYS)
     setPassword('')
     setFormError(null)
     setBaseline({
-      name: '', profile: DEFAULT_PROFILE, scopes: [...DEFAULT_MCP_SCOPES],
+      name: '', profile: DEFAULT_PROFILE, scopes: grantable([...DEFAULT_MCP_SCOPES]),
       expiresInDays: MCP_DEFAULT_EXPIRY_DAYS, password: '',
     })
-  }, [setBaseline])
+  }, [setBaseline, grantable])
 
   const toggleScope = (s: McpScope) => {
     setScopes(prev => (prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]))
@@ -276,7 +284,12 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
    * `scopesForProfile` returns the recommended set only.
    */
   const changeProfile = async (next: ProfileId) => {
-    const diverged = profileScopeDiff(profile, scopes).modified
+    // Measured against what the profile could tick for this account, so the scopes it left out
+    // for want of a permission do not read as a hand edit.
+    const ticked = grantable(scopesForProfile(profile))
+    const diverged = scopeLimits
+      ? ticked.length !== scopes.length || scopes.some(s => !ticked.includes(s))
+      : profileScopeDiff(profile, scopes).modified
     if (diverged) {
       const ok = await confirm(
         `Switching to ${PROFILES[next].label} resets the permissions to that profile's ` +
@@ -289,7 +302,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
     } else {
       setProfile(next)
     }
-    setScopes(scopesForProfile(next))
+    setScopes(grantable(scopesForProfile(next)))
   }
 
   const changeEditProfile = async (next: ProfileId) => {
@@ -313,7 +326,8 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
     } else {
       setEditProfile(next)
     }
-    setEditScopes(scopesForProfile(next))
+    // A scope the account cannot grant is ticked only when the token already holds it.
+    setEditScopes(scopesForProfile(next).filter(s => scopeLimits?.[s] === undefined || editing.scopes.includes(s)))
   }
 
   const openEdit = (t: TokenRow) => {
@@ -634,7 +648,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
               </select>
             </div>
 
-            <ScopeChecklist selected={scopes} onToggle={toggleScope} profile={profile} loopOff={!loopOn} />
+            <ScopeChecklist selected={scopes} onToggle={toggleScope} profile={profile} loopOff={!loopOn} limits={scopeLimits} />
 
             <div className={`formGroup ${styles.field}`}>
               <label className="formLabel" htmlFor="mcpTokenPassword">Confirm your password</label>
@@ -765,6 +779,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
               disabled={!!editing.revokedAt}
               profile={editProfile}
               loopOff={!loopOn}
+              limits={scopeLimits}
               onToggle={s => {
                 setEditScopes(prev => (prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]))
                 setServerWantsPassword(false)
@@ -846,6 +861,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
         initialScopes={onboarding?.scopes ?? [...DEFAULT_MCP_SCOPES]}
         tokenName={onboarding?.name}
         loopOn={loopOn}
+        limits={scopeLimits}
       />
 
       {!loading && !loadError && tokens.length > 0 && (

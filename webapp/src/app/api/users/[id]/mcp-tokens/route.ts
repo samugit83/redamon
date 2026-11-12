@@ -11,6 +11,10 @@
  * Listing keeps the admin bypass so an admin can audit tokens during an
  * incident, except Root's (identity switch on: `root_protected`). Revoking is a
  * safe privilege; minting is not.
+ *
+ * With the permissions switch on a scope is grantable only while the account holds the
+ * permissions it maps to (step 3.10): the mint refuses the others, and the list names them so
+ * the screen shows them disabled with the reason.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
@@ -30,6 +34,7 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
 import { rootTokensRefusal } from '@/lib/authz/rootProtection'
+import { scopeGrantRefusal, ungrantableScopesOf } from '@/lib/mcp/scopePermissions'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -61,7 +66,13 @@ export const GET = withRouteErrors('Could not load tokens', async (request: Next
     // Expired and revoked rows stay visible: "why did my agent stop working" is
     // the common support question, and hiding the answer makes it harder.
     // The browser cannot read the deployment's switches; the token UI needs this one.
-    return NextResponse.json({ tokens, features: { agentInTheLoop: agentInTheLoopEnabled() } })
+    // `ungrantableScopes` exists only with the permissions switch on (off: today's answer).
+    const ungrantable = await ungrantableScopesOf(id)
+    return NextResponse.json({
+      tokens,
+      features: { agentInTheLoop: agentInTheLoopEnabled() },
+      ...(ungrantable ? { ungrantableScopes: ungrantable } : {}),
+    })
   } catch (error) {
     return internalError(error, 'Could not load tokens', { log: '[mcp-tokens] list failed' })
   }
@@ -110,6 +121,9 @@ export const POST = withRouteErrors('Could not create the token', async (request
   if ('error' in expiryResult) {
     return NextResponse.json({ error: expiryResult.error }, { status: 400 })
   }
+  // Before the password: a scope the person cannot hold costs no step-up attempt.
+  const ungrantable = await scopeGrantRefusal(id, scopeResult.scopes)
+  if (ungrantable) return NextResponse.json(ungrantable, { status: 403 })
 
   // Step-up: a stolen 7-day session cookie must not silently become a
   // credential that outlives logout and password changes. The helper throttles

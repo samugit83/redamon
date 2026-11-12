@@ -237,7 +237,14 @@ export async function POST(request: NextRequest) {
     return jsonRpcError(-32600, 'Batch requests are not supported', 400)
   }
 
-  const auth = await resolveMcpUser(request)
+  let auth: Awaited<ReturnType<typeof resolveMcpUser>>
+  try {
+    auth = await resolveMcpUser(request)
+  } catch (err) {
+    // The token row or its owner's permissions could not be read: refused, never the row's scopes.
+    console.error('[mcp] token resolution failed:', err)
+    return jsonRpcError(-32603, 'Internal error', 500)
+  }
   if (!auth.ok || !auth.token) {
     // Audited, but THROTTLED per prefix. This path is pre-auth and public, so
     // an unthrottled insert lets an anonymous flood of `Bearer rdmn_mcp_xxxx`
@@ -259,7 +266,8 @@ export async function POST(request: NextRequest) {
   // Onboarding is composed only for `initialize`, which is where the client
   // reads it. The transport is stateless, so the server is rebuilt for every
   // request; doing this on each tool call would add a database read and a
-  // tool-list build to every call for a string that is never read again.
+  // tool-list build to every call for a string that is never read again. The scopes are the
+  // usable ones (minted ∩ the owner's permissions), so the text never promises a lost one.
   const instructions = isInitialize
     ? await buildInstructions(auth.token.tokenId, auth.token.scopes)
     : undefined

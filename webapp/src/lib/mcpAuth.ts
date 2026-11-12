@@ -11,7 +11,8 @@
  *  - `assertMcpProjectAccess` takes the token's user id, never a browser session
  *    or the act-as cookie, and refuses a project of anyone else with a flat 404.
  *  - Scopes are checked on every call. A field that exists but is never read is
- *    fail-open by omission.
+ *    fail-open by omission. The scopes a call sees are the minted ones its owner
+ *    may still use (RBAC permissions, mcp/scopePermissions.ts), computed once here.
  *  - Expiry and revocation are re-checked on every call, not at connect, so both
  *    take effect mid-session.
  */
@@ -19,6 +20,7 @@ import { createHash, randomBytes } from 'crypto'
 import prisma from '@/lib/prisma'
 import { constantTimeEqual } from '@/lib/constantTimeEqual'
 import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
+import { usableScopes } from '@/lib/mcp/scopePermissions'
 
 export const MCP_TOKEN_PREFIX = 'rdmn_mcp_'
 /** 24 bytes -> 48 hex chars, comfortably past the 40 the format calls for. */
@@ -250,6 +252,10 @@ export interface ResolvedMcpToken {
   userId: string
   tokenPrefix: string
   name: string
+  /**
+   * What this call may use: the minted scopes its owner's permissions still allow. Every
+   * requireScope / hasScope and the connect-time instructions read these, never the row's.
+   */
   scopes: McpScope[]
 }
 
@@ -304,6 +310,10 @@ export async function resolveMcpToken(presented: string): Promise<McpAuthResult>
     return { ok: false, failure: 'bad_scopes', prefix: row.tokenPrefix }
   }
 
+  // A token never does more than its owner may do now (PE-20): a permission the owner lost
+  // answers the scope error on this call. A failed read throws rather than grant the row's scopes.
+  const scopes = await usableScopes(row.userId, row.scopes as McpScope[])
+
   return {
     ok: true,
     prefix: row.tokenPrefix,
@@ -312,7 +322,7 @@ export async function resolveMcpToken(presented: string): Promise<McpAuthResult>
       userId: row.userId,
       tokenPrefix: row.tokenPrefix,
       name: row.name,
-      scopes: row.scopes as McpScope[],
+      scopes,
     },
   }
 }

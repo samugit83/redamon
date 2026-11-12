@@ -20,7 +20,8 @@
  *  - a change that WIDENS it (add a scope, later or no expiry, reviving an
  *    expired token) gets the mint's step-up: self-only on the REAL identity,
  *    password re-confirmed, same limiter. Otherwise a stolen session cookie
- *    could upgrade an existing token into the credential it cannot mint.
+ *    could upgrade an existing token into the credential it cannot mint. A scope
+ *    it adds must be one the owner may grant, as at mint (permissions switch on).
  *
  * Scopes and expiry are re-read on every MCP call, so an edit takes effect on
  * the agent's next call.
@@ -44,6 +45,7 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rootTokensRefusal } from '@/lib/authz/rootProtection'
 import { ownsRow } from '@/lib/authz/rowOwner'
+import { scopeGrantRefusal } from '@/lib/mcp/scopePermissions'
 
 interface RouteParams {
   params: Promise<{ id: string; tokenId: string }>
@@ -175,6 +177,9 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
     // Adding power is the mint's permission (self:mcp_tokens, fresh); taking it away never asks it.
     const refused = await requireSelfPermission(request, id, 'self:mcp_tokens', { fresh: true })
     if (refused) return refused
+    // Only the scopes it adds: one already on the token stays capped on every call.
+    const ungrantable = await scopeGrantRefusal(id, (data.scopes ?? []).filter(s => !existing.scopes.includes(s)))
+    if (ungrantable) return NextResponse.json(ungrantable, { status: 403 })
     // The shared step-up: one attempt budget with the mint and every other
     // step-up route. This route keeps its own answers (401 + passwordRequired).
     const proof = await checkStepUp(request, body.password)

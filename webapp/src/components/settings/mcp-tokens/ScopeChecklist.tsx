@@ -19,6 +19,10 @@
  *
  * `kali:exec` still gets its own panel below a separator, because a shell on a
  * target-facing box is a different KIND of block, not a louder one.
+ *
+ * With the permissions switch on, a scope the token's owner cannot grant is
+ * disabled with the permissions it lacks (`limits`); one the token already holds
+ * stays enabled so it can be taken away, since the token cannot use it anyway.
  */
 import { ShieldAlert, Terminal } from 'lucide-react'
 import { ExternalLink } from '@/components/ui'
@@ -50,9 +54,18 @@ interface Props {
    * new token, and a token that already holds it shows it marked off.
    */
   loopOff?: boolean
+  /**
+   * The scopes the token's owner cannot grant, each with the permissions it lacks
+   * (the token list's `ungrantableScopes`). Absent with the permissions switch off.
+   */
+  limits?: Partial<Record<McpScope, readonly string[]>>
 }
 
-export default function ScopeChecklist({ selected, onToggle, disabled = false, profile, loopOff = false }: Props) {
+/** An empty list: no permission maps the scope, so nobody can grant it. */
+const needsText = (missing: readonly string[]) =>
+  missing.length > 0 ? missing.join(' and ') : 'a permission no account holds'
+
+export default function ScopeChecklist({ selected, onToggle, disabled = false, profile, loopOff = false, limits }: Props) {
   const meta = profile ? PROFILES[profile] : null
   const recommended = new Set(meta?.recommendedScopes ?? [])
   const optIn = new Set(meta?.optInScopes ?? [])
@@ -75,6 +88,7 @@ export default function ScopeChecklist({ selected, onToggle, disabled = false, p
   const renderRow = (scope: McpScope, tone: 'neutral' | 'action' | 'exec') => {
     const { checked, tag } = rowState(scope)
     const copy = SCOPE_COPY[scope]
+    const missing = limits?.[scope]
     return (
       <label
         key={scope}
@@ -88,7 +102,7 @@ export default function ScopeChecklist({ selected, onToggle, disabled = false, p
           type="checkbox"
           className={`checkbox ${styles.scopeCheckbox}`}
           checked={checked}
-          disabled={disabled}
+          disabled={disabled || (missing !== undefined && !checked)}
           onChange={() => onToggle(scope)}
         />
         <span className={styles.scopeText}>
@@ -107,7 +121,15 @@ export default function ScopeChecklist({ selected, onToggle, disabled = false, p
             {loopOff && scope === LOOP_SCOPE && (
               <span className={styles.scopeTag}>(off on this deployment)</span>
             )}
+            {missing !== undefined && <span className={styles.scopeTag}>limited by your permissions</span>}
           </span>
+          {missing !== undefined && (
+            <span className={styles.scopeLimit}>
+              {checked
+                ? `This token cannot use it: it needs ${needsText(missing)}, which your permissions do not include. You can remove it.`
+                : `Needs ${needsText(missing)}, which your permissions do not include.`}
+            </span>
+          )}
           <span className={styles.scopeBlurb}>{tone === 'exec' ? copy.detail ?? copy.blurb : copy.blurb}</span>
           {tone === 'exec' && copy.learnMore && (
             <span className={styles.scopeLinks}>
@@ -126,6 +148,15 @@ export default function ScopeChecklist({ selected, onToggle, disabled = false, p
   return (
     <fieldset className={styles.scopes} disabled={disabled}>
       <legend className="formLabel">Permissions</legend>
+      {limits && (
+        <p className={styles.scopeFootnote}>
+          <ShieldAlert size={13} />
+          <span>
+            Limited by your permissions: a token only ever uses what your own RedAmon permissions
+            allow, checked on every call. A permission you do not hold cannot be ticked.
+          </span>
+        </p>
+      )}
 
       {SCOPE_GROUPS.filter(g => g.tone !== 'exec' && g.scopes.some(offered)).map(group => (
         <div key={group.id} className={styles.scopeGroup}>

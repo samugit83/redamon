@@ -52,6 +52,8 @@ interface Props {
   tokenName?: string
   /** Agent in the Loop is on for this deployment (its scope and profile are offered). */
   loopOn?: boolean
+  /** The scopes the account cannot grant and why (ScopeChecklist `limits`; permissions switch on). */
+  limits?: Partial<Record<McpScope, readonly string[]>>
 }
 
 /**
@@ -95,7 +97,7 @@ function shapeWarnings(scopes: McpScope[]): string[] {
 }
 
 export default function AgentOnboardingModal({
-  userId, isOpen, onClose, initialProfile, initialScopes, tokenName, loopOn = false,
+  userId, isOpen, onClose, initialProfile, initialScopes, tokenName, loopOn = false, limits,
 }: Props) {
   const { alertError } = useAlertModal()
 
@@ -267,6 +269,7 @@ export default function AgentOnboardingModal({
           selected={scopes}
           profile={profile}
           loopOff={!loopOn}
+          limits={limits}
           onToggle={s => {
             setScopes(prev => (prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]))
             setFiles(null)
