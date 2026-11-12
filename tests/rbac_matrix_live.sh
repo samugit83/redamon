@@ -17,10 +17,15 @@
 #           acting as <user>, while an admin; the account is demoted to standard by SQL
 #           just before the row's request and restored right after it, the cookies kept) |
 #           deleted (the seed's throwaway account, signed in, then deleted by SQL; its
-#           still-valid cookie is kept)
+#           still-valid cookie is kept) |
+#           <user>_revoked (admin_a, admin_b, member_a, member_b or member_c signed in;
+#           the account's session version is raised by SQL just before the row's
+#           request and put back right after it, the cookie kept: a cookie of an
+#           older version)
 #   body    '-' for none, else sent as application/json
 #   expect  status codes joined by '|', then optional ';has=<text>' / ';lacks=<text>'
-#           checks on the response body (literal text)
+#           checks on the response body (literal text) and ';hdr=<text>' on its
+#           headers (literal text, any case)
 #   tags    space-separated: hole:<finding> (today's behaviour a later phase closes),
 #           req:<id>, probe:<how>, superseded-by:<file> (kept, never run again)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
@@ -35,10 +40,13 @@
 # against an image built before they existed. Response bodies are never printed:
 # some rows read secrets on purpose. INTERNAL_API_KEY and SCANNER_API_KEY are read
 # from .env for the internal and scanner rows only, straight into curl's header
-# config on stdin, never echoed and never on a command line. The demoted and deleted
-# actors change the users table through psql in the postgres container (SQL on stdin);
-# an interrupted run leaves nothing behind, because the cleanup deletes every fixture
-# account and the next seed resets each one's role.
+# config on stdin, never echoed and never on a command line. The demoted, deleted and
+# revoked actors change the users table through psql in the postgres container (SQL on
+# stdin); an interrupted run leaves nothing behind, because the cleanup deletes every
+# fixture account and the next seed resets each one's role. With RBAC_IDENTITY_ENABLED
+# on, a webapp process keeps an account it read for RBAC_AUTHZ_CACHE_MS, so after each
+# such change the runner waits that long (read from the webapp container) before the
+# next request: a change made by SQL is a change made by another copy.
 #
 # Needs the stack up (webapp on :3000); prints SKIP and exits 0 when it is not, so
 # it never fails a gate. Live suites (*_live.sh) are not part of the gate.
@@ -199,11 +207,38 @@ db_sql() { # SQL on stdin -> psql in the postgres container; prints only the ret
 safe_id() { [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]]; }
 set_role() { # user-id role -> 0 when exactly that account now has the role
   safe_id "$1" || return 1
-  [ "$(printf "update users set role = '%s' where id = '%s' returning id;\n" "$2" "$1" | db_sql)" = "$1" ]
+  [ "$(printf "update users set role = '%s' where id = '%s' returning id;\n" "$2" "$1" | db_sql)" = "$1" ] && cache_settle
 }
 delete_account() { # user-id -> 0 when exactly that account was deleted
   safe_id "$1" || return 1
-  [ "$(printf "delete from users where id = '%s' returning id;\n" "$1" | db_sql)" = "$1" ]
+  [ "$(printf "delete from users where id = '%s' returning id;\n" "$1" | db_sql)" = "$1" ] && cache_settle
+}
+revoked_user_id() { # <user>_revoked -> the seeded id of <user>
+  local who="${1%_revoked}"
+  case "$who" in admin_a|admin_b|member_a|member_b|member_c) printf '%s' "${SEED[$(user_key "$who")_ID]:-}" ;; *) return 1 ;; esac
+}
+shift_session_version() { # user-id +1|-1 -> 0 when exactly that account's version moved
+  safe_id "$1" || return 1
+  [ "$(printf "update users set session_version = session_version %s 1 where id = '%s' and session_version %s returning id;\n" \
+    "${2:0:1}" "$1" "$([ "$2" = -1 ] && echo '> 0' || echo '>= 0')" | db_sql)" = "$1" ] && cache_settle
+}
+CACHE_SETTLE=""
+cache_settle() { # waits out the webapp's account cache when the identity switch is on
+  if [ -z "$CACHE_SETTLE" ]; then
+    local env on ms
+    env="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
+    on="$(printf '%s' "${env%%|*}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    ms="${env#*|}"; ms="${ms//[[:space:]]/}"
+    case "$on" in
+      true|1|yes)
+        [[ "$ms" =~ ^[0-9]+$ ]] || ms=5000
+        [ "$ms" -gt 60000 ] && ms=60000
+        CACHE_SETTLE=$(( (ms + 999) / 1000 + 1 ))
+        echo "== identity switch on: each account change by SQL waits ${CACHE_SETTLE}s for the webapp's account cache ==" ;;
+      *) CACHE_SETTLE=0 ;;
+    esac
+  fi
+  [ "$CACHE_SETTLE" -eq 0 ] || sleep "$CACHE_SETTLE"
 }
 actor_jar() { # actor -> sets JAR[actor] or ACTOR_ERR[actor]
   local actor="$1" base="$1" jar err
@@ -212,6 +247,9 @@ actor_jar() { # actor -> sets JAR[actor] or ACTOR_ERR[actor]
   if [[ "$actor" == *_demoted ]]; then
     demoted_user_id "$actor" >/dev/null || { ACTOR_ERR[$actor]="only admin_a or admin_b can be demoted"; return; }
     base="${actor%_demoted}"
+  elif [[ "$actor" == *_revoked ]]; then
+    revoked_user_id "$actor" >/dev/null || { ACTOR_ERR[$actor]="only a plain seeded account can be revoked"; return; }
+    base="${actor%_revoked}"
   fi
   err="$(sign_in "$base" "$jar")" || { ACTOR_ERR[$actor]="$err"; return; }
   if [ "$actor" = deleted ] && ! delete_account "${SEED[DELETED_ID]:-}"; then
@@ -238,14 +276,14 @@ for line in "${ROWS[@]}"; do
     echo "FAIL  $label  unresolved \${...} in the row  [$tags]"; FAIL=$((FAIL + 1)); continue
   fi
 
-  args=(-s -m "$REQUEST_TIMEOUT" -o "$TMP/body" -w '%{http_code}' -X "$method")
+  args=(-s -m "$REQUEST_TIMEOUT" -o "$TMP/body" -D "$TMP/headers" -w '%{http_code}' -X "$method")
   # A browser sends Origin on every non-GET request; the same-origin guards expect it.
   [ "$method" = GET ] || [ "$method" = HEAD ] || args+=(-H "Origin: $BASE")
   if [ "$body" != - ]; then
     subst "$body" > "$TMP/req"
     args+=(-H 'Content-Type: application/json' --data-binary @"$TMP/req")
   fi
-  : > "$TMP/body"
+  : > "$TMP/body"; : > "$TMP/headers"
   case "$actor" in
     anon)
       code="$(curl "${args[@]}" "$BASE$url_path")" ;;
@@ -262,17 +300,26 @@ for line in "${ROWS[@]}"; do
       if [ -n "${ACTOR_ERR[$actor]:-}" ]; then
         echo "FAIL  $label  actor not ready: ${ACTOR_ERR[$actor]}  [$tags]"; FAIL=$((FAIL + 1)); continue
       fi
-      demoted=""
+      demoted=""; revoked=""
       if [[ "$actor" == *_demoted ]]; then
         demoted="$(demoted_user_id "$actor")"
         if ! set_role "$demoted" standard; then
           echo "FAIL  $label  could not demote the account by SQL  [$tags]"; FAIL=$((FAIL + 1)); continue
+        fi
+      elif [[ "$actor" == *_revoked ]]; then
+        revoked="$(revoked_user_id "$actor")"
+        if ! shift_session_version "$revoked" +1; then
+          echo "FAIL  $label  could not raise the session version by SQL  [$tags]"; FAIL=$((FAIL + 1)); continue
         fi
       fi
       # Read-only jar: a row's Set-Cookie never changes the actor for the next row.
       code="$(curl "${args[@]}" -b "${JAR[$actor]}" "$BASE$url_path")"
       if [ -n "$demoted" ] && ! set_role "$demoted" admin; then
         echo "FAIL  $label  could not restore the demoted account to admin: later rows are unreliable  [$tags]"
+        FAIL=$((FAIL + 1)); continue
+      fi
+      if [ -n "$revoked" ] && ! shift_session_version "$revoked" -1; then
+        echo "FAIL  $label  could not put the session version back: later rows are unreliable  [$tags]"
         FAIL=$((FAIL + 1)); continue
       fi ;;
   esac
@@ -289,6 +336,7 @@ for line in "${ROWS[@]}"; do
       text="$(subst "${check#*=}")"
       case "$check" in
         has=*) grep -qF -- "$text" "$TMP/body" || why="body lacks ${check#*=}" ;;
+        hdr=*) grep -qiF -- "$text" "$TMP/headers" || why="headers lack ${check#*=}" ;;
         lacks=*) grep -qF -- "$text" "$TMP/body" && why="body contains ${check#*=}" ;;
         *) why="unknown check '$check'" ;;
       esac

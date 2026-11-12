@@ -185,7 +185,13 @@ printed, and the internal and scanner keys are read from `.env` only for their r
 of `p1.tsv` change the users table through `psql` in the `postgres` container: `admin_b_demoted`
 (and `admin_b_as_<user>_demoted`) keeps the cookies `rbac-admin-b` got as an admin, is demoted
 to `standard` just before its row and restored right after; `deleted` signs in as the
-throwaway `rbac-deleted` account, which is then deleted, and replays its still-valid cookie. The
+throwaway `rbac-deleted` account, which is then deleted, and replays its still-valid cookie.
+`p2.tsv` adds `<user>_revoked` (for example `member_a_revoked`): the account's session version is
+raised just before the row and put back right after, so the row sends a cookie of an older
+version; `;hdr=<text>` checks the answer's headers (the cleared cookie). With
+`RBAC_IDENTITY_ENABLED` on, the webapp keeps an account it read for `RBAC_AUTHZ_CACHE_MS`, so the
+runner waits that long after each of these SQL changes (it reads both values from the webapp
+container and prints the wait once). The
 Playwright helper `testing/e2e/tests/rbacUsers.ts` signs in as any of those accounts through the
 real form (`seedRbac`, `loginAs`, `cleanupRbac`); `rbacUsers.spec.ts` shows the use.
 

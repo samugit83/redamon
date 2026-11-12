@@ -1,0 +1,21 @@
+# Live RBAC route matrix: Phase 2 (identity). Each step adds the rows of the behaviour it
+# changes; a row of an earlier file whose answer a step changes is tagged superseded-by:p2 there.
+# Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
+#
+# id	since	actor	method	path	body	expect	tags
+#
+# ---- step 2.2: the session version in the login token ----
+# member_a and admin_a sign in; the runner raises the account's session version by SQL just
+# before each *_revoked row and puts it back right after (the cookie kept), so the row sends a
+# login cookie of an older version. The refusal clears the cookie on its own 401 (an expired
+# redamon-auth in the answer's headers). Each control sends the same request with the cookie
+# of the current version. POST /api/users answers a missing session with 403 and refuses an
+# empty body after its admin check (400), so no account is ever created.
+p2-sv-me-control	2.2	member_a	GET	/api/auth/me	-	200;has=rbac-member-a@e2e.local	req:ID-21 req:UP-14
+p2-sv-me-revoked	2.2	member_a_revoked	GET	/api/auth/me	-	401;hdr=redamon-auth=;hdr=Expires=Thu, 01 Jan 1970	req:ID-21 req:ID-23
+p2-sv-settings-control	2.2	member_a	GET	/api/users/${MEMBER_A_ID}/settings	-	200	req:ID-21
+p2-sv-settings-revoked	2.2	member_a_revoked	GET	/api/users/${MEMBER_A_ID}/settings	-	401	req:ID-21
+p2-sv-admin-users-list-control	2.2	admin_a	GET	/api/users	-	200;has=rbac-member-a@e2e.local	req:ID-21
+p2-sv-admin-users-list-revoked	2.2	admin_a_revoked	GET	/api/users	-	401	req:ID-21
+p2-sv-admin-users-create-control	2.2	admin_a	POST	/api/users	{}	400	req:ID-21 req:ID-22
+p2-sv-admin-users-create-revoked	2.2	admin_a_revoked	POST	/api/users	{}	403	req:ID-21 req:ID-22
