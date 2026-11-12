@@ -143,6 +143,10 @@ export async function personAuditEntry(
   return { ...actorFields(auditActorOf(sessionActor(session), actingAs)), ...entry, source: 'api' }
 }
 
+// Accounts whose sockets are closed at once: a set held by hundreds would otherwise wait out one
+// agent call after another.
+const SOCKET_CLOSE_BATCH = 8
+
 /**
  * Ends what the accounts that lost a permission still hold (ID-21): their session version was
  * raised in the change's transaction; here, after the commit, this process forgets them and the
@@ -153,10 +157,20 @@ export async function endSessionsOf(userIds: readonly string[]): Promise<{ close
   let closed = 0
   let failed = 0
   for (const id of userIds) invalidatePrincipal(id)
-  for (const id of userIds) {
-    const ended = await endAgentWork(id, { stopRuns: false })
-    if ('closed' in ended.sockets) closed += ended.sockets.closed
-    else failed += 1
+  for (let i = 0; i < userIds.length; i += SOCKET_CLOSE_BATCH) {
+    const batch = userIds.slice(i, i + SOCKET_CLOSE_BATCH)
+    const ended = await Promise.all(batch.map((id) => endAgentWork(id, { stopRuns: false })))
+    for (const e of ended) {
+      if ('closed' in e.sockets) closed += e.sockets.closed
+      else failed += 1
+    }
+    const rest = userIds.length - i - batch.length
+    // A whole batch refused: the agent is down, and each further call would wait out its timeout.
+    if (rest > 0 && ended.every((e) => !('closed' in e.sockets))) {
+      console.error(`[rbac] socket-close failed for ${rest} more account(s): the agent did not answer`)
+      failed += rest
+      break
+    }
   }
   return { closed, failed }
 }

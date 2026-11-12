@@ -238,6 +238,21 @@ describe('PUT', () => {
     expect(await held('member-1')).not.toContain('graph:read')
   })
 
+  test('the agent down: the edit and every sign-out stand; after one refused batch nobody waits on it', async () => {
+    const many = Array.from({ length: 20 }, (_, i) => `member-x${i}`)
+    db().seedUsers(many.map((id) => ({ id })))
+    for (const id of many) db().seedAssignment(id, 'set-analysts')
+    fetchMock.mockImplementation(async () => { throw new TypeError('fetch failed') })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const r = await edit('admin-1', 'set-analysts', { permissions: READ_ONLY.filter((p) => p !== 'graph:read') })
+    const lines = err.mock.calls.map(([line]) => String(line))
+    err.mockRestore()
+    expect(r).toMatchObject({ status: 200, body: { signedOut: 22, agent: { closed: 0, failed: 22 } } })
+    expect(many.every((id) => db().account(id)!.sessionVersion === 1)).toBe(true)
+    expect(fetchMock.mock.calls.length).toBe(8)
+    expect(lines).toContain('[rbac] socket-close failed for 14 more account(s): the agent did not answer')
+  })
+
   test('a rename only: no sign-out; a name taken: 409', async () => {
     expect(await edit('admin-1', 'set-analysts', { name: 'Analyst team' })).toMatchObject({ status: 200, body: { signedOut: 0, set: { name: 'Analyst team', holders: 2 } } })
     expect((await edit('admin-1', 'set-analysts', { name: 'UNUSED' })).body.code).toBe('name_taken')
