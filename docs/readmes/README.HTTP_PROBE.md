@@ -274,14 +274,15 @@ These options extract basic HTTP response information with **minimal performance
 
 | Parameter | Type | Default | httpx Flag | What It Does | Speed Impact |
 |-----------|------|---------|------------|--------------|--------------|
-| `HTTPX_PROBE_TLS_INFO` | `bool` | `True` | `-tls-probe` | Basic TLS info: version, cipher suite. Not passed in IP mode or while RoE exclusions are in force, where it would request the names the certificate lists, an excluded one included (`[-][httpx] TLS probing: off in IP mode` / `off while RoE exclusions are in force`); `-tls-grab` (its own setting) still reads the certificate, and in a domain run its names still join as late names, each admitted on its own | ⚡ **Medium** |
+| `HTTPX_PROBE_TLS_INFO` | `bool` | `True` | `-tls-probe` | Also probes the names the TLS certificate of each probed host lists (its SANs), each as one more target. Not passed in IP mode or while RoE exclusions are in force, where it would request the names the certificate lists, an excluded one included (`[-][httpx] TLS probing: off in IP mode` / `off while RoE exclusions are in force`); `-tls-grab` (its own setting) still reads the certificate, and in a domain run its names still join as late names, each admitted on its own | ⚡ **Medium** |
 | `HTTPX_PROBE_TLS_GRAB` | `bool` | `True` | `-tls-grab` | Full certificate extraction | ⚠️ **SLOW** |
 
-**TLS_INFO extracts:**
-- TLS version (TLS 1.0, 1.1, 1.2, 1.3)
-- Cipher suite in use
+**TLS_INFO probes** the hostnames the certificate lists, so a probe can reach a
+host nobody handed httpx; that is why it is off in IP mode and under RoE
+exclusions. The TLS fields stored on a URL come from TLS_GRAB.
 
-**TLS_GRAB extracts (additional):**
+**TLS_GRAB extracts:**
+- TLS version (TLS 1.0, 1.1, 1.2, 1.3) and the cipher suite in use
 - Certificate subject (CN, DN, organisation) and issuer (DN, CN, organisation)
 - Validity period (not_before, not_after)
 - Subject Alternative Names (all domains on cert)
@@ -973,7 +974,7 @@ docker run --rm --net=host \
   -td \                      # Tech detect
   -ip \                      # IP address
   -cname \                   # CNAME records
-  -tls-probe \               # TLS info (not in IP mode, not under RoE exclusions)
+  -tls-probe \               # probe the certificate's names (not in IP mode, not under RoE exclusions)
   -tls-grab \                # TLS certificate
   -favicon \                 # Favicon hash
   -jarm \                    # JARM fingerprint

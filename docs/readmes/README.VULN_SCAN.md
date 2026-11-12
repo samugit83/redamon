@@ -438,7 +438,7 @@ The AI-in-pipeline switch (`AI_IN_PIPELINE`) turns `NUCLEI_AI_TAGS`, `NUCLEI_AI_
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `NUCLEI_SYSTEM_RESOLVERS` | `bool` | `True` | Use system DNS resolvers |
-| `NUCLEI_FOLLOW_REDIRECTS` | `bool` | `True` | Follow HTTP redirects (`-follow-redirects`). Same host only (`-follow-host-redirects`) when session headers are attached, and in IP mode or while RoE exclusions are in force, in both passes and the takeover templates (`[*][Nuclei] Redirects followed on the same host only: RoE exclusions are in force`); that flag also holds a template's own `redirects: true` to the same host. Off, no flag is passed and a template with `redirects: true` follows its redirects to any host |
+| `NUCLEI_FOLLOW_REDIRECTS` | `bool` | `True` | Follow HTTP redirects (`-follow-redirects`). Same host only (`-follow-host-redirects`) when session headers are attached, and in IP mode or while RoE exclusions are in force, in both passes and the takeover templates (`[*][Nuclei] Redirects followed on the same host only: RoE exclusions are in force`); that flag also holds a template's own `redirects: true` to the same host. Off, no flag is passed, so a template with `redirects: true` follows its redirects to any host, except in those same three cases (a session, IP mode, RoE exclusions): there `-disable-redirects` holds it (`[*][Nuclei] Template redirects held (-disable-redirects): RoE exclusions are in force`) |
 | `NUCLEI_MAX_REDIRECTS` | `int` | `10` | Maximum redirects to follow |
 | `NUCLEI_SCAN_ALL_IPS` | `bool` | `False` | Also scan `http(s)://<ip>` for every resolved IP no other target URL covers |
 | `NUCLEI_INTERACTSH` | `bool` | `True` | Enable OOB testing (blind vulns); always off when session headers are attached, since callbacks go to a third-party collector |
@@ -688,6 +688,7 @@ docker run --rm --net=host --name redamon-nuclei-detection-<id> \
 - `force_dast_pass=True` adds `-dast` and drops every tag and template filter, which would otherwise empty-intersect with the DAST template set.
 - `auth_headers` become `-H` flags; with them, redirects use `-follow-host-redirects` and `-no-interactsh` is forced.
 - `ip_mode=True` or `roe_exclusions=True` also switches redirects to `-follow-host-redirects`. The target list is admitted, but a target's redirect is not, and nuclei follows it inside its client before any scope check. `run_vuln_scan` passes `roe_exclusions` from `admission_context(settings, recon_data).excluded`, so a partial run reads the exclusions from `metadata.roe`; `_run_nuclei_takeover` reads them from its settings.
+- With `follow_redirects=False`, any of the three (`auth_headers`, `ip_mode`, `roe_exclusions`) adds `-disable-redirects`. Without it, a template that sets its own `redirects: true` follows a redirect to any host: an excluded one, an address off the IP target list, or a third party that would receive the `-H` session. With none of the three, follow-off passes no redirect flag.
 - When HTTP traffic capture is on and reachable, `-proxy <capture proxy>` and an `X-Redamon-Ctx` header are added.
 
 ---
@@ -993,6 +994,7 @@ The flags `build_nuclei_command()` can pass:
 | `-system-resolvers` | Use system DNS |
 | `-follow-redirects` | Follow HTTP redirects |
 | `-follow-host-redirects` | Follow redirects on the same host only |
+| `-disable-redirects` | Follow no redirect, a template's own `redirects: true` included |
 | `-max-redirects <n>` | Max redirect depth |
 | `-proxy <url>` | Send traffic through the capture proxy |
 
@@ -1467,6 +1469,17 @@ data"), and the log says `[!][SecurityCheck] N host(s) without live-port
 evidence for a web check: not probed there, earlier findings kept`. A run whose
 port and URL data show nothing live at all probes every host on both ports, as
 before the gate.
+
+A deliberate refusal is no cut (`_REFUSAL_GAP_SOURCES` in
+`recon/helpers/security_checks.py`): the gap naabu or masscan records when the
+RoE gate keeps a target from it (`{"source": "roe_excluded", "module": "naabu"}`;
+the scanner still scanned every target it was allowed), and the `httpx_jarm` /
+`httpx_favicon` gaps the RoE ceiling leaves when it turns those fingerprints off
+(httpx still probed every URL). So under an RoE exclusion a finished port scan
+stays a verdict: an HTTP-only or HTTPS-only host is no longer kept as unproven,
+and its stale `security_check` findings are pruned. Any other gap under an evidence
+source, an unknown or new one included, still counts as a cut. IP mode
+(`_keep_unproven_targets`) and `vhost_sni_enum` read the same cuts.
 
 **The Rules of Engagement.** The three target lists (the direct-IP checks'
 addresses, the WAF bypass's name-address pairs, the hostname checks' names) pass

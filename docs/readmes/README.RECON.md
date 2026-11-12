@@ -854,7 +854,10 @@ What follows from that:
   `security_check` alone (`source_only_hosts`): the prune keeps their findings,
   and none is marked unreachable, which would keep the host's findings for every
   source. In a partial run, a typed host the graph has no live row for is probed
-  on both web ports.
+  on both web ports. An RoE refusal (`roe_excluded`) and the RoE ceiling's
+  `httpx_jarm` / `httpx_favicon` gaps are no cut, so a finished port scan stays
+  a verdict under an RoE exclusion; any other gap under naabu, masscan or httpx,
+  an unknown source included, is one.
 - **Passive CVE lookups record positive coverage.** Shodan (with InternetDB),
   Netlas and CriminalIP pass `note_cve_coverage` the IPs they started from
   (`considered=`), the ones they asked about and the ones whose whole answer
@@ -1068,10 +1071,11 @@ filter (`metadata.expanded_ips`; the admission helpers in
 `subdomain_filter` and `ip_to_hostname`, so no tool is handed a real name by
 GROUP 1. A reverse-DNS answer is evidence, never a scope entry: its own A/AAAA
 can point anywhere. httpx follows redirects with `-fhr` and no `-tls-probe`,
-nuclei with `-follow-host-redirects`, Katana, Kiterunner, Arjun and FFuf follow
-none, Hakrawler crawls each seed's own host, JS recon follows them only to
-admitted hosts, origin discovery is skipped, GVM takes the IPs only, and nmap
-runs with `-n`. In IP mode the NSE vuln set leaves out `http-cross-domain-policy`
+nuclei with `-follow-host-redirects` (`-disable-redirects` with Follow Redirects
+off), Katana, Kiterunner, Arjun and FFuf follow none, Hakrawler crawls each
+seed's own host, JS recon follows them only to admitted hosts, origin discovery
+is skipped, GVM takes the IPs only, and nmap runs with `-n`. In IP mode the NSE
+vuln set leaves out `http-cross-domain-policy`
 (`--script "vuln and not http-cross-domain-policy"`), because that script
 follows a redirect off the target address on its own.
 
