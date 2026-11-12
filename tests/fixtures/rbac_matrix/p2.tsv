@@ -156,3 +156,24 @@ p2-reset-admin-target	2.10	admin_a	POST	/api/users/${ADMIN_B_ID}/reset-credentia
 p2-reset-bad-mode	2.10	admin_a	POST	/api/users/${MEMBER_C_ID}/reset-credentials	{"mode":"email"}	400;has=invalid_field	req:ID-18 identity:on
 p2-reset-unknown	2.10	admin_a	POST	/api/users/rbac-no-such-account/reset-credentials	{"mode":"link","reason":"rbac matrix"}	404;has=user_not_found	req:ID-18 identity:on
 p2-reset-policy	2.10	admin_a	POST	/api/users/${MEMBER_C_ID}/reset-credentials	{"mode":"temporary","temporaryPassword":"PasswordPassword","reason":"rbac matrix"}	400;has=password_common	req:ID-18 req:ID-20 identity:on
+
+# ---- step 2.11: email change, session lifetimes, My activity ----
+# With the identity switch on, changing a sign-in email takes the current password (own) or the
+# admin's own (a member's): without it 403 step_up_required before anything is read or written.
+# An address another account holds in other capitals is 409 email_taken, answered only after the
+# password (rbac-member-b gives its right password, so nothing is written either way); off, Phase 1
+# answers the collision without a password. The login cookie lives as long as its token: an admin
+# 12 h, a member 168 h with the switch on (the instance row's defaults, PLACEHOLDER(OQ-38): these rows
+# assume Root left them), 7 days for everyone off. My activity is the signed-in account's, 404 off.
+# The stateful flow (an email change with the password, its notice and activity row, an idle admin
+# sent to sign-in) is E2E-P2-09, tests/rbac_account_live.sh on a disposable instance.
+p2-email-own-nopw	2.11	member_a	PUT	/api/users/${MEMBER_A_ID}	{"email":"rbac-member-a-moved@e2e.local"}	403;has=step_up_required	req:ID-30 req:ID-25 identity:on
+p2-email-admin-nopw	2.11	admin_a	PUT	/api/users/${MEMBER_C_ID}	{"email":"rbac-member-c-moved@e2e.local"}	403;has=step_up_required	req:ID-30 req:ID-25 identity:on
+p2-email-taken	2.11	member_b	PUT	/api/users/${MEMBER_B_ID}	{"email":"RBAC-MEMBER-C@e2e.local","currentPassword":"${RBAC_PASSWORD}"}	409;has=email_taken	req:ID-30 identity:on
+p2-email-taken-off	2.11	member_b	PUT	/api/users/${MEMBER_B_ID}	{"email":"RBAC-MEMBER-C@e2e.local"}	409;has=email_taken	req:ID-30 identity:off
+p2-lifetime-admin	2.11	anon	POST	/api/auth/login	{"email":"${ADMIN_A_EMAIL}","password":"${RBAC_PASSWORD}"}	200;hdr=Max-Age=43200	req:ID-24 identity:on
+p2-lifetime-admin-off	2.11	anon	POST	/api/auth/login	{"email":"${ADMIN_A_EMAIL}","password":"${RBAC_PASSWORD}"}	200;hdr=Max-Age=604800	req:ID-24 identity:off
+p2-lifetime-member	2.11	anon	POST	/api/auth/login	{"email":"${MEMBER_A_EMAIL}","password":"${RBAC_PASSWORD}"}	200;hdr=Max-Age=604800	req:ID-24
+p2-activity-read	2.11	member_a	GET	/api/account/activity	-	200;has="events"	req:UI-09 identity:on
+p2-activity-anon	2.11	anon	GET	/api/account/activity	-	401	req:UI-09
+p2-activity-off	2.11	member_a	GET	/api/account/activity	-	404	req:UI-09 identity:off
