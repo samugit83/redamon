@@ -24,7 +24,7 @@ function entry(over: Partial<PluginEntry> = {}): PluginEntry {
   }
 }
 
-const show = (e: PluginEntry) => render(<PluginCard entry={e} isAdmin={false} onAction={vi.fn()} />)
+const show = (e: PluginEntry) => render(<PluginCard entry={e} manages={false} onAction={vi.fn()} />)
 
 describe('PluginCard listing', () => {
   test('the catalog icon is shown, named after the plugin', () => {

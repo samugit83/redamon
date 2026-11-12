@@ -16,8 +16,9 @@ import { listVersions } from './staging'
 /**
  * The model of the Plugins page (README.PLUGINS.md §7.1): one entry per catalog plugin,
  * merged with the installed rows (an installed plugin the catalog no longer lists is still
- * shown and manageable), and the catalog's state in words that say what to do. Only an
- * admin's model carries errors and the management details.
+ * shown and manageable), and the catalog's state in words that say what to do. Only the model
+ * of whoever manages plugins (platform:plugins, `viewerIsAdmin`) carries errors and the
+ * management details; "Admins only" below means them.
  */
 export type CardState =
   | 'not_installed'
@@ -91,7 +92,8 @@ export interface PluginEntry {
 
 export interface PluginsPage {
   platformVersion: string
-  isAdmin: boolean
+  /** The viewer holds platform:plugins: the management details and actions are theirs. */
+  managesPlugins: boolean
   catalog: CatalogView
   plugins: PluginEntry[]
 }
@@ -118,15 +120,15 @@ const CATALOG_DETAILS_MAX = 5
 
 const capped = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text)
 
-function catalogView(loaded: LoadedCatalog | null, error: CatalogError | null, isAdmin: boolean): CatalogView {
+function catalogView(loaded: LoadedCatalog | null, error: CatalogError | null, manages: boolean): CatalogView {
   if (!loaded) {
     const code = error?.code ?? 'catalog_unreachable'
     const details = error?.details?.slice(0, CATALOG_DETAILS_MAX).map((d) => capped(d, CATALOG_DETAIL_MAX))
     return {
       state: STATE_OF[code] ?? 'unreachable',
       message: error ? (CATALOG_MESSAGES[code] ?? (() => error.message))(error) : null,
-      ...(isAdmin && error ? { detail: capped(error.message, CATALOG_DETAIL_MAX) } : {}),
-      ...(isAdmin && details?.length ? { details } : {}),
+      ...(manages && error ? { detail: capped(error.message, CATALOG_DETAIL_MAX) } : {}),
+      ...(manages && details?.length ? { details } : {}),
       official: false,
       extraKey: false,
       replayed: false,
@@ -158,7 +160,7 @@ export function cardState(row: PluginInstall | null): CardState {
   return row.enabled ? 'ready' : 'disabled'
 }
 
-function installedView(row: PluginInstall, isAdmin: boolean): InstalledView {
+function installedView(row: PluginInstall, manages: boolean): InstalledView {
   const v: InstalledView = {
     version: row.activeVersion,
     previousVersion: row.previousVersion,
@@ -170,7 +172,7 @@ function installedView(row: PluginInstall, isAdmin: boolean): InstalledView {
     revokedReason: row.revokedReason,
     operationKind: row.operationKind,
   }
-  if (isAdmin) v.lastError = row.lastError
+  if (manages) v.lastError = row.lastError
   return v
 }
 
@@ -180,7 +182,7 @@ function entryOf(
   releases: CatalogRelease[] | null,
   row: PluginInstall | null,
   loaded: LoadedCatalog | null,
-  isAdmin: boolean,
+  manages: boolean,
 ): PluginEntry {
   const manifest = row?.manifest as { displayName?: string; description?: string } | null
   const best = releases && loaded ? chooseRelease({ id, releases }, PLUGIN_PLATFORM_VERSION, loaded.catalog.revoked) : null
@@ -211,7 +213,7 @@ function entryOf(
     description: meta?.description ?? manifest?.description ?? '',
     inCatalog: loaded ? !!releases : null,
     state,
-    installed: row && installedState ? installedView(row, isAdmin) : null,
+    installed: row && installedState ? installedView(row, manages) : null,
     available: best
       ? { version: best.version, dataVersion: best.dataVersion, platform: best.platform, permissions: permissionViews(best.permissions) }
       : null,
@@ -220,7 +222,7 @@ function entryOf(
   }
   if (meta?.icon) entry.icon = pluginIconPath(id, meta.icon.sha256)
   if (meta?.docsUrl) entry.docsUrl = meta.docsUrl
-  if (isAdmin && row && !installedState) entry.lastAttemptError = row.lastError
+  if (manages && row && !installedState) entry.lastAttemptError = row.lastError
   return entry
 }
 
@@ -229,7 +231,7 @@ export async function viewerIsAdmin(userId: string): Promise<boolean> {
   return accountHolds(userId, 'platform:plugins', { fresh: true })
 }
 
-export async function buildPluginsPage(isAdmin: boolean): Promise<PluginsPage> {
+export async function buildPluginsPage(manages: boolean): Promise<PluginsPage> {
   let loaded: LoadedCatalog | null = null
   let error: CatalogError | null = null
   try {
@@ -242,22 +244,22 @@ export async function buildPluginsPage(isAdmin: boolean): Promise<PluginsPage> {
   const byId = new Map(rows.map((r) => [r.pluginId, r]))
   const plugins: PluginEntry[] = []
   for (const p of loaded?.catalog.plugins ?? []) {
-    plugins.push(entryOf(p.id, p, p.releases, byId.get(p.id) ?? null, loaded, isAdmin))
+    plugins.push(entryOf(p.id, p, p.releases, byId.get(p.id) ?? null, loaded, manages))
     byId.delete(p.id)
   }
   // Installed (or kept after "uninstall, keep data") but not in the catalog in use. A row that
   // keeps nothing (an attempt that failed, a plugin delisted) has nothing to show or manage.
   for (const row of byId.values()) {
-    if (row.status === 'available' && (!isAdmin || !(await hasKeptAnything(row.pluginId)))) continue
-    plugins.push(entryOf(row.pluginId, null, null, row, loaded, isAdmin))
+    if (row.status === 'available' && (!manages || !(await hasKeptAnything(row.pluginId)))) continue
+    plugins.push(entryOf(row.pluginId, null, null, row, loaded, manages))
   }
-  if (isAdmin) {
+  if (manages) {
     for (const e of plugins) {
       if (e.state === 'not_installed' && rows.some((r) => r.pluginId === e.id) && (await hasKeptAnything(e.id))) e.keptData = true
     }
   }
   plugins.sort((a, b) => a.displayName.localeCompare(b.displayName))
-  return { platformVersion: PLUGIN_PLATFORM_VERSION, isAdmin, catalog: catalogView(loaded, error, isAdmin), plugins }
+  return { platformVersion: PLUGIN_PLATFORM_VERSION, managesPlugins: manages, catalog: catalogView(loaded, error, manages), plugins }
 }
 
 export interface PluginDetail {
@@ -276,13 +278,13 @@ export interface PluginDetail {
   }
 }
 
-export async function buildPluginDetail(pluginId: string, isAdmin: boolean): Promise<PluginDetail | null> {
-  const page = await buildPluginsPage(isAdmin)
+export async function buildPluginDetail(pluginId: string, manages: boolean): Promise<PluginDetail | null> {
+  const page = await buildPluginsPage(manages)
   const plugin = page.plugins.find((p) => p.id === pluginId)
   const row = await prisma.pluginInstall.findUnique({ where: { pluginId } })
   if (!plugin && !row) return null
-  const entry = plugin ?? entryOf(pluginId, null, null, row, null, isAdmin)
-  if (!isAdmin) return { plugin: entry }
+  const entry = plugin ?? entryOf(pluginId, null, null, row, null, manages)
+  if (!manages) return { plugin: entry }
   const [usage, overrides] = await Promise.all([
     prisma.pluginData.aggregate({
       where: { pluginId, namespace: 'live', NOT: { collection: { startsWith: likePrefix('__') } } },

@@ -47,7 +47,7 @@ function entry(state: PluginEntry['state'], over: Partial<PluginEntry> = {}): Pl
 
 function model(plugins: PluginEntry[], over: Partial<PluginsPage> = {}): PluginsPage {
   return {
-    platformVersion: '1.0.0', isAdmin: true,
+    platformVersion: '1.0.0', managesPlugins: true,
     catalog: { state: 'ok', message: null, official: true, extraKey: false, replayed: false, serial: 3 },
     plugins, ...over,
   }

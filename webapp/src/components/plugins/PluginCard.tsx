@@ -38,7 +38,8 @@ const TRANSIENT: CardState[] = ['installing', 'updating', 'uninstalling']
 
 interface PluginCardProps {
   entry: PluginEntry
-  isAdmin: boolean
+  /** The viewer holds platform:plugins (the page model's `managesPlugins`). */
+  manages: boolean
   busy?: boolean
   onAction: (action: CardAction, entry: PluginEntry) => void
 }
@@ -56,16 +57,16 @@ function PluginAvatar({ src, name }: { src?: string; name: string }) {
   return <img className={styles.avatar} src={src} alt={`${name} icon`} onError={() => setFailedSrc(src)} />
 }
 
-/** One plugin on the Plugins page; the actions an admin may take depend on its state. */
-export function PluginCard({ entry, isAdmin, busy = false, onAction }: PluginCardProps) {
+/** One plugin on the Plugins page; the actions whoever manages plugins may take depend on its state. */
+export function PluginCard({ entry, manages, busy = false, onAction }: PluginCardProps) {
   const { state } = entry
-  const label = isAdmin ? ADMIN_LABEL[state].text : USER_LABEL[state]
-  const chip = isAdmin ? ADMIN_LABEL[state].chip : state === 'ready' ? 'chipSuccess' : 'chipSecondary'
+  const label = manages ? ADMIN_LABEL[state].text : USER_LABEL[state]
+  const chip = manages ? ADMIN_LABEL[state].chip : state === 'ready' ? 'chipSuccess' : 'chipSecondary'
   const permissions = entry.installed?.grantedPermissions ?? entry.available?.permissions.map((p) => p.id) ?? []
   const act = (a: CardAction) => () => onAction(a, entry)
 
   const buttons: { action: CardAction; label: string; danger?: boolean; disabled?: boolean }[] = []
-  if (isAdmin && !TRANSIENT.includes(state)) {
+  if (manages && !TRANSIENT.includes(state)) {
     if (state === 'not_installed') {
       buttons.push({ action: 'install', label: 'Install', disabled: !entry.available })
       if (entry.keptData) buttons.push({ action: 'deleteKept', label: 'Delete kept data', danger: true })
@@ -130,11 +131,11 @@ export function PluginCard({ entry, isAdmin, busy = false, onAction }: PluginCar
           {state === 'revoked' && entry.installed?.revokedReason && (
             <div className={styles.error}>Revoked by the catalog: {entry.installed.revokedReason}</div>
           )}
-          {isAdmin && entry.installed?.lastError && <div className={styles.error}>{entry.installed.lastError}</div>}
-          {isAdmin && !entry.installed && entry.lastAttemptError && (
+          {manages && entry.installed?.lastError && <div className={styles.error}>{entry.installed.lastError}</div>}
+          {manages && !entry.installed && entry.lastAttemptError && (
             <div className={styles.error}>Last attempt: {entry.lastAttemptError}</div>
           )}
-          {isAdmin && state === 'not_installed' && entry.installBlocked && <div className={styles.notice}>{entry.installBlocked}</div>}
+          {manages && state === 'not_installed' && entry.installBlocked && <div className={styles.notice}>{entry.installBlocked}</div>}
           {buttons.length > 0 && (
             <div className={styles.actions}>
               {buttons.map((b) => (

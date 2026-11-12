@@ -47,7 +47,6 @@ const OWN_ACCOUNT = 'the account the path names is the signed-in one: an account
 const PATH_ROW = "a per-user row of the account requireUserAccess / requireOwnBrowserRequest let in, not a project's owner"
 const SKILL_OWNER_PROJECT = "the project whose toggles name the skill owner's own skills (the agent loads the project owner's user skills, so only the owner's project can switch them on), not any project the person sees"
 const CAPTURE_TENANT = 'the capture rows of a project carry its owner as tenant (ingest writes it), filtered after the project guard'
-const PLUGINS_VIEWER = `the viewer manages plugins (pageModel.ts viewerIsAdmin, which asks platform:plugins): the isAdmin field of /api/plugins that PluginsPageClient.tsx and PluginCard.tsx read`
 const SHARED_TOOL = 'a shared-tool short-circuit before sharedToolAccess (sharedTools.ts); the platform permission replaces both with the platform routes'
 
 interface Allowed {
@@ -94,20 +93,6 @@ const ALLOWED: Record<string, Allowed> = {
     reason: SHARED_TOOL,
     lines: [
       "if (session.role === 'admin') return { allowed: true, via: 'admin' }",
-    ],
-  },
-  'src/app/api/plugins/[pluginId]/route.ts::is_admin': {
-    reason: PLUGINS_VIEWER,
-    lines: [
-      'const isAdmin = !!session && (await viewerIsAdmin(session.userId))',
-      'const out = await buildPluginDetail(pluginId, isAdmin)',
-    ],
-  },
-  'src/app/api/plugins/route.ts::is_admin': {
-    reason: PLUGINS_VIEWER,
-    lines: [
-      'const isAdmin = !!session && (await viewerIsAdmin(session.userId))',
-      "return NextResponse.json(await buildPluginsPage(isAdmin), { headers: { 'Cache-Control': 'no-store' } })",
     ],
   },
   'src/app/api/presets/[id]/route.ts::row_owner_helper': {
@@ -336,30 +321,6 @@ const ALLOWED: Record<string, Allowed> = {
       "return owner?.role === 'admin'",
     ],
   },
-  'src/lib/plugins/pageModel.ts::is_admin': {
-    reason: PLUGINS_VIEWER,
-    lines: [
-      'isAdmin: boolean',
-      'function catalogView(loaded: LoadedCatalog | null, error: CatalogError | null, isAdmin: boolean): CatalogView {',
-      '...(isAdmin && error ? { detail: capped(error.message, CATALOG_DETAIL_MAX) } : {}),',
-      '...(isAdmin && details?.length ? { details } : {}),',
-      'function installedView(row: PluginInstall, isAdmin: boolean): InstalledView {',
-      'if (isAdmin) v.lastError = row.lastError',
-      'isAdmin: boolean,',
-      'installed: row && installedState ? installedView(row, isAdmin) : null,',
-      'if (isAdmin && row && !installedState) entry.lastAttemptError = row.lastError',
-      'export async function buildPluginsPage(isAdmin: boolean): Promise<PluginsPage> {',
-      'plugins.push(entryOf(p.id, p, p.releases, byId.get(p.id) ?? null, loaded, isAdmin))',
-      "if (row.status === 'available' && (!isAdmin || !(await hasKeptAnything(row.pluginId)))) continue",
-      'plugins.push(entryOf(row.pluginId, null, null, row, loaded, isAdmin))',
-      'if (isAdmin) {',
-      'return { platformVersion: PLUGIN_PLATFORM_VERSION, isAdmin, catalog: catalogView(loaded, error, isAdmin), plugins }',
-      'export async function buildPluginDetail(pluginId: string, isAdmin: boolean): Promise<PluginDetail | null> {',
-      'const page = await buildPluginsPage(isAdmin)',
-      'const entry = plugin ?? entryOf(pluginId, null, null, row, null, isAdmin)',
-      'if (!isAdmin) return { plugin: entry }',
-    ],
-  },
   'src/lib/plugins/userSkillAdoption.ts::find_by_id_and_owner': {
     reason: `the skill owner's source skill (a per-user row) and ${SKILL_OWNER_PROJECT}, inside the save's transaction`,
     lines: [
@@ -535,6 +496,28 @@ describe('no inline owner or admin check outside lib/authz', () => {
 
   test('every entry gives its reason and lists a statement', () => {
     expect(Object.entries(ALLOWED).filter(([, a]) => a.reason.trim().length < 20 || a.lines.length === 0).map(([k]) => k)).toEqual([])
+  })
+
+  test('no isAdmin: the account type is not a permission, so its rule allows nothing (step 3.12, UI-01)', () => {
+    expect(Object.keys(ALLOWED).filter((key) => key.endsWith('::is_admin'))).toEqual([])
+    expect([...found.keys()].filter((key) => key.endsWith('::is_admin'))).toEqual([])
+  })
+
+  test('no isAdmin in the screens either: they ask useCan (step 3.12, UI-01)', () => {
+    // The agent's suggestion prompts name an `isAdmin` field to tamper with on a target: text, not a check.
+    const PROMPT_TEXT = new Set(['src/app/graph/components/AIAssistantDrawer/suggestionData.ts'])
+    const hits: string[] = []
+    for (const root of ['src/app', 'src/components', 'src/providers', 'src/hooks', 'src/context']) {
+      for (const full of sources(join(WEBAPP, root))) {
+        const file = relative(WEBAPP, full).split(sep).join('/')
+        if (file.startsWith('src/app/api/') || PROMPT_TEXT.has(file)) continue
+        readFileSync(full, 'utf8').split('\n').forEach((line, i) => {
+          if (RULES.is_admin.test(line)) hits.push(`${file}:${i + 1}: ${line.trim()}`)
+        })
+      }
+    }
+    expect(hits).toEqual([])
+    expect([...PROMPT_TEXT].every((f) => RULES.is_admin.test(readFileSync(join(WEBAPP, f), 'utf8')))).toBe(true)
   })
 
   test('the rules catch the shapes they name, and not their look-alikes', () => {

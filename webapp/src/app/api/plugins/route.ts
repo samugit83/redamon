@@ -6,7 +6,7 @@ import { getSession } from '@/lib/session'
 
 /**
  * GET /api/plugins: the Plugins page model (lib/plugins/pageModel.ts) for any signed-in
- * user; management details only for an admin, by the role read from the database.
+ * user; management details only for whoever holds platform:plugins, read fresh from the database.
  */
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -15,6 +15,6 @@ export const GET = pluginRoute('plugins page', 'The Plugins page could not be re
   const user = await requireEffectiveUser()
   if (user instanceof NextResponse) return user
   const session = await getSession()
-  const isAdmin = !!session && (await viewerIsAdmin(session.userId))
-  return NextResponse.json(await buildPluginsPage(isAdmin), { headers: { 'Cache-Control': 'no-store' } })
+  const managesPlugins = !!session && (await viewerIsAdmin(session.userId))
+  return NextResponse.json(await buildPluginsPage(managesPlugins), { headers: { 'Cache-Control': 'no-store' } })
 })

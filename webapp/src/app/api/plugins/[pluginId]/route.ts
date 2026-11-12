@@ -20,8 +20,8 @@ export const GET = pluginRoute('plugin details', "The plugin's details could not
     return NextResponse.json({ error: 'Invalid plugin id.', code: 'invalid_plugin_id' }, { status: 400 })
   }
   const session = await getSession()
-  const isAdmin = !!session && (await viewerIsAdmin(session.userId))
-  const out = await buildPluginDetail(pluginId, isAdmin)
+  const managesPlugins = !!session && (await viewerIsAdmin(session.userId))
+  const out = await buildPluginDetail(pluginId, managesPlugins)
   if (!out) return NextResponse.json({ error: `Plugin ${pluginId} is not known.`, code: 'not_found' }, { status: 404 })
   return NextResponse.json(out, { headers: { 'Cache-Control': 'no-store' } })
 })

@@ -36,12 +36,13 @@ function entries(): PluginEntry[] {
   }))
 }
 
-let isAdmin = false
+// Whether the viewer manages plugins (platform:plugins): the page model's managesPlugins.
+let managesPlugins = false
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (url === '/api/plugins/status') return new Response(JSON.stringify({ platformVersion: '1.0.0', runner: { reachable: true, state: 'ok' } }))
     const page: PluginsPage = {
-      platformVersion: '1.0.0', isAdmin,
+      platformVersion: '1.0.0', managesPlugins,
       catalog: { state: 'ok', message: null, official: true, extraKey: false, replayed: false, serial: 1 },
       plugins: entries(),
     }
@@ -60,7 +61,7 @@ function show() {
 
 describe('a standard user', () => {
   test('sees each card read-only, in plain words', async () => {
-    isAdmin = false
+    managesPlugins = false
     show()
     for (const [i, [, label]] of STATES.entries()) {
       const c = within(await screen.findByTestId(`plugin-card-p${i}x`))
@@ -74,7 +75,7 @@ describe('a standard user', () => {
 
 describe('an admin', () => {
   test('sees the management controls', async () => {
-    isAdmin = true
+    managesPlugins = true
     show()
     const ready = within(await screen.findByTestId('plugin-card-p1x'))
     expect(ready.getByRole('button', { name: 'Disable' })).toBeTruthy()
