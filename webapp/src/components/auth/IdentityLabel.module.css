@@ -1,0 +1,43 @@
+.label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-1-5);
+  min-width: 0;
+}
+
+.name {
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+
+.email {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  white-space: nowrap;
+}
+
+.root {
+  background: rgba(234, 179, 8, 0.18);
+  color: var(--status-warning);
+}
+
+.admin {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-primary);
+}
+
+.member {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-secondary);
+}

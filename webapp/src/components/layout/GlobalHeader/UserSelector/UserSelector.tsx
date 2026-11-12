@@ -8,6 +8,7 @@ import { useUsers } from '@/hooks/useUsers'
 import { useGuardedRouter, useNavigationGuard } from '@/context/NavigationGuardContext'
 import { useErrorToast } from '@/hooks/useErrorToast'
 import { StepUpModal } from '@/components/auth/StepUpModal'
+import { IdentityLabel, accountTypeFor, identityText, ACCOUNT_TYPE_LABEL } from '@/components/auth/IdentityLabel'
 import styles from './UserSelector.module.css'
 
 export function UserSelector() {
@@ -80,6 +81,13 @@ export function UserSelector() {
   const initials = displayUser
     ? displayUser.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
     : '?'
+  // Identity switch on (step 2.11, ID-31): accounts are named by email and type, not by name alone.
+  const identity = authUser?.rbac?.identity === true
+  const rootRef = authUser?.rbac?.root ?? null
+  const typeOf = (u: { role?: string; email?: string }) => accountTypeFor({ role: u.role ?? 'standard', email: u.email ?? '' }, rootRef)
+  const displayType = identity && displayUser
+    ? (currentUser ? typeOf(currentUser) : authUser?.accountType ?? typeOf(authUser ?? {}))
+    : null
 
   return (
     <div className={styles.container} ref={dropdownRef}>
@@ -87,6 +95,9 @@ export function UserSelector() {
         className={styles.trigger}
         onClick={() => setIsOpen(!isOpen)}
         title="User Menu"
+        aria-label={displayType && displayUser
+          ? `User menu: ${identityText({ name: displayUser.name, email: displayUser.email ?? '', accountType: displayType })}`
+          : undefined}
       >
         <div className={styles.avatar}>
           <span>{initials}</span>
@@ -94,6 +105,11 @@ export function UserSelector() {
         <span className={styles.userName}>
           {displayUser?.name || 'No User'}
         </span>
+        {displayType && (
+          <span className={`${styles.roleBadge} ${displayType === 'member' ? styles.roleBadgeStandard : styles.roleBadgeAdmin}`}>
+            {ACCOUNT_TYPE_LABEL[displayType]}
+          </span>
+        )}
         <ChevronDown size={14} className={isOpen ? styles.iconOpen : ''} />
       </button>
 
@@ -116,16 +132,22 @@ export function UserSelector() {
                       <div className={styles.itemAvatar}>
                         <span>{user.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)}</span>
                       </div>
-                      <div className={styles.itemContent}>
-                        <span className={styles.itemName}>
-                          {user.name}
-                          {' '}
-                          <span className={`${styles.roleBadge} ${user.role === 'admin' ? styles.roleBadgeAdmin : styles.roleBadgeStandard}`}>
-                            {user.role}
+                      {identity ? (
+                        <div className={styles.itemContent}>
+                          <IdentityLabel name={user.name} email={user.email} accountType={typeOf(user)} />
+                        </div>
+                      ) : (
+                        <div className={styles.itemContent}>
+                          <span className={styles.itemName}>
+                            {user.name}
+                            {' '}
+                            <span className={`${styles.roleBadge} ${user.role === 'admin' ? styles.roleBadgeAdmin : styles.roleBadgeStandard}`}>
+                              {user.role}
+                            </span>
                           </span>
-                        </span>
-                        <span className={styles.itemEmail}>{user.email}</span>
-                      </div>
+                          <span className={styles.itemEmail}>{user.email}</span>
+                        </div>
+                      )}
                     </button>
                   ))
                 ) : (

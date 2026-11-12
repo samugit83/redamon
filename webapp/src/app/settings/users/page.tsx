@@ -13,6 +13,7 @@ import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { InviteRowActions, InviteUserModal } from '@/components/admin/InviteUserModal'
 import { ResetCredentialsModal } from '@/components/admin/ResetCredentialsModal'
+import { IdentityLabel, accountTypeFor } from '@/components/auth/IdentityLabel'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import styles from './page.module.css'
@@ -297,6 +298,18 @@ export default function UsersPage() {
   const confirmedRoot = identity && authUser?.accountType === 'root' && authUser?.rbac?.root?.confirmed === true
   const manageAdmins = !identity || confirmedRoot
   const createsAdminWithPassword = identity && role === 'admin'
+  // Identity switch on (step 2.11, ID-31): a dialog acting on an account names it by email and type.
+  const targetId = identity && (modal.type === 'password' || modal.type === 'delete') ? modal.userId : null
+  const modalTarget = targetId ? users?.find(u => u.id === targetId) ?? null : null
+  const targetLabel = modalTarget && (
+    <p className={styles.hint}>
+      <IdentityLabel
+        name={modalTarget.name}
+        email={modalTarget.email}
+        accountType={accountTypeFor(modalTarget, authUser?.rbac?.root)}
+      />
+    </p>
+  )
 
   return (
     <div className={styles.page}>
@@ -548,6 +561,7 @@ export default function UsersPage() {
         size="small"
       >
         <div className={styles.form}>
+          {targetLabel}
           {formError && <div className={styles.error}>{formError}</div>}
           {formSuccess && <div className={styles.success}>{formSuccess}</div>}
           {setOwnRow && (
@@ -645,6 +659,7 @@ export default function UsersPage() {
         size="small"
       >
         <div className={styles.form}>
+          {targetLabel}
           {formError && <div className={styles.error}>{formError}</div>}
           <p style={{ color: 'var(--text-primary)', fontSize: 'var(--text-sm)' }}>
             Are you sure you want to delete <strong>{modal.type === 'delete' ? modal.userName : ''}</strong>?
