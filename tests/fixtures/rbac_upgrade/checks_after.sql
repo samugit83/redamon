@@ -26,8 +26,9 @@ SELECT after->>'files', after->>'rowsCreated'
 SELECT count(*), count(*) FILTER (WHERE owner_user_id IS NULL) FROM nuclei_templates;
 
 -- The identity columns arrive with the defaults that mean "as before": every account
--- active, version 0, no forced change, nothing on hold, no notices; no instance row and
--- no invite until a later backfill or an admin writes one; no audit row gains a value.
+-- active, version 0, no forced change, nothing on hold, no notices; one instance row, the
+-- instance settings backfill's (step 2.4), and no invite until an admin writes one; no
+-- audit row gains a value.
 \echo == identity columns (email, status, session version, must change, last login set, admin profile set, password on hold, notices) [step 2.1]
 SELECT email, status, session_version, must_change_password, last_login_at IS NOT NULL,
        admin_profile_id IS NOT NULL, password_on_hold <> '', pending_notices::text
@@ -44,3 +45,19 @@ SELECT (SELECT count(*) FROM audit_log WHERE on_behalf_of_user_id IS NOT NULL),
        (SELECT count(*) FROM act_as_audit WHERE reason IS NOT NULL),
        (SELECT count(*) FROM act_as_audit WHERE duration_minutes IS NOT NULL),
        (SELECT count(*) FROM act_as_audit WHERE ended_by IS NOT NULL);
+
+-- The instance settings row holds the values the readers pick in the user rows: the tunnel
+-- row enabled first, then saved last, then the lowest id; the capture settings of the admin
+-- row saved last; each group's source account; no admin wrote it. The harness runs with the
+-- identity switch off: one marker, and a second run that changes nothing writes none.
+\echo == instance settings (tunnels, ngrok token, chisel url, chisel auth, tunnel source, capture on, retention, store bodies, capture source, written by an admin) [step 2.4]
+SELECT i.tunnels_enabled, i.ngrok_authtoken, i.chisel_server_url, i.chisel_auth,
+       (SELECT email FROM users WHERE id = i.tunnel_source_user_id),
+       i.capture_proxy_enabled, i.capture_proxy_retention_days, i.capture_proxy_store_bodies,
+       (SELECT email FROM users WHERE id = i.capture_source_user_id), i.updated_by_id IS NOT NULL
+  FROM instance_settings i;
+
+\echo == instance settings marker (identity, wrote, tunnel source, capture source, tunnel candidates, capture candidates), one line per marker row
+SELECT after->>'identity', after->>'wrote', after->>'tunnelSourceUserId', after->>'captureSourceUserId',
+       after->'tunnelCandidates', after->'captureCandidates'
+  FROM audit_log WHERE action = 'system.rbac_instance_settings_backfill' ORDER BY created_at;

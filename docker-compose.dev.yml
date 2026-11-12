@@ -38,6 +38,7 @@ services:
         node scripts/backfill-jev-provider-selection.mjs
         node scripts/backfill-rbac-legacy-grants.mjs
         node scripts/backfill-nuclei-template-owners.mjs
+        node scripts/backfill-rbac-instance-settings.mjs
         npm run dev
     volumes:
       - ./webapp:/app

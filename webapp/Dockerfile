@@ -124,12 +124,12 @@ RUN PRISMA_VER=$(node -p "require('/tmp/prisma-pkg.json').version") && \
 #             constraints are re-checked here too (never fatal: the stores
 #             enforce the same rules). Row fix-ups that need the pushed columns
 #             (clamp-triage-review-budget, the one-time user-skill toggle,
-#             Jev provider selection, RBAC legacy-grant and Nuclei template
-#             owner backfills) run here too.
+#             Jev provider selection, RBAC legacy-grant, Nuclei template
+#             owner and instance settings backfills) run here too.
 # The push itself is fatal: a webapp serving without the columns its code
 # expects fails on every request that touches them, which is worse than a
 # restart. compose restarts it (unless-stopped) once Postgres answers.
-RUN printf '#!/bin/sh\nnode scripts/migrate-trufflehog-profiles.mjs 2>&1 || exit 1\nnode scripts/add-js-recon-trufflehog-column.mjs 2>&1 || exit 1\necho "Syncing Prisma schema..."\nnode scripts/db-push-locked.mjs db push --skip-generate --accept-data-loss --schema ./prisma/schema.prisma 2>&1 || exit 1\nnode scripts/apply-ingest-role.mjs 2>&1\nnode scripts/apply-traffic-fts.mjs 2>&1\nnode scripts/apply-engagement-immutability.mjs 2>&1\nnode scripts/apply-plugin-constraints.mjs 2>&1 || echo "[plugins] constraint script failed"\nnode scripts/clamp-triage-review-budget.mjs 2>&1\nnode scripts/backfill-user-skill-toggles.mjs 2>&1\nnode scripts/backfill-jev-provider-selection.mjs 2>&1\nnode scripts/backfill-rbac-legacy-grants.mjs 2>&1\nnode scripts/backfill-nuclei-template-owners.mjs 2>&1\nexec node server.js\n' > /app/entrypoint.sh \
+RUN printf '#!/bin/sh\nnode scripts/migrate-trufflehog-profiles.mjs 2>&1 || exit 1\nnode scripts/add-js-recon-trufflehog-column.mjs 2>&1 || exit 1\necho "Syncing Prisma schema..."\nnode scripts/db-push-locked.mjs db push --skip-generate --accept-data-loss --schema ./prisma/schema.prisma 2>&1 || exit 1\nnode scripts/apply-ingest-role.mjs 2>&1\nnode scripts/apply-traffic-fts.mjs 2>&1\nnode scripts/apply-engagement-immutability.mjs 2>&1\nnode scripts/apply-plugin-constraints.mjs 2>&1 || echo "[plugins] constraint script failed"\nnode scripts/clamp-triage-review-budget.mjs 2>&1\nnode scripts/backfill-user-skill-toggles.mjs 2>&1\nnode scripts/backfill-jev-provider-selection.mjs 2>&1\nnode scripts/backfill-rbac-legacy-grants.mjs 2>&1\nnode scripts/backfill-nuclei-template-owners.mjs 2>&1\nnode scripts/backfill-rbac-instance-settings.mjs 2>&1\nexec node server.js\n' > /app/entrypoint.sh \
     && chmod +x /app/entrypoint.sh
 
 USER nextjs

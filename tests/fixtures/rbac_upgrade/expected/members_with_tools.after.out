@@ -15,6 +15,7 @@ upg-PC|upg-member-c@e2e.local|upg-c.test
 system.jev_provider_selection_backfill|1
 system.jev_provider_selection_cutoff|1
 system.nuclei_template_owners_backfill|1
+system.rbac_instance_settings_backfill|1
 system.rbac_legacy_grants_backfill|1
 system.rbac_legacy_grants_cutoff|1
 system.user_skill_toggles_backfill|1
@@ -40,6 +41,10 @@ upg-member-b@e2e.local|active|0|f|f|f|f|[]
 upg-member-c@e2e.local|active|0|f|f|f|f|[]
 upg-member-d@e2e.local|active|0|f|f|f|f|[]
 == identity tables (instance settings rows, invite rows)
-0|0
+1|0
 == audit columns set (on behalf of, project, permission, actor email, act-as reason, duration, ended by)
 0|0|0|0|0|0|0
+== instance settings (tunnels, ngrok token, chisel url, chisel auth, tunnel source, capture on, retention, store bodies, capture source, written by an admin) [step 2.4]
+f|||||t|14|t||f
+== instance settings marker (identity, wrote, tunnel source, capture source, tunnel candidates, capture candidates), one line per marker row
+false|true|||[]|[]

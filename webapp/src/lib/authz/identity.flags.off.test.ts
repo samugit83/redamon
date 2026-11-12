@@ -59,6 +59,9 @@ const WEBAPP = path.resolve(__dirname, '../../..')
 
 /** Production files allowed to read an identity table or column, each checking the switch where it must. */
 const IDENTITY_READERS: string[] = [
+  // Step 2.4: fills the instance settings row whatever the switch (the data is ready the day
+  // it goes on); with the switch off nothing reads that row.
+  'scripts/backfill-rbac-instance-settings.mjs',
   // The host commands (step 2.7) run whatever the switch: a host reset bumps the session
   // version (the one identity check the switch does not gate) and re-enables the account;
   // check-root / set-root and create-admin's first admin record Root, which takes effect

@@ -15,7 +15,8 @@
 #     identical after it, audit_log counted without the rows of UPGRADE_AUDIT_ACTIONS; a
 #     table or users column the run added is printed as a NOTE;
 #   - the scenario's checks: tests/fixtures/rbac_upgrade/checks.sql, then checks_after.sql
-#     (what the upgrade adds: legacy grants, Nuclei template owners, their marker rows),
+#     (what the upgrade adds: legacy grants, Nuclei template owners, the instance settings
+#     row, their marker rows),
 #     through psql, diffed against expected/<scenario>.after.out. The fixture itself is
 #     checked with checks.sql against expected/<scenario>.out before the run.
 #
@@ -46,7 +47,7 @@
 #   RBAC_UPGRADE_OLD_IMAGE  pinned 7.7.2 image (default redamon-webapp:rbac-7.7.2)
 #   RBAC_UPGRADE_SCENARIOS  scenario name regex (default: all)
 #   RBAC_UPGRADE_FAIL_BACKFILL  the backfill the failure mode breaks: user-skill-toggles
-#                           (default) or rbac-legacy-grants
+#                           (default), rbac-legacy-grants or rbac-instance-settings
 #   RBAC_UPGRADE_FAIL_SCRIPT / _FAIL_MARKER / _FAIL_TABLE / _FAIL_LOG
 #                           override that choice: its script, its AuditLog marker action,
 #                           the table it reads inside the marker's transaction, and the
@@ -58,6 +59,7 @@
 #
 # Run:  bash tests/rbac_upgrade_live.sh all twice parallel failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-grants bash tests/rbac_upgrade_live.sh failure
+#       RBAC_UPGRADE_FAIL_BACKFILL=rbac-instance-settings bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_SCENARIOS='^one_admin$' bash tests/rbac_upgrade_live.sh twice
 #       bash tests/rbac_upgrade_live.sh serve several_admins
 set -uo pipefail
@@ -72,7 +74,7 @@ SERVE_PORT=3901
 
 # Each backfill reads its table right after it finds no marker, inside the transaction
 # that writes the marker: user_attack_skills for the user-skill toggles, users for the
-# legacy grants.
+# legacy grants, instance_settings for the instance settings.
 case "${RBAC_UPGRADE_FAIL_BACKFILL:-user-skill-toggles}" in
   user-skill-toggles)
     d_script=backfill-user-skill-toggles.mjs; d_marker=system.user_skill_toggles_backfill
@@ -80,7 +82,10 @@ case "${RBAC_UPGRADE_FAIL_BACKFILL:-user-skill-toggles}" in
   rbac-legacy-grants)
     d_script=backfill-rbac-legacy-grants.mjs; d_marker=system.rbac_legacy_grants_backfill
     d_table=users; d_log='\[rbac\] could not backfill legacy grants' ;;
-  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles or rbac-legacy-grants" >&2; exit 2 ;;
+  rbac-instance-settings)
+    d_script=backfill-rbac-instance-settings.mjs; d_marker=system.rbac_instance_settings_backfill
+    d_table=instance_settings; d_log='\[rbac\] could not fill the instance settings' ;;
+  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles, rbac-legacy-grants or rbac-instance-settings" >&2; exit 2 ;;
 esac
 FAIL_SCRIPT="${RBAC_UPGRADE_FAIL_SCRIPT:-$d_script}"
 FAIL_MARKER="${RBAC_UPGRADE_FAIL_MARKER:-$d_marker}"
@@ -90,7 +95,7 @@ FAIL_LOG="${RBAC_UPGRADE_FAIL_LOG:-$d_log}"
 # Audit rows the upgrade writes by design: left out of the row-count comparison and pinned
 # instead, by count, in checks.sql's markers and by checks_after.sql.
 UPGRADE_AUDIT_ACTIONS=(system.rbac_legacy_grants_cutoff system.rbac_legacy_grants_backfill
-                       system.nuclei_template_owners_backfill)
+                       system.nuclei_template_owners_backfill system.rbac_instance_settings_backfill)
 UPGRADE_AUDIT_SQL="$(printf "'%s'," "${UPGRADE_AUDIT_ACTIONS[@]}")"
 UPGRADE_AUDIT_SQL="${UPGRADE_AUDIT_SQL%,}"
 
