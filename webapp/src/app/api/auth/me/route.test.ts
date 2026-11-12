@@ -2,7 +2,9 @@
  * GET /api/auth/me tells an admin, and only an admin, what the header's banners show
  * (HD-30, HD-29, step 1.18): `rbac.compat` while REDAMON_SHARED_TOOLS_COMPAT is on, and
  * how many legacy grants still wait for a decision. A member's answer is unchanged. The
- * extra read never fails the session: the whole app reads it.
+ * extra read never fails the session: the whole app reads it. With the identity switch on
+ * the answer also carries the account type and, for an admin, the Root (step 2.5; the Root
+ * cases in depth are in route.root.test.ts).
  *
  * @vitest-environment node
  */
@@ -10,7 +12,20 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.stubEnv('AUTH_SECRET', 'f'.repeat(64))
 
-const h = vi.hoisted(() => ({ db: null as unknown, jar: {} as { auth?: string } }))
+type Row = Record<string, unknown>
+const h = vi.hoisted(() => ({
+  db: null as unknown,
+  jar: {} as { auth?: string },
+  instance: null as Record<string, unknown> | null,
+  // The plugins fake has no instance settings table: this is its one row, naming the Root.
+  instanceSettings: {
+    findUnique: async ({ select }: { select?: Record<string, boolean> }): Promise<Record<string, unknown> | null> => {
+      const row = h.instance
+      if (!row) return null
+      return select ? Object.fromEntries(Object.keys(select).filter((k) => select[k]).map((k) => [k, row[k]])) : { ...row }
+    },
+  },
+}))
 vi.mock('next/headers', () => ({
   cookies: vi.fn(async () => ({
     get: (name: string) => (name === 'redamon-auth' && h.jar.auth ? { value: h.jar.auth } : undefined),
@@ -18,13 +33,14 @@ vi.mock('next/headers', () => ({
 }))
 vi.mock('@/lib/prisma', async () => {
   const { createFakePrisma } = await import('@/lib/plugins/__testing__/fakePrisma')
-  h.db = createFakePrisma()
+  h.db = Object.assign(createFakePrisma(), { instanceSettings: h.instanceSettings })
   return { default: h.db, prisma: h.db }
 })
 
 import type { FakePrisma } from '@/lib/plugins/__testing__/fakePrisma'
 import { createToken } from '@/lib/auth'
 import { setFlagsForTests } from '@/lib/authz/flags'
+import { clearInstanceRootCacheForTests } from '@/lib/authz/root'
 import { KEEP_ACTION } from '@/lib/authz/updateReview'
 import { GET } from './route'
 
@@ -39,6 +55,8 @@ beforeEach(() => {
       legacyGrants: ['kali_terminal', 'shell_sessions'] },
   ])
   db().seed('auditLog', [{ action: KEEP_ACTION, targetType: 'user', targetId: 'member-1', actorId: 'admin-1', after: { grant: 'shell_sessions' } }])
+  h.instance = { id: 'instance', rootUserId: 'admin-1', rootConfirmedAt: T, rootAssignedBy: 'install' } as Row
+  clearInstanceRootCacheForTests()
   setFlagsForTests({ sharedToolsCompat: false })
   h.jar = {}
 })
@@ -70,12 +88,36 @@ describe('GET /api/auth/me', () => {
     expect((await (await GET()).json()).rbac).toEqual({ compat: true, legacyGrantsPending: 1 })
   })
 
-  test('identity: true only while the identity switch is on (step 2.3); a member never gets it', async () => {
+  test('identity: true only while the identity switch is on (step 2.3), with the account type and the Root (2.5); a member gets its type only', async () => {
+    setFlagsForTests({ identity: true })
+    const err = vi.spyOn(console, 'error')
+    h.jar.auth = await createToken('admin-1', 'admin')
+    expect(await (await GET()).json()).toEqual({
+      id: 'admin-1', name: 'Ada', email: 'ada@e2e.local', role: 'admin', accountType: 'root',
+      rbac: {
+        compat: false, legacyGrantsPending: 1, identity: true,
+        root: { email: 'ada@e2e.local', confirmed: true, chosenAt: null },
+      },
+    })
+    h.jar.auth = await createToken('member-1', 'standard')
+    expect(await (await GET()).json()).toEqual({
+      id: 'member-1', name: 'Marco', email: 'marco@e2e.local', role: 'standard', accountType: 'member',
+    })
+    expect(err).not.toHaveBeenCalled()
+  })
+
+  test('identity switch on, a failed Root read: the account without its type or rbac.root, and logged', async () => {
     setFlagsForTests({ identity: true })
     h.jar.auth = await createToken('admin-1', 'admin')
-    expect((await (await GET()).json()).rbac).toEqual({ compat: false, legacyGrantsPending: 1, identity: true })
-    h.jar.auth = await createToken('member-1', 'standard')
-    expect(await (await GET()).json()).not.toHaveProperty('rbac')
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(h.instanceSettings, 'findUnique').mockRejectedValueOnce(Object.assign(new Error('boom'), { code: 'P1001' }))
+    const res = await GET()
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      id: 'admin-1', name: 'Ada', email: 'ada@e2e.local', role: 'admin',
+      rbac: { compat: false, legacyGrantsPending: 1, identity: true },
+    })
+    expect(err.mock.calls.map((c) => c.join(' '))).toEqual(['[rbac] could not read the Root: P1001'])
   })
 
   test('a demoted admin (token still says admin) is a member here', async () => {
