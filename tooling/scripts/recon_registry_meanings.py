@@ -232,9 +232,13 @@ OVERRIDES: dict[str, str] = {
         "engagement ceiling a 0 here is rewritten to the ceiling at scan start."
     ),
     "webCachePoisonMaxRpsPerHost": (
-        "Requests per second the web-cache-poisoning scan sends to any ONE host. ZERO MEANS "
-        "UNLIMITED, so 0 is the most aggressive value available and not the safest. Under an "
-        "engagement ceiling a 0 here is rewritten to the ceiling at scan start."
+        "Requests per second of the web-cache-poisoning breadth sweep (WCVS -rr). Despite "
+        "the name it is NOT per host: it is one rate for the whole WCVS process, shared by "
+        "every thread and URL. ZERO MEANS UNLIMITED, so 0 is the most aggressive value "
+        "available and not the safest. Under an engagement ceiling a 0 here is rewritten to "
+        "the ceiling at scan start, and WCVS then runs one thread at a rate below the "
+        "ceiling (ceiling - 1 from 2 rps up, 1 / (2 + 1/ceiling) below 2), or at this value "
+        "when it is lower, because its cache-buster checks can send two requests together."
     ),
     "purednsRateLimit": (
         "DNS queries per second puredns sends to its resolvers. ZERO MEANS UNLIMITED, so 0 "
