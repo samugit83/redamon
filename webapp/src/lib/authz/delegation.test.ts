@@ -8,9 +8,12 @@
  *   the project scope of `ownsScope` (plugins/changeSetAccess.ts), the project of `strictContext`
  *   (plugins/actions.ts) and of the Gateway's tenancy check (plugins/gateway.ts).
  * - The helpers of a per-user row answer what `ownsRow()` answers: `assertOwner`,
- *   `assertOwnerStrict`, `ownerScope` (`rowOwnerFilter`), the conversation helpers (a
- *   conversation is its author's), the user scope of `ownsScope`, the session of `strictContext`
- *   and of the Gateway. They never ask `projectAccess()`: the row names its owner, not a project.
+ *   `assertOwnerStrict`, `ownerScope` (`rowOwnerFilter`), the user scope of `ownsScope`, the
+ *   session of `strictContext` and of the Gateway (whose project is checked apart). They never
+ *   ask `projectAccess()`: the row names its owner, not a project.
+ * - The conversation helpers need both: the author (`ownsRow`) and `projectAccess()` on the
+ *   conversation's project, so an author who can no longer see the project loses its
+ *   conversations, and the project alone never opens another author's.
  *
  * Each test turns the policy's answer against the stored row; the helper must follow the policy.
  * The answers themselves (404, 403, 400, the returned shapes) are pinned by each helper's own
@@ -269,28 +272,6 @@ describe('the per-user row helpers answer what ownsRow() answers, never projectA
     expect(rowOwnerFilter).toHaveBeenCalledWith({ userId: 'u9' })
   })
 
-  test("requireConversationAccess: a conversation is its author's: follows the row check", async () => {
-    rowPolicy.mockReturnValueOnce(false)
-    expect(status(await requireConversationAccess({ userId: ALICE }, ALICE_CONV))).toBe(404)
-    rowPolicy.mockReturnValueOnce(true)
-    expect(await requireConversationAccess({ userId: ALICE }, 'conv-bob')).toEqual({
-      conversation: { id: 'conv-bob', userId: BOB, projectId: BOB_PROJECT },
-    })
-    expect(rowPolicy.mock.calls).toEqual([[{ userId: ALICE }, ALICE], [{ userId: ALICE }, BOB]])
-    expect(policy).not.toHaveBeenCalled()
-  })
-
-  test('requireConversationAccessBySession: follows the row check', async () => {
-    rowPolicy.mockReturnValueOnce(false)
-    expect(status(await requireConversationAccessBySession({ userId: ALICE }, ALICE_SESSION))).toBe(404)
-    rowPolicy.mockReturnValueOnce(true)
-    expect(await requireConversationAccessBySession({ userId: ALICE }, BOB_SESSION)).toEqual({
-      conversation: { id: 'conv-bob', userId: BOB, projectId: BOB_PROJECT },
-    })
-    expect(rowPolicy.mock.calls).toEqual([[{ userId: ALICE }, ALICE], [{ userId: ALICE }, BOB]])
-    expect(policy).not.toHaveBeenCalled()
-  })
-
   test('ownsScope: a user scope follows the row check', async () => {
     rowPolicy.mockReturnValueOnce(false)
     expect(await ownsScope({ type: 'user', id: ALICE }, ALICE)).toBe(false)
@@ -313,5 +294,43 @@ describe('the per-user row helpers answer what ownsRow() answers, never projectA
     expect(r.status).toBe(404)
     expect(handler).not.toHaveBeenCalled()
     expect(rowPolicy).toHaveBeenCalledWith({ userId: ALICE }, ALICE)
+  })
+})
+
+// A conversation is its author's, and the author keeps it only while they can still see its
+// project: both checks, never the project alone (another member's conversation stays closed).
+describe.each([
+  ['requireConversationAccess', (id: 'alice' | 'bob') => requireConversationAccess({ userId: ALICE }, id === 'alice' ? ALICE_CONV : 'conv-bob')],
+  ['requireConversationAccessBySession', (id: 'alice' | 'bob') => requireConversationAccessBySession({ userId: ALICE }, id === 'alice' ? ALICE_SESSION : BOB_SESSION)],
+])("%s: the author (ownsRow) AND projectAccess() on the conversation's project", (_name, check) => {
+  test('not the author: 404, and the project is not asked', async () => {
+    rowPolicy.mockReturnValueOnce(false)
+    expect(status(await check('alice'))).toBe(404)
+    expect(rowPolicy).toHaveBeenCalledWith({ userId: ALICE }, ALICE)
+    expect(policy).not.toHaveBeenCalled()
+  })
+
+  test('the author, but the policy says no on the project: 404', async () => {
+    policy.mockResolvedValueOnce(null)
+    const r = await check('alice')
+    expect(status(r)).toBe(404)
+    expect(await (r as NextResponse).json()).toEqual({ error: 'Not found' })
+    expect(policy).toHaveBeenCalledWith({ userId: ALICE }, ALICE_PROJECT)
+    expect(projectReads).not.toHaveBeenCalled()
+  })
+
+  test('both say yes: the conversation, whoever the stored rows name', async () => {
+    rowPolicy.mockReturnValueOnce(true)
+    policy.mockResolvedValueOnce(granted(BOB_PROJECT, BOB))
+    expect(await check('bob')).toEqual({ conversation: { id: 'conv-bob', userId: BOB, projectId: BOB_PROJECT } })
+    expect(rowPolicy).toHaveBeenCalledWith({ userId: ALICE }, BOB)
+    expect(policy).toHaveBeenCalledWith({ userId: ALICE }, BOB_PROJECT)
+    expect(projectReads).not.toHaveBeenCalled()
+  })
+
+  test('the project alone opens nothing: the policy says yes, the row check no -> 404', async () => {
+    rowPolicy.mockReturnValueOnce(false)
+    policy.mockResolvedValue(granted(BOB_PROJECT, BOB))
+    expect(status(await check('bob'))).toBe(404)
   })
 })

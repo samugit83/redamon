@@ -213,6 +213,7 @@ describe('requireConversationAccess', () => {
   })
   test('owner -> returns conversation', async () => {
     mockConversationFindUnique.mockResolvedValue({ id: 'c1', userId: 'u1', projectId: 'p1' })
+    mockProjectFindUnique.mockResolvedValue({ id: 'p1', userId: 'u1' })
     const r = await requireConversationAccess({ userId: 'u1' }, 'c1')
     expect(r).toEqual({ conversation: { id: 'c1', userId: 'u1', projectId: 'p1' } })
   })
@@ -221,5 +222,36 @@ describe('requireConversationAccess', () => {
     mockConversationFindUnique.mockResolvedValue({ id: 'c1', userId: 'victim', projectId: 'p1' })
     const r = await requireConversationAccess({ userId: 'attacker' }, 'c1')
     expect((r as NextResponse).status).toBe(404)
+  })
+})
+
+// The author keeps a conversation only while they can still see its project: after a transfer or
+// a revoked membership the project is gone for them, and so are its conversations.
+describe.each([
+  ['requireConversationAccess', (eff: { userId: string }) => requireConversationAccess(eff, 'c1')],
+  ['requireConversationAccessBySession', (eff: { userId: string }) => requireConversationAccessBySession(eff, 's1')],
+])('%s: the author AND the project', (_name, check) => {
+  test('the author on a project they still see -> the conversation', async () => {
+    mockConversationFindUnique.mockResolvedValue({ id: 'c1', userId: 'u1', projectId: 'p1' })
+    mockProjectFindUnique.mockResolvedValue({ id: 'p1', userId: 'u1' })
+    expect(await check({ userId: 'u1' })).toEqual({ conversation: { id: 'c1', userId: 'u1', projectId: 'p1' } })
+    expect(mockProjectFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'p1' } }))
+  })
+  test('the author on a project now someone else sees -> 404, as for a missing one', async () => {
+    mockConversationFindUnique.mockResolvedValue({ id: 'c1', userId: 'u1', projectId: 'p1' })
+    mockProjectFindUnique.mockResolvedValue({ id: 'p1', userId: 'new-owner' })
+    const r = await check({ userId: 'u1' })
+    expect((r as NextResponse).status).toBe(404)
+    expect(await (r as NextResponse).json()).toEqual({ error: 'Not found' })
+  })
+  test("the author on a project that is gone -> 404", async () => {
+    mockConversationFindUnique.mockResolvedValue({ id: 'c1', userId: 'u1', projectId: 'p1' })
+    mockProjectFindUnique.mockResolvedValue(null)
+    expect(((await check({ userId: 'u1' })) as NextResponse).status).toBe(404)
+  })
+  test('the project alone never opens another author’s conversation -> 404', async () => {
+    mockConversationFindUnique.mockResolvedValue({ id: 'c1', userId: 'victim', projectId: 'p1' })
+    mockProjectFindUnique.mockResolvedValue({ id: 'p1', userId: 'u1' })
+    expect(((await check({ userId: 'u1' })) as NextResponse).status).toBe(404)
   })
 })

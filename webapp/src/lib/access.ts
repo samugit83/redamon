@@ -21,8 +21,9 @@ import { ownsRow, rowOwnerFilter } from './authz/rowOwner'
  *
  * Secret-exposure routes (A2) use requireUserAccess, which answers 403 instead.
  *
- * The helpers keep their signatures and answers, and ask the policy (T1): a project through
- * `projectAccess()`, a per-user row (a preset, a conversation) through `ownsRow()`.
+ * The helpers ask one policy instead of comparing owners themselves: a project through
+ * `projectAccess()`, a per-user row (a preset) through `ownsRow()`, a conversation through both
+ * (its author, on a project the author can still see).
  */
 
 let ignoredWarned = false
@@ -122,37 +123,48 @@ export async function requireProjectScopedResource(
   return { ok: true }
 }
 
-/** Load a Conversation (which carries a direct userId) and verify ownership: 404 when absent or another user's. */
+type ConversationRow = { id: string; userId: string; projectId: string }
+
+/**
+ * A conversation is its author's, and only while the author can still see its project: after a
+ * transfer or a lost membership the project's conversations close with it. The project alone
+ * never opens another author's conversation. Every refusal is the same 404.
+ */
+async function conversationAccess(
+  eff: EffectiveUser,
+  conversation: ConversationRow | null,
+): Promise<{ conversation: ConversationRow } | NextResponse> {
+  if (!conversation) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+  if (!ownsRow(eff, conversation.userId)) return ownershipDenied()
+  if (!(await projectAccess(eff, conversation.projectId))) return ownershipDenied()
+  return { conversation }
+}
+
+/** Load a Conversation and verify the effective user may use it (`conversationAccess`): 404 otherwise. */
 export async function requireConversationAccess(
   eff: EffectiveUser,
   conversationId: string
-): Promise<{ conversation: { id: string; userId: string; projectId: string } } | NextResponse> {
+): Promise<{ conversation: ConversationRow } | NextResponse> {
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
     select: { id: true, userId: true, projectId: true },
   })
-  if (!conversation) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  }
-  if (!ownsRow(eff, conversation.userId)) return ownershipDenied()
-  return { conversation }
+  return conversationAccess(eff, conversation)
 }
 
 /**
- * Load a Conversation by its (unique) sessionId and verify ownership: 404 when absent or
- * another user's. Used by the by-session/* routes.
+ * Load a Conversation by its (unique) sessionId and verify the effective user may use it
+ * (`conversationAccess`): 404 otherwise. Used by the by-session/* routes.
  */
 export async function requireConversationAccessBySession(
   eff: EffectiveUser,
   sessionId: string
-): Promise<{ conversation: { id: string; userId: string; projectId: string } } | NextResponse> {
+): Promise<{ conversation: ConversationRow } | NextResponse> {
   const conversation = await prisma.conversation.findUnique({
     where: { sessionId },
     select: { id: true, userId: true, projectId: true },
   })
-  if (!conversation) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  }
-  if (!ownsRow(eff, conversation.userId)) return ownershipDenied()
-  return { conversation }
+  return conversationAccess(eff, conversation)
 }
