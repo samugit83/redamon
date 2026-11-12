@@ -233,6 +233,9 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
     const PERMISSION_READERS = [
       // Step 3.15: the boot conversion of kept legacy grants writes overrides only with the switch on.
       'scripts/backfill-rbac-legacy-overrides.mjs',
+      // Step 3.8: the live-matrix fixture seed puts its synthetic rbac-* accounts on their built-in
+      // sets (and clears their overrides) whatever the switch; the sets count only with it on.
+      'scripts/e2e-rbac-seed.mjs',
       // Step 3.4: the resolution reads the sets and the instance default set only with the switch on.
       'src/lib/authz/capabilities.ts',
       // Step 3.15: the review's override write, called by the legacy-grants route only with the switch on.

@@ -49,18 +49,20 @@ const at = (route: string, load: () => Promise<Mod>, permission: PermissionId, p
   route, permission, params, body, handler: async () => (await load())[route.split(' ')[0]] as never,
 })
 
+type Loaders = Record<'start' | 'pause' | 'resume' | 'stop' | 'status' | 'logs' | 'download', () => Promise<Mod>>
+
 /** The run-control routes every scanner has, under /api/<scanner>/[projectId]. */
-function scanner(name: string, run: PermissionId, load: (sub: string) => Promise<Mod>): RouteCase[] {
+function scanner(name: string, run: PermissionId, load: Loaders): RouteCase[] {
   const p = { projectId: P }
   return [
-    at(`POST /api/${name}/[projectId]/start`, () => load('start'), run, p, {}),
-    at(`POST /api/${name}/[projectId]/pause`, () => load('pause'), run, p),
-    at(`POST /api/${name}/[projectId]/resume`, () => load('resume'), run, p),
-    at(`POST /api/${name}/[projectId]/stop`, () => load('stop'), run, p),
-    at(`GET /api/${name}/[projectId]/status`, () => load('status'), 'recon:read', p),
-    at(`GET /api/${name}/[projectId]/logs`, () => load('logs'), 'recon:read', p),
-    at(`GET /api/${name}/[projectId]/download`, () => load('download'), 'recon:read', p),
-    at(`HEAD /api/${name}/[projectId]/download`, () => load('download'), 'recon:read', p),
+    at(`POST /api/${name}/[projectId]/start`, load.start, run, p, {}),
+    at(`POST /api/${name}/[projectId]/pause`, load.pause, run, p),
+    at(`POST /api/${name}/[projectId]/resume`, load.resume, run, p),
+    at(`POST /api/${name}/[projectId]/stop`, load.stop, run, p),
+    at(`GET /api/${name}/[projectId]/status`, load.status, 'recon:read', p),
+    at(`GET /api/${name}/[projectId]/logs`, load.logs, 'recon:read', p),
+    at(`GET /api/${name}/[projectId]/download`, load.download, 'recon:read', p),
+    at(`HEAD /api/${name}/[projectId]/download`, load.download, 'recon:read', p),
   ]
 }
 
@@ -73,10 +75,34 @@ const version = { id: P, versionId: 'V1' }
 const clearCaches = () => { clearCapabilityCachesForTests(); clearInstanceRootCacheForTests() }
 const opts = { setFlags: setFlagsForTests, clearCaches }
 
-describeRoutePermissions('GVM', scanner('gvm', 'scan:gvm', s => import(`./gvm/[projectId]/${s}/route`)), h, opts)
-describeRoutePermissions('GitHub secret hunt', scanner('github-hunt', 'scan:secrets', s => import(`./github-hunt/[projectId]/${s}/route`)), h, opts)
+describeRoutePermissions('GVM', scanner('gvm', 'scan:gvm', {
+  start: () => import('./gvm/[projectId]/start/route'),
+  pause: () => import('./gvm/[projectId]/pause/route'),
+  resume: () => import('./gvm/[projectId]/resume/route'),
+  stop: () => import('./gvm/[projectId]/stop/route'),
+  status: () => import('./gvm/[projectId]/status/route'),
+  logs: () => import('./gvm/[projectId]/logs/route'),
+  download: () => import('./gvm/[projectId]/download/route'),
+}), h, opts)
+describeRoutePermissions('GitHub secret hunt', scanner('github-hunt', 'scan:secrets', {
+  start: () => import('./github-hunt/[projectId]/start/route'),
+  pause: () => import('./github-hunt/[projectId]/pause/route'),
+  resume: () => import('./github-hunt/[projectId]/resume/route'),
+  stop: () => import('./github-hunt/[projectId]/stop/route'),
+  status: () => import('./github-hunt/[projectId]/status/route'),
+  logs: () => import('./github-hunt/[projectId]/logs/route'),
+  download: () => import('./github-hunt/[projectId]/download/route'),
+}), h, opts)
 describeRoutePermissions('supply chain', [
-  ...scanner('supply-chain', 'scan:supply_chain', s => import(`./supply-chain/[projectId]/${s}/route`)),
+  ...scanner('supply-chain', 'scan:supply_chain', {
+  start: () => import('./supply-chain/[projectId]/start/route'),
+  pause: () => import('./supply-chain/[projectId]/pause/route'),
+  resume: () => import('./supply-chain/[projectId]/resume/route'),
+  stop: () => import('./supply-chain/[projectId]/stop/route'),
+  status: () => import('./supply-chain/[projectId]/status/route'),
+  logs: () => import('./supply-chain/[projectId]/logs/route'),
+  download: () => import('./supply-chain/[projectId]/download/route'),
+}),
   at('GET /api/supply-chain/[projectId]/upload', () => import('./supply-chain/[projectId]/upload/route'), 'recon:read', p),
   at('POST /api/supply-chain/[projectId]/upload', () => import('./supply-chain/[projectId]/upload/route'), 'scan:supply_chain', p),
   at('DELETE /api/supply-chain/[projectId]/upload', () => import('./supply-chain/[projectId]/upload/route'), 'scan:supply_chain', p),

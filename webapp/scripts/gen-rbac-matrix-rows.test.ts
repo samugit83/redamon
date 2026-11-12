@@ -83,6 +83,20 @@ describe('gen-rbac-matrix-rows', () => {
     }
   })
 
+  test('the seed creates each actor on its set, owning the projects the rows call, and the runner signs it in', () => {
+    const seed = readFileSync(join(WEBAPP, 'scripts', 'e2e-rbac-seed.mjs'), 'utf8')
+    const runner = readFileSync(join(WEBAPP, '..', 'tests', 'rbac_matrix_live.sh'), 'utf8')
+    const userKeys = /user_key\(\)[\s\S]*?\n\s*([a-z_|]+)\) echo "\$\{1\^\^\}" ;;/.exec(runner)![1].split('|')
+    for (const a of ACTORS as { actor: string; set: string; project: string; tmp: string | null }[]) {
+      const key = a.actor.toUpperCase()
+      expect(seed, `${a.actor} is seeded on ${a.set}`).toMatch(new RegExp(`key: '${key}',[^\\n]*sets: \\['${a.set}'\\]`))
+      for (const p of [a.project, a.tmp].filter(Boolean) as string[]) {
+        expect(seed, `${p} is owned by ${a.actor}`).toMatch(new RegExp(`key: '${p.replace(/_ID$/, '')}', owner: '${key}'`))
+      }
+      expect(userKeys, `the runner signs ${a.actor} in`).toContain(a.actor)
+    }
+  })
+
   test('every row has the runner\'s eight columns', () => {
     const lines = renderRows(rows).split('\n').filter((l: string) => l && !l.startsWith('#'))
     for (const l of lines) expect(l.split('\t')).toHaveLength(8)

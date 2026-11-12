@@ -146,6 +146,9 @@ const IDENTITY_READERS: string[] = [
   // only with the switch on.
   'scripts/check-root.mjs',
   'scripts/create-admin.mjs',
+  // Step 3.8: the live-matrix fixture seed gives its synthetic rbac-* admin the User manager profile
+  // whatever the switch; the profile counts only with the switches on, as for any admin.
+  'scripts/e2e-rbac-seed.mjs',
   // Step 2.8: the instance password minimum, read by the host scripts only with the switch on.
   'scripts/lib/passwordRules.mjs',
   // Step 2.13: the upgrade preview reads the Root and whether an admin saved the instance row,
