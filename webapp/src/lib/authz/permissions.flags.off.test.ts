@@ -238,6 +238,9 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
       'scripts/e2e-rbac-seed.mjs',
       // Step 3.4: the resolution reads the sets and the instance default set only with the switch on.
       'src/lib/authz/capabilities.ts',
+      // Step 3.13: a new account's chosen sets, written only with the switch on (off, the invite and
+      // create routes ignore the key).
+      'src/lib/authz/initialSets.ts',
       // Step 3.15: the review's override write, called by the legacy-grants route only with the switch on.
       'src/lib/authz/legacyOverrideDecisions.ts',
       // Step 3.11: the permission management helpers, reached only through the routes that answer

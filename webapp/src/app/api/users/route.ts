@@ -13,6 +13,7 @@ import { writeAuditTx } from '@/lib/audit'
 import { rbacFlags } from '@/lib/authz/flags'
 import { requireRootPower } from '@/lib/authz/rootPowers'
 import { requireSessionPermission, sessionHolds } from '@/lib/authz/adminPermission'
+import { checkInitialSets, InitialSetGone, initialSetGoneResponse, writeInitialSets } from '@/lib/authz/initialSets'
 
 const EMAIL_TAKEN = { error: 'A user with this email already exists', code: 'email_taken' } as const
 
@@ -69,7 +70,8 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/users - Create a new user (users:create)
+// POST /api/users - Create a new user (users:create); permissions switch on, `sets` names the
+// member sets it starts with (step 3.13, ID-28: users:assign_permissions, lib/authz/initialSets.ts)
 export async function POST(request: NextRequest) {
   try {
     // S2/E2: creating a user (incl. minting an admin via role) requires a
@@ -136,6 +138,10 @@ export async function POST(request: NextRequest) {
     // unless the admin says otherwise; the account changes it at its first sign-in.
     const temporary = Boolean(password) && rbacFlags().identity && body.requirePasswordChange !== false
 
+    // Root creating an admin gave its password above; nobody is asked twice.
+    const initial = await checkInitialSets(request, session, parsed.body, { stepUpDone: makesAdmin })
+    if (initial instanceof NextResponse) return initial
+
     const data = {
       name,
       email: storedEmail,
@@ -146,14 +152,19 @@ export async function POST(request: NextRequest) {
     const created = (user: { id: string; email: string; role: string }): UserAuditFields => ({
       action: 'user.create',
       targetId: user.id,
-      after: { email: user.email, role: user.role, passwordless: !password, ...(temporary ? { mustChangePassword: true } : {}) },
+      after: {
+        email: user.email, role: user.role, passwordless: !password, ...(temporary ? { mustChangePassword: true } : {}),
+        ...(initial ? { sets: initial.sets } : {}),
+      },
     })
 
     let user
-    if (makesAdmin) {
-      // A Root action: the account and its row commit together, or neither does (AU-05).
+    if (makesAdmin || initial) {
+      // A Root action, or one that gives permissions: the account, its sets and its row commit
+      // together, or none does (AU-05).
       user = await prisma.$transaction(async (tx) => {
         const row = await tx.user.create({ data })
+        if (initial) await writeInitialSets(tx, row.id, initial)
         await writeAuditTx(tx, await userAuditEntry(request, session, created(row)))
         return row
       })
@@ -175,6 +186,7 @@ export async function POST(request: NextRequest) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
       return NextResponse.json(EMAIL_TAKEN, { status: 409 })
     }
+    if (error instanceof InitialSetGone) return initialSetGoneResponse()
 
     return internalError(error, 'Failed to create user')
   }

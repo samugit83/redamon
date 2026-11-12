@@ -32,6 +32,7 @@ import { markShown, noticeView, pendingNotices, type NoticeView } from './accoun
 import { now } from './clock'
 import { invalidatePrincipal } from './principal'
 import { INSTANCE_SETTINGS_ROW } from './root'
+import { checkInitialSets, InitialSetGone, initialSetGoneResponse, writeInitialSets } from './initialSets'
 
 export type LinkKind = 'invite' | 'reset'
 
@@ -267,14 +268,18 @@ function isUniqueViolation(err: unknown): boolean {
 
 /**
  * POST /api/users/invite: a MEMBER account (whatever the body says: §7.1 "invited as member
- * only"), `invited`, with no password, and its link, answered once. The account, the link and
- * `user.invite` commit together.
+ * only"), `invited`, with no password, and its link, answered once. With the permissions switch
+ * on, `sets` names the member sets it starts with (step 3.13, ID-28; initialSets.ts: the
+ * assignment rules, `stepUpPassword` when a set needs it); none, the instance default set. The
+ * account, its sets, the link and `user.invite` commit together.
  */
 export async function inviteMember(request: NextRequest, session: Session, body: Record<string, unknown>): Promise<NextResponse> {
   const name = typeof body.name === 'string' ? body.name.trim() : ''
   if (!name || name.length > MAX_NAME) return invalidField('name', `A name is required (at most ${MAX_NAME} characters).`)
   const typed = typeof body.email === 'string' ? body.email.trim() : ''
   if (!typed || typed.length > MAX_EMAIL || !EMAIL_SHAPE.test(typed)) return invalidField('email', 'A valid email address is required.')
+  const initial = await checkInitialSets(request, session, body)
+  if (initial instanceof NextResponse) return initial
   // Stored lowercase; an older account may hold the same address in other capitals.
   const email = normalizeEmail(typed)
   if (await emailTakenByAnother(email)) return NextResponse.json(EMAIL_TAKEN, { status: 409 })
@@ -284,11 +289,15 @@ export async function inviteMember(request: NextRequest, session: Session, body:
         data: { name, email, role: 'standard', status: 'invited', password: '' },
         select: { id: true, name: true, email: true, role: true, status: true },
       })
+      if (initial) await writeInitialSets(tx, user.id, initial)
       const made = await createLink(tx, { userId: user.id, kind: 'invite', createdById: session.userId })
       await writeAuditTx(tx, await userAuditEntry(request, session, {
         action: 'user.invite',
         targetId: user.id,
-        after: { email, role: 'standard', status: 'invited', expiresAt: made.expiresAt.toISOString() },
+        after: {
+          email, role: 'standard', status: 'invited', expiresAt: made.expiresAt.toISOString(),
+          ...(initial ? { sets: initial.sets } : {}),
+        },
       }))
       return { user, made }
     })
@@ -297,6 +306,7 @@ export async function inviteMember(request: NextRequest, session: Session, body:
     }, 201)
   } catch (err) {
     if (isUniqueViolation(err)) return NextResponse.json(EMAIL_TAKEN, { status: 409 })
+    if (err instanceof InitialSetGone) return initialSetGoneResponse()
     throw err
   }
 }
