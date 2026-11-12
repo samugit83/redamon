@@ -273,3 +273,53 @@ describe('TrafficMindSettingsModal — failures say their cause', () => {
     expect(toastSuccess).not.toHaveBeenCalled()
   })
 })
+
+// Step 2.4 (F-15): with the identity switch on the user GET points at the instance
+// settings, and the modal loads and saves them there, under the signed-in admin.
+describe('TrafficMindSettingsModal — instance settings (identity switch on)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    toastSuccess.mockReset()
+    toastError.mockReset()
+    toastWarning.mockReset()
+  })
+  afterEach(() => cleanup())
+
+  function mockInstanceApi(putAnswer: () => Response = () => new Response(JSON.stringify({ captureProxyPort: 9000 }), { status: 200 })) {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'GET' && url === '/api/users/user-1/settings') {
+        return new Response(JSON.stringify({ captureProxyPort: 1, canManageTunnels: false, sharedSettingsAt: 'instance' }), { status: 200 })
+      }
+      if (method === 'GET' && url === '/api/admin/instance-settings') {
+        return new Response(JSON.stringify({ captureProxyPort: 8888, canManageCapture: true }), { status: 200 })
+      }
+      if (method === 'PUT' && url === '/api/admin/instance-settings') return putAnswer()
+      return new Response('{}', { status: 500 })
+    }) as typeof fetch)
+    return fetchMock
+  }
+
+  test('TrafficMind save while acting writes the singleton: it loads and saves the instance settings', async () => {
+    const fetchMock = mockInstanceApi()
+    render(<TrafficMindSettingsModal isOpen onClose={vi.fn()} userId="user-1" />)
+    // The instance value, not the member row's.
+    fireEvent.change(await screen.findByDisplayValue('8888'), { target: { value: '9000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('TrafficMind settings applied'))
+    const puts = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'PUT')
+    expect(puts.map((c) => c[0])).toEqual(['/api/admin/instance-settings'])
+    expect(JSON.parse((puts[0][1] as RequestInit).body as string)).toEqual({ captureProxyPort: 9000 })
+  })
+
+  test('a refusal of the instance route is shown with its reason, nothing reads as applied', async () => {
+    mockInstanceApi(() => new Response(JSON.stringify({
+      error: 'Only an administrator changes the TrafficMind settings.', code: 'forbidden',
+    }), { status: 403 }))
+    render(<TrafficMindSettingsModal isOpen onClose={vi.fn()} userId="user-1" />)
+    fireEvent.change(await screen.findByDisplayValue('8888'), { target: { value: '9000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringContaining('Only an administrator changes the TrafficMind settings.')))
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+})

@@ -4,7 +4,10 @@
  * TrafficMind global settings, as a self-contained admin modal opened from the
  * TrafficMind (/traffic) page toolbar. It owns its own fetch + save against
  * /api/users/[userId]/settings (capture fields only), so it does not share state
- * with the System settings page and cannot be clobbered by a stale save there.
+ * with the System settings page and cannot be clobbered by a stale save there. With
+ * the identity switch on that GET answers `sharedSettingsAt: 'instance'` and the modal
+ * reads and saves /api/admin/instance-settings instead, as the signed-in admin even
+ * while acting as a member (step 2.4, F-15).
  *
  * There is a single shared capture proxy, so these are GLOBAL settings: a change
  * applies to every user and project and the last save wins. Admin-only (the
@@ -106,6 +109,7 @@ function activeBodyPreset(rules: Record<string, string> | undefined): string | n
 }
 
 const LOAD_FAILED = "Couldn't load the TrafficMind settings"
+const INSTANCE_SETTINGS_URL = '/api/admin/instance-settings'
 
 const label13 = { display: 'flex', flexDirection: 'column' as const, gap: 4, color: 'var(--text-secondary)', fontSize: 13 }
 const row13 = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, color: 'var(--text-secondary)', fontSize: 13 }
@@ -123,15 +127,26 @@ export function TrafficMindSettingsModal({ isOpen, onClose, userId }: {
   const [loadError, setLoadError] = useState<string | null>(null)
   // Last server-synced truth. Edits diff against this; Apply reconciles to it.
   const saved = useRef<CaptureSettings>({ ...DEFAULT_CAPTURE })
+  // Where the settings live: this account's row, or the instance settings.
+  const endpoint = useRef<string | null>(null)
 
   const dirty = isCaptureDirty(saved.current, s)
 
   const load = useCallback(async () => {
     if (!userId) return
     try {
-      const resp = await fetch(`/api/users/${userId}/settings`)
+      const userUrl = `/api/users/${userId}/settings`
+      let resp = await fetch(userUrl)
       if (!resp.ok) throw await readApiError(resp, LOAD_FAILED)
-      const c = pickCapture(await resp.json())
+      let body = await resp.json()
+      endpoint.current = userUrl
+      if (body?.sharedSettingsAt === 'instance') {
+        endpoint.current = INSTANCE_SETTINGS_URL
+        resp = await fetch(INSTANCE_SETTINGS_URL)
+        if (!resp.ok) throw await readApiError(resp, LOAD_FAILED)
+        body = await resp.json()
+      }
+      const c = pickCapture(body)
       saved.current = c
       setS(c)
       setLoaded(true)
@@ -155,14 +170,14 @@ export function TrafficMindSettingsModal({ isOpen, onClose, userId }: {
   // On success adopt the server's canonical values (reflecting any clamping) for
   // the submitted fields, preserving any field the user re-edited mid-save.
   const applyChanges = useCallback(async () => {
-    if (!userId || !loaded) return
+    if (!userId || !loaded || !endpoint.current) return
     const patch = diffCapture(saved.current, s)
     const keys = Object.keys(patch) as (keyof CaptureSettings)[]
     if (keys.length === 0) return
     const submitted = s
     setSaving(true)
     try {
-      const resp = await fetch(`/api/users/${userId}/settings`, {
+      const resp = await fetch(endpoint.current, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
       })
       if (!resp.ok) throw await readApiError(resp, 'the server gave no reason')

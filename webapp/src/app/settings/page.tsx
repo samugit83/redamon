@@ -38,6 +38,8 @@ import { JevProviderSection } from '@/components/settings/JevProviderSection'
 import { actionFailedText, failureText, saveWarningLines } from '@/components/settings/failureText'
 import { readApiError } from '@/lib/apiError'
 import { StepUpModal } from '@/components/auth/StepUpModal'
+import { TunnelStatusReadOnly } from '@/components/settings/TunnelStatusReadOnly'
+import { InstanceTunnelSection } from '@/components/settings/InstanceTunnelSection'
 
 /** A Secret Multiscanner credential column (TRUFFLEHOG_KEY_FIELDS). */
 type TrufflehogField = `trufflehog${string}`
@@ -248,6 +250,8 @@ export default function SettingsPage() {
   // The tunnel is one listener for the whole instance (HD-06). Only an explicit `false`
   // from the settings GET hides its controls: the PUT is what refuses a change.
   const [canManageTunnels, setCanManageTunnels] = useState(true)
+  // With the identity switch on the tunnel is an instance setting, saved on its own (step 2.4).
+  const [tunnelAtInstance, setTunnelAtInstance] = useState(false)
 
   // Key Rotation
   const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationInfo>>({})
@@ -552,6 +556,7 @@ export default function SettingsPage() {
           setRotationConfigs(data.rotationConfigs)
         }
         setCanManageTunnels(data.canManageTunnels !== false)
+        setTunnelAtInstance(data.sharedSettingsAt === 'instance')
         setSettingsLoaded(true)
         setSettingsLoadError(null)
       } else {
@@ -1749,6 +1754,8 @@ export default function SettingsPage() {
             {settingsLoadError}. Saving is off until they load, so nothing stored is overwritten.{' '}
             <button type="button" className="textButton" onClick={retrySettings}>Retry</button>
           </div>
+        ) : tunnelAtInstance ? (
+          <InstanceTunnelSection />
         ) : !canManageTunnels ? (
           <TunnelStatusReadOnly />
         ) : (
@@ -2051,7 +2058,9 @@ export default function SettingsPage() {
             <ul style={{ margin: 0, paddingLeft: '18px' }}>
               {pendingImport.keyCount > 0 && <li><strong>{pendingImport.keyCount}</strong> API key{pendingImport.keyCount > 1 ? 's' : ''}</li>}
               {pendingImport.rotationCount > 0 && <li><strong>{pendingImport.rotationCount}</strong> rotation config{pendingImport.rotationCount > 1 ? 's' : ''}</li>}
-              {pendingImport.tunnelingCount > 0 && <li><strong>{pendingImport.tunnelingCount}</strong> tunneling field{pendingImport.tunnelingCount > 1 ? 's' : ''}{!canManageTunnels && ' (not imported: the tunnel is managed by an administrator)'}</li>}
+              {pendingImport.tunnelingCount > 0 && <li><strong>{pendingImport.tunnelingCount}</strong> tunneling field{pendingImport.tunnelingCount > 1 ? 's' : ''}{!canManageTunnels && (tunnelAtInstance
+                ? ' (not imported: the tunnel is an instance setting, saved in the Tunneling section)'
+                : ' (not imported: the tunnel is managed by an administrator)')}</li>}
             </ul>
             <p style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
               Empty values and masked values are skipped. You must click <strong>Save Settings</strong> after import to persist.
@@ -2257,39 +2266,6 @@ const BADGE_STYLES: Record<string, React.CSSProperties> = {
 
 /** The settings that change the instance tunnel, which the PUT refuses without the right. */
 const TUNNEL_SETTING_KEYS = ['tunnelsEnabled', 'ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
-
-type TunnelView = { kind: 'loading' } | { kind: 'error' } | { kind: 'loaded'; providers: string[] }
-
-/** The Tunneling section for an account that may not change the tunnel: its state and who manages it. */
-function TunnelStatusReadOnly() {
-  const [view, setView] = useState<TunnelView>({ kind: 'loading' })
-  useEffect(() => {
-    let live = true
-    fetch('/api/agent/tunnel-status', { cache: 'no-store' })
-      .then(async res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const body = await res.json() as Partial<Record<'ngrok' | 'chisel', { active?: boolean }>>
-        const providers = (['ngrok', 'chisel'] as const).filter(p => body?.[p]?.active === true)
-        if (live) setView({ kind: 'loaded', providers })
-      })
-      .catch(() => { if (live) setView({ kind: 'error' }) })
-    return () => { live = false }
-  }, [])
-
-  return (
-    <div className={styles.settingsGrid}>
-      <div className="formGroup">
-        <span className="formLabel">Tunnel status</span>
-        <span role="status">
-          {view.kind === 'loading' && <><Loader2 size={14} className={styles.spin} /> Checking...</>}
-          {view.kind === 'error' && 'Status unavailable'}
-          {view.kind === 'loaded' && (view.providers.length ? `On (${view.providers.join(' and ')})` : 'Off')}
-        </span>
-        <span className="formHint">The tunnel is managed by an administrator.</span>
-      </div>
-    </div>
-  )
-}
 
 /** The id of a SecretField input; CredentialDrawer rows use `credential-key-<name>`. */
 const secretFieldId = (name: string) => `settings-secret-${name}`
