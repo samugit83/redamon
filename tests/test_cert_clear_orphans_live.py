@@ -1,19 +1,20 @@
 """LIVE-Neo4j proof for CF4: a cleared certificate leaves no orphan Subdomain.
 
-tlsx promotes in-scope SAN names into `Subdomain` nodes (`source='tlsx_san'`),
-which means the certificate is the ONLY reason some of those hosts are in the
-graph at all. Two ways that can rot:
+tlsx links its certificate (`COVERS_HOST`) to the in-scope SAN names the scan
+admitted, which the late-name DNS step wrote as `Subdomain` nodes; it never
+creates one itself (D2, tests/test_tlsx_san_subdomain_live.py). Two ways the
+graph can still rot:
 
   * a recon re-run clears and rescans, and a name that has since been dropped
     from the cert stays behind forever as a host we claim to have found;
-  * a cross-scanner clear deletes the certificate and leaves its SAN-only
-    Subdomains dangling with no edge and no evidence.
+  * a cross-scanner clear deletes the certificate and leaves the Subdomains it
+    covered dangling with no edge and no evidence.
 
 A dangling Subdomain is not cosmetic: it feeds the next scan's target list, so
-the pipeline keeps probing a hostname no certificate vouches for any more.
+the pipeline keeps probing a hostname nothing vouches for any more.
 
 Only a real database proves it, because the clear is one big `DETACH DELETE`
-with label/source exclusions and the promotion is a `MERGE`.
+with label/source exclusions.
 
 Run:
   docker run --rm --network host -v "$PWD:/repo" -w /repo \\
@@ -103,6 +104,21 @@ class CertificateClearLeavesNoOrphans(unittest.TestCase):
                 """,
                 ip=_IP, port=_PORT, uid=self.uid, pid=self.pid).consume()
 
+    def _discovered(self, names):
+        """What the late-name DNS step writes for the SAN names the scan admitted."""
+        with self.client.driver.session() as s:
+            s.run(
+                """
+                MERGE (d:Domain {name: 'acme.test', user_id: $uid, project_id: $pid})
+                WITH d
+                UNWIND $names AS name
+                MERGE (sd:Subdomain {name: name, user_id: $uid, project_id: $pid})
+                  ON CREATE SET sd.source = 'tlsx'
+                MERGE (sd)-[:BELONGS_TO]->(d)
+                MERGE (d)-[:HAS_SUBDOMAIN]->(sd)
+                """,
+                names=list(names), uid=self.uid, pid=self.pid).consume()
+
     def tearDown(self):
         try:
             with self.client.driver.session() as s:
@@ -123,13 +139,16 @@ class CertificateClearLeavesNoOrphans(unittest.TestCase):
 
     # -- CF4 ---------------------------------------------------------------
     def test_a_san_dropped_from_the_cert_does_not_survive_a_clear_and_rescan(self):
+        self._discovered(["mail.acme.test", "imap.acme.test"])
         self.client.update_graph_from_tlsx(
             _payload(["mail.acme.test", "imap.acme.test"]), self.uid, self.pid)
         self.assertEqual(self._subdomains(), ["imap.acme.test", "mail.acme.test"])
 
-        # The operator re-runs recon. The cert has been re-issued without imap.
+        # The operator re-runs recon. The cert has been re-issued without imap,
+        # so the scan admits mail alone.
         self.client.clear_recon_data(self.uid, self.pid)
         self._seed_port_scan()
+        self._discovered(["mail.acme.test"])
         self.client.update_graph_from_tlsx(
             _payload(["mail.acme.test"], fingerprint="11223344"), self.uid, self.pid)
 
@@ -138,7 +157,8 @@ class CertificateClearLeavesNoOrphans(unittest.TestCase):
             "a hostname whose only evidence was the previous certificate survived "
             "the clear and is still being fed to the next scan")
 
-    def test_the_clear_removes_the_san_only_subdomains_with_the_certificate(self):
+    def test_the_clear_removes_the_certificate_and_the_subdomains_it_covered(self):
+        self._discovered(["mail.acme.test", "imap.acme.test"])
         self.client.update_graph_from_tlsx(
             _payload(["mail.acme.test", "imap.acme.test"]), self.uid, self.pid)
         self.client.clear_recon_data(self.uid, self.pid)
@@ -150,6 +170,7 @@ class CertificateClearLeavesNoOrphans(unittest.TestCase):
     def test_no_subdomain_is_left_without_evidence_after_the_clear_and_rescan(self):
         """The structural form of the same invariant: every Subdomain still in
         the graph must hang off something (a cert, an IP, a domain), never float."""
+        self._discovered(["mail.acme.test", "imap.acme.test", "smtp.acme.test"])
         self.client.update_graph_from_tlsx(
             _payload(["mail.acme.test", "imap.acme.test", "smtp.acme.test"]),
             self.uid, self.pid)
@@ -166,6 +187,7 @@ class CertificateClearLeavesNoOrphans(unittest.TestCase):
         """clear_gvm_data deletes certificates GVM alone observed. A recon-owned
         Subdomain that happened to be covered by one must stay: recon still owns
         it, and deleting it here would silently shrink the next scan's scope."""
+        self._discovered(["mail.acme.test", "imap.acme.test"])
         self.client.update_graph_from_tlsx(
             _payload(["mail.acme.test", "imap.acme.test"]), self.uid, self.pid)
         with self.client.driver.session() as s:

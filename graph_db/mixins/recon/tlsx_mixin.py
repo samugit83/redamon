@@ -3,10 +3,11 @@
 Writes, all tenant-scoped on {natural_key, user_id, project_id}:
   - Certificate           MERGEd on cert_key (Phase 0.2 shared key)
   - (IP)-[:HAS_CERTIFICATE]->(Certificate)   the documented non-HTTP TLS anchor
-  - (Certificate)-[:COVERS_HOST]->(Subdomain) per in-scope SAN entry, so SAN
-        data is traversable instead of a dead list property; a SAN listed in
-        the payload's wildcard_dropped (it answers only through its zone's
-        wildcard DNS) gets none
+  - (Certificate)-[:COVERS_HOST]->(Subdomain) per in-scope SAN entry whose
+        Subdomain the graph already holds, so SAN data is traversable instead
+        of a dead list property. A SAN never creates the Subdomain; a SAN
+        listed in the payload's wildcard_dropped (it answers only through its
+        zone's wildcard DNS) gets no edge
   - Service enrichment: advisory TLS props on the EXISTING Service node
         (never a rename -- name is part of the Service MERGE key, so writing a
         different one orphans the node)
@@ -122,9 +123,8 @@ class TlsxMixin:
             return stats
         cdn_by_ip = tlsx_data.get("cdn_by_ip") or {}
 
-        # The run's SCAN roots, not attach_roots: a SAN only gets a COVERS_HOST
-        # Subdomain here, never a Domain link, so in a full batch a sibling
-        # group's SAN would become an orphan Subdomain. A partial run's scope
+        # The run's SCAN roots, not attach_roots: in a full batch a group's
+        # certificates link only that group's names. A partial run's scope
         # already holds every root it scanned.
         roots = scope_roots(recon_data)
         if not roots:
@@ -273,21 +273,30 @@ class TlsxMixin:
                         )
 
                     # --- COVERS_HOST for each in-scope SAN --------------------
+                    # A SAN never creates the Subdomain (D2). The target writes
+                    # its own SAN list; merge_discovered_hostnames decides which
+                    # names join the scan (group scope, RoE, cap, address,
+                    # wildcard) and the late-name DNS step writes those under
+                    # their Domain, ahead of this write on the one graph worker.
+                    # Partial runs read every Subdomain back as a target, so any
+                    # other name, and every SAN of partial tlsx (it merges none),
+                    # stays on the certificate's san list.
                     for san_name in entry.get("san") or []:
                         name = (san_name or "").strip().lower().lstrip("*.")
                         if not name or not _in_scope(name) or name in wildcard_dropped:
                             continue
                         try:
-                            session.run(
+                            rec = session.run(
                                 """
                                 MATCH (c:Certificate {cert_key: $cert_key, user_id: $uid, project_id: $pid})
-                                MERGE (s:Subdomain {name: $name, user_id: $uid, project_id: $pid})
-                                  ON CREATE SET s.source = 'tlsx_san', s.updated_at = datetime()
+                                MATCH (s:Subdomain {name: $name, user_id: $uid, project_id: $pid})
                                 MERGE (c)-[:COVERS_HOST]->(s)
+                                RETURN count(s) AS matched
                                 """,
                                 cert_key=cert_key, name=name, uid=user_id, pid=project_id,
-                            )
-                            stats["covers_host_edges"] += 1
+                            ).single()
+                            if rec and rec["matched"]:
+                                stats["covers_host_edges"] += 1
                         except Exception as e:
                             stats["errors"].append(f"tlsx covers_host {name}: {e}")
                 except Exception as e:

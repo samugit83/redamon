@@ -212,6 +212,16 @@ class TlsxGraphWriteLive(unittest.TestCase):
 
     # -- COVERS_HOST --------------------------------------------------------
     def test_covers_host_edges_exist_for_in_scope_san_names(self):
+        # The late-name DNS step writes the SAN names the scan admitted; tlsx
+        # only links its certificate to them (it mints no Subdomain, D2).
+        with self.client.driver.session() as s:
+            s.run(
+                """
+                UNWIND $names AS name
+                MERGE (sd:Subdomain {name: name, user_id: $uid, project_id: $pid})
+                """,
+                names=["mail.acme.test", "imap.acme.test"],
+                uid=self.uid, pid=self.pid).consume()
         self._write()
         names = self._one(
             "MATCH (:Certificate {user_id: $uid, project_id: $pid})-[:COVERS_HOST]->(s:Subdomain) "
