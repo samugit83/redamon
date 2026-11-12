@@ -6,6 +6,8 @@ import { requireUserExists, isForeignKeyViolation } from '@/lib/userScopedWrite'
 import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
 import { internalError } from '@/lib/routeErrors'
 import { maskProvider } from '@/lib/llmProviderMask'
+import { sessionHolds } from '@/lib/authz/adminPermission'
+import { forbiddenResponse } from '@/lib/authz/guards'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -17,7 +19,7 @@ interface RouteParams {
 // are returned ONLY to trusted internal callers that present a valid
 // `X-Internal-Key` header (the agent) - never on the strength of the plaintext
 // `?internal=true` query param alone. Browser/JWT callers always receive masked
-// rows, and only for their OWN user id (or if admin), closing the cross-tenant
+// rows, and only for their OWN user id (or with users:read), closing the cross-tenant
 // IDOR where any logged-in user could read another user's cleartext keys.
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
@@ -26,15 +28,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const wantUnmasked = request.nextUrl.searchParams.get('internal') === 'true'
 
     // The read rule (requireUserAccess `read`): browser/JWT callers must own the
-    // account or be an admin, and they never get unmasked secrets, even with
-    // ?internal=true.
+    // account or hold the user directory (users:read), and they never get unmasked
+    // secrets, even with ?internal=true.
     if (!internalReq) {
       const session = await getSession()
       if (!session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
-      if (session.userId !== id && session.role !== 'admin') {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      if (session.userId !== id && !(await sessionHolds(session, 'users:read'))) {
+        return forbiddenResponse('users:read')
       }
     }
 

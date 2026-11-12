@@ -17,10 +17,14 @@ import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rootProtectedAnswer, rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { rbacFlags } from '@/lib/authz/flags'
 import { lockedInstanceRoot } from '@/lib/authz/root'
-import { requireRootPower, rootOnlyRefusal } from '@/lib/authz/rootPowers'
+import { manageRefusal, requireRootPower, rootOnlyRefusal, rootStanding } from '@/lib/authz/rootPowers'
+import { canAssignProfile, canManage } from '@/lib/authz/hierarchy'
+import { managedOf, managerOf, profileContents } from '@/lib/authz/permissionAdmin'
 import { emailChangedNotice, withNotice } from '@/lib/authz/accountNotices'
 import { now } from '@/lib/authz/clock'
 import type { RootGuardRefusal } from '@/lib/authz/adminSet'
+import { requireSessionPermission, sessionHolds } from '@/lib/authz/adminPermission'
+import { forbiddenResponse } from '@/lib/authz/guards'
 import type { Session } from '@/lib/session'
 
 interface RouteParams {
@@ -115,6 +119,7 @@ function rootRecheck(session: { userId: string }, needsRoot = false) {
 }
 
 const ROOT_ONLY_EDIT = 'Only Root can make an admin, or change, demote or delete another admin account.'
+const ROOT_ONLY_DELETE = 'Only Root can delete an admin account.'
 
 /** The answer to a write the Root re-check refused inside its transaction. */
 async function rootGuardAnswer(
@@ -154,10 +159,19 @@ async function updateWithIdentity(
   const roleChange = 'role' in data && data.role !== target.role
   const emailChange = 'email' in data && data.email !== target.email
   const otherAdmin = !self && target.role === 'admin'
-  const needsRoot = otherAdmin || (roleChange && data.role === 'admin')
-  if (needsRoot) {
-    const refusal = await requireRootPower(request, session, stepUpPassword, ROOT_ONLY_EDIT)
-    if (refusal) return refusal
+  const promotes = roleChange && data.role === 'admin'
+  // Another admin's account or a promotion: written under the Root lock, which re-checks Root.
+  const adminWrite = otherAdmin || promotes
+  let needsRoot = adminWrite
+  if (adminWrite) {
+    const managed = await adminsManagePath(request, session, id, 'edit', stepUpPassword, ROOT_ONLY_EDIT, { promotes })
+    if (managed instanceof NextResponse) return managed
+    if (managed === 'allowed') {
+      needsRoot = false
+    } else {
+      const refusal = await requireRootPower(request, session, stepUpPassword, ROOT_ONLY_EDIT)
+      if (refusal) return refusal
+    }
   } else if (emailChange) {
     const refusal = await requireStepUp(request, self ? currentPassword : stepUpPassword)
     if (refusal) return refusal
@@ -168,7 +182,7 @@ async function updateWithIdentity(
   const select = { ...USER_SELECT, sessionVersion: true } as const
   const attempted = roleChange ? 'role_change' : 'edit'
 
-  if (!roleChange && !needsRoot && !emailChange) {
+  if (!roleChange && !adminWrite && !emailChange) {
     const before = ('name' in data || 'email' in data)
       ? await prisma.user.findUnique({ where: { id }, select: { name: true, email: true, role: true } })
       : null
@@ -233,6 +247,34 @@ async function updateWithIdentity(
   }
 }
 
+/**
+ * Managing another admin, or promoting a member, is the confirmed Root's (step 2.6) unless the
+ * permissions switch is on and the person holds `admins:manage` (hierarchy.ts, D-02): then they edit,
+ * demote or delete an admin whose profile sits strictly inside their own admin side, and promote only
+ * an account whose profile would, each with their own password; the write then re-checks under the
+ * Root lock only that the target is not Root. `null`: this path does not apply (switch off, or the
+ * confirmed Root): Root's rule answers. A refusal answers as 2.6's would (`root_only`), or says why
+ * (`not_a_subset`, the action's permission).
+ */
+async function adminsManagePath(
+  request: NextRequest, session: Session, targetId: string, action: 'edit' | 'delete', password: unknown, error: string,
+  { promotes = false }: { promotes?: boolean } = {},
+): Promise<NextResponse | 'allowed' | null> {
+  if (!rbacFlags().permissions || (await rootStanding(session.userId)) === 'confirmed') return null
+  const target = await managedOf(targetId)
+  if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  const { manager } = await managerOf(session)
+  if (target.managed.accountType !== 'member') {
+    const decision = canManage(manager, target.managed, action)
+    if (!decision.allowed) return manageRefusal(session, decision, error)
+  }
+  if (promotes) {
+    const decision = canAssignProfile(manager, await profileContents(prisma, target.principal.adminProfileId))
+    if (!decision.allowed) return manageRefusal(session, decision, error)
+  }
+  return (await requireStepUp(request, password)) ?? 'allowed'
+}
+
 /** Another admin's account changes hands only with the acting admin's own password. */
 async function isAnotherAdmin(sessionUserId: string, targetId: string): Promise<boolean> {
   if (sessionUserId === targetId) return false
@@ -245,14 +287,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    // Check permissions: admin or internal can view any user, standard can only view self
+    // The internal key and the user directory (users:read) read any account; anyone else their own.
     if (!isInternalRequest(request)) {
       const session = await getSession()
       if (!session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
-      if (session.role !== 'admin' && session.userId !== id) {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      if (session.userId !== id && !(await sessionHolds(session, 'users:read'))) {
+        return forbiddenResponse('users:read')
       }
     }
 
@@ -327,14 +369,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
     const { name, email, role, defaultAgentModel, defaultAiPipelineModel, stepUpPassword } = body
 
-    // Standard users can only update their own name/email
-    if (session.role !== 'admin' && session.userId !== id) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
-
-    // Only admin can change roles
-    if (role && session.role !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    // Without users:edit a person changes only their own name and email, never a role.
+    if ((session.userId !== id || role) && !(await sessionHolds(session, 'users:edit', { fresh: true }))) {
+      return forbiddenResponse('users:edit')
     }
 
     // Identity switch on: nobody else edits Root, and Root keeps the admin role.
@@ -413,11 +450,13 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    // S2/E2: deleting a user requires an admin session; no internal bypass.
+    // S2/E2: deleting a user requires a session holding users:delete; no internal bypass.
     const session = await getSession({ fresh: true })
-    if (!session || session.role !== 'admin') {
+    if (!session) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
+    const denied = await requireSessionPermission(session, 'users:delete', { fresh: true })
+    if (denied) return denied
     // Whatever the identity switch (ID-26, step 2.12). No JSON check: a member's DELETE has no
     // body, and a browser form cannot send a DELETE.
     if (!sameOrigin(request)) return crossOriginResponse(request)
@@ -436,14 +475,23 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const rootRefusal = await rootProtectedRefusal(request, session, id, 'delete')
     if (rootRefusal) return rootRefusal
     const targetIsAdmin = target?.role === 'admin'
-    // Identity switch on: deleting an admin is the confirmed Root's power (step 2.6).
-    const rootPower = targetIsAdmin && rbacFlags().identity
+    // Identity switch on: deleting an admin is the confirmed Root's power (step 2.6), or an
+    // `admins:manage` holder's over a strict subset (permissions switch on).
+    let rootPower = targetIsAdmin && rbacFlags().identity
     if (targetIsAdmin) {
       const body = await request.json().catch(() => null)
-      const refusal = rootPower
-        ? await requireRootPower(request, session, body?.stepUpPassword, 'Only Root can delete an admin account.')
-        : await requireStepUp(request, body?.stepUpPassword)
-      if (refusal) return refusal
+      const managed = rootPower
+        ? await adminsManagePath(request, session, id, 'delete', body?.stepUpPassword, ROOT_ONLY_DELETE)
+        : null
+      if (managed instanceof NextResponse) return managed
+      if (managed === 'allowed') {
+        rootPower = false
+      } else {
+        const refusal = rootPower
+          ? await requireRootPower(request, session, body?.stepUpPassword, ROOT_ONLY_DELETE)
+          : await requireStepUp(request, body?.stepUpPassword)
+        if (refusal) return refusal
+      }
     }
 
     // The teardown below cannot be undone, so a deletion the last-admin rule

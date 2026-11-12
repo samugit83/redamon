@@ -9,10 +9,13 @@
  * read the real session), so only `admin`-kind permissions are asked here; a member permission acts
  * on the effective user's data and goes through `requirePermission` (guards.ts).
  *
- * The account is the one `getSession()` read (its remembered principal). A session object it did
- * not build (a copy, a test double) carries only the id and role getSession read: with the
- * permissions switch off they are the whole answer but for a member's legacy grants, which are not
- * on it (so a shared tool reads as not held: fail closed); with the switch on the account is read.
+ * With the permissions switch off, capabilities.ts gives every admin *Full admin* (every
+ * administration permission but Root's own), Root everything, and a member none but the shared
+ * tool of a legacy grant: so for any other permission the account type getSession read is the whole
+ * answer, and nothing more is read (no Root, no account: the switch-off product reads what it read
+ * before, DV-30). adminPermission.test.ts holds this equal to can() for every such permission.
+ * Otherwise can() decides, on the account getSession read (its remembered principal), or on the
+ * account read again for a session object getSession did not build (a copy, a test double).
  */
 import type { NextResponse } from 'next/server'
 import type { Session } from '@/lib/session'
@@ -23,6 +26,7 @@ import { forbiddenResponse } from './guards'
 import { PERMISSIONS, assertKnownPermission, type PermissionId } from './permissions'
 import { loadPrincipal } from './principal'
 import { sessionPrincipal } from './sessionPrincipal'
+import { LEGACY_GRANTS } from './updateReview'
 
 export interface AdminPermissionOptions {
   /** A critical path: the account (when not already read fresh), the Root and the sets read again. */
@@ -36,13 +40,12 @@ function assertAdministration(permission: PermissionId): void {
   }
 }
 
-async function principalOf(session: Session, fresh: boolean): Promise<CapabilityPrincipal | null> {
-  const read = sessionPrincipal(session)
-  if (read) return read
-  if (!rbacFlags().permissions) {
-    return { id: session.userId, role: session.role, status: 'active', adminProfileId: null, legacyGrants: [] }
-  }
-  return loadPrincipal(session.userId, { fresh })
+/** The shared tools a member holds through a legacy grant (§14.7): `platform:<grant>`. */
+const LEGACY_GRANTED: ReadonlySet<string> = new Set(LEGACY_GRANTS.map((g) => `platform:${g}`))
+
+/** Whether the switch-off answer for `permission` is the account type alone (see the header). */
+export function decidedByAccountType(permission: PermissionId): boolean {
+  return !rbacFlags().permissions && !PERMISSIONS[permission].rootOnly && !LEGACY_GRANTED.has(permission)
 }
 
 async function decide(principal: CapabilityPrincipal | null, permission: PermissionId, fresh: boolean): Promise<boolean> {
@@ -53,7 +56,8 @@ async function decide(principal: CapabilityPrincipal | null, permission: Permiss
 /** Whether the signed-in person holds this administration or platform permission. A failed read throws. */
 export async function sessionHolds(session: Session, permission: PermissionId, { fresh = false }: AdminPermissionOptions = {}): Promise<boolean> {
   assertAdministration(permission)
-  return decide(await principalOf(session, fresh), permission, fresh)
+  if (decidedByAccountType(permission)) return session.role === 'admin'
+  return decide(sessionPrincipal(session) ?? await loadPrincipal(session.userId, { fresh }), permission, fresh)
 }
 
 /** Null when the signed-in person holds the permission, else the 403 naming it (master §9.8). */
@@ -72,5 +76,7 @@ export async function requireSessionPermission(
  */
 export async function accountHolds(userId: string, permission: PermissionId, { fresh = false }: AdminPermissionOptions = {}): Promise<boolean> {
   assertAdministration(permission)
-  return decide(await loadPrincipal(userId, { fresh }), permission, fresh)
+  const principal = await loadPrincipal(userId, { fresh })
+  if (principal && decidedByAccountType(permission)) return principal.role === 'admin'
+  return decide(principal, permission, fresh)
 }

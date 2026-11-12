@@ -12,10 +12,11 @@ import { userAuditEntry, writeUserAudit, type UserAuditFields } from '@/lib/user
 import { writeAuditTx } from '@/lib/audit'
 import { rbacFlags } from '@/lib/authz/flags'
 import { requireRootPower } from '@/lib/authz/rootPowers'
+import { requireSessionPermission, sessionHolds } from '@/lib/authz/adminPermission'
 
 const EMAIL_TAKEN = { error: 'A user with this email already exists', code: 'email_taken' } as const
 
-// GET /api/users - List users (admin: all, standard: self only, internal: all)
+// GET /api/users - List users (users:read: all, anyone else: self only, internal: all)
 export async function GET(request: NextRequest) {
   try {
     let where = {}
@@ -26,8 +27,8 @@ export async function GET(request: NextRequest) {
       if (!session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
-      // Standard users only see themselves
-      if (session.role !== 'admin') {
+      // Without the user directory a person sees only their own account.
+      if (!(await sessionHolds(session, 'users:read'))) {
         where = { id: session.userId }
       }
     }
@@ -68,16 +69,18 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/users - Create a new user (admin only or internal)
+// POST /api/users - Create a new user (users:create)
 export async function POST(request: NextRequest) {
   try {
-    // S2/E2: creating a user (incl. minting an admin via role) requires an
-    // admin SESSION. The internal-key bypass is removed here - no production
-    // internal caller creates users, and key possession must not mint admins.
+    // S2/E2: creating a user (incl. minting an admin via role) requires a
+    // SESSION holding users:create. The internal-key bypass is removed here - no
+    // production internal caller creates users, and key possession must not mint admins.
     const session = await getSession({ fresh: true })
-    if (!session || session.role !== 'admin') {
+    if (!session) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
+    const denied = await requireSessionPermission(session, 'users:create', { fresh: true })
+    if (denied) return denied
 
     // Same-origin JSON whatever the identity switch (ID-26, step 2.12): a page on another site
     // cannot create an account with this admin's cookie.

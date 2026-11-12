@@ -6,6 +6,8 @@ import { cachedPrincipal, loadPrincipal, type LoadPrincipalOptions, type Princip
 import { rememberSessionPrincipal, sessionPrincipal } from './authz/sessionPrincipal'
 import { rbacFlags } from './authz/flags'
 import { isRootAccount } from './authz/root'
+import { sessionHolds } from './authz/adminPermission'
+import { forbiddenResponse } from './authz/guards'
 import { internalError } from './routeErrors'
 
 export interface Session {
@@ -186,7 +188,10 @@ export async function requireSession(opts: SessionOptions = {}): Promise<Session
 }
 
 /**
- * Returns admin session or a 401/403 NextResponse. Caller must check and return the response.
+ * Returns the session of an administrator ACCOUNT (Root or an admin), or a 401/403 NextResponse.
+ * An account type, not a permission: a route that administers something then checks the
+ * permission it needs (authz/adminPermission.ts `requireSessionPermission`), so an admin whose
+ * profile lacks it is refused. Caller must check and return the response.
  * Usage: const result = await requireAdmin(); if (result instanceof NextResponse) return result;
  */
 export async function requireAdmin(opts: SessionOptions = {}): Promise<Session | NextResponse> {
@@ -243,7 +248,8 @@ export async function requireAccountWrite(targetUserId: string): Promise<NextRes
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   if (session.userId === targetUserId) return null
-  if (session.role !== 'admin') {
+  // Only someone who acts as others can pass below, through act-as.
+  if (!actsAsOthers(session)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
   const target = await actAsTarget(session)
@@ -255,8 +261,9 @@ export async function requireAccountWrite(targetUserId: string): Promise<NextRes
  * Ownership gate for user-scoped secret/data routes (settings, llm-providers,
  * tradecraft, skills, MCP servers and tokens). Internal-key callers (the agent +
  * scanners) pass in both modes.
- *  - `read`: the account itself or an admin. Every secret these routes return is
- *    masked for a browser caller, so an admin's read never sees one.
+ *  - `read`: the account itself or the user directory (`users:read`, every admin
+ *    with the permissions switch off). Every secret these routes return is masked
+ *    for a browser caller, so an admin's read never sees one.
  *  - `write`: requireAccountWrite. The admin write bypass is gone: an admin cannot
  *    change another account, through act-as or not, except a passwordless managed
  *    account it is acting as.
@@ -275,8 +282,8 @@ export async function requireUserAccess(
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  if (session.userId !== targetUserId && session.role !== 'admin') {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  if (session.userId !== targetUserId && !(await sessionHolds(session, 'users:read'))) {
+    return forbiddenResponse('users:read')
   }
   return null
 }

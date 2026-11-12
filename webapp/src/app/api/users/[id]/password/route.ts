@@ -14,6 +14,8 @@ import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { requireRootPower } from '@/lib/authz/rootPowers'
 import { rbacFlags } from '@/lib/authz/flags'
+import { sessionHolds } from '@/lib/authz/adminPermission'
+import { forbiddenResponse } from '@/lib/authz/guards'
 import { setLoginCookie } from '@/lib/loginCookie'
 import { issueLoginToken } from '@/lib/authz/sessionLifetime'
 import { parseReason, reasonRequired, resetCredentials, resetStatusRefusal } from '@/lib/authz/resetCredentials'
@@ -52,12 +54,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    const isAdmin = session.role === 'admin'
     const isSelf = session.userId === id
 
-    // Standard users can only change their own password
-    if (!isAdmin && !isSelf) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    // Setting another account's password is resetting its credentials.
+    if (!isSelf && !(await sessionHolds(session, 'users:reset_credentials', { fresh: true }))) {
+      return forbiddenResponse('users:reset_credentials')
     }
 
     // Identity switch on (step 2.10): a password set for someone else is a credentials reset.
@@ -160,7 +161,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         action: 'mcp-token.revoke-all',
         targetType: 'user',
         targetId: id,
-        after: { reason: 'password changed', revokedCount: revoked.count, byAdmin: isAdmin && !isSelf },
+        after: { reason: 'password changed', revokedCount: revoked.count, byAdmin: !isSelf },
         source: 'api',
       })
     }

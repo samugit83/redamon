@@ -19,6 +19,7 @@ import { requireStepUp } from '@/lib/authz/stepUp'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { scannerJobRefusalForLiveProject } from '@/lib/authz/jobCredential'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
+import { sessionHolds } from '@/lib/authz/adminPermission'
 import { type SaveWarning } from './saveWarnings'
 import { rbacFlags } from '@/lib/authz/flags'
 import { changedCaptureFields, changedTunnelFields, parseCapturePatch } from '@/lib/sharedInstanceSettings'
@@ -55,6 +56,12 @@ async function tunnelAccess(record: boolean, { fresh = false }: { fresh?: boolea
   const principal = await loadPrincipal(session.userId, { fresh })
   if (!principal) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
   return { access: await sharedToolAccess(principal, 'tunnels', { record }), actor }
+}
+
+/** Whether the signed-in person may change the instance's capture policy, on a fresh read. */
+async function capturePolicyHolder(): Promise<boolean> {
+  const session = await getSession({ fresh: true })
+  return session !== null && await sessionHolds(session, 'platform:traffic_capture', { fresh: true })
 }
 
 /**
@@ -373,8 +380,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    // A fresh read: a demoted admin must not change the instance's capture policy (T3).
-    const captureAdminOK = isInternalRequest(request) || (await getSession({ fresh: true }))?.role === 'admin'
+    // A fresh read: an admin who lost platform:traffic_capture must not change the instance's
+    // capture policy (T3).
+    const captureAdminOK = isInternalRequest(request) || await capturePolicyHolder()
     // Named in the answer, so a non-admin's TrafficMind save does not read as applied.
     const ignoredFields: string[] = []
     if (!captureAdminOK) {

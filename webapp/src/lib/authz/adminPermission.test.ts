@@ -33,7 +33,8 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
-import { accountHolds, requireSessionPermission, sessionHolds } from './adminPermission'
+import { accountHolds, decidedByAccountType, requireSessionPermission, sessionHolds } from './adminPermission'
+import { can } from './can'
 import { setFlagsForTests } from './flags'
 import { clearCapabilityCachesForTests } from './capabilities'
 import { clearInstanceRootCacheForTests } from './root'
@@ -100,19 +101,36 @@ describe('switch off: the admin check of today, through can()', () => {
     expect(await sessionHolds(await readSession('alice'), 'admins:manage')).toBe(false)
   })
 
-  test("a session object getSession did not build answers from the role it carries, reading neither person's account", async () => {
+  test('the account type getSession read answers, and nothing more is read (no Root, no account: DV-30)', async () => {
     for (const p of CHECKED.filter((x) => x !== 'admins:manage')) {
       expect(await sessionHolds({ userId: 'admin-1', role: 'admin' }, p)).toBe(true)
+      expect(await sessionHolds({ userId: 'root', role: 'admin' }, p)).toBe(true)
       expect(await sessionHolds({ userId: 'alice', role: 'standard' }, p)).toBe(false)
     }
-    // Only the Root's account is read (root.ts), to tell Root from an admin.
-    const read = userFindUnique.mock.calls.map(([a]) => a.where.id)
-    expect(read.filter((id) => id !== 'root')).toEqual([])
+    expect(userFindUnique).not.toHaveBeenCalled()
+    expect(instanceFindUnique).not.toHaveBeenCalled()
   })
 
-  test("a member's legacy grant is not on a session copy: the shared tool reads as not held (fail closed)", async () => {
+  test.each([[{ identity: false }], [{ identity: true }]])('%j: the account type answer equals can() for every administration permission it answers', async (flags) => {
+    setFlagsForTests({ ...flags, permissions: false })
+    db.users.set('alice', account('alice', 'standard', { legacyGrants: ['tunnels', 'kali_terminal', 'shell_sessions'] }))
+    db.users.set('bob', account('bob', 'standard'))
+    const decided = ADMIN_SIDE.filter((p) => decidedByAccountType(p))
+    expect(decided.length).toBeGreaterThan(10)
+    for (const id of ['root', 'admin-1', 'alice', 'bob']) {
+      const principal = (await loadPrincipal(id, { fresh: true }))!
+      for (const p of decided) {
+        expect(await sessionHolds({ userId: id, role: principal.role }, p), `${id} ${p}`).toBe((await can(principal, p)).allowed)
+      }
+    }
+  })
+
+  test("a shared tool and a Root-only permission read the account: a member's legacy grant counts", async () => {
     db.users.set('alice', account('alice', 'standard', { legacyGrants: ['tunnels'] }))
-    expect(await sessionHolds({ userId: 'alice', role: 'standard' }, 'platform:tunnels')).toBe(false)
+    expect(decidedByAccountType('platform:tunnels')).toBe(false)
+    expect(decidedByAccountType('admins:manage')).toBe(false)
+    expect(await sessionHolds({ userId: 'alice', role: 'standard' }, 'platform:tunnels')).toBe(true)
+    expect(await sessionHolds({ userId: 'alice', role: 'standard' }, 'platform:kali_terminal')).toBe(false)
   })
 })
 
