@@ -42,7 +42,7 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
-import { requirePermission, withPermission, forbiddenResponse, type PermissionContext } from './guards'
+import { requirePermission, requireAlso, withPermission, forbiddenResponse, type PermissionContext } from './guards'
 import { setFlagsForTests } from './flags'
 import { clearCapabilityCachesForTests } from './capabilities'
 import { clearInstanceRootCacheForTests } from './root'
@@ -233,6 +233,58 @@ describe('requirePermission', () => {
   test('an unknown permission throws (a programming error, not a refusal)', async () => {
     signedIn(principal('alice'))
     await expect(requirePermission(request(), 'recon:everything' as PermissionId)).rejects.toThrow(/Unknown permission/)
+  })
+})
+
+describe('requireAlso (a second permission inside one request, step 3.8)', () => {
+  test('held: null, and nothing is read again', async () => {
+    signedIn(principal('alice'))
+    const ctx = await requirePermission(request(), 'recon:scan', { projectId: 'P-alice' }) as PermissionContext
+    projectFindUnique.mockClear()
+    h.getAuthzIdentity.mockClear()
+    expect(requireAlso(ctx, 'recon:overwrite')).toBeNull()
+    expect(projectFindUnique).not.toHaveBeenCalled()
+    expect(h.getAuthzIdentity).not.toHaveBeenCalled()
+  })
+
+  test('not held: the 403 naming the second permission', async () => {
+    signedIn(principal('alice', 'standard', {
+      permissionOverrides: [{ permission: 'recon:overwrite', effect: 'deny', expiresAt: null, reason: null }],
+    }))
+    const ctx = await requirePermission(request(), 'recon:scan', { projectId: 'P-alice' }) as PermissionContext
+    const res = requireAlso(ctx, 'recon:overwrite') as NextResponse
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'recon:overwrite' })
+  })
+
+  test('act-as: decided on what can() applied, so a member permission the account acted as lacks is refused', async () => {
+    signedIn(principal('admin-1', 'admin'), principal('alice', 'standard', {
+      permissionOverrides: [{ permission: 'project:rescope', effect: 'deny', expiresAt: null, reason: null }],
+    }))
+    const ctx = await requirePermission(request(), 'project:settings', { projectId: 'P-alice' }) as PermissionContext
+    expect((requireAlso(ctx, 'project:rescope') as NextResponse).status).toBe(403)
+  })
+
+  test('the level the second permission needs is checked on the project the context checked', async () => {
+    signedIn(principal('alice'))
+    const ctx = await requirePermission(request(), 'project:settings', { projectId: 'P-alice' }) as PermissionContext
+    // A context whose access meets no level (a kind of access Phase 4 adds without a level table).
+    const shared = { ...ctx, access: { project: { id: 'P-alice', userId: 'bob' }, level: 'reader' } } as unknown as PermissionContext
+    expect(requireAlso(ctx, 'project:rescope')).toBeNull()
+    expect((requireAlso(shared, 'project:rescope') as NextResponse).status).toBe(403)
+  })
+
+  test('an instance permission needs no project; a project permission on a context that checked none throws', async () => {
+    signedIn(principal('alice'))
+    const ctx = await requirePermission(request(), 'project:create') as PermissionContext
+    expect(requireAlso(ctx, 'project:import')).toBeNull()
+    expect(() => requireAlso(ctx, 'recon:scan')).toThrow(/needs a context that checked a project/)
+  })
+
+  test('an unknown permission throws', async () => {
+    signedIn(principal('alice'))
+    const ctx = await requirePermission(request(), 'recon:scan', { projectId: 'P-alice' }) as PermissionContext
+    expect(() => requireAlso(ctx, 'recon:everything' as PermissionId)).toThrow(/Unknown permission/)
   })
 })
 

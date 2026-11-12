@@ -23,10 +23,10 @@
 import { NextResponse } from 'next/server'
 import { getAuthzIdentity, type AuthzIdentity, type EffectiveUser } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
-import { can, type CanDecision } from './can'
+import { actsOnProject, can, type CanDecision } from './can'
 import type { Capabilities } from './capabilities'
-import { assertKnownPermission, type PermissionId } from './permissions'
-import type { ProjectAccess } from './projectAccess'
+import { PERMISSIONS, assertKnownPermission, type PermissionId } from './permissions'
+import { meetsLevel, type ProjectAccess } from './projectAccess'
 
 export interface PermissionContext extends AuthzIdentity {
   /** Whose data the request touches: the account acted as, else the signed-in account. */
@@ -106,6 +106,28 @@ export async function requirePermission(
   const identity = await signedIn(fresh)
   if (identity instanceof NextResponse) return identity
   return decide(identity, permission, 'projectId' in opts ? { projectId: opts.projectId } : {}, fresh)
+}
+
+/**
+ * A second permission the same request needs because of what it asks for (an overwrite run, a
+ * scope change inside a settings save, the kind of scan a queued job will start), decided on the
+ * context the route's requirePermission answered, as can() would decide it on the same project,
+ * reading nothing again: the capabilities can() applied (under act-as, what both people hold) and,
+ * on the project the context checked, the access level the permission needs. Answers null when
+ * held, else the 403 naming it.
+ *
+ * A permission that acts on a project, on a context that checked none, throws: the level could not
+ * be decided, so the route must name the project in its requirePermission first.
+ */
+export function requireAlso(auth: PermissionContext, permission: PermissionId): NextResponse | null {
+  assertKnownPermission(permission)
+  if (actsOnProject(permission) && !auth.access) {
+    throw new Error(`[rbac] requireAlso('${permission}') needs a context that checked a project`)
+  }
+  if (!auth.capabilities.has(permission)) return forbiddenResponse(permission)
+  const level = PERMISSIONS[permission].level
+  if (auth.access && level !== null && !meetsLevel(auth.access, level)) return forbiddenResponse(permission)
+  return null
 }
 
 type ProjectIdExtractor<C> = (request: Request, context: C) => string | null | undefined | Promise<string | null | undefined>

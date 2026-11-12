@@ -13,6 +13,7 @@ import { notQuarantined } from '@/lib/graph/requestTargets'
 
 const mockRun = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: () => Promise.resolve(null) }))
 vi.mock('@/lib/prisma', () => ({
   default: { project: { findUnique: () => Promise.resolve({ userId: 'u1', targetDomain: 'acme.test' }) } },

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import {
@@ -450,8 +450,8 @@ const ZERO_COUNTS = {
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId, toolId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'recon:read', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     const project = await prisma.project.findUnique({
       where: { id: projectId },

@@ -13,6 +13,7 @@ import { NextRequest } from 'next/server'
 
 const h = vi.hoisted(() => ({ guard: vi.fn(), start: vi.fn() }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: (...a: unknown[]) => h.guard(...a) }))
 // The route imports parseScanMode from the real scanTimeline module, which pulls
 // in the Prisma client — stub it so no query engine is loaded in unit tests.

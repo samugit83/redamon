@@ -25,6 +25,7 @@ vi.mock('@/lib/activationLock', () => ({
   // which asks the boolean form.
   isActivationInProgress: async () => h.isActivating(),
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   guardProject: async () => null,
   requireProjectAccess: async () => ({ project: { id: 'p1', userId: 'owner' } }),

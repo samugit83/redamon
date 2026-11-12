@@ -1,5 +1,5 @@
-import { NextRequest } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { upstreamErrorResponse, upstreamFailureResponse, withRouteErrors } from '@/lib/routeErrors'
 
@@ -11,8 +11,8 @@ interface RouteParams {
 
 export const GET = withRouteErrors('Failed to connect to partial recon log stream', async (request: NextRequest, { params }: RouteParams) => {
   const { projectId, runId } = await params
-  const __denied = await guardProject(projectId)
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'recon:read', { projectId })
+  if (auth instanceof NextResponse) return auth
 
   let response: Response
   try {

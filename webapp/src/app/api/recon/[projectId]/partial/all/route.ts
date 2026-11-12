@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { reconcileRunScanJobs } from '@/lib/scanTimeline'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
@@ -13,8 +13,8 @@ interface RouteParams {
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'recon:read', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     // No answer is reported as such, never as an empty list: "no partial runs"
     // would hide a run that is still writing the graph.

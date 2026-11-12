@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { recordRunStopped } from '@/lib/scanTimeline'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
@@ -13,8 +13,8 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId, runId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'recon:partial', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     let response: Response
     try {

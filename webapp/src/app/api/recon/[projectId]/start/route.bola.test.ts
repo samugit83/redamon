@@ -13,6 +13,7 @@ const mockOrchestratorFetch = vi.fn()
 const mockProjectFindUnique = vi.fn()
 const mockStart = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: (...a: unknown[]) => mockGuardProject(...a) }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => mockOrchestratorFetch(...a) }))
 vi.mock('@/lib/prisma', () => ({

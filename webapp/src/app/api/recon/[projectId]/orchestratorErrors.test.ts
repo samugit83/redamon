@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   run: vi.fn(),
 }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: async () => null }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => h.orchestratorFetch(...a) }))
 vi.mock('@/lib/scanTimeline', () => ({

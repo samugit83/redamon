@@ -17,6 +17,7 @@ const mockFindUnique = vi.fn()
 const mockRun = vi.fn()
 const mockClose = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: (...a: unknown[]) => mockGuard(...a) }))
 vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: (...a: unknown[]) => mockFindUnique(...a) } } }))
 vi.mock('@/app/api/graph/neo4j', () => ({

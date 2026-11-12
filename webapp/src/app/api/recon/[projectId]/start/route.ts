@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requireAlso, requirePermission } from '@/lib/authz/guards'
 import { getEffectiveUser } from '@/lib/session'
 import { parseScanMode, type ScanMode } from '@/lib/scanTimeline'
 import { startFullScan } from '@/lib/startFullScan'
@@ -12,8 +12,8 @@ interface RouteParams {
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { projectId } = await params
-    const __denied = await guardProject(projectId)
-    if (__denied) return __denied
+    const auth = await requirePermission(request, 'recon:scan', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     // Scan Timeline: `mode` decides what happens to the graph this scan is about
     // to destroy. Default 'new' (keep the current graph as a saved version) is the
@@ -29,6 +29,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         )
       }
       mode = parsed
+    }
+    if (mode === 'overwrite') {
+      const refused = requireAlso(auth, 'recon:overwrite')
+      if (refused) return refused
     }
 
     const eff = await getEffectiveUser()
