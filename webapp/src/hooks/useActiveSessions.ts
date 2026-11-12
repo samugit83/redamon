@@ -1,8 +1,27 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useContext } from 'react'
 import type { MsfSession, MsfJob, NonMsfSession, SessionInteractResult } from '@/lib/websocket-types'
 import { readApiError, toApiError } from '@/lib/apiError'
+import { useCan, useRbacFlags } from '@/hooks/useCan'
+import { AuthContext } from '@/providers/authContext'
+
+export type SessionsAccess = 'pending' | 'allowed' | 'refused'
+
+/**
+ * Whether the shell-sessions list may be asked for: GET /api/agent/sessions asks agent:sessions with
+ * no project (step 3.9). 'refused' only with RBAC_PERMISSIONS_ENABLED on and the permission missing
+ * from /api/auth/me's set; 'pending' while that answer is read, since the switch is unknown until
+ * then. With the switch off, or with no AuthProvider above, 'allowed', as before the switch (DV-30).
+ * Which sessions the list holds stays the server's rule (1.13), so nothing else is gated here.
+ */
+export function useSessionsAccess(): SessionsAccess {
+  const authLoading = useContext(AuthContext)?.isLoading ?? false
+  const flags = useRbacFlags()
+  const held = useCan('agent:sessions')
+  if (authLoading) return 'pending'
+  return flags?.permissions === true && !held ? 'refused' : 'allowed'
+}
 
 interface UseActiveSessionsOptions {
   enabled?: boolean
@@ -17,6 +36,8 @@ interface UseActiveSessionsReturn {
   isLoading: boolean
   error: string | null
   totalCount: number
+  /** The person may not use shell sessions (useSessionsAccess): nothing is asked, the lists are empty. */
+  refused: boolean
   interactWithSession: (sessionId: number, command: string) => Promise<SessionInteractResult>
   /** Rejects with an ApiError when the kill failed; the row is back in the list by then. */
   killSession: (sessionId: number) => Promise<void>
@@ -42,6 +63,19 @@ export function useActiveSessions({
   // Track killed sessions/jobs so polls don't re-add them
   const killedSessionsRef = useRef<Set<number>>(new Set())
   const killedJobsRef = useRef<Set<number>>(new Set())
+  const access = useSessionsAccess()
+  const refused = access === 'refused'
+  const active = enabled && access === 'allowed'
+
+  // An act-as switch can take agent:sessions away mid-page: the rows read before are not this set's.
+  useEffect(() => {
+    if (!refused) return
+    setSessions([])
+    setJobs([])
+    setNonMsfSessions([])
+    setAgentBusy(false)
+    setError(null)
+  }, [refused])
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -119,14 +153,14 @@ export function useActiveSessions({
 
   // Initial fetch
   useEffect(() => {
-    if (!enabled) return
+    if (!active) return
     setIsLoading(true)
     fetchSessions().finally(() => setIsLoading(false))
-  }, [enabled, fetchSessions])
+  }, [active, fetchSessions])
 
   // Smart polling
   useEffect(() => {
-    if (!enabled) return
+    if (!active) return
 
     if (pollingRef.current) {
       clearInterval(pollingRef.current)
@@ -141,7 +175,7 @@ export function useActiveSessions({
         pollingRef.current = null
       }
     }
-  }, [enabled, fastPoll, fetchSessions])
+  }, [active, fastPoll, fetchSessions])
 
   const totalCount = sessions.length + nonMsfSessions.length
 
@@ -150,9 +184,10 @@ export function useActiveSessions({
     jobs,
     nonMsfSessions,
     agentBusy,
-    isLoading,
+    isLoading: isLoading || (enabled && access === 'pending'),
     error,
     totalCount,
+    refused,
     interactWithSession,
     killSession,
     killJob,

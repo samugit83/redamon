@@ -5,6 +5,8 @@ import { Terminal, AlertCircle } from 'lucide-react'
 import type { MsfSession, MsfJob, NonMsfSession, SessionInteractResult } from '@/lib/websocket-types'
 import { useToast } from '@/components/ui'
 import { errorMessage } from '@/lib/apiError'
+import { useSessionsAccess } from '@/hooks/useActiveSessions'
+import { ForbiddenNotice } from '@/components/auth/ForbiddenNotice'
 import { SessionCard, NonMsfCard, JobCard } from './SessionCard'
 import { SessionTerminal } from './SessionTerminal'
 import styles from './ActiveSessions.module.css'
@@ -37,6 +39,7 @@ export const ActiveSessions = memo(function ActiveSessions({
 }: ActiveSessionsProps) {
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null)
   const toast = useToast()
+  const refused = useSessionsAccess() === 'refused'
 
   const selectedSession = sessions.find(s => s.id === selectedSessionId)
   const totalSessions = sessions.length + nonMsfSessions.length
@@ -60,6 +63,14 @@ export const ActiveSessions = memo(function ActiveSessions({
       toast.error(errorMessage(err, `Failed to kill job ${id}`), 'Job not stopped')
     }
   }, [onKillJob, toast])
+
+  if (refused) {
+    return (
+      <div className={styles.emptyState}>
+        <ForbiddenNotice permission="agent:sessions" />
+      </div>
+    )
+  }
 
   // Loading state
   if (isLoading) {

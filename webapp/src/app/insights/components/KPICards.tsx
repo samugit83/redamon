@@ -4,6 +4,7 @@ import { Activity, Shield, Github, Terminal } from 'lucide-react'
 import { formatNumber } from '../utils/formatters'
 import type { PipelineStatusData, UnreachablePipeline } from '../types'
 import type { SessionsData } from '@/lib/websocket-types'
+import { useSessionsAccess } from '@/hooks/useActiveSessions'
 import styles from './KPICards.module.css'
 
 interface KPI {
@@ -81,9 +82,13 @@ function PipelineCard({ label, icon, status, phase, unavailable, unavailableTitl
 }
 
 function SessionsCard({ sessions, error }: { sessions: SessionsData | undefined; error?: string | null }) {
+  // Someone without agent:sessions is never sent the count (the query is off too): no card at all.
+  const refused = useSessionsAccess() === 'refused'
   const msf = sessions?.sessions || []
   const nonMsf = sessions?.non_msf_sessions || []
   const total = msf.length + nonMsf.length
+
+  if (refused) return null
 
   if (error) {
     return (
