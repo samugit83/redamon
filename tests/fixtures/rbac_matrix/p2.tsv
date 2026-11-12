@@ -177,3 +177,28 @@ p2-lifetime-member	2.11	anon	POST	/api/auth/login	{"email":"${MEMBER_A_EMAIL}","
 p2-activity-read	2.11	member_a	GET	/api/account/activity	-	200;has="events"	req:UI-09 identity:on
 p2-activity-anon	2.11	anon	GET	/api/account/activity	-	401	req:UI-09
 p2-activity-off	2.11	member_a	GET	/api/account/activity	-	404	req:UI-09 identity:off
+
+# ---- step 2.12: same-origin JSON on the identity routes ----
+# Each row is a page of another site (origin:https://rbac-other-site.example) sending what the route
+# would refuse after its checks anyway (an empty body, the own account, an unknown token, a value
+# that is not valid), so a missing origin check changes nothing: it only answers that refusal
+# instead of 403 cross_origin. The Phase 1 routes check the origin whatever the identity switch (a
+# security fix); the Phase 2 routes answer 404 first with the switch off, so their rows run on only.
+# The control row is the same request from the webapp's own origin (what the app sends), refused
+# for its body after the check. The public invite form checks it too (anon, no session).
+p2-xo-users-create	2.12	admin_a	POST	/api/users	{}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-users-edit	2.12	admin_a	PUT	/api/users/${MEMBER_A_ID}	{"defaultAgentModel":"loop/mcp"}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-users-delete	2.12	admin_a	DELETE	/api/users/${ADMIN_A_ID}	-	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-password	2.12	admin_a	PUT	/api/users/${MEMBER_A_ID}/password	{"newPassword":"short"}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-actas-start	2.12	admin_a	POST	/api/auth/act-as	{}	403;has=cross_origin;nohdr=redamon-act-as=	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-actas-stop	2.12	admin_a	DELETE	/api/auth/act-as	-	403;has=cross_origin;nohdr=redamon-act-as=	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-token-mint	2.12	member_a	POST	/api/users/${MEMBER_A_ID}/mcp-tokens	{}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-token-edit	2.12	member_a	PATCH	/api/users/${MEMBER_A_ID}/mcp-tokens/rbac-no-such-token	{}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-token-delete	2.12	member_a	DELETE	/api/users/${MEMBER_A_ID}/mcp-tokens/rbac-no-such-token	-	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-settings	2.12	member_a	PUT	/api/users/${MEMBER_A_ID}/settings	{"githubEnterpriseHost":"127.0.0.1"}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-enable	2.12	admin_a	POST	/api/users/${MEMBER_A_ID}/enable	{}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-legacy-grants	2.12	admin_a	POST	/api/admin/legacy-grants	{"action":"rbac-none"}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example
+p2-xo-disable	2.12	admin_a	POST	/api/users/${ADMIN_B_ID}/disable	{}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example identity:on
+p2-xo-instance-settings	2.12	admin_a	PUT	/api/admin/instance-settings	{"ngrokAuthtoken":1}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example identity:on
+p2-xo-invite-accept	2.12	anon	POST	/api/invite/accept	{"password":"rbac-never-applied-passphrase"}	403;has=cross_origin	req:ID-26 origin:https://rbac-other-site.example identity:on
+p2-xo-same-origin-control	2.12	admin_a	PUT	/api/users/${MEMBER_A_ID}	{"defaultAgentModel":"loop/mcp"}	400;has=loop_model_not_allowed	req:ID-26

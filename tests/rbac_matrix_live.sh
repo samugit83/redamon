@@ -29,7 +29,8 @@
 #   tags    space-separated: hole:<finding> (today's behaviour a later phase closes),
 #           req:<id>, probe:<how>, superseded-by:<file> (kept, never run again),
 #           identity:on | identity:off (run only while the webapp's RBAC_IDENTITY_ENABLED
-#           is so, read from the container; SKIP otherwise)
+#           is so, read from the container; SKIP otherwise), origin:<url> (the Origin header
+#           the row sends instead of the webapp's own, e.g. a page of another site)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
 #
 # Rows never start a scan or an agent run. A row that must prove "allowed" without
@@ -295,7 +296,9 @@ for line in "${ROWS[@]}"; do
 
   args=(-s -m "$REQUEST_TIMEOUT" -o "$TMP/body" -D "$TMP/headers" -w '%{http_code}' -X "$method")
   # A browser sends Origin on every non-GET request; the same-origin guards expect it.
-  [ "$method" = GET ] || [ "$method" = HEAD ] || args+=(-H "Origin: $BASE")
+  origin="$BASE"
+  [[ " $tags " =~ \ origin:([^ ]+)\  ]] && origin="${BASH_REMATCH[1]}"
+  [ "$method" = GET ] || [ "$method" = HEAD ] || args+=(-H "Origin: $origin")
   if [ "$body" != - ]; then
     subst "$body" > "$TMP/req"
     args+=(-H 'Content-Type: application/json' --data-binary @"$TMP/req")
