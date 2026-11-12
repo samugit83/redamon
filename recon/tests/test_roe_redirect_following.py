@@ -164,6 +164,38 @@ def test_nuclei_ip_mode_argv_is_unchanged_by_exclusions():
             == build_nuclei_command(**common))
 
 
+@pytest.mark.parametrize("entry", [f"{EXCLUDED_IP}/32", EDGE])
+def test_nuclei_with_redirects_off_holds_template_redirects_under_roe_exclusions(monkeypatch, entry):
+    """With NUCLEI_FOLLOW_REDIRECTS off nuclei got no redirect flag, and a
+    template that sets `redirects: true` still followed a 302 to any host.
+    On nuclei:latest (a loopback 302 to another host): no flag, 1 request
+    there; -disable-redirects, none."""
+    seen = _nuclei_passes(monkeypatch, dict(_roe(entry), NUCLEI_FOLLOW_REDIRECTS=False))
+    for label, (cmd, _kwargs) in seen.items():
+        assert cmd.count("-disable-redirects") == 1, label
+        assert _redirect_flags(cmd) == [] and "-max-redirects" not in cmd, label
+
+
+@pytest.mark.parametrize("settings", INACTIVE)
+def test_nuclei_with_redirects_off_unchanged_without_an_exclusion(monkeypatch, settings):
+    seen = _nuclei_passes(monkeypatch, dict(settings, NUCLEI_FOLLOW_REDIRECTS=False))
+    for label, (cmd, _kwargs) in seen.items():
+        assert "-disable-redirects" not in cmd and _redirect_flags(cmd) == [], label
+
+
+def test_nuclei_ip_mode_with_redirects_off_holds_template_redirects():
+    from recon.helpers.nuclei_helpers import build_nuclei_command
+    cmd = build_nuclei_command("/tmp/redamon/t/targets.txt", "/tmp/redamon/t/o.jsonl",
+                               "projectdiscovery/nuclei:latest", follow_redirects=False,
+                               ip_mode=True)
+    assert cmd.count("-disable-redirects") == 1 and _redirect_flags(cmd) == []
+
+
+def test_takeover_nuclei_with_redirects_off_holds_template_redirects(monkeypatch, tmp_path):
+    cmd = _takeover_cmd(monkeypatch, tmp_path, dict(_roe(EDGE), NUCLEI_FOLLOW_REDIRECTS=False))
+    assert cmd.count("-disable-redirects") == 1 and _redirect_flags(cmd) == []
+
+
 def _takeover_cmd(monkeypatch, tmp_path, settings: dict) -> list:
     from recon.main_recon_modules import subdomain_takeover as st
     seen = {}

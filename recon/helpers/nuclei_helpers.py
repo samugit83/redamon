@@ -87,7 +87,8 @@ def build_nuclei_command(
         roe_exclusions: the Rules of Engagement exclude hosts, so a redirect
             is followed only on the same host too: an admitted target's
             Location can name an excluded host, and nuclei follows it before
-            any scope check (R-2).
+            any scope check (R-2). With follow_redirects off, these two and an
+            attached session add -disable-redirects.
         ... (configuration parameters)
 
     Returns:
@@ -265,6 +266,11 @@ def build_nuclei_command(
                     else "-follow-redirects"])
         if max_redirects > 0:
             cmd.extend(["-max-redirects", str(max_redirects)])
+    elif _has_auth or ip_mode or roe_exclusions:
+        # Off is not off for a template that sets `redirects: true`: it still
+        # follows to any host, the session and refused hosts included.
+        # -disable-redirects holds it (checked on nuclei:latest).
+        cmd.append("-disable-redirects")
 
     # Interactsh (OOB testing)
     if not interactsh:

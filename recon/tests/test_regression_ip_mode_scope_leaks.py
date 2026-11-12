@@ -394,6 +394,8 @@ def test_naabu_target_list_has_no_duplicates(recon_main, monkeypatch):
 #     -fr, -follow-redirects        enable following redirects for http templates
 #     -fhr, -follow-host-redirects  follow redirects on the same host
 #     -mr, -max-redirects int       max number of redirects to follow for http templates
+#     -dr, -disable-redirects       disable redirects for http templates (R-2, 2026-11-12:
+#                                   holds a template's own `redirects: true`; no flag does not)
 
 def test_ip_mode_httpx_command_has_no_cross_host_redirect_or_tls_probe(recon_main, monkeypatch):
     dns = FakeDns()
@@ -417,6 +419,16 @@ def test_ip_mode_nuclei_follows_host_redirects_only(recon_main, monkeypatch):
 
     assert "-follow-host-redirects" in cmd
     assert "-follow-redirects" not in cmd and "-fr" not in cmd
+
+
+def test_ip_mode_nuclei_with_redirects_off_follows_none(recon_main, monkeypatch):
+    result, _ = _group1(recon_main, monkeypatch, FakeDns())
+    result["http_probe"] = {"by_url": {f"http://{ip}": {"url": f"http://{ip}", "status_code": 200}
+                                       for ip in TARGETS}}
+    cmd = _nuclei(monkeypatch, result, dict(IP_MODE_SETTINGS, NUCLEI_FOLLOW_REDIRECTS=False))["cmd"]
+
+    assert cmd.count("-disable-redirects") == 1
+    assert not {"-follow-redirects", "-follow-host-redirects", "-fr", "-fhr", "-max-redirects"} & set(cmd)
 
 
 # ---------------------------------------------------------------------------

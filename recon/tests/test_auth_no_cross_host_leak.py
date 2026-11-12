@@ -63,10 +63,17 @@ class TestNucleiRedirectLeak:
         assert "-max-redirects" in cmd
         assert cmd[cmd.index("-max-redirects") + 1] == "7"
 
-    def test_redirects_off_adds_no_redirect_flag(self):
+    def test_redirects_off_holds_template_redirects_under_auth(self):
+        # Off without a flag let a `redirects: true` template carry the session
+        # to any host; -disable-redirects holds it (nuclei:latest, R-2).
         cmd = _nuclei(follow_redirects=False, auth_headers=AUTH)
         assert "-follow-redirects" not in cmd
         assert "-follow-host-redirects" not in cmd
+        assert cmd.count("-disable-redirects") == 1
+
+    def test_redirects_off_without_auth_adds_no_redirect_flag(self):
+        cmd = _nuclei(follow_redirects=False, auth_headers=None)
+        assert not {"-follow-redirects", "-follow-host-redirects", "-disable-redirects"} & set(cmd)
 
 
 class TestNucleiStillSendsAuth:

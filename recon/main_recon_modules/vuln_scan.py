@@ -593,6 +593,8 @@ def run_vuln_scan(recon_data: dict, output_file: Path = None, settings: dict = N
         nuclei_roe_exclusions = bool(admission_context(settings, recon_data).excluded)
         if nuclei_roe_exclusions and NUCLEI_FOLLOW_REDIRECTS:
             print("[*][Nuclei] Redirects followed on the same host only: RoE exclusions are in force")
+        elif nuclei_roe_exclusions:
+            print("[*][Nuclei] Template redirects held (-disable-redirects): RoE exclusions are in force")
 
         # Initialize the per-scan AI context for the false-positive response
         # filter. Consumed by is_false_positive() in _execute_nuclei_pass().
