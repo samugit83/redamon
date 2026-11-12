@@ -2758,6 +2758,128 @@ ensure_admin() {
     fi
 }
 
+# The identity switch read as the webapp reads it (webapp/src/lib/authz/flags.ts):
+# true, 1 or yes, in any case, is on; anything else is off. From the app .env, where
+# the operator sets it (deploy.sh forwards no RBAC_* key).
+_rbac_identity_on() {
+    local v
+    v="$(_env_get RBAC_IDENTITY_ENABLED)"
+    v="$(printf '%s' "$v" | tr -d "[:space:]\"'" | tr '[:upper:]' '[:lower:]')"
+    [[ "$v" == true || "$v" == 1 || "$v" == yes ]]
+}
+
+# set-root.mjs confirms the account when it is already Root, else moves Root to it.
+# Never fatal: the update is done by the time this runs.
+_set_root_from_update() {
+    local rc=0
+    docker compose exec -T -e "ROOT_EMAIL=$1" webapp node scripts/set-root.mjs </dev/null || rc=$?
+    if [[ $rc -ne 0 ]]; then
+        warn "Root was not changed (set-root.mjs exit $rc). Retry with: ./redamon.sh set-root $1"
+    fi
+}
+
+# After ensure_admin in `update`: confirm the Root the webapp chose at boot (the
+# oldest admin with a password), which has Root's protections but none of its powers
+# until the host confirms it. The only admin with a password is confirmed; with
+# several, a terminal lists them to confirm or choose; a deploy or CI run uses
+# ADMIN_EMAIL (the environment first, as _prompt_and_create_admin reads it: deploy.sh
+# exports deploy.env and never writes it to the app .env; then .env) when it names one
+# of them, else keeps the choice and says how to change it. With no Root chosen yet
+# nothing is assigned without an explicit choice. Never fatal, never reads stdin
+# outside a terminal (the single-host deploy pipes its remote script into the shell).
+_confirm_root() {
+    if ! _rbac_identity_on; then
+        info "Root: not checked by this update (RBAC_IDENTITY_ENABLED is off in .env)."
+        return 0
+    fi
+    local out rc=0
+    out="$(docker compose exec -T webapp node scripts/check-root.mjs --lines </dev/null 2>/dev/null)" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+        warn "Root check did not run (exit $rc); the update itself does not depend on it."
+        return 0
+    fi
+    local kind a b root="" state="" proposal="" pick="" cand
+    local -a cands=()
+    while IFS=$'\t' read -r kind a b _; do
+        case "$kind" in
+            root) root="$a"; state="$b" ;;
+            candidate) cands+=("$a") ;;
+        esac
+    done <<<"$out"
+
+    if [[ -n "$root" && "$state" == confirmed ]]; then
+        info "Root: $root (confirmed)."
+        return 0
+    fi
+    if [[ ${#cands[@]} -eq 0 ]]; then
+        warn "This instance has no Root: no admin has a password. Create one with: ./redamon.sh create-admin"
+        return 0
+    fi
+    for cand in "${cands[@]}"; do
+        [[ "$cand" == "$root" ]] && proposal="$root"
+    done
+    if [[ -n "$proposal" && ${#cands[@]} -eq 1 ]]; then
+        info "Root: $proposal, the only admin with a password; confirming it."
+        _set_root_from_update "$proposal"
+        return 0
+    fi
+
+    if [[ -n "$proposal" ]]; then
+        info "Root: $proposal was chosen automatically and is not confirmed yet."
+    elif [[ -n "$root" ]]; then
+        warn "Root: $root is not an admin with a password any more."
+    else
+        info "No Root is chosen yet."
+    fi
+    if [[ -t 0 && -t 1 ]]; then
+        local i answer ask
+        echo "  Admins who can be Root (oldest first):"
+        for i in "${!cands[@]}"; do
+            if [[ "${cands[$i]}" == "$proposal" ]]; then
+                echo "    $((i + 1))) ${cands[$i]}  (chosen automatically, not confirmed)"
+            else
+                echo "    $((i + 1))) ${cands[$i]}"
+            fi
+        done
+        info "Choosing another admin signs it and the current Root out and revokes its MCP tokens."
+        if [[ -n "$proposal" ]]; then
+            ask="  Enter = confirm $proposal, a number = choose that admin, n = decide later: "
+        else
+            ask="  A number = choose that admin, n = decide later: "
+        fi
+        while true; do
+            read -erp "$ask" answer || answer=n
+            if [[ -z "$answer" && -n "$proposal" ]]; then
+                pick="$proposal"; break
+            elif [[ "$answer" =~ ^[Nn] ]]; then
+                break
+            elif [[ "$answer" =~ ^[0-9]+$ ]] && (( 10#$answer >= 1 && 10#$answer <= ${#cands[@]} )); then
+                pick="${cands[$((10#$answer - 1))]}"; break
+            fi
+            warn "Type a number from 1 to ${#cands[@]}${proposal:+, Enter to confirm} or n."
+        done
+    else
+        local want want_lc
+        want="${ADMIN_EMAIL:-$(_env_get ADMIN_EMAIL)}"
+        want_lc="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
+        for cand in "${cands[@]}"; do
+            if [[ -n "$want" && "$(printf '%s' "$cand" | tr '[:upper:]' '[:lower:]')" == "$want_lc" ]]; then
+                pick="$cand"
+            fi
+        done
+        if [[ -n "$pick" ]]; then
+            info "Root: ADMIN_EMAIL names $pick."
+        elif [[ -n "$want" ]]; then
+            warn "ADMIN_EMAIL ($want) is not an admin with a password; Root is left as it is."
+        fi
+    fi
+    if [[ -z "$pick" ]]; then
+        info "To confirm or choose Root: ./redamon.sh set-root <email> (a non-interactive update uses ADMIN_EMAIL when it names an admin)."
+        return 0
+    fi
+    _set_root_from_update "$pick"
+}
+
 # Standalone admin (re)creation — the reliable path when the automatic prompt was
 # skipped (slow first boot) or the admin password was lost. Safe to re-run: an
 # admin's email resets its password, a new email adds an admin, and a member's
@@ -2779,6 +2901,30 @@ cmd_create_admin() {
     info "A member's email is refused; to promote that member on purpose, run: FORCE_PROMOTE=1 ./redamon.sh create-admin"
     echo ""
     _prompt_and_create_admin
+}
+
+# Break-glass: make an account the instance's confirmed Root (set-root.mjs). Works
+# with the identity switch off too, so the choice is ready when it is turned on.
+cmd_set_root() {
+    local email="${1:-}"
+    if [[ -z "$email" ]]; then
+        error "Usage: ./redamon.sh set-root <email>"
+        exit 1
+    fi
+    print_banner
+    check_prerequisites
+    if ! _wait_for_webapp 150; then
+        error "Webapp is not responding at http://localhost:3000/api/health."
+        error "Start the stack first ('./redamon.sh up'), then re-run './redamon.sh set-root $email'."
+        exit 1
+    fi
+    if ! _rbac_identity_on; then
+        info "RBAC_IDENTITY_ENABLED is off in .env: Root is recorded now and takes effect once it is on."
+    fi
+    info "Moving Root to $email signs it and the previous Root out and revokes its MCP tokens; confirming the current Root changes nothing else."
+    local rc=0
+    docker compose exec -T -e "ROOT_EMAIL=$email" webapp node scripts/set-root.mjs </dev/null || rc=$?
+    [[ $rc -eq 0 ]] || exit "$rc"
 }
 
 cmd_reset_password() {
@@ -4189,6 +4335,7 @@ cmd_update() {
 
     # Ensure an admin user exists (prompts if none found)
     ensure_admin
+    _confirm_root
 
     _urlscan_backfill_once
 
@@ -5118,6 +5265,8 @@ cmd_help() {
     echo -e "  ${GREEN}migrate-layout${NC}   Move data left at pre-6.9 paths (runs automatically on update/up)"
     echo -e "  ${GREEN}create-admin${NC}     Create the admin login (or reset it); use if no prompt appeared at install"
     echo -e "  ${GREEN}reset-password${NC}   Reset an existing user's password"
+    echo -e "  ${GREEN}set-root <email>${NC} Make that account the instance's Root (break-glass; signs it and the"
+    echo -e "                   previous Root out), or confirm the Root chosen at upgrade"
     echo -e "  ${GREEN}kb <command>${NC}     Knowledge Base management (build/update/rebuild/stats)"
     echo -e "  ${GREEN}supply-chain-sync [ecos]${NC}  Populate the offline OSV DB (default: npm; e.g. 'npm PyPI Go')"
     echo -e "  ${GREEN}sca-intel-sync [--force|--seed-only]${NC}  Populate the supply-chain incident intel (supplychainattack.org; --seed-only installs the bundled offline copy, no network)"
@@ -5136,6 +5285,7 @@ cmd_help() {
     echo "  ./redamon.sh up dev           # Dev mode with hot-reload (auto-detects GVM)"
     echo "  ./redamon.sh create-admin     # Create the admin login (or reset it)"
     echo "  ./redamon.sh reset-password   # Reset a user's password"
+    echo "  ./redamon.sh set-root a@b.c   # Make a@b.c the instance's Root"
     echo "  ./redamon.sh kb build lite    # Build Knowledge Base"
     echo "  ./redamon.sh kb update        # Refresh all KB sources"
     echo "  ./redamon.sh kb stats         # Show KB chunk counts"
@@ -5461,6 +5611,7 @@ case "${1:-help}" in
         ;;
     reset-password) cmd_reset_password ;;
     create-admin)   cmd_create_admin ;;
+    set-root)       shift; cmd_set_root "$@" ;;
     supply-chain-sync) shift; cmd_supply_chain_sync "$@" ;;
     sca-intel-sync) shift; cmd_sca_intel_sync "$@" ;;
     test)           shift; cmd_test "${1:-unit}" ;;

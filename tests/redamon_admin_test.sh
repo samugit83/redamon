@@ -8,7 +8,8 @@
 #                                that does not abort the caller
 #   - ensure_admin            -> actionable skip message (points at create-admin)
 #   - cmd_create_admin        -> standalone recovery command (upsert = safe re-run)
-#   - dispatch + help wiring   for `create-admin`
+#   - cmd_set_root            -> `set-root <email>`: ROOT_EMAIL to set-root.mjs, its exit code kept
+#   - dispatch + help wiring   for `create-admin` and `set-root`
 #   - interactive prompts      -> arrow keys edit the line, never reach the value (issue #210)
 #
 # Pure unit tests: `docker`/`sleep` are stubbed, no daemon needed, CI-friendly.
@@ -167,6 +168,41 @@ assert_eq   "exits non-zero when webapp is down"     "$rc" "1"
 assert_true "tells the operator to start the stack"  "echo \"\$out\" | grep -q './redamon.sh up'"
 unset -f print_banner check_prerequisites _wait_for_webapp
 
+echo "== cmd_set_root: needs an email, passes it with exec -e, keeps the script's exit code =="
+# set-root.mjs makes the account the confirmed Root (break-glass). The .env read for the
+# switch note is a scratch one: the test never reads the checkout's real .env.
+print_banner() { :; }
+check_prerequisites() { :; }
+_wait_for_webapp() { return 0; }
+SR_DIR="$(mktemp -d)"; SR_SAVED_DIR="$SCRIPT_DIR"; SCRIPT_DIR="$SR_DIR"
+CAPFILE="$(mktemp)"
+docker() { echo "$*" >> "$CAPFILE"; return 0; }
+out="$(cmd_set_root 2>&1)"; rc=$?
+assert_eq    "no email: exits 1"                                "$rc" "1"
+assert_true  "no email: prints the usage"                       "echo \"\$out\" | grep -qF './redamon.sh set-root <email>'"
+assert_eq    "no email: nothing is run"                         "$(cat "$CAPFILE")" ""
+out="$(cmd_set_root root@example.com 2>&1)"; rc=$?
+assert_eq    "an email: exits 0"                                "$rc" "0"
+assert_eq    "runs set-root.mjs with ROOT_EMAIL passed by exec -e" "$(cat "$CAPFILE")" \
+    "compose exec -T -e ROOT_EMAIL=root@example.com webapp node scripts/set-root.mjs"
+assert_true  "says moving Root signs both accounts out"         "echo \"\$out\" | grep -q 'signs it and the previous Root out'"
+assert_true  "switch off: says Root takes effect once RBAC_IDENTITY_ENABLED is on" \
+    "echo \"\$out\" | grep -q 'RBAC_IDENTITY_ENABLED is off'"
+echo 'RBAC_IDENTITY_ENABLED=true' > "$SR_DIR/.env"
+out="$(cmd_set_root root@example.com 2>&1)"
+assert_false "switch on: no switch note"                        "echo \"\$out\" | grep -q 'RBAC_IDENTITY_ENABLED'"
+docker() { echo 'ERROR: "nopass@example.com" has no password' >&2; return 1; }
+out="$( (set -e; cmd_set_root nopass@example.com; echo '[caller continued]') 2>&1 )"; rc=$?
+assert_eq    "a refusal keeps the script's exit code"           "$rc" "1"
+assert_false "and stops there"                                  "echo \"\$out\" | grep -qF '[caller continued]'"
+assert_true  "the script's reason reaches the operator"         "echo \"\$out\" | grep -q 'has no password'"
+_wait_for_webapp() { return 1; }
+out="$(cmd_set_root root@example.com 2>&1)"; rc=$?
+assert_eq    "webapp down: exits 1"                             "$rc" "1"
+assert_true  "webapp down: tells the operator to start the stack" "echo \"\$out\" | grep -q './redamon.sh up'"
+SCRIPT_DIR="$SR_SAVED_DIR"; rm -rf "$SR_DIR"; rm -f "$CAPFILE"
+unset -f print_banner check_prerequisites _wait_for_webapp docker
+
 echo "== dispatch + help wiring for create-admin =="
 SRC="$REPO_ROOT/redamon.sh"
 assert_true "dispatch has a create-admin) arm"       "grep -qE '^\s*create-admin\)\s*cmd_create_admin' '$SRC'"
@@ -179,6 +215,9 @@ assert_true "cmd_create_admin is defined"            "grep -q '^cmd_create_admin
 # 40/40 pass serially, 14/24 FAIL when run concurrently.
 HELP_OUT="$(cd "$REPO_ROOT" && ./redamon.sh help 2>/dev/null || true)"
 assert_true "help lists create-admin"                "echo \"\$HELP_OUT\" | grep -qi 'create-admin'"
+assert_true "dispatch has a set-root) arm passing the email" "grep -qE '^\s*set-root\)\s*shift; cmd_set_root \"\\\$@\"' '$SRC'"
+assert_true "cmd_set_root is defined"                "grep -q '^cmd_set_root()' '$SRC'"
+assert_true "help lists set-root <email>"            "echo \"\$HELP_OUT\" | grep -q 'set-root <email>'"
 
 # Runs bash code ($1) on a fresh pseudo-terminal: the prompts read /dev/tty, so
 # only a real terminal shows what a person's keys turn into. $2 is typed before

@@ -53,7 +53,7 @@ for fn in _assert_checkout_writable _warn_root_owned_runtime_files _migrate_reor
           mcp_server_preflight ensure_volume_ownership ensure_db_secrets ensure_gvm_secret \
           ensure_osv_db ensure_sca_intel _plugins_build_runner _map_plugin_consumers \
           export_resource_caps reconcile_gvm_admin_password verify_core_running ensure_admin \
-          _urlscan_backfill_once; do
+          _confirm_root _urlscan_backfill_once; do
     eval "$fn() { :; }"
 done
 _plugins_prepare() { record "PLUGINS_PREPARE"; }
