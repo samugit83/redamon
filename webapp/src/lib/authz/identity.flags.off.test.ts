@@ -43,7 +43,8 @@
  * powers. With the switch off:
  *   - nobody holds them and nothing reads the Root for them: every admin keeps the Phase 1
  *     rules (rootOnlyAdmins.test.ts runs each route with the switch off);
- *   - a role change raises no session version.
+ *   - a role change raises no session version;
+ *   - the Root transfer routes answer 404 to everyone, as before they existed, and read nothing.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
@@ -115,6 +116,8 @@ const IDENTITY_READERS: string[] = [
   'src/lib/authz/principal.ts',
   // Step 2.5: the Root, read only with the switch on (off: no Root, nothing read).
   'src/lib/authz/root.ts',
+  // Step 2.6: the Root transfer, reached only through routes that answer 404 with the switch off.
+  'src/lib/authz/rootTransfer.ts',
   // Compares the session version whatever the switch, the status only with it on.
   'src/lib/session.ts',
   // Step 2.4: the tunnel and capture readers read the instance settings row only with the
@@ -326,6 +329,24 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.6)', () => {
     const request = new NextRequest('http://redamon.test/api/x', { method: 'POST' })
     expect(await adminTargetGate(request, { userId: 'admin-1', role: 'admin' }, 'admin-2', undefined, 'x'))
       .toEqual({ adminTarget: false })
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+
+  test('the Root transfer routes answer 404 to everyone and read nothing', async () => {
+    setFlagsForTests({ identity: false })
+    authCookie = await createToken('admin-1', 'admin')
+    const { GET, POST: offer } = await import('@/app/api/root/transfer/route')
+    const { POST: accept } = await import('@/app/api/root/transfer/accept/route')
+    const { POST: cancel } = await import('@/app/api/root/transfer/cancel/route')
+    const post = (body: unknown) => new NextRequest('http://redamon.test/api/root/transfer', {
+      method: 'POST', headers: { host: 'redamon.test', 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    for (const res of [
+      await GET(new NextRequest('http://redamon.test/api/root/transfer')),
+      await offer(post({ targetUserId: 'admin-2', stepUpPassword: 'x' })),
+      await accept(post({ stepUpPassword: 'x' })),
+      await cancel(post({})),
+    ]) expect(res.status).toBe(404)
     expect(findUnique).not.toHaveBeenCalled()
   })
 })

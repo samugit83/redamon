@@ -52,6 +52,9 @@ import { POST as disableUser } from '@/app/api/users/[id]/disable/route'
 import { POST as enableUser } from '@/app/api/users/[id]/enable/route'
 import { POST as revokeUserSessions } from '@/app/api/users/[id]/revoke-sessions/route'
 import { POST as revokeAllSessions } from '@/app/api/auth/sessions/revoke-all/route'
+import { GET as readRootTransfer, POST as offerRootTransfer } from '@/app/api/root/transfer/route'
+import { POST as acceptRootTransfer } from '@/app/api/root/transfer/accept/route'
+import { POST as withdrawRootTransfer } from '@/app/api/root/transfer/cancel/route'
 import { setFlagsForTests } from './flags'
 import { checkStepUp } from './stepUp'
 
@@ -145,6 +148,21 @@ describe('critical paths read the account fresh', () => {
       setFlagsForTests(null)
     }
   })
+
+  // Step 2.6: the Root transfer. The identity switch is on so the routes exist.
+  test.each([
+    ['offering Root', () => offerRootTransfer(req('POST', {}))],
+    ['accepting Root', () => acceptRootTransfer(req('POST', {}))],
+    ['withdrawing an offer', () => withdrawRootTransfer(req('POST', {}))],
+  ] as const)('%s', async (_name, call) => {
+    setFlagsForTests({ identity: true })
+    try {
+      expect((await call()).status).toBe(401)
+      expect(h.requireAdmin).toHaveBeenCalledWith(FRESH)
+    } finally {
+      setFlagsForTests(null)
+    }
+  })
 })
 
 describe('read paths keep the cached read (control)', () => {
@@ -159,5 +177,15 @@ describe('read paths keep the cached read (control)', () => {
     expect((await listLegacyGrants()).status).toBe(401)
     expect(h.requireAdmin).toHaveBeenCalledTimes(1)
     expect(h.requireAdmin.mock.calls[0][0]?.fresh ?? false).toBe(false)
+  })
+
+  test('reading a pending Root transfer (step 2.6)', async () => {
+    setFlagsForTests({ identity: true })
+    try {
+      expect((await readRootTransfer(req('GET'))).status).toBe(401)
+      expect(h.requireAdmin.mock.calls[0][0]?.fresh ?? false).toBe(false)
+    } finally {
+      setFlagsForTests(null)
+    }
   })
 })

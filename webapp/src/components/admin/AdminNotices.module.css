@@ -179,3 +179,26 @@
   color: var(--status-error-text);
   font-size: var(--text-sm);
 }
+
+/* A small button inside a banner (Root transfer: accept, decline, cancel). */
+.bannerAction {
+  flex-shrink: 0;
+  padding: var(--space-0-5) var(--space-2);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.bannerAction:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.bannerAction:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

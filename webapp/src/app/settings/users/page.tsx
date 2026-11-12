@@ -10,6 +10,7 @@ import { LegacyAccessCard } from '@/components/admin/LegacyAccessCard'
 import { WhatChangedCard } from '@/components/admin/WhatChangedCard'
 import { AccountStatusActions, AccountStatusBadge } from '@/components/admin/AccountStatusActions'
 import { RoleControl } from '@/components/admin/RoleControl'
+import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import styles from './page.module.css'
 
@@ -355,6 +356,9 @@ export default function UsersPage() {
                       >
                         Delete
                       </button>
+                    )}
+                    {confirmedRoot && user.id === authUser?.id && (
+                      <RootTransferAction selfId={user.id} users={users} className={styles.actionButton} />
                     )}
                     <AccountStatusActions
                       user={user}

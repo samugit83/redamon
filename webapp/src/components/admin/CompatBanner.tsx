@@ -6,6 +6,7 @@ import { GuardedLink as Link } from '@/components/GuardedLink'
 import type { AdminNotices } from '@/providers/AuthProvider'
 import { LEGACY_GRANTS_CHANGED_EVENT, LEGACY_REVIEW_ANCHOR, plural } from './updateNotes'
 import { RootBanner } from './RootBanner'
+import { RootTransferBanner } from './RootTransferBanner'
 import styles from './AdminNotices.module.css'
 
 /** Red while the escape hatch is on (HD-30): it reopens shared tools, so admins must not forget it. */
@@ -42,8 +43,9 @@ interface AdminBannersProps {
 
 /**
  * The header's banner slot: admins only, from /api/auth/me's `rbac` block. No banner blocks
- * anything; the Root one (step 2.5) shows while Root is unconfirmed or missing. A decision on the Users page fires LEGACY_GRANTS_CHANGED_EVENT, and the
- * count is read again then.
+ * anything; the Root one (step 2.5) shows while Root is unconfirmed or missing, and the Root
+ * transfer one (step 2.6, identity switch on) while an offer waits for Root or its recipient. A
+ * decision on the Users page fires LEGACY_GRANTS_CHANGED_EVENT, and the count is read again then.
  */
 export function AdminBanners({ isAdmin, rbac, pathname }: AdminBannersProps) {
   const [notices, setNotices] = useState<AdminNotices | undefined>(rbac)
@@ -70,11 +72,13 @@ export function AdminBanners({ isAdmin, rbac, pathname }: AdminBannersProps) {
   const pending = notices.legacyGrantsPending ?? 0
   const showReview = pending > 0 && pathname !== '/settings/users'
   const showRoot = notices.root === null || (notices.root !== undefined && !notices.root.confirmed)
-  if (!notices.compat && !showReview && !showRoot) return null
+  const transfers = notices.identity === true
+  if (!notices.compat && !showReview && !showRoot && !transfers) return null
   return (
     <div className={styles.slot}>
       {notices.compat && <CompatBanner />}
       {showRoot && <RootBanner root={notices.root} />}
+      {transfers && <RootTransferBanner />}
       {showReview && <LegacyReviewBanner pending={pending} />}
     </div>
   )
