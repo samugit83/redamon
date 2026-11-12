@@ -8,12 +8,12 @@ import { Modal } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { LegacyAccessCard } from '@/components/admin/LegacyAccessCard'
 import { WhatChangedCard } from '@/components/admin/WhatChangedCard'
-import { AccountStatusActions, AccountStatusBadge } from '@/components/admin/AccountStatusActions'
+import { AccountStatusActions } from '@/components/admin/AccountStatusActions'
 import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { InviteRowActions, InviteUserModal } from '@/components/admin/InviteUserModal'
 import { ResetCredentialsModal } from '@/components/admin/ResetCredentialsModal'
-import { IdentityLabel, accountTypeFor } from '@/components/auth/IdentityLabel'
+import { ACCOUNT_TYPE_LABEL, IdentityLabel, accountTypeFor, type AccountType } from '@/components/auth/IdentityLabel'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import styles from './page.module.css'
@@ -336,9 +336,12 @@ export default function UsersPage() {
       <LegacyAccessCard />
 
       {isLoading ? (
-        <div className={styles.empty}>Loading users...</div>
+        <div className={styles.empty} role="status">Loading users...</div>
       ) : usersError ? (
-        <div className={styles.error} role="alert">{usersError.message}</div>
+        <div className={styles.errorState}>
+          <div className={styles.error} role="alert">{usersError.message}</div>
+          <button type="button" className={styles.actionButton} onClick={() => void refetchUsers?.()}>Retry</button>
+        </div>
       ) : !users || users.length === 0 ? (
         <div className={styles.empty}>No users found</div>
       ) : (
@@ -347,9 +350,12 @@ export default function UsersPage() {
             <tr>
               <th className={styles.th}>Name</th>
               <th className={styles.th}>Email</th>
-              <th className={styles.th}>Role</th>
+              {/* Identity switch on: Root, Admin or Member (ID-31); off, Phase 1's stored role. */}
+              <th className={styles.th}>{identity ? 'Type' : 'Role'}</th>
+              <th className={styles.th}>Status</th>
               <th className={styles.th}>Password</th>
               <th className={styles.th}>Projects</th>
+              <th className={styles.th}>Last login</th>
               <th className={styles.th}>Actions</th>
             </tr>
           </thead>
@@ -359,7 +365,6 @@ export default function UsersPage() {
                 <td className={styles.td}>
                   {user.name}
                   {user.id === authUser?.id && <span className={styles.selfLabel}>(you)</span>}
-                  <AccountStatusBadge status={user.status} className={`${styles.badge} ${styles.badgeDisabled}`} />
                 </td>
                 <td className={styles.td}>
                   <span className={styles.email}>{user.email}</span>
@@ -372,11 +377,19 @@ export default function UsersPage() {
                       className={styles.select}
                       onChanged={() => void refetchUsers?.()}
                     />
+                  ) : identity ? (
+                    <AccountTypeBadge
+                      type={accountTypeFor(user, authUser?.rbac?.root)}
+                      unconfirmed={authUser?.rbac?.root?.confirmed === false}
+                    />
                   ) : (
                     <span className={`${styles.badge} ${user.role === 'admin' ? styles.badgeAdmin : styles.badgeStandard}`}>
                       {user.role}
                     </span>
                   )}
+                </td>
+                <td className={styles.td}>
+                  <AccountStatusCell status={user.status} mustChange={identity && user.mustChangePassword === true} />
                 </td>
                 <td className={styles.td}>
                   {user.hasPassword ? (
@@ -386,6 +399,7 @@ export default function UsersPage() {
                   )}
                 </td>
                 <td className={styles.td}>{user._count?.projects ?? 0}</td>
+                <td className={styles.td}><LastLogin at={user.lastLoginAt} /></td>
                 <td className={styles.td}>
                   <div className={styles.actions}>
                     {identity && user.status === 'invited' && (
@@ -691,6 +705,55 @@ export default function UsersPage() {
         onClose={closeModal}
       />
     </div>
+  )
+}
+
+const TYPE_BADGE: Record<AccountType, string> = {
+  root: styles.badgeRoot,
+  admin: styles.badgeAdmin,
+  member: styles.badgeStandard,
+}
+
+/** Root, Admin or Member (identity switch on). An unconfirmed Root has no Root powers yet (step 2.5). */
+function AccountTypeBadge({ type, unconfirmed }: { type: AccountType; unconfirmed: boolean }) {
+  return (
+    <span className={styles.cellStack}>
+      <span className={`${styles.badge} ${TYPE_BADGE[type]}`}>{ACCOUNT_TYPE_LABEL[type]}</span>
+      {type === 'root' && unconfirmed && <span className={styles.hint}>unconfirmed</span>}
+    </span>
+  )
+}
+
+const STATUS: Record<string, { label: string; tone: string }> = {
+  active: { label: 'Active', tone: styles.badgeYes },
+  invited: { label: 'Invited', tone: styles.badgeStandard },
+  disabled: { label: 'Disabled', tone: styles.badgeWarn },
+}
+
+/** The account's status; a row from an older server has none and reads as active. */
+function AccountStatusCell({ status, mustChange }: { status?: string; mustChange: boolean }) {
+  const known = STATUS[status || 'active'] ?? { label: status ?? '', tone: styles.badgeStandard }
+  return (
+    <span className={styles.cellStack}>
+      <span className={`${styles.badge} ${known.tone}`}>{known.label}</span>
+      {mustChange && <span className={`${styles.badge} ${styles.badgeWarn}`}>Must change password</span>}
+    </span>
+  )
+}
+
+/**
+ * The last sign-in (ID-27). Sign-ins are recorded from the identity schema on (step 2.2), so an
+ * account without one may have signed in before that: "Not recorded", never "Never".
+ */
+function LastLogin({ at }: { at?: string | null }) {
+  const when = at ? new Date(at) : null
+  if (!when || Number.isNaN(when.getTime())) {
+    return <span className={styles.badgeNo} title="No sign-in recorded since this version">Not recorded</span>
+  }
+  return (
+    <time dateTime={when.toISOString()} title={when.toLocaleString()}>
+      {when.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+    </time>
   )
 }
 

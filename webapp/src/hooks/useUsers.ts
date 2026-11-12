@@ -11,6 +11,10 @@ export interface User {
   /** active | invited | disabled */
   status?: string
   hasPassword: boolean
+  /** The last sign-in (ISO), null when none is recorded (step 2.12, ID-27). */
+  lastLoginAt?: string | null
+  /** Identity switch on only: the password must change at the next sign-in. */
+  mustChangePassword?: boolean
   createdAt: string
   updatedAt: string
   _count?: {

@@ -185,9 +185,3 @@ export function AccountStatusActions({ user, selfId, identity, manageAdmins = fa
     </>
   )
 }
-
-/** The status badge of a Users page row; nothing for an active account. */
-export function AccountStatusBadge({ status, className }: { status?: string; className: string }) {
-  if (!status || status === 'active') return null
-  return <span className={className}>{status === 'disabled' ? 'Disabled' : status}</span>
-}

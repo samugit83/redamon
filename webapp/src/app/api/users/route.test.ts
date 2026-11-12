@@ -8,7 +8,7 @@
  * Run: npx vitest run src/app/api/users/route.test.ts
  * @vitest-environment node
  */
-import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 
 const mockCreate = vi.fn()
@@ -29,6 +29,7 @@ vi.mock('@/lib/session', () => ({
 vi.mock('@/lib/auth', () => ({ hashPassword: async (p: string) => `hashed:${p}` }))
 
 import prisma from '@/lib/prisma'
+import { setFlagsForTests } from '@/lib/authz/flags'
 import { GET, POST } from './route'
 
 function postReq(body: unknown, headers: Record<string, string> = {}) {
@@ -197,5 +198,46 @@ describe('GET /api/users — account status (step 2.3)', () => {
     expect(rows.map((r: Record<string, unknown>) => [r.id, r.status, r.hasPassword])).toEqual([['u1', 'disabled', false], ['u2', 'active', true]])
     expect(JSON.stringify(rows)).not.toContain('$2a$')
     expect(vi.mocked(prisma.user.findMany).mock.calls[0][0]?.select).toMatchObject({ status: true })
+  })
+})
+
+describe('GET /api/users — the Users page columns (step 2.12)', () => {
+  const ROWS = [
+    {
+      id: 'u1', name: 'A', email: 'a@x.z', role: 'standard', status: 'active', password: '$2a$12$hash',
+      lastLoginAt: new Date('2026-11-01T10:00:00Z'), mustChangePassword: true,
+      createdAt: new Date(0), updatedAt: new Date(0), _count: { projects: 3 },
+    },
+    {
+      id: 'u2', name: 'B', email: 'b@x.z', role: 'admin', status: 'invited', password: '',
+      lastLoginAt: null, mustChangePassword: false, createdAt: new Date(0), updatedAt: new Date(0), _count: { projects: 0 },
+    },
+  ]
+  async function list(identity: boolean) {
+    setFlagsForTests({ identity })
+    mockIsInternal.mockReturnValue(false)
+    mockGetSession.mockResolvedValue({ userId: 'admin1', role: 'admin' })
+    vi.mocked(prisma.user.findMany).mockReset().mockResolvedValue(ROWS as never)
+    const rows = await (await GET(new NextRequest('http://localhost/api/users'))).json()
+    return { rows: rows as Record<string, unknown>[], select: vi.mocked(prisma.user.findMany).mock.calls[0][0]?.select as Record<string, unknown> }
+  }
+  afterEach(() => setFlagsForTests(null))
+
+  test('lastLoginAt: each row carries its last sign-in, null for never, whatever the switch (ID-27)', async () => {
+    for (const identity of [false, true]) {
+      const { rows, select } = await list(identity)
+      expect(select).toMatchObject({ lastLoginAt: true, status: true, _count: { select: { projects: true } } })
+      expect(rows.map((r) => [r.id, r.lastLoginAt, (r._count as { projects: number }).projects]))
+        .toEqual([['u1', '2026-11-01T10:00:00.000Z', 3], ['u2', null, 0]])
+      expect(JSON.stringify(rows)).not.toContain('$2a$')
+    }
+  })
+
+  test('switch on: each row says whether its password must change; off it is not read', async () => {
+    const on = await list(true)
+    expect(on.select).toMatchObject({ mustChangePassword: true })
+    expect(on.rows.map((r) => r.mustChangePassword)).toEqual([true, false])
+    const off = await list(false)
+    expect(off.select).not.toHaveProperty('mustChangePassword')
   })
 })

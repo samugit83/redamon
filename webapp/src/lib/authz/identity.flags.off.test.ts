@@ -88,7 +88,10 @@
  * legacy-grant review, which run with the switch off too; a page of this app sends the same
  * request as before, so only a request from another site or a non-JSON body is refused
  * (identitySameOrigin.test.ts and settings/sameOrigin.test.ts run each route with the switch off
- * and on). The Phase 2 routes answer 404 before it with the switch off.
+ * and on). The Phase 2 routes answer 404 before it with the switch off. The Users page gains the
+ * Status and Last login columns whatever the switch (the login records the time whatever it); with
+ * it off the role column, the actions and the create form stay Phase 1's, and no must-change flag
+ * is read or shown (users/route.test.ts, settings/users/page.columns.test.tsx).
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
@@ -158,8 +161,13 @@ const IDENTITY_READERS: string[] = [
   // Step 2.6: a role change raises the session version only with the switch on (its
   // identity path); off, the Phase 1 path writes the role alone.
   'src/app/api/users/[id]/route.ts',
-  // Step 2.8: a new account with a temporary password is flagged only with the switch on.
+  // Step 2.8: a new account with a temporary password is flagged only with the switch on. Step
+  // 2.12: the list carries the last sign-in whatever the switch, the must-change flag only with it on.
   'src/app/api/users/route.ts',
+  // Step 2.12: the Users page shows the last sign-in whatever the switch, a password that must
+  // change only with it on; the hook only types the list's fields.
+  'src/app/settings/users/page.tsx',
+  'src/hooks/useUsers.ts',
   // Step 2.11: My activity reads the account's notices, reached only through a route that answers
   // 404 with the switch off.
   'src/lib/authz/accountActivity.ts',

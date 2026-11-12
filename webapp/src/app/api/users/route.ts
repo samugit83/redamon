@@ -44,6 +44,10 @@ export async function GET(request: NextRequest) {
         // so an account disabled while the switch was on can be found and enabled.
         status: true,
         password: true,
+        // Written at every sign-in whatever the switch (ID-27); null: none recorded.
+        lastLoginAt: true,
+        // Enforced only with the identity switch on, so only then shown.
+        ...(rbacFlags().identity ? { mustChangePassword: true } : {}),
         createdAt: true,
         updatedAt: true,
         _count: {
