@@ -1174,7 +1174,13 @@ def merge_port_scan_results(combined_result: dict) -> None:
         }
         return
 
-    # Both scanners ran — merge masscan into port_scan, deduplicating
+    # Both scanners ran — merge masscan into port_scan, deduplicating. A domain
+    # run's detail names its address (a name can sit on several), so a port is
+    # one per address: by port alone, masscan's 443 on a name's second address
+    # was dropped once naabu had 443 on the first.
+    def _detail_key(entry: dict, pd: dict) -> tuple:
+        return (pd.get("ip") or entry.get("ip"), pd["port"])
+
     for host, mdata in masscan_data.get("by_host", {}).items():
         if host not in port_scan["by_host"]:
             port_scan["by_host"][host] = mdata
@@ -1183,8 +1189,10 @@ def merge_port_scan_results(combined_result: dict) -> None:
             for port in mdata.get("ports", []):
                 if port not in existing["ports"]:
                     existing["ports"].append(port)
+            have = {_detail_key(existing, x) for x in existing.get("port_details", [])}
             for pd in mdata.get("port_details", []):
-                if pd["port"] not in [x["port"] for x in existing.get("port_details", [])]:
+                if _detail_key(mdata, pd) not in have:
+                    have.add(_detail_key(mdata, pd))
                     existing.setdefault("port_details", []).append(pd)
             existing["ports"].sort()
             if "port_details" in existing:
