@@ -153,14 +153,39 @@ def attach_known_ports(combined_result: dict, names: list, targets=None) -> list
             continue
         first = by_ip[scanned[0]]
         ports = sorted({p for ip in scanned for p in by_ip[ip].get("ports") or []})
-        known = {d.get("port"): d for ip in scanned for d in details_of_ip.get(ip) or []}
+        if targets is None:
+            details = _details_per_address(by_host, by_ip, scanned, ports)
+        else:
+            known = {d.get("port"): d for ip in scanned for d in details_of_ip.get(ip) or []}
+            details = [copy.deepcopy(known[p]) if p in known else
+                       {"port": p, "protocol": "tcp", "service": _service(p)} for p in ports]
         by_host[name] = {
-            "host": name, "ip": scanned[0], "ports": ports,
-            "port_details": [copy.deepcopy(known[p]) if p in known else
-                             {"port": p, "protocol": "tcp", "service": _service(p)} for p in ports],
+            "host": name, "ip": scanned[0], "ports": ports, "port_details": details,
             "cdn": first.get("cdn"), "is_cdn": bool(first.get("is_cdn")),
         }
     return unscanned
+
+
+def _details_per_address(by_host: dict, by_ip: dict, scanned: list, ports: list) -> list:
+    """A domain run's late name on several addresses: one detail per address
+    and port, a copy of that address's own (its banner, product), naming the
+    address so the graph writer puts it there and not on the first one."""
+    known = {}
+    for row in by_host.values():
+        if isinstance(row, dict) and row.get("ip"):
+            for d in row.get("port_details") or []:
+                if isinstance(d, dict):
+                    known.setdefault((d.get("ip") or row["ip"], d.get("port")), d)
+    details = []
+    for p in ports:
+        for ip in scanned:
+            if p not in (by_ip[ip].get("ports") or []):
+                continue
+            seen = known.get((ip, p))
+            detail = copy.deepcopy(seen) if seen else {"port": p, "protocol": "tcp", "service": _service(p)}
+            detail["ip"] = ip
+            details.append(detail)
+    return details
 
 
 def _service(port: int) -> str:
