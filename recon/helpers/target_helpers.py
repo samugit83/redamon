@@ -423,11 +423,13 @@ def _resolves_to_routable(hostname: str) -> bool:
     if cache is not None:
         found, value = cache.get(hostname)
         if found:
-            return value
+            return value[0]
 
-    def _remember(result: bool) -> bool:
+    # The addresses are kept for the RoE address gate (_looked_up_addresses),
+    # so it judges the name on this answer instead of asking DNS again.
+    def _remember(result: bool, addresses=()) -> bool:
         if cache is not None:
-            cache.put(hostname, result)
+            cache.put(hostname, (result, tuple(addresses)))
         return result
 
     # A resolver already proven down would make every getaddrinfo a timeout.
@@ -445,6 +447,7 @@ def _resolves_to_routable(hostname: str) -> bool:
         infos = socket.getaddrinfo(hostname, None)
     except Exception:
         return _remember(True)
+    addresses = []
     for info in infos:
         try:
             addr = info[4][0]
@@ -452,7 +455,55 @@ def _resolves_to_routable(hostname: str) -> bool:
             continue
         if is_non_routable_ip(addr):
             return _remember(False)
-    return _remember(True)
+        if addr not in addresses:
+            addresses.append(addr)
+    return _remember(True, addresses)
+
+
+def _looked_up_addresses(hostname: str) -> list:
+    """The addresses ``_resolves_to_routable`` saw for ``hostname`` this run,
+    read from its cache: never a lookup of its own."""
+    cache = _san_resolve_cache()
+    if cache is None:
+        return []
+    found, value = cache.get(hostname)
+    return list(value[1]) if found else []
+
+
+def _late_name_gate_applies(settings: Optional[dict], combined_result: dict) -> bool:
+    """A domain run with an RoE exclusion in force. Otherwise the by-name RoE
+    check is all there is: with no exclusion, or in IP mode, whose late names
+    are the hostname rule's pinned answers, judged against the target list
+    there."""
+    if ((combined_result or {}).get("metadata") or {}).get("ip_mode"):
+        return False
+    from recon.helpers.target_admission import admission_context
+    return bool(admission_context(settings, combined_result).excluded)
+
+
+def _admit_late_names(combined_result: dict, names: list, settings: Optional[dict],
+                      source: str) -> list:
+    """The ``names`` the admission gate admits whole, in order.
+
+    Each name is judged on the addresses the merge's own lookup saw and the
+    ones the run's DNS data already holds for it. A name with any excluded
+    address is refused, never narrowed: httpx, Nuclei and the crawlers resolve
+    it themselves and could reach it there, and the late-name step would
+    write the excluded address under it. A name with no address is refused
+    while RoE IP or CIDR entries exist, recorded as not checked. The gate
+    notes each refusal under ``roe_excluded``, with ``source`` as the module.
+    """
+    from recon.helpers.target_admission import admit_targets, known_addresses
+    try:
+        known = known_addresses(combined_result)
+    except (AttributeError, TypeError):
+        # Partial JS Recon hands its graph subdomains over as a list, which
+        # the merge replaces; the lookup's own answer still judges each name.
+        known = {}
+    given = {n: list(dict.fromkeys([*_looked_up_addresses(n), *known.get(n, [])])) for n in names}
+    admission = admit_targets(settings, combined_result, names=given, module=source,
+                              resolves_names=True)
+    return [n for n in names if n in admission.names]
 
 
 def injection_scope(recon_data: dict) -> Optional[dict]:
@@ -492,12 +543,17 @@ def merge_discovered_hostnames(
          ends with ``"." + root_domain`` (``root_domain`` may be a list of roots,
          matched one by one). Every other name is recorded in
          ``discovered_external_domains`` and never becomes an active-scan target.
-      2. RoE narrowing (``_filter_roe_excluded``) — additive, never sufficient
-         on its own (it is off by default).
+      2. RoE narrowing by name (``_filter_roe_excluded``) — additive, never
+         sufficient on its own (it is off by default).
       3. Hostname syntax validation (``\\Z``-anchored; blocks newline injection
          into the newline-delimited target files).
-      4. Resolve-and-check: drop any name resolving to a non-routable IP.
-      5. Cap the injected count (``max_injected``).
+      4. Cap the injected count (``max_injected``).
+      5. Resolve-and-check: drop any name resolving to a non-routable IP.
+         5b. Domain mode, with an RoE exclusion in force: the admission gate
+         (``_admit_late_names``, D2) refuses a name with any excluded address,
+         or with none while IP/CIDR entries exist, and notes each refusal as
+         ``roe_excluded`` coverage. Step 2's by-name refusals stay a log
+         line, as discovery's are.
       6. Wildcard DNS (``wildcard_control``): drop a name that answers only
          through its zone's wildcard. The zones checked are recorded in
          ``combined_result["wildcard_zones"]``.
@@ -589,6 +645,11 @@ def merge_discovered_hostnames(
 
     # 5. Resolve-and-check (SAN-derived names only, never the port-scan list).
     in_scope = [n for n in in_scope if _resolves_to_routable(n)]
+
+    # 5b. RoE on the addresses (D2), ahead of the wildcard probes: a refused
+    # name costs no further query.
+    if in_scope and _late_name_gate_applies(settings, result):
+        in_scope = _admit_late_names(result, in_scope, settings, source)
 
     # 6. Wildcard DNS: these names arrive after puredns, so they get RedAmon's
     # own check. A name that answers only through its zone's wildcard is no
