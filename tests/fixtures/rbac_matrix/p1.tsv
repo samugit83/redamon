@@ -42,12 +42,14 @@ p1-login-email-case	1.2	anon	POST	/api/auth/login	{"email":"RBAC-MEMBER-A@E2E.LO
 # after it gives the right one and clears it (rows never keep a Set-Cookie, so the actor
 # stays rbac-admin-a). The last-admin guard cannot answer 409 on a stack whose real admins
 # remain: its race is proved on the locked transaction itself (route.concurrentDemote.test.ts).
-p1-stepup-demote-admin	1.4	admin_a	PUT	/api/users/${ADMIN_B_ID}	{"role":"standard"}	403;has=step_up_required	req:HD-09 req:ID-25
-p1-stepup-delete-admin	1.4	admin_a	DELETE	/api/users/${ADMIN_B_ID}	-	403;has=step_up_required	req:HD-09 req:ID-25
-p1-stepup-delete-admin-wrong	1.4	admin_a	DELETE	/api/users/${ADMIN_B_ID}	{"stepUpPassword":"not-the-rbac-password"}	403;has=step_up_failed	req:HD-09 req:ID-25
-p1-stepup-reset-admin	1.4	admin_a	PUT	/api/users/${ADMIN_B_ID}/password	{"newPassword":"rbac-never-applied-passphrase"}	403;has=step_up_required	req:HD-09 req:ID-25
-p1-stepup-actas-admin	1.4	admin_a	POST	/api/auth/act-as	{"targetUserId":"${ADMIN_B_ID}"}	403;has=step_up_required	req:HD-09 req:ID-25
-p1-stepup-actas-admin-ok	1.4	admin_a	POST	/api/auth/act-as	{"targetUserId":"${ADMIN_B_ID}","stepUpPassword":"${RBAC_PASSWORD}"}	200;has=${ADMIN_B_ID}	req:HD-09 req:ID-25
+# With RBAC_IDENTITY_ENABLED on these six are Root's (step 2.6): rbac-admin-a gets 403 root_only
+# before any password (p2.tsv p2-rootonly-*), so they run only with the switch off.
+p1-stepup-demote-admin	1.4	admin_a	PUT	/api/users/${ADMIN_B_ID}	{"role":"standard"}	403;has=step_up_required	req:HD-09 req:ID-25 identity:off
+p1-stepup-delete-admin	1.4	admin_a	DELETE	/api/users/${ADMIN_B_ID}	-	403;has=step_up_required	req:HD-09 req:ID-25 identity:off
+p1-stepup-delete-admin-wrong	1.4	admin_a	DELETE	/api/users/${ADMIN_B_ID}	{"stepUpPassword":"not-the-rbac-password"}	403;has=step_up_failed	req:HD-09 req:ID-25 identity:off
+p1-stepup-reset-admin	1.4	admin_a	PUT	/api/users/${ADMIN_B_ID}/password	{"newPassword":"rbac-never-applied-passphrase"}	403;has=step_up_required	req:HD-09 req:ID-25 identity:off
+p1-stepup-actas-admin	1.4	admin_a	POST	/api/auth/act-as	{"targetUserId":"${ADMIN_B_ID}"}	403;has=step_up_required	req:HD-09 req:ID-25 identity:off
+p1-stepup-actas-admin-ok	1.4	admin_a	POST	/api/auth/act-as	{"targetUserId":"${ADMIN_B_ID}","stepUpPassword":"${RBAC_PASSWORD}"}	200;has=${ADMIN_B_ID}	req:HD-09 req:ID-25 identity:off
 p1-own-password-admin-current	1.4	admin_a	PUT	/api/users/${ADMIN_A_ID}/password	{"newPassword":"rbac-never-applied-passphrase"}	400;has=step_up_required	req:HD-09 req:ID-25
 # a member target needs no step-up; a demotion runs in the locked transaction even when the
 # account is already standard, so this proves the advisory lock on the deployed build

@@ -75,3 +75,36 @@ p2-instance-moved-hint-admin	2.4	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-
 p2-instance-moved-hint-off	2.4	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;lacks=sharedSettingsAt	req:ID-32 identity:off
 p2-tunnel-sync-no-bearer	2.4	anon	POST	/api/global/tunnel-config/sync	-	401	req:ID-33
 p2-tunnel-sync-session-no-bearer	2.4	admin_a	POST	/api/global/tunnel-config/sync	-	401	req:ID-33
+#
+# ---- step 2.6: only Root manages admins; the security policy; the Root transfer ----
+# rbac-admin-a is an admin, never Root (on the dev stack Root is the owner's own account), so with
+# the identity switch on every action on rbac-admin-b, a promotion or an admin creation answers
+# 403 root_only before any password is checked: nothing is created or changed, and the rows that
+# carry the right password prove it is never even tried. The p1 step-up rows of the same requests
+# run only with the switch off. The transfer routes do not exist with the switch off (404); on, an
+# admin that is not Root offers nothing, and with no offer pending accept and cancel answer 409
+# before any password. The stateful flows (Root's own powers, a transfer, decline and cancel) run
+# on a disposable instance: tests/rbac_root_admin_live.sh.
+p2-rootonly-demote-admin	2.6	admin_a	PUT	/api/users/${ADMIN_B_ID}	{"role":"standard"}	403;has=root_only	req:PE-08 req:ID-03 identity:on
+p2-rootonly-demote-admin-pw	2.6	admin_a	PUT	/api/users/${ADMIN_B_ID}	{"role":"standard","stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 req:ID-25 identity:on
+p2-rootonly-edit-admin	2.6	admin_a	PUT	/api/users/${ADMIN_B_ID}	{"name":"RBAC never applied"}	403;has=root_only	req:PE-08 identity:on
+p2-rootonly-delete-admin	2.6	admin_a	DELETE	/api/users/${ADMIN_B_ID}	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 req:ID-03 identity:on
+p2-rootonly-reset-admin	2.6	admin_a	PUT	/api/users/${ADMIN_B_ID}/password	{"newPassword":"rbac-never-applied-passphrase","stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 identity:on
+p2-rootonly-actas-admin	2.6	admin_a	POST	/api/auth/act-as	{"targetUserId":"${ADMIN_B_ID}","stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only;nohdr=redamon-act-as=ey	req:PE-08 identity:on
+p2-rootonly-enable-admin	2.6	admin_a	POST	/api/users/${ADMIN_B_ID}/enable	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 identity:on
+p2-rootonly-promote-member	2.6	admin_a	PUT	/api/users/${MEMBER_C_ID}	{"role":"admin","stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 req:ID-03 identity:on
+p2-rootonly-create-admin	2.6	admin_a	POST	/api/users	{"name":"RBAC never","email":"rbac-never-admin@e2e.local","password":"rbac-never-applied-passphrase","role":"admin","stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:PE-08 req:ID-03 identity:on
+p2-rootonly-policy	2.6	admin_a	PUT	/api/admin/instance-settings	{"passwordMinLength":14,"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:ID-03 req:ID-25 identity:on
+p2-rootonly-policy-invalid	2.6	admin_a	PUT	/api/admin/instance-settings	{"passwordMinLength":8}	400;has=invalid_field;has=passwordMinLength	req:ID-03 identity:on
+p2-rootonly-policy-read	2.6	admin_a	GET	/api/admin/instance-settings	-	200;has="canManageSecurityPolicy":false;has=passwordMinLength	req:ID-03 identity:on
+p2-transfer-off	2.6	admin_a	GET	/api/root/transfer	-	404	req:ID-07 identity:off
+p2-transfer-off-offer	2.6	admin_a	POST	/api/root/transfer	{}	404	req:ID-07 identity:off
+p2-transfer-off-accept	2.6	admin_a	POST	/api/root/transfer/accept	{}	404	req:ID-07 identity:off
+p2-transfer-off-cancel	2.6	admin_a	POST	/api/root/transfer/cancel	{}	404	req:ID-07 identity:off
+p2-transfer-anon	2.6	anon	POST	/api/root/transfer	{}	401	req:ID-07 identity:on
+p2-transfer-member	2.6	member_a	POST	/api/root/transfer	{}	403;has=root:transfer	req:ID-07 identity:on
+p2-transfer-admin-not-root	2.6	admin_a	POST	/api/root/transfer	{"targetUserId":"${ADMIN_B_ID}","stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:ID-07 req:ID-05 identity:on
+p2-transfer-not-json	2.6	admin_a	POST	/api/root/transfer	-	415	req:ID-07 identity:on
+p2-transfer-read-admin	2.6	admin_a	GET	/api/root/transfer	-	200;has="offer":null	req:ID-07 identity:on
+p2-transfer-accept-none	2.6	admin_a	POST	/api/root/transfer/accept	{"stepUpPassword":"not-the-rbac-password"}	409;has=no_transfer_offer	req:ID-07 identity:on
+p2-transfer-cancel-none	2.6	admin_a	POST	/api/root/transfer/cancel	{}	409;has=no_transfer_offer	req:ID-07 identity:on
