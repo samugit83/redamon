@@ -213,7 +213,15 @@ If you forget the admin password, reset it from the terminal:
 ./redamon.sh create-admin     # create the first admin, or reset an admin by re-entering its email
 ```
 
-Use `create-admin` when no admin exists yet; `reset-password` only updates a user that already exists, never changes its role, and revokes its MCP tokens.
+Use `create-admin` when no admin exists yet; `reset-password` only updates a user that already exists, never changes its role, and revokes its MCP tokens. Both resets also sign that account out everywhere and re-enable it if it was disabled.
+
+**Root.** The first admin is the instance's Root: the one account no other admin can demote, disable, reset or act as, and the only one that manages other admins (with `RBAC_IDENTITY_ENABLED=true` in `.env`; off by default). An install that already had admins gets one at the update (the oldest admin with a password), and `./redamon.sh update` confirms it. To make another account Root, or to get back in when Root's account is lost:
+
+```bash
+./redamon.sh set-root you@example.com
+```
+
+See [User Management](https://github.com/samugit83/redamon/wiki/User-Management) for Root, invites, account status and sessions.
 
 ### 3. Configure
 
@@ -257,6 +265,8 @@ All lifecycle management is handled by a single script:
 | `./redamon.sh clean` | Remove containers + images, keep data |
 | `./redamon.sh create-admin` | Create the admin login (or reset it) -- use if no prompt appeared at install |
 | `./redamon.sh reset-password` | Reset an existing user's password from the terminal |
+| `./redamon.sh set-root <email>` | Make that account the instance's Root, or confirm it (break-glass; moving Root signs both accounts out) |
+| `./redamon.sh update --preview` | Pull and build like `update`, print what it changes for the accounts, and restart nothing |
 | `./redamon.sh supply-chain-sync [ecosystems]` | Populate the offline OSV database for the supply-chain feature (default: `npm`; e.g. `npm PyPI Go`) |
 | `./redamon.sh purge` | Remove everything including all data |
 
