@@ -21,11 +21,22 @@ vi.mock('@/lib/access', () => ({
   requireConversationAccess: vi.fn(async () => ({ conversation: { id: 'c1', userId: 'u1', projectId: 'p1' } })),
 }))
 // The session, health and tunnel proxies read the session first (HD-10); these tests are about a signed-in account.
-vi.mock('@/lib/session', () => ({ requireSession: async () => ({ userId: 'u1', role: 'standard' }) }))
+vi.mock('@/lib/session', () => ({
+  requireSession: async () => ({ userId: 'u1', role: 'standard' }),
+  // The session routes also resolve whose projects' sessions are the caller's (HD-01).
+  getEffectiveUser: async () => ({ userId: 'u1' }),
+}))
 vi.mock('@/lib/prisma', () => ({
   default: {
+    // The session routes read the account (HD-01): u1 holds every session.
+    user: {
+      findUnique: vi.fn(async () => ({
+        id: 'u1', email: 'u1@x', role: 'user', password: 'h', createdAt: new Date(0), legacyGrants: ['shell_sessions'],
+      })),
+    },
     conversation: {
       findUnique: vi.fn(async () => ({ sessionId: 's1', userId: 'u1', projectId: 'p1' })),
+      findMany: vi.fn(async () => [{ sessionId: 's1', projectId: 'p1', project: { userId: 'u1' } }]),
       delete: vi.fn(async () => ({})),
     },
   },
@@ -79,6 +90,16 @@ afterEach(() => {
 
 const listReq = () => new NextRequest('http://x/api/agent/workspace/list?projectId=p1&path=.')
 
+// Interact and kill look their target up in the session list first (HD-01). The lookup
+// answers, so the error under test is the drive's own.
+const SESSION_LIST = {
+  sessions: [{ id: 1, chat_session_id: 's1' }, { id: 3, chat_session_id: 's1' }],
+  jobs: [],
+  non_msf_sessions: [],
+}
+const drive = (fail: () => Promise<Response>) => async (url: string) =>
+  url.endsWith('/sessions') ? jsonResponse(200, SESSION_LIST) : fail()
+
 describe('agent never answered', () => {
   test('refused: 503 agent_unreachable with the errno, never "fetch failed"', async () => {
     answer = async () => { throw refused() }
@@ -107,8 +128,9 @@ describe('agent never answered', () => {
 
 describe('agent answered with an error', () => {
   test('a 5xx gets the fixed message, the code and the agent status, not its text', async () => {
-    answer = async () => jsonResponse(500, { error: SECRET })
+    answer = drive(async () => jsonResponse(500, { error: SECRET }))
     const res = await sessionKill.POST(new NextRequest('http://x', { method: 'POST' }), { params: Promise.resolve({ id: '3' }) })
+    expect(calls[1]).toMatch(/\/sessions\/3\/kill$/)
     expect(res.status).toBe(502)
     const body = await res.json()
     expect(body).toEqual({ error: 'Failed to kill session', code: 'agent_error', upstreamStatus: 500 })
@@ -140,9 +162,10 @@ describe('agent answered with an error', () => {
   })
 
   test('a session manager timeout reaches the terminal as the upstream status', async () => {
-    answer = async () => jsonResponse(504, { error: 'Session interaction timeout' })
+    answer = drive(async () => jsonResponse(504, { error: 'Session interaction timeout' }))
     const req = new NextRequest('http://x', { method: 'POST', body: JSON.stringify({ command: 'id' }) })
     const res = await sessionInteract.POST(req, { params: Promise.resolve({ id: '1' }) })
+    expect(calls[1]).toMatch(/\/sessions\/1\/interact$/)
     expect(res.status).toBe(502)
     expect(await res.json()).toMatchObject({ error: 'Failed to interact with session', upstreamStatus: 504 })
   })
