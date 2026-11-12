@@ -220,6 +220,16 @@ interface EventItem {
 
 const text = (v: unknown) => (typeof v === 'string' && v ? v : null)
 
+// How an impersonation ended (the end row's `endedBy`); `stopped` and anything unknown read as a plain stop.
+const ACT_AS_ENDED: Readonly<Record<string, string>> = {
+  expired: 'its time limit ran out',
+  logout: 'the admin signed out',
+  target_disabled: 'your account was disabled',
+  target_promoted: 'your account became an admin',
+  invalidated: "the admin's session or permission to act as others ended",
+  refused: 'acting as you is no longer allowed',
+}
+
 function noticeText(n: NoticeItem): string {
   if (n.type === 'email_changed') return `Your sign-in email was changed from ${n.from} to ${n.to}`
   return `Your password was reset with ${n.mode === 'link' ? 'a reset link' : 'a temporary password'}${n.reason ? ` (reason: ${n.reason})` : ''}`
@@ -236,9 +246,11 @@ export function eventText(e: EventItem): string {
     case 'user.email_changed':
       return `Sign-in email changed from ${d.from} to ${d.to}`
     case 'act_as.start':
-      return 'An admin started acting as you'
-    case 'act_as.end':
-      return 'An admin stopped acting as you'
+      return `An admin started acting as you${typeof d.durationMinutes === 'number' ? ` for up to ${d.durationMinutes} minutes` : ''}${text(d.reason) ? ` (reason: ${d.reason})` : ''}`
+    case 'act_as.end': {
+      const why = typeof d.endedBy === 'string' ? ACT_AS_ENDED[d.endedBy] : undefined
+      return why ? `An admin's acting as you ended (${why})` : 'An admin stopped acting as you'
+    }
     case 'root.transfer_offered':
       return 'Root was offered to you'
     case 'root.transfer':

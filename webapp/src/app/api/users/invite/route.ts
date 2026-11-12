@@ -8,9 +8,11 @@ import { forbiddenToInvite, inviteMember, withInviteErrors } from '@/lib/authz/i
 import { requireSessionPermission } from '@/lib/authz/adminPermission'
 
 /**
- * POST /api/users/invite {name, email} (step 2.9, ID-14, ID-36): invite a person. Creates a
+ * POST /api/users/invite {name, email, sets?, stepUpPassword?}: invite a person. Creates a
  * member account, `invited` and without a password, and answers its link once (never cached).
- * Any admin: an invite never makes an admin. Identity switch only (404 without it).
+ * Needs `users:create`; an invite never makes an admin. With RBAC_PERMISSIONS_ENABLED on, `sets`
+ * names the member sets the account starts with, under the assignment rules (initialSets.ts);
+ * off, the key is ignored. Identity switch only (404 without it).
  */
 export const POST = withInviteErrors('invite', 'Could not invite the user', async (request: NextRequest) => {
   if (!rbacFlags().identity) return routeNotFound()

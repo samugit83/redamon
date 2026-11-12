@@ -200,8 +200,10 @@ model UserPermissionSet {
 }
 
 /// A per-account grant or deny of one permission on top of the sets; a deny wins. An
-/// override past expiresAt counts for nothing. No override carries an admin
-/// permission: an admin's admin side is the single profile in User.adminProfileId (D-20).
+/// override past expiresAt counts for nothing. It names a member permission or, on a member,
+/// a platform:* tool (a kept legacy grant is one); never any other administration
+/// permission, nothing of an admin's admin side (its one profile, User.adminProfileId) and
+/// nothing on Root. The writers check it (authz/hierarchy.ts overrideAllowed).
 model UserPermissionOverride {
   userId      String    @map("user_id")
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)

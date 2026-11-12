@@ -181,6 +181,26 @@ describe('My activity', () => {
     expect(text[3]).toMatch(/Password reset with a reset link.*Locked out/)
   })
 
+  test('an act-as row says why, for how long and how it ended, when the row holds it', async () => {
+    const laura = { name: 'Laura', email: 'laura@e2e.local' }
+    h.activity.body = {
+      notices: [],
+      events: [
+        { id: 'e4', at: '2026-11-12T12:00:00.000Z', action: 'act_as.end', by: laura, details: { endedBy: 'logout' } },
+        { id: 'e3', at: '2026-11-12T11:00:00.000Z', action: 'act_as.end', by: laura, details: { endedBy: 'expired' } },
+        { id: 'e2', at: '2026-11-12T10:30:00.000Z', action: 'act_as.end', by: laura, details: { endedBy: 'stopped' } },
+        { id: 'e1', at: '2026-11-12T10:00:00.000Z', action: 'act_as.start', by: laura, details: { reason: 'Ticket 42', durationMinutes: 30 } },
+      ],
+    }
+    renderPage()
+    const region = screen.getByRole('region', { name: 'My activity' })
+    const text = (await within(region).findAllByRole('listitem')).map((i) => i.textContent)
+    expect(text[0]).toMatch(/An admin's acting as you ended \(the admin signed out\) by Laura/)
+    expect(text[1]).toMatch(/An admin's acting as you ended \(its time limit ran out\) by Laura/)
+    expect(text[2]).toMatch(/An admin stopped acting as you by Laura/)
+    expect(text[3]).toMatch(/An admin started acting as you for up to 30 minutes \(reason: Ticket 42\) by Laura/)
+  })
+
   test('nothing yet', async () => {
     renderPage()
     expect(await screen.findByText('Nothing to show yet.')).toBeInTheDocument()
