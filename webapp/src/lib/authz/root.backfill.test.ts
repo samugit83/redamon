@@ -354,3 +354,28 @@ describe('agreement with the host commands (step 2.7)', () => {
       .toContain("SELECT email FROM users WHERE role = 'admin' AND password <> '' ORDER BY created_at, id")
   })
 })
+
+describe('the startup lists', () => {
+  const dockerfile = readFileSync(path.resolve(__dirname, '../../../Dockerfile'), 'utf8')
+
+  test('the entrypoint runs it after db push and the instance settings backfill, before the server, never fatally', () => {
+    const entry = dockerfile.split('\n').find((l) => l.startsWith('RUN printf') && l.includes('entrypoint'))!
+    const push = entry.indexOf('db push')
+    const instance = entry.indexOf('backfill-rbac-instance-settings.mjs')
+    const ours = entry.indexOf('backfill-rbac-root.mjs')
+    const server = entry.indexOf('exec node server.js')
+    expect(push).toBeGreaterThan(0)
+    expect(instance).toBeGreaterThan(push)
+    expect(ours).toBeGreaterThan(instance)
+    expect(server).toBeGreaterThan(ours)
+    expect(entry).toMatch(/\\nnode scripts\/backfill-rbac-root\.mjs 2>&1\\n/)
+  })
+
+  test('the dev command runs it in the same place', () => {
+    const dev = readFileSync(path.resolve(__dirname, '../../../../docker-compose.dev.yml'), 'utf8')
+    const lines = dev.split('\n').map((l) => l.trim())
+    const instance = lines.indexOf('node scripts/backfill-rbac-instance-settings.mjs')
+    expect(instance).toBeGreaterThan(0)
+    expect(lines[instance + 1]).toBe('node scripts/backfill-rbac-root.mjs')
+  })
+})
