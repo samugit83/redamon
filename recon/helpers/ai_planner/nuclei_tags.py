@@ -117,7 +117,9 @@ def get_ai_tags(
         print(f"[*][{_TAG}] No tech in fingerprint; probing {len(probe_urls)} URL(s) for headers...")
         for url in probe_urls:
             try:
-                r = requests.head(url, allow_redirects=True, timeout=HEAD_TIMEOUT)
+                # The first answer's headers are the target's own; a redirect
+                # could name a host the RoE exclude, unchecked (R-2).
+                r = requests.head(url, allow_redirects=False, timeout=HEAD_TIMEOUT)
                 srv = (r.headers.get('Server') or '').lower().split('/')[0].strip()
                 pwr = (r.headers.get('X-Powered-By') or '').lower().strip()
                 if srv:

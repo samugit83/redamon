@@ -79,7 +79,9 @@ def get_ai_extensions(
     print(f"[*][{_TAG}] Planning extensions for {clean_url}")
 
     try:
-        head_resp = requests.head(clean_url, allow_redirects=True, timeout=HEAD_TIMEOUT)
+        # The first answer's headers are the target's own; a redirect could
+        # name a host the RoE exclude, unchecked (R-2).
+        head_resp = requests.head(clean_url, allow_redirects=False, timeout=HEAD_TIMEOUT)
         headers = dict(head_resp.headers)
     except Exception as e:
         print(f"[!][{_TAG}] HEAD request failed for {clean_url}: {e}. Using safe fallback.")
