@@ -31,7 +31,7 @@
 - recon_coverage_gaps (string): JSON array of what this run could NOT check, one object per cut source (`source`, `module`, `reason`, `skipped`, `hosts`, and `root`: the scan root whose group cut it); "[]" on a clean run
 - recon_coverage_roots (list[string]): the scan roots whose groups stamped this coverage record in its run (several scan roots share one org Domain)
 - recon_coverage_run (string): the start of the full recon run that wrote the coverage record; the groups of one run merge into it, a new run replaces it
-- recon_skipped_hosts (list[string]): host:port targets this run skipped as unreachable (first 500, sorted); their findings were kept, not re-checked
+- recon_skipped_hosts (list[string]): targets this run skipped as unreachable, as host:port ([v6]:port for IPv6) or a bare host (first 500, sorted); their findings were kept, not re-checked. The Priority Board reads a host:port key as that port only, a bare host as the whole host
 - recon_nuclei_truncated (boolean): a Nuclei pass hit NUCLEI_MAX_RUNTIME and was stopped; its partial findings were kept
 - is_wildcard_zone (boolean): RedAmon's wildcard control probed random names under this domain and they resolved, so the zone answers EVERY name (wildcard DNS); false when they did not resolve; absent when it was never checked (DNS resolution off, or the probe failed). Names that only resolve through the wildcard are not kept as Subdomains
 - wildcard_ips (list[string]): the addresses the wildcard answers with (empty when the zone is no wildcard)
@@ -183,7 +183,7 @@ Additional properties present on this node type, not yet described:
 - cpe (string): CPE string from Nmap (e.g. "cpe:/a:vsftpd:vsftpd:2.3.4")
 - nmap_scanned (boolean): true if Nmap has probed this port
 - A Port with source "nmap" was missed by the port scan and confirmed open by Nmap, which created it
-- passive_only (boolean): true on a Port only Shodan or InternetDB reported (set on create); naabu, masscan and nmap set it false when they find the same port. Absent on ports written before the mark
+- passive_only (boolean): true on a Port only Shodan or InternetDB reported (set on create); naabu and masscan set it false when they find the same port, nmap on every open port it reports (on the Port of the protocol it scanned), httpx on the TCP port it gets an HTTP answer from, and GVM on the port (of its protocol) it detects a service on. Absent on ports written before the mark
 Additional properties present on this node type, not yet described:
 - ip_address (string)
 
