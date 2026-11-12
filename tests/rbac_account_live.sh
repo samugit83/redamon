@@ -149,7 +149,11 @@ eq "admin A signs in again under a 2-minute limit" "$(login "$A_EMAIL" "$A2") $(
 echo "  (waiting 65 s without activity)"
 sleep 65
 code="$(curl -s -m 30 -o /dev/null -D "$WORK/headers" -w '%{http_code}' -b "$BJ" "$BASE/graph")"
-eq "idle admin B: a page goes to /login" "$code $(grep -i '^location:' "$WORK/headers" | tr -d '\r' | sed 's/^[Ll]ocation: //')" "307 $BASE/login"
+# Next.js sends a same-origin redirect as a path ("/login"): resolved against this origin, as a
+# browser does, it must be this instance's /login either way.
+location="$(grep -i '^location:' "$WORK/headers" | tr -d '\r' | sed 's/^[Ll]ocation: //')"
+[[ "$location" == /* ]] && location="$BASE$location"
+eq "idle admin B: a page goes to /login" "$code $location" "307 $BASE/login"
 eq "idle admin B: an API answers 401 session_ended" "$(call "$BJ" GET /api/auth/me) $(field "b.get('code')")" "401 session_ended"
 eq "admin A (2-minute limit) is still in and gets a refreshed cookie" "$(call "$A2" GET /api/auth/me) $(sets_auth)" "200 yes"
 eq "the refreshed token keeps its expiry and moves lat" "$(claims "$A2" "(c['exp'] - c['iat'], c['lat'] > c['iat'])")" "(43200, True)"

@@ -32,8 +32,10 @@ p1-deleted-user-login	1.1	anon	POST	/api/auth/login	{"email":"${DELETED_EMAIL}",
 p1-password-floor-create	1.2	admin_a	POST	/api/users	{"name":"RBAC Floor","email":"rbac-floor@e2e.local","password":"elevenchars"}	400;has=password_too_short	req:HD-12
 p1-password-floor-change	1.2	member_b	PUT	/api/users/${MEMBER_B_ID}/password	{"newPassword":"elevenchars","currentPassword":"${RBAC_PASSWORD}"}	400;has=password_too_short	req:HD-12
 # Emails are stored lowercase: an edit to an address another account holds in other
-# capitals is refused, and sign-in finds the account whatever the case typed.
-p1-email-edit-collision	1.2	admin_a	PUT	/api/users/${MEMBER_B_ID}	{"email":"RBAC-Member-A@e2e.local"}	409;has=email_taken	req:NF-09
+# capitals is refused, and sign-in finds the account whatever the case typed. With the
+# identity switch on an admin changing a member's email needs its own password first
+# (step 2.11): the collision's twin with it is p2-email-admin-taken in p2.tsv.
+p1-email-edit-collision	1.2	admin_a	PUT	/api/users/${MEMBER_B_ID}	{"email":"RBAC-Member-A@e2e.local"}	409;has=email_taken	req:NF-09 identity:off
 p1-login-email-case	1.2	anon	POST	/api/auth/login	{"email":"RBAC-MEMBER-A@E2E.LOCAL","password":"${RBAC_PASSWORD}"}	200;has=rbac-member-a@e2e.local	req:NF-09
 #
 # ---- step 1.4: admin-on-admin actions need the acting admin's own password ----
