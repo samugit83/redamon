@@ -5,10 +5,12 @@
  * plain sign-out; a 5xx or no answer is now exposed as `sessionError`, with its
  * code and status, so the app can say the session could not be read.
  *
- * A 401 also sends the browser to /login (step 2.2): the Edge middleware checks only the
- * cookie's signature, so a revoked, disabled or deleted account's cookie still loads pages
- * while every API answers 401. Without the redirect the person sat in a signed-in shell
- * that could do nothing.
+ * A 401 that ends the session also sends the browser to /login (step 2.2): the Edge
+ * middleware checks only the cookie's signature, so a revoked, disabled or deleted account's
+ * cookie still loads pages while every API answers 401. Without the redirect the person sat in
+ * a signed-in shell that could do nothing. Only the identity switch ends a session this way
+ * (/api/auth/me answers `code: session_ended` and the cookie is cleared); with it off the 401
+ * is bare and the page stays, as after Phase 1 (review of step 2.2).
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
@@ -24,6 +26,9 @@ function Consumer() {
     </div>
   )
 }
+
+/** What /api/auth/me answers for a refused cookie while the identity switch is on. */
+const SESSION_ENDED = { error: 'Unauthorized', code: 'session_ended' }
 
 let fetchMock: ReturnType<typeof vi.fn>
 const realLocation = window.location
@@ -77,14 +82,28 @@ describe('AuthProvider session hydrate', () => {
   })
 
   test('a 401 from /api/auth/me goes to /login', async () => {
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 }))
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(SESSION_ENDED), { status: 401 }))
     await hydrate()
     expect(replaceMock).toHaveBeenCalledWith('/login')
   })
 
+  test("a bare 401 (identity switch off) stays on the page, as after Phase 1", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 }))
+    await hydrate()
+    expect(screen.getByTestId('user').textContent).toBe('none')
+    expect(replaceMock).not.toHaveBeenCalled()
+  })
+
+  test('a 401 whose body is not JSON stays on the page', async () => {
+    fetchMock.mockResolvedValue(new Response('Unauthorized', { status: 401 }))
+    await hydrate()
+    expect(screen.getByTestId('error').textContent).toBe('')
+    expect(replaceMock).not.toHaveBeenCalled()
+  })
+
   test('on the login page a 401 stays there: no reload loop', async () => {
     onPage('/login')
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 }))
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(SESSION_ENDED), { status: 401 }))
     await hydrate()
     expect(replaceMock).not.toHaveBeenCalled()
   })

@@ -88,4 +88,21 @@ describe('GET /api/auth/me', () => {
   test('no session 401', async () => {
     expect((await GET()).status).toBe(401)
   })
+
+  // Step 2.2 review: getSession clears a refused cookie only with the identity switch on, and
+  // only then does this answer send the browser to sign-in (AuthProvider).
+  test('with the identity switch on a refused cookie answers 401 session_ended', async () => {
+    setFlagsForTests({ identity: true })
+    h.jar.auth = await createToken('gone', 'standard')
+    const res = await GET()
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'Unauthorized', code: 'session_ended' })
+  })
+
+  test("with the switch off a refused cookie gets Phase 1's bare 401", async () => {
+    h.jar.auth = await createToken('member-1', 'standard', 1)
+    const res = await GET()
+    expect(res.status).toBe(401)
+    expect(await res.json()).toEqual({ error: 'Unauthorized' })
+  })
 })

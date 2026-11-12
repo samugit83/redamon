@@ -337,17 +337,28 @@ describe('the session version (switch off and on)', () => {
         expect(await getSession()).toEqual({ userId: 'u1', role: 'admin' })
       })
 
-      test("a refused token's 401 clears the cookie", async () => {
+      // Clearing the refused cookie belongs to the identity switch: off, it stays as after Phase 1
+      // (DV-30); it is dead either way, since a version only rises and a deleted id never returns.
+      const cleared = identity ? ['redamon-auth'] : []
+
+      test(identity ? "a refused token's 401 clears the cookie" : "a refused token's 401 keeps the cookie, as after Phase 1", async () => {
         db.set('u1', row({ sessionVersion: 1 }))
         jar.auth = await createToken('u1', 'admin', 0)
         expect(((await requireSession()) as NextResponse).status).toBe(401)
-        expect(jar.deleted).toEqual(['redamon-auth'])
+        expect(jar.deleted).toEqual(cleared)
       })
 
-      test("a deleted account's cookie is cleared too", async () => {
+      test(identity ? "a deleted account's cookie is cleared too" : "a deleted account's cookie is kept too", async () => {
         jar.auth = await createToken('gone', 'admin')
         expect(await getSession()).toBeNull()
-        expect(jar.deleted).toEqual(['redamon-auth'])
+        expect(jar.deleted).toEqual(cleared)
+      })
+
+      test(identity ? 'a token that does not verify is cleared too' : 'a token that does not verify is kept too', async () => {
+        jar.auth = 'not-a-login-token'
+        expect(await getSession()).toBeNull()
+        expect(findUnique).not.toHaveBeenCalled()
+        expect(jar.deleted).toEqual(cleared)
       })
 
       test('a failed read keeps the cookie: an outage is not a sign-out', async () => {

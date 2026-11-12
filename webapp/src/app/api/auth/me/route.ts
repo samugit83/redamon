@@ -23,7 +23,10 @@ export async function GET() {
   try {
     const session = await getSession()
     if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      // With the identity switch on getSession cleared the refused cookie, and the code sends
+      // the browser to sign-in (AuthProvider); off, the answer stays the one before the switch.
+      const ended = rbacFlags().identity ? { code: 'session_ended' } : {}
+      return NextResponse.json({ error: 'Unauthorized', ...ended }, { status: 401 })
     }
 
     const user = await prisma.user.findUnique({

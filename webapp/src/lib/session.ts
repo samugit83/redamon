@@ -38,11 +38,14 @@ function tokenAccepted(sv: number, principal: Principal): boolean {
 
 /**
  * A refused cookie can never become valid again, and the Edge middleware, which cannot
- * read the database, would keep loading pages with it while every API answers 401: clear
- * it on this answer, so the next page goes to /login. Route handlers can write cookies;
- * a read-only store (a Server Component) still refuses, it just cannot clear.
+ * read the database, would keep loading pages with it while every API answers 401: with the
+ * identity switch on, clear it on this answer, so the next page goes to /login. With the
+ * switch off the cookie stays, as after Phase 1 (DV-30): it is dead either way. Route
+ * handlers can write cookies; a read-only store (a Server Component) still refuses, it just
+ * cannot clear.
  */
 function refuse(cookieStore: CookieStore): null {
+  if (!rbacFlags().identity) return null
   try {
     cookieStore.delete(AUTH_COOKIE_NAME)
   } catch {
@@ -55,8 +58,8 @@ function refuse(cookieStore: CookieStore): null {
  * The signed-in account, or null (the caller answers 401). The login JWT proves who
  * signed in; whether that account still exists, its role, its session version and its
  * status are read from the database, so the role claim in the token is never trusted.
- * A refused cookie is cleared. A failed database read throws: it never reads as signed
- * in, and it keeps the cookie.
+ * A refused cookie is cleared (identity switch on). A failed database read throws: it never
+ * reads as signed in, and it keeps the cookie.
  */
 export async function getSession({ fresh = false }: SessionOptions = {}): Promise<Session | null> {
   const cookieStore = await cookies()

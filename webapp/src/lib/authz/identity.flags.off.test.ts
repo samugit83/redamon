@@ -16,8 +16,9 @@
  *     switch (only the host commands bump it then: a host reset signs the account out);
  *   - the account's status decides nothing: no session ends because of it;
  *   - nothing is cached: every request reads the account, as after Phase 1;
- *   - a refused cookie is cleared and the browser lands on /login, because the deleted
- *     account of Phase 1 and the bumped version are refusals the switch does not gate.
+ *   - a refused cookie is kept and /api/auth/me answers Phase 1's bare 401, so the browser is
+ *     not sent to /login: clearing the cookie and the redirect belong to the switch (review of
+ *     step 2.2). The cookie is dead anyway: a version only rises, a deleted id never returns.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
@@ -158,7 +159,8 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.2)', () => {
     findUnique.mockImplementation(account({ sessionVersion: 1 }))
     authCookie = await createToken('member-1', 'standard', 0)
     expect(await getSession()).toBeNull()
-    expect(clearedCookies).toEqual(['redamon-auth'])
+    // Signed out, but the cookie stays, as a deleted account's did after Phase 1.
+    expect(clearedCookies).toEqual([])
     authCookie = await createToken('member-1', 'standard', 1)
     expect(await getSession()).toEqual({ userId: 'member-1', role: 'standard' })
   })

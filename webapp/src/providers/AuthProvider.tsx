@@ -57,8 +57,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (res.status >= 500) setSessionError(await readApiError(res, 'Could not read your session'))
         // The middleware checks only the cookie's signature, so a revoked, disabled or
         // deleted account still loads pages while every API answers 401: go to sign-in
-        // rather than leave a signed-in shell that can do nothing.
-        if (res.status === 401 && !onSignedOutPage(window.location.pathname)) window.location.replace('/login')
+        // rather than leave a signed-in shell that can do nothing. Only a session the identity
+        // switch ended says so; a bare 401 (switch off) leaves the page as before the switch.
+        if (res.status === 401 && !onSignedOutPage(window.location.pathname)) {
+          const body = await res.json().catch(() => null)
+          if (body?.code === 'session_ended') window.location.replace('/login')
+        }
         return null
       })
       .then(data => {
