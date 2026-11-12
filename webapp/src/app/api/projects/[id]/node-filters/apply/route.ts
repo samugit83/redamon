@@ -15,10 +15,12 @@
  * the agent is handed its id and nothing else.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { readJsonBody } from '@/lib/jsonBody'
-import { requireProjectOwner, realActorUserId } from '@/lib/triageClient'
+import { realActorUserId } from '@/lib/triageClient'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { isActivationInProgress } from '@/lib/activationLock'
@@ -37,10 +39,11 @@ interface RouteParams {
  * The POST checks all of this again; this only lets the modal explain itself
  * before the operator clicks.
  */
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
   const [busy, version, activating] = await Promise.all([
     describeLiveGraphWriters(caller.projectId),
     activeVersion(caller.projectId),
@@ -56,8 +59,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'node_filters:manage', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   const { target, versionId, revision } = parsed.body as {
     target?: unknown; versionId?: unknown; revision?: unknown

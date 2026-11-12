@@ -14,6 +14,7 @@ import { describe, test, expect, vi } from 'vitest'
 import { secretSourceLabel } from './jsReconSecret'
 
 const mockRun = vi.fn()
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: () => Promise.resolve(null) }))
 vi.mock('@/app/api/graph/neo4j', () => ({
   getGraphSession: () => ({ run: (...a: unknown[]) => mockRun(...a), close: vi.fn() }),

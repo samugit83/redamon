@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireProjectOwner } from '@/lib/triageClient'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import { readFinding } from '@/lib/triage/actions'
 import { actionErrorResponse, parseFindingRef } from '@/lib/triage/http'
 
@@ -12,8 +13,9 @@ import { actionErrorResponse, parseFindingRef } from '@/lib/triage/http'
  */
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams
-  const caller = await requireProjectOwner(params.get('projectId'))
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:read', { projectId: params.get('projectId') })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
   const ref = parseFindingRef(params.get('findingId'), params.get('label'))
   if (ref instanceof NextResponse) return ref
   try {

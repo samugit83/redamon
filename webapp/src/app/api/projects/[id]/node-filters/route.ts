@@ -14,11 +14,13 @@
  * from the request, so it always describes exactly what was saved.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { readJsonBody } from '@/lib/jsonBody'
-import { requireProjectOwner, realActorUserId } from '@/lib/triageClient'
+import { realActorUserId } from '@/lib/triageClient'
 import { allErrors, validateNodeFilters } from '@/lib/nodeFilters/validate'
 import { coerceDoc, type NodeFilterMode } from '@/lib/nodeFilters/model'
 import { muteRulesFingerprint, parseLoadedPresetInput } from '@/lib/nodeFilters/presets'
@@ -31,10 +33,11 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   const [stored, exemptions, version, lastRun, lastCompleted, live] = await Promise.all([
     loadNodeFilter(caller.projectId),
@@ -63,8 +66,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'node_filters:manage', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   const { mode, rules, revision, force } = parsed.body as {
     mode?: unknown; rules?: unknown; revision?: unknown; force?: unknown

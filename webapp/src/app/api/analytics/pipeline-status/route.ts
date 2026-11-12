@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { readUpstreamBody, upstreamFailure } from '@/lib/routeErrors'
 
@@ -35,8 +35,8 @@ async function fetchStatus(url: string, label: string): Promise<Record<string, u
 
 export async function GET(request: NextRequest) {
   const projectId = request.nextUrl.searchParams.get('projectId')
-  const __denied = await guardProject(projectId || '')
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'graph:read', { projectId })
+  if (auth instanceof NextResponse) return auth
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
   }

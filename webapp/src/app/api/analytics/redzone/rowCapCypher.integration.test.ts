@@ -26,6 +26,7 @@
 import { describe, test, expect, afterAll, vi } from 'vitest'
 import neo4j from 'neo4j-driver'
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: vi.fn().mockResolvedValue(null) }))
 
 const captured: Array<{ cypher: string; params: Record<string, unknown> }> = []

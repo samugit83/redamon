@@ -12,6 +12,7 @@
 import { describe, test, expect, vi } from 'vitest'
 
 vi.mock('@/lib/prisma', () => ({ default: {} }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: vi.fn().mockResolvedValue(null) }))
 vi.mock('@/app/api/graph/neo4j', () => ({
   getGraphSession: () => ({ run: async () => ({ records: [] }), close: async () => {} }),

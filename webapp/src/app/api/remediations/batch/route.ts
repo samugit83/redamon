@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 
 const SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info'])
 const MAX_REMEDIATIONS = 200
@@ -63,10 +63,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (!isInternalRequest(request)) {
-      const eff = await requireEffectiveUser()
-      if (eff instanceof NextResponse) return eff
-      const access = await requireProjectAccess(eff, projectId)
-      if (access instanceof NextResponse) return access
+      const auth = await requirePermission(request, 'remediation:write', { projectId })
+      if (auth instanceof NextResponse) return auth
     }
 
     // Delete existing pending remediations for this project (re-triage replaces them)

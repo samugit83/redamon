@@ -21,6 +21,7 @@ vi.mock('./cache', () => ({ getCached: () => null, setCached: vi.fn(), invalidat
 vi.mock('@/lib/prisma', () => ({
   default: { conversation: { findMany: vi.fn().mockResolvedValue([]) } },
 }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => mockRequireEff(),
   requireProjectAccess: (...a: unknown[]) => mockRequireProjectAccess(...a),

@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   eff: { userId: 'alice' } as { userId: string } | null,
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => h.db[k as string] }) }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', async (orig) => ({
   ...(await orig<typeof import('@/lib/access')>()),
   requireEffectiveUser: vi.fn(async () => h.eff),
@@ -131,7 +132,7 @@ describe('the "my projects" lists go by visibleProjectsWhere', () => {
     const findMany = vi.fn(async () => [])
     h.db = { ...h.db, report: { findMany } }
     vi.mocked(visibleProjectsWhere).mockReturnValueOnce(SEEN)
-    expect((await listReports()).status).toBe(200)
+    expect((await listReports(new NextRequest('http://x/api/reports'))).status).toBe(200)
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { project: SEEN } }))
   })
 

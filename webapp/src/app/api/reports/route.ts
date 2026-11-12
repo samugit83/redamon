@@ -1,14 +1,18 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { visibleProjectsWhere } from '@/lib/authz/visibleProjects'
 import { internalError } from '@/lib/routeErrors'
 
-/** GET /api/reports - List the reports of the projects the effective user sees. */
-export async function GET() {
+/**
+ * GET /api/reports - List the reports of the projects the effective user sees. The list spans
+ * projects, so `reports:read` is asked as a capability; the projects are the visible ones.
+ */
+export async function GET(request: NextRequest) {
   try {
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
+    const auth = await requirePermission(request, 'reports:read')
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     const reports = await prisma.report.findMany({
       where: { project: visibleProjectsWhere(eff) },

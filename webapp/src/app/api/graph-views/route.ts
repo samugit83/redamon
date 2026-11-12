@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 
 export async function GET(request: NextRequest) {
   const projectId = request.nextUrl.searchParams.get('projectId')
@@ -10,10 +10,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, projectId)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'graph:read', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     const views = await prisma.graphView.findMany({
       where: { projectId },
@@ -37,10 +35,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, projectId)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'graph:views', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     const view = await prisma.graphView.create({
       data: {

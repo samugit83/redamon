@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   activation: vi.fn(), latestRun: vi.fn(),
 }))
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overProjectOwner()))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: () => h.eff() }))
 vi.mock('@/lib/session', () => ({ getSession: () => h.session() }))
 vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: (...a: unknown[]) => h.project(...a) } } }))

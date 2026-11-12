@@ -15,6 +15,7 @@ import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest'
 import neo4j, { type Driver, type Session } from 'neo4j-driver'
 
 vi.mock('@/lib/prisma', () => ({ default: {} }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: vi.fn().mockResolvedValue(null) }))
 
 const URI = process.env.NEO4J_URI || 'bolt://localhost:7687'

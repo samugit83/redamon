@@ -11,6 +11,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { inSeverityBreakdown } from '@/lib/triage/disposition'
 import { reportCountable } from '@/lib/triage/reportable'
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: vi.fn().mockResolvedValue(null) }))
 
 const queries: string[] = []

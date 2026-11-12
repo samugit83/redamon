@@ -20,6 +20,7 @@ vi.mock('./cache', () => ({
   invalidateCache: vi.fn(),
 }))
 vi.mock('./neo4j', () => ({ getGraphSession: () => ({ run: vi.fn(), close: vi.fn() }) }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: async () => ({ userId: 'owner' }),
   requireProjectAccess: async () => ({ project: { id: 'p1', userId: 'owner' } }),

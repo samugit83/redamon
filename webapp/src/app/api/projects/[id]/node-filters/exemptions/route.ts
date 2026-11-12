@@ -7,9 +7,11 @@
  * passes its own); without it every exemption in the project goes.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
-import { requireProjectOwner, realActorUserId } from '@/lib/triageClient'
+import { realActorUserId } from '@/lib/triageClient'
 import { MUTEABLE_FINDING_LABELS } from '@/lib/mcp/findingLabels'
 
 interface RouteParams {
@@ -18,8 +20,9 @@ interface RouteParams {
 
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'node_filters:manage', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   const label = request.nextUrl.searchParams.get('label')
   if (label && !(MUTEABLE_FINDING_LABELS as readonly string[]).includes(label)) {

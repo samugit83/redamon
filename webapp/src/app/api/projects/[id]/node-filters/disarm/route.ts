@@ -5,10 +5,12 @@
  * the current graph.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { readJsonBody } from '@/lib/jsonBody'
-import { requireProjectOwner, realActorUserId } from '@/lib/triageClient'
+import { realActorUserId } from '@/lib/triageClient'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -18,8 +20,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'node_filters:manage', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   const updated = await prisma.projectNodeFilter.updateMany({
     where: { projectId: caller.projectId, applyToScans: true },

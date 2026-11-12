@@ -11,6 +11,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 
 const guardProject = vi.fn().mockResolvedValue(null)
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overGuardProject()))
 vi.mock('@/lib/access', () => ({ guardProject: (...args: unknown[]) => guardProject(...args) }))
 
 const NOW = '2026-08-20T12:00:00.000Z'

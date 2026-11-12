@@ -17,6 +17,7 @@ vi.mock('@/lib/prisma', () => ({
   default: { remediation: { create: (...a: unknown[]) => mockCreate(...a) } },
 }))
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => mockIsInternal(...a) }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => mockRequireEff(),
   requireProjectAccess: (...a: unknown[]) => mockRequireProjectAccess(...a),

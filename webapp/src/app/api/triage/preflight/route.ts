@@ -14,11 +14,12 @@
  *     (the dialog opens the model picker); budget 0 needs no model at all;
  *   whether anything is BLOCKING a run right now.
  *
- * Guarded by `requireProjectOwner`, the strict owner check the mute routes use.
+ * Guarded by `requirePermission(triage:read)` on the project, the check the other triage reads use.
  * The logic lives in `lib/triage/preflight.ts`, shared with MCP `get_triage_status`.
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { requireProjectOwner } from '@/lib/triageClient'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import { featureModelErrorResponse } from '@/lib/featureModels'
 import { computePreflight } from '@/lib/triage/preflight'
 import { withRouteErrors } from '@/lib/routeErrors'
@@ -27,8 +28,9 @@ import { withRouteErrors } from '@/lib/routeErrors'
 // which the dialog could only report as "could not be checked".
 export const GET = withRouteErrors('The project could not be checked.', async (request: NextRequest) => {
   const projectId = request.nextUrl.searchParams.get('projectId')
-  const caller = await requireProjectOwner(projectId)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:read', { projectId })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   const preflight = await computePreflight(caller, 'app')
   if (!preflight) return NextResponse.json({ error: 'Not found' }, { status: 404 })

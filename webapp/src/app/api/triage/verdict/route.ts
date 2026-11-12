@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireProjectOwner, realActorUserId } from '@/lib/triageClient'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
+import { realActorUserId } from '@/lib/triageClient'
 import { readJsonBody } from '@/lib/jsonBody'
 import { writeAudit } from '@/lib/audit'
 import { FINDING_ID_RE, recordVerdict, VERDICT_STATUSES, type VerdictStatus } from '@/lib/triage/actions'
@@ -25,8 +27,9 @@ export async function POST(request: NextRequest) {
     projectId?: string; nodeId?: unknown; status?: string; reason?: unknown; label?: unknown
   }
 
-  const caller = await requireProjectOwner(projectId)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:verdict', { projectId })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
   const ref = parseFindingRef(nodeId, label)
   if (ref instanceof NextResponse) {
     // This route names the id `nodeId`; a bad label keeps its own message.

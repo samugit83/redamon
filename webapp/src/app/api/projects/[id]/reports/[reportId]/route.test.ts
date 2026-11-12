@@ -16,6 +16,7 @@ const mockReportFindFirst = vi.fn()
 const mockExistsSync = vi.fn()
 const mockReadFileSync = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: (...a: unknown[]) => mockRequireEffectiveUser(...a),
   requireProjectAccess: (...a: unknown[]) => mockRequireProjectAccess(...a),

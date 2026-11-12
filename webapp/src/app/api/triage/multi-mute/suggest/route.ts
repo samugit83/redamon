@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import { readJsonBody } from '@/lib/jsonBody'
-import { requireProjectOwner } from '@/lib/triageClient'
 import { activationBusy } from '@/lib/activationLock'
 import { resolveFindingByGraphId } from '@/lib/resolveFindingKey'
 import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels'
@@ -31,8 +32,9 @@ export async function POST(request: NextRequest) {
     projectId?: string; nodeId?: unknown; graphId?: unknown
   }
 
-  const caller = await requireProjectOwner(projectId)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:mute', { projectId })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
   if (await activationBusy(caller.projectId)) return activationBusyCoded()
 
   let seedKey: string

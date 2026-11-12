@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
-import { requireEffectiveUser, requireProjectScopedResource } from '@/lib/access'
+import { requireEffectiveUser } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -29,16 +30,13 @@ const ALLOWED_STATUS = new Set([
 ])
 
 // A remediation is owned via its parent project. Cypherfix uses X-Internal-Key
-// (carve-out); browser callers must own the remediation's project.
-async function guardRemediation(request: NextRequest, id: string): Promise<NextResponse | null> {
-  if (isInternalRequest(request)) return null
+// (carve-out); a browser caller asks the handler's permission on the remediation's project:
+// the session first (401), then the project, 404 for a remediation that does not exist.
+async function remediationProject(id: string): Promise<string | NextResponse> {
   const eff = await requireEffectiveUser()
   if (eff instanceof NextResponse) return eff
-  const guard = await requireProjectScopedResource(eff, async () => {
-    const r = await prisma.remediation.findUnique({ where: { id }, select: { projectId: true } })
-    return r?.projectId
-  })
-  return guard instanceof NextResponse ? guard : null
+  const r = await prisma.remediation.findUnique({ where: { id }, select: { projectId: true } })
+  return r?.projectId || NextResponse.json({ error: 'Not found' }, { status: 404 })
 }
 
 // GET /api/remediations/[id] - Get single remediation
@@ -46,8 +44,12 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    const denied = await guardRemediation(request, id)
-    if (denied) return denied
+    if (!isInternalRequest(request)) {
+      const projectId = await remediationProject(id)
+      if (projectId instanceof NextResponse) return projectId
+      const auth = await requirePermission(request, 'remediation:read', { projectId })
+      if (auth instanceof NextResponse) return auth
+    }
 
     const remediation = await prisma.remediation.findUnique({
       where: { id },
@@ -71,8 +73,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    const denied = await guardRemediation(request, id)
-    if (denied) return denied
+    if (!isInternalRequest(request)) {
+      const projectId = await remediationProject(id)
+      if (projectId instanceof NextResponse) return projectId
+      const auth = await requirePermission(request, 'remediation:write', { projectId })
+      if (auth instanceof NextResponse) return auth
+    }
 
     const body = await request.json()
 
@@ -124,8 +130,12 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    const denied = await guardRemediation(request, id)
-    if (denied) return denied
+    if (!isInternalRequest(request)) {
+      const projectId = await remediationProject(id)
+      if (projectId instanceof NextResponse) return projectId
+      const auth = await requirePermission(request, 'remediation:write', { projectId })
+      if (auth instanceof NextResponse) return auth
+    }
 
     await prisma.remediation.delete({
       where: { id },

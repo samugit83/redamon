@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import { withRouteErrors } from '@/lib/routeErrors'
-import { requireProjectOwner, graphTriage } from '@/lib/triageClient'
+import { graphTriage } from '@/lib/triageClient'
 import { auditSingleMute } from '@/lib/triage/muteAudit'
 import { readJsonBody } from '@/lib/jsonBody'
 import { invalidateCache } from '@/app/api/graph/cache'
@@ -34,8 +36,9 @@ export const POST = withRouteErrors('The finding could not be muted.', async (re
     projectId?: string; nodeId?: unknown; reason?: unknown
   }
 
-  const caller = await requireProjectOwner(projectId)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:mute', { projectId })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
   if (!nodeId || typeof nodeId !== 'string') {
     return NextResponse.json({ error: 'nodeId is required' }, { status: 400 })
   }

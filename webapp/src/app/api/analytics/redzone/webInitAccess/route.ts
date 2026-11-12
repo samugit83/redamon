@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
 import { reportCountable } from '@/lib/triage/reportable'
@@ -45,8 +45,8 @@ const AUTH_CATEGORIES = ['auth', 'login', 'admin', 'authentication']
 
 export async function GET(request: NextRequest) {
   const projectId = request.nextUrl.searchParams.get('projectId')
-  const __denied = await guardProject(projectId || '')
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'graph:read', { projectId })
+  if (auth instanceof NextResponse) return auth
   if (!projectId) {
     return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
   }

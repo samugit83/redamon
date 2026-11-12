@@ -4,7 +4,7 @@ import { readLiveGraph } from './liveRead'
 import { getCached, setCached, invalidateCache } from './cache'
 import { truncateGraph } from './truncate'
 import { GRAPH_PERF_DEBUG } from './config'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { graphError } from './graphErrors'
 
@@ -25,10 +25,8 @@ export const GET = withRouteErrors('The graph could not be loaded', async (reque
   // project. Since a project has exactly one owner, proving ownership here scopes
   // the returned subgraph to the effective user (blocks the impersonation-URL BOLA
   // where an admin simulating X, or any user, reads another user's graph by id).
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, projectId)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'graph:read', { projectId })
+  if (auth instanceof NextResponse) return auth
 
   if (GRAPH_PERF_DEBUG) console.log(`[GraphPerf:API] GET /api/graph projectId=${projectId}`)
 
@@ -141,10 +139,8 @@ export const DELETE = withRouteErrors('The node could not be deleted', async (re
   }
 
   // Only the project's effective owner may delete its graph nodes.
-  const eff = await requireEffectiveUser()
-  if (eff instanceof NextResponse) return eff
-  const access = await requireProjectAccess(eff, projectId)
-  if (access instanceof NextResponse) return access
+  const auth = await requirePermission(request, 'graph:edit', { projectId })
+  if (auth instanceof NextResponse) return auth
 
   const session = getGraphSession()
 

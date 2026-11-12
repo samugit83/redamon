@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import prisma from '@/lib/prisma'
 import { readJsonBody } from '@/lib/jsonBody'
-import { requireProjectOwner, graphTriage, realActorUserId } from '@/lib/triageClient'
+import { graphTriage, realActorUserId } from '@/lib/triageClient'
 import { activationBusy } from '@/lib/activationLock'
 import { invalidateCache } from '@/app/api/graph/cache'
 import { writeAudit } from '@/lib/audit'
@@ -49,8 +51,9 @@ export async function POST(request: NextRequest) {
     projectId?: string; batchId?: unknown; keys?: unknown; includeSeed?: unknown; concept?: unknown
   }
 
-  const caller = await requireProjectOwner(projectId)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:mute', { projectId })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   if (typeof batchId !== 'string' || !MULTI_BATCH_PATTERN.test(batchId)) {
     return NextResponse.json({ error: 'batchId must be a Multi mute batch id' }, { status: 400 })

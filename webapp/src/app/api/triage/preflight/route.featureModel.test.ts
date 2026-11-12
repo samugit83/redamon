@@ -12,6 +12,7 @@ const mockProject = vi.fn()
 const mockSettings = vi.fn()
 const mockProviders = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overProjectOwner()))
 vi.mock('@/lib/triageClient', () => ({
   requireProjectOwner: async (projectId: string) => ({ userId: 'alice', projectId }),
 }))

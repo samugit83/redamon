@@ -3,7 +3,7 @@ import { graphError } from '../../graph/graphErrors'
 import { getGraphSession } from '../../graph/neo4j'
 import { formatGraphRecords } from '../../graph/format'
 import { injectProjectFilter, findUnscopedNodePattern, namesMutedLabel, hasVariableLengthPath, findDisallowedCall } from './injectProjectFilter'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * Execute a Cypher query (from a saved graph view) against Neo4j,
@@ -23,10 +23,8 @@ export async function POST(request: NextRequest) {
 
     // Only the project's effective owner may run a (read-only) view query against
     // its subgraph.
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, projectId)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'graph:cypher', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     // Block write operations -- data filters are read-only
     const upper = cypherQuery.toUpperCase().replace(/\/\/[^\n]*/g, '')

@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({ read: vi.fn(), run: vi.fn(), eff: vi.fn() }))
 vi.mock('./liveRead', () => ({ readLiveGraph: (...a: unknown[]) => h.read(...a) }))
 vi.mock('./cache', () => ({ getCached: () => null, setCached: () => 'e', invalidateCache: vi.fn() }))
 vi.mock('./neo4j', () => ({ getGraphSession: () => ({ run: (...a: unknown[]) => h.run(...a), close: vi.fn() }) }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => h.eff(),
   requireProjectAccess: async () => ({ project: { id: 'p1', userId: 'owner' } }),

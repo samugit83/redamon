@@ -46,6 +46,8 @@ export interface RouteCase {
   params: Record<string, string>
   /** A JSON body; only the request's shape, nothing past the guard runs on a refusal. */
   body?: unknown
+  /** The query string, for a route that reads its project from it (`?projectId=`). */
+  query?: Record<string, string>
   /**
    * The project the route names when it is not a param (a job row's project); null for an
    * instance permission checked with no project (project create, import).
@@ -106,7 +108,8 @@ export function denying(id: string, permission: PermissionId): Principal {
 
 function requestFor(c: RouteCase): NextRequest {
   const [method, path] = c.route.split(' ')
-  const url = 'http://localhost:3000' + path.replace(/\[(\w+)\]/g, (_m, k: string) => c.params[k] ?? k)
+  const query = c.query ? `?${new URLSearchParams(c.query)}` : ''
+  const url = 'http://localhost:3000' + path.replace(/\[(\w+)\]/g, (_m, k: string) => c.params[k] ?? k) + query
   const init: { method: string; headers?: Record<string, string>; body?: string } = { method }
   if (c.body !== undefined) {
     init.headers = { 'content-type': 'application/json', origin: 'http://localhost:3000' }
@@ -188,7 +191,8 @@ export function describeRoutePermissions(family: string, cases: RouteCase[], h: 
     const onProject = cases.find(c => c.projectId === undefined)
     if (onProject) {
       test(`${onProject.route}: a project the caller cannot see answers 404 whatever they hold`, async () => {
-        const { res } = await run(h, { ...onProject, params: retarget(onProject) }, principal('bob-friend'))
+        const query = onProject.query && retarget({ ...onProject, params: onProject.query })
+        const { res } = await run(h, { ...onProject, params: retarget(onProject), query }, principal('bob-friend'))
         expect(res?.status).toBe(404)
         expect(h.upstream).not.toHaveBeenCalled()
       })

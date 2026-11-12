@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '../../../graph/neo4j'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 
 // POST /api/projects/[id]/purge-orphan-chains
@@ -20,10 +20,8 @@ export async function POST(
 
     // Ownership: this stops the project's agent tasks and DETACH-DELETEs graph
     // nodes, so only the effective owner may invoke it.
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, projectId)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'graph:edit', { projectId })
+    if (auth instanceof NextResponse) return auth
 
     // Live conversations for this project = the session_ids that must be KEPT.
     const conversations = await prisma.conversation.findMany({

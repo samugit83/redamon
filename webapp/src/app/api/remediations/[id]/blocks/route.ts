@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
-import { requireEffectiveUser, requireProjectScopedResource } from '@/lib/access'
+import { requireEffectiveUser } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -16,11 +17,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (!isInternalRequest(request)) {
       const eff = await requireEffectiveUser()
       if (eff instanceof NextResponse) return eff
-      const guard = await requireProjectScopedResource(eff, async () => {
-        const r = await prisma.remediation.findUnique({ where: { id }, select: { projectId: true } })
-        return r?.projectId
-      })
-      if (guard instanceof NextResponse) return guard
+      const r = await prisma.remediation.findUnique({ where: { id }, select: { projectId: true } })
+      if (!r?.projectId) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      const auth = await requirePermission(request, 'remediation:write', { projectId: r.projectId })
+      if (auth instanceof NextResponse) return auth
     }
 
     const body = await request.json()

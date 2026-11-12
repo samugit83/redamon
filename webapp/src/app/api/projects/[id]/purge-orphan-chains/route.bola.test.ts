@@ -19,6 +19,7 @@ vi.mock('@/lib/prisma', () => ({
   default: { conversation: { findMany: (...a: unknown[]) => mockConversationFindMany(...a) } },
 }))
 vi.mock('../../../graph/neo4j', () => ({ getGraphSession: () => mockGetGraphSession() }))
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => mockRequireEff(),
   requireProjectAccess: (...a: unknown[]) => mockRequireProjectAccess(...a),

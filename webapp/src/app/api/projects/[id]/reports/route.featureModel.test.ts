@@ -16,6 +16,7 @@ const mockAgentFetch = vi.fn()
 const mockGather = vi.fn()
 const mockHtml = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: async () => ({ userId: 'alice' }),
   requireProjectAccess: async () => ({ id: 'p1', userId: 'alice' }),

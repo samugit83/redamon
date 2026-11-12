@@ -24,6 +24,7 @@ const mockAgentFetch = vi.fn()
 const mockAudit = vi.fn()
 const mockSession = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overProjectOwner()))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: () => mockRequireEff() }))
 vi.mock('@/lib/session', () => ({ getSession: () => mockSession() }))
 vi.mock('@/lib/prisma', () => ({

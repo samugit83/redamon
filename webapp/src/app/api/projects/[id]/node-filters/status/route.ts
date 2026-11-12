@@ -5,16 +5,18 @@
  * Save and Apply, and when the project changes.
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { requireProjectOwner } from '@/lib/triageClient'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import { nodeFilterStatus } from '@/lib/nodeFilters/server'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
   return NextResponse.json(await nodeFilterStatus(caller.projectId))
 }

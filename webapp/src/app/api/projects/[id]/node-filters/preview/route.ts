@@ -11,8 +11,9 @@
  * The agent stops at 20 s and marks the result partial; this call gives up at 25 s.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import { readJsonBody } from '@/lib/jsonBody'
-import { requireProjectOwner } from '@/lib/triageClient'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { allErrors, validateNodeFilters } from '@/lib/nodeFilters/validate'
 import { exemptionPairs, relatedRemediationCount } from '@/lib/nodeFilters/server'
@@ -27,8 +28,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   const { id } = await params
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'node_filters:manage', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   const { mode, rules, kinds, withRemediations } = parsed.body as {
     mode?: unknown; rules?: unknown; kinds?: unknown; withRemediations?: unknown

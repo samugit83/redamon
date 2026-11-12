@@ -179,6 +179,7 @@ describe('the manifest and the route tree', () => {
  */
 const CAPABILITY_ONLY: Record<string, string> = {
   '/api/nuclei-templates scan:custom_templates': 'a template belongs to an account, not a project: uploading or deleting one is the capability alone; selecting it for a project is the project PUT\'s check (templateSelectionRefusal, under project:settings) (step 3.8)',
+  '/api/reports reports:read': 'the list of every report over the projects the account can see (visibleProjectsWhere): no one project to name; opening or deleting one asks on its project (step 3.9)',
 }
 
 /** The `<path> <permission>` of each permission guard call that acts on a project and names none. */

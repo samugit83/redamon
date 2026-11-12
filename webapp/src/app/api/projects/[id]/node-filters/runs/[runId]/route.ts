@@ -5,8 +5,9 @@
  * a run id from another project is a 404 like any other miss.
  */
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import prisma from '@/lib/prisma'
-import { requireProjectOwner } from '@/lib/triageClient'
 import { RUN_SELECT } from '@/lib/nodeFilters/server'
 import { findLiveNodeFilterRun } from '@/lib/nodeFilterRun'
 
@@ -14,10 +15,11 @@ interface RouteParams {
   params: Promise<{ id: string; runId: string }>
 }
 
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   const { id, runId } = await params
-  const caller = await requireProjectOwner(id)
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:read', { projectId: id })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
   // Sweeps a run whose agent died, so polling a lost run ends in `failed`
   // instead of spinning for ever.
   await findLiveNodeFilterRun(caller.projectId).catch(() => null)

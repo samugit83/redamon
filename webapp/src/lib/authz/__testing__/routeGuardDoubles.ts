@@ -94,3 +94,19 @@ export function overEffectiveUser(): Promise<Guards> {
     return context(permission, eff, project ?? { id: opts.projectId ?? '', userId: eff.userId })
   })
 }
+
+/**
+ * For a test of a triage or mute-rule route (step 3.9), which decided who passes through
+ * `requireProjectOwner` (triageClient.ts, real or doubled): the context's project is the caller it
+ * answers, the project's owner as its user.
+ */
+export function overProjectOwner(): Promise<Guards> {
+  return withDouble(async (_request: Request, permission: PermissionId, opts: RequirePermissionOptions = {}) => {
+    assertKnownPermission(permission)
+    if (!('projectId' in opts)) throw new Error('overProjectOwner doubles project checks only')
+    const { requireProjectOwner } = await import('@/lib/triageClient')
+    const caller = await requireProjectOwner(opts.projectId)
+    if (isResponse(caller)) return asNextResponse(caller)
+    return context(permission, { userId: caller.userId }, { id: caller.projectId, userId: caller.userId })
+  })
+}

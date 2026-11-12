@@ -10,7 +10,7 @@
  * watermark map; it is a read and performs no writes.
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { internalError } from '@/lib/routeErrors'
 import { BADGED_TABS } from '@/app/graph/unseen/registry'
@@ -77,8 +77,8 @@ export async function POST(request: NextRequest) {
   }
 
   const projectId = typeof body.projectId === 'string' ? body.projectId : ''
-  const denied = await guardProject(projectId)
-  if (denied) return denied
+  const auth = await requirePermission(request, 'graph:read', { projectId })
+  if (auth instanceof NextResponse) return auth
 
   const marks = sanitiseMarks(body.marks)
 

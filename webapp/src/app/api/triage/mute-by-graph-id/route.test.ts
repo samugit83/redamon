@@ -15,6 +15,7 @@ const mockAgentFetch = vi.fn()
 const mockRun = vi.fn()
 const mockClose = vi.fn()
 
+vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overProjectOwner()))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: () => mockRequireEff(),
 }))

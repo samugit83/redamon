@@ -5,7 +5,7 @@ import { gatherReportData } from '@/lib/report/reportData'
 import { generateReportHtml, type LLMNarratives } from '@/lib/report/reportTemplate'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import path from 'path'
-import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels'
 import { callFeatureAgent } from '@/lib/featureAgentCall'
 import { providerFailureDetail } from '@/lib/llmFeatures'
@@ -19,14 +19,12 @@ interface RouteParams {
 }
 
 /** GET /api/projects/{id}/reports - List all reports for a project */
-export async function GET(_request: NextRequest, { params }: RouteParams) {
+export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'reports:read', { projectId: id })
+    if (auth instanceof NextResponse) return auth
 
     const reports = await prisma.report.findMany({
       where: { projectId: id },
@@ -49,14 +47,13 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 }
 
 /** POST /api/projects/{id}/reports - Generate a new report */
-export async function POST(_request: NextRequest, { params }: RouteParams) {
+export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    const eff = await requireEffectiveUser()
-    if (eff instanceof NextResponse) return eff
-    const access = await requireProjectAccess(eff, id)
-    if (access instanceof NextResponse) return access
+    const auth = await requirePermission(request, 'reports:generate', { projectId: id })
+    if (auth instanceof NextResponse) return auth
+    const eff = auth.effective
 
     // The narratives run on the caller's own "Report narratives" model and keys.
     // Checked before the (slow) data gathering so the model picker opens at once.

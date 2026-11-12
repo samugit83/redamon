@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { requirePermission } from '@/lib/authz/guards'
+import { triageCaller } from '@/lib/triage/routeCaller'
 import { withRouteErrors } from '@/lib/routeErrors'
-import { requireProjectOwner, graphTriage } from '@/lib/triageClient'
+import { graphTriage } from '@/lib/triageClient'
 import { liveRuleMutedBy } from '@/lib/nodeFilters/model'
 import { MULTI_BATCH_PATTERN } from '@/lib/multiMute'
 import {
@@ -43,8 +45,9 @@ function intParam(raw: string | null, fallback: number, min: number, max: number
 // Next's empty-bodied 500.
 export const GET = withRouteErrors('Could not load the muted nodes', async (request: NextRequest) => {
   const q = request.nextUrl.searchParams
-  const caller = await requireProjectOwner(q.get('projectId'))
-  if (caller instanceof NextResponse) return caller
+  const auth = await requirePermission(request, 'triage:read', { projectId: q.get('projectId') })
+  if (auth instanceof NextResponse) return auth
+  const caller = triageCaller(auth)
 
   const mutedVia = q.get('mutedVia')
   const order = q.get('order')

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
-import { guardProject } from '@/lib/access'
+import { requirePermission } from '@/lib/authz/guards'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
 import { reportCountable } from '@/lib/triage/reportable'
@@ -18,7 +18,7 @@ import { internalError } from '@/lib/routeErrors'
  *   packages   - one row per Package, with rolled-up verdict + advisory counts
  *   advisories - one row per CVE/GHSA Vulnerability written by the OSV pass
  *
- * Every query is tenant-scoped on {project_id: $pid} behind guardProject.
+ * Every query is tenant-scoped on {project_id: $pid} behind requirePermission('graph:read').
  */
 
 type Neo4jRecord = { get: (key: string) => unknown }
@@ -60,8 +60,8 @@ const NOT_ANALYSED = `(coalesce(f.soft_error, false) OR coalesce(f.advisory_id, 
 
 export async function GET(request: NextRequest) {
   const pid = request.nextUrl.searchParams.get('projectId')
-  const __denied = await guardProject(pid || '')
-  if (__denied) return __denied
+  const auth = await requirePermission(request, 'graph:read', { projectId: pid })
+  if (auth instanceof NextResponse) return auth
   if (!pid) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
 
   // Row caps, now the one global cap shared with every other RedZone route.
