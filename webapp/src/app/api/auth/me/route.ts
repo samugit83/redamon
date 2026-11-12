@@ -33,14 +33,25 @@ async function rootView(user: { id: string; role: string }): Promise<RootView | 
   }
 }
 
+// Every admin page load asks while Root is unconfirmed. loadInstanceRoot hands back one frozen
+// object for as long as it caches the row (RBAC_AUTHZ_CACHE_MS, invalidateInstanceRoot), so
+// keyed on it the date lives and goes exactly as the Root does.
+const chosenAtByRoot = new WeakMap<InstanceRoot, string | null>()
+
 async function rootNotice(root: InstanceRoot): Promise<RootNotice> {
   if (root.confirmed) return { email: root.email, confirmed: true, chosenAt: null }
-  const chosen = await prisma.auditLog.findFirst({
-    where: { action: ROOT_ASSIGNED_ACTION, targetId: root.userId },
-    orderBy: { createdAt: 'desc' },
-    select: { createdAt: true },
-  })
-  return { email: root.email, confirmed: false, chosenAt: chosen?.createdAt.toISOString() ?? null }
+  let chosenAt = chosenAtByRoot.get(root)
+  if (chosenAt === undefined) {
+    // targetType lets it use the (target_type, target_id, created_at) index.
+    const chosen = await prisma.auditLog.findFirst({
+      where: { action: ROOT_ASSIGNED_ACTION, targetType: 'user', targetId: root.userId },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    })
+    chosenAt = chosen?.createdAt.toISOString() ?? null
+    chosenAtByRoot.set(root, chosenAt)
+  }
+  return { email: root.email, confirmed: false, chosenAt }
 }
 
 /**

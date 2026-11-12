@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   instance: null as Record<string, unknown> | null,
   audit: [] as Record<string, unknown>[],
   instanceReads: 0,
+  auditWheres: [] as Record<string, unknown>[],
   failInstance: false,
 }))
 vi.mock('next/headers', () => ({
@@ -48,7 +49,8 @@ vi.mock('@/lib/prisma', () => ({
     auditLog: {
       findFirst: async ({ where, orderBy }: { where: Row; orderBy: Row }) => {
         expect(orderBy).toEqual({ createdAt: 'desc' })
-        const rows = h.audit.filter((r) => r.action === where.action && r.targetId === where.targetId)
+        h.auditWheres.push(where)
+        const rows = h.audit.filter((r) => r.action === where.action && r.targetType === where.targetType && r.targetId === where.targetId)
           .sort((a, b) => (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime())
         return rows[0] ? { createdAt: rows[0].createdAt } : null
       },
@@ -60,7 +62,7 @@ vi.mock('@/lib/authz/updateReview', () => ({ pendingLegacyGrantCount: async () =
 import { createToken } from '@/lib/auth'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { clearPrincipalCacheForTests } from '@/lib/authz/principal'
-import { clearInstanceRootCacheForTests } from '@/lib/authz/root'
+import { clearInstanceRootCacheForTests, invalidateInstanceRoot } from '@/lib/authz/root'
 import { GET } from './route'
 
 const T = new Date('2026-01-01T00:00:00.000Z')
@@ -86,11 +88,12 @@ beforeEach(() => {
   ]
   h.instance = { id: 'instance', rootUserId: 'root-1', rootConfirmedAt: null, rootAssignedBy: 'automatic' }
   h.audit = [
-    { action: 'system.rbac_root_assigned', targetId: 'root-1', createdAt: new Date('2026-11-01T00:00:00Z') },
-    { action: 'system.rbac_root_assigned', targetId: 'root-1', createdAt: CHOSEN },
-    { action: 'system.rbac_root_assigned', targetId: 'admin-2', createdAt: new Date('2026-11-20T00:00:00Z') },
+    { action: 'system.rbac_root_assigned', targetType: 'user', targetId: 'root-1', createdAt: new Date('2026-11-01T00:00:00Z') },
+    { action: 'system.rbac_root_assigned', targetType: 'user', targetId: 'root-1', createdAt: CHOSEN },
+    { action: 'system.rbac_root_assigned', targetType: 'user', targetId: 'admin-2', createdAt: new Date('2026-11-20T00:00:00Z') },
   ]
   h.instanceReads = 0
+  h.auditWheres = []
   h.failInstance = false
   h.jar = {}
   setFlagsForTests({ identity: true })
@@ -142,6 +145,31 @@ describe('GET /api/auth/me with the identity switch on', () => {
     await me('admin-2')
     await me('root-1')
     expect(h.instanceReads).toBe(1)
+  })
+
+  test('the date of the choice is read through the audit index (target type, target id, time)', async () => {
+    await me('admin-2')
+    expect(h.auditWheres).toEqual([{ action: 'system.rbac_root_assigned', targetType: 'user', targetId: 'root-1' }])
+  })
+
+  test('the date is cached with the Root: two admin page loads, one audit read; a Root change reads both again', async () => {
+    await me('admin-2')
+    await me('root-1')
+    expect([h.instanceReads, h.auditWheres.length]).toEqual([1, 1])
+    invalidateInstanceRoot()
+    expect((await me('admin-2')).rbac.root.chosenAt).toBe(CHOSEN.toISOString())
+    expect([h.instanceReads, h.auditWheres.length]).toEqual([2, 2])
+  })
+
+  test('RBAC_AUTHZ_CACHE_MS=0: every admin page load reads the Root and its date', async () => {
+    vi.stubEnv('RBAC_AUTHZ_CACHE_MS', '0')
+    try {
+      await me('admin-2')
+      await me('admin-2')
+      expect([h.instanceReads, h.auditWheres.length]).toEqual([2, 2])
+    } finally {
+      vi.stubEnv('RBAC_AUTHZ_CACHE_MS', '')
+    }
   })
 
   test('a failed Root read answers the account without the two fields and logs it', async () => {
