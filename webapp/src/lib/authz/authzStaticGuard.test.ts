@@ -180,9 +180,9 @@ const ALLOWED: Record<string, Allowed> = {
     ],
   },
   'src/app/api/users/[id]/llm-providers/route.ts::owner_compare': {
-    reason: `${OWN_ACCOUNT}; another account needs users:read`,
+    reason: `${OWN_ACCOUNT}; another account needs users:read, unless the session acts as it (its own data)`,
     lines: [
-      "if (session.userId !== id && !(await sessionHolds(session, 'users:read'))) {",
+      "if (session.userId !== id && !(await sessionHolds(session, 'users:read')) && !(await actsAsAccount(session, id))) {",
     ],
   },
   'src/app/api/users/[id]/mcp-tokens/[tokenId]/route.ts::owner_compare': {
@@ -210,12 +210,12 @@ const ALLOWED: Record<string, Allowed> = {
     ],
   },
   'src/app/api/users/[id]/route.ts::owner_compare': {
-    reason: `the Root re-check under the Root lock names Root's account (rootProtection.ts), and ${OWN_ACCOUNT} (another account needs users:read or users:edit; nobody deletes their own)`,
+    reason: `the Root re-check under the Root lock names Root's account (rootProtection.ts), and ${OWN_ACCOUNT} (another account needs users:read or users:edit unless the session acts as it; nobody deletes their own)`,
     lines: [
       "if (root && root.userId === id && id !== session.userId) return { refused: 'root_protected' }",
       "if (needsRoot && !(root && root.userId === session.userId && root.confirmed)) return { refused: 'root_only' }",
-      "if (session.userId !== id && !(await sessionHolds(session, 'users:read'))) {",
-      "if ((session.userId !== id || role) && !(await sessionHolds(session, 'users:edit', { fresh: true }))) {",
+      'if (session.userId !== id) {',
+      "if ((session.userId !== id || role) && !(await sessionHolds(session, 'users:edit', { fresh: true }))",
       'if (session.userId === id) {',
     ],
   },
@@ -364,7 +364,7 @@ const ALLOWED: Record<string, Allowed> = {
     reason: OWN_ACCOUNT,
     lines: [
       'if (session.userId === targetUserId) return null',
-      'if (session.userId !== targetUserId && !(await sessionHolds(session, permission))) {',
+      'if (session.userId === targetUserId || (await sessionHolds(session, permission))) return null',
     ],
   },
   'src/lib/session.ts::role_admin': {

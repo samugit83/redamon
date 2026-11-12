@@ -139,6 +139,16 @@ export async function authzIdentityOf(session: Session, opts: SessionOptions = {
   return { session, principal, actingAs: target && target.id !== principal.id ? target : null }
 }
 
+/**
+ * Whether the session acts as the account `userId` names, by the act-as cookie getEffectiveUser
+ * honours. The path naming the account acted as is that account's own data (§4.7: what both people
+ * may do; a member permission is asked through can()'s actingAs, the intersection), not another
+ * account's administration, so the user directory's permissions do not decide it.
+ */
+export async function actsAsAccount(session: Session, userId: string, opts: SessionOptions = {}): Promise<boolean> {
+  return (await actAsTarget(session, opts))?.id === userId
+}
+
 /** Only an admin acts as anyone: anyone else's act-as cookie is ignored. */
 function actsAsOthers(account: { role: string }): boolean {
   return account.role === 'admin'
@@ -270,9 +280,10 @@ export async function requireAccountWrite(targetUserId: string): Promise<NextRes
  * Ownership gate for user-scoped secret/data routes (settings, llm-providers,
  * tradecraft, skills, MCP servers and tokens). Internal-key callers (the agent +
  * scanners) pass in every mode.
- *  - `read`: the account itself or the user directory (`users:read`, every admin
- *    with the permissions switch off). Every secret these routes return is masked
- *    for a browser caller, so an admin's read never sees one.
+ *  - `read`: the account itself, the account the session acts as (its own data,
+ *    actsAsAccount), or the user directory (`users:read`, every admin with the
+ *    permissions switch off). Every secret these routes return is masked for a
+ *    browser caller, so an admin's read never sees one.
  *  - `write`: requireAccountWrite. The admin write bypass is gone: an admin cannot
  *    change another account, through act-as or not, except a passwordless managed
  *    account it is acting as.
@@ -296,8 +307,8 @@ export async function requireUserAccess(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   const permission = mode === 'revoke' ? 'users:revoke_sessions' : 'users:read'
-  if (session.userId !== targetUserId && !(await sessionHolds(session, permission))) {
-    return forbiddenResponse(permission)
-  }
-  return null
+  if (session.userId === targetUserId || (await sessionHolds(session, permission))) return null
+  // Revoking stays the real person's administration (§4.7), even of the account acted as.
+  if (mode === 'read' && (await actsAsAccount(session, targetUserId))) return null
+  return forbiddenResponse(permission)
 }

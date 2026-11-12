@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
-import { getSession, isInternalRequest } from '@/lib/session'
+import { actsAsAccount, getSession, isInternalRequest } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -287,14 +287,19 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    // The internal key and the user directory (users:read) read any account; anyone else their own.
+    // The internal key and the user directory (users:read) read any account; anyone else their own,
+    // or the one they act as (its own data, §4.7). Through the directory alone another account's
+    // projects show their names and dates: their scope is projects:oversee's (§5.1).
+    let withScope = true
     if (!isInternalRequest(request)) {
       const session = await getSession()
       if (!session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
-      if (session.userId !== id && !(await sessionHolds(session, 'users:read'))) {
-        return forbiddenResponse('users:read')
+      if (session.userId !== id) {
+        const directory = await sessionHolds(session, 'users:read')
+        withScope = (directory && (await sessionHolds(session, 'projects:oversee'))) || (await actsAsAccount(session, id))
+        if (!directory && !withScope) return forbiddenResponse('users:read')
       }
     }
 
@@ -337,10 +342,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // A batch has no targetDomain: each project row carries its scope label.
     return NextResponse.json({
       ...user,
-      projects: user.projects.map(({ ipMode, targetIps, subdomainList, domainBatchMode, domainBatchHosts, ...p }) => ({
-        ...p,
-        targetLabel: projectTargetLabel({ ...p, ipMode, targetIps, subdomainList, domainBatchMode, domainBatchHosts }),
-      })),
+      projects: user.projects.map(({ targetDomain, ipMode, targetIps, subdomainList, domainBatchMode, domainBatchHosts, ...p }) => (
+        withScope
+          ? { ...p, targetDomain, targetLabel: projectTargetLabel({ ...p, targetDomain, ipMode, targetIps, subdomainList, domainBatchMode, domainBatchHosts }) }
+          : p
+      )),
     })
   } catch (error) {
     return internalError(error, 'Failed to fetch user')
@@ -369,8 +375,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
     const { name, email, role, defaultAgentModel, defaultAiPipelineModel, stepUpPassword } = body
 
-    // Without users:edit a person changes only their own name and email, never a role.
-    if ((session.userId !== id || role) && !(await sessionHolds(session, 'users:edit', { fresh: true }))) {
+    // Without users:edit a person changes only their own name, email and preferences, never a role.
+    // Acting as the account the path names saves its preferences (the remembered default models) as
+    // its own; its name and email stay the real person's to change (§4.7).
+    if ((session.userId !== id || role) && !(await sessionHolds(session, 'users:edit', { fresh: true }))
+      && !(!role && !name && !email && (await actsAsAccount(session, id, { fresh: true })))) {
       return forbiddenResponse('users:edit')
     }
 

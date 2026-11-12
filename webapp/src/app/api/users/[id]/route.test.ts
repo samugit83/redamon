@@ -71,6 +71,8 @@ vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: vi.fn()
 vi.mock('@/lib/session', () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
   isInternalRequest: (...args: unknown[]) => mockIsInternal(...args),
+  // No act-as in this file: actAs.ownAccount.test.ts proves the account acted as.
+  actsAsAccount: async () => false,
 }))
 vi.mock('@/lib/authz/principal', async (orig) => ({
   ...(await orig<typeof import('@/lib/authz/principal')>()),

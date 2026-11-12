@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { getSession, isInternalRequest, requireAccountWrite } from '@/lib/session'
+import { actsAsAccount, getSession, isInternalRequest, requireAccountWrite } from '@/lib/session'
 import { isReasoningEffort } from '@/lib/llmReasoning'
 import { requireUserExists, isForeignKeyViolation } from '@/lib/userScopedWrite'
 import { isJevProvider, jevPinnedConfig } from '@/lib/llmProviderKinds'
@@ -28,14 +28,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const wantUnmasked = request.nextUrl.searchParams.get('internal') === 'true'
 
     // The read rule (requireUserAccess `read`): browser/JWT callers must own the
-    // account or hold the user directory (users:read), and they never get unmasked
-    // secrets, even with ?internal=true.
+    // account, act as it, or hold the user directory (users:read), and they never get
+    // unmasked secrets, even with ?internal=true.
     if (!internalReq) {
       const session = await getSession()
       if (!session) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
-      if (session.userId !== id && !(await sessionHolds(session, 'users:read'))) {
+      if (session.userId !== id && !(await sessionHolds(session, 'users:read')) && !(await actsAsAccount(session, id))) {
         return forbiddenResponse('users:read')
       }
     }

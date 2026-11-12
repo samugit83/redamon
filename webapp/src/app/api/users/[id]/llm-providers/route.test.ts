@@ -41,6 +41,8 @@ vi.mock('@/lib/session', async () => {
   return {
     getSession: (...args: unknown[]) => mockGetSession(...args),
     isInternalRequest: (...args: unknown[]) => mockIsInternal(...args),
+    // No act-as in this file: actAs.ownAccount.test.ts proves the account acted as.
+    actsAsAccount: async () => false,
     // session.ts requireAccountWrite over the session the test sets (no act-as here: the
     // managed-account exception is proved in session.userAccess.test.ts).
     requireAccountWrite: async (id: string) => {
