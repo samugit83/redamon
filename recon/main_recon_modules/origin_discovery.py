@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import ipaddress
 import difflib
 import re
 import socket
@@ -204,8 +205,7 @@ class _RunCtx:
         self.budget = _SearchBudget(int(settings.get("ORIGIN_DISCOVERY_MAX_SEARCH_CALLS", 50) or 50))
         self.roe_enabled = bool(settings.get("ROE_ENABLED"))
         self.roe_excluded = settings.get("ROE_EXCLUDED_HOSTS", []) or []
-        from recon.helpers.target_admission import admission_context
-        self.redirect_hops_admitted = bool(admission_context(settings).excluded)
+        self._operator_targets = None
         self._cache: Dict[Tuple[str, str], List[str]] = {}
         self._cache_lock = threading.Lock()
         self._misses = 0
@@ -228,6 +228,18 @@ class _RunCtx:
             if key not in self._ref_certs:
                 self._ref_certs[key] = dial()
             return self._ref_certs[key]
+
+    @property
+    def operator_targets(self):
+        """(hosts, networks) the operator typed; none when they cannot be
+        read, so the stricter rule applies."""
+        if self._operator_targets is None:
+            try:
+                from recon.helpers.openapi.discovery import operator_targets
+                self._operator_targets = operator_targets(self.settings)
+            except Exception:  # noqa: BLE001
+                self._operator_targets = (set(), [])
+        return self._operator_targets
 
     def pace(self) -> None:
         """Before every packet to a target (a connect, a handshake, a GET, a
@@ -957,41 +969,79 @@ def _extract_text(body: bytes) -> str:
     return _WS_RE.sub(" ", text).strip()
 
 
-def _pace_each_hop(ctx: _RunCtx):
-    """A response hook: requests follows a redirect itself, and the hop it is
-    about to send is one more request to the target, so it waits like the first."""
-    def hook(response, *_args, **_kwargs):
-        if response.is_redirect:
-            ctx.pace()
-    return hook
+def _operator_typed(host: str, ctx: _RunCtx) -> bool:
+    """A host or address the operator named (operator_targets), which every
+    caller of the address rule scans whatever it resolves to."""
+    hosts, networks = ctx.operator_targets
+    if host in hosts:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(address in net for net in networks if address.version == net.version)
 
 
-def _get_admitted_hops(url: str, headers: dict, ctx: _RunCtx):
-    """The reference GET under RoE exclusions: requests would follow the
-    fronted host's redirect into an excluded host unchecked, so every hop, the
-    first URL included, is checked against the RoE before it is sent
-    (hop_guard; R-2). None when a hop is refused: the host then has no
-    reference and keeps its earlier findings. Each hop waits like the first:
-    the module's rate here, the RoE clock in fetch_hop_by_hop."""
-    from recon.helpers.js_recon.hop_guard import fetch_hop_by_hop
+def _reference_hop_safe(url: str, fronted: str, ctx: _RunCtx) -> bool:
+    """The reference fetch's SSRF guard, the caller's as js_recon's downloads
+    apply it. Recon runs with host networking, so a Location naming cloud
+    metadata or an internal address would be fetched from inside the stack.
+    The fronted host's own hops pass (its address passed the pipeline's rule
+    before it was selected), and so does a host the operator typed; any other
+    host a redirect names is target-controlled and must resolve to public
+    addresses only."""
+    from recon.helpers.js_recon.hop_guard import url_host
+    host = url_host(url)
+    if host == fronted or _operator_typed(host, ctx):
+        return True
+    return is_url_safe_to_probe(url)
+
+
+def _get_hop_by_hop(url: str, headers: dict, ctx: _RunCtx):
+    """The reference GET, its redirects followed by hand (hop_guard): requests'
+    own following checks no hop. Every hop, the first URL included, passes the
+    RoE (inert without an exclusion; R-2) and _reference_hop_safe before it
+    is sent. None when a hop is refused: the host then has no reference and
+    keeps its earlier findings. Each hop waits like the first (the module's
+    rate here, the RoE clock in fetch_hop_by_hop), and a cookie a hop sets
+    rides on to the next, as requests' redirects carry it."""
+    from recon.helpers.js_recon.hop_guard import fetch_hop_by_hop, url_host
+    jar = requests.cookies.RequestsCookieJar()
+    sent: list = []
 
     def send(_method, hop_url, *, timeout, headers, allow_redirects):
+        for earlier in sent:
+            _close_quietly(earlier)
+        sent.clear()
         ctx.rate.wait()
-        return requests.get(hop_url, timeout=timeout, verify=False, allow_redirects=False,
-                            headers=headers, stream=True)
+        resp = requests.get(hop_url, timeout=timeout, verify=False, allow_redirects=False,
+                            headers=headers, stream=True, cookies=jar)
+        sent.append(resp)
+        cookies = getattr(resp, "cookies", None)
+        if cookies:
+            jar.update(cookies)
+        return resp
 
+    fronted = url_host(url)
     refusal: dict = {}
-    # The SSRF guard stays what it was for this fetch: none (the fronted host
-    # is in scope); only the RoE is added.
     resp = fetch_hop_by_hop("GET", url, timeout=ctx.timeout, headers=headers,
                             settings={"ROE_ENABLED": ctx.roe_enabled,
                                       "ROE_EXCLUDED_HOSTS": ctx.roe_excluded},
-                            url_guard=lambda _url: True, refusal=refusal, send=send,
-                            module="origin_discovery")
+                            url_guard=lambda hop: _reference_hop_safe(hop, fronted, ctx),
+                            refusal=refusal, send=send, module="origin_discovery")
     if resp is None:
+        for earlier in sent:
+            _close_quietly(earlier)
         _log("-", f"reference fetch stopped at redirect hop {refusal.get('hop')} "
                   f"({refusal.get('reason')}): the host keeps its earlier findings")
     return resp
+
+
+def _close_quietly(resp) -> None:
+    try:
+        resp.close()
+    except Exception:  # noqa: BLE001 - a response that cannot close holds nothing we need
+        pass
 
 
 def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = False) -> Optional[dict]:
@@ -1002,8 +1052,8 @@ def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = Fal
     internal or cloud-metadata host the G11 IP filter never saw, turning the
     probe into an SSRF pivot. The trusted reference fetch (the in-scope fronted
     host) passes allow_redirects=True so a canonical 301 (apex->www, http->https)
-    doesn't collapse its body and destroy the HTML-similarity signal; under
-    RoE exclusions only through hops the RoE admits (_get_admitted_hops).
+    doesn't collapse its body and destroy the HTML-similarity signal, hop by
+    hop through the RoE and the SSRF guard (_get_hop_by_hop).
 
     That trusted reference fetch also returns the raw page (its ``<script
     src>`` are where the site's own file is found) and the URL it ended on,
@@ -1012,16 +1062,15 @@ def _fetch(url: str, host_header: str, ctx: _RunCtx, allow_redirects: bool = Fal
     headers = {"User-Agent": _UA}
     if host_header:
         headers["Host"] = host_header
-    extra = {"hooks": {"response": _pace_each_hop(ctx)}} if allow_redirects else {}
     try:
-        if allow_redirects and ctx.redirect_hops_admitted:
-            resp = _get_admitted_hops(url, headers, ctx)
+        if allow_redirects:
+            resp = _get_hop_by_hop(url, headers, ctx)
             if resp is None:
                 return None
         else:
             ctx.pace()
-            resp = requests.get(url, timeout=ctx.timeout, verify=False,
-                                allow_redirects=allow_redirects, headers=headers, stream=True, **extra)
+            resp = requests.get(url, timeout=ctx.timeout, verify=False, allow_redirects=False,
+                                headers=headers, stream=True)
         _back_off_if_throttled(resp)
         body = resp.raw.read(_MAX_HTML_BYTES, decode_content=True) or b""
         status = resp.status_code
