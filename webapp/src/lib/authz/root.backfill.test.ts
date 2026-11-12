@@ -5,7 +5,9 @@
  * automatic and unconfirmed, with its `system.rbac_root_assigned` row in the same
  * transaction; no candidate, no Root. A Root id that names no account, or an account that is
  * no longer an admin, is no Root. The assignment is a conditional update under the host
- * commands' advisory lock, so two copies booting together choose one Root.
+ * commands' advisory lock, so two copies booting together choose one Root. It never creates
+ * the instance settings row: the earlier backfill fills it from the user rows, and a row of
+ * schema defaults would win over them with the identity switch on; without it, it waits.
  *
  * Prisma is an in-memory double whose `pg_advisory_xact_lock` serializes two transactions
  * and whose transaction rolls back its own writes when the callback throws.
@@ -92,14 +94,10 @@ class FakeDb {
           await Promise.resolve()
           return this.instance ? pick(this.instance, select) : null
         },
-        createMany: async ({ data, skipDuplicates }: { data: Row[]; skipDuplicates: boolean }) => {
-          expect(skipDuplicates).toBe(true)
-          expect(data).toEqual([{ id: SINGLETON_ID }])
-          if (this.instance) return { count: 0 }
-          this.instance = { id: SINGLETON_ID, rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null,
-            pendingRootTransferTo: null, pendingRootTransferExpires: null, tunnelsEnabled: false, updatedById: null }
-          return { count: 1 }
-        },
+        // A row made here would hold the schema defaults, which the readers prefer to the user
+        // rows with the switch on: only the instance settings backfill creates it.
+        create: async () => { throw new Error('the Root backfill never creates the instance settings row') },
+        createMany: async () => { throw new Error('the Root backfill never creates the instance settings row') },
         updateMany: async ({ where, data }: { where: Where; data: Row }) => {
           if (this.beforeUpdate) { const f = this.beforeUpdate; this.beforeUpdate = null; f() }
           await Promise.resolve()
@@ -140,8 +138,16 @@ const rootOf = () => db.instance && {
   rootUserId: db.instance.rootUserId, confirmed: db.instance.rootConfirmedAt !== null, by: db.instance.rootAssignedBy,
 }
 
+/** The row the instance settings backfill wrote: it runs first in both startup lists. */
+const filledRow = (): Row => ({
+  id: SINGLETON_ID, rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null,
+  pendingRootTransferTo: null, pendingRootTransferExpires: null,
+  tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok', captureProxyStoreBodies: false, updatedById: null,
+})
+
 beforeEach(() => {
   db = new FakeDb()
+  db.instance = filledRow()
 })
 
 describe('backfillRbacRoot', () => {
@@ -181,10 +187,10 @@ describe('backfillRbacRoot', () => {
     expect((await backfillRbacRoot(db)).userId).toBe('adm-m')
   })
 
-  test('none: no admin at all, no Root, no row, no audit', async () => {
+  test('none: no admin at all, no Root, the row untouched, no audit', async () => {
     account('mem', 'standard', T(1))
     expect(await backfillRbacRoot(db)).toEqual({ assigned: false, rootUserId: null, candidateCount: 0 })
-    expect(db.instance).toBeNull()
+    expect(db.instance).toEqual(filledRow())
     expect(db.audit).toEqual([])
   })
 
@@ -267,10 +273,24 @@ describe('backfillRbacRoot', () => {
     expect(db.instance).toMatchObject({ tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok', updatedById: null, rootUserId: 'adm' })
   })
 
-  test('no row yet: it is created with its defaults (never overwriting one), then Root is set', async () => {
+  test('no row yet (the instance settings backfill failed this boot): nothing written, not even the row; the next boot chooses', async () => {
     account('adm', 'admin', T(1))
-    await backfillRbacRoot(db)
-    expect(rootOf()).toEqual({ rootUserId: 'adm', confirmed: false, by: 'automatic' })
+    db.instance = null
+    expect(await backfillRbacRoot(db)).toEqual({ assigned: false, rootUserId: null, candidateCount: 1, noRow: true })
+    expect(db.instance).toBeNull()
+    expect(db.audit).toEqual([])
+    db.instance = filledRow()
+    expect(await backfillRbacRoot(db)).toEqual({ assigned: true, userId: 'adm', rule: 'only_admin', candidateCount: 1 })
+    expect(db.instance).toMatchObject({ tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok', captureProxyStoreBodies: false, rootUserId: 'adm' })
+  })
+
+  test('no row yet, two copies booting together: neither creates it nor chooses', async () => {
+    account('adm', 'admin', T(1))
+    db.instance = null
+    const results = await Promise.all([backfillRbacRoot(db), backfillRbacRoot(db)])
+    expect(results.every((r) => r.noRow === true && !r.assigned)).toBe(true)
+    expect(db.instance).toBeNull()
+    expect(db.audit).toEqual([])
   })
 
   test('a writer that moved the Root without the lock wins: conditional update, no row written', async () => {
@@ -296,7 +316,8 @@ describe('backfillRbacRoot', () => {
   test('a downgrade dropped the table while the row survives: the next boot assigns again', async () => {
     account('adm', 'admin', T(1))
     await backfillRbacRoot(db)
-    db.instance = null
+    // The re-upgrade's db push makes the table again; the instance settings backfill refills it.
+    db.instance = filledRow()
     expect((await backfillRbacRoot(db)).assigned).toBe(true)
     expect(assigned()).toHaveLength(2)
   })
@@ -333,11 +354,27 @@ describe('run (the entrypoint)', () => {
     await run(db)
     expect(log).not.toHaveBeenCalled()
     db = new FakeDb()
+    db.instance = filledRow()
     await run(db)
     expect(log.mock.calls.map((c) => c.join(' '))).toEqual([
       '[rbac] this instance has no Root yet: no admin has a password (./redamon.sh create-admin makes one, and it becomes Root).',
     ])
     log.mockRestore()
+  })
+
+  test('no instance settings row: logs that the Root waits for it, retried next boot (not "no Root yet")', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    account('adm', 'admin', T(1))
+    db.instance = null
+    await run(db)
+    expect(log).not.toHaveBeenCalled()
+    expect(err.mock.calls.map((c) => c.join(' '))).toEqual([
+      '[rbac] could not recognise the Root (retried next boot): the instance settings row is missing (its backfill has not filled it yet)',
+    ])
+    expect(db.instance).toBeNull()
+    log.mockRestore()
+    err.mockRestore()
   })
 })
 

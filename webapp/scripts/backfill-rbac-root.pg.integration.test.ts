@@ -3,6 +3,8 @@
  * oldest admin with a password becomes the automatic, unconfirmed Root with its
  * `system.rbac_root_assigned` row; three copies booting together, and the host's
  * create-admin claim taking the same lock, never make two; a stale Root id is chosen again.
+ * It runs after the instance settings backfill, as both startup lists do, and never creates
+ * the instance settings row itself: when that backfill failed, it waits for the next boot.
  *
  * Needs a DISPOSABLE database holding the webapp schema (`prisma db push`); it empties
  * `audit_log`, `instance_settings` and `users` (CASCADE) between tests. Run:
@@ -15,6 +17,7 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { PrismaClient } from '@prisma/client'
 import { ASSIGNED_ACTION, backfillRbacRoot } from './backfill-rbac-root.mjs'
+import { backfillRbacInstanceSettings } from './backfill-rbac-instance-settings.mjs'
 
 const URL = process.env.PLUGINS_PG_TEST_URL
 const MARKER = 'plugins_pg_integration_test_marker'
@@ -26,6 +29,9 @@ const T = (day: number) => new Date(Date.UTC(2026, 0, day, 9))
 async function user(id: string, role: string, createdAt: Date, password = PW) {
   await db.user.create({ data: { id, name: id, email: `${id}@example.invalid`, role, password, createdAt } })
 }
+/** The backfill before this one in both startup lists, which creates the row; switch off. */
+const fillInstanceSettings = (c: PrismaClient = db) =>
+  backfillRbacInstanceSettings(c, { RBAC_IDENTITY_ENABLED: 'false' } as unknown as NodeJS.ProcessEnv)
 const root = async () => db.instanceSettings.findUnique({
   where: { id: 'instance' }, select: { rootUserId: true, rootConfirmedAt: true, rootAssignedBy: true },
 })
@@ -51,6 +57,7 @@ describe.skipIf(!URL)('backfillRbacRoot on a real Postgres (PLUGINS_PG_TEST_URL)
   })
 
   test('the oldest admin with a password becomes the automatic, unconfirmed Root, with its row', async () => {
+    await fillInstanceSettings()
     expect(await backfillRbacRoot(db)).toEqual({ assigned: true, userId: 'adm-old', rule: 'oldest_admin', candidateCount: 2 })
     expect(await root()).toEqual({ rootUserId: 'adm-old', rootConfirmedAt: null, rootAssignedBy: 'automatic' })
     const rows = await db.auditLog.findMany({ where: { action: ASSIGNED_ACTION } })
@@ -62,7 +69,7 @@ describe.skipIf(!URL)('backfillRbacRoot on a real Postgres (PLUGINS_PG_TEST_URL)
   test('three webapp copies booting together choose one Root (lock + conditional update)', async () => {
     const copies = [1, 2, 3].map(() => new PrismaClient({ datasources: { db: { url: URL } } }))
     try {
-      const results = await Promise.all(copies.map((c) => backfillRbacRoot(c)))
+      const results = await Promise.all(copies.map(async (c) => { await fillInstanceSettings(c); return backfillRbacRoot(c) }))
       expect(results.filter((r) => r.assigned)).toHaveLength(1)
       expect(await db.auditLog.count({ where: { action: ASSIGNED_ACTION } })).toBe(1)
       expect((await root())?.rootUserId).toBe('adm-old')
@@ -106,6 +113,20 @@ describe.skipIf(!URL)('backfillRbacRoot on a real Postgres (PLUGINS_PG_TEST_URL)
     expect(await backfillRbacRoot(db)).toEqual({ assigned: false, rootUserId: 'adm-old' })
     const rows = await db.auditLog.findMany({ where: { action: ASSIGNED_ACTION } })
     expect(rows.map((r) => r.after)).toEqual([{ userId: 'adm-old', rule: 'oldest_admin', candidateCount: 2, previousRootUserId: 'gone' }])
+  })
+
+  test('no instance settings row (its backfill failed this boot): no row, no Root; the next boot fills it, then chooses', async () => {
+    await db.userSettings.create({ data: { userId: 'adm-young', tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok-token', captureProxyStoreBodies: false } })
+    expect(await backfillRbacRoot(db)).toEqual({ assigned: false, rootUserId: null, candidateCount: 2, noRow: true })
+    expect(await db.instanceSettings.count()).toBe(0)
+    expect(await db.auditLog.count()).toBe(0)
+
+    await fillInstanceSettings()
+    expect((await backfillRbacRoot(db)).userId).toBe('adm-old')
+    expect(await db.instanceSettings.findUnique({
+      where: { id: 'instance' },
+      select: { rootUserId: true, tunnelsEnabled: true, ngrokAuthtoken: true, captureProxyStoreBodies: true },
+    })).toEqual({ rootUserId: 'adm-old', tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok-token', captureProxyStoreBodies: false })
   })
 
   test('only passwordless admins: no Root and no row', async () => {

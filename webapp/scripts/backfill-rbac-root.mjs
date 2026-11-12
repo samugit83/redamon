@@ -24,7 +24,8 @@
  *
  * Runs whatever the identity switch (the Root is ready the day it goes on), from the webapp
  * entrypoint AFTER `db push` and the instance settings backfill, and from the dev container's
- * command. Never fatal: a failure is logged and the next boot tries again.
+ * command. Never fatal: a failure, or no instance settings row yet, is logged and the next
+ * boot tries again.
  */
 import { PrismaClient } from '@prisma/client'
 import { pathToFileURL } from 'node:url'
@@ -63,8 +64,11 @@ export async function backfillRbacRoot(prisma) {
     const choice = chooseRoot(candidates)
     if (!choice) return { assigned: false, rootUserId: null, candidateCount: 0 }
 
-    // The earlier backfill normally created the row; never overwrite one that exists.
-    if (!row) await tx.instanceSettings.createMany({ data: [{ id: SINGLETON_ID }], skipDuplicates: true })
+    // Only the instance settings backfill creates the row, from the user rows: one of schema
+    // defaults made here would win over them with the switch on (the readers fall back to the
+    // user rows only while it is absent), dropping the tunnel credentials and storing capture
+    // bodies. Its failure this boot leaves no row: wait for the next boot.
+    if (!row) return { assigned: false, rootUserId: null, candidateCount: choice.candidateCount, noRow: true }
     // Conditional on the Root read above: a writer that does not take the lock (a Root
     // transfer) and moved it meanwhile wins, and nothing is recorded here.
     const { count } = await tx.instanceSettings.updateMany({
@@ -93,6 +97,8 @@ export async function run(prisma) {
     if (r.assigned) {
       const why = r.rule === 'only_admin' ? 'the only admin with a password' : `the oldest of ${r.candidateCount} admins with a password`
       console.log(`[rbac] Root chosen automatically: user ${r.userId}, ${why}; unconfirmed until the host confirms it (./redamon.sh update or ./redamon.sh set-root <email>).`)
+    } else if (r.noRow) {
+      console.error('[rbac] could not recognise the Root (retried next boot):', 'the instance settings row is missing (its backfill has not filled it yet)')
     } else if (r.rootUserId === null && !r.raced) {
       console.log('[rbac] this instance has no Root yet: no admin has a password (./redamon.sh create-admin makes one, and it becomes Root).')
     }
