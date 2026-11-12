@@ -7,6 +7,13 @@
 # act-as end row must name its target (and a DELETE without the cookie must write none),
 # and a logout row must name the account that signed out.
 #
+# It runs in whichever state the webapp's RBAC_IDENTITY_ENABLED is (read from its container).
+# With it on, the same admin gets the identity answers: another account's email changes only
+# with the admin's own password (2.11: 403 step_up_required without it, nothing written), the
+# email change has its own user.email_changed row, and making an admin is the confirmed Root's
+# (2.6: 403 root_only; the seeded admin is never Root), so there is no admin to demote. Five
+# rows then: create, update (the name), email_changed, credentials_reset, delete.
+#
 # Fixtures are synthetic: webapp/scripts/e2e-rbac-seed.mjs (rbac-*@e2e.local) plus the
 # throwaway rbac-audit-throwaway@e2e.local, all removed with their audit rows by
 # e2e-rbac-cleanup.mjs, even on Ctrl-C. Both scripts are fed to the webapp container on
@@ -58,6 +65,13 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+env_line="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s" "${RBAC_IDENTITY_ENABLED:-}"' 2>/dev/null)"
+case "$(printf '%s' "$env_line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes) IDENTITY=on ;;
+  *) IDENTITY=off ;;
+esac
+echo "== Identity switch: $IDENTITY =="
+
 echo "== Seeding fixtures =="
 declare -A SEED=()
 seed_out="$(webapp_node e2e-rbac-seed.mjs)" || { echo "seed failed"; exit 1; }
@@ -102,12 +116,26 @@ ok=0; [ "$code" = 201 ] && safe_id "$TID" && ok=1
 check "create the throwaway account -> $code" "$ok"
 [ "$ok" = 1 ] || exit 1
 
-code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" "{\"name\":\"RBAC Audit Renamed\",\"email\":\"$RENAMED_EMAIL\"}")"
-ok=0; [ "$code" = 200 ] && ok=1; check "edit its name and email -> $code" "$ok"
-code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" '{"role":"admin"}')"
-ok=0; [ "$code" = 200 ] && ok=1; check "promote it -> $code" "$ok"
-code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" "{\"role\":\"standard\",\"stepUpPassword\":\"${SEED[RBAC_PASSWORD]}\"}")"
-ok=0; [ "$code" = 200 ] && ok=1; check "demote it (another admin: step-up) -> $code" "$ok"
+body_has() { grep -qF -- "$1" "$TMP/body"; }
+if [ "$IDENTITY" = on ]; then
+  code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" "{\"name\":\"RBAC Audit Renamed\",\"email\":\"$RENAMED_EMAIL\"}")"
+  ok=0; [ "$code" = 403 ] && body_has '"code":"step_up_required"' && ok=1
+  check "edit its name and email without the admin's password -> $code step_up_required" "$ok"
+  code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" \
+    "{\"name\":\"RBAC Audit Renamed\",\"email\":\"$RENAMED_EMAIL\",\"stepUpPassword\":\"${SEED[RBAC_PASSWORD]}\"}")"
+  ok=0; [ "$code" = 200 ] && ok=1; check "edit its name and email with it -> $code" "$ok"
+  # Refused before the password is checked, so sending it proves the refusal is Root's rule.
+  code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" "{\"role\":\"admin\",\"stepUpPassword\":\"${SEED[RBAC_PASSWORD]}\"}")"
+  ok=0; [ "$code" = 403 ] && body_has '"code":"root_only"' && ok=1
+  check "promote it: only Root makes an admin -> $code root_only" "$ok"
+else
+  code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" "{\"name\":\"RBAC Audit Renamed\",\"email\":\"$RENAMED_EMAIL\"}")"
+  ok=0; [ "$code" = 200 ] && ok=1; check "edit its name and email -> $code" "$ok"
+  code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" '{"role":"admin"}')"
+  ok=0; [ "$code" = 200 ] && ok=1; check "promote it -> $code" "$ok"
+  code="$(call "$ADMIN_JAR" PUT "/api/users/$TID" "{\"role\":\"standard\",\"stepUpPassword\":\"${SEED[RBAC_PASSWORD]}\"}")"
+  ok=0; [ "$code" = 200 ] && ok=1; check "demote it (another admin: step-up) -> $code" "$ok"
+fi
 code="$(call "$ADMIN_JAR" PUT "/api/users/$TID/password" "{\"newPassword\":\"$RESET_PASSWORD\"}")"
 ok=0; [ "$code" = 200 ] && ok=1; check "reset its password -> $code" "$ok"
 code="$(call "$ADMIN_JAR" DELETE "/api/users/$TID")"
@@ -115,10 +143,14 @@ ok=0; [ "$code" = 200 ] && ok=1; check "delete it -> $code" "$ok"
 
 printf "select action || chr(9) || coalesce(actor_id, '-') || chr(9) || coalesce(source, '') || chr(9) || coalesce(before::text, '') || chr(9) || coalesce(after::text, '') from audit_log where target_type = 'user' and target_id = '%s' order by created_at, id;\n" "$TID" \
   | db_sql > "$TMP/rows" || true
-want=(user.create user.update user.role_changed user.role_changed user.credentials_reset user.delete)
+if [ "$IDENTITY" = on ]; then
+  want=(user.create user.update user.email_changed user.credentials_reset user.delete)
+else
+  want=(user.create user.update user.role_changed user.role_changed user.credentials_reset user.delete)
+fi
 mapfile -t got < <(cut -f1 "$TMP/rows")
 ok=0; [ "${got[*]:-}" = "${want[*]}" ] && ok=1
-check "audit_log holds exactly the six rows, in order" "$ok" "got: ${got[*]:-none}"
+check "audit_log holds exactly the ${#want[@]} rows, in order" "$ok" "got: ${got[*]:-none}"
 ok=1; while IFS=$'\t' read -r _ actor source _ _; do
   [ "$actor" = "${SEED[ADMIN_A_ID]}" ] && [ "$source" = api ] || ok=0
 done < "$TMP/rows"
@@ -126,7 +158,7 @@ check "every row: actor = the admin, source api" "$ok"
 # Step 2.1 (AU-01, AU-08): the actor's email is snapshotted; nobody was acted for here.
 printf "select coalesce(actor_email, '-') || chr(9) || coalesce(on_behalf_of_user_id, '-') from audit_log where target_type = 'user' and target_id = '%s' order by created_at, id;\n" "$TID" \
   | db_sql > "$TMP/actor_cols" || true
-ok=0; [ "$(wc -l < "$TMP/actor_cols")" -eq 6 ] && ok=1
+ok=0; [ "$(wc -l < "$TMP/actor_cols")" -eq "${#want[@]}" ] && ok=1
 while IFS=$'\t' read -r email onbehalf; do
   [ "$email" = "${SEED[ADMIN_A_EMAIL]}" ] && [ "$onbehalf" = - ] || ok=0
 done < "$TMP/actor_cols"
@@ -140,12 +172,21 @@ row() { sed -n "${1}p" "$TMP/rows"; }
 has() { [[ "$(row "$1")" == *"$2"* ]]; }
 ok=0; has 1 "\"email\": \"$THROWAWAY_EMAIL\"" && has 1 '"passwordless": false' && has 1 '"role": "standard"' && ok=1
 check "user.create: email, role, passwordless" "$ok"
-ok=0; has 2 "\"email\": \"$THROWAWAY_EMAIL\"" && has 2 "\"email\": \"$RENAMED_EMAIL\"" && has 2 '"name": "RBAC Audit Renamed"' && ok=1
-check "user.update: name and email before and after" "$ok"
-ok=0; [[ "$(row 3 | cut -f4,5)" == $'{"role": "standard"}\t{"role": "admin"}' ]] && [[ "$(row 4 | cut -f4,5)" == $'{"role": "admin"}\t{"role": "standard"}' ]] && ok=1
-check "user.role_changed: standard->admin, then admin->standard" "$ok"
-ok=0; has 5 '"revokedMcpTokens": 0' && ok=1; check "user.credentials_reset: revoked token count" "$ok"
-ok=0; has 6 "\"email\": \"$RENAMED_EMAIL\"" && has 6 '"ownedProjectCount": 0' && has 6 '"role": "standard"' && ok=1
+if [ "$IDENTITY" = on ]; then
+  ok=0; [[ "$(row 2 | cut -f4,5)" == $'{"name": "RBAC Audit Throwaway"}\t{"name": "RBAC Audit Renamed"}' ]] && ok=1
+  check "user.update: the name before and after (the email has its own row)" "$ok"
+  ok=0; [[ "$(row 3 | cut -f4,5)" == "{\"email\": \"$THROWAWAY_EMAIL\"}"$'\t'"{\"email\": \"$RENAMED_EMAIL\"}" ]] && ok=1
+  check "user.email_changed: the email before and after" "$ok"
+  reset_row=4; delete_row=5
+else
+  ok=0; has 2 "\"email\": \"$THROWAWAY_EMAIL\"" && has 2 "\"email\": \"$RENAMED_EMAIL\"" && has 2 '"name": "RBAC Audit Renamed"' && ok=1
+  check "user.update: name and email before and after" "$ok"
+  ok=0; [[ "$(row 3 | cut -f4,5)" == $'{"role": "standard"}\t{"role": "admin"}' ]] && [[ "$(row 4 | cut -f4,5)" == $'{"role": "admin"}\t{"role": "standard"}' ]] && ok=1
+  check "user.role_changed: standard->admin, then admin->standard" "$ok"
+  reset_row=5; delete_row=6
+fi
+ok=0; has "$reset_row" '"revokedMcpTokens": 0' && ok=1; check "user.credentials_reset: revoked token count" "$ok"
+ok=0; has "$delete_row" "\"email\": \"$RENAMED_EMAIL\"" && has "$delete_row" '"ownedProjectCount": 0' && has "$delete_row" '"role": "standard"' && ok=1
 check "user.delete: email, role, owned project count" "$ok"
 
 # ---- act-as end names its target; no cookie, no row -----------------------------------

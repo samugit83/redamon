@@ -19,7 +19,11 @@
 #   - tunnel read (F-04): the credentials answer the internal key only, L included
 #   - tunnel write (F-05): a new member's change is 403 tunnels_admin_only; L's passes the
 #     tunnel check (the request then fails the GitHub Enterprise host check, so nothing is
-#     written or pushed to the sandbox)
+#     written or pushed to the sandbox). With RBAC_IDENTITY_ENABLED on (read from the webapp
+#     container) the tunnel is an instance setting (step 2.4): the user-settings route answers
+#     both 409 moved_to_instance_settings, and the writer is /api/admin/instance-settings, which
+#     refuses B (403) and lets L through to its field check (400 invalid_field: nothing written,
+#     so the live instance's tunnel is never changed)
 #   - template overwrite (F-07): A's template cannot be replaced or deleted by B, nor by L
 #     (no grant opens every template)
 #   - emergency stop scope (F-06): a press by a new member or by L stops only their own
@@ -70,6 +74,13 @@ code() { # jarfile method url [data]
   fi
 }
 body() { curl -s -b "$1" "$BASE$2"; }
+
+env_line="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s" "${RBAC_IDENTITY_ENABLED:-}"' 2>/dev/null)"
+case "$(printf '%s' "$env_line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes) IDENTITY=on ;;
+  *) IDENTITY=off ;;
+esac
+echo "== Identity switch: $IDENTITY =="
 
 echo "== Removing an earlier run's fixtures =="
 # A fresh account every run: the escape hatch covers only accounts older than the upgrade.
@@ -238,13 +249,41 @@ echo "== F-04 / F-05 the tunnel is the admins' (HD-05, HD-06) =="
 TUNNEL_CHANGE='{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}'
 check_body "new member A reads the tunnel credentials -> 404"                  404 "$(req "$TMP/a.jar" GET /api/global/tunnel-config)"
 check_body "legacy holder L reads the tunnel credentials -> 404 (internal key only)" 404 "$(req "$TMP/l.jar" GET /api/global/tunnel-config)"
-check_body "new member B changes the tunnel -> 403 tunnels_admin_only"         403 "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:tunnels_admin_only
-check_body "legacy holder L passes the tunnel check (then refused by the GitHub Enterprise host check)" 400 \
-  "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" "has:GitHub Enterprise Host" lacks:tunnels_admin_only
-check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
-  'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
-check_body "L's settings: tunnel controls offered, nothing written"            200 "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" \
-  'has:"canManageTunnels":true' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+if [ "$IDENTITY" = on ]; then
+  check_body "new member B changes the tunnel in its own settings -> 409 moved_to_instance_settings" 409 \
+    "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:moved_to_instance_settings has:chiselServerUrl
+  check_body "legacy holder L changes the tunnel in its own settings -> 409 moved_to_instance_settings" 409 \
+    "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" has:moved_to_instance_settings has:chiselServerUrl
+  # The live instance's tunnel is never really changed: a tunnel field that is not text is
+  # refused after the access check, so B's 403 and L's 400 tell the two apart.
+  INSTANCE_TUNNEL_PROBE='{"tunnelsEnabled":true,"chiselServerUrl":42}'
+  lc="$(req "$TMP/l.jar" GET /api/admin/instance-settings)"; tunnel_before="$(json "(b['tunnelsEnabled'], b['chiselServerUrl'])")"
+  check_body "new member B changes the instance tunnel -> 403" 403 \
+    "$(req "$TMP/b.jar" PUT /api/admin/instance-settings "$INSTANCE_TUNNEL_PROBE")" 'has:"code":"forbidden"' lacks:invalid_field
+  check_body "legacy holder L passes the instance tunnel check (then refused by the field check)" 400 \
+    "$(req "$TMP/l.jar" PUT /api/admin/instance-settings "$INSTANCE_TUNNEL_PROBE")" 'has:"code":"invalid_field"' 'has:"field":"chiselServerUrl"'
+  check_body "B's instance settings read -> 403" 403 "$(req "$TMP/b.jar" GET /api/admin/instance-settings)" 'lacks:"canManageTunnels"'
+  check_body "L's instance settings: tunnel controls offered, the capture ones not" 200 \
+    "$(req "$TMP/l.jar" GET /api/admin/instance-settings)" 'has:"canManageTunnels":true' 'has:"canManageCapture":false'
+  if [ "$lc" = 200 ] && [ -n "$tunnel_before" ] && [ "$(json "(b['tunnelsEnabled'], b['chiselServerUrl'])")" = "$tunnel_before" ]; then
+    ok "the refused instance tunnel changes wrote nothing (switch and chisel URL unchanged)"
+  else
+    bad "the instance tunnel after the refused changes (first read $lc; switch or chisel URL changed, or unreadable)"
+  fi
+  check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
+    'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+  check_body "L's settings: the tunnel controls live in the instance settings, nothing written" 200 \
+    "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" 'has:"canManageTunnels":false' 'has:"sharedSettingsAt":"instance"' \
+    'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+else
+  check_body "new member B changes the tunnel -> 403 tunnels_admin_only"         403 "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:tunnels_admin_only
+  check_body "legacy holder L passes the tunnel check (then refused by the GitHub Enterprise host check)" 400 \
+    "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" "has:GitHub Enterprise Host" lacks:tunnels_admin_only
+  check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
+    'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+  check_body "L's settings: tunnel controls offered, nothing written"            200 "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" \
+    'has:"canManageTunnels":true' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+fi
 
 echo "== F-07 a Nuclei template is its owner's (HD-08) =="
 check_body "new member A uploads $TPL"                                         200 "$(upload "$TMP/a.jar" bola-x)"
