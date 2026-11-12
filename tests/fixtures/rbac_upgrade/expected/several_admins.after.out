@@ -16,6 +16,7 @@ system.nuclei_template_owners_backfill|1
 system.rbac_instance_settings_backfill|1
 system.rbac_legacy_grants_backfill|1
 system.rbac_legacy_grants_cutoff|1
+system.rbac_root_assigned|1
 system.user_skill_toggles_backfill|1
 system.user_skill_toggles_cutoff|1
 == legacy grants (email, grants) [step 1.8]
@@ -44,3 +45,7 @@ upg-member-a@e2e.local|active|0|f|f|f|f|[]
 f|||||t|14|t||f
 == instance settings marker (identity, wrote, tunnel source, capture source, tunnel candidates, capture candidates), one line per marker row
 false|true|||[]|[]
+== root (email, confirmed, assigned by, transfer pending) [step 2.5]
+upg-admin-c@e2e.local|f|automatic|f
+== root marker (user, rule, candidates, previous root), one line per marker row
+upg-admin-c|oldest_admin|3|

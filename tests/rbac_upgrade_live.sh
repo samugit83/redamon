@@ -16,7 +16,7 @@
 #     table or users column the run added is printed as a NOTE;
 #   - the scenario's checks: tests/fixtures/rbac_upgrade/checks.sql, then checks_after.sql
 #     (what the upgrade adds: legacy grants, Nuclei template owners, the instance settings
-#     row, their marker rows),
+#     row, the Root the boot chose, their marker rows),
 #     through psql, diffed against expected/<scenario>.after.out. The fixture itself is
 #     checked with checks.sql against expected/<scenario>.out before the run.
 #
@@ -24,7 +24,8 @@
 #   all       the startup list once
 #   twice     the startup list twice in a row (the second run must change nothing)
 #   parallel  two containers start the startup list at once (several webapp copies)
-#   failure   the list once; then the marker row of the backfill under test is deleted,
+#   failure   the list once; then the marker row of the backfill under test is deleted
+#             (with the data it wrote, when its skip reads the data: the Root choice),
 #             a psql session holds LOCK TABLE <its table> IN ACCESS EXCLUSIVE MODE, and
 #             only that backfill's line of the list runs again with lock_timeout=2000
 #             appended to its own DATABASE_URL: it must log a failure, exit 0 and leave
@@ -47,7 +48,7 @@
 #   RBAC_UPGRADE_OLD_IMAGE  pinned 7.7.2 image (default redamon-webapp:rbac-7.7.2)
 #   RBAC_UPGRADE_SCENARIOS  scenario name regex (default: all)
 #   RBAC_UPGRADE_FAIL_BACKFILL  the backfill the failure mode breaks: user-skill-toggles
-#                           (default), rbac-legacy-grants or rbac-instance-settings
+#                           (default), rbac-legacy-grants, rbac-instance-settings or rbac-root
 #   RBAC_UPGRADE_FAIL_SCRIPT / _FAIL_MARKER / _FAIL_TABLE / _FAIL_LOG
 #                           override that choice: its script, its AuditLog marker action,
 #                           the table it reads inside the marker's transaction, and the
@@ -60,6 +61,7 @@
 # Run:  bash tests/rbac_upgrade_live.sh all twice parallel failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-grants bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-instance-settings bash tests/rbac_upgrade_live.sh failure
+#       RBAC_UPGRADE_FAIL_BACKFILL=rbac-root bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_SCENARIOS='^one_admin$' bash tests/rbac_upgrade_live.sh twice
 #       bash tests/rbac_upgrade_live.sh serve several_admins
 set -uo pipefail
@@ -74,7 +76,11 @@ SERVE_PORT=3901
 
 # Each backfill reads its table right after it finds no marker, inside the transaction
 # that writes the marker: user_attack_skills for the user-skill toggles, users for the
-# legacy grants, instance_settings for the instance settings.
+# legacy grants, instance_settings for the instance settings and the Root. The Root choice
+# skips on its data, not on its marker, and writes one only when a scenario has an admin
+# with a password: d_rows is how many marker rows the first run left, d_undo removes the
+# Root it chose so the failed run and the third one choose again.
+d_rows='SELECT 1'; d_undo=''
 case "${RBAC_UPGRADE_FAIL_BACKFILL:-user-skill-toggles}" in
   user-skill-toggles)
     d_script=backfill-user-skill-toggles.mjs; d_marker=system.user_skill_toggles_backfill
@@ -85,7 +91,12 @@ case "${RBAC_UPGRADE_FAIL_BACKFILL:-user-skill-toggles}" in
   rbac-instance-settings)
     d_script=backfill-rbac-instance-settings.mjs; d_marker=system.rbac_instance_settings_backfill
     d_table=instance_settings; d_log='\[rbac\] could not fill the instance settings' ;;
-  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles, rbac-legacy-grants or rbac-instance-settings" >&2; exit 2 ;;
+  rbac-root)
+    d_script=backfill-rbac-root.mjs; d_marker=system.rbac_root_assigned
+    d_table=instance_settings; d_log='\[rbac\] could not recognise the Root'
+    d_rows="SELECT least(count(*), 1) FROM users WHERE role = 'admin' AND password <> ''"
+    d_undo="UPDATE instance_settings SET root_user_id = NULL, root_confirmed_at = NULL, root_assigned_by = NULL" ;;
+  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles, rbac-legacy-grants, rbac-instance-settings or rbac-root" >&2; exit 2 ;;
 esac
 FAIL_SCRIPT="${RBAC_UPGRADE_FAIL_SCRIPT:-$d_script}"
 FAIL_MARKER="${RBAC_UPGRADE_FAIL_MARKER:-$d_marker}"
@@ -95,7 +106,8 @@ FAIL_LOG="${RBAC_UPGRADE_FAIL_LOG:-$d_log}"
 # Audit rows the upgrade writes by design: left out of the row-count comparison and pinned
 # instead, by count, in checks.sql's markers and by checks_after.sql.
 UPGRADE_AUDIT_ACTIONS=(system.rbac_legacy_grants_cutoff system.rbac_legacy_grants_backfill
-                       system.nuclei_template_owners_backfill system.rbac_instance_settings_backfill)
+                       system.nuclei_template_owners_backfill system.rbac_instance_settings_backfill
+                       system.rbac_root_assigned)
 UPGRADE_AUDIT_SQL="$(printf "'%s'," "${UPGRADE_AUDIT_ACTIONS[@]}")"
 UPGRADE_AUDIT_SQL="${UPGRADE_AUDIT_SQL%,}"
 
@@ -353,11 +365,16 @@ mode_failure() {
   run_list "$IMAGE" "$TMP/run1.log"; list_ok "$1" "failure run 1" "$TMP/run1.log" $? || return
   verify "$1" "failure run 1"
 
-  local deleted
+  local deleted want
+  want="$(psql_db -c "$d_rows")"
   deleted="$(psql_db -c "WITH d AS (DELETE FROM audit_log WHERE action = '$FAIL_MARKER' RETURNING 1)
     SELECT count(*) FROM d")"
-  if [ "$deleted" = 1 ]; then pass "$1 failure: marker $FAIL_MARKER deleted"
-  else fail "$1 failure: marker $FAIL_MARKER deleted (rows: ${deleted:-none})"; return; fi
+  if [ -n "$want" ] && [ "$deleted" = "$want" ]; then pass "$1 failure: marker $FAIL_MARKER deleted ($deleted row(s))"
+  else fail "$1 failure: marker $FAIL_MARKER deleted (rows: ${deleted:-none}, expected ${want:-?})"; return; fi
+  if [ -n "$d_undo" ]; then
+    if psql_db -c "$d_undo" >/dev/null; then pass "$1 failure: the data it wrote undone too"
+    else fail "$1 failure: the data it wrote undone too"; return; fi
+  fi
 
   docker exec -d -e PGAPPNAME="$PFX-lock" "$PG" psql -X -U postgres -d redamon -qAt \
     -c "BEGIN; LOCK TABLE \"$FAIL_TABLE\" IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(600); COMMIT;"

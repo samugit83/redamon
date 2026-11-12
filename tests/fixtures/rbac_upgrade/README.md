@@ -9,7 +9,7 @@ user, host, scan result or secret is in any file here.
 | `<scenario>.sql` | a full dump (schema and data, `pg_dump --no-owner`), loadable alone into an empty Postgres 16 database |
 | `seed/<scenario>.sql` | the synthetic rows of the scenario, the only hand-written part of its dump |
 | `checks.sql` | the scenario checks (`psql -At`, `\|` between fields), run on the fixture and after every startup list |
-| `checks_after.sql` | what the upgrade adds by design (legacy grants, Nuclei template owners, the instance settings row, their markers, the identity columns and tables at their defaults), run after every startup list only |
+| `checks_after.sql` | what the upgrade adds by design (legacy grants, Nuclei template owners, the instance settings row, the Root the boot chose, their markers, the identity columns and tables at their defaults), run after every startup list only |
 | `expected/<scenario>.out` | what `checks.sql` prints on the scenario's dump |
 | `expected/<scenario>.after.out` | what `checks.sql` then `checks_after.sql` must print after the new image's startup list |
 
@@ -59,7 +59,10 @@ files and no `nuclei_templates` row; step 2.4: one `instance_settings` row holdi
 row the readers pick (enabled first, then saved last, then the lowest id) and the capture
 settings of the admin row saved last, both sources named, defaults where nothing is
 configured, and one marker recording the identity switch off, the sources and the candidate
-ids). A step that changes the upgrade by
+ids; step 2.5: the Root the boot chooses in that row, the only admin with a password or the
+oldest of several (created_at, then id), automatic and unconfirmed, with one
+`system.rbac_root_assigned` row naming it, the rule and the candidate count; no Root and no
+row when no admin has a password). A step that changes the upgrade by
 design appends its queries to `checks_after.sql`, its lines to every `.after.out`, and the
 audit actions it writes to `UPGRADE_AUDIT_ACTIONS` in the harness (left out of the row-count
 comparison, pinned by count in the markers section instead).

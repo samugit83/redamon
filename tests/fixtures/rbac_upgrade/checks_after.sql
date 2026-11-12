@@ -61,3 +61,16 @@ SELECT i.tunnels_enabled, i.ngrok_authtoken, i.chisel_server_url, i.chisel_auth,
 SELECT after->>'identity', after->>'wrote', after->>'tunnelSourceUserId', after->>'captureSourceUserId',
        after->'tunnelCandidates', after->'captureCandidates'
   FROM audit_log WHERE action = 'system.rbac_instance_settings_backfill' ORDER BY created_at;
+
+-- The boot recognises the Root (step 2.5): the only admin with a password, or the oldest of
+-- several (created_at, then id), automatic and unconfirmed until the host confirms it; no Root
+-- when no admin has a password (the row stays as the instance settings backfill wrote it). One
+-- marker records the choice, and a second run, or a second copy, changes nothing.
+\echo == root (email, confirmed, assigned by, transfer pending) [step 2.5]
+SELECT (SELECT email FROM users WHERE id = i.root_user_id), i.root_confirmed_at IS NOT NULL,
+       i.root_assigned_by, i.pending_root_transfer_to IS NOT NULL
+  FROM instance_settings i;
+
+\echo == root marker (user, rule, candidates, previous root), one line per marker row
+SELECT target_id, after->>'rule', after->>'candidateCount', after->>'previousRootUserId'
+  FROM audit_log WHERE action = 'system.rbac_root_assigned' ORDER BY created_at;

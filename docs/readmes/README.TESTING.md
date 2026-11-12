@@ -240,6 +240,8 @@ which would decide the stack's real members' grants. It needs the same container
 
 `tests/rbac_instance_settings_live.sh` checks the instance settings (step 2.4) on a disposable instance: it starts `tests/rbac_upgrade_live.sh serve tunnel_rows` with `RBAC_IDENTITY_ENABLED=true` (its own Postgres and webapp on 127.0.0.1:3901, never the running stack), then checks that the boot backfill copied the tunnel and capture rows in force, that the readers answer the instance row, that an admin's TrafficMind and tunnel changes through `/api/admin/instance-settings` reach the proxy config and are mirrored into their source user rows (the 7.7.x reading), that the user settings PUT refuses a real change with 409, that the `tunnels` legacy holder changes the tunnel but not the capture policy, that the audit names no credential and that the tunnel sync refuses a call without the sandbox's bearer. It needs a `redamon-webapp:latest` with the step and SKIPs otherwise.
 
+`tests/rbac_root_live.sh` checks the Root (step 2.5) on the same disposable instance, scenario `several_admins`, with `RBAC_IDENTITY_ENABLED=true` and then off. Switch on: the boot chose the oldest admin with a password, automatic and unconfirmed, with one `system.rbac_root_assigned` row; `/api/auth/me` gives each account its type and every admin the unconfirmed Root (the header banner's data); another admin's demote, edit, disable, password reset, sign-out, act-as and delete of Root each answer 403 `root_protected`, change nothing and are audited; Root's own deletion is the 400 every account gets and its own demotion is refused; `set-root` in the instance's webapp confirms it without signing anyone out, and the admins' answer then reads confirmed. Switch off: the Root is still chosen, but `/api/auth/me` and the routes answer as after Phase 1 and nothing is refused. It needs a `redamon-webapp:latest` with the step and SKIPs otherwise.
+
 `tests/rbac_account_status_live.sh` checks account status in whichever state the webapp's `RBAC_IDENTITY_ENABLED` is. Switch on: an admin disables `rbac-member-c`, whose open cookie is refused at once, whose sign-in gets the generic answer (audited `auth.login.disabled`) and whose MCP token (inserted by SQL with a random hash) is revoked, the password waiting on hold; a second disable changes nothing; enabled again, the member signs in with the same password; an admin's "Sign out everywhere" refuses the member's new cookie, and the member's own (`/api/auth/sessions/revoke-all`) clears this browser's cookie and refuses the other browser's. Each change has one audit row. Switch off: disable, revoke-sessions and revoke-all answer 404, and an account disabled by SQL as the switch-on route does stays out and is restored by enable, which stays open. It reads `users`, `mcp_access_tokens` and `audit_log` through `psql`.
 
 `tests/test_e2e_bola_live.sh` is the two-user cross-tenant test with its own fixtures (`webapp/scripts/e2e-bola-seed.mjs`: `bola-*@e2e.local`, removed before and after the run by `e2e-bola-cleanup.mjs`, both fed on stdin): ownership of projects, graph, exports, conversations, presets, scans and user settings, the admin's act-as chain, and every case of the RBAC hardening (shell sessions, tunnel read and write, template overwrite, emergency stop scope, MCP reload, terminal ticket, a stdio MCP test, the browser's project read) for a member created after the upgrade and for `bola-legacy@e2e.local`, who holds the three legacy grants. It never presses the instance-wide stop, reloads the agent's MCP set or writes a tunnel.
@@ -255,8 +257,9 @@ capture rows, members with and without passwords), made with the pinned image
 on. It checks each fixture with `checks.sql` against `expected/<scenario>.out` before the run;
 after every run it asserts that the row count of every table and every `users` column are
 unchanged, and diffs `checks.sql` then `checks_after.sql` (what the upgrade adds: legacy
-grants, Nuclei template owners, the identity columns at their defaults, the empty
-instance-settings and invite tables) against `expected/<scenario>.after.out`.
+grants, Nuclei template owners, the identity columns at their defaults, the instance settings
+row and the Root the boot chose in it, the empty invite table) against
+`expected/<scenario>.after.out`.
 
 ```bash
 bash tests/rbac_upgrade_live.sh all twice parallel failure   # the regression chain
@@ -267,7 +270,9 @@ bash tests/rbac_upgrade_live.sh serve several_admins   # 127.0.0.1:3901 until Ct
 `twice` runs the list twice; `parallel` starts two containers at once (several webapp copies);
 `failure` deletes a backfill's marker, holds a lock on the table it reads and re-runs only that
 backfill with a 2 s `lock_timeout`: it must log the failure, exit 0 and write no marker, and the
-next run completes it. `serve` boots the server on the scenario database with fake secrets, the
+next run completes it (`RBAC_UPGRADE_FAIL_BACKFILL` picks the backfill: `user-skill-toggles`,
+`rbac-legacy-grants`, `rbac-instance-settings` or `rbac-root`; the Root choice skips on its data,
+so that preset also clears the Root it chose). `serve` boots the server on the scenario database with fake secrets, the
 disposable instance for checks that would move or sign out the dev stack's own admin. It needs
 Docker, `redamon-webapp:latest`, `redamon-webapp:rbac-7.7.2` and `postgres:16-alpine`, and
 prints `SKIP` without one (it never pulls or builds); as a `*_live.sh` it is never in the gate.
