@@ -56,15 +56,16 @@ function changedTunnelFields(existing: Record<string, unknown> | null, body: Rec
 /**
  * Whether the signed-in account may change the instance tunnel (HD-06, F-05): an admin,
  * the member who kept the `tunnels` legacy grant, or a pre-upgrade account under the
- * escape hatch. `record: false` asks without counting a use of that hatch.
+ * escape hatch. `record: false` asks without counting a use of that hatch. The PUT decides on
+ * a `fresh` read, so a demoted admin or a removed grant never changes the instance's tunnel.
  */
-async function tunnelAccess(record: boolean): Promise<{ access: SharedToolAccess; actor: AuditActor }> {
-  const session = await getSession()
+async function tunnelAccess(record: boolean, { fresh = false }: { fresh?: boolean } = {}): Promise<{ access: SharedToolAccess; actor: AuditActor }> {
+  const session = await getSession({ fresh })
   if (!session) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
   const actor = auditActorOf(sessionActor(session))
   // getSession read the role from the database: an admin needs no second read.
   if (session.role === 'admin') return { access: { allowed: true, via: 'admin' }, actor }
-  const principal = await loadPrincipal(session.userId)
+  const principal = await loadPrincipal(session.userId, { fresh })
   if (!principal) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
   return { access: await sharedToolAccess(principal, 'tunnels', { record }), actor }
 }
@@ -377,7 +378,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     let tunnelActor = auditActorOf(null)
     let tunnelVia = 'internal'
     if (tunnelChanges.length && !isInternalRequest(request)) {
-      const { access, actor } = await tunnelAccess(true)
+      const { access, actor } = await tunnelAccess(true, { fresh: true })
       if (!access.allowed || !access.via) {
         return NextResponse.json(
           { error: TUNNELS_ADMIN_ONLY, code: 'tunnels_admin_only', fields: tunnelChanges },

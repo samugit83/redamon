@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireAdmin, type Session } from '@/lib/session'
+import { requireAdmin, type Session, type SessionOptions } from '@/lib/session'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -21,8 +21,8 @@ import {
 
 const PERMISSION = 'users:assign_permissions'
 
-async function reviewer(): Promise<Session | NextResponse> {
-  const session = await requireAdmin()
+async function reviewer(opts: SessionOptions = {}): Promise<Session | NextResponse> {
+  const session = await requireAdmin(opts)
   if (session instanceof NextResponse && session.status === 403) {
     return NextResponse.json(
       { error: 'Only an administrator reviews legacy access.', code: 'forbidden', permission: PERMISSION },
@@ -43,7 +43,8 @@ export const GET = withRouteErrors('Could not read the legacy access review', as
 const invalid = (code: string, error: string) => NextResponse.json({ error, code }, { status: 400 })
 
 export const POST = withRouteErrors('Could not record the legacy access decision', async (request: NextRequest) => {
-  const session = await reviewer()
+  // A decision changes another account's grants and may close its terminals: a stale admin never makes it.
+  const session = await reviewer({ fresh: true })
   if (session instanceof NextResponse) return session
   if (!sameOrigin(request)) return crossOriginResponse(request)
   const parsed = await readJsonBody(request)
