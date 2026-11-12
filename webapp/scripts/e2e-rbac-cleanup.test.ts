@@ -262,6 +262,33 @@ describe('audit rows', () => {
     expect(s.auditRowsDeleted).toBe(5 + 1)
   })
 
+  test('the rows of a fixture account deleted through the Users page go, found by its user.delete row', async () => {
+    // DELETE /api/users/[id] records the account's address in `before`: once the user row is
+    // gone, that row is the only record that the id was a fixture's (the P0-18 throwaway).
+    db.t.auditLog.push(
+      { id: 'a-del-thrown', actorId: 'u-fa', targetType: 'user', targetId: 'u-thrown', action: 'user.delete', before: { email: 'rbac-throwaway@e2e.local' }, after: {} },
+      { id: 'a-login-thrown', actorId: 'u-thrown', targetType: 'user', targetId: 'u-thrown', action: 'auth.login.success', after: {} },
+      { id: 'a-real-on-thrown', actorId: 'u-real', targetType: 'user', targetId: 'u-thrown', action: 'user.update', after: {} },
+      // A real account and a near-miss address deleted the same way: their rows stay.
+      { id: 'a-del-bob', actorId: 'u-real', targetType: 'user', targetId: 'u-bob', action: 'user.delete', before: { email: 'bob@example.com' }, after: {} },
+      { id: 'a-login-bob', actorId: 'u-bob', targetType: 'user', targetId: 'u-bob', action: 'auth.login.success', after: {} },
+      { id: 'a-del-near', actorId: 'u-real', targetType: 'user', targetId: 'u-near2', action: 'user.delete', before: { email: 'rbac-x@example.com' }, after: {} },
+      { id: 'a-login-near2', actorId: 'u-near2', targetType: 'user', targetId: 'u-near2', action: 'auth.login.success', after: {} },
+    )
+    db.t.actAsAudit.push({ id: 'x3', adminId: 'u-real', targetUserId: 'u-thrown' }, { id: 'x4', adminId: 'u-real', targetUserId: 'u-bob' })
+    for (const table of CHECKPOINT_TABLES) db.t[table].push({ thread_id: 'u-thrown:p-gone:sess' }, { thread_id: 'u-bob:p-gone:sess' })
+    const s = await run()
+    for (const table of CHECKPOINT_TABLES) {
+      expect(threads(table)).toContain('u-bob:p-gone:sess')
+      expect(threads(table)).not.toContain('u-thrown:p-gone:sess')
+    }
+    expect(db.t.auditLog.map(a => a.id).sort()).toEqual([
+      'a-del-bob', 'a-del-near', 'a-fail-audit', 'a-fail-near', 'a-fail-real', 'a-login-bob', 'a-login-near2', 'a-real',
+    ])
+    expect(db.t.actAsAudit.map(a => a.id)).toEqual(['x2', 'x4'])
+    expect(s.auditRowsDeleted).toBe(5 + 3 + 1 + 1)
+  })
+
   test('the fixed id is the seed\'s', () => {
     const seedSource = readFileSync(path.join(__dirname, 'e2e-rbac-seed.mjs'), 'utf8')
     expect(seedSource).toMatch(new RegExp(`key: 'DELETED',[^}]*id: '${DELETED_FIXTURE_ID}'`))

@@ -22,7 +22,9 @@
  * The matrix deletes its throwaway account (`rbac-deleted@e2e.local`) by SQL in the
  * middle of a run, so it is no longer a user here: the seed gives it a fixed id
  * (DELETED_FIXTURE_ID) and its rows are matched by that id, and failed sign-ins of any
- * fixture address by the address they record.
+ * fixture address by the address they record. A fixture account deleted through
+ * DELETE /api/users/[id] (the Users page) is gone too, but that route's `user.delete` row
+ * keeps its address in `before`: a fixture address there names the id.
  *
  * Idempotent: a second run finds nothing and prints CLEANED=0.
  *
@@ -96,6 +98,16 @@ export async function cleanupRbacFixtures({ prisma, graph, purgeWorkspace, warn 
   const users = candidates.filter(u => FIXTURE_EMAIL.test(u.email))
   const userIds = users.map(u => u.id)
   const kept = new Set()
+  const deletedAccounts = await prisma.auditLog.findMany({
+    where: {
+      action: 'user.delete', targetType: 'user',
+      OR: FIXTURE_PREFIXES.map(prefix => ({ before: { path: ['email'], string_starts_with: prefix } })),
+    },
+    select: { targetId: true, before: true },
+  })
+  const deletedIds = deletedAccounts
+    .filter(r => r.targetId && FIXTURE_EMAIL.test(String(r.before?.email ?? '')))
+    .map(r => r.targetId)
 
   const projects = userIds.length
     ? await prisma.project.findMany({ where: { userId: { in: userIds } }, select: { id: true, userId: true } })
@@ -123,7 +135,7 @@ export async function cleanupRbacFixtures({ prisma, graph, purgeWorkspace, warn 
     if (projectIds.length && !graph) throw new Error('no Neo4j session')
     summary.graphNodesDeleted = await clearFixtureGraph(graph, projectIds)
     summary.checkpointRowsDeleted = await deleteFixtureCheckpoints(prisma, {
-      userIds: [...removable, DELETED_FIXTURE_ID], projectIds,
+      userIds: [...removable, DELETED_FIXTURE_ID, ...deletedIds], projectIds,
     })
   } catch (err) {
     warn(`CLEANUP_ERROR: the fixtures' graph or agent checkpoints could not be cleared (${err?.code || err?.name || 'error'}); no fixture row was deleted, rerun the cleanup`)
@@ -146,7 +158,7 @@ export async function cleanupRbacFixtures({ prisma, graph, purgeWorkspace, warn 
   // Sign-ins, act-as and the routes the matrix calls write these rows; their actor
   // or target is a fixture account or project, so nothing else is touched. A failed
   // sign-in names no user, only the address it tried.
-  const accountIds = [...removable, DELETED_FIXTURE_ID]
+  const accountIds = [...removable, DELETED_FIXTURE_ID, ...deletedIds]
   const keptEmails = new Set(users.filter(u => kept.has(u.id)).map(u => u.email))
   const signIns = await prisma.auditLog.findMany({
     where: { actorId: null, OR: FIXTURE_PREFIXES.map(prefix => ({ after: { path: ['email'], string_starts_with: prefix } })) },
