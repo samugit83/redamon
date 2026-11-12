@@ -58,6 +58,15 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
   `upstreamErrorResponse`. The browser reads a failure with `readApiError` /
   `fetchJson` ([apiError.ts](src/lib/apiError.ts)), whose message carries the
   code and HTTP status, so a screenshot is enough to tell the causes apart.
+- **NEVER check ownership or admin rights outside
+  [src/lib/authz/](src/lib/authz/); call `can()` / `projectAccess()`.** A route
+  asks its permission through `requirePermission` ([guards.ts](src/lib/authz/guards.ts)),
+  `requireSelfPermission` or `requireSessionPermission`, lists projects through
+  `visibleProjectsWhere()` and per-user rows through `ownsRow()`; an inline
+  `project.userId === user` or `role === 'admin'` is a second policy that the
+  next permission or sharing change misses ([authzStaticGuard.test.ts](src/lib/authz/authzStaticGuard.test.ts)
+  fails on one). The route's manifest entry names the same permission
+  ([routePermissions.test.ts](src/lib/authz/routePermissions.test.ts)).
 
 ---
 

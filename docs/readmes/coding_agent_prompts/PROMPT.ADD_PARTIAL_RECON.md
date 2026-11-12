@@ -280,6 +280,8 @@ File: `webapp/src/app/api/recon/[projectId]/partial/route.ts`
 
 Already passes `user_targets: body.user_targets || null`. No changes needed for new tools.
 
+The route asks `recon:partial` on the project (`requirePermission(request, 'recon:partial', { projectId })`) and the graph-input route `recon:read`. A NEW route for a tool (its own start, stop or input list) does the same with the permission of what it does, the `projectId` key written literally, and names that permission in the route manifest (`node scripts/gen-route-manifest.mjs` from `webapp/`; `webapp/src/lib/authz/routePermissions.test.ts` fails when the two differ). Never an inline owner check: `authzStaticGuard.test.ts` fails on one.
+
 ### 7. Backend: Orchestrator
 
 Files: `recon_orchestrator/models.py` + `recon_orchestrator/api.py`

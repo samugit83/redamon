@@ -1337,6 +1337,8 @@ Partial Recon lets you run any single tool from the pipeline independently, with
 
 A partial run applies the Mute Rules that are active on new scans to what it wrote, in a `finally` and with its own start time, exactly as a full run does ([How a Run Ends](#-how-a-run-ends-prune-and-mute-rules)). It prunes nothing. The webapp refuses to start one while an "apply to current graph" is running.
 
+Who may start one: the start and stop routes ask `recon:partial` on the project, the graph-input lists `recon:read`, and a full scan's start `recon:scan` (plus `recon:overwrite` for an overwrite run); with `RBAC_PERMISSIONS_ENABLED` off every project owner holds all of them, as before. A *Read-only analyst* reads the results and is refused a start (403 naming `recon:partial`).
+
 > **[Wiki: Recon Pipeline Workflow -- Partial Recon](https://github.com/samugit83/redamon/wiki/Recon-Pipeline-Workflow#partial-recon)**
 
 ---

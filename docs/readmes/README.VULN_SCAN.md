@@ -346,7 +346,7 @@ Custom nuclei templates (`mcp/nuclei-templates/`) can be uploaded, viewed, and d
 - **Select** templates per project via checkboxes — only selected templates run during scans
 - **View** all uploaded templates with severity badges and metadata
 - **Delete** individual templates
-- API: `GET/POST/DELETE /api/nuclei-templates`
+- API: `GET/POST/DELETE /api/nuclei-templates`; uploading or deleting asks `scan:custom_templates`, and replacing or deleting another account's template, or making one an instance template (`PATCH`), `platform:nuclei_templates` (an admin; with `RBAC_PERMISSIONS_ENABLED` on, an admin profile that holds it or a member's override)
 
 **How it works:**
 - The orchestrator passes the templates' host path as `HOST_CUSTOM_TEMPLATES_PATH`; it is mounted read-only at `/custom-templates`, and each selected template is passed as `-t /custom-templates/{path}`

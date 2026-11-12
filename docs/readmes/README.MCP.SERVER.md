@@ -250,6 +250,12 @@ Agent-side bounds (the agent **does** have an `env_file`, so `.env` reaches it):
   discarding the current graph.
 - **An Agent Profile picks the starting permission set** (§3.1). It is a label
   and a suggestion, never an authorization input.
+- **With `RBAC_PERMISSIONS_ENABLED` on, you tick only what you may do yourself**
+  (§6, "Your own permissions cap every token"): a scope whose RedAmon permission
+  you lack is shown disabled, tagged "limited by your permissions" with the
+  permission it needs, and the mint refuses it before asking for your password.
+  Minting at all needs `self:mcp_tokens` (gone for everyone while
+  `MCP_SERVER_ENABLED` is off).
 - **`triage:write` is the verdict write**, and a verdict cannot be undone from
   this surface except by another verdict. It writes
   `triage_source = 'human'` deliberately: a third provenance value would make
@@ -565,6 +571,38 @@ return - saved graph views, remediations, queued jobs - answer 404 for another
 user's project too: the shared browser guard has no log-only mode
 (`ACCESS_ENFORCE` is ignored), so a different user cannot plant a row in this
 project for a token to execute later through `run_graph_view`.
+
+### Your own permissions cap every token
+
+A token is a machine acting for one person, so it never does more than that
+person could. With `RBAC_PERMISSIONS_ENABLED` on (identity switch on too), each
+scope maps onto the RedAmon permissions whose registry entry names it
+(`webapp/src/lib/mcp/scopePermissions.ts`; `recon:read` needs `recon:read` and
+`graph:read`, `kali:exec` needs `agent:kali_exec`, and so on), and a scope needs
+ALL of them; a scope no permission maps to is never usable.
+
+- **Mint and widen.** A scope the owner cannot use is refused with 403
+  `{error, code: 'forbidden', permission, scope}`, read fresh (a credential is
+  being granted), after the body checks and before the password, so it spends
+  no step-up attempt. A widening edit asks only about the scopes it adds;
+  narrowing and revoking are never refused.
+- **Every call.** `resolveMcpToken` keeps only the minted scopes the owner can
+  use now (`usableScopes`): a set change, a deny override, an instance cap or a
+  disabled account stops the token's next call, within the authorization cache
+  bound, with the usual "This token is missing the required scope" error, and
+  the scope comes back with the permission. The token row is never rewritten.
+  If the owner's permissions cannot be read the call is refused (JSON-RPC
+  -32603 / HTTP 500) and the webapp logs `[rbac] mcp_scope_cap_failed`; it never
+  falls back to the minted scopes.
+- **The token screen.** `GET /api/users/[id]/mcp-tokens` adds
+  `ungrantableScopes` (scope -> the permissions it lacks) with the switch on;
+  the scope checklist, the Agent Profile ticks and the onboarding pack skip
+  those scopes.
+- **No act-as.** A token's owner's own permissions decide, never an admin's
+  who acts as them; minting stays self-only.
+
+With the switch off nothing is read and the minted scopes are the usable ones,
+as before.
 
 ### The route is bearer-only
 

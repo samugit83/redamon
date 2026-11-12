@@ -733,7 +733,13 @@ and a page under `webapp/src/app/plugins/`.
   outlives a demotion by up to seven days. An admin acting as another user keeps these rights
   and is recorded as the actor.
   Every signed-in user sees the contributions of enabled plugins; only those who hold
-  `platform:plugins` see the management controls.
+  `platform:plugins` see the management controls (`GET /api/plugins` and
+  `GET /api/plugins/[pluginId]` answer `managesPlugins`, read fresh). A refusal answers 403
+  `{code: 'admin_required', permission: 'platform:plugins'}`. With the permissions switch on,
+  the member-side routes ask their own permissions too: using plugins (the page, contributions,
+  actions, jobs, the skill picker, the override views) `plugins:use`, approving, rejecting,
+  resetting or deleting a proposed skill version `plugins:approve_overrides`; both are in
+  *Default member*, so nothing changes until an account is given a narrower set.
 - **Audit.** Every lifecycle operation, every override proposal, approval and reset, and
   every permission grant is recorded with the existing
   [`writeAudit`](../../webapp/src/lib/audit.ts#L17) into the `AuditLog` table.
