@@ -42,6 +42,10 @@ vi.mock('@/hooks/usePasswordPolicy', () => ({ usePasswordPolicy: () => null }))
 
 import UsersPage from './page'
 
+// With the identity switch on the page's create action is "Create with a temporary password"
+// beside "Invite user" (step 2.9, ID-36); off it is "Create User".
+const CREATE_ACTION = /^(Create User|Create with a temporary password)$/
+
 const PW = 'Temporary-orchid-42'
 const REQUIRE = 'Require a change at first sign-in'
 const typeIn = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } })
@@ -97,7 +101,7 @@ describe("set someone else's password (identity switch on)", () => {
 describe('create an account with a temporary password (identity switch on)', () => {
   test('offered once a password is typed, ticked by default, and sent', async () => {
     render(<UsersPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create User' }))
+    fireEvent.click(screen.getByRole('button', { name: CREATE_ACTION }))
     expect(screen.queryByRole('checkbox', { name: REQUIRE })).not.toBeInTheDocument()
     typeIn('Name *', 'New Person')
     typeIn('Email *', 'new-person@e2e.local')

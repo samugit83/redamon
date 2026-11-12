@@ -11,6 +11,7 @@ import { WhatChangedCard } from '@/components/admin/WhatChangedCard'
 import { AccountStatusActions, AccountStatusBadge } from '@/components/admin/AccountStatusActions'
 import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
+import { InviteRowActions, InviteUserModal } from '@/components/admin/InviteUserModal'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import styles from './page.module.css'
@@ -18,6 +19,7 @@ import styles from './page.module.css'
 type ModalState =
   | { type: 'none' }
   | { type: 'create' }
+  | { type: 'invite' }
   | { type: 'password'; userId: string; userName: string; userEmail: string; targetIsAdmin: boolean }
   | { type: 'delete'; userId: string; userName: string }
   | { type: 'deleteAdmin'; userId: string; userName: string }
@@ -294,9 +296,21 @@ export default function UsersPage() {
     <div className={styles.page}>
       <div className={styles.header}>
         <h1 className={styles.title}>User Management</h1>
-        <button className="primaryButton" onClick={() => openModal({ type: 'create' })}>
-          Create User
-        </button>
+        {identity ? (
+          // Step 2.9 (ID-36): a link is the default, so the admin never knows a working password.
+          <div className={styles.actions}>
+            <button className="primaryButton" onClick={() => openModal({ type: 'invite' })}>
+              Invite user
+            </button>
+            <button className={styles.actionButton} onClick={() => openModal({ type: 'create' })}>
+              Create with a temporary password
+            </button>
+          </div>
+        ) : (
+          <button className="primaryButton" onClick={() => openModal({ type: 'create' })}>
+            Create User
+          </button>
+        )}
       </div>
 
       <WhatChangedCard />
@@ -355,7 +369,15 @@ export default function UsersPage() {
                 <td className={styles.td}>{user._count?.projects ?? 0}</td>
                 <td className={styles.td}>
                   <div className={styles.actions}>
-                    {(user.id === authUser?.id || user.role !== 'admin' || manageAdmins) && (
+                    {identity && user.status === 'invited' && (
+                      <InviteRowActions
+                        user={user}
+                        buttonClassName={styles.actionButton}
+                        dangerClassName={styles.deleteButton}
+                        onChanged={() => void refetchUsers?.()}
+                      />
+                    )}
+                    {(user.id === authUser?.id || user.role !== 'admin' || manageAdmins) && !(identity && user.status === 'invited') && (
                       <button
                         className={styles.actionButton}
                         onClick={() => openModal({
@@ -395,6 +417,8 @@ export default function UsersPage() {
           </tbody>
         </table>
       )}
+
+      <InviteUserModal isOpen={modal.type === 'invite'} onClose={closeModal} onInvited={() => void refetchUsers?.()} />
 
       {/* Create User Modal */}
       <Modal isOpen={modal.type === 'create'} onClose={closeModal} title="Create User">

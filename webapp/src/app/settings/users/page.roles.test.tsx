@@ -39,6 +39,10 @@ vi.mock('@/hooks/useUsers', () => ({
 
 import UsersPage from './page'
 
+// With the identity switch on the page's create action is "Create with a temporary password"
+// beside "Invite user" (step 2.9, ID-36); off it is "Create User".
+const CREATE_ACTION = /^(Create User|Create with a temporary password)$/
+
 const row = (id: string, name: string, role: string) =>
   ({ id, name, email: `${id}@x.z`, role, status: 'active', hasPassword: true, _count: { projects: 0 } })
 
@@ -182,7 +186,7 @@ describe('changing a role', () => {
 })
 
 describe('creating a user', () => {
-  const open = () => fireEvent.click(screen.getByRole('button', { name: 'Create User' }))
+  const open = () => fireEvent.click(screen.getByRole('button', { name: CREATE_ACTION }))
   const fill = () => {
     fireEvent.change(dialog().getByLabelText('Name *'), { target: { value: 'Nina' } })
     fireEvent.change(dialog().getByLabelText('Email *'), { target: { value: 'nina@x.z' } })
