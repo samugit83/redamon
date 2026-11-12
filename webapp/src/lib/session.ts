@@ -128,22 +128,43 @@ export async function getAuthzIdentity(opts: SessionOptions = {}): Promise<Authz
   return { session, principal, actingAs: target && target.id !== principal.id ? target : null }
 }
 
+/** Only an admin acts as anyone: anyone else's act-as cookie is ignored. */
+function actsAsOthers(account: { role: string }): boolean {
+  return account.role === 'admin'
+}
+
+/**
+ * The act-as rule: whether `actor` may act as `target`. The act-as cookie (actAsTarget) and
+ * `can()`'s `actingAs` both answer to it, so a caller that builds an `actingAs` by hand cannot
+ * skip it. Only an admin acts as anyone, and nobody acts as Root (identity switch on): a cookie
+ * minted before the account became Root, or before the switch, acts for nobody. Acting as
+ * oneself is no act-as.
+ */
+export async function mayActAs(
+  actor: Pick<Principal, 'id' | 'role'>,
+  target: Pick<Principal, 'id' | 'role'>,
+  opts: SessionOptions = {},
+): Promise<boolean> {
+  if (!actsAsOthers(actor)) return false
+  if (target.id === actor.id) return true
+  // Root is an admin, so a member target costs no instance read.
+  return target.role !== 'admin' || !(await isRootAccount(target.id, opts))
+}
+
 /**
  * The account an admin session is acting as: the act-as cookie must have been minted
- * by this admin and name an account that still exists. Null for anyone else.
+ * by this admin and name an account that still exists, which the act-as rule allows.
+ * Null for anyone else.
  */
 async function actAsTarget(session: Session, opts: SessionOptions = {}): Promise<Principal | null> {
-  if (session.role !== 'admin') return null
+  if (!actsAsOthers(session)) return null
   const cookieStore = await cookies()
   const actAsToken = cookieStore.get(ACT_AS_COOKIE_NAME)?.value
   if (!actAsToken) return null
   const claims = await verifyActAsToken(actAsToken)
   if (!claims || claims.sub !== session.userId) return null
   const target = await loadPrincipal(claims.act, opts)
-  // Nobody acts as Root (identity switch on). A cookie minted before it was Root, or before
-  // the switch, acts for nobody; Root is an admin, so a member target costs no instance read.
-  if (target && target.role === 'admin' && target.id !== session.userId && await isRootAccount(target.id, opts)) return null
-  return target
+  return target && (await mayActAs({ id: session.userId, role: session.role }, target, opts)) ? target : null
 }
 
 /**

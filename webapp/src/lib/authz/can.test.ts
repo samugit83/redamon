@@ -8,7 +8,8 @@
  *
  * Under act-as the project is the acted-as account's (as `getEffectiveUser` answers today), a
  * member permission needs both people to hold it (§4.7: the admin can use only what both may do),
- * and an administration or platform permission stays the real person's.
+ * and an administration or platform permission stays the real person's. An `actingAs` the act-as
+ * rule refuses (session.ts `mayActAs`: only an admin, never as Root) throws: a caller bug.
  *
  * With RBAC_PERMISSIONS_ENABLED on unless a test says otherwise (permissions.flags.off.test.ts
  * holds the switch-off side). Prisma (projects, the instance row, the Root's account, custom
@@ -22,11 +23,13 @@ const db = vi.hoisted(() => ({
   users: new Map<string, Record<string, unknown>>(),
   projects: new Map<string, { id: string; userId: string }>(),
   instance: null as Record<string, unknown> | null,
+  sets: new Map<string, { id: string; kind: string; name: string; permissions: string[] }>(),
   failProjects: false,
 }))
 const userFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => db.users.get(where.id) ?? null)
 const instanceFindUnique = vi.fn(async () => (db.instance ? { ...db.instance } : null))
-const setFindMany = vi.fn(async () => [])
+const setFindMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+  where.id.in.flatMap((id) => (db.sets.has(id) ? [{ ...db.sets.get(id)! }] : [])))
 const projectFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => {
   if (db.failProjects) throw Object.assign(new Error('db down'), { code: 'P1001' })
   const row = db.projects.get(where.id)
@@ -36,12 +39,12 @@ vi.mock('@/lib/prisma', () => ({
   default: {
     user: { findUnique: (a: { where: { id: string } }) => userFindUnique(a) },
     instanceSettings: { findUnique: () => instanceFindUnique() },
-    permissionSet: { findMany: () => setFindMany() },
+    permissionSet: { findMany: (a: { where: { id: { in: string[] } } }) => setFindMany(a) },
     project: { findUnique: (a: { where: { id: string } }) => projectFindUnique(a) },
   },
 }))
 
-import { can } from './can'
+import { can, ActAsNotAllowedError } from './can'
 import { setFlagsForTests } from './flags'
 import { clearCapabilityCachesForTests, type CapabilityPrincipal } from './capabilities'
 import { clearInstanceRootCacheForTests } from './root'
@@ -62,7 +65,9 @@ beforeEach(() => {
   db.projects.set('P-alice', { id: 'P-alice', userId: 'alice' })
   db.projects.set('P-bob', { id: 'P-bob', userId: 'bob' })
   db.projects.set('P-admin', { id: 'P-admin', userId: 'admin-1' })
+  db.projects.set('P-admin-2', { id: 'P-admin-2', userId: 'admin-2' })
   db.instance = { rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null, defaultMemberSetId: null }
+  db.sets.clear()
   db.failProjects = false
   for (const fn of [userFindUnique, instanceFindUnique, setFindMany, projectFindUnique]) fn.mockClear()
   setFlagsForTests({ identity: true, permissions: true })
@@ -188,11 +193,103 @@ describe('can() under act-as (§4.7: the target\'s project, both people\'s membe
     const opts = { actingAs: member('alice', { permissionSets: ['builtin:no-access'] }) }
     expect(await can(admin('admin-1'), 'users:read', opts)).toMatchObject({ allowed: true })
     expect(await can(admin('admin-1'), 'platform:emergency_stop', opts)).toMatchObject({ allowed: true })
-    expect(await can(member('bob'), 'users:read', { actingAs: member('alice') })).toMatchObject({ allowed: false, status: 403 })
+    // A member handed an actingAs is a caller bug, not a refusal (the act-as rule below).
+    await expect(can(member('bob'), 'users:read', { actingAs: member('alice') })).rejects.toThrow(ActAsNotAllowedError)
   })
 
   test('acting as oneself is no act-as', async () => {
     const self = admin('admin-1')
     expect((await can(self, 'recon:read', { actingAs: self, projectId: 'P-admin' })).allowed).toBe(true)
+  })
+})
+
+describe('can() holds an actingAs to the act-as rule (session.ts mayActAs: only an admin, never as Root)', () => {
+  test('a member handed an actingAs throws a coded error, for a member and an administration permission alike, before anything is read', async () => {
+    for (const permission of ['recon:read', 'recon:scan', 'users:read'] as const) {
+      await expect(can(member('bob'), permission, { actingAs: member('alice'), projectId: 'P-alice' }))
+        .rejects.toMatchObject({ name: 'ActAsNotAllowedError', message: expect.stringMatching(/^\[rbac\] act_as_refused: /) })
+    }
+    await expect(can(member('bob'), 'recon:read', { actingAs: member('alice') })).rejects.toThrow(ActAsNotAllowedError)
+    expect(projectFindUnique).not.toHaveBeenCalled()
+    expect(setFindMany).not.toHaveBeenCalled()
+  })
+
+  test('nobody acts as Root; an admin still acts as another admin (Phase 2 rule)', async () => {
+    db.instance = { rootUserId: 'root-1', rootConfirmedAt: new Date(0), rootAssignedBy: null, defaultMemberSetId: null }
+    db.users.set('root-1', { email: 'root-1@e2e.local', role: 'admin' })
+    await expect(can(admin('admin-1'), 'recon:read', { actingAs: admin('root-1'), projectId: 'P-admin' })).rejects.toThrow(ActAsNotAllowedError)
+    await expect(can(admin('admin-1'), 'users:read', { actingAs: admin('root-1') })).rejects.toThrow(ActAsNotAllowedError)
+    expect((await can(admin('admin-1'), 'recon:read', { actingAs: admin('admin-2'), projectId: 'P-admin-2' })).allowed).toBe(true)
+  })
+})
+
+describe('can() under act-as returns what the person may use while acting (§4.7), not their own set', () => {
+  test('member permissions both people hold, administration ones the real person\'s; the 403 carries the same set', async () => {
+    const opts = { actingAs: member('alice', ANALYST), projectId: 'P-alice' }
+    const d = await can(admin('admin-1'), 'recon:read', opts)
+    expect(d.allowed).toBe(true)
+    if (!d.allowed) return
+    const c = d.capabilities
+    expect(c.userId).toBe('admin-1')
+    expect([c.has('recon:read'), c.has('recon:scan'), c.has('agent:approve_dangerous'), c.has('users:read')]).toEqual([true, false, false, true])
+    expect(c.held).toContain('users:read')
+    expect(c.held).not.toContain('agent:approve_dangerous')
+    expect(c.held.every((p) => c.has(p))).toBe(true)
+    expect(c.explainAll().filter((e) => e.held).map((e) => e.permission)).toEqual(c.held)
+    // The reasons of a member permission the account acted as lacks are that account's.
+    expect(c.explain('recon:scan')).toMatchObject({ permission: 'recon:scan', held: false, reasons: [{ effect: 'deny', kind: 'not_granted', sets: [{ id: 'builtin:read-only-analyst' }] }] })
+    expect(c.explain('users:read').held).toBe(true)
+    expect(() => c.has('recon:everything' as PermissionId)).toThrow(/Unknown permission/)
+    expect(Object.isFrozen(c)).toBe(true)
+
+    const refused = await can(admin('admin-1'), 'recon:scan', opts)
+    expect(refused).toMatchObject({ allowed: false, status: 403, reason: 'capability' })
+    if (refused.allowed || refused.status !== 403) return
+    expect(refused.capabilities.has('recon:scan')).toBe(false)
+  })
+
+  test('without act-as the decision carries the person\'s own set', async () => {
+    const d = await can(admin('admin-1'), 'recon:scan', { projectId: 'P-admin' })
+    expect(d.allowed && d.capabilities.has('agent:approve_dangerous')).toBe(true)
+  })
+})
+
+describe('can() with fresh (a critical check)', () => {
+  const OPS = { id: 'set-ops', kind: 'member', name: 'Ops', permissions: ['recon:read', 'recon:scan'] }
+
+  test('the custom sets are read again; without fresh the cached contents stand for the cache bound', async () => {
+    db.sets.set('set-ops', OPS)
+    const alice = member('alice', { permissionSets: ['set-ops'] })
+    expect((await can(alice, 'recon:scan', { projectId: 'P-alice' })).allowed).toBe(true)
+    db.sets.set('set-ops', { ...OPS, permissions: ['recon:read'] })
+    expect((await can(alice, 'recon:scan', { projectId: 'P-alice' })).allowed).toBe(true)
+    expect(await can(alice, 'recon:scan', { projectId: 'P-alice', fresh: true })).toMatchObject({ allowed: false, status: 403 })
+  })
+
+  test('the account acted as: its sets are read again too', async () => {
+    db.sets.set('set-ops', OPS)
+    const opts = { actingAs: member('alice', { permissionSets: ['set-ops'] }), projectId: 'P-alice' }
+    expect((await can(admin('admin-1'), 'recon:scan', opts)).allowed).toBe(true)
+    db.sets.set('set-ops', { ...OPS, permissions: ['recon:read'] })
+    expect((await can(admin('admin-1'), 'recon:scan', opts)).allowed).toBe(true)
+    expect(await can(admin('admin-1'), 'recon:scan', { ...opts, fresh: true })).toMatchObject({ allowed: false, status: 403 })
+  })
+
+  test('the act-as rule reads the Root again: an account that became Root is acted as by nobody', async () => {
+    const opts = { actingAs: admin('admin-2'), projectId: 'P-admin-2' }
+    expect((await can(admin('admin-1'), 'recon:read', opts)).allowed).toBe(true)
+    db.instance = { rootUserId: 'admin-2', rootConfirmedAt: new Date(0), rootAssignedBy: null, defaultMemberSetId: null }
+    db.users.set('admin-2', { email: 'admin-2@e2e.local', role: 'admin' })
+    expect((await can(admin('admin-1'), 'recon:read', opts)).allowed).toBe(true)
+    await expect(can(admin('admin-1'), 'recon:read', { ...opts, fresh: true })).rejects.toThrow(ActAsNotAllowedError)
+  })
+
+  test('the people are the caller\'s read: can() reads no account, fresh or not (DV-25: a request reads its account once)', async () => {
+    const alice = member('alice', { permissionSets: ['builtin:read-only-analyst'] })
+    // The rows the caller read decide, whatever the account table says now.
+    db.users.set('alice', { id: 'alice', role: 'standard', status: 'active', permissionSets: [], permissionOverrides: [] })
+    expect(await can(alice, 'recon:scan', { projectId: 'P-alice', fresh: true })).toMatchObject({ allowed: false, status: 403 })
+    await can(admin('admin-1'), 'recon:read', { actingAs: alice, projectId: 'P-alice', fresh: true })
+    expect(userFindUnique).not.toHaveBeenCalled()
   })
 })

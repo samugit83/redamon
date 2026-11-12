@@ -6,8 +6,8 @@
  * otherwise, a coded 500 when a read fails (never allowed). `withPermission(permission, handler)`
  * wraps a handler with it.
  *
- * The session helpers are a double (`getAuthzIdentity`); Prisma is a double; the policy, the
- * resolution and the registry are the real ones, with RBAC_PERMISSIONS_ENABLED on.
+ * `getAuthzIdentity` is a double (the act-as rule `mayActAs` is the real one); Prisma is a double;
+ * the policy, the resolution and the registry are the real ones, with RBAC_PERMISSIONS_ENABLED on.
  *
  * @vitest-environment node
  */
@@ -17,10 +17,12 @@ import { NextRequest, NextResponse } from 'next/server'
 const h = vi.hoisted(() => ({
   getAuthzIdentity: vi.fn(),
   projects: new Map<string, { id: string; userId: string }>(),
+  sets: new Map<string, { id: string; kind: string; name: string; permissions: string[] }>(),
   failProjects: false,
 }))
-vi.mock('@/lib/session', () => ({
+vi.mock('@/lib/session', async (importOriginal) => ({
   getAuthzIdentity: (...a: unknown[]) => h.getAuthzIdentity(...a),
+  mayActAs: (await importOriginal<typeof import('@/lib/session')>()).mayActAs,
 }))
 const projectFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => {
   if (h.failProjects) throw Object.assign(new Error('relation "projects" leaks target-1.example'), { code: 'P1001' })
@@ -31,7 +33,10 @@ vi.mock('@/lib/prisma', () => ({
   default: {
     project: { findUnique: (a: { where: { id: string } }) => projectFindUnique(a) },
     instanceSettings: { findUnique: async () => null },
-    permissionSet: { findMany: async () => [] },
+    permissionSet: {
+      findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in.flatMap((id) => (h.sets.has(id) ? [{ ...h.sets.get(id)! }] : [])),
+    },
     user: { findUnique: async () => null },
   },
 }))
@@ -62,6 +67,7 @@ beforeEach(() => {
   h.projects.clear()
   h.projects.set('P-alice', { id: 'P-alice', userId: 'alice' })
   h.projects.set('P-bob', { id: 'P-bob', userId: 'bob' })
+  h.sets.clear()
   h.failProjects = false
   projectFindUnique.mockClear()
   setFlagsForTests({ identity: true, permissions: true })
@@ -167,6 +173,53 @@ describe('requirePermission', () => {
     expect(ctx.effective).toEqual({ userId: 'alice' })
   })
 
+  test('act-as: the context\'s capabilities are what can() applies (member ones both hold, admin ones the real person\'s), so a second check cannot widen', async () => {
+    signedIn(principal('admin-1', 'admin'), principal('alice', 'standard', { permissionSets: ['builtin:read-only-analyst'] }))
+    const ctx = await requirePermission(request(), 'recon:read', { projectId: 'P-alice' }) as PermissionContext
+    expect(ctx.capabilities.has('agent:approve_dangerous')).toBe(false)
+    expect(ctx.capabilities.has('recon:scan')).toBe(false)
+    expect(ctx.capabilities.has('recon:read')).toBe(true)
+    expect(ctx.capabilities.has('users:read')).toBe(true)
+    signedIn(principal('admin-1', 'admin'))
+    const own = await requirePermission(request(), 'recon:read') as PermissionContext
+    expect(own.capabilities.has('agent:approve_dangerous')).toBe(true)
+  })
+
+  test('an identity whose actingAs the act-as rule refuses (a member): a coded 500, never a pass', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    signedIn(principal('bob'), principal('alice'))
+    const res = await requirePermission(request(), 'recon:read', { projectId: 'P-alice' }) as NextResponse
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Could not check the permission', code: 'ActAsNotAllowedError' })
+    expect(projectFindUnique).not.toHaveBeenCalled()
+  })
+
+  test('a projectId key whose value is undefined is a project named but empty: 400, never the capability alone', async () => {
+    signedIn(principal('alice'))
+    const res = await requirePermission(request(), 'recon:read', { projectId: undefined }) as NextResponse
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'projectId is required' })
+  })
+
+  test('fresh decides on the account read again: an assignment changed since the cached read refuses at once', async () => {
+    const cached = principal('alice', 'standard', { permissionSets: [] })
+    const current = principal('alice', 'standard', { permissionSets: ['builtin:read-only-analyst'] })
+    h.getAuthzIdentity.mockImplementation(async (o: { fresh?: boolean } = {}) =>
+      ({ session: { userId: 'alice', role: 'standard' }, principal: o.fresh ? current : cached, actingAs: null }))
+    expect(await requirePermission(request(), 'recon:scan', { projectId: 'P-alice' })).not.toBeInstanceOf(NextResponse)
+    expect(((await requirePermission(request(), 'recon:scan', { projectId: 'P-alice', fresh: true })) as NextResponse).status).toBe(403)
+  })
+
+  test('fresh reads the sets again: a set narrowed since the cached read refuses at once', async () => {
+    const ops = { id: 'set-ops', kind: 'member', name: 'Ops', permissions: ['recon:read', 'recon:scan'] }
+    h.sets.set('set-ops', ops)
+    signedIn(principal('alice', 'standard', { permissionSets: ['set-ops'] }))
+    expect(await requirePermission(request(), 'recon:scan', { projectId: 'P-alice' })).not.toBeInstanceOf(NextResponse)
+    h.sets.set('set-ops', { ...ops, permissions: ['recon:read'] })
+    expect(await requirePermission(request(), 'recon:scan', { projectId: 'P-alice' })).not.toBeInstanceOf(NextResponse)
+    expect(((await requirePermission(request(), 'recon:scan', { projectId: 'P-alice', fresh: true })) as NextResponse).status).toBe(403)
+  })
+
   test('fresh is passed to the account read (critical paths, step 2.2)', async () => {
     signedIn(principal('alice'))
     await requirePermission(request(), 'recon:read', { projectId: 'P-alice', fresh: true })
@@ -218,6 +271,15 @@ describe('withPermission', () => {
     expect((await route(request(), {})).status).toBe(401)
     signedIn(principal('alice'))
     expect((await route(request(), {})).status).toBe(403)
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  test('an actingAs the act-as rule refuses never runs the handler', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    signedIn(principal('bob'), principal('alice'))
+    const handler = vi.fn(async () => NextResponse.json({}))
+    const res = await withPermission('users:read', handler)(request(), {})
+    expect(res.status).toBe(500)
     expect(handler).not.toHaveBeenCalled()
   })
 

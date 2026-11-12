@@ -28,7 +28,11 @@ export interface PermissionContext extends AuthzIdentity {
   /** Whose data the request touches: the account acted as, else the signed-in account. */
   effective: EffectiveUser
   permission: PermissionId
-  /** The signed-in account's. */
+  /**
+   * What the request may use, as can() applied it: the signed-in account's, or under act-as the
+   * member permissions both people hold and the administration ones the real person holds (§4.7),
+   * so a second check on this field cannot reach past the act-as rule.
+   */
   capabilities: Capabilities
   /** The caller's access to the project the check named, else null. */
   access: ProjectAccess | null
@@ -37,7 +41,10 @@ export interface PermissionContext extends AuthzIdentity {
 export interface RequirePermissionOptions {
   /** The project the action is on; see `CanOptions.projectId` (a key present but empty answers 400). */
   projectId?: string | null
-  /** A critical path (step 2.2): the account and the capabilities are read from the database. */
+  /**
+   * A critical path (step 2.2): both accounts (getAuthzIdentity), the Root, the sets and the
+   * instance default are read from the database (`CanOptions.fresh`).
+   */
   fresh?: boolean
 }
 
