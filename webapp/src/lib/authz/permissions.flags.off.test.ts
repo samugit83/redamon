@@ -22,6 +22,10 @@
  * off (and on: they read no switch, no account and no set) they answer as before: the owner
  * passes, another account's project or row and a missing project are the same 404.
  *
+ * Step 3.11 adds the permission management routes (sets, admin profiles, an account's permissions).
+ * With the switch off they do not exist: every method answers 404 before reading the session or
+ * the database, whatever the identity switch says.
+ *
  * @vitest-environment node
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -57,6 +61,12 @@ import { PERMISSIONS, PERMISSION_IDS, type PermissionId } from './permissions'
 import { builtinSet, DEFAULT_MEMBER_SET_ID, FULL_ADMIN_PROFILE_ID } from './builtinSets'
 import { sharedToolAccess, resetSharedToolsForTests, SHARED_TOOLS, type SharedTool } from './sharedTools'
 import { can } from './can'
+import { NextRequest } from 'next/server'
+import { GET as listSets, POST as createSet } from '@/app/api/admin/permission-sets/route'
+import { PUT as editSet, DELETE as deleteSet } from '@/app/api/admin/permission-sets/[id]/route'
+import { GET as listProfiles, POST as createProfile } from '@/app/api/admin/admin-profiles/route'
+import { PUT as editProfile, DELETE as deleteProfile } from '@/app/api/admin/admin-profiles/[id]/route'
+import { GET as readPermissions, PUT as changePermissions } from '@/app/api/users/[id]/permissions/route'
 import { assertOwner, ownerScope, requireProjectAccess } from '@/lib/access'
 import { McpAccessDenied, assertMcpProjectAccess } from '@/lib/mcpAuth'
 import { ownsScope } from '@/lib/plugins/changeSetAccess'
@@ -217,8 +227,15 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
     const PERMISSION_READERS = [
       // Step 3.4: the resolution reads the sets and the instance default set only with the switch on.
       'src/lib/authz/capabilities.ts',
+      // Step 3.11: the permission management helpers, reached only through the routes that answer
+      // 404 with the switch off and the admins:manage gate, which reads them only with it on.
+      'src/lib/authz/permissionAdmin.ts',
+      'src/lib/authz/permissionSetAdmin.ts',
       // Step 3.4: selects the assignments and overrides only with the switch on.
       'src/lib/authz/principal.ts',
+      // Step 3.11: an account's sets and overrides, read and written only through a route that
+      // answers 404 with the switch off.
+      'src/lib/authz/userPermissionAdmin.ts',
     ]
     const NAMES = /\b(permissionSets?|permissionOverrides?|userPermissionSet|userPermissionOverride|permission_sets|user_permission_sets|user_permission_overrides|defaultMemberSetId|default_member_set_id)\b/
     const files: string[] = []
@@ -237,6 +254,38 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
     expect(files).toContain(path.join(WEBAPP, 'src/lib/authz/principal.ts'))
     const readers = files.filter((f) => NAMES.test(readFileSync(f, 'utf8'))).map((f) => path.relative(WEBAPP, f)).sort()
     expect(readers).toEqual(PERMISSION_READERS)
+  })
+})
+
+describe('RBAC_PERMISSIONS_ENABLED off: the permission management routes do not exist (step 3.11)', () => {
+  const body = JSON.stringify({ name: 'x', permissions: [], sets: ['builtin:no-access'] })
+  const r = (method: string) => new NextRequest('http://redamon.test/api/x', {
+    method, headers: { host: 'redamon.test', 'content-type': 'application/json', origin: 'http://redamon.test' },
+    ...(method === 'GET' ? {} : { body }),
+  })
+  const id = { params: Promise.resolve({ id: 'member-1' }) }
+  const ROUTES: Array<[string, () => Promise<Response>]> = [
+    ['GET /api/admin/permission-sets', () => listSets()],
+    ['POST /api/admin/permission-sets', () => createSet(r('POST'))],
+    ['PUT /api/admin/permission-sets/[id]', () => editSet(r('PUT'), id)],
+    ['DELETE /api/admin/permission-sets/[id]', () => deleteSet(r('DELETE'), id)],
+    ['GET /api/admin/admin-profiles', () => listProfiles()],
+    ['POST /api/admin/admin-profiles', () => createProfile(r('POST'))],
+    ['PUT /api/admin/admin-profiles/[id]', () => editProfile(r('PUT'), id)],
+    ['DELETE /api/admin/admin-profiles/[id]', () => deleteProfile(r('DELETE'), id)],
+    ['GET /api/users/[id]/permissions', () => readPermissions(r('GET'), id)],
+    ['PUT /api/users/[id]/permissions', () => changePermissions(r('PUT'), id)],
+  ]
+
+  test.each([true, false])('switch off → 404 on every method, before the session or any read (identity %s)', async (identity) => {
+    setFlagsForTests({ identity, permissions: false })
+    for (const [name, call] of ROUTES) {
+      const res = await call()
+      expect([name, res.status, await res.json()]).toEqual([name, 404, { error: 'Not found' }])
+    }
+    expect(userFindUnique).not.toHaveBeenCalled()
+    expect(instanceFindUnique).not.toHaveBeenCalled()
+    expect(setFindMany).not.toHaveBeenCalled()
   })
 })
 

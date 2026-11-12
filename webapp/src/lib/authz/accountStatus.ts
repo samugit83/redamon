@@ -36,6 +36,11 @@ export type StatusPermission = 'users:disable' | 'users:revoke_sessions'
 export interface StatusOptions {
   /** Root's path (step 2.6): another admin may be the target; the route checked Root's power. */
   adminTarget?: boolean
+  /**
+   * False when the route let an `admins:manage` holder through instead (step 3.11, rootPowers.ts
+   * `adminTargetGate`): the transaction then re-checks only that the target is not Root.
+   */
+  needsRoot?: boolean
 }
 
 /** What the agent did for an account that lost its sessions; each part is an error when it did not answer. */
@@ -192,7 +197,7 @@ export async function disableAccount(
       after: { status: 'disabled', sessionVersion: row.sessionVersion + 1, tokensRevoked },
     })
     return { kind: 'disabled', tokensRevoked }
-  }, rbacFlags().identity ? { root: { actorId: session.userId, needsRoot: !!opts.adminTarget } } : {}))
+  }, rbacFlags().identity ? { root: { actorId: session.userId, needsRoot: !!opts.adminTarget && opts.needsRoot !== false } } : {}))
   if (result instanceof NextResponse) return result
   if (!result.ok) {
     if (result.refused === 'root_protected') return rootProtectedAnswer(request, session, targetId, 'disable')

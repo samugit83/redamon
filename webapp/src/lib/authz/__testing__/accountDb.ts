@@ -15,7 +15,11 @@
  * - (step 2.9) the `user_invites` rows (deleted with their account, as the schema's cascade),
  *   `where` also matches `{gt}` / `{lt}` on dates, `user.deleteMany`, `project.count` (seeded
  *   by `seedProjects`), and the one raw read `emailTakenByAnother` sends;
- * - (step 2.10) every account carries `pendingNotices` (`[]`, the schema default).
+ * - (step 2.10) every account carries `pendingNotices` (`[]`, the schema default);
+ * - (step 3.11) the `permission_sets`, `user_permission_sets` and `user_permission_overrides`
+ *   rows (an account's assignments and overrides go with it, as the schema's cascade), the
+ *   account's nested `permissionSets` / `permissionOverrides` select the principal makes, a
+ *   unique set name (P2002), and `orderBy` ignored (callers sort).
  */
 import { Prisma } from '@prisma/client'
 
@@ -33,6 +37,7 @@ export interface AccountSeed {
   legacyGrants?: string[]
   lastLoginAt?: Date | null
   pendingNotices?: unknown[]
+  adminProfileId?: string | null
 }
 
 function matches(row: Row, where: Row = {}): boolean {
@@ -81,6 +86,9 @@ export function createAccountDb() {
     instance: null as Row | null,
     invites: [] as Row[],
     projectCounts: {} as Record<string, number>,
+    sets: [] as Row[],
+    assignments: [] as Row[],
+    overrides: [] as Row[],
   }
   const failing = new Set<string>()
   const rawCalls: string[] = []
@@ -88,10 +96,19 @@ export function createAccountDb() {
   let queue: Promise<unknown> = Promise.resolve()
   let transactions = 0
 
+  const RELATIONS = { permissionSets: () => state.assignments, permissionOverrides: () => state.overrides } as const
+  const withRelations = (r: Row, select?: Row): Row => {
+    const out = pick(r, select)
+    for (const [k, rows] of Object.entries(RELATIONS)) {
+      const nested = select?.[k] as { select?: Row } | undefined
+      if (nested) out[k] = rows().filter((x) => x.userId === r.id).map((x) => pick(x, nested.select))
+    }
+    return out
+  }
   const user = {
     findUnique: async (a: { where: Row; select?: Row }) => {
       const r = state.users.find((u) => matches(u, a.where))
-      return r ? pick(r, a.select) : null
+      return r ? withRelations(r, a.select) : null
     },
     findMany: async (a: { where?: Row; select?: Row } = {}) =>
       state.users.filter((u) => matches(u, a.where)).map((u) => pick(u, a.select)),
@@ -124,6 +141,8 @@ export function createAccountDb() {
       if (i < 0) throw notFound()
       const [r] = state.users.splice(i, 1)
       state.invites = state.invites.filter((v) => v.userId !== r.id)
+      state.assignments = state.assignments.filter((v) => v.userId !== r.id)
+      state.overrides = state.overrides.filter((v) => v.userId !== r.id)
       return r
     },
     deleteMany: async (a: { where?: Row } = {}) => {
@@ -131,6 +150,8 @@ export function createAccountDb() {
       state.users = state.users.filter((u) => !gone.includes(u))
       const ids = new Set(gone.map((u) => u.id))
       state.invites = state.invites.filter((v) => !ids.has(v.userId))
+      state.assignments = state.assignments.filter((v) => !ids.has(v.userId))
+      state.overrides = state.overrides.filter((v) => !ids.has(v.userId))
       return { count: gone.length }
     },
   }
@@ -236,7 +257,63 @@ export function createAccountDb() {
       return { count: 1 }
     },
   }
-  const client = { user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, userInvite, $executeRaw, $queryRaw }
+  let setSeq = 0
+  const unique = () => new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'fake' })
+  const permissionSet = {
+    findUnique: async (a: { where: Row; select?: Row }) => {
+      const r = state.sets.find((x) => matches(x, a.where))
+      return r ? pick(r, a.select) : null
+    },
+    findMany: async (a: { where?: Row; select?: Row } = {}) =>
+      state.sets.filter((x) => matches(x, a.where)).map((x) => pick(x, a.select)),
+    create: async (a: { data: Row; select?: Row }) => {
+      if (state.sets.some((x) => x.name === a.data.name)) throw unique()
+      const r: Row = {
+        id: `set-${++setSeq}`, description: null, clonedFrom: null, createdAt: new Date(), updatedAt: new Date(), ...a.data,
+        permissions: [...(a.data.permissions as string[])],
+      }
+      state.sets.push(r)
+      return pick(r, a.select)
+    },
+    update: async (a: { where: Row; data: Row; select?: Row }) => {
+      const r = state.sets.find((x) => matches(x, a.where))
+      if (!r) throw notFound()
+      if (a.data.name !== undefined && state.sets.some((x) => x !== r && x.name === a.data.name)) throw unique()
+      apply(r, a.data)
+      return pick(r, a.select)
+    },
+    delete: async (a: { where: Row }) => {
+      const i = state.sets.findIndex((x) => matches(x, a.where))
+      if (i < 0) throw notFound()
+      return state.sets.splice(i, 1)[0]
+    },
+  }
+  const rowsOf = (key: 'assignments' | 'overrides') => ({
+    findMany: async (a: { where?: Row; select?: Row } = {}) =>
+      state[key].filter((x) => matches(x, a.where)).map((x) => pick(x, a.select)),
+    count: async (a: { where?: Row } = {}) => state[key].filter((x) => matches(x, a.where)).length,
+    deleteMany: async (a: { where?: Row } = {}) => {
+      const gone = state[key].filter((x) => matches(x, a.where))
+      state[key] = state[key].filter((x) => !gone.includes(x))
+      return { count: gone.length }
+    },
+    createMany: async (a: { data: Row[] }) => {
+      const id = (x: Row) => key === 'assignments' ? `${x.userId}|${x.setId}` : `${x.userId}|${x.permission}`
+      for (const d of a.data) {
+        if (state[key].some((x) => id(x) === id(d))) throw unique()
+        state[key].push(key === 'assignments'
+          ? { createdAt: new Date(), ...d }
+          : { expiresAt: null, reason: null, createdAt: new Date(), ...d })
+      }
+      return { count: a.data.length }
+    },
+  })
+  const userPermissionSet = rowsOf('assignments')
+  const userPermissionOverride = rowsOf('overrides')
+  const client = {
+    user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, userInvite,
+    permissionSet, userPermissionSet, userPermissionOverride, $executeRaw, $queryRaw,
+  }
 
   async function $transaction<T>(fn: ((tx: typeof client) => Promise<T>) | Promise<unknown>[]): Promise<T> {
     // The array form: its writes already started, in order, as Prisma's batch would send them.
@@ -253,6 +330,9 @@ export function createAccountDb() {
         state.actAs = snapshot.actAs
         state.instance = snapshot.instance
         state.invites = snapshot.invites
+        state.sets = snapshot.sets
+        state.assignments = snapshot.assignments
+        state.overrides = snapshot.overrides
         throw e
       }
     })
@@ -302,6 +382,20 @@ export function createAccountDb() {
     },
     audit: () => state.audit.map((a) => ({ ...a })),
     actAs: () => state.actAs.map((a) => ({ ...a })),
+    /** A stored permission set or admin profile (`kind`), its other columns defaulted. */
+    seedSet(row: { id: string; kind: string; name: string; permissions: string[] } & Row) {
+      state.sets.push({ description: null, clonedFrom: null, createdById: 'root-1', createdAt: new Date(0), updatedAt: new Date(0), ...row })
+    },
+    /** The account's set assignment rows. */
+    seedAssignment(userId: string, ...setIds: string[]) {
+      for (const setId of setIds) state.assignments.push({ userId, setId, createdAt: new Date(0) })
+    },
+    seedOverride(row: { userId: string; permission: string; effect: string } & Row) {
+      state.overrides.push({ expiresAt: null, reason: null, grantedById: 'root-1', createdAt: new Date(0), ...row })
+    },
+    sets: () => state.sets.map((x): Row => ({ ...x, permissions: [...(x.permissions as string[])] })),
+    assignments: () => state.assignments.map((x) => ({ ...x })),
+    overrides: () => state.overrides.map((x) => ({ ...x })),
     failAudit(action: string | null) {
       failing.clear()
       if (action) failing.add(action)
@@ -314,7 +408,11 @@ export function createAccountDb() {
       state.instance = null
       state.invites = []
       state.projectCounts = {}
+      state.sets = []
+      state.assignments = []
+      state.overrides = []
       inviteSeq = 0
+      setSeq = 0
       failing.clear()
       rawCalls.length = 0
       rawValues.length = 0

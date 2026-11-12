@@ -154,8 +154,12 @@ describe('the manifest and the route tree', () => {
  * none (a member's deletion, stopping act-as, revoking a token): a browser form cannot send one.
  */
 const SAME_ORIGIN_ROUTES = [
+  '/api/admin/admin-profiles',
+  '/api/admin/admin-profiles/[id]',
   '/api/admin/instance-settings',
   '/api/admin/legacy-grants',
+  '/api/admin/permission-sets',
+  '/api/admin/permission-sets/[id]',
   '/api/auth/act-as',
   '/api/auth/sessions/revoke-all',
   '/api/invite/accept',
@@ -171,6 +175,7 @@ const SAME_ORIGIN_ROUTES = [
   '/api/users/[id]/mcp-tokens',
   '/api/users/[id]/mcp-tokens/[tokenId]',
   '/api/users/[id]/password',
+  '/api/users/[id]/permissions',
   '/api/users/[id]/reset-credentials',
   '/api/users/[id]/revoke-sessions',
   '/api/users/[id]/settings',
@@ -180,10 +185,10 @@ const SAME_ORIGIN_ROUTES = [
 /** The families a new route joins the list from: accounts, credentials, sessions, Root, instance and access policy. */
 const SAME_ORIGIN_FAMILIES = [
   /^\/api\/users(\/invite)?$/,
-  /^\/api\/users\/\[id\](\/(password|disable|enable|revoke-sessions|reset-credentials|settings|invite\/[^/]+|mcp-tokens(\/\[tokenId\])?))?$/,
+  /^\/api\/users\/\[id\](\/(password|permissions|disable|enable|revoke-sessions|reset-credentials|settings|invite\/[^/]+|mcp-tokens(\/\[tokenId\])?))?$/,
   /^\/api\/auth\/(act-as|sessions\/.+)$/,
   /^\/api\/root\//,
-  /^\/api\/admin\/(instance-settings|legacy-grants)$/,
+  /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?)$/,
   /^\/api\/invite\//,
   /^\/api\/account\//,
 ]

@@ -17,9 +17,10 @@ interface RouteParams {
  * POST: enable a disabled account again (ID-13): its password comes back and it can sign in.
  * Open whatever the identity switch, so an account disabled while the switch was on can
  * always be restored after it is turned off. With the switch on another admin needs the
- * confirmed Root (`root_only` for anyone else) and Root's password; with it off the Phase 1 rule
- * holds: another admin needs the acting admin's own password. Either way the password goes as
- * `{stepUpPassword}` (ID-25). Body: a JSON object.
+ * confirmed Root (`root_only` for anyone else) and Root's password, or with the permissions
+ * switch on an `admins:manage` holder over a strict subset and its own (step 3.11); with it off
+ * the Phase 1 rule holds: another admin needs the acting admin's own password. Either way the
+ * password goes as `{stepUpPassword}` (ID-25). Body: a JSON object.
  */
 export const POST = withRouteErrors('Could not enable the account', async (request: NextRequest, { params }: RouteParams) => {
   const session = await requireAdmin({ fresh: true })
@@ -31,7 +32,7 @@ export const POST = withRouteErrors('Could not enable the account', async (reque
   const rootRefusal = await rootProtectedRefusal(request, session, id, 'enable')
   if (rootRefusal) return rootRefusal
   if (rbacFlags().identity) {
-    const gate = await adminTargetGate(request, session, id, parsed.body.stepUpPassword, ROOT_ONLY_REFUSAL.error)
+    const gate = await adminTargetGate(request, session, id, parsed.body.stepUpPassword, ROOT_ONLY_REFUSAL.error, 'enable')
     if (gate instanceof NextResponse) return gate
     return enableAccount(request, session, id, gate)
   }

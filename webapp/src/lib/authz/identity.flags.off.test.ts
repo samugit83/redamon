@@ -196,6 +196,12 @@ const IDENTITY_READERS: string[] = [
   'src/lib/authz/mustChangeGate.ts',
   // Step 2.8: the instance password minimum and the sign-in prompt, read only with the switch on.
   'src/lib/authz/passwordPolicyInForce.ts',
+  // Step 3.11: an admin's profile, read by the permission routes and the admins:manage gate, all
+  // reached only with the permissions switch on, which needs this switch.
+  'src/lib/authz/permissionAdmin.ts',
+  // Step 3.11: an admin's profile and the instance default set (the instance row), written and read
+  // only through routes that answer 404 with the permissions switch off.
+  'src/lib/authz/permissionSetAdmin.ts',
   // Reads every identity field of the account; the cache only with the switch on.
   'src/lib/authz/principal.ts',
   // Step 2.10: credentials resets, reached only with the switch on (the reset route answers 404
@@ -207,6 +213,9 @@ const IDENTITY_READERS: string[] = [
   'src/lib/authz/rootTransfer.ts',
   // Step 2.11: the session lifetimes, read only with the switch on (off: Phase 1's 7 days and 12 h).
   'src/lib/authz/sessionLifetime.ts',
+  // Step 3.11: an admin's profile and the session version a removal raises, reached only through
+  // a route that answers 404 with the permissions switch off.
+  'src/lib/authz/userPermissionAdmin.ts',
   // Compares the session version whatever the switch, the status only with it on.
   'src/lib/session.ts',
   // Step 2.4: the tunnel and capture readers read the instance settings row only with the
