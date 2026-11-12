@@ -49,6 +49,7 @@ from helpers.ai_signal_catalog import (
     match_ai_title,
     match_ai_body_fingerprint,
 )
+from recon.helpers import request_pacer
 
 # Settings are passed from main.py to avoid multiple database queries
 
@@ -318,6 +319,9 @@ def grab_banner(host: str, port: int, timeout: float = 5.0, use_ssl: bool = Fals
     """
 
     try:
+        # The banner grab connects in-process, so its connections share the
+        # RoE ceiling's clock with recon's other requests (inert with none).
+        request_pacer.acquire()
         # Picks the address family from the target, so an IPv6 address connects too.
         sock = socket.create_connection((host, port), timeout=timeout)
 
@@ -870,17 +874,72 @@ def get_host_path(container_path: str) -> str:
     return container_path
 
 
-def httpx_budget(url_count: int, threads: int, timeout: int, retries: int) -> int:
+def httpx_budget(url_count: int, threads: int, timeout: int, retries: int,
+                 delay: float = 0.0) -> int:
     """Worst-case seconds for one httpx run (after hakrawler_job_budget).
 
     httpx works through the URLs `threads` at a time, each taking up to
-    `timeout * (retries + 1)`, plus 60s of startup/parse slack. The old
+    `timeout * (retries + 1)`, plus `delay` seconds between URLs (its -delay,
+    set under the RoE ceiling) and 60s of startup/parse slack. The old
     `url_count * timeout` was ~2.8h for 1,000 URLs, so it never fired and a hung
     probe ran for hours.
     """
     per_url = max(1, int(timeout)) * (max(0, int(retries)) + 1)
     waves = math.ceil(max(0, int(url_count)) / max(1, int(threads)))
-    return waves * per_url + 60
+    return waves * per_url + math.ceil(max(0, int(url_count)) * max(0.0, float(delay))) + 60
+
+
+def httpx_ceiling_pacing(settings: dict) -> Optional[dict]:
+    """httpx's flags under the RoE ceiling C, or None with no ceiling.
+
+    httpx (v1.12) holds -rl in fixed one-second windows (projectdiscovery/ratelimit:
+    a window's tokens can all go out at its start, so two windows' worth can land
+    within one second) and counts only each URL's main request: its retries, its
+    redirect hops, the favicon fetch and JARM's ten handshakes take no token, and
+    `-t 1` still keeps two URLs in flight. So under a ceiling: one thread, no
+    retries, -rl at half the ceiling (at least 1, never above the project's rate),
+    2/C seconds between URLs, and no favicon or JARM probe (``drop``), whose
+    requests no setting can count. On a loopback lab at C = 2 that took the
+    busiest second from 7 connections to 2; redirect hops still take no token.
+    """
+    ceiling = request_pacer.ceiling_rps(settings)
+    if not ceiling:
+        return None
+    rate = max(1, math.floor(ceiling / 2))
+    configured = settings.get('HTTPX_RATE_LIMIT', 50)
+    if isinstance(configured, (int, float)) and not isinstance(configured, bool) and configured > 0:
+        rate = max(1, min(rate, int(configured)))
+    drop = [probe for probe, key in (("jarm", 'HTTPX_PROBE_JARM'), ("favicon", 'HTTPX_PROBE_FAVICON'))
+            if settings.get(key, True)]
+    return {"ceiling": ceiling, "threads": 1, "retries": 0, "rate_limit": rate,
+            "delay_ms": math.ceil(2000 / ceiling), "drop": drop}
+
+
+_FINGERPRINT_LABELS = {"jarm": "JARM", "favicon": "favicon"}
+
+
+def _note_fingerprints_not_collected(pacing: dict, url_count: int) -> None:
+    """Log and record, as a coverage gap, the probes the ceiling turned off.
+
+    A URL with no JARM or favicon hash from this run was not fingerprinted,
+    which is not the same as having none: the gap (sources ``httpx_jarm``,
+    ``httpx_favicon``) says so, and the graph writers keep the hashes an
+    earlier run stored, since they skip absent values. A probe the project
+    itself turned off is not a gap. Never raises.
+    """
+    drop = pacing.get("drop") or []
+    if not drop:
+        return
+    ceiling = f"{pacing['ceiling']:g} rps RoE ceiling"
+    print(f"[-][httpx] {' and '.join(_FINGERPRINT_LABELS[p] for p in drop)} not collected while "
+          f"the {ceiling} is in force: httpx's limiter does not count their requests")
+    try:
+        from recon.helpers import circuit_breaker
+        circuit_breaker.note_degraded("http_probe", entries=[
+            {"source": f"httpx_{p}", "reason": f"not collected under the {ceiling}",
+             "skipped": url_count} for p in drop])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _stop_httpx_at_budget(process, container: str, budget: int, url_count: int) -> None:
@@ -993,6 +1052,12 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
                                                      probe_hosts or [])
     HTTPX_MATCH_CODES = settings.get('HTTPX_MATCH_CODES', [])
     HTTPX_FILTER_CODES = settings.get('HTTPX_FILTER_CODES', [])
+    pacing = httpx_ceiling_pacing(settings)
+    if pacing:
+        HTTPX_THREADS = pacing["threads"]
+        HTTPX_RETRIES = pacing["retries"]
+        HTTPX_RATE_LIMIT = pacing["rate_limit"]
+        HTTPX_PROBE_FAVICON = HTTPX_PROBE_JARM = False
 
     # Convert container paths to host paths for sibling container volume mounts
     targets_host_path = get_host_path(str(Path(targets_file).parent))
@@ -1039,6 +1104,8 @@ def build_httpx_command(targets_file: str, output_file: str, settings: dict,
 
     if HTTPX_RATE_LIMIT > 0:
         cmd.extend(["-rl", str(HTTPX_RATE_LIMIT)])
+    if pacing:
+        cmd.extend(["-delay", f"{pacing['delay_ms']}ms"])
 
     # Redirect handling. httpx re-sends its -H set to whatever host a redirect
     # names, so with a session attached -fhr (same-host only) keeps redirect
@@ -2132,12 +2199,19 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
         cmd = build_httpx_command(str(targets_file), str(httpx_output), cmd_settings,
                                   probe_hosts=_probe_hosts, container_name=httpx_container)
 
+        pacing = httpx_ceiling_pacing(cmd_settings)
         print(f"\n[*][httpx] Starting httpx probe...")
         print(f"[*][httpx] URLs to probe: {len(urls)}")
-        print(f"[*][httpx] Threads: {HTTPX_THREADS}")
+        print(f"[*][httpx] Threads: {pacing['threads'] if pacing else HTTPX_THREADS}")
         print(f"[*][httpx] Timeout: {HTTPX_TIMEOUT}s")
-        print(f"[*][httpx] Rate limit: {HTTPX_RATE_LIMIT} req/s")
+        print(f"[*][httpx] Rate limit: {pacing['rate_limit'] if pacing else HTTPX_RATE_LIMIT} req/s")
         print(f"[*][httpx] Follow redirects: {HTTPX_FOLLOW_REDIRECTS}")
+        if pacing:
+            caveat = ("; its redirect hops take no token of httpx's limiter and can exceed it"
+                      if HTTPX_FOLLOW_REDIRECTS else "")
+            print(f"[*][httpx] Paced to the {pacing['ceiling']:g} rps RoE ceiling: one URL at a time, "
+                  f"-rl {pacing['rate_limit']}, -delay {pacing['delay_ms']}ms, no retries{caveat}")
+            _note_fingerprints_not_collected(pacing, len(urls))
 
         if HTTPX_PROBE_TECH_DETECT:
             print(f"[*][httpx] Technology detection: enabled")
@@ -2159,8 +2233,12 @@ def run_http_probe(recon_data: dict, output_file: Path = None, settings: dict = 
             text=True
         )
 
-        safety_timeout = httpx_budget(len(urls), HTTPX_THREADS, HTTPX_TIMEOUT,
-                                      settings.get('HTTPX_RETRIES', 2))
+        if pacing:
+            safety_timeout = httpx_budget(len(urls), pacing["threads"], HTTPX_TIMEOUT,
+                                          pacing["retries"], delay=pacing["delay_ms"] / 1000)
+        else:
+            safety_timeout = httpx_budget(len(urls), HTTPX_THREADS, HTTPX_TIMEOUT,
+                                          settings.get('HTTPX_RETRIES', 2))
         timed_out = False
         try:
             _, stderr = process.communicate(timeout=safety_timeout)
