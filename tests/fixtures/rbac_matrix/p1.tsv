@@ -104,16 +104,17 @@ p1-ws-ticket-terminal-admin-acting	1.14	admin_a_as_member_a	POST	/api/agent/ws-t
 # tests/test_e2e_security_live.sh and testing/e2e/tests/rbacTunnels.spec.ts). Rows that pass
 # the tunnel check send a GitHub Enterprise host the route refuses after it (400), so nothing
 # is written or pushed to the sandbox; refused rows stop at the tunnel check. The settings GET
-# tells the page whether to offer the controls.
+# tells the page whether to offer the controls. With the identity switch on these settings are
+# instance settings (step 2.4): the rows tagged identity:off have identity:on twins in p2.tsv.
 p1-tunnel-config-member	1.10	member_c	GET	/api/global/tunnel-config	-	404	req:HD-05
 p1-tunnel-config-admin	1.10	admin_a	GET	/api/global/tunnel-config	-	404	req:HD-05
 p1-tunnel-config-internal	1.10	internal	GET	/api/global/tunnel-config	-	200;has=chiselServerUrl	req:HD-05
-p1-tunnel-change-member	1.10	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	403;has=tunnels_admin_only;has=chiselServerUrl	req:HD-06
-p1-tunnel-enable-member	1.10	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"tunnelsEnabled":true,"githubEnterpriseHost":"127.0.0.1"}	403;has=tunnels_admin_only	req:HD-06
+p1-tunnel-change-member	1.10	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	403;has=tunnels_admin_only;has=chiselServerUrl	req:HD-06 identity:off
+p1-tunnel-enable-member	1.10	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"tunnelsEnabled":true,"githubEnterpriseHost":"127.0.0.1"}	403;has=tunnels_admin_only	req:HD-06 identity:off
 p1-tunnel-member-full-save	1.10	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"tunnelsEnabled":false,"ngrokAuthtoken":"","chiselServerUrl":"","chiselAuth":"","githubEnterpriseHost":"127.0.0.1"}	400;has=GitHub Enterprise Host	req:HD-06
-p1-tunnel-change-admin	1.10	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	400;has=GitHub Enterprise Host	req:HD-06
+p1-tunnel-change-admin	1.10	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	400;has=GitHub Enterprise Host	req:HD-06 identity:off
 p1-tunnel-hint-member	1.10	member_b	GET	/api/users/${MEMBER_B_ID}/settings	-	200;has="canManageTunnels":false	req:HD-06 req:UI-03
-p1-tunnel-hint-admin	1.10	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;has="canManageTunnels":true	req:HD-06 req:UI-03
+p1-tunnel-hint-admin	1.10	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;has="canManageTunnels":true	req:HD-06 req:UI-03 identity:off
 #
 # ---- step 1.6 review fixes ----
 # The settings row also carries the MCP servers JSON: the admin's masked read of /settings

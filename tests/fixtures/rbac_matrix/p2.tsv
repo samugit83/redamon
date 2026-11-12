@@ -48,3 +48,30 @@ p2-revoke-all-anon	2.3	anon	POST	/api/auth/sessions/revoke-all	{}	401	req:ID-21
 p2-enable-active-member	2.3	admin_a	POST	/api/users/${MEMBER_C_ID}/enable	{}	200;has="changed":false	req:ID-13
 p2-enable-member-refused	2.3	member_a	POST	/api/users/${MEMBER_C_ID}/enable	{}	403;has=users:disable	req:ID-13
 p2-enable-anon	2.3	anon	POST	/api/users/${MEMBER_C_ID}/enable	{}	401	req:ID-13
+#
+# ---- step 2.4: instance settings (the tunnel and the TrafficMind capture policy) ----
+# With the identity switch on they live in the instance settings: GET/PUT
+# /api/admin/instance-settings as the signed-in person (an admin; the tunnel also the
+# `tunnels` legacy holder, none seeded here), and the user settings PUT refuses a real change
+# of one with 409 before anything is written. Off, the route does not exist (404) and the
+# p1 tunnel rows hold. No row writes: the PUTs are refused before the row is read or written
+# (not JSON 415, a tunnel field that is not text 400, a member 403, a moved field 409). The
+# tunnel sync takes only the sandbox's bearer whatever the switch (the accepted call:
+# tests/test_e2e_security_live.sh).
+p2-instance-settings-off	2.4	admin_a	GET	/api/admin/instance-settings	-	404	req:ID-32 identity:off
+p2-instance-settings-off-put	2.4	admin_a	PUT	/api/admin/instance-settings	{"chiselServerUrl":42}	404	req:ID-32 identity:off
+p2-instance-settings-anon	2.4	anon	GET	/api/admin/instance-settings	-	401	req:ID-32
+p2-instance-settings-member	2.4	member_c	GET	/api/admin/instance-settings	-	403;has=instance:settings	req:ID-32 identity:on
+p2-instance-settings-member-put	2.4	member_c	PUT	/api/admin/instance-settings	{"captureProxyEnabled":false}	403;has=instance:settings	req:ID-32 identity:on
+p2-instance-settings-admin	2.4	admin_a	GET	/api/admin/instance-settings	-	200;has="canManageTunnels":true;has="canManageCapture":true;has=captureEgressBlockPrivate	req:ID-32 identity:on
+p2-instance-settings-admin-not-json	2.4	admin_a	PUT	/api/admin/instance-settings	-	415	req:ID-32 identity:on
+p2-instance-settings-admin-bad-field	2.4	admin_a	PUT	/api/admin/instance-settings	{"chiselServerUrl":42}	400;has=invalid_field	req:ID-32 identity:on
+p2-instance-settings-acting-admin	2.4	admin_a_as_member_c	PUT	/api/admin/instance-settings	{"chiselServerUrl":42}	400;has=invalid_field	req:ID-32 identity:on
+p2-instance-moved-tunnel-change-member	2.4	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	409;has=moved_to_instance_settings;has=chiselServerUrl	req:ID-32 identity:on
+p2-instance-moved-tunnel-enable-member	2.4	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"tunnelsEnabled":true,"githubEnterpriseHost":"127.0.0.1"}	409;has=moved_to_instance_settings	req:ID-32 identity:on
+p2-instance-moved-tunnel-change-admin	2.4	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	409;has=moved_to_instance_settings	req:ID-32 identity:on
+p2-instance-moved-capture-admin	2.4	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"captureProxyPort":1,"githubEnterpriseHost":"127.0.0.1"}	409;has=captureProxyPort	req:ID-32 identity:on
+p2-instance-moved-hint-admin	2.4	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;has="canManageTunnels":false;has="sharedSettingsAt":"instance"	req:ID-32 req:UI-04 identity:on
+p2-instance-moved-hint-off	2.4	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;lacks=sharedSettingsAt	req:ID-32 identity:off
+p2-tunnel-sync-no-bearer	2.4	anon	POST	/api/global/tunnel-config/sync	-	401	req:ID-33
+p2-tunnel-sync-session-no-bearer	2.4	admin_a	POST	/api/global/tunnel-config/sync	-	401	req:ID-33
