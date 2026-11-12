@@ -9,7 +9,8 @@
  *  - a change that NARROWS the token's capability (drop a scope, earlier expiry,
  *    "expire now") is open to an admin on another account, exactly like DELETE
  *    below: taking power away is a safe privilege during an incident, and both are
- *    audited with the real admin as the actor (HD-23's one exception). A profile
+ *    audited with the real admin as the actor (HD-23's one exception), except on
+ *    Root's tokens (identity switch on: `root_protected`, as DELETE). A profile
  *    switch riding along is allowed with it: the profile is a label, never an
  *    authorization input, and switching it in the UI re-ticks the scopes.
  *  - a rename or a profile change on its own is the account's write rule
@@ -37,6 +38,7 @@ import {
 } from '@/lib/mcpAuth'
 import { validateProfile, type ProfileId } from '@/lib/mcp/profiles'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
+import { rootTokensRefusal } from '@/lib/authz/rootProtection'
 
 interface RouteParams {
   params: Promise<{ id: string; tokenId: string }>
@@ -74,7 +76,7 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
   const { id, tokenId } = await params
   // The read rule lets an admin reach another account's token to narrow it; every
   // other edit is checked against the write rule below, once its direction is known.
-  const denied = await requireUserAccess(request, id, { mode: 'read' })
+  const denied = await requireUserAccess(request, id, { mode: 'read' }) ?? await rootTokensRefusal(request, id, 'edit_mcp_token')
   if (denied) return denied
 
   let body: Record<string, unknown>
@@ -234,8 +236,8 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
 export const DELETE = withRouteErrors('Could not delete the token', async (request: NextRequest, { params }: RouteParams) => {
   const { id, tokenId } = await params
   // The read rule on purpose: an admin revokes another account's token during an
-  // incident (HD-23's one exception). The audit row names the real admin.
-  const denied = await requireUserAccess(request, id, { mode: 'read' })
+  // incident (HD-23's one exception), never Root's. The audit row names the real admin.
+  const denied = await requireUserAccess(request, id, { mode: 'read' }) ?? await rootTokensRefusal(request, id, 'delete_mcp_token')
   if (denied) return denied
 
   const existing = await loadOwned(id, tokenId)

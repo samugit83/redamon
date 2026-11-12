@@ -9,7 +9,8 @@
  * own actions. Admins included: there is no act-as path to minting.
  *
  * Listing keeps the admin bypass so an admin can audit tokens during an
- * incident. Revoking is a safe privilege; minting is not.
+ * incident, except Root's (identity switch on: `root_protected`). Revoking is a
+ * safe privilege; minting is not.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
@@ -25,6 +26,7 @@ import {
 import { validateProfile } from '@/lib/mcp/profiles'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
 import { agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
+import { rootTokensRefusal } from '@/lib/authz/rootProtection'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -44,7 +46,7 @@ const LIST_SELECT = {
 
 export const GET = withRouteErrors('Could not load tokens', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
-  const denied = await requireUserAccess(request, id, { mode: 'read' })
+  const denied = await requireUserAccess(request, id, { mode: 'read' }) ?? await rootTokensRefusal(request, id, 'list_mcp_tokens')
   if (denied) return denied
 
   try {
