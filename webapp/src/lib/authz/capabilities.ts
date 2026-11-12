@@ -32,7 +32,7 @@ import { mcpServerEnabled } from '@/lib/mcpServerEnabled'
 import { rbacFlags } from './flags'
 import { now } from './clock'
 import { principalCacheTtl, type Principal } from './principal'
-import { accountTypeOf, loadInstanceRoot, INSTANCE_SETTINGS_ROW, type AccountType } from './root'
+import { accountTypeOf, loadInstanceRoot, INSTANCE_SETTINGS_ROW, type AccountType, type InstanceRoot } from './root'
 import { PERMISSIONS, PERMISSION_IDS, assertKnownPermission, isPermissionId, type PermissionId } from './permissions'
 import { builtinSet, DEFAULT_MEMBER_SET_ID, FULL_ADMIN_PROFILE_ID, NO_ACCESS_SET_ID } from './builtinSets'
 import { clearLegacyConversionCacheForTests, LEGACY_GRANT_PERMISSION, legacyGrantsConverted } from './legacyOverrides'
@@ -265,15 +265,21 @@ export interface ResolveOptions {
    * are read from the database even when this process holds them, and what was read is kept.
    */
   fresh?: boolean
+  /**
+   * The Root this request already read (root.ts `loadInstanceRoot`, null = none), used instead of
+   * reading it again: with no cache (RBAC_AUTHZ_CACHE_MS=0) a second read is a second query.
+   */
+  root?: InstanceRoot | null
 }
 
 /** What `principal` may do at all, and why (`explain`). */
-export async function resolveCapabilities(principal: CapabilityPrincipal, { fresh = false }: ResolveOptions = {}): Promise<Capabilities> {
+export async function resolveCapabilities(principal: CapabilityPrincipal, opts: ResolveOptions = {}): Promise<Capabilities> {
+  const fresh = opts.fresh === true
   const flags = rbacFlags()
   const enforced = flags.permissions
   if (enforced) requireAssignments(principal)
   // Root is an admin (root.ts), so a member costs no instance read.
-  const root = principal.role === 'admin' ? await loadInstanceRoot({ fresh }) : null
+  const root = principal.role !== 'admin' ? null : opts.root !== undefined ? opts.root : await loadInstanceRoot({ fresh })
   const accountType = accountTypeOf(principal, root)
   const ledger = new Ledger()
 

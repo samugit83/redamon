@@ -65,6 +65,9 @@ import { clearPrincipalCacheForTests } from '@/lib/authz/principal'
 import { clearInstanceRootCacheForTests, invalidateInstanceRoot } from '@/lib/authz/root'
 import { GET } from './route'
 
+// Step 3.12 (PE-21) adds what the person may use and the switch states to every answer, beside the
+// fields below; their values are pinned in route.capabilities.test.ts.
+const STEP_312 = { capabilities: expect.any(Array), flags: expect.any(Object) }
 const T = new Date('2026-01-01T00:00:00.000Z')
 const CHOSEN = new Date('2026-11-12T08:30:00.000Z')
 const account = (id: string, role: string, email: string) => ({
@@ -137,7 +140,7 @@ describe('GET /api/auth/me with the identity switch on', () => {
 
   test('a member: account type member, no rbac block, and no Root read', async () => {
     const body = await me('member-1')
-    expect(body).toEqual({ id: 'member-1', name: 'member-1', email: 'mem@e2e.local', role: 'standard', accountType: 'member' })
+    expect(body).toEqual({ id: 'member-1', name: 'member-1', email: 'mem@e2e.local', role: 'standard', accountType: 'member', ...STEP_312 })
     expect(h.instanceReads).toBe(0)
   })
 
@@ -186,9 +189,9 @@ describe('GET /api/auth/me with the switch off', () => {
   test('the answer before the switch existed: no account type, no Root, nothing read', async () => {
     setFlagsForTests({ identity: false })
     expect(await me('root-1')).toEqual({
-      id: 'root-1', name: 'root-1', email: 'root@e2e.local', role: 'admin', rbac: { compat: false, legacyGrantsPending: 0 },
+      id: 'root-1', name: 'root-1', email: 'root@e2e.local', role: 'admin', ...STEP_312, rbac: { compat: false, legacyGrantsPending: 0 },
     })
-    expect(await me('member-1')).toEqual({ id: 'member-1', name: 'member-1', email: 'mem@e2e.local', role: 'standard' })
+    expect(await me('member-1')).toEqual({ id: 'member-1', name: 'member-1', email: 'mem@e2e.local', role: 'standard', ...STEP_312 })
     expect(h.instanceReads).toBe(0)
   })
 })

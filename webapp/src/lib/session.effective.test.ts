@@ -32,7 +32,7 @@ const dbUser = async ({ where }: { where: { id: string } }) =>
     : null
 vi.mock('@/lib/prisma', () => ({ default: { user: { findUnique: (a: { where: { id: string } }) => dbUser(a) } } }))
 
-import { getEffectiveUser, getAuthzIdentity } from './session'
+import { getEffectiveUser, getAuthzIdentity, getSession, authzIdentityOf } from './session'
 import { createToken, createActAsToken } from './auth'
 
 describe('getEffectiveUser', () => {
@@ -140,5 +140,41 @@ describe('getAuthzIdentity', () => {
       const effective = await getEffectiveUser()
       expect([sub, actAsCookie && 'act-as', { userId: (id!.actingAs ?? id!.principal).id }]).toEqual([sub, actAsCookie && 'act-as', effective])
     }
+  })
+})
+
+/**
+ * authzIdentityOf (step 3.12): getAuthzIdentity for a session getSession already answered, so a
+ * route that reads the session itself (/api/auth/me) reads the act-as cookie once more and the
+ * login cookie and the account not again.
+ */
+describe('authzIdentityOf', () => {
+  beforeEach(() => {
+    authCookie = undefined
+    actAsCookie = undefined
+  })
+
+  test('the same answer as getAuthzIdentity, in every act-as case', async () => {
+    const cases: Array<[string, string, (() => Promise<string>) | null]> = [
+      ['std-1', 'standard', () => createActAsToken('std-1', 'victim')],
+      ['admin-1', 'admin', null],
+      ['admin-1', 'admin', () => createActAsToken('admin-1', 'user-X')],
+      ['admin-1', 'admin', () => createActAsToken('admin-1', 'admin-1')],
+      ['admin-1', 'admin', () => createActAsToken('admin-2', 'user-X')],
+      ['admin-1', 'admin', () => createActAsToken('admin-1', 'nobody')],
+    ]
+    for (const [sub, role, actAs] of cases) {
+      authCookie = await createToken(sub, role)
+      actAsCookie = actAs ? await actAs() : undefined
+      const session = await getSession()
+      const of = await authzIdentityOf(session!)
+      const whole = await getAuthzIdentity()
+      expect([sub, of.session, of.principal.id, of.actingAs?.id ?? null])
+        .toEqual([sub, whole!.session, whole!.principal.id, whole!.actingAs?.id ?? null])
+    }
+  })
+
+  test('a session object getSession did not answer throws: no account was read for it', async () => {
+    await expect(authzIdentityOf({ userId: 'admin-1', role: 'admin' })).rejects.toThrow(/no account read/)
   })
 })

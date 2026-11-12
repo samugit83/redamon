@@ -618,6 +618,21 @@ describe('reads (permissions switch on)', () => {
     expect(held(await resolveCapabilities(member({ id: 'member-2' })))).toEqual(contents('builtin:read-only-analyst'))
   })
 
+  test('the Root a request already read (step 3.12, /api/auth/me) is used: no second Root read, also with no cache', async () => {
+    vi.stubEnv('RBAC_AUTHZ_CACHE_MS', '0')
+    seedRoot('admin-1')
+    const confirmed = { userId: 'admin-1', email: 'admin-1@e2e.local', confirmed: true, assignedBy: 'host' }
+    const caps = await resolveCapabilities(admin(), { root: confirmed })
+    expect([caps.accountType, held(caps)]).toEqual(['root', ALL])
+    expect(held(await resolveCapabilities(admin(), { root: { ...confirmed, confirmed: false } }))).toEqual(minus(ALL, ...ROOT_ONLY))
+    // null is an answer too (the instance has no Root): the admin resolves as an admin.
+    expect((await resolveCapabilities(admin(), { root: null })).accountType).toBe('admin')
+    expect(instanceFindUnique).not.toHaveBeenCalled()
+    // Without the option the resolution reads it, as before.
+    expect((await resolveCapabilities(admin())).accountType).toBe('root')
+    expect(instanceFindUnique).toHaveBeenCalledTimes(1)
+  })
+
   test('a failed read throws: it never resolves to a grant', async () => {
     db.failSets = true
     await expect(resolveCapabilities(member({ permissionSets: ['set-a'] }))).rejects.toThrow('db down')

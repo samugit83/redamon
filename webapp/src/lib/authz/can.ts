@@ -31,7 +31,9 @@ import {
   type Capabilities,
   type CapabilityPrincipal,
   type PermissionExplanation,
+  type ResolveOptions,
 } from './capabilities'
+import type { InstanceRoot } from './root'
 import { PERMISSIONS, PERMISSION_IDS, assertKnownPermission, type PermissionId } from './permissions'
 import { meetsLevel, projectAccess, type ProjectAccess } from './projectAccess'
 
@@ -112,12 +114,40 @@ function actingCapabilities(own: Capabilities, target: Capabilities): Capabiliti
   })
 }
 
+/** The account acted as, held to the act-as rule; null when there is none (or it is oneself). */
+async function actingAsOf(principal: CapabilityPrincipal, actingAs: CapabilityPrincipal | null | undefined, fresh: boolean): Promise<CapabilityPrincipal | null> {
+  const target = actingAs && actingAs.id !== principal.id ? actingAs : null
+  if (target && !(await mayActAs(principal, target, { fresh }))) throw new ActAsNotAllowedError(principal.id, target.id)
+  return target
+}
+
+async function inForce(principal: CapabilityPrincipal, actingAs: CapabilityPrincipal | null, opts: ResolveOptions): Promise<Capabilities> {
+  const own = await resolveCapabilities(principal, opts)
+  // The Root is the instance's, the same for both people.
+  return actingAs ? actingCapabilities(own, await resolveCapabilities(actingAs, opts)) : own
+}
+
+export interface InForceOptions extends Pick<CanOptions, 'actingAs' | 'fresh'> {
+  /** The Root the caller already read for this request (capabilities.ts `ResolveOptions.root`). */
+  root?: InstanceRoot | null
+}
+
+/**
+ * The set can() decides with, for a caller that shows it rather than checks one permission
+ * (/api/auth/me, so the UI follows the server): the person's own, or under act-as what they may
+ * use while acting. Reads no project; an `actingAs` the act-as rule refuses throws as in can().
+ */
+export async function capabilitiesInForce(principal: CapabilityPrincipal, opts: InForceOptions = {}): Promise<Capabilities> {
+  const fresh = opts.fresh === true
+  const actingAs = await actingAsOf(principal, opts.actingAs, fresh)
+  return inForce(principal, actingAs, { fresh, ...('root' in opts ? { root: opts.root } : {}) })
+}
+
 export async function can(principal: CapabilityPrincipal, permission: PermissionId, opts: CanOptions = {}): Promise<CanDecision> {
   assertKnownPermission(permission)
   const meta = PERMISSIONS[permission]
   const fresh = opts.fresh === true
-  const actingAs = opts.actingAs && opts.actingAs.id !== principal.id ? opts.actingAs : null
-  if (actingAs && !(await mayActAs(principal, actingAs, { fresh }))) throw new ActAsNotAllowedError(principal.id, actingAs.id)
+  const actingAs = await actingAsOf(principal, opts.actingAs, fresh)
   const onProject = actsOnProject(permission) && 'projectId' in opts
 
   let access: ProjectAccess | null = null
@@ -127,8 +157,7 @@ export async function can(principal: CapabilityPrincipal, permission: Permission
     if (!access) return Object.freeze({ allowed: false, status: 404, reason: 'project_not_visible', permission })
   }
 
-  const own = await resolveCapabilities(principal, { fresh })
-  const capabilities = actingAs ? actingCapabilities(own, await resolveCapabilities(actingAs, { fresh })) : own
+  const capabilities = await inForce(principal, actingAs, { fresh })
   if (!capabilities.has(permission)) return Object.freeze({ allowed: false, status: 403, reason: 'capability', permission, capabilities })
   if (access && meta.level !== null && !meetsLevel(access, meta.level)) {
     return Object.freeze({ allowed: false, status: 403, reason: 'project_level', permission, capabilities })

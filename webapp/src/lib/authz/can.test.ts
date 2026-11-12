@@ -44,7 +44,7 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
-import { can, ActAsNotAllowedError } from './can'
+import { can, capabilitiesInForce, ActAsNotAllowedError } from './can'
 import { setFlagsForTests } from './flags'
 import { clearCapabilityCachesForTests, type CapabilityPrincipal } from './capabilities'
 import { clearInstanceRootCacheForTests } from './root'
@@ -251,6 +251,47 @@ describe('can() under act-as returns what the person may use while acting (§4.7
   test('without act-as the decision carries the person\'s own set', async () => {
     const d = await can(admin('admin-1'), 'recon:scan', { projectId: 'P-admin' })
     expect(d.allowed && d.capabilities.has('agent:approve_dangerous')).toBe(true)
+  })
+})
+
+/**
+ * capabilitiesInForce (step 3.12): the set can() decides with, for a caller that shows it rather than
+ * checks one permission (/api/auth/me, so the UI follows the server, UI-01).
+ */
+describe('capabilitiesInForce: the set can() decides with', () => {
+  test('without act-as, the person\'s own set; under act-as, the same set can() carries', async () => {
+    const own = await capabilitiesInForce(member('alice', ANALYST))
+    expect([own.userId, own.held.includes('recon:read'), own.held.includes('recon:scan')]).toEqual(['alice', true, false])
+    const opts = { actingAs: member('alice', ANALYST) }
+    const acting = await capabilitiesInForce(admin('admin-1'), opts)
+    const d = await can(admin('admin-1'), 'recon:read', { ...opts, projectId: 'P-alice' })
+    expect(d.allowed).toBe(true)
+    if (!d.allowed) return
+    expect(acting.held).toEqual(d.capabilities.held)
+    expect([acting.has('recon:scan'), acting.has('users:impersonate')]).toEqual([false, true])
+    expect(Object.isFrozen(acting)).toBe(true)
+  })
+
+  test('acting as oneself is no act-as', async () => {
+    const own = await capabilitiesInForce(admin('admin-1'))
+    expect((await capabilitiesInForce(admin('admin-1'), { actingAs: admin('admin-1') })).held).toEqual(own.held)
+  })
+
+  test('an actingAs the act-as rule refuses throws before anything is read', async () => {
+    await expect(capabilitiesInForce(member('bob'), { actingAs: member('alice') })).rejects.toThrow(ActAsNotAllowedError)
+    expect([instanceFindUnique, setFindMany, projectFindUnique].map((f) => f.mock.calls.length)).toEqual([0, 0, 0])
+  })
+
+  test('the Root the caller already read is used: no Root read for the person', async () => {
+    const root = { userId: 'admin-1', email: 'admin-1@e2e.local', confirmed: true, assignedBy: 'host' }
+    const caps = await capabilitiesInForce(admin('admin-1'), { root })
+    expect([caps.accountType, caps.held.length]).toEqual(['root', PERMISSION_IDS.length])
+    expect(instanceFindUnique).not.toHaveBeenCalled()
+  })
+
+  test('reads no project, whatever it holds', async () => {
+    await capabilitiesInForce(admin('admin-1'), { actingAs: member('alice', ANALYST) })
+    expect(projectFindUnique).not.toHaveBeenCalled()
   })
 })
 

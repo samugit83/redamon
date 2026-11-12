@@ -45,6 +45,9 @@ import { KEEP_ACTION } from '@/lib/authz/updateReview'
 import { GET } from './route'
 
 const db = () => h.db as FakePrisma
+// Step 3.12 (PE-21) adds what the person may use and the switch states to every answer, beside the
+// fields below; their values are pinned in route.capabilities.test.ts.
+const STEP_312 = { capabilities: expect.any(Array), flags: expect.any(Object) }
 const T = new Date('2026-01-01T00:00:00.000Z')
 
 beforeEach(() => {
@@ -71,13 +74,13 @@ describe('GET /api/auth/me', () => {
     h.jar.auth = await createToken('member-1', 'standard')
     const res = await GET()
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ id: 'member-1', name: 'Marco', email: 'marco@e2e.local', role: 'standard' })
+    expect(await res.json()).toEqual({ id: 'member-1', name: 'Marco', email: 'marco@e2e.local', role: 'standard', ...STEP_312 })
   })
 
   test('an admin gets rbac.compat false and the pending count while the switch is off', async () => {
     h.jar.auth = await createToken('admin-1', 'admin')
     expect(await (await GET()).json()).toEqual({
-      id: 'admin-1', name: 'Ada', email: 'ada@e2e.local', role: 'admin',
+      id: 'admin-1', name: 'Ada', email: 'ada@e2e.local', role: 'admin', ...STEP_312,
       rbac: { compat: false, legacyGrantsPending: 1 },
     })
   })
@@ -93,7 +96,7 @@ describe('GET /api/auth/me', () => {
     const err = vi.spyOn(console, 'error')
     h.jar.auth = await createToken('admin-1', 'admin')
     expect(await (await GET()).json()).toEqual({
-      id: 'admin-1', name: 'Ada', email: 'ada@e2e.local', role: 'admin', accountType: 'root',
+      id: 'admin-1', name: 'Ada', email: 'ada@e2e.local', role: 'admin', accountType: 'root', ...STEP_312,
       rbac: {
         compat: false, legacyGrantsPending: 1, identity: true,
         root: { email: 'ada@e2e.local', confirmed: true, chosenAt: null },
@@ -101,7 +104,7 @@ describe('GET /api/auth/me', () => {
     })
     h.jar.auth = await createToken('member-1', 'standard')
     expect(await (await GET()).json()).toEqual({
-      id: 'member-1', name: 'Marco', email: 'marco@e2e.local', role: 'standard', accountType: 'member',
+      id: 'member-1', name: 'Marco', email: 'marco@e2e.local', role: 'standard', accountType: 'member', ...STEP_312,
     })
     expect(err).not.toHaveBeenCalled()
   })
@@ -114,7 +117,7 @@ describe('GET /api/auth/me', () => {
     const res = await GET()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      id: 'admin-1', name: 'Ada', email: 'ada@e2e.local', role: 'admin',
+      id: 'admin-1', name: 'Ada', email: 'ada@e2e.local', role: 'admin', ...STEP_312,
       rbac: { compat: false, legacyGrantsPending: 1, identity: true },
     })
     expect(err.mock.calls.map((c) => c.join(' '))).toEqual(['[rbac] could not read the Root: P1001'])

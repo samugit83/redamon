@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { getSession } from '@/lib/session'
+import { authzIdentityOf, getSession, type Session } from '@/lib/session'
 import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { rbacFlags } from '@/lib/authz/flags'
+import { capabilitiesInForce } from '@/lib/authz/can'
+import type { PermissionId } from '@/lib/authz/permissions'
 import { pendingLegacyGrantCount } from '@/lib/authz/updateReview'
 import { accountTypeOf, loadInstanceRoot, type AccountType, type InstanceRoot } from '@/lib/authz/root'
 import type { AdminNotices, RootNotice } from '@/providers/AuthProvider'
@@ -14,7 +16,12 @@ interface RootView {
   accountType: AccountType
   /** Admins only. */
   root?: RootNotice | null
+  /** The Root as read, for the capabilities (admins only: a member reads none). */
+  read?: InstanceRoot | null
 }
+
+/** An administrator account (Root or an admin): the `rbac` block and the Root are theirs. */
+const isAdministrator = (account: { id: string; role: string }): boolean => accountTypeOf(account, null) !== 'member'
 
 /**
  * The account type and, for an admin, the Root its banner shows (step 2.5); identity switch
@@ -23,12 +30,30 @@ interface RootView {
  */
 async function rootView(user: { id: string; role: string }): Promise<RootView | null> {
   if (!rbacFlags().identity) return null
-  if (user.role !== 'admin') return { accountType: 'member' }
+  if (!isAdministrator(user)) return { accountType: 'member' }
   try {
     const root = await loadInstanceRoot()
-    return { accountType: accountTypeOf(user, root), root: root && await rootNotice(root) }
+    return { accountType: accountTypeOf(user, root), root: root && await rootNotice(root), read: root }
   } catch (err) {
     console.error(`[rbac] could not read the Root: ${safeErrorCode(err)}`)
+    return null
+  }
+}
+
+/**
+ * What the person may use now (step 3.12, PE-21, UI-01): the permission ids can() decides with, in
+ * registry order; under act-as what the admin may use while acting (can.ts). The UI hides what is
+ * not held; the routes still decide. From the account getSession read and the Root this route
+ * read: the nginx `auth_request` of the WebSocket paths calls this route (T2). Null when it could
+ * not be resolved (logged): the session, which the whole app reads, never fails.
+ */
+async function capabilitiesView(session: Session, root: RootView | null): Promise<PermissionId[] | null> {
+  try {
+    const { principal, actingAs } = await authzIdentityOf(session)
+    const caps = await capabilitiesInForce(principal, { actingAs, ...(root && 'read' in root ? { root: root.read } : {}) })
+    return [...caps.held]
+  } catch (err) {
+    console.error(`[rbac] could not resolve the capabilities: ${safeErrorCode(err)}`)
     return null
   }
 }
@@ -91,9 +116,14 @@ export async function GET() {
     }
 
     const root = await rootView(user)
-    const account = root ? { ...user, accountType: root.accountType } : user
-    // The real signed-in account's role, read from the database: only admins see the switch.
-    if (session.role !== 'admin') return NextResponse.json(account)
+    // `flags` beside `rbac`, which stays admin-only: every account's UI reads the switches.
+    const account = {
+      ...(root ? { ...user, accountType: root.accountType } : user),
+      capabilities: await capabilitiesView(session, root),
+      flags: rbacFlags(),
+    }
+    // The real signed-in account's type, read from the database: only admins see the switch.
+    if (!isAdministrator({ id: session.userId, role: session.role })) return NextResponse.json(account)
     const rbac = await adminNotices()
     return NextResponse.json({ ...account, rbac: root && 'root' in root ? { ...rbac, root: root.root } : rbac })
   } catch (error) {

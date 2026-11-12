@@ -123,6 +123,15 @@ export interface AuthzIdentity {
 export async function getAuthzIdentity(opts: SessionOptions = {}): Promise<AuthzIdentity | null> {
   const session = await getSession(opts)
   if (!session) return null
+  return authzIdentityOf(session, opts)
+}
+
+/**
+ * getAuthzIdentity for a session getSession already answered (a route that reads the session
+ * itself): the act-as cookie is read, the login cookie and the account not again. Throws for a
+ * session object getSession did not answer, and on a failed read.
+ */
+export async function authzIdentityOf(session: Session, opts: SessionOptions = {}): Promise<AuthzIdentity> {
   const principal = sessionPrincipal(session)
   // getSession remembers the principal of every session it answers.
   if (!principal) throw new Error('session: no account read for this session')
