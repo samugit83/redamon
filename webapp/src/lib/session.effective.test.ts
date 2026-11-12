@@ -32,7 +32,7 @@ const dbUser = async ({ where }: { where: { id: string } }) =>
     : null
 vi.mock('@/lib/prisma', () => ({ default: { user: { findUnique: (a: { where: { id: string } }) => dbUser(a) } } }))
 
-import { getEffectiveUser } from './session'
+import { getEffectiveUser, getAuthzIdentity } from './session'
 import { createToken, createActAsToken } from './auth'
 
 describe('getEffectiveUser', () => {
@@ -84,5 +84,61 @@ describe('getEffectiveUser', () => {
     authCookie = await createToken('admin-1', 'admin')
     actAsCookie = 'not-a-jwt'
     expect(await getEffectiveUser()).toEqual({ userId: 'admin-1' })
+  })
+})
+
+/**
+ * getAuthzIdentity (step 3.5): what can() decides on. The real account and the account acted
+ * as, read exactly as getSession and getEffectiveUser read them.
+ */
+describe('getAuthzIdentity', () => {
+  beforeEach(() => {
+    authCookie = undefined
+    actAsCookie = undefined
+  })
+
+  test('null when there is no session', async () => {
+    expect(await getAuthzIdentity()).toBeNull()
+  })
+
+  test('the real session and its account; no act-as', async () => {
+    authCookie = await createToken('admin-1', 'admin')
+    const id = await getAuthzIdentity()
+    expect(id?.session).toEqual({ userId: 'admin-1', role: 'admin' })
+    expect(id?.principal).toMatchObject({ id: 'admin-1', role: 'admin', email: 'admin-1@e2e.local' })
+    expect(id?.actingAs).toBeNull()
+  })
+
+  test('an admin acting as X: the session stays the admin, actingAs is X', async () => {
+    authCookie = await createToken('admin-1', 'admin')
+    actAsCookie = await createActAsToken('admin-1', 'user-X')
+    const id = await getAuthzIdentity()
+    expect(id?.session.userId).toBe('admin-1')
+    expect(id?.actingAs).toMatchObject({ id: 'user-X', role: 'standard' })
+  })
+
+  test('acting as oneself is no act-as', async () => {
+    authCookie = await createToken('admin-1', 'admin')
+    actAsCookie = await createActAsToken('admin-1', 'admin-1')
+    expect((await getAuthzIdentity())?.actingAs).toBeNull()
+  })
+
+  test('the effective user it gives is getEffectiveUser\'s, in every case above', async () => {
+    const cases: Array<[string, string, (() => Promise<string>) | null]> = [
+      ['std-1', 'standard', () => createActAsToken('std-1', 'victim')],
+      ['std-1', 'standard', () => createActAsToken('some-admin', 'victim')],
+      ['admin-1', 'admin', null],
+      ['admin-1', 'admin', () => createActAsToken('admin-1', 'user-X')],
+      ['admin-1', 'admin', () => createActAsToken('admin-2', 'user-X')],
+      ['admin-1', 'admin', () => createActAsToken('admin-1', 'nobody')],
+      ['admin-1', 'admin', async () => 'not-a-jwt'],
+    ]
+    for (const [sub, role, actAs] of cases) {
+      authCookie = await createToken(sub, role)
+      actAsCookie = actAs ? await actAs() : undefined
+      const id = await getAuthzIdentity()
+      const effective = await getEffectiveUser()
+      expect([sub, actAsCookie && 'act-as', { userId: (id!.actingAs ?? id!.principal).id }]).toEqual([sub, actAsCookie && 'act-as', effective])
+    }
   })
 })

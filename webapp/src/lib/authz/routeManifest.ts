@@ -23,7 +23,10 @@ export const GUARD_CLASSES = [
   'internal',
   /** Accepts the scanner key (`isScannerRequest`), with or without the internal key. */
   'scanner',
-  /** The caller must own the project (`guardProject`, `requireProjectAccess`, `requireProjectOwner`, ...). */
+  /**
+   * The caller must own the project (`guardProject`, `requireProjectAccess`, `requireProjectOwner`, ...,
+   * `requirePermission` / `withPermission` naming a `projectId`: the entry's permission too).
+   */
   'project',
   /** The caller must own the conversation (`requireConversationAccess`, `...BySession`). */
   'conversation',
@@ -39,7 +42,10 @@ export const GUARD_CLASSES = [
   'admin-db',
   /** Scoped to the effective user's own rows (`requireEffectiveUser`, `ownerScope`), no project check. */
   'effective-user',
-  /** Reads the login session (`getSession`, `requireSession`), no ownership check. */
+  /**
+   * Reads the login session (`getSession`, `requireSession`), no ownership check; with
+   * `requirePermission` / `withPermission` and no project, the entry's permission as well.
+   */
   'session',
   /** Only the middleware's JWT check: the handler reads no session at all. */
   'login-only',

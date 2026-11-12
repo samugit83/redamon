@@ -13,6 +13,11 @@
  *   - the five shared tools resolve as `sharedToolAccess` answers them without the escape hatch;
  *   - no production file other than the named readers names a permission table.
  *
+ * Step 3.5 decides with `can()`. With the switch off it answers what the guards answer today: on
+ * a project, its owner (the account acted as, under act-as) may do every member action and anyone
+ * else gets 404; an instance action is an admin's (Root's own ones the confirmed Root's), and a
+ * member's only through a legacy grant, whatever rows exist.
+ *
  * @vitest-environment node
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -26,11 +31,17 @@ const db = vi.hoisted(() => ({
 const userFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => db.users.get(where.id) ?? null)
 const instanceFindUnique = vi.fn(async () => (db.instance ? { ...db.instance } : null))
 const setFindMany = vi.fn(async () => [])
+const PROJECTS: Record<string, { id: string; userId: string }> = {
+  'P-member': { id: 'P-member', userId: 'member-1' },
+  'P-admin': { id: 'P-admin', userId: 'admin-1' },
+}
+const projectFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => PROJECTS[where.id] ?? null)
 vi.mock('@/lib/prisma', () => ({
   default: {
     user: { findUnique: (a: { where: { id: string } }) => userFindUnique(a) },
     instanceSettings: { findUnique: () => instanceFindUnique() },
     permissionSet: { findMany: () => setFindMany() },
+    project: { findUnique: (a: { where: { id: string } }) => projectFindUnique(a) },
   },
 }))
 
@@ -41,6 +52,7 @@ import { clearInstanceRootCacheForTests } from './root'
 import { PERMISSIONS, PERMISSION_IDS, type PermissionId } from './permissions'
 import { builtinSet, DEFAULT_MEMBER_SET_ID, FULL_ADMIN_PROFILE_ID } from './builtinSets'
 import { sharedToolAccess, resetSharedToolsForTests, SHARED_TOOLS, type SharedTool } from './sharedTools'
+import { can } from './can'
 
 const WEBAPP = path.resolve(__dirname, '../../..')
 const ALL = [...PERMISSION_IDS]
@@ -218,5 +230,44 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
     expect(files).toContain(path.join(WEBAPP, 'src/lib/authz/principal.ts'))
     const readers = files.filter((f) => NAMES.test(readFileSync(f, 'utf8'))).map((f) => path.relative(WEBAPP, f)).sort()
     expect(readers).toEqual(PERMISSION_READERS)
+  })
+})
+
+describe('RBAC_PERMISSIONS_ENABLED off: can() answers as the guards do today (step 3.5)', () => {
+  const ON_A_PROJECT = ALL.filter((p) => PERMISSIONS[p].scope === 'project' || PERMISSIONS[p].level !== null)
+  const ADMIN_SIDE = ALL.filter((p) => PERMISSIONS[p].kind === 'admin')
+
+  test.each([true, false])('on a project: its owner may do every member action, anyone else gets 404, whatever rows exist (identity %s)', async (identity) => {
+    setFlagsForTests({ identity, permissions: false })
+    const owner = account('member-1', 'standard', NARROWED)
+    for (const p of ON_A_PROJECT) {
+      expect([p, (await can(owner, p, { projectId: 'P-member' })).allowed]).toEqual([p, true])
+      expect([p, await can(owner, p, { projectId: 'P-admin' })])
+        .toEqual([p, { allowed: false, status: 404, reason: 'project_not_visible', permission: p }])
+      expect([p, (await can(account('admin-1', 'admin', NARROWED), p, { projectId: 'P-member' })).allowed]).toEqual([p, false])
+    }
+    expect(setFindMany).not.toHaveBeenCalled()
+  })
+
+  test('act-as: the project is the account acted as (getEffectiveUser), and every member action stays open', async () => {
+    const opts = { actingAs: account('member-1', 'standard', NARROWED) }
+    for (const p of ON_A_PROJECT) {
+      expect([p, (await can(account('admin-1', 'admin'), p, { ...opts, projectId: 'P-member' })).allowed]).toEqual([p, true])
+      expect([p, await can(account('admin-1', 'admin'), p, { ...opts, projectId: 'P-admin' })]).toMatchObject([p, { allowed: false, status: 404 }])
+    }
+  })
+
+  test("an instance action: an admin's (but Root's own), a member's only through a legacy grant (requireAdmin, sharedToolAccess)", async () => {
+    const memberDecisions = await Promise.all(ADMIN_SIDE.map(async (p) => [p, (await can(account('member-1', 'standard', NARROWED), p)).allowed]))
+    expect(memberDecisions.filter(([, allowed]) => allowed)).toEqual([])
+    const granted = account('member-2', 'standard', { legacyGrants: ['kali_terminal', 'tunnels'] })
+    expect((await can(granted, 'platform:kali_terminal')).allowed).toBe(true)
+    expect((await can(granted, 'platform:tunnels')).allowed).toBe(true)
+    expect(await can(granted, 'platform:emergency_stop')).toMatchObject({ allowed: false, status: 403, permission: 'platform:emergency_stop' })
+    for (const p of ADMIN_SIDE) {
+      expect([p, (await can(account('admin-1', 'admin', NARROWED), p)).allowed]).toEqual([p, !ROOT_ONLY.includes(p)])
+    }
+    setFlagsForTests({ identity: false, permissions: false })
+    expect((await can(account('admin-1', 'admin'), 'admins:manage')).allowed).toBe(true)
   })
 })

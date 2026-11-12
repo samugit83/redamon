@@ -541,6 +541,32 @@ describe('reads (permissions switch on)', () => {
     expect(setFindMany).toHaveBeenCalledTimes(2)
   })
 
+  test('fresh (a critical check, step 3.5) reads the Root, the sets and the instance default again, and keeps them', async () => {
+    seedRoot('admin-1')
+    expect((await resolveCapabilities(admin())).accountType).toBe('root')
+    // Another process moved the Root: the cached read still answers within the bound, a fresh one does not.
+    seedRoot('admin-2')
+    expect((await resolveCapabilities(admin())).accountType).toBe('root')
+    expect((await resolveCapabilities(admin(), { fresh: true })).accountType).toBe('admin')
+    expect((await resolveCapabilities(admin())).accountType).toBe('admin')
+
+    seedSet({ id: 'set-a', kind: 'member', name: 'A', permissions: ['recon:read'] })
+    const p = member({ permissionSets: ['set-a'] })
+    await resolveCapabilities(p)
+    db.sets.set('set-a', { id: 'set-a', kind: 'member', name: 'A', permissions: ['recon:read', 'recon:scan'] })
+    expect((await resolveCapabilities(p)).has('recon:scan')).toBe(false)
+    expect((await resolveCapabilities(p, { fresh: true })).has('recon:scan')).toBe(true)
+    const reads = setFindMany.mock.calls.length
+    expect((await resolveCapabilities(p)).has('recon:scan')).toBe(true)
+    expect(setFindMany.mock.calls.length).toBe(reads)
+
+    await resolveCapabilities(member({ id: 'member-2' }))
+    db.instance!.defaultMemberSetId = 'builtin:read-only-analyst'
+    expect(held(await resolveCapabilities(member({ id: 'member-2' })))).toEqual(DEFAULT_MEMBER)
+    expect(held(await resolveCapabilities(member({ id: 'member-2' }), { fresh: true }))).toEqual(contents('builtin:read-only-analyst'))
+    expect(held(await resolveCapabilities(member({ id: 'member-2' })))).toEqual(contents('builtin:read-only-analyst'))
+  })
+
   test('a failed read throws: it never resolves to a grant', async () => {
     db.failSets = true
     await expect(resolveCapabilities(member({ permissionSets: ['set-a'] }))).rejects.toThrow('db down')

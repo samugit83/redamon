@@ -135,14 +135,14 @@ export function clearCapabilityCachesForTests(): void {
   warned.clear()
 }
 
-async function storedSets(ids: readonly string[]): Promise<ReadonlyMap<string, StoredSet | null>> {
+async function storedSets(ids: readonly string[], fresh: boolean): Promise<ReadonlyMap<string, StoredSet | null>> {
   const ttl = principalCacheTtl()
   const at = now().getTime()
   const out = new Map<string, StoredSet | null>()
   const wanted: string[] = []
   // A `builtin:` id the code does not hold is no row either: a custom set's id is a cuid.
   for (const id of new Set(ids.filter((i) => !i.startsWith('builtin:')))) {
-    const hit = ttl > 0 ? setCache.get(id) : undefined
+    const hit = ttl > 0 && !fresh ? setCache.get(id) : undefined
     if (hit && hit.expiresAt > at) out.set(id, hit.set)
     else wanted.push(id)
   }
@@ -163,9 +163,9 @@ async function storedSets(ids: readonly string[]): Promise<ReadonlyMap<string, S
   return out
 }
 
-async function instanceDefaultSetId(): Promise<string | null> {
+async function instanceDefaultSetId(fresh: boolean): Promise<string | null> {
   const ttl = principalCacheTtl()
-  if (ttl > 0 && defaultSetCache && defaultSetCache.expiresAt > now().getTime()) return defaultSetCache.id
+  if (!fresh && ttl > 0 && defaultSetCache && defaultSetCache.expiresAt > now().getTime()) return defaultSetCache.id
   const startedAt = generation
   const row = await prisma.instanceSettings.findUnique({
     where: { id: INSTANCE_SETTINGS_ROW },
@@ -262,13 +262,21 @@ function requireAssignments(principal: CapabilityPrincipal): asserts principal i
   }
 }
 
+export interface ResolveOptions {
+  /**
+   * A critical check (step 2.2's `fresh` reads): the Root, the sets and the instance default set
+   * are read from the database even when this process holds them, and what was read is kept.
+   */
+  fresh?: boolean
+}
+
 /** What `principal` may do at all, and why (`explain`). */
-export async function resolveCapabilities(principal: CapabilityPrincipal): Promise<Capabilities> {
+export async function resolveCapabilities(principal: CapabilityPrincipal, { fresh = false }: ResolveOptions = {}): Promise<Capabilities> {
   const flags = rbacFlags()
   const enforced = flags.permissions
   if (enforced) requireAssignments(principal)
   // Root is an admin (root.ts), so a member costs no instance read.
-  const root = principal.role === 'admin' ? await loadInstanceRoot() : null
+  const root = principal.role === 'admin' ? await loadInstanceRoot({ fresh }) : null
   const accountType = accountTypeOf(principal, root)
   const ledger = new Ledger()
 
@@ -295,7 +303,7 @@ export async function resolveCapabilities(principal: CapabilityPrincipal): Promi
   } else {
     requireAssignments(principal)
     const profileId = accountType === 'admin' ? principal.adminProfileId : null
-    const stored = await storedSets(profileId ? [profileId, ...principal.permissionSets] : principal.permissionSets)
+    const stored = await storedSets(profileId ? [profileId, ...principal.permissionSets] : principal.permissionSets, fresh)
     if (accountType === 'admin') {
       if (profileId === null) {
         ledger.defaultSet(FULL_ADMIN_PROFILE_ID)
@@ -308,7 +316,7 @@ export async function resolveCapabilities(principal: CapabilityPrincipal): Promi
       else ledger.defaultSet(DEFAULT_MEMBER_SET_ID)
     } else {
       if (principal.permissionSets.length > 0) ledger.assignedMemberSets(principal.permissionSets, stored)
-      else await instanceDefault(ledger)
+      else await instanceDefault(ledger, fresh)
       addLegacyGrants(principal, ledger)
     }
     addOverrides(principal.permissionOverrides, accountType, ledger)
@@ -321,13 +329,13 @@ export async function resolveCapabilities(principal: CapabilityPrincipal): Promi
   return result(principal.id, accountType, enforced, ledger)
 }
 
-async function instanceDefault(ledger: Ledger): Promise<void> {
-  const id = await instanceDefaultSetId()
+async function instanceDefault(ledger: Ledger, fresh: boolean): Promise<void> {
+  const id = await instanceDefaultSetId(fresh)
   if (id === null) {
     ledger.defaultSet(DEFAULT_MEMBER_SET_ID)
     return
   }
-  const set = setContents(id, 'member', await storedSets([id]))
+  const set = setContents(id, 'member', await storedSets([id], fresh))
   if (set) {
     ledger.grantSet({ id, name: set.name, kind: 'member', via: 'instance_default' }, set.permissions)
   } else {

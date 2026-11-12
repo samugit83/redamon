@@ -340,8 +340,35 @@ describe('the generator', () => {
       ['ownerScope', 'effective-user'],
       ['getEffectiveUser', 'effective-user'],
       ['requireSession', 'session'],
+      ['requirePermission', 'session'],
+      ['withPermission', 'session'],
+      ['requirePermission({projectId})', 'project'],
+      ['withPermission({projectId})', 'project'],
     ]
     for (const [helper, guard] of cases) expect([helper, classify('/api/x', new Set([helper]), middleware)]).toEqual([helper, guard])
+  })
+
+  test('a permission guard is a project guard only when it names the project (step 3.5)', () => {
+    const calls = (body: string) => [...calledGuards(body)]
+    expect(calls("export async function POST(r: Request) { return requirePermission(r, 'recon:scan', { projectId }) }"))
+      .toEqual(['requirePermission({projectId})'])
+    expect(calls("export async function POST(r: Request) { return requirePermission(r, 'recon:scan', { projectId: p.id, fresh: true }) }"))
+      .toEqual(['requirePermission({projectId})'])
+    expect(calls("export const GET = withPermission('recon:read', handler, { projectId: async (_r, c) => (await c.params).id })"))
+      .toEqual(['withPermission({projectId})'])
+    expect(calls("export const GET = authz.withPermission('recon:read', handler, { 'projectId': fromParams })"))
+      .toEqual(['withPermission({projectId})'])
+    // Capability only: no project option, another option, a spread or a variable the scan cannot read.
+    expect(calls("export async function GET(r: Request) { return requirePermission(r, 'users:read') }")).toEqual(['requirePermission'])
+    expect(calls("export async function GET(r: Request) { return requirePermission(r, 'users:read', { fresh: true }) }")).toEqual(['requirePermission'])
+    expect(calls("export async function GET(r: Request) { return requirePermission(r, 'recon:read', { ...opts }) }")).toEqual(['requirePermission'])
+    expect(calls("export async function GET(r: Request) { return requirePermission(r, 'recon:read', opts) }")).toEqual(['requirePermission'])
+    expect(calls("export const GET = withPermission('users:read', handler)")).toEqual(['withPermission'])
+    // The project option is read on the guard's own options argument, not on another argument.
+    expect(calls("export async function GET(r: Request) { return requirePermission({ projectId }, 'x') }")).toEqual(['requirePermission'])
+    expect(classify('/api/x', calledGuards("export async function GET(r: Request) { return requirePermission(r, 'recon:read', { projectId }) }"), middleware))
+      .toBe('project')
+    expect(classify('/api/x', new Set(['requirePermission', 'isInternalRequest']), middleware)).toBe('session')
   })
 
   test('public and plugin-token come from the path, whatever the handler calls', () => {

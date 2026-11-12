@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyToken, verifyActAsToken, AUTH_COOKIE_NAME, ACT_AS_COOKIE_NAME } from './auth'
 import { constantTimeEqual } from './constantTimeEqual'
 import { cachedPrincipal, loadPrincipal, type LoadPrincipalOptions, type Principal } from './authz/principal'
-import { rememberSessionPrincipal } from './authz/sessionPrincipal'
+import { rememberSessionPrincipal, sessionPrincipal } from './authz/sessionPrincipal'
 import { rbacFlags } from './authz/flags'
 import { isRootAccount } from './authz/root'
 import { internalError } from './routeErrors'
@@ -101,6 +101,31 @@ export async function getEffectiveUser(opts: SessionOptions = {}): Promise<Effec
   if (!session) return null
   const target = await actAsTarget(session, opts)
   return { userId: target ? target.id : session.userId }
+}
+
+/** Who a request is: what `can()` decides on (authz/guards.ts). */
+export interface AuthzIdentity {
+  /** The real signed-in account; act-as never changes it. */
+  session: Session
+  /** The same account as this request read it. */
+  principal: Principal
+  /** The account an admin is acting as (the effective user), or null. */
+  actingAs: Principal | null
+}
+
+/**
+ * The signed-in account and the account it acts as, read as `getSession` and `getEffectiveUser`
+ * read them (the effective user is `actingAs ?? principal`). Null without a valid session; a
+ * failed read throws.
+ */
+export async function getAuthzIdentity(opts: SessionOptions = {}): Promise<AuthzIdentity | null> {
+  const session = await getSession(opts)
+  if (!session) return null
+  const principal = sessionPrincipal(session)
+  // getSession remembers the principal of every session it answers.
+  if (!principal) throw new Error('session: no account read for this session')
+  const target = await actAsTarget(session, opts)
+  return { session, principal, actingAs: target && target.id !== principal.id ? target : null }
 }
 
 /**
@@ -215,8 +240,7 @@ export async function requireAccountWrite(targetUserId: string): Promise<NextRes
  *    change another account, through act-as or not, except a passwordless managed
  *    account it is acting as.
  *
- * Enforcement is IMMEDIATE (not the log-only ACCESS_ENFORCE path) because these
- * routes expose or mutate a user's plaintext secrets (STRIDE I1). Returns null
+ * These routes expose or mutate a user's plaintext secrets (STRIDE I1). Returns null
  * when allowed, or a 401/403 NextResponse the caller must return.
  */
 export async function requireUserAccess(

@@ -59,7 +59,16 @@ export const GUARD_HELPERS = {
   requireSession: 'session',
   isScannerRequest: 'scanner',
   isInternalRequest: 'internal',
+  // authz/guards.ts: the session, then can(). A call whose options object names `projectId`
+  // also checks the caller's access to that project (see calledGuards).
+  requirePermission: 'session',
+  withPermission: 'session',
+  'requirePermission({projectId})': 'project',
+  'withPermission({projectId})': 'project',
 }
+
+/** Permission guards and the index of their options argument. */
+const PERMISSION_GUARD_OPTIONS = { requirePermission: 2, withPermission: 2 }
 
 export const GUARD_PRECEDENCE = [
   'public',
@@ -86,14 +95,28 @@ function parse(file, source) {
   return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
 }
 
-/** The guard helpers the source calls, as `f(...)` or `x.f(...)`, anywhere in the file. */
+/** Whether a permission guard call passes a literal options object with a `projectId` key. */
+function namesProject(name, call) {
+  const options = call.arguments[PERMISSION_GUARD_OPTIONS[name]]
+  if (!options || !ts.isObjectLiteralExpression(options)) return false
+  return options.properties.some(p =>
+    (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p) || ts.isMethodDeclaration(p))
+    && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === 'projectId')
+}
+
+/**
+ * The guard helpers the source calls, as `f(...)` or `x.f(...)`, anywhere in the file. A
+ * permission guard that names the project counts as `name({projectId})`.
+ */
 export function calledGuards(source) {
   const found = new Set()
   const visit = node => {
     if (ts.isCallExpression(node)) {
       const callee = node.expression
       const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : null
-      if (name && Object.hasOwn(GUARD_HELPERS, name)) found.add(name)
+      if (name && Object.hasOwn(GUARD_HELPERS, name)) {
+        found.add(Object.hasOwn(PERMISSION_GUARD_OPTIONS, name) && namesProject(name, node) ? `${name}({projectId})` : name)
+      }
     }
     ts.forEachChild(node, visit)
   }
