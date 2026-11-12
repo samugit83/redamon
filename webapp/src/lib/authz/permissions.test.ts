@@ -228,7 +228,8 @@ describe('unknown rejected (PE-02)', () => {
     const named = ROUTE_MANIFEST.flatMap((entry) => {
       const p = (entry as { permission?: unknown }).permission
       if (p === undefined || p === null) return []
-      return typeof p === 'string' ? [p] : Object.values(p as Record<string, string>)
+      // A method no person's permission backs is null (step 3.9): it names no permission.
+      return typeof p === 'string' ? [p] : Object.values(p as Record<string, string | null>).filter((v) => v !== null)
     })
     expect(named.filter((p) => !isPermissionId(p))).toEqual([])
   })
