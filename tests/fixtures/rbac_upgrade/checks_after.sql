@@ -74,3 +74,9 @@ SELECT (SELECT email FROM users WHERE id = i.root_user_id), i.root_confirmed_at 
 \echo == root marker (user, rule, candidates, previous root), one line per marker row
 SELECT target_id, after->>'rule', after->>'candidateCount', after->>'previousRootUserId'
   FROM audit_log WHERE action = 'system.rbac_root_assigned' ORDER BY created_at;
+
+-- The permission tables arrive empty (step 3.3): no custom set, no assignment, no override,
+-- so every account resolves to its account type's default, as before the upgrade.
+\echo == permission tables (sets, set assignments, overrides) [step 3.3]
+SELECT (SELECT count(*) FROM permission_sets), (SELECT count(*) FROM user_permission_sets),
+       (SELECT count(*) FROM user_permission_overrides);

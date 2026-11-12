@@ -272,7 +272,7 @@ on. It checks each fixture with `checks.sql` against `expected/<scenario>.out` b
 after every run it asserts that the row count of every table and every `users` column are
 unchanged, and diffs `checks.sql` then `checks_after.sql` (what the upgrade adds: legacy
 grants, Nuclei template owners, the identity columns at their defaults, the instance settings
-row and the Root the boot chose in it, the empty invite table) against
+row and the Root the boot chose in it, the empty invite and permission tables) against
 `expected/<scenario>.after.out`.
 
 ```bash

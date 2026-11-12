@@ -54,3 +54,5 @@ false|true|upg-member-b|upg-admin-b|["upg-member-b", "upg-member-a"]|["upg-admin
 upg-admin-a@e2e.local|f|automatic|f
 == root marker (user, rule, candidates, previous root), one line per marker row
 upg-admin-a|oldest_admin|2|
+== permission tables (sets, set assignments, overrides) [step 3.3]
+0|0|0

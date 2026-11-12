@@ -16,7 +16,7 @@
 #     table or users column the run added is printed as a NOTE;
 #   - the scenario's checks: tests/fixtures/rbac_upgrade/checks.sql, then checks_after.sql
 #     (what the upgrade adds: legacy grants, Nuclei template owners, the instance settings
-#     row, the Root the boot chose, their marker rows),
+#     row, the Root the boot chose, their marker rows, the empty permission tables),
 #     through psql, diffed against expected/<scenario>.after.out. The fixture itself is
 #     checked with checks.sql against expected/<scenario>.out before the run.
 #

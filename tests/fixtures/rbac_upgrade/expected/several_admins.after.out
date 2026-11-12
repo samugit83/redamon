@@ -49,3 +49,5 @@ false|true|||[]|[]
 upg-admin-c@e2e.local|f|automatic|f
 == root marker (user, rule, candidates, previous root), one line per marker row
 upg-admin-c|oldest_admin|3|
+== permission tables (sets, set assignments, overrides) [step 3.3]
+0|0|0

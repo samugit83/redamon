@@ -144,3 +144,82 @@ describe('the identity schema (step 2.1)', () => {
     expect(now.UserInvite.blockAttributes).toContain('@@index([userId, kind])')
   })
 })
+
+// Step 3.3 (phase_03): where a member's permission sets and overrides are kept. No row
+// exists after the upgrade, so every account resolves to its account type's default.
+describe('the permission schema (step 3.3)', () => {
+  const columnsOf = (model: string) =>
+    Object.entries(now[model]?.fields ?? {}).filter(([, f]) => !isRelation(f.type)).map(([name]) => name)
+
+  test('the new tables map to permission_sets, user_permission_sets and user_permission_overrides', () => {
+    expect(now.PermissionSet?.table).toBe('permission_sets')
+    expect(now.UserPermissionSet?.table).toBe('user_permission_sets')
+    expect(now.UserPermissionOverride?.table).toBe('user_permission_overrides')
+  })
+
+  test.each([
+    ['PermissionSet', 'id', 'String', 'id'],
+    ['PermissionSet', 'kind', 'String', 'kind'],
+    ['PermissionSet', 'name', 'String', 'name'],
+    ['PermissionSet', 'description', 'String?', 'description'],
+    ['PermissionSet', 'permissions', 'String[]', 'permissions'],
+    ['PermissionSet', 'clonedFrom', 'String?', 'cloned_from'],
+    ['PermissionSet', 'createdById', 'String', 'created_by_id'],
+    ['PermissionSet', 'createdAt', 'DateTime', 'created_at'],
+    ['PermissionSet', 'updatedAt', 'DateTime', 'updated_at'],
+    ['UserPermissionSet', 'userId', 'String', 'user_id'],
+    ['UserPermissionSet', 'setId', 'String', 'set_id'],
+    ['UserPermissionSet', 'createdAt', 'DateTime', 'created_at'],
+    ['UserPermissionOverride', 'userId', 'String', 'user_id'],
+    ['UserPermissionOverride', 'permission', 'String', 'permission'],
+    ['UserPermissionOverride', 'effect', 'String', 'effect'],
+    ['UserPermissionOverride', 'expiresAt', 'DateTime?', 'expires_at'],
+    ['UserPermissionOverride', 'reason', 'String?', 'reason'],
+    ['UserPermissionOverride', 'grantedById', 'String', 'granted_by_id'],
+    ['UserPermissionOverride', 'createdAt', 'DateTime', 'created_at'],
+  ])('%s.%s is %s in column %s', (model, name, type, column) => {
+    expect(field(model, name)).toMatchObject({ type, column })
+  })
+
+  test('each table holds exactly these columns', () => {
+    expect(columnsOf('PermissionSet')).toEqual([
+      'id', 'kind', 'name', 'description', 'permissions', 'clonedFrom', 'createdById', 'createdAt', 'updatedAt',
+    ])
+    expect(columnsOf('UserPermissionSet')).toEqual(['userId', 'setId', 'createdAt'])
+    expect(columnsOf('UserPermissionOverride')).toEqual([
+      'userId', 'permission', 'effect', 'expiresAt', 'reason', 'grantedById', 'createdAt',
+    ])
+  })
+
+  test('a set has a generated id and a unique name; the database keeps the times', () => {
+    expect(field('PermissionSet', 'id').line).toMatch(/@id\s+@default\(cuid\(\)\)/)
+    expect(field('PermissionSet', 'name').line).toContain('@unique')
+    expect(field('PermissionSet', 'createdAt').line).toContain('@default(now())')
+    expect(field('PermissionSet', 'updatedAt').line).toContain('@updatedAt')
+    expect(field('UserPermissionSet', 'createdAt').line).toContain('@default(now())')
+    expect(field('UserPermissionOverride', 'createdAt').line).toContain('@default(now())')
+  })
+
+  test('one assignment per account and set, one override per account and permission', () => {
+    expect(now.UserPermissionSet.blockAttributes).toContain('@@id([userId, setId])')
+    expect(now.UserPermissionOverride.blockAttributes).toContain('@@id([userId, permission])')
+  })
+
+  test('an account reaches its assignments and overrides', () => {
+    expect(field('User', 'permissionSets').type).toBe('UserPermissionSet[]')
+    expect(field('User', 'permissionOverrides').type).toBe('UserPermissionOverride[]')
+  })
+
+  // PE-30 (D-20): one admin profile per admin is the single nullable column of step 2.1,
+  // never a list or a join table; the instance default set is the settings row's.
+  test('an admin keeps one profile in User.adminProfileId; the step adds no column to users or the settings row', () => {
+    expect(field('User', 'adminProfileId')).toMatchObject({ type: 'String?', column: 'admin_profile_id' })
+    expect(field('InstanceSettings', 'defaultMemberSetId')).toMatchObject({ type: 'String?', column: 'default_member_set_id' })
+    const profileHolders = Object.entries(now)
+      .filter(([name, m]) => name !== 'User' && Object.keys(m.fields).some((f) => /adminProfile/i.test(f)))
+      .map(([name]) => name)
+    expect(profileHolders).toEqual([])
+    const userPermissionFields = Object.keys(now.User.fields).filter((f) => /permission/i.test(f))
+    expect(userPermissionFields).toEqual(['permissionSets', 'permissionOverrides'])
+  })
+})

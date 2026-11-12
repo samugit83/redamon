@@ -68,6 +68,8 @@ model User {
   // One-time notices shown to the account at its next sign-in.
   pendingNotices     Json      @default("[]") @map("pending_notices")
   invites            UserInvite[]
+  permissionSets      UserPermissionSet[]
+  permissionOverrides UserPermissionOverride[]
 
   @@map("users")
 }
@@ -163,6 +165,55 @@ model UserInvite {
 
   @@index([userId, kind])
   @@map("user_invites")
+}
+
+/// A custom permission set (kind member) or admin profile (kind admin). The built-in
+/// ones are code (src/lib/authz/builtinSets.ts), never rows: their ids are
+/// 'builtin:<slug>'. Accounts are named by plain id, so a set outlives its author.
+model PermissionSet {
+  id          String   @id @default(cuid())
+  kind        String                                    // member | admin
+  name        String   @unique
+  description String?
+  // Registry ids (src/lib/authz/permissions.ts), validated on write.
+  permissions String[]
+  clonedFrom  String?  @map("cloned_from")
+  createdById String   @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("permission_sets")
+}
+
+/// A member's permission sets. No row = never assigned: the instance default set,
+/// else Default member. setId is a PermissionSet id or 'builtin:<slug>' with no
+/// foreign key, so deleting a set leaves its rows behind and an account whose every
+/// set is gone resolves to No access instead of widening to the default.
+model UserPermissionSet {
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  setId     String   @map("set_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([userId, setId])
+  @@map("user_permission_sets")
+}
+
+/// A per-account grant or deny of one permission on top of the sets; a deny wins. An
+/// override past expiresAt counts for nothing. No override carries an admin
+/// permission: an admin's admin side is the single profile in User.adminProfileId (D-20).
+model UserPermissionOverride {
+  userId      String    @map("user_id")
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission  String
+  effect      String                                    // grant | deny
+  expiresAt   DateTime? @map("expires_at")
+  reason      String?
+  grantedById String    @map("granted_by_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@id([userId, permission])
+  @@map("user_permission_overrides")
 }
 
 /// A personal access token for the INBOUND MCP server (/api/mcp-server), which
