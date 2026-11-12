@@ -361,3 +361,143 @@ def test_nmap_ip_mode_argv_is_unchanged_by_exclusions():
     settings = {"IP_MODE": True, "NMAP_TIMING_TEMPLATE": "T3", "NMAP_HOST_TIMEOUT": 300}
     assert (build_nmap_command(ADMITTED_IP, "80", "/tmp/o.xml", settings, roe_exclusions=True)
             == build_nmap_command(ADMITTED_IP, "80", "/tmp/o.xml", settings))
+
+
+# --------------------------------------------------------------------------
+# Arjun: the URLs and the argv run_arjun_discovery builds, and its callers
+# --------------------------------------------------------------------------
+
+#: The endpoint list resource_enum hands Arjun: the admitted bare IP (its root
+#: 302s to edge), www, and edge itself (a crawler or jsluice can name it).
+ARJUN_URLS = [f"http://{ADMITTED_IP}/", f"https://{WWW}/search", f"http://{EDGE}/login"]
+
+
+def _arjun(monkeypatch, settings, recon_data=None, urls=ARJUN_URLS, disable_redirects=False):
+    """run_arjun_discovery with Arjun's process faked; returns [(argv, urls)]."""
+    from unittest.mock import MagicMock
+    from recon.helpers.resource_enum import arjun_helpers
+    runs = []
+
+    def popen(cmd, **_k):
+        runs.append((cmd, Path(cmd[cmd.index("-i") + 1]).read_text().split()))
+        proc = MagicMock()
+        proc.communicate.return_value = ("", "")
+        proc.returncode = 0
+        return proc
+
+    monkeypatch.setattr(arjun_helpers.subprocess, "Popen", popen)
+    monkeypatch.setattr("helpers.proxy_routing.get_capture_routing", lambda *_a, **_k: (None, None))
+    arjun_helpers.run_arjun_discovery(
+        list(urls), ["GET"], 1, 5, 5, 10, 0, False, False, disable_redirects, [],
+        {ADMITTED_IP, WWW, EDGE}, settings=settings, recon_data=recon_data)
+    return runs
+
+
+@pytest.mark.parametrize("entry", [f"{EXCLUDED_IP}/32", "198.51.100.0/24", EDGE])
+def test_arjun_follows_no_redirect_and_gets_no_excluded_host(monkeypatch, capsys, entry):
+    [(cmd, urls)] = _arjun(monkeypatch, _roe(entry), DOMAIN_RECON)
+    assert cmd.count("--disable-redirects") == 1
+    assert urls == ARJUN_URLS[:2]
+    out = capsys.readouterr().out
+    assert "[*][Arjun] Redirects not followed" in out
+    assert "[-][RoE] arjun: not sent to" in out
+
+
+@pytest.mark.parametrize("settings", INACTIVE)
+def test_arjun_unchanged_without_an_exclusion(monkeypatch, settings):
+    [(cmd, urls)] = _arjun(monkeypatch, settings, DOMAIN_RECON)
+    assert "--disable-redirects" not in cmd
+    assert urls == ARJUN_URLS
+
+
+def test_arjun_without_the_run_is_unchanged(monkeypatch):
+    [(cmd, urls)] = _arjun(monkeypatch, None, None)
+    assert "--disable-redirects" not in cmd and urls == ARJUN_URLS
+
+
+def test_arjun_follows_no_redirect_in_ip_mode(monkeypatch):
+    recon = {"metadata": {"ip_mode": True, "expanded_ips": [ADMITTED_IP]}}
+    [(cmd, urls)] = _arjun(monkeypatch, {"IP_MODE": True}, recon)
+    assert cmd.count("--disable-redirects") == 1
+    assert urls == [f"http://{ADMITTED_IP}/"]
+
+
+def test_arjun_partial_run_disables_redirects_from_its_settings(monkeypatch):
+    """A partial run passes no recon dict: its graph and typed URLs were
+    admitted upstream, so the list stays as given."""
+    [(cmd, urls)] = _arjun(monkeypatch, _roe(f"{EXCLUDED_IP}/32"), None)
+    assert cmd.count("--disable-redirects") == 1 and urls == ARJUN_URLS
+
+
+def test_arjun_redirects_already_off_are_not_doubled(monkeypatch):
+    [(cmd, _urls)] = _arjun(monkeypatch, _roe(EDGE), DOMAIN_RECON, disable_redirects=True)
+    assert cmd.count("--disable-redirects") == 1
+
+
+def test_arjun_with_every_url_refused_starts_nothing(monkeypatch):
+    assert _arjun(monkeypatch, _roe(EDGE), DOMAIN_RECON, urls=[f"http://{EDGE}/a"]) == []
+
+
+def _resource_enum_arjun(monkeypatch, settings: dict) -> list:
+    """run_resource_enum with every tool off but Arjun, whose process is
+    faked; returns [(argv, urls)]. With no crawler output Arjun gets the run's
+    target URLs: www and the admitted bare IP whose root 302s to edge."""
+    from unittest.mock import MagicMock
+    from recon.helpers.resource_enum import arjun_helpers
+    from recon.main_recon_modules import resource_enum
+    runs = []
+
+    def popen(cmd, **_k):
+        runs.append((cmd, Path(cmd[cmd.index("-i") + 1]).read_text().split()))
+        proc = MagicMock()
+        proc.communicate.return_value = ("", "")
+        proc.returncode = 0
+        return proc
+
+    for name in ("pull_katana_docker_image", "pull_hakrawler_docker_image",
+                 "pull_gau_docker_image", "pull_zap_ajax_docker_image"):
+        monkeypatch.setattr(resource_enum, name, lambda *_a, **_k: True, raising=False)
+    monkeypatch.setattr(resource_enum, "is_docker_installed", lambda: True)
+    monkeypatch.setattr(resource_enum, "is_docker_running", lambda: True)
+    monkeypatch.setattr(resource_enum, "arjun_binary_check", lambda: True)
+    monkeypatch.setattr(arjun_helpers.subprocess, "Popen", popen)
+    monkeypatch.setattr("helpers.proxy_routing.get_capture_routing", lambda *_a, **_k: (None, None))
+    resource_enum.run_resource_enum(copy.deepcopy(DOMAIN_RECON), settings=dict(
+        settings, KATANA_ENABLED=False, HAKRAWLER_ENABLED=False, JSLUICE_ENABLED=False,
+        FFUF_ENABLED=False, ZAP_AJAX_SPIDER_ENABLED=False, GAU_ENABLED=False,
+        PARAMSPIDER_ENABLED=False, KITERUNNER_ENABLED=False, OPENAPI_ENABLED=False,
+        ARJUN_ENABLED=True, ARJUN_METHODS=["GET"]))
+    return runs
+
+
+def test_resource_enum_arjun_follows_no_redirect_under_roe_exclusions(monkeypatch):
+    [(cmd, urls)] = _resource_enum_arjun(monkeypatch, _roe(f"{EXCLUDED_IP}/32"))
+    assert f"http://{ADMITTED_IP}" in urls
+    assert cmd.count("--disable-redirects") == 1
+
+
+@pytest.mark.parametrize("settings", INACTIVE)
+def test_resource_enum_arjun_unchanged_without_an_exclusion(monkeypatch, settings):
+    [(cmd, urls)] = _resource_enum_arjun(monkeypatch, settings)
+    assert f"http://{ADMITTED_IP}" in urls
+    assert "--disable-redirects" not in cmd
+
+
+def test_partial_arjun_hands_arjun_its_settings(monkeypatch):
+    from recon.helpers.resource_enum import arjun_helpers
+    from recon.partial_recon_modules import parameter_discovery
+    seen = {}
+
+    def arjun(*args, **kwargs):
+        seen["urls"], seen["kwargs"] = args[0], kwargs
+        raise _Stop
+
+    monkeypatch.setattr(arjun_helpers, "arjun_binary_check", lambda: True)
+    monkeypatch.setattr(arjun_helpers, "run_arjun_discovery", arjun)
+    config = {"domain": "example.com", "include_graph_targets": False,
+              "user_targets": {"urls": [f"https://{WWW}/search"]},
+              "_settings": dict(_roe(EDGE))}
+    with pytest.raises(_Stop):
+        parameter_discovery.run_arjun(config)
+    assert seen["urls"] == [f"https://{WWW}/search"]
+    assert seen["kwargs"]["settings"]["ROE_EXCLUDED_HOSTS"] == [EDGE]

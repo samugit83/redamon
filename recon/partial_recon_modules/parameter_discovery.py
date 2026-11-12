@@ -707,6 +707,7 @@ def run_arjun(config: dict) -> None:
         ARJUN_DISABLE_REDIRECTS,
         ARJUN_CUSTOM_HEADERS,
         target_domains,
+        settings=settings,
     )
 
     # Merge Arjun results into by_base_url structure

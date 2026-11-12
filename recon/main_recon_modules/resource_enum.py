@@ -1385,6 +1385,8 @@ def run_resource_enum(recon_data: dict, output_file: Optional[Path] = None, sett
                 ARJUN_DISABLE_REDIRECTS,
                 ARJUN_CUSTOM_HEADERS,
                 target_domains,
+                settings=settings,
+                recon_data=recon_data,
             )
 
             if arjun_results:
