@@ -207,12 +207,15 @@ class TestExternalDomains(unittest.TestCase):
         w.update_graph_from_external_domains(recon, "u1", "p1")
         return w
 
-    def test_a_sibling_roots_host_becomes_its_subdomain(self):
+    def test_a_sibling_roots_host_joins_its_existing_subdomain_and_mints_none(self):
+        # A link is no admission (D2): the sibling group's own steps write the
+        # names its scope and the RoE admit; the link only joins one of them.
         w = self._write({"domain": "alpha.test", "all_project_roots": ROOTS,
                          "external_domains_aggregated": self.AGGREGATED})
         self.assertEqual(w.attached().get("api.beta.test"), "beta.test")
-        merged = [p for q, p in w.session.calls if "MERGE (s:Subdomain" in q]
-        self.assertEqual(merged[0]["source"], "js_recon")
+        self.assertEqual(w.subdomains_merged(), [])
+        lookup, = [q for q, p in w.session.calls if p.get("name") == "api.beta.test"]
+        self.assertIn("MATCH (s:Subdomain {name: $name, user_id: $uid, project_id: $pid})", lookup)
 
     def test_only_a_foreign_host_is_an_external_domain(self):
         w = self._write({"domain": "alpha.test", "all_project_roots": ROOTS,

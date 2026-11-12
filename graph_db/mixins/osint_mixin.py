@@ -1264,11 +1264,18 @@ class OsintMixin:
         domain = home_domain(recon_data)
         if not external_domains:
             return
-        # Each module judged "external" against the one scan root it scanned, so
-        # in a Domain batch a host under a SIBLING scan root lands here too. It
-        # is not foreign: it joins that root's org as a Subdomain. A scan root
-        # itself is left to the domain writer, which makes it a node only when
-        # it is a target.
+        # Each module judged "external" against its own target list, so a host
+        # under a scan root lands here too: a crawler's or an archive's link, a
+        # redirect, a sibling scan root's host in a Domain batch. It is not
+        # foreign, so it gets no ExternalDomain. A link is no admission either
+        # (D2): the RoE, an EXACT group's list or the wildcard control may have
+        # refused the name, and partial scans read every Subdomain back as a
+        # target. So it only joins a Subdomain the run's own steps wrote, as an
+        # Uncover URL or a certificate SAN does. IP mode's in-scope names are
+        # the ones its hostname rule selected, written under their org. A scan
+        # root itself is left to the domain writer, which makes it a node only
+        # when it is a target.
+        ip_mode = bool((recon_data.get("metadata") or {}).get("ip_mode"))
 
         print(f"\n[GRAPH] External Domains: {len(external_domains)} foreign domains")
 
@@ -1280,7 +1287,19 @@ class OsintMixin:
                     continue
                 kind, root = classify_host(ed_domain, recon_data)
                 if kind != OUT_OF_SCOPE:
-                    if kind == IN_SCOPE and ed_domain.strip().lower() != root.strip().lower():
+                    owned = kind == IN_SCOPE and ed_domain.strip().lower() != root.strip().lower()
+                    if owned and not ip_mode:
+                        try:
+                            session.run("""
+                                MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
+                                MATCH (s:Subdomain {name: $name, user_id: $uid, project_id: $pid})
+                                MERGE (d)-[:HAS_SUBDOMAIN]->(s)
+                                MERGE (s)-[:BELONGS_TO]->(d)
+                            """, domain=org_for_scan_root(root, recon_data), name=ed_domain.strip().lower(),
+                                uid=user_id, pid=project_id)
+                        except Exception as e:
+                            logger.warning(f"Subdomain link error for {ed_domain}: {e}")
+                    elif owned:
                         try:
                             session.run("""
                                 MATCH (d:Domain {name: $domain, user_id: $uid, project_id: $pid})
