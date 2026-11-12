@@ -8,13 +8,17 @@ import { useAlertModal } from '@/components/ui'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { readApiError, toApiError } from '@/lib/apiError'
+import { ActivitySection, ProfileSection, SessionsSection } from './AccountSections'
 import styles from './page.module.css'
 
 /**
- * My account (step 2.8: the password form; step 2.11 adds the rest). While an account's
+ * My account (step 2.8: the password form; step 2.11, UI-09: the rest). While an account's
  * password must change (identity switch on), the middleware holds the browser here with
- * `?changePassword=1`; the password route then re-issues the login cookie without the
- * must-change claim, so a full navigation goes on into the app.
+ * `?changePassword=1` and every other API answers 403, so only the password form shows; the
+ * password route then re-issues the login cookie without the must-change claim, so a full
+ * navigation goes on into the app. With the identity switch on (the session then carries an
+ * account type) the page also holds the profile, the sessions and My activity; off, the
+ * password form alone, as step 2.8 built it.
  */
 export default function AccountPage() {
   const { user, isLoading, sessionError } = useAuth()
@@ -96,9 +100,12 @@ export default function AccountPage() {
     }
   }
 
+  const full = account.accountType !== undefined && !forced
+
   return (
     <main className={styles.page}>
       <h1 className={styles.title}>My account</h1>
+      {full && <ProfileSection account={account} />}
       <section className={styles.section} aria-labelledby="account-password-title">
         <h2 id="account-password-title" className={styles.sectionTitle}>Password</h2>
         {forced && (
@@ -119,7 +126,7 @@ export default function AccountPage() {
               value={current}
               onChange={e => setCurrent(e.target.value)}
               autoComplete="current-password"
-              autoFocus
+              autoFocus={!full}
             />
           </div>
           <div className={styles.field}>
@@ -153,6 +160,8 @@ export default function AccountPage() {
           </div>
         </form>
       </section>
+      {full && <SessionsSection account={account} />}
+      {full && <ActivitySection />}
     </main>
   )
 }

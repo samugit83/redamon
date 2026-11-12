@@ -103,3 +103,63 @@
   font-size: var(--text-sm);
   color: var(--text-secondary);
 }
+
+/* Step 2.11: "Sign out everywhere" and My activity. */
+.dangerButton {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--status-error);
+  background: transparent;
+  border: 1px solid var(--status-error);
+  border-radius: var(--radius-default);
+  cursor: pointer;
+}
+
+.dangerButton:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.dangerButton:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.dangerButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.activityItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--table-border);
+}
+
+.activityItem:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.activityWhen {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.activityTag {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}

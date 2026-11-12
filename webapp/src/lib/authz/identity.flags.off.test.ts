@@ -78,7 +78,9 @@
  *     an act-as cookie 12 h, and no instance row is read for them (sessionLifetime.test.ts,
  *     login/route.lifetime.test.ts, act-as/route.test.ts);
  *   - the middleware ends no session for idleness and refreshes none, whatever claims a token
- *     minted while the switch was on carries (middleware.sessionIdle.test.ts).
+ *     minted while the switch was on carries (middleware.sessionIdle.test.ts);
+ *   - /api/account/activity answers 404 to everyone and reads nothing, and the My account page is
+ *     step 2.8's password form alone (account/page.myAccount.test.tsx).
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/identity.flags.off.test.ts
  * @vitest-environment node
@@ -150,6 +152,9 @@ const IDENTITY_READERS: string[] = [
   'src/app/api/users/[id]/route.ts',
   // Step 2.8: a new account with a temporary password is flagged only with the switch on.
   'src/app/api/users/route.ts',
+  // Step 2.11: My activity reads the account's notices, reached only through a route that answers
+  // 404 with the switch off.
+  'src/lib/authz/accountActivity.ts',
   'src/lib/authz/accountEmail.ts',
   // Step 2.10: the reset notices, written by a reset and handed over at a sign-in, both only with
   // the switch on.
@@ -546,6 +551,16 @@ describe('RBAC_IDENTITY_ENABLED off (step 2.11)', () => {
       expect(maxAge).toBe(7 * 24 * 3600)
     }
     expect(await actAsLifetimeSeconds()).toBe(12 * 3600)
+    expect(findUnique).not.toHaveBeenCalled()
+  })
+
+  test('My activity answers 404 to a member, an admin and nobody, and reads nothing', async () => {
+    setFlagsForTests({ identity: false })
+    const { GET: activity } = await import('@/app/api/account/activity/route')
+    for (const cookie of [await createToken('admin-1', 'admin'), await createToken('member-1', 'standard'), undefined]) {
+      authCookie = cookie
+      expect((await activity()).status).toBe(404)
+    }
     expect(findUnique).not.toHaveBeenCalled()
   })
 })

@@ -64,6 +64,7 @@ export interface RouteManifestEntry {
 }
 
 export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
+  { path: '/api/account/activity', guard: 'session', methods: ['GET'], note: '404 with RBAC_IDENTITY_ENABLED off; the real signed-in account (never one acted as) reads its own notices and the audit rows about it from a safe list (resets and the sign-in after one, email changes, act-as on it, Root changes), safe fields only, no account id (UI-09, step 2.11)' },
   { path: '/api/admin/instance-settings', guard: 'session', methods: ['GET', 'PUT'], note: 'getSession (fresh for the PUT) reads the signed-in account, never the act-as one; 404 with RBAC_IDENTITY_ENABLED off; an admin reads and changes everything, the tunnels legacy holder or a compat account only the tunnel (sharedToolAccess tunnels, HD-06, OQ-R3 (a)), anyone else 403 instance:settings; PUT same-origin JSON only (ID-32, step 2.4); the security policy fields (password policy, lifetimes, impersonation, publicBaseUrl) change only by the confirmed Root with step-up, anyone else 403 root_only (step 2.6)' },
   { path: '/api/admin/legacy-grants', guard: 'admin-jwt', methods: ['GET', 'POST'] },
   { path: '/api/admin/whats-new', guard: 'admin-jwt', methods: ['GET', 'POST'] },
