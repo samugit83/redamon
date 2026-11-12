@@ -24,10 +24,12 @@
 #           older version)
 #   body    '-' for none, else sent as application/json
 #   expect  status codes joined by '|', then optional ';has=<text>' / ';lacks=<text>'
-#           checks on the response body (literal text) and ';hdr=<text>' on its
-#           headers (literal text, any case)
+#           checks on the response body (literal text) and ';hdr=<text>' /
+#           ';nohdr=<text>' on its headers (literal text, any case)
 #   tags    space-separated: hole:<finding> (today's behaviour a later phase closes),
-#           req:<id>, probe:<how>, superseded-by:<file> (kept, never run again)
+#           req:<id>, probe:<how>, superseded-by:<file> (kept, never run again),
+#           identity:on | identity:off (run only while the webapp's RBAC_IDENTITY_ENABLED
+#           is so, read from the container; SKIP otherwise)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
 #
 # Rows never start a scan or an agent run. A row that must prove "allowed" without
@@ -222,21 +224,29 @@ shift_session_version() { # user-id +1|-1 -> 0 when exactly that account's versi
   [ "$(printf "update users set session_version = session_version %s 1 where id = '%s' and session_version %s returning id;\n" \
     "${2:0:1}" "$1" "$([ "$2" = -1 ] && echo '> 0' || echo '>= 0')" | db_sql)" = "$1" ] && cache_settle
 }
+IDENTITY=""; CACHE_MS=""
+read_identity() { # the webapp's identity switch (IDENTITY=on|off) and cache bound, read once
+  [ -n "$IDENTITY" ] && return
+  local env on
+  env="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
+  on="$(printf '%s' "${env%%|*}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  CACHE_MS="${env#*|}"; CACHE_MS="${CACHE_MS//[[:space:]]/}"
+  case "$on" in true|1|yes) IDENTITY=on ;; *) IDENTITY=off ;; esac
+}
 CACHE_SETTLE=""
 cache_settle() { # waits out the webapp's account cache when the identity switch is on
   if [ -z "$CACHE_SETTLE" ]; then
-    local env on ms
-    env="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
-    on="$(printf '%s' "${env%%|*}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-    ms="${env#*|}"; ms="${ms//[[:space:]]/}"
-    case "$on" in
-      true|1|yes)
-        [[ "$ms" =~ ^[0-9]+$ ]] || ms=5000
-        [ "$ms" -gt 60000 ] && ms=60000
-        CACHE_SETTLE=$(( (ms + 999) / 1000 + 1 ))
-        echo "== identity switch on: each account change by SQL waits ${CACHE_SETTLE}s for the webapp's account cache ==" ;;
-      *) CACHE_SETTLE=0 ;;
-    esac
+    local ms
+    read_identity
+    ms="$CACHE_MS"
+    if [ "$IDENTITY" = on ]; then
+      [[ "$ms" =~ ^[0-9]+$ ]] || ms=5000
+      [ "$ms" -gt 60000 ] && ms=60000
+      CACHE_SETTLE=$(( (ms + 999) / 1000 + 1 ))
+      echo "== identity switch on: each account change by SQL waits ${CACHE_SETTLE}s for the webapp's account cache =="
+    else
+      CACHE_SETTLE=0
+    fi
   fi
   [ "$CACHE_SETTLE" -eq 0 ] || sleep "$CACHE_SETTLE"
 }
@@ -269,6 +279,13 @@ for line in "${ROWS[@]}"; do
   label="$id  $actor $method $path"
   if [[ " $tags " == *" superseded-by:"* ]]; then
     echo "SKIP  $label  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
+  fi
+  if [[ " $tags " =~ \ identity:(on|off)\  ]]; then
+    want="${BASH_REMATCH[1]}"
+    read_identity
+    if [ "$want" != "$IDENTITY" ]; then
+      echo "SKIP  $label  (identity switch $IDENTITY)  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
+    fi
   fi
   url_path="$(subst "$path")"
   expect_s="$(subst "$expect")"
@@ -337,6 +354,7 @@ for line in "${ROWS[@]}"; do
       case "$check" in
         has=*) grep -qF -- "$text" "$TMP/body" || why="body lacks ${check#*=}" ;;
         hdr=*) grep -qiF -- "$text" "$TMP/headers" || why="headers lack ${check#*=}" ;;
+        nohdr=*) grep -qiF -- "$text" "$TMP/headers" && why="headers contain ${check#*=}" ;;
         lacks=*) grep -qF -- "$text" "$TMP/body" && why="body contains ${check#*=}" ;;
         *) why="unknown check '$check'" ;;
       esac

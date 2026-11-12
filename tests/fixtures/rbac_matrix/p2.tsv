@@ -7,12 +7,14 @@
 # ---- step 2.2: the session version in the login token ----
 # member_a and admin_a sign in; the runner raises the account's session version by SQL just
 # before each *_revoked row and puts it back right after (the cookie kept), so the row sends a
-# login cookie of an older version. The refusal clears the cookie on its own 401 (an expired
-# redamon-auth in the answer's headers). Each control sends the same request with the cookie
-# of the current version. POST /api/users answers a missing session with 403 and refuses an
+# login cookie of an older version. With the identity switch on the refusal clears the cookie
+# on its own 401 (an expired redamon-auth in the answer's headers) and /api/auth/me says
+# session_ended (the browser goes to /login); off, both stay as after Phase 1. Each control
+# sends the same request with the cookie of the current version. POST /api/users answers a missing session with 403 and refuses an
 # empty body after its admin check (400), so no account is ever created.
 p2-sv-me-control	2.2	member_a	GET	/api/auth/me	-	200;has=rbac-member-a@e2e.local	req:ID-21 req:UP-14
-p2-sv-me-revoked	2.2	member_a_revoked	GET	/api/auth/me	-	401;hdr=redamon-auth=;hdr=Expires=Thu, 01 Jan 1970	req:ID-21 req:ID-23
+p2-sv-me-revoked	2.2	member_a_revoked	GET	/api/auth/me	-	401;has=session_ended;hdr=redamon-auth=;hdr=Expires=Thu, 01 Jan 1970	req:ID-21 req:ID-23 identity:on
+p2-sv-me-revoked-off	2.2	member_a_revoked	GET	/api/auth/me	-	401;lacks=session_ended;nohdr=redamon-auth=	req:ID-21 req:ID-23 identity:off
 p2-sv-settings-control	2.2	member_a	GET	/api/users/${MEMBER_A_ID}/settings	-	200	req:ID-21
 p2-sv-settings-revoked	2.2	member_a_revoked	GET	/api/users/${MEMBER_A_ID}/settings	-	401	req:ID-21
 p2-sv-admin-users-list-control	2.2	admin_a	GET	/api/users	-	200;has=rbac-member-a@e2e.local	req:ID-21

@@ -188,10 +188,13 @@ to `standard` just before its row and restored right after; `deleted` signs in a
 throwaway `rbac-deleted` account, which is then deleted, and replays its still-valid cookie.
 `p2.tsv` adds `<user>_revoked` (for example `member_a_revoked`): the account's session version is
 raised just before the row and put back right after, so the row sends a cookie of an older
-version; `;hdr=<text>` checks the answer's headers (the cleared cookie). With
+version; `;hdr=<text>` / `;nohdr=<text>` check the answer's headers (the cleared cookie). With
 `RBAC_IDENTITY_ENABLED` on, the webapp keeps an account it read for `RBAC_AUTHZ_CACHE_MS`, so the
 runner waits that long after each of these SQL changes (it reads both values from the webapp
-container and prints the wait once). The
+container and prints the wait once). A row tagged `identity:on` or `identity:off` runs only while
+the webapp's switch is so and is a SKIP otherwise: with the switch off a refused cookie is kept and
+`/api/auth/me` answers a bare 401, with it on the cookie is cleared and the 401 says
+`session_ended`. The
 Playwright helper `testing/e2e/tests/rbacUsers.ts` signs in as any of those accounts through the
 real form (`seedRbac`, `loginAs`, `cleanupRbac`); `rbacUsers.spec.ts` shows the use.
 
