@@ -9,7 +9,8 @@
  *     is their own sets (never assigned = *Default member*, §14.3) and overrides;
  *   - a member holds their sets (never assigned = the instance default set, else *Default
  *     member*; assigned but every set gone = *No access*), their legacy grants (§14.7, until
- *     step 3.15 converts them) and unexpired override grants; an unexpired deny wins over all;
+ *     the boot converts them: legacyOverrides.ts) and unexpired override grants; an unexpired
+ *     deny wins over all;
  *   - the instance caps remove what the instance has switched off;
  *   - an account that is not active holds nothing.
  * Dangling data fails closed: a set or profile that is gone, or of the wrong kind, gives nothing.
@@ -21,8 +22,9 @@
  *
  * Reads: the account (the principal, cached, carrying its assignments and overrides), the Root
  * for an admin (root.ts, cached), and for a custom set or the instance default set one read each,
- * cached here for the same bound (RBAC_AUTHZ_CACHE_MS). Built-in sets are code: no read. A failed
- * read throws: it never resolves to a grant.
+ * cached here for the same bound (RBAC_AUTHZ_CACHE_MS); for a member holding a legacy grant,
+ * whether the conversion ran (legacyOverrides.ts, cached). Built-in sets are code: no read. A
+ * failed read throws: it never resolves to a grant.
  */
 import prisma from '@/lib/prisma'
 import { agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
@@ -33,7 +35,7 @@ import { principalCacheTtl, type Principal } from './principal'
 import { accountTypeOf, loadInstanceRoot, INSTANCE_SETTINGS_ROW, type AccountType } from './root'
 import { PERMISSIONS, PERMISSION_IDS, assertKnownPermission, isPermissionId, type PermissionId } from './permissions'
 import { builtinSet, DEFAULT_MEMBER_SET_ID, FULL_ADMIN_PROFILE_ID, NO_ACCESS_SET_ID } from './builtinSets'
-import type { LegacyGrant } from './updateReview'
+import { clearLegacyConversionCacheForTests, LEGACY_GRANT_PERMISSION, legacyGrantsConverted } from './legacyOverrides'
 
 /** What the resolution reads of an account: a principal loadPrincipal returned. */
 export type CapabilityPrincipal = Pick<Principal, 'id' | 'role' | 'status' | 'adminProfileId' | 'legacyGrants'>
@@ -90,12 +92,6 @@ export interface Capabilities {
   explainAll(): readonly PermissionExplanation[]
 }
 
-const LEGACY_PERMISSION: ReadonlyMap<string, PermissionId> = new Map<LegacyGrant, PermissionId>([
-  ['kali_terminal', 'platform:kali_terminal'],
-  ['shell_sessions', 'platform:shell_sessions'],
-  ['tunnels', 'platform:tunnels'],
-])
-
 const ROOT: CapabilityReason = Object.freeze({ effect: 'grant', kind: 'root' })
 const ROOT_UNCONFIRMED_GRANT: CapabilityReason = Object.freeze({ effect: 'grant', kind: 'root_unconfirmed' })
 const ROOT_UNCONFIRMED_DENY: CapabilityReason = Object.freeze({ effect: 'deny', kind: 'root_unconfirmed' })
@@ -132,6 +128,7 @@ export function invalidatePermissionSets(): void {
 /** Tests only. */
 export function clearCapabilityCachesForTests(): void {
   invalidatePermissionSets()
+  clearLegacyConversionCacheForTests()
   warned.clear()
 }
 
@@ -317,7 +314,8 @@ export async function resolveCapabilities(principal: CapabilityPrincipal, { fres
     } else {
       if (principal.permissionSets.length > 0) ledger.assignedMemberSets(principal.permissionSets, stored)
       else await instanceDefault(ledger, fresh)
-      addLegacyGrants(principal, ledger)
+      // After the conversion a kept grant is an override and the others lapsed.
+      if (holdsLegacyGrant(principal) && !(await legacyGrantsConverted({ fresh }))) addLegacyGrants(principal, ledger)
     }
     addOverrides(principal.permissionOverrides, accountType, ledger)
   }
@@ -344,9 +342,12 @@ async function instanceDefault(ledger: Ledger, fresh: boolean): Promise<void> {
   }
 }
 
+const holdsLegacyGrant = (principal: CapabilityPrincipal): boolean =>
+  principal.legacyGrants.some((g) => LEGACY_GRANT_PERMISSION.has(g))
+
 function addLegacyGrants(principal: CapabilityPrincipal, ledger: Ledger): void {
   for (const grant of principal.legacyGrants) {
-    const permission = LEGACY_PERMISSION.get(grant)
+    const permission = LEGACY_GRANT_PERMISSION.get(grant)
     if (permission) ledger.add(permission, Object.freeze({ effect: 'grant', kind: 'legacy_grant', grant }))
   }
 }

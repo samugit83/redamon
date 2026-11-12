@@ -17,12 +17,16 @@ export interface LegacyHolderView {
   id: string
   name: string
   email: string
-  grants: { grant: LegacyGrant; state: 'pending' | 'kept' }[]
+  /** `expiresAt`: with the permissions switch on, when the override keeping a grant ends (null: never). */
+  grants: { grant: LegacyGrant; state: 'pending' | 'kept'; expiresAt?: string | null }[]
 }
 
 export interface LegacyGrantsAnswer {
   holders: LegacyHolderView[]
   pending: number
+  /** The permissions switch is on: a Keep is an override that ends after `keepDays` days. */
+  overrides?: boolean
+  keepDays?: number
 }
 
 export interface LegacyDecisionAnswer {

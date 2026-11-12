@@ -40,6 +40,7 @@ services:
         node scripts/backfill-nuclei-template-owners.mjs
         node scripts/backfill-rbac-instance-settings.mjs
         node scripts/backfill-rbac-root.mjs
+        node scripts/backfill-rbac-legacy-overrides.mjs
         npm run dev
     volumes:
       - ./webapp:/app

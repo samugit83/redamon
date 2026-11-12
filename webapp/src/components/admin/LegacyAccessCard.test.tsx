@@ -198,6 +198,67 @@ describe('the review', () => {
   })
 })
 
+describe('with the permissions switch on (step 3.15: a Keep is an expiring override)', () => {
+  const stepUpThenOk = () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method !== 'POST') return new Response(JSON.stringify(listing), { status: 200 })
+      const body = JSON.parse(String(init.body))
+      if (body.stepUpPassword === undefined) {
+        return new Response(JSON.stringify({ error: 'Enter your password to confirm this action.', code: 'step_up_required' }), { status: 403 })
+      }
+      if (body.stepUpPassword !== 'my-own-pass') {
+        return new Response(JSON.stringify({ error: 'Password is incorrect', code: 'step_up_failed' }), { status: 403 })
+      }
+      return new Response(JSON.stringify({ changed: true }), { status: 200 })
+    })
+  }
+
+  beforeEach(() => {
+    listing = {
+      holders: [{ ...ANNA, grants: [{ grant: 'kali_terminal', state: 'kept', expiresAt: '2027-02-10T10:00:00.000Z' }, { grant: 'tunnels', state: 'pending' }] }],
+      pending: 1, overrides: true, keepDays: 90,
+    }
+  })
+
+  test('says what a Keep is now, and shows when a kept grant ends', async () => {
+    renderCard()
+    const card = await screen.findByRole('region', { name: /kept access to shared tools/ })
+    expect(card.textContent).toMatch(/a grant nobody kept has lapsed, and a kept one is an override that ends after 90 days/)
+    expect(within(card).getByText(`Kept until ${new Date('2027-02-10T10:00:00.000Z').toLocaleDateString()}`)).toBeInTheDocument()
+  })
+
+  test('Keep asks for the admin\'s own password when the server wants it, and sends it with the decision once', async () => {
+    stepUpThenOk()
+    renderCard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep Tunnel settings for Anna' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toMatch(/for 90 days\. Enter your password to confirm/)
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'wrong-pass' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/Password is incorrect/)
+    fireEvent.change(within(dialog).getByLabelText('Your password'), { target: { value: 'my-own-pass' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(posts()).toEqual([
+      { action: 'keep', userId: 'member-2', grant: 'tunnels' },
+      { action: 'keep', userId: 'member-2', grant: 'tunnels', stepUpPassword: 'wrong-pass' },
+      { action: 'keep', userId: 'member-2', grant: 'tunnels', stepUpPassword: 'my-own-pass' },
+    ])
+    await waitFor(() => expect(fetchMock.mock.calls.filter(c => !(c[1] as RequestInit | undefined)?.method)).toHaveLength(2))
+  })
+
+  test('Keep all goes the same way; Cancel sends nothing more', async () => {
+    stepUpThenOk()
+    renderCard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep all' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(posts()).toEqual([{ action: 'keep_all' }])
+    expect(screen.getByRole('button', { name: 'Keep all' })).not.toBeDisabled()
+  })
+})
+
 describe('everything decided', () => {
   test('only kept grants: a closed summary that still offers Remove, without the bulk buttons', async () => {
     listing = { holders: [{ ...MARCO, grants: MARCO.grants.map(g => ({ ...g, state: 'kept' as const })) }], pending: 0 }

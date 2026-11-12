@@ -20,9 +20,13 @@ const db = vi.hoisted(() => ({
   instance: null as Record<string, unknown> | null,
   sets: new Map<string, { id: string; kind: string; name: string; permissions: string[] }>(),
   failSets: false,
+  /** The legacy-grant conversion's marker row exists (step 3.15). */
+  converted: false,
 }))
 const userFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => db.users.get(where.id) ?? null)
 const instanceFindUnique = vi.fn(async () => (db.instance ? { ...db.instance } : null))
+const markerFindFirst = vi.fn(async ({ where }: { where: { action: string } }) =>
+  (db.converted && where.action === 'system.rbac_legacy_overrides_backfill' ? { id: 'marker-1' } : null))
 const setFindMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) => {
   if (db.failSets) throw Object.assign(new Error('db down'), { code: 'P1001' })
   return where.id.in.flatMap((id) => (db.sets.has(id) ? [{ ...db.sets.get(id)! }] : []))
@@ -32,6 +36,7 @@ vi.mock('@/lib/prisma', () => ({
     user: { findUnique: (a: { where: { id: string } }) => userFindUnique(a) },
     instanceSettings: { findUnique: () => instanceFindUnique() },
     permissionSet: { findMany: (a: { where: { id: { in: string[] } } }) => setFindMany(a) },
+    auditLog: { findFirst: (a: { where: { action: string } }) => markerFindFirst(a) },
   },
 }))
 
@@ -87,6 +92,8 @@ beforeEach(() => {
   db.sets.clear()
   db.instance = { rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null, defaultMemberSetId: null }
   db.failSets = false
+  db.converted = false
+  markerFindFirst.mockClear()
   userFindUnique.mockClear()
   instanceFindUnique.mockClear()
   setFindMany.mockClear()
@@ -265,6 +272,50 @@ describe('members (permissions switch on)', () => {
       const one = await resolveCapabilities(member({ permissionSets: ['builtin:no-access'], legacyGrants: [grant] }))
       expect(held(one)).toEqual([`platform:${grant}`])
     }
+  })
+
+  test('after the boot converted them, legacy grants no longer count: a kept one is an override (step 3.15)', async () => {
+    db.converted = true
+    const caps = await resolveCapabilities(member({
+      legacyGrants: ['kali_terminal', 'shell_sessions', 'tunnels'],
+      permissionOverrides: [override('platform:shell_sessions', 'grant', new Date(T0 + 90 * 86_400_000), 'kept from 7.7.x')],
+    }))
+    expect(held(caps)).toEqual(union(DEFAULT_MEMBER, ['platform:shell_sessions']))
+    expect(caps.explain('platform:shell_sessions').reasons).toEqual([
+      { effect: 'grant', kind: 'override', expiresAt: new Date(T0 + 90 * 86_400_000), reason: 'kept from 7.7.x' },
+    ])
+    expect(caps.explain('platform:kali_terminal').held).toBe(false)
+    expect(caps.explain('platform:kali_terminal').reasons.map((r) => r.kind)).toEqual(['not_granted'])
+    // The kept grant ends with its override.
+    t = T0 + 90 * 86_400_000
+    clearCapabilityCachesForTests()
+    db.converted = true
+    expect(held(await resolveCapabilities(member({
+      legacyGrants: ['shell_sessions'],
+      permissionOverrides: [override('platform:shell_sessions', 'grant', new Date(T0 + 90 * 86_400_000), 'kept from 7.7.x')],
+    })))).toEqual(DEFAULT_MEMBER)
+  })
+
+  test('the conversion is read only for a member holding a legacy grant; a "no" is kept for the bound, a "yes" for good', async () => {
+    await resolveCapabilities(member())
+    await resolveCapabilities(member({ legacyGrants: ['future_grant'] }))
+    expect(markerFindFirst).not.toHaveBeenCalled()
+    await resolveCapabilities(member({ legacyGrants: ['tunnels'] }))
+    await resolveCapabilities(member({ legacyGrants: ['tunnels'] }))
+    expect(markerFindFirst).toHaveBeenCalledTimes(1)
+    expect(markerFindFirst).toHaveBeenCalledWith({ where: { action: 'system.rbac_legacy_overrides_backfill' }, select: { id: true } })
+    // The boot converts while this copy runs: seen within the bound, or at once by a fresh read.
+    db.converted = true
+    expect(held(await resolveCapabilities(member({ legacyGrants: ['tunnels'] })))).toContain('platform:tunnels')
+    expect(held(await resolveCapabilities(member({ legacyGrants: ['tunnels'] }), { fresh: true }))).not.toContain('platform:tunnels')
+    db.converted = false
+    t = T0 + 3_600_000
+    expect(held(await resolveCapabilities(member({ legacyGrants: ['tunnels'] })))).not.toContain('platform:tunnels')
+    expect(markerFindFirst).toHaveBeenCalledTimes(2)
+    // A failed read throws: it never resolves to the grant.
+    clearCapabilityCachesForTests()
+    markerFindFirst.mockRejectedValueOnce(Object.assign(new Error('db down'), { code: 'P1001' }))
+    await expect(resolveCapabilities(member({ legacyGrants: ['tunnels'] }))).rejects.toThrow('db down')
   })
 
   test('a disabled account resolves to nothing (DV-27)', async () => {

@@ -12,12 +12,20 @@
  *
  * Only non-admin accounts are reviewed: an admin reaches every shared tool by role, so its
  * grants matter only if it is demoted, and then they show up here again.
+ *
+ * With RBAC_PERMISSIONS_ENABLED on, a grant is kept by an override (legacyOverrides.ts, step
+ * 3.15): it reads "kept" while an override grant of its platform permission is in force, with
+ * that override's end, and "pending" otherwise (never kept, lapsed at the conversion, or past its
+ * end). The route writes the override first (legacyOverrideDecisions.ts), then the decision here.
  */
 import prisma from '@/lib/prisma'
 import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { isStdioServer } from '@/lib/mcp/schema'
 import { legacyCutoff } from './sharedTools'
 import { invalidatePrincipal } from './principal'
+import { rbacFlags } from './flags'
+import { now } from './clock'
+import { LEGACY_GRANT_PERMISSION } from './legacyOverrides'
 
 /** The backfill's LEGACY_GRANTS, LOCK_KEY and REMOVE_ACTION (a test keeps them equal). */
 export const LEGACY_GRANTS = ['kali_terminal', 'shell_sessions', 'tunnels'] as const
@@ -37,6 +45,8 @@ export function isLegacyGrant(value: unknown): value is LegacyGrant {
 export interface LegacyGrantState {
   grant: LegacyGrant
   state: 'pending' | 'kept'
+  /** Permissions switch on, kept: when the override that keeps it ends (null: never). */
+  expiresAt?: string | null
 }
 
 export interface LegacyHolder {
@@ -59,7 +69,7 @@ function decisionActorColumns(actor: DecisionActor) {
   return actorFields(auditActorOf({ id: actor.actorId, email: actor.actorEmail }, actor.actingAsUserId))
 }
 
-type Db = Pick<typeof prisma, 'user' | 'auditLog'>
+type Db = Pick<typeof prisma, 'user' | 'auditLog' | 'userPermissionOverride'>
 type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0]
 
 const grantKey = (accountId: string, grant: string) => `${accountId}\u0000${grant}`
@@ -72,6 +82,19 @@ function grantOf(after: unknown): string | null {
 
 const REVIEWED = { role: { not: 'admin' }, legacyGrants: { hasSome: [...LEGACY_GRANTS] } }
 
+/** The end of the override grant in force that keeps each (account, grant), by key; null: none ends. */
+async function keptByOverride(db: Db, userIds: string[]): Promise<Map<string, string | null>> {
+  const grantOf = new Map([...LEGACY_GRANT_PERMISSION].map(([grant, permission]) => [permission as string, grant]))
+  const at = now().getTime()
+  const rows = await db.userPermissionOverride.findMany({
+    where: { userId: { in: userIds }, permission: { in: [...grantOf.keys()] }, effect: 'grant' },
+    select: { userId: true, permission: true, expiresAt: true },
+  })
+  return new Map(rows
+    .filter(r => r.expiresAt === null || r.expiresAt.getTime() > at)
+    .map(r => [grantKey(r.userId, grantOf.get(r.permission)!), r.expiresAt ? r.expiresAt.toISOString() : null]))
+}
+
 async function readHolders(db: Db): Promise<LegacyHolder[]> {
   const users = await db.user.findMany({
     where: REVIEWED,
@@ -79,6 +102,18 @@ async function readHolders(db: Db): Promise<LegacyHolder[]> {
     orderBy: { email: 'asc' },
   })
   if (users.length === 0) return []
+  if (rbacFlags().permissions) {
+    const kept = await keptByOverride(db, users.map(u => u.id))
+    return users.map(u => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      grants: LEGACY_GRANTS.filter(g => u.legacyGrants.includes(g)).map(g => {
+        const key = grantKey(u.id, g)
+        return kept.has(key) ? { grant: g, state: 'kept' as const, expiresAt: kept.get(key) ?? null } : { grant: g, state: 'pending' as const }
+      }),
+    }))
+  }
   const kept = new Set((await db.auditLog.findMany({
     where: { action: KEEP_ACTION, targetType: 'user', targetId: { in: users.map(u => u.id) } },
     select: { targetId: true, after: true },

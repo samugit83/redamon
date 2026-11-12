@@ -26,6 +26,11 @@
  * With the switch off they do not exist: every method answers 404 before reading the session or
  * the database, whatever the identity switch says.
  *
+ * Step 3.15 converts the legacy grants at the first boot with the switch on. With it off the
+ * boot script reads and writes nothing, and a member's legacy grants count whatever the
+ * conversion did (the roll-back): nothing reads its marker. The review card's switch-off
+ * decisions are Phase 1's (src/app/api/admin/legacy-grants/route.test.ts).
+ *
  * @vitest-environment node
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -70,6 +75,7 @@ import { GET as readPermissions, PUT as changePermissions } from '@/app/api/user
 import { assertOwner, ownerScope, requireProjectAccess } from '@/lib/access'
 import { McpAccessDenied, assertMcpProjectAccess } from '@/lib/mcpAuth'
 import { ownsScope } from '@/lib/plugins/changeSetAccess'
+import { backfillRbacLegacyOverrides, run as runLegacyOverrides } from '../../../scripts/backfill-rbac-legacy-overrides.mjs'
 
 const WEBAPP = path.resolve(__dirname, '../../..')
 const ALL = [...PERMISSION_IDS]
@@ -225,14 +231,20 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
 
   test('no production code names a permission table outside the named readers', () => {
     const PERMISSION_READERS = [
+      // Step 3.15: the boot conversion of kept legacy grants writes overrides only with the switch on.
+      'scripts/backfill-rbac-legacy-overrides.mjs',
       // Step 3.4: the resolution reads the sets and the instance default set only with the switch on.
       'src/lib/authz/capabilities.ts',
+      // Step 3.15: the review's override write, called by the legacy-grants route only with the switch on.
+      'src/lib/authz/legacyOverrideDecisions.ts',
       // Step 3.11: the permission management helpers, reached only through the routes that answer
       // 404 with the switch off and the admins:manage gate, which reads them only with it on.
       'src/lib/authz/permissionAdmin.ts',
       'src/lib/authz/permissionSetAdmin.ts',
       // Step 3.4: selects the assignments and overrides only with the switch on.
       'src/lib/authz/principal.ts',
+      // Step 3.15: the review reads the holders' overrides only with the switch on.
+      'src/lib/authz/updateReview.ts',
       // Step 3.11: an account's sets and overrides, read and written only through a route that
       // answers 404 with the switch off.
       'src/lib/authz/userPermissionAdmin.ts',
@@ -352,5 +364,35 @@ describe('the owner helpers answer as before, whatever the switches (step 3.6)',
     expect(ownerScope({ userId: 'member-1' })).toEqual({ userId: 'member-1' })
     expect(userFindUnique).not.toHaveBeenCalled()
     expect(setFindMany).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_PERMISSIONS_ENABLED off (step 3.15)', () => {
+  test('legacy grants count whatever the conversion did (the roll-back): its marker is never read', async () => {
+    // The prisma double has no audit table: a read of the conversion's marker would throw.
+    for (const identity of [true, false]) {
+      setFlagsForTests({ identity, permissions: false })
+      clearCapabilityCachesForTests()
+      const caps = await resolveCapabilities(account('member-1', 'standard', {
+        legacyGrants: ['kali_terminal', 'shell_sessions', 'tunnels'],
+        permissionOverrides: [{ permission: 'platform:kali_terminal', effect: 'grant', expiresAt: null, reason: 'kept from 7.7.x' }],
+      }))
+      expect([...caps.held]).toEqual(union(DEFAULT_MEMBER, ['platform:kali_terminal', 'platform:shell_sessions', 'platform:tunnels']))
+      expect(caps.explain('platform:kali_terminal').reasons).toEqual([{ effect: 'grant', kind: 'legacy_grant', grant: 'kali_terminal' }])
+    }
+  })
+
+  test('the boot script reads and writes nothing', async () => {
+    const untouchable = new Proxy({}, { get: (_t, name) => { throw new Error(`touched prisma.${String(name)}`) } })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    for (const env of [{}, { RBAC_IDENTITY_ENABLED: 'true' }, { RBAC_IDENTITY_ENABLED: 'false', RBAC_PERMISSIONS_ENABLED: 'true' }]) {
+      expect(await backfillRbacLegacyOverrides(untouchable, env as unknown as NodeJS.ProcessEnv)).toEqual({ ran: false })
+      await runLegacyOverrides(untouchable, env as unknown as NodeJS.ProcessEnv)
+    }
+    expect(log).not.toHaveBeenCalled()
+    expect(err).not.toHaveBeenCalled()
+    log.mockRestore()
+    err.mockRestore()
   })
 })

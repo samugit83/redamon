@@ -9,6 +9,9 @@ import { closeAgentSockets } from '@/lib/agentSockets'
 import {
   decideAllLegacyGrants, decideLegacyGrant, isLegacyGrant, listLegacyHolders, type DecisionActor,
 } from '@/lib/authz/updateReview'
+import { rbacFlags } from '@/lib/authz/flags'
+import { LEGACY_KEEP_DAYS } from '@/lib/authz/legacyOverrides'
+import { writeLegacyOverrides } from '@/lib/authz/legacyOverrideDecisions'
 
 /**
  * The admin review of the shared tools members kept at the RBAC upgrade (HD-29). GET lists
@@ -17,6 +20,13 @@ import {
  * also closes that member's open terminals (the agent's POST /ws/close, scope `access`, so
  * an admin acting as the member keeps theirs); the sessions console and the tunnel need no
  * close, since each request re-reads the grant.
+ *
+ * With RBAC_PERMISSIONS_ENABLED on (step 3.15) a grant is kept by an expiring override: each
+ * decision first changes the member's overrides through the account permission writer
+ * (legacyOverrideDecisions.ts: its rules, its step-up `stepUpPassword` for a Keep, its audit row
+ * and its sign-out on a removal), then is recorded as above, the column included, so a roll-back
+ * (the switch off) keeps every removal and every Keep. A refusal of the writer is the answer, and
+ * nothing of that account is recorded.
  */
 
 const PERMISSION = 'users:assign_permissions'
@@ -37,7 +47,8 @@ export const GET = withRouteErrors('Could not read the legacy access review', as
   if (session instanceof NextResponse) return session
   const holders = await listLegacyHolders()
   const pending = holders.reduce((n, h) => n + h.grants.filter(g => g.state === 'pending').length, 0)
-  return NextResponse.json({ holders, pending })
+  if (!rbacFlags().permissions) return NextResponse.json({ holders, pending })
+  return NextResponse.json({ holders, pending, overrides: true, keepDays: LEGACY_KEEP_DAYS })
 })
 
 const invalid = (code: string, error: string) => NextResponse.json({ error, code }, { status: 400 })
@@ -49,13 +60,28 @@ export const POST = withRouteErrors('Could not record the legacy access decision
   if (!sameOrigin(request)) return crossOriginResponse(request)
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
-  const { action, userId, grant } = parsed.body
+  const { action, userId, grant, stepUpPassword } = parsed.body
+  const overrides = rbacFlags().permissions
 
   const actor: DecisionActor = {
     actorId: session.userId, actingAsUserId: await actingAsUserId(request, session), actorEmail: sessionActor(session).email,
   }
 
   if (action === 'keep_all' || action === 'remove_all') {
+    if (overrides) {
+      let changed = 0
+      for (const holder of await listLegacyHolders()) {
+        const grants = holder.grants.filter(g => action === 'remove_all' || g.state === 'pending').map(g => g.grant)
+        if (grants.length === 0) continue
+        const refused = await writeLegacyOverrides(request, session, holder.id, grants, action === 'keep_all' ? 'keep' : 'remove', stepUpPassword)
+        if (refused) return refused
+        if (action === 'keep_all') {
+          for (const g of grants) await decideLegacyGrant(actor, holder.id, g, 'keep')
+          changed += grants.length
+        }
+      }
+      if (action === 'keep_all') return NextResponse.json({ action, changed })
+    }
     const result = await decideAllLegacyGrants(actor, action)
     if (action === 'keep_all') return NextResponse.json({ action, changed: result.changed })
     let closed = 0
@@ -74,6 +100,10 @@ export const POST = withRouteErrors('Could not record the legacy access decision
   if (typeof userId !== 'string' || userId === '') return invalid('invalid_user', 'userId is required.')
   if (!isLegacyGrant(grant)) return invalid('invalid_grant', 'grant must be kali_terminal, shell_sessions or tunnels.')
 
+  if (overrides) {
+    const refused = await writeLegacyOverrides(request, session, userId, [grant], action, stepUpPassword)
+    if (refused) return refused
+  }
   const result = await decideLegacyGrant(actor, userId, grant, action)
   if (!result.ok) return NextResponse.json({ error: result.error, code: result.code }, { status: result.status })
   const answer: Record<string, unknown> = { action, userId, grant, changed: result.changed }
