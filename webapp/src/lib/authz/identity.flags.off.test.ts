@@ -129,6 +129,9 @@ const IDENTITY_READERS: string[] = [
   // with the switch off, except enable, which stays open to restore an account disabled
   // while the switch was on.
   'src/lib/authz/accountStatus.ts',
+  // Step 2.9: invite and reset links, reached only through routes that answer 404 with the
+  // switch off.
+  'src/lib/authz/invites.ts',
   // Step 2.8: flags a short password at sign-in, reached only with the switch on.
   'src/lib/authz/mustChange.ts',
   // Step 2.8: reads no column; it names the 403 code `must_change_password`, which the

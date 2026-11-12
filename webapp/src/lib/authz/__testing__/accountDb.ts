@@ -11,7 +11,10 @@
  *   `update` of a missing row raises P2025; `@updatedAt` moves on every update;
  * - `failAudit(action)` makes the audit insert of that action throw, as a lost database would;
  * - (step 2.6) the instance row is written by `update` / `updateMany`, accounts are created and
- *   deleted, and an account's deletion reads no project and hands over no template here.
+ *   deleted, and an account's deletion reads no project and hands over no template here;
+ * - (step 2.9) the `user_invites` rows (deleted with their account, as the schema's cascade),
+ *   `where` also matches `{gt}` / `{lt}` on dates, `user.deleteMany`, `project.count` (seeded
+ *   by `seedProjects`), and the one raw read `emailTakenByAnother` sends.
  */
 import { Prisma } from '@prisma/client'
 
@@ -37,6 +40,8 @@ function matches(row: Row, where: Row = {}): boolean {
       const c = cond as Row
       if ('not' in c && v === c.not) return false
       if ('in' in c && !(c.in as unknown[]).includes(v)) return false
+      if ('gt' in c && !(v instanceof Date && v.getTime() > (c.gt as Date).getTime())) return false
+      if ('lt' in c && !(v instanceof Date && v.getTime() < (c.lt as Date).getTime())) return false
       continue
     }
     if (cond === null ? v !== null && v !== undefined : v !== cond) return false
@@ -71,6 +76,8 @@ export function createAccountDb() {
     audit: [] as Row[],
     actAs: [] as Row[],
     instance: null as Row | null,
+    invites: [] as Row[],
+    projectCounts: {} as Record<string, number>,
   }
   const failing = new Set<string>()
   const rawCalls: string[] = []
@@ -113,10 +120,60 @@ export function createAccountDb() {
       const i = state.users.findIndex((u) => matches(u, a.where))
       if (i < 0) throw notFound()
       const [r] = state.users.splice(i, 1)
+      state.invites = state.invites.filter((v) => v.userId !== r.id)
       return r
     },
+    deleteMany: async (a: { where?: Row } = {}) => {
+      const gone = state.users.filter((u) => matches(u, a.where))
+      state.users = state.users.filter((u) => !gone.includes(u))
+      const ids = new Set(gone.map((u) => u.id))
+      state.invites = state.invites.filter((v) => !ids.has(v.userId))
+      return { count: gone.length }
+    },
   }
-  const project = { findMany: async () => [] as Row[] }
+  const project = {
+    findMany: async () => [] as Row[],
+    count: async (a: { where?: Row } = {}) => state.projectCounts[String(a.where?.userId)] ?? 0,
+  }
+  let inviteSeq = 0
+  const withUser = (r: Row, select?: Row): Row => {
+    const out = pick(r, select)
+    const nested = select?.user as { select?: Row } | undefined
+    if (nested) {
+      const u = state.users.find((x) => x.id === r.userId)
+      out.user = u ? pick(u, nested.select) : null
+    }
+    return out
+  }
+  const userInvite = {
+    create: async (a: { data: Row; select?: Row }) => {
+      if (state.invites.some((v) => v.tokenHash === a.data.tokenHash)) {
+        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'fake' })
+      }
+      const r: Row = { id: `invite-${++inviteSeq}`, usedAt: null, cancelledAt: null, reason: null, createdAt: new Date(), ...a.data }
+      state.invites.push(r)
+      return pick(r, a.select)
+    },
+    findUnique: async (a: { where: Row; select?: Row }) => {
+      const r = state.invites.find((v) => matches(v, a.where))
+      return r ? withUser(r, a.select) : null
+    },
+    findMany: async (a: { where?: Row; select?: Row } = {}) =>
+      state.invites.filter((v) => matches(v, a.where)).map((v) => withUser(v, a.select)),
+    updateMany: async (a: { where?: Row; data: Row }) => {
+      const rows = state.invites.filter((v) => matches(v, a.where))
+      for (const r of rows) Object.assign(r, a.data)
+      return { count: rows.length }
+    },
+  }
+  const $queryRaw = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const sql = strings.join('?')
+    if (!/^\s*SELECT id FROM users WHERE lower\(email\) = lower\(\?\)\s*$/.test(sql)) {
+      throw new Error(`accountDb: raw SQL not supported: ${sql}`)
+    }
+    const email = String(values[0]).toLowerCase()
+    return state.users.filter((u) => String(u.email).toLowerCase() === email).map((u) => ({ id: u.id }))
+  }
   const nucleiTemplate = { updateMany: async () => ({ count: 0 }) }
   const mcpAccessToken = {
     updateMany: async (a: { where?: Row; data: Row }) => {
@@ -176,7 +233,7 @@ export function createAccountDb() {
       return { count: 1 }
     },
   }
-  const client = { user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, $executeRaw }
+  const client = { user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, userInvite, $executeRaw, $queryRaw }
 
   async function $transaction<T>(fn: ((tx: typeof client) => Promise<T>) | Promise<unknown>[]): Promise<T> {
     // The array form: its writes already started, in order, as Prisma's batch would send them.
@@ -192,6 +249,7 @@ export function createAccountDb() {
         state.audit = snapshot.audit
         state.actAs = snapshot.actAs
         state.instance = snapshot.instance
+        state.invites = snapshot.invites
         throw e
       }
     })
@@ -231,6 +289,14 @@ export function createAccountDb() {
       return r && { ...r }
     },
     tokens: () => state.tokens.map((t) => ({ ...t })),
+    /** The invite and reset link rows as they are now (copies). */
+    invites: () => state.invites.map((v) => ({ ...v })),
+    seedInvite(row: { id: string; userId: string; kind: string; tokenHash: string; expiresAt: Date } & Row) {
+      state.invites.push({ usedAt: null, cancelledAt: null, createdById: 'admin-1', reason: null, createdAt: new Date(0), ...row })
+    },
+    seedProjects(userId: string, count: number) {
+      state.projectCounts[userId] = count
+    },
     audit: () => state.audit.map((a) => ({ ...a })),
     actAs: () => state.actAs.map((a) => ({ ...a })),
     failAudit(action: string | null) {
@@ -243,6 +309,9 @@ export function createAccountDb() {
       state.audit = []
       state.actAs = []
       state.instance = null
+      state.invites = []
+      state.projectCounts = {}
+      inviteSeq = 0
       failing.clear()
       rawCalls.length = 0
       rawValues.length = 0
