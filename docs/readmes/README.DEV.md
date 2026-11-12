@@ -1213,6 +1213,8 @@ These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if 
 
 Read only by [`webapp/src/lib/authz/flags.ts`](../../webapp/src/lib/authz/flags.ts). Each defaults to `false` in `docker-compose.yml`; `true`, `1` or `yes` turn it on, and any other value reads off. A switch whose requirement is off reads off too, with one `[rbac]` warning per webapp process. Recreate the webapp after a change (`./redamon.sh up`).
 
+After turning `RBAC_PERMISSIONS_ENABLED` on or off, also run `docker compose restart agent`, or have everyone reload their open chat tabs. An agent chat socket keeps the approval permissions its ticket carried when it opened (the `cap` claim, [README.SECURITY_POSTURE.md](README.SECURITY_POSTURE.md) §9). Recreating the webapp does not close it, because the browser talks to the agent directly. Until a tab reconnects, its phase approvals and dangerous-tool confirmations follow the switch it opened under. The restart closes every chat socket and stops the runs in progress, so do it when no run matters.
+
 | Variable | Default | Turns on | Requires |
 |----------|---------|----------|----------|
 | `REDAMON_SHARED_TOOLS_COMPAT` | `false` | The pre-upgrade behaviour of the five shared tools for accounts created before the upgrade (escape hatch) | none |

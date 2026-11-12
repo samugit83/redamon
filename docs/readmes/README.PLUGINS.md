@@ -863,7 +863,8 @@ Three rules shape these calls:
   ([`redact_secret_shapes`](../../agentic/cypherfix_triage/evidence.py#L147)). Target
   hostnames, IPs and findings stay readable, because a transcript without them is useless and
   regex anonymisation of free text is not reliable. A value is masked together with its key,
-  and a key that is itself secret-shaped is masked too. The session is read in pages of 500 rows
+  and a key that is itself secret-shaped is masked too. Who answered the agent's requests (a row's
+  `actor`: the account and, under act-as, the admin) is left out. The session is read in pages of 500 rows
   and capped at `PLUGIN_TRANSCRIPT_MAX_BYTES` (2 MiB; never below 64 KiB): long strings keep
   their head and tail, an event above 64 KB becomes a preview, and three tiers (what people
   wrote, the agent's priority events, the rest) each keep a head and a sliding tail, so the middle
