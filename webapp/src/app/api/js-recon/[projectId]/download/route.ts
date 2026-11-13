@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requirePermission } from '@/lib/authz/guards'
+import { requireLevel, requirePermission } from '@/lib/authz/guards'
 import { createHash } from 'crypto'
 
 // Reuse the graph API's Neo4j driver
@@ -87,6 +87,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   const { projectId } = await params
   const auth = await requirePermission(request, 'recon:read', { projectId })
   if (auth instanceof NextResponse) return auth
+  // A raw output (the JS recon output): a read share needs Raw data & files (step 4.7).
+  const raw = requireLevel(auth, 'R*')
+  if (raw) return raw
   if (!PROJECT_ID_RE.test(projectId)) {
     return new NextResponse(null, { status: 400 })
   }
@@ -443,6 +446,8 @@ export async function HEAD(request: NextRequest, { params }: RouteParams) {
   const { projectId } = await params
   const auth = await requirePermission(request, 'recon:read', { projectId })
   if (auth instanceof NextResponse) return auth
+  const raw = requireLevel(auth, 'R*')
+  if (raw) return raw
   if (!PROJECT_ID_RE.test(projectId)) {
     return new NextResponse(null, { status: 400 })
   }

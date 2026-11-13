@@ -6,12 +6,17 @@
  *   current version -> the LIVE graph, through the same read path as /api/graph
  *   past version    -> the stored snapshot bytes, converted to the render shape
  *
+ * A reader without Raw data & files gets each attack-chain step without its content
+ * (stripStepContent, SH-30). Only the live graph holds chain nodes (snapshots leave
+ * them out), but both answers pass through it.
+ *
  * This endpoint is READ-ONLY and never touches Neo4j for a past version. Making a
  * past version the graph the agent works on is a different, deliberate action
  * (POST .../activate).
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { requirePermission } from '@/lib/authz/guards'
+import { stripStepContent } from '@/lib/authz/stepContent'
 import { requireVersionInProject } from '@/lib/scanVersionAccess'
 import { loadSnapshot, snapshotToGraphPayload } from '@/lib/scanSnapshot'
 import { readLiveGraph } from '@/app/api/graph/liveRead'
@@ -35,7 +40,7 @@ export const GET = withRouteErrors('Failed to read version graph', async (reques
     if (version.isCurrent) {
       const { nodes, links } = await readLiveGraph(id)
       return NextResponse.json(
-        { nodes, links, projectId: id, versionId, isCurrent: true, live: true },
+        { nodes: stripStepContent(nodes, auth.access), links, projectId: id, versionId, isCurrent: true, live: true },
         { headers: { 'Cache-Control': 'private, no-cache' } }
       )
     }
@@ -53,7 +58,7 @@ export const GET = withRouteErrors('Failed to read version graph', async (reques
 
     const { nodes, links } = snapshotToGraphPayload(snapshot)
     return NextResponse.json(
-      { nodes, links, projectId: id, versionId, isCurrent: false, live: false },
+      { nodes: stripStepContent(nodes, auth.access), links, projectId: id, versionId, isCurrent: false, live: false },
       { headers: { 'Cache-Control': 'private, no-cache' } }
     )
   } catch (error) {

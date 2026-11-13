@@ -25,7 +25,7 @@ import { getAuthzIdentity, type AuthzIdentity, type EffectiveUser } from '@/lib/
 import { internalError } from '@/lib/routeErrors'
 import { actsOnProject, can, type CanDecision } from './can'
 import type { Capabilities } from './capabilities'
-import { PERMISSIONS, assertKnownPermission, type PermissionId } from './permissions'
+import { PERMISSIONS, assertKnownPermission, type PermissionId, type ProjectLevel } from './permissions'
 import { meetsLevel, type ProjectAccess } from './projectAccess'
 
 export interface PermissionContext extends AuthzIdentity {
@@ -128,6 +128,31 @@ export function requireAlso(auth: PermissionContext, permission: PermissionId): 
   const level = PERMISSIONS[permission].level
   if (auth.access && level !== null && !meetsLevel(auth.access, level)) return forbiddenResponse(permission)
   return null
+}
+
+/**
+ * A project level the request needs beyond the one its permission names, decided on the access the
+ * route's requirePermission answered, reading nothing again (step 4.7). For a route whose
+ * permission is a read but whose answer is raw data: the six scan-result downloads and the AI
+ * attack-surface transcript keep `recon:read` (the owner and the Read-only analyst unchanged) and
+ * add `requireLevel(auth, 'R*')`, so a read collaborator without Raw data & files is refused.
+ *
+ *   const auth = await requirePermission(request, 'recon:read', { projectId })
+ *   if (auth instanceof NextResponse) return auth
+ *   const raw = requireLevel(auth, 'R*')
+ *   if (raw) return raw
+ *
+ * Answers null when the access reaches the level (`meetsLevel`), else the 403 of §9.8 naming the
+ * route's permission and the level: `{error, code: 'forbidden', permission, level}`. A context that
+ * checked no project throws: the route must name its project in requirePermission first.
+ */
+export function requireLevel(auth: PermissionContext, level: ProjectLevel): NextResponse | null {
+  if (!auth.access) throw new Error(`[rbac] requireLevel('${level}') needs a context that checked a project`)
+  if (meetsLevel(auth.access, level)) return null
+  const error = level === 'R*'
+    ? `This needs Raw data & files on this project (${auth.permission}).`
+    : `Your access to this project does not reach this action (${auth.permission}, level ${level}).`
+  return NextResponse.json({ error, code: 'forbidden', permission: auth.permission, level }, { status: 403 })
 }
 
 type ProjectIdExtractor<C> = (request: Request, context: C) => string | null | undefined | Promise<string | null | undefined>

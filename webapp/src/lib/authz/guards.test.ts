@@ -42,7 +42,7 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
-import { requirePermission, requireAlso, withPermission, forbiddenResponse, type PermissionContext } from './guards'
+import { requirePermission, requireAlso, requireLevel, withPermission, forbiddenResponse, type PermissionContext } from './guards'
 import { setFlagsForTests } from './flags'
 import { clearCapabilityCachesForTests } from './capabilities'
 import { clearInstanceRootCacheForTests } from './root'
@@ -285,6 +285,60 @@ describe('requireAlso (a second permission inside one request, step 3.8)', () =>
     signedIn(principal('alice'))
     const ctx = await requirePermission(request(), 'recon:scan', { projectId: 'P-alice' }) as PermissionContext
     expect(() => requireAlso(ctx, 'recon:everything' as PermissionId)).toThrow(/Unknown permission/)
+  })
+})
+
+describe('requireLevel (a level beyond the permission\'s own, step 4.7)', () => {
+  const readAccess = (rawData: boolean) => Object.freeze({
+    project: Object.freeze({ id: 'P-alice', userId: 'alice' }), level: 'read', toggles: Object.freeze({ rawData }), via: 'share',
+  })
+  async function contextOn(access: unknown): Promise<PermissionContext> {
+    signedIn(principal('carol'))
+    h.projects.set('P-carol', { id: 'P-carol', userId: 'carol' })
+    const ctx = await requirePermission(request(), 'recon:read', { projectId: 'P-carol' }) as PermissionContext
+    return { ...ctx, access } as PermissionContext
+  }
+
+  test('the owner reaches R*: null, and nothing is read again', async () => {
+    signedIn(principal('alice'))
+    const ctx = await requirePermission(request(), 'recon:read', { projectId: 'P-alice' }) as PermissionContext
+    projectFindUnique.mockClear()
+    h.getAuthzIdentity.mockClear()
+    expect(requireLevel(ctx, 'R*')).toBeNull()
+    expect(projectFindUnique).not.toHaveBeenCalled()
+    expect(h.getAuthzIdentity).not.toHaveBeenCalled()
+  })
+
+  test('a read share without Raw data & files: 403 naming the route\'s permission and the level', async () => {
+    const res = requireLevel(await contextOn(readAccess(false)), 'R*') as NextResponse
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({
+      error: 'This needs Raw data & files on this project (recon:read).', code: 'forbidden', permission: 'recon:read', level: 'R*',
+    })
+  })
+
+  test('a read share with Raw data & files reaches R*, and R either way', async () => {
+    expect(requireLevel(await contextOn(readAccess(true)), 'R*')).toBeNull()
+    expect(requireLevel(await contextOn(readAccess(false)), 'R')).toBeNull()
+  })
+
+  test('a write level is refused to a read share, raw or not, with its own sentence', async () => {
+    for (const raw of [false, true]) {
+      const res = requireLevel(await contextOn(readAccess(raw)), 'W') as NextResponse
+      expect(res.status).toBe(403)
+      expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'recon:read', level: 'W' })
+    }
+  })
+
+  test('a kind of access the level table does not know fails closed', async () => {
+    const ctx = await contextOn({ project: { id: 'P-alice', userId: 'alice' }, level: 'reader', toggles: { rawData: true }, via: 'share' })
+    expect((requireLevel(ctx, 'R') as NextResponse).status).toBe(403)
+  })
+
+  test('a context that checked no project throws', async () => {
+    signedIn(principal('alice'))
+    const ctx = await requirePermission(request(), 'project:create') as PermissionContext
+    expect(() => requireLevel(ctx, 'R*')).toThrow(/needs a context that checked a project/)
   })
 })
 

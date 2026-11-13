@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requirePermission } from '@/lib/authz/guards'
+import { requireLevel, requirePermission } from '@/lib/authz/guards'
 import { promises as fs } from 'fs'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
@@ -23,6 +23,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   const { projectId } = await params
   const auth = await requirePermission(request, 'recon:read', { projectId })
   if (auth instanceof NextResponse) return auth
+  // A raw output (the probe prompts and the target's answers): a read share needs Raw data & files (step 4.7).
+  const raw = requireLevel(auth, 'R*')
+  if (raw) return raw
   const ref = request.nextUrl.searchParams.get('ref') || ''
 
   const filePath = resolveTranscriptPath(ref)
