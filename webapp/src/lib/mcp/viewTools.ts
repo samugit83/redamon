@@ -55,7 +55,7 @@ async function viewsNeedingUpdate(projectId: string, groups: readonly ScopeGroup
 export async function listGraphViews(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const views = await prisma.graphView.findMany({
     where: { projectId },
@@ -115,7 +115,11 @@ export async function runGraphView(ctx: McpContext, projectId: string, viewId: s
 
   // Scoped by projectId in the lookup rather than by trusting `view.projectId`
   // afterwards, so a foreign id is the same flat answer as a missing one.
-  const view = await assertViewInProject(ctx.token.userId, projectId, viewId)
+  // `R*`: a stored query can return attack-chain step content (raw data) in any
+  // column, and no rule over the answer tells it apart (graphReadView.ts), so on
+  // a shared project a view runs only for a share with Raw data & files.
+  const view = await assertViewInProject(ctx.token, projectId, viewId, 'R*')
+  const project = { id: projectId, userId: view.ownerId }
 
   const cypher = (view.cypherQuery ?? '').trim()
   if (!cypher) {
@@ -127,7 +131,7 @@ export async function runGraphView(ctx: McpContext, projectId: string, viewId: s
 
   let result
   try {
-    result = await execCypher(ctx.token.userId, projectId, cypher)
+    result = await execCypher(project.userId, projectId, cypher)
   } catch (err) {
     // A refusal here is usually not a broken tool, and saying so is the
     // difference between the operator fixing the view and concluding MCP is
@@ -148,7 +152,7 @@ export async function runGraphView(ctx: McpContext, projectId: string, viewId: s
     throw err
   }
 
-  const guarded = guardGraphResult(result, ctx, projectId, 'run_graph_view')
+  const guarded = guardGraphResult(result, ctx, project, 'run_graph_view')
   return {
     projectId,
     view: { viewId: view.id, name: view.name },

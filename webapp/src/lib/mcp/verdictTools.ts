@@ -49,7 +49,7 @@ export async function setFindingVerdict(
 ) {
   requireScope(ctx.token, 'triage:write')
   enforceRate(ctx, 'write')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId)
 
   if (!(VERDICT_STATUSES as readonly string[]).includes(status)) {
     throw new McpToolError(
@@ -61,7 +61,7 @@ export async function setFindingVerdict(
   let result
   try {
     result = await recordVerdict(
-      { userId: ctx.token.userId, projectId },
+      { userId: owner, projectId },
       {
         findingId: nodeId,
         status: status as VerdictStatus,

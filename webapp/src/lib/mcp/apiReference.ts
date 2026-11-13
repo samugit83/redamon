@@ -272,7 +272,7 @@ function renderAuthentication(): string {
   return [
     '## Authentication',
     '',
-    `Every request carries a personal access token in the \`Authorization\` header. That is the only way in: this endpoint ignores the browser session cookie and RedAmon's internal service keys, and it never reads a token from the URL. A token acts as the user who created it, inside that user's own projects, limited to the permissions ticked on it.`,
+    `Every request carries a personal access token in the \`Authorization\` header. That is the only way in: this endpoint ignores the browser session cookie and RedAmon's internal service keys, and it never reads a token from the URL. A token acts as the user who created it, inside that user's own projects (and, if it opts in, the projects shared with that user), limited to the permissions ticked on it.`,
     '',
     'A local install has the server on: `./redamon.sh` writes `MCP_SERVER_ENABLED=true` into `.env` (a single-host server deploy keeps it off until you enable it). While the switch is off, every request answers `404`, whatever the token, with an error message that says the server is disabled and names that variable. After changing it, recreate the webapp container with `docker compose up -d webapp`: a plain `docker compose restart` keeps the old environment.',
     '',
@@ -330,6 +330,8 @@ function renderAuthentication(): string {
     `Being authenticated is not the same as being allowed. A valid token that lacks a permission gets a normal response whose tool result is an error, \`${new McpScopeError('<permission>' as McpScope).message}\`, and a project that does not exist or belongs to someone else is always \`Project not found\`.`,
     '',
     'A token never does more than the person who owns it. With per-person permissions switched on (`RBAC_PERMISSIONS_ENABLED`), each permission ticked on a token works only while its owner holds the RedAmon permissions it maps to: one the owner loses (a permission set changed, a permission denied, the account disabled) fails with that same error from the next call, and works again when the permission comes back. The token itself is not changed; the token screen marks such a permission as limited by your permissions.',
+    '',
+    'With project sharing on (`RBAC_SHARING_ENABLED` and the instance sharing policy), a token reaches the projects other people shared with its owner only when it was created or edited with **Include projects shared with me** (asking for your password, like any change that widens a token), optionally limited to the shared projects it names. A token without that option keeps reaching only its owner\'s own projects. On a shared project `list_projects` shows `myAccess`, and only the read tools answer: a tool that changes the project, starts work on it or asks a natural-language question (which spends the owner\'s model key) returns an error that says so, and raw Cypher and saved views need a share that includes raw data. A revoked or expired share answers `Project not found` from the next call. An administrator\'s oversight never opens a project to a token.',
   ].join('\n')
 }
 

@@ -3,7 +3,10 @@
  *
  * Each tool takes an explicit `projectId` and calls `assertMcpProjectAccess`
  * FIRST. A personal access token resolves to exactly one user; there is no
- * admin act-as here, and no tool trusts an identity from its arguments.
+ * admin act-as here, and no tool trusts an identity from its arguments. On a
+ * project shared with that user (a token that opted in, step 4.10) the check
+ * answers the project's OWNER, and every graph and triage read passes the owner
+ * as the tenant, never the token's user: the data is the owner's.
  *
  * Two rules run through all of it:
  *
@@ -25,9 +28,14 @@ import {
   assertMcpProjectAccess,
   checkLlmBudget,
   checkRateLimit,
+  mcpProjectAccess,
+  McpLevelDenied,
   requireScope,
   type ResolvedMcpToken,
 } from '@/lib/mcpAuth'
+import { meetsLevel } from '@/lib/authz/projectAccess'
+import { SHARE_SECRET_FIELDS } from '@/lib/authz/projectReadView'
+import { myShareSelect, ownedProjectsWhere, visibleProjects, withMyAccess } from '@/lib/authz/visibleProjects'
 import { projectReconSettings, reconSettingsSelect } from '@/lib/reconSettings/filter'
 import { ipHostnameOverrides } from '@/lib/ipHostnameOverrides'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
@@ -75,6 +83,10 @@ export function enforceRate(
 /**
  * Post-validate a graph result, then hand it back.
  *
+ * The tenant is the project's owner as the access check answered it: on a
+ * shared project the rows carry the owner's id, and checking them against the
+ * token's user would discard every one as a violation.
+ *
  * A tenant violation drops the WHOLE response and audits at error level: a
  * partial answer is indistinguishable from a complete one and would be acted
  * on as if it were.
@@ -82,11 +94,12 @@ export function enforceRate(
 export function guardGraphResult(
   result: GraphRecords,
   ctx: McpContext,
-  projectId: string,
+  project: { id: string; userId: string },
   tool: string
 ): GraphRecords {
+  const projectId = project.id
   try {
-    assertTenantScoped(result.records, ctx.token.userId, projectId)
+    assertTenantScoped(result.records, project.userId, projectId)
   } catch (err) {
     if (err instanceof TenantViolation) {
       console.error(
@@ -99,6 +112,18 @@ export function guardGraphResult(
     throw err
   }
   return result
+}
+
+/**
+ * A `select` without the columns that stay the owner's on a shared project
+ * (`share: secret`), for anyone but the owner. Not loaded, rather than loaded and
+ * dropped, so a later projection cannot return one by mistake.
+ */
+export function ownerOnlyColumnsDropped<S extends Record<string, unknown>>(select: S, owner: boolean): S {
+  if (owner) return select
+  const kept = { ...select }
+  for (const key of SHARE_SECRET_FIELDS) delete kept[key]
+  return kept
 }
 
 // --- reads --------------------------------------------------------------------
@@ -121,13 +146,28 @@ export async function listProjects(ctx: McpContext) {
   }
   assertReadableSelect(select, 'list_projects')
 
-  // `where: { userId }` is the enumeration boundary: an external agent can
-  // never see another user's project ids, so it can never name one.
-  const projects = await prisma.project.findMany({
-    where: { userId: ctx.token.userId },
-    select,
+  // The filter is the enumeration boundary: an external agent never sees a
+  // project id the token may not reach, so it can never name one. A token that
+  // opted in also lists the projects shared with its user by a live share (the
+  // same shares projectAccess answers), narrowed by its allowlist; never what
+  // oversight or break-glass would open, which no MCP check admits.
+  const subject = { userId: ctx.token.userId }
+  const reach = ctx.token.sharedProjects ?? null
+  const visible = reach
+    ? await visibleProjects(subject)
+    : { where: ownedProjectsWhere(subject), withShares: false }
+  const where = visible.withShares && reach && reach.allowlist.length > 0
+    ? { OR: [ownedProjectsWhere(subject), { AND: [visible.where, { id: { in: [...reach.allowlist] } }] }] }
+    : visible.where
+  // userId and the owner's name decide each row's own access; neither is an
+  // MCP-readable column, so both leave with the row's `myAccess` only.
+  const rows = await prisma.project.findMany({
+    where,
+    select: { ...select, userId: true, user: { select: { name: true, email: true } }, ...myShareSelect(subject, visible) },
     orderBy: { updatedAt: 'desc' },
   })
+  // With the sharing switch off the rows come back without `myAccess`, as before (DV-30).
+  const projects = withMyAccess(subject, rows).map(({ userId: _owner, user: _user, ...row }) => row)
   return {
     projects: projects.map(({ domainBatchHosts, subdomainList, ...p }) => {
       const { groups } = resolveScopeGroups({ ...p, domainBatchHosts, subdomainList })
@@ -147,7 +187,7 @@ export async function listProjects(ctx: McpContext) {
 export async function getReconStatus(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   let resp: Response
   try {
@@ -266,7 +306,7 @@ export async function getProjectActivity(ctx: McpContext, projectId: string) {
   // orchestrator is shared by every project on the host. Telling the model not
   // to poll is advice to an untrusted caller, not a control.
   enforceRate(ctx, 'query')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const activity = await readProjectActivity(projectId)
   const blocker = await describeLiveGraphWriters(projectId)
@@ -326,7 +366,7 @@ export async function listRemediations(
 ) {
   requireScope(ctx.token, 'triage:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const limit = Math.max(1, Math.min(Math.trunc(args.limit ?? 25), 100))
   const offset = Math.max(0, Math.trunc(args.offset ?? 0))
@@ -381,12 +421,14 @@ export async function listRemediations(
 export async function getReconSettings(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const { access } = await mcpProjectAccess(ctx.token, projectId, 'R')
 
   // Selected BY the allowlist, so no credential-bearing column is ever loaded,
   // let alone returned - and re-checked against the READ classification, so a
   // future widening of the write allowlist cannot quietly widen this too.
-  const select = { ...reconSettingsSelect(), updatedAt: true }
+  // Anyone but the owner reads without the columns that stay the owner's
+  // (`share: secret`: the custom request-header lists), as the project GET does.
+  const select = ownerOnlyColumnsDropped({ ...reconSettingsSelect(), updatedAt: true }, access.level === 'owner')
   assertReadableSelect(select, 'get_recon_settings')
   const row = await prisma.project.findUnique({
     where: { id: projectId },
@@ -418,7 +460,7 @@ export async function getReconSettings(ctx: McpContext, projectId: string) {
 export async function graphSummary(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const project = await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const current = await prisma.scanVersion.findFirst({
     where: { projectId, isCurrent: true },
@@ -433,8 +475,8 @@ export async function graphSummary(ctx: McpContext, projectId: string) {
   // counts - the exact false negative this field exists to prevent. This way
   // the same race over-warns instead: the counts predate the wipe and the
   // state still says the graph is moving.
-  const summary = await summaryCounts(ctx, projectId)
-  const stale = await staleFindingCount(ctx, projectId)
+  const summary = await summaryCounts(project)
+  const stale = await staleFindingCount(project)
   const liveGraphState = await resolveLiveGraphState(projectId)
   // Computed by the agent inside the same summary op, so the block costs this
   // most-called tool no round trip of its own.
@@ -579,7 +621,7 @@ export async function resolveLiveGraphState(projectId: string): Promise<LiveGrap
   return liveGraphStateOf(await readProjectActivity(projectId))
 }
 
-async function summaryCounts(ctx: McpContext, projectId: string) {
+async function summaryCounts(project: { id: string; userId: string }) {
   let resp: Response
   try {
     resp = await fetch(`${agentBaseUrl()}/graph/exec`, {
@@ -587,8 +629,8 @@ async function summaryCounts(ctx: McpContext, projectId: string) {
       headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         op: 'summary',
-        user_id: ctx.token.userId,
-        project_id: projectId,
+        user_id: project.userId,
+        project_id: project.id,
         source: 'mcp',
       }),
       signal: AbortSignal.timeout(60_000),
@@ -626,9 +668,9 @@ async function summaryCounts(ctx: McpContext, projectId: string) {
  * the surface, and Cypher cannot reach muted findings at all.
  * `list_muted_findings` and `search_muted_findings` are where that number lives.
  */
-async function staleFindingCount(ctx: McpContext, projectId: string): Promise<number | null> {
+async function staleFindingCount(project: { id: string; userId: string }): Promise<number | null> {
   try {
-    const result = await execCypher(ctx.token.userId, projectId, staleFindingsCypher())
+    const result = await execCypher(project.userId, project.id, staleFindingsCypher())
     const row = (result.records?.[0] ?? {}) as Record<string, unknown>
     const n = row.stale
     return typeof n === 'number' && Number.isFinite(n) ? n : null
@@ -676,7 +718,27 @@ export async function queryGraph(
   }
   if (cypher) requireScope(ctx.token, 'graph:cypher')
 
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const { project, access } = await mcpProjectAccess(ctx.token, projectId, 'R')
+  if (access.level !== 'owner') {
+    // A question spends the owner's provider key, which the browser lets only
+    // the text-to-Cypher assistants permission do (W+A), never a reader.
+    if (question) {
+      throw new McpLevelDenied(
+        "Natural-language questions spend the project owner's model key, so they are not available " +
+        'on a project shared with you. Ask with `cypher` instead.'
+      )
+    }
+    // Raw Cypher can read attack-chain step content (raw data) in any column it
+    // writes, and no rule over the answer can tell it apart (graphReadView.ts),
+    // so on a shared project it needs Raw data & files.
+    if (!meetsLevel(access, 'R*')) {
+      throw new McpLevelDenied(
+        'Raw Cypher on a project shared with your account needs Raw data & files, which this share ' +
+        'does not include. The other read tools (graph_summary, list_findings, the analytics tools) ' +
+        'still answer.'
+      )
+    }
+  }
 
   let result: GraphRecords
   if (question) {
@@ -690,13 +752,13 @@ export async function queryGraph(
         'budget_exhausted'
       )
     }
-    result = await nlQuery(ctx.token.userId, projectId, question)
+    result = await nlQuery(project.userId, projectId, question)
   } else {
     enforceRate(ctx, 'read')
-    result = await execCypher(ctx.token.userId, projectId, cypher)
+    result = await execCypher(project.userId, projectId, cypher)
   }
 
-  const guarded = guardGraphResult(result, ctx, projectId, 'query_graph')
+  const guarded = guardGraphResult(result, ctx, project, 'query_graph')
   return {
     projectId,
     records: guarded.records,

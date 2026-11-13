@@ -85,8 +85,8 @@ export async function getFindingTriage(
 ) {
   requireScope(ctx.token, 'triage:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
-  const tenant: TriageTenant = { userId: ctx.token.userId, projectId }
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId, 'R')
+  const tenant: TriageTenant = { userId: owner, projectId }
 
   let detail: Record<string, unknown>
   try {
@@ -206,8 +206,8 @@ export async function getFindingEvidence(
 ) {
   requireScope(ctx.token, 'triage:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
-  const tenant: TriageTenant = { userId: ctx.token.userId, projectId }
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId, 'R')
+  const tenant: TriageTenant = { userId: owner, projectId }
 
   let body: Record<string, unknown>
   try {
@@ -258,8 +258,8 @@ export async function submitFindingReview(
 ) {
   requireScope(ctx.token, 'triage:review')
   enforceRate(ctx, 'write')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
-  const tenant: TriageTenant = { userId: ctx.token.userId, projectId }
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId)
+  const tenant: TriageTenant = { userId: owner, projectId }
 
   let result
   try {
@@ -311,8 +311,8 @@ export async function submitFindingReview(
 export async function getTriageStatus(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'triage:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
-  const tenant: TriageTenant = { userId: ctx.token.userId, projectId }
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId, 'R')
+  const tenant: TriageTenant = { userId: owner, projectId }
 
   const [preflight, recent, facets] = await Promise.all([
     computePreflight(tenant, 'mcp'),
@@ -366,8 +366,8 @@ export async function startTriageRun(ctx: McpContext, projectId: string) {
   // spacing and the daily cap) come before the rate token and cost nothing;
   // the preflight, which reads the graph, only after it, so a caller looping
   // on a refusal cannot run it unmetered.
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
-  const tenant: TriageTenant = { userId: ctx.token.userId, projectId }
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId)
+  const tenant: TriageTenant = { userId: owner, projectId }
 
   let live
   try {
@@ -443,8 +443,8 @@ export async function startTriageRun(ctx: McpContext, projectId: string) {
 
 export async function stopTriageRun(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'triage:run')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
-  const tenant: TriageTenant = { userId: ctx.token.userId, projectId }
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId)
+  const tenant: TriageTenant = { userId: owner, projectId }
 
   let live
   try {

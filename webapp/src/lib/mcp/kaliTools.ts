@@ -142,7 +142,7 @@ export async function execCommand(
 ) {
   requireScope(ctx.token, 'kali:exec')
   assertEnabled()
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId)
   await assertProjectOptedIn(projectId)
 
   const trimmed = typeof command === 'string' ? command.trim() : ''
@@ -191,7 +191,7 @@ export async function readCommandOutput(
 ) {
   requireScope(ctx.token, 'kali:exec')
   assertEnabled()
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId)
   await assertProjectOptedIn(projectId)
   if (!jobId) throw new McpToolError('A jobId is required.', 'bad_args')
   if (cursor !== undefined && (!Number.isInteger(cursor) || cursor < 0)) {
@@ -207,7 +207,7 @@ export async function readCommandOutput(
 export async function cancelCommand(ctx: McpContext, projectId: string, jobId: string) {
   requireScope(ctx.token, 'kali:exec')
   assertEnabled()
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId)
   await assertProjectOptedIn(projectId)
   if (!jobId) throw new McpToolError('A jobId is required.', 'bad_args')
   enforceRate(ctx, 'write')

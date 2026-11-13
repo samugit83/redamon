@@ -215,7 +215,7 @@ async function assertNameFree(userId: string, name: string, exceptId?: string) {
 
 /** A project's preset fields, minus upload paths that only that project may read. */
 async function captureFromProject(ctx: McpContext, projectId: string) {
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId)
   const select = Object.fromEntries(PRESET_FIELD_KEYS.map(k => [k, true]))
   assertReadableSelect(select, 'create_recon_preset')
   const row = await prisma.project.findUnique({ where: { id: projectId }, select })
@@ -523,7 +523,7 @@ export async function applyReconPreset(
   args: { projectId: string; presetId: string; dryRun?: boolean; expectedUpdatedAt?: string }
 ) {
   requireScope(ctx.token, 'preset:apply')
-  await assertMcpProjectAccess(ctx.token.userId, args.projectId)
+  await assertMcpProjectAccess(ctx.token, args.projectId)
   enforceRate(ctx, 'write')
 
   // The LIVE writers, not only the scans: the in-app agent re-reads project

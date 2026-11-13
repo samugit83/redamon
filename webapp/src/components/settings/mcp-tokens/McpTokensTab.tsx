@@ -35,6 +35,7 @@ import {
   type ProfileId,
 } from '@/lib/mcp/profiles'
 import ScopeChecklist from './ScopeChecklist'
+import SharedProjectsField from './SharedProjectsField'
 import AgentOnboardingModal from './AgentOnboardingModal'
 import styles from './McpTokensTab.module.css'
 import { profileOffered } from '@/lib/agentInTheLoop'
@@ -54,6 +55,9 @@ interface TokenRow {
   expiresAt: string | null
   revokedAt: string | null
   createdAt: string
+  /** Present with the sharing switch on (step 4.10). */
+  includeSharedProjects?: boolean
+  projectAllowlist?: string[]
 }
 
 /**
@@ -153,6 +157,12 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
   // an admin is viewing someone else's settings the form is disabled WITH A
   // REASON rather than being a button that 403s on click.
   const [sessionUserId, setSessionUserId] = useState<string | null>(null)
+  // Sharing in force (/api/auth/me): only then can a token opt in to shared projects.
+  const [sharingOn, setSharingOn] = useState(false)
+  const [includeShared, setIncludeShared] = useState(false)
+  const [allowlist, setAllowlist] = useState<string[]>([])
+  const [editIncludeShared, setEditIncludeShared] = useState(false)
+  const [editAllowlist, setEditAllowlist] = useState<string[]>([])
 
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
@@ -193,19 +203,30 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
     { profile: ProfileId; scopes: McpScope[]; name: string } | null
   >(null)
 
-  const draft = { name, profile, scopes, expiresInDays, password }
+  const draft = { name, profile, scopes, expiresInDays, password, includeShared, allowlist }
   const { isDirty, setBaseline } = useDirtyState(draft)
 
   const editScopesChanged = editing !== null && (
     editScopes.length !== editing.scopes.length || editScopes.some(s => !editing.scopes.includes(s))
   )
   const editProfileChanged = editing !== null && editProfile !== profileOrDefault(editing.profile)
+  const editSharedChanged = editing !== null && sharingOn && (
+    editIncludeShared !== (editing.includeSharedProjects === true)
+    || editAllowlist.length !== (editing.projectAllowlist ?? []).length
+    || editAllowlist.some(id => !(editing.projectAllowlist ?? []).includes(id))
+  )
   const editDirty = editing !== null && (
-    editName.trim() !== editing.name || editScopesChanged || editProfileChanged || editExpiry !== 'keep'
+    editName.trim() !== editing.name || editScopesChanged || editProfileChanged || editExpiry !== 'keep' || editSharedChanged
   )
   const editWidens = editing !== null && isTokenWidening(
-    { scopes: editing.scopes, expiresAt: editing.expiresAt ? new Date(editing.expiresAt) : null },
-    { scopes: editScopes, expiresAt: prospectiveExpiry(editExpiry, editDate, editing.expiresAt) },
+    {
+      scopes: editing.scopes, expiresAt: editing.expiresAt ? new Date(editing.expiresAt) : null,
+      includeSharedProjects: editing.includeSharedProjects === true, projectAllowlist: editing.projectAllowlist ?? [],
+    },
+    {
+      scopes: editScopes, expiresAt: prospectiveExpiry(editExpiry, editDate, editing.expiresAt),
+      ...(editSharedChanged ? { includeSharedProjects: editIncludeShared, projectAllowlist: editAllowlist } : {}),
+    },
   )
   const editNeedsPassword = editWidens || serverWantsPassword
 
@@ -249,7 +270,10 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
         const r = await fetch('/api/auth/me')
         if (!r.ok) return
         const data = await r.json()
-        if (!cancelled) setSessionUserId(typeof data?.id === 'string' ? data.id : null)
+        if (!cancelled) {
+          setSessionUserId(typeof data?.id === 'string' ? data.id : null)
+          setSharingOn(data?.sharing?.enabled === true)
+        }
       } catch {
         // Leaving it null keeps the form disabled, which is the safe direction.
       }
@@ -263,10 +287,12 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
     setScopes(grantable([...DEFAULT_MCP_SCOPES]))
     setExpiresInDays(MCP_DEFAULT_EXPIRY_DAYS)
     setPassword('')
+    setIncludeShared(false)
+    setAllowlist([])
     setFormError(null)
     setBaseline({
       name: '', profile: DEFAULT_PROFILE, scopes: grantable([...DEFAULT_MCP_SCOPES]),
-      expiresInDays: MCP_DEFAULT_EXPIRY_DAYS, password: '',
+      expiresInDays: MCP_DEFAULT_EXPIRY_DAYS, password: '', includeShared: false, allowlist: [],
     })
   }, [setBaseline, grantable])
 
@@ -339,6 +365,8 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
     setEditExpiry('keep')
     setEditDate('')
     setEditPassword('')
+    setEditIncludeShared(t.includeSharedProjects === true)
+    setEditAllowlist([...(t.projectAllowlist ?? [])])
     setEditError(null)
     setServerWantsPassword(false)
   }
@@ -359,6 +387,10 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
       if (editProfileChanged) body.profile = editProfile === 'custom' ? null : editProfile
       const expiry = expiryPayload(editExpiry, editDate)
       if (expiry !== undefined) body.expiry = expiry
+      if (editSharedChanged) {
+        body.includeSharedProjects = editIncludeShared
+        body.projectAllowlist = editAllowlist
+      }
       if (editNeedsPassword) body.password = editPassword
 
       const r = await fetch(`/api/users/${userId}/mcp-tokens/${editing.id}`, {
@@ -399,6 +431,8 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
           // already reads as. Storing the literal string would make the absence
           // of a choice indistinguishable from choosing Custom.
           profile: profile === 'custom' ? null : profile,
+          // Sent only with sharing in force, so the request is the one before sharing otherwise.
+          ...(sharingOn ? { includeSharedProjects: includeShared, projectAllowlist: allowlist } : {}),
         }),
       })
       if (!r.ok) {
@@ -650,6 +684,15 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
 
             <ScopeChecklist selected={scopes} onToggle={toggleScope} profile={profile} loopOff={!loopOn} limits={scopeLimits} />
 
+            {sharingOn && (
+              <SharedProjectsField
+                idPrefix="mcpToken"
+                include={includeShared}
+                allowlist={allowlist}
+                onChange={(include, ids) => { setIncludeShared(include); setAllowlist(ids) }}
+              />
+            )}
+
             <div className={`formGroup ${styles.field}`}>
               <label className="formLabel" htmlFor="mcpTokenPassword">Confirm your password</label>
               <input
@@ -786,6 +829,20 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
               }}
             />
 
+            {sharingOn && (
+              <SharedProjectsField
+                idPrefix="mcpEdit"
+                include={editIncludeShared}
+                allowlist={editAllowlist}
+                disabled={!!editing.revokedAt}
+                onChange={(include, ids) => {
+                  setEditIncludeShared(include)
+                  setEditAllowlist(ids)
+                  setServerWantsPassword(false)
+                }}
+              />
+            )}
+
             {editScopesChanged && profileScopeDiff(editProfile, editScopes).modified && (
               <div className={styles.noticeBanner}>
                 <ShieldAlert size={14} />
@@ -802,8 +859,8 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
               <div className={styles.noticeBanner}>
                 <ShieldAlert size={14} />
                 <span>
-                  Only the token&apos;s own user can add a permission or extend the expiry. You can
-                  still remove permissions, shorten the expiry or revoke it.
+                  Only the token&apos;s own user can add a permission, extend the expiry or open it to
+                  more shared projects. You can still remove permissions, shorten the expiry or revoke it.
                 </span>
               </div>
             )}
@@ -820,8 +877,8 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
                   onChange={e => setEditPassword(e.target.value)}
                 />
                 <span className="formHint">
-                  Adding a permission or extending the expiry gives this token more power, so it asks
-                  for your password again.
+                  Adding a permission, extending the expiry or opening it to more shared projects gives
+                  this token more power, so it asks for your password again.
                 </span>
               </div>
             )}

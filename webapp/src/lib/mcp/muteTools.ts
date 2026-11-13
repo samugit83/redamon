@@ -193,7 +193,7 @@ export async function muteFindings(
 ) {
   requireScope(ctx.token, 'triage:mute')
   enforceRate(ctx, 'mute')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const { userId: tenant } = await assertMcpProjectAccess(ctx.token, projectId)
 
   const { keys, graphIds } = refsOf(args.findingIds, args.nodeIds, MUTE_MAX_REFS)
   const reason = (args.reason ?? '').trim()
@@ -221,7 +221,7 @@ export async function muteFindings(
 
   let result: { items: MuteManyItem[]; notFound: string[] }
   try {
-    result = await muteMany(ctx.token.userId, projectId, {
+    result = await muteMany(tenant, projectId, {
       keys, graphIds, exemptPairs, reason, tokenPrefix: ctx.token.tokenPrefix,
     })
   } catch (err) {
@@ -245,7 +245,7 @@ export async function muteFindings(
 
   if (result.items.some(i => i.outcome === 'muted')) invalidateCache(projectId)
   const release = await releaseBroughtBack(
-    ctx.token.userId, projectId, result.items.filter(i => i.outcome === 'muted'))
+    tenant, projectId, result.items.filter(i => i.outcome === 'muted'))
   // A finding released above is reported as the refusal it would have been
   // had the write seen the person's exemption.
   const items = result.items.map(i =>
@@ -312,11 +312,12 @@ export async function unmuteFindings(
 ) {
   requireScope(ctx.token, 'triage:mute')
   enforceRate(ctx, 'mute')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const { userId: tenant } = await assertMcpProjectAccess(ctx.token, projectId)
 
   const { keys, graphIds } = refsOf(args.findingIds, args.nodeIds, UNMUTE_MAX_REFS)
   const includeRuleMutes = args.includeRuleMutes === true
-  const userId = ctx.token.userId
+  // Who unmutes; the findings are the project owner's (`tenant`).
+  const actor = ctx.token.userId
 
   // A rule mute is re-muted by a sweep that read the exemptions before this
   // unmute wrote one: an apply (a NodeFilterRun) or, for a rule mute, the
@@ -327,7 +328,7 @@ export async function unmuteFindings(
   const writer = await graphWriter()
   if (writer) throw busy(writer)
 
-  const resolved = await resolveMuted(userId, projectId, { keys, graphIds, includeRuleMutes })
+  const resolved = await resolveMuted(tenant, projectId, { keys, graphIds, includeRuleMutes })
   const pairs: ExemptionPair[] = resolved.toUnmute.map(r => ({ label: r.label, key: r.key }))
 
   const doc = resolved.skippedRuleMutes.length > 0 ? await loadMutedRuleDoc(projectId) : null
@@ -355,7 +356,7 @@ export async function unmuteFindings(
   // rest is safe.
   let exemptions: { created: ExemptionPair[]; total: number }
   try {
-    exemptions = await ensureExemptions(projectId, pairs, { createdBy: userId, realActorUserId: null })
+    exemptions = await ensureExemptions(projectId, pairs, { createdBy: actor, realActorUserId: null })
   } catch (err) {
     console.error('[mcp] unmute_findings could not save the exemptions:', err)
     throw new McpToolError(
@@ -371,7 +372,7 @@ export async function unmuteFindings(
 
   let result: Awaited<ReturnType<typeof unmuteMany>>
   try {
-    result = await unmuteMany(userId, projectId, {
+    result = await unmuteMany(tenant, projectId, {
       keys: [...new Set(pairs.map(p => p.key))],
       includeRuleMutes,
     })
@@ -379,7 +380,7 @@ export async function unmuteFindings(
     if (err instanceof McpToolError && err.code === 'unmute_outcome_unknown') {
       invalidateCache(projectId)
       void auditUnmute({
-        actorId: userId, projectId, source: 'mcp', realActorUserId: null,
+        actorId: actor, projectId, source: 'mcp', realActorUserId: null,
         tokenId: ctx.token.tokenId, tokenPrefix: ctx.token.tokenPrefix,
         items: [], exempted: exemptions.total, outcome: 'unknown',
         requested: requestedForAudit(keys, graphIds),
@@ -409,7 +410,7 @@ export async function unmuteFindings(
     }))
 
   await auditUnmute({
-    actorId: userId, projectId, source: 'mcp', realActorUserId: null,
+    actorId: actor, projectId, source: 'mcp', realActorUserId: null,
     tokenId: ctx.token.tokenId, tokenPrefix: ctx.token.tokenPrefix,
     items: unmuted.map(u => ({ key: u.findingId, label: u.label, wasMutedVia: u.wasMutedVia })),
     exempted: exemptions.total - dropped.length, outcome: 'ok',
@@ -454,7 +455,7 @@ export async function searchMutedFindings(
 ) {
   requireScope(ctx.token, 'triage:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const project = await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const limit = Math.max(1, Math.min(args.limit ?? SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT))
   const offset = Math.max(0, Math.min(args.offset ?? 0, SEARCH_MAX_OFFSET))
@@ -463,7 +464,7 @@ export async function searchMutedFindings(
   }
 
   const doc = await loadMutedRuleDoc(projectId)
-  const page = await listMutedPage(ctx.token.userId, projectId, {
+  const page = await listMutedPage(project.userId, projectId, {
     limit,
     offset,
     label: args.label,
@@ -480,7 +481,7 @@ export async function searchMutedFindings(
 
   let facets: Record<string, unknown> | undefined
   if (args.facets === true) {
-    const raw = annotateMutedFacets(doc, await mutedFacets(ctx.token.userId, projectId))
+    const raw = annotateMutedFacets(doc, await mutedFacets(project.userId, projectId))
     facets = {
       total: raw.total,
       byPerson: raw.by_person,

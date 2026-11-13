@@ -224,6 +224,9 @@ describe('P8: every tool named in an agent-facing string exists', () => {
       /\beight target[- ]list/i,
       /only a batch host list and the other scanners'? targets/i,
       /host list and the other scanners'? targets (- change|are the one exception)/i,
+      // A token that opts in also reaches the projects shared with its user (step 4.10).
+      /only ever sees that user'?s own projects/i,
+      /see only this token owner'?s own projects/i,
     ]
     const problems: string[] = []
     for (const file of AGENT_FACING) {

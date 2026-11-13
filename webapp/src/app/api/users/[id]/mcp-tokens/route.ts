@@ -15,6 +15,10 @@
  * With the permissions switch on a scope is grantable only while the account holds the
  * permissions it maps to (step 3.10): the mint refuses the others, and the list names them so
  * the screen shows them disabled with the reason.
+ *
+ * With RBAC_SHARING_ENABLED on a token can opt in to the projects shared with its user, optionally
+ * narrowed to an allowlist (step 4.10; SH-42); the mint stores the choice and the list shows it.
+ * With the switch off neither field is read from a body or listed, as before (DV-30).
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
@@ -27,6 +31,7 @@ import {
   resolveExpiry,
   sanitizeTokenName,
   validateScopes,
+  validateSharedReach,
 } from '@/lib/mcpAuth'
 import { validateProfile } from '@/lib/mcp/profiles'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
@@ -35,6 +40,7 @@ import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
 import { rootTokensRefusal } from '@/lib/authz/rootProtection'
 import { scopeGrantRefusal, ungrantableScopesOf } from '@/lib/mcp/scopePermissions'
+import { rbacFlags } from '@/lib/authz/flags'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -52,6 +58,13 @@ const LIST_SELECT = {
   createdAt: true,
 } as const
 
+/** The token row as the screen reads it; the shared-project opt-in only with the sharing switch on. */
+function tokenSelect() {
+  return rbacFlags().sharing
+    ? { ...LIST_SELECT, includeSharedProjects: true, projectAllowlist: true }
+    : LIST_SELECT
+}
+
 export const GET = withRouteErrors('Could not load tokens', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
   const denied = await requireUserAccess(request, id, { mode: 'read' }) ?? await rootTokensRefusal(request, id, 'list_mcp_tokens')
@@ -60,7 +73,7 @@ export const GET = withRouteErrors('Could not load tokens', async (request: Next
   try {
     const tokens = await prisma.mcpAccessToken.findMany({
       where: { userId: id },
-      select: LIST_SELECT,
+      select: tokenSelect(),
       orderBy: { createdAt: 'desc' },
     })
     // Expired and revoked rows stay visible: "why did my agent stop working" is
@@ -121,6 +134,11 @@ export const POST = withRouteErrors('Could not create the token', async (request
   if ('error' in expiryResult) {
     return NextResponse.json({ error: expiryResult.error }, { status: 400 })
   }
+  // The opt-in to shared projects is part of what the password below confirms.
+  const reach = rbacFlags().sharing ? validateSharedReach(body.includeSharedProjects, body.projectAllowlist) : null
+  if (reach && 'error' in reach) {
+    return NextResponse.json({ error: reach.error }, { status: 400 })
+  }
   // Before the password: a scope the person cannot hold costs no step-up attempt.
   const ungrantable = await scopeGrantRefusal(id, scopeResult.scopes)
   if (ungrantable) return NextResponse.json(ungrantable, { status: 403 })
@@ -151,8 +169,9 @@ export const POST = withRouteErrors('Could not create the token', async (request
         scopes: scopeResult.scopes,
         profile: profileResult.profile,
         expiresAt: expiryResult.expiresAt,
+        ...(reach ?? {}),
       },
-      select: LIST_SELECT,
+      select: tokenSelect(),
     })
 
     await writeAudit({
@@ -163,6 +182,7 @@ export const POST = withRouteErrors('Could not create the token', async (request
       after: {
         tokenPrefix: prefix, name, scopes: scopeResult.scopes,
         profile: profileResult.profile, expiresAt: expiryResult.expiresAt,
+        ...(reach ?? {}),
       },
       source: 'ui',
     })

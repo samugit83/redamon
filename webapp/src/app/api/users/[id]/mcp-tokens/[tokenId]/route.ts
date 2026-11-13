@@ -23,6 +23,11 @@
  *    could upgrade an existing token into the credential it cannot mint. A scope
  *    it adds must be one the owner may grant, as at mint (permissions switch on).
  *
+ * With RBAC_SHARING_ENABLED on, the opt-in to shared projects and its allowlist
+ * are capability too (step 4.10): opting in, emptying the allowlist or naming a
+ * new project widens; opting out or naming fewer narrows. With the switch off
+ * neither is read from a body or shown, as before (DV-30).
+ *
  * Scopes and expiry are re-read on every MCP call, so an edit takes effect on
  * the agent's next call.
  */
@@ -37,8 +42,10 @@ import {
   resolveExpiryChange,
   sanitizeTokenName,
   validateScopes,
+  validateSharedReach,
   type McpScope,
 } from '@/lib/mcpAuth'
+import { rbacFlags } from '@/lib/authz/flags'
 import { validateProfile, type ProfileId } from '@/lib/mcp/profiles'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
@@ -63,11 +70,18 @@ const SELECT = {
   createdAt: true,
 } as const
 
+const SHARED_REACH_SELECT = { includeSharedProjects: true, projectAllowlist: true } as const
+
+/** The token row as the screen reads it; the shared-project opt-in only with the sharing switch on. */
+function tokenSelect(): typeof SELECT & Partial<typeof SHARED_REACH_SELECT> {
+  return rbacFlags().sharing ? { ...SELECT, ...SHARED_REACH_SELECT } : SELECT
+}
+
 /** Load the token, 404ing unless it belongs to the user in the path. */
 async function loadOwned(userId: string, tokenId: string) {
   const token = await prisma.mcpAccessToken.findUnique({
     where: { id: tokenId },
-    select: { ...SELECT, userId: true },
+    select: { ...tokenSelect(), userId: true },
   })
   if (!token || !ownsRow({ userId }, token.userId)) return null
   return token
@@ -78,6 +92,9 @@ const sameScopes = (a: readonly string[], b: readonly string[]) =>
 
 const sameExpiry = (a: Date | null, b: Date | null) =>
   (a === null && b === null) || (a !== null && b !== null && a.getTime() === b.getTime())
+
+const sameIds = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every(s => b.includes(s))
 
 export const PATCH = withRouteErrors('Could not update the token', async (request: NextRequest, { params }: RouteParams) => {
   const { id, tokenId } = await params
@@ -100,7 +117,11 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
     scopes?: McpScope[]
     profile?: ProfileId | null
     expiresAt?: Date | null
+    includeSharedProjects?: boolean
+    projectAllowlist?: string[]
   } = {}
+  const sharing = rbacFlags().sharing
+  const touchesReach = sharing && ('includeSharedProjects' in body || 'projectAllowlist' in body)
 
   if ('name' in body) {
     const name = sanitizeTokenName(body.name)
@@ -129,19 +150,31 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
     if (!sameExpiry(expiryResult.expiresAt, existing.expiresAt)) data.expiresAt = expiryResult.expiresAt
   }
 
-  if (!('name' in body) && !('scopes' in body) && !('expiry' in body) && !('profile' in body)) {
+  if (touchesReach) {
+    // A field left out keeps its stored value, so an edit can change one of the two alone.
+    const reach = validateSharedReach(
+      'includeSharedProjects' in body ? body.includeSharedProjects : existing.includeSharedProjects,
+      'projectAllowlist' in body ? body.projectAllowlist : existing.projectAllowlist,
+    )
+    if ('error' in reach) return NextResponse.json({ error: reach.error }, { status: 400 })
+    if (reach.includeSharedProjects !== (existing.includeSharedProjects === true)) data.includeSharedProjects = reach.includeSharedProjects
+    if (!sameIds(reach.projectAllowlist, existing.projectAllowlist ?? [])) data.projectAllowlist = reach.projectAllowlist
+  }
+
+  if (!('name' in body) && !('scopes' in body) && !('expiry' in body) && !('profile' in body) && !touchesReach) {
     return NextResponse.json({ error: 'Nothing to change' }, { status: 400 })
   }
   if (Object.keys(data).length === 0) {
     const token = Object.fromEntries(
-      Object.keys(SELECT).map(k => [k, existing[k as keyof typeof SELECT]])
+      Object.keys(tokenSelect()).map(k => [k, existing[k as keyof typeof existing]])
     )
     return NextResponse.json({ token })
   }
 
   // A profile is deliberately NOT capability-changing: it grants nothing, so it
   // needs no password and is allowed on a revoked token, exactly like a rename.
-  const changesCapability = 'scopes' in data || 'expiresAt' in data
+  const changesReach = 'includeSharedProjects' in data || 'projectAllowlist' in data
+  const changesCapability = 'scopes' in data || 'expiresAt' in data || changesReach
   if (changesCapability && existing.revokedAt) {
     return NextResponse.json(
       { error: 'A revoked token can only be renamed. Create a new token to restore access.' },
@@ -152,6 +185,8 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
   const after = {
     scopes: data.scopes ?? existing.scopes,
     expiresAt: 'expiresAt' in data ? data.expiresAt ?? null : existing.expiresAt,
+    includeSharedProjects: data.includeSharedProjects ?? existing.includeSharedProjects,
+    projectAllowlist: data.projectAllowlist ?? existing.projectAllowlist,
   }
   const widened = changesCapability && isTokenWidening(existing, after)
   const narrowsOnly = changesCapability && !widened && !('name' in data)
@@ -168,8 +203,9 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
       return NextResponse.json(
         {
           error:
-            'Only the token owner, signed in as themselves, can add a permission or extend the ' +
-            'expiry. You can still remove permissions, shorten the expiry or revoke it.',
+            'Only the token owner, signed in as themselves, can add a permission, extend the ' +
+            'expiry or open it to more shared projects. You can still remove permissions, shorten ' +
+            'the expiry or revoke it.',
         },
         { status: 403 }
       )
@@ -192,7 +228,9 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
     if (proof.outcome === 'missing') {
       return NextResponse.json(
         {
-          error: 'Adding a permission or extending the expiry needs your password.',
+          error: changesReach && !('scopes' in data) && !('expiresAt' in data)
+            ? 'Opening a token to projects shared with you needs your password.'
+            : 'Adding a permission or extending the expiry needs your password.',
           passwordRequired: true,
         },
         { status: 401 }
@@ -210,7 +248,7 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
     const updated = await prisma.mcpAccessToken.update({
       where: { id: tokenId },
       data,
-      select: SELECT,
+      select: tokenSelect(),
     })
 
     // A profile change is recorded as an update, not a rename: it does not
@@ -228,6 +266,7 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
             name: existing.name, tokenPrefix: existing.tokenPrefix,
             scopes: existing.scopes, profile: existing.profile,
             expiresAt: existing.expiresAt,
+            ...(changesReach ? { includeSharedProjects: existing.includeSharedProjects, projectAllowlist: existing.projectAllowlist } : {}),
           },
       after: renameOnly
         ? { name: updated.name, tokenPrefix: existing.tokenPrefix }
@@ -235,6 +274,7 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
             name: updated.name, tokenPrefix: existing.tokenPrefix,
             scopes: updated.scopes, profile: updated.profile,
             expiresAt: updated.expiresAt,
+            ...(changesReach ? { includeSharedProjects: after.includeSharedProjects, projectAllowlist: after.projectAllowlist } : {}),
             widened, ownerId: id,
           },
       source: 'ui',

@@ -12,7 +12,7 @@
  */
 import prisma from '@/lib/prisma'
 import { SCOPE_SELECT, currentScanRoots } from '@/lib/scanCoverage'
-import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
+import { assertMcpProjectAccess, requireScope, type McpProjectToken } from '@/lib/mcpAuth'
 import { McpToolError } from '@/lib/mcp/errors'
 import { assertVersionInProject, type OwnedScanVersion } from '@/lib/mcp/childAccess'
 import { readProjectActivity } from '@/lib/mcp/activity'
@@ -48,7 +48,7 @@ export async function listScanVersions(
 ) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const limit = Math.max(
     1,
@@ -119,7 +119,7 @@ interface LoadedSide {
 }
 
 async function resolveSide(
-  userId: string,
+  token: McpProjectToken,
   projectId: string,
   selector: string | undefined,
   fallbackToNewestPast: boolean
@@ -131,7 +131,7 @@ async function resolveSide(
   // a comparison it never requested.
   if (raw === 'current') return { kind: 'current' }
   if (raw) {
-    const version = await assertVersionInProject(userId, projectId, raw)
+    const version = await assertVersionInProject(token, projectId, raw, 'R')
     return { kind: 'version', version }
   }
   if (!fallbackToNewestPast) return { kind: 'current' }
@@ -154,7 +154,7 @@ async function resolveSide(
       'not_found'
     )
   }
-  const version = await assertVersionInProject(userId, projectId, row.id)
+  const version = await assertVersionInProject(token, projectId, row.id, 'R')
   return { kind: 'version', version }
 }
 
@@ -303,14 +303,14 @@ export async function compareScanVersions(
   // who knows a project id exhaust that project's comparison budget, and the
   // owner would then be refused with a message blaming their own token.
   // `startRecon` checks ownership first for exactly this reason.
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'R')
   // Orders of magnitude heavier than any other read: a stored side is a full
   // Postgres Bytes fetch plus gunzip plus JSON.parse, and a `current` side
   // runs two unbounded Cypher queries.
   enforceRate(ctx, 'compare', projectId, { perProject: true })
 
-  const fromSide = await resolveSide(ctx.token.userId, projectId, args.from, true)
-  const toSide = await resolveSide(ctx.token.userId, projectId, args.to, false)
+  const fromSide = await resolveSide(ctx.token, projectId, args.from, true)
+  const toSide = await resolveSide(ctx.token, projectId, args.to, false)
 
   // Two captures of the same graph buy a guaranteed no-op answer with two of
   // the only two snapshot slots, which the UI and version activation share.

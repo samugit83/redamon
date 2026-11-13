@@ -138,7 +138,7 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   requireScope(ctx.token, 'project:rescope')
   // Recording what authorized a widening is its own durable claim.
   if (args.authorization !== undefined) requireScope(ctx.token, 'engagement:authorize')
-  await assertMcpProjectAccess(ctx.token.userId, args.projectId)
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, args.projectId)
   enforceRate(ctx, 'write')
 
   const busy = await describeLiveGraphWriters(args.projectId)
@@ -306,7 +306,7 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   let hostnamePolicyMarked: boolean | undefined
   if (policyTouched && ipHostnamePolicyNarrowed(row as ScopeFields, { ...row, ...data } as ScopeFields)) {
     try {
-      hostnamePolicyMarked = await markOutOfPolicy(args.projectId, ctx.token.userId, { ...row, ...data } as ScopeFields)
+      hostnamePolicyMarked = await markOutOfPolicy(args.projectId, owner, { ...row, ...data } as ScopeFields)
     } catch (e) {
       console.warn('[mcp] update_project_scope: hostname policy marker failed:', e)
       hostnamePolicyMarked = false
@@ -315,18 +315,18 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
 
   // After the commit, and best-effort: the partial-recon picker lists Domain
   // nodes, so a new root without one could not be scanned on its own.
-  // The owner is the token's user: assertMcpProjectAccess proved it, and the
-  // row's own userId is not an MCP-readable column.
+  // The graph's tenant is the project's owner as assertMcpProjectAccess
+  // answered it; the row's own userId is not an MCP-readable column.
   // Seeding attaches to Domain nodes too, so on a graph built under the old
   // scope model (§4.11.6) it waits for the full recon that rebuilds it.
   const legacyGraph = addedRoots.length > 0
-    ? (await legacyGraphDomains(ctx.token.userId, args.projectId, batchScope(data.domainBatchHosts))) ?? []
+    ? (await legacyGraphDomains(owner, args.projectId, batchScope(data.domainBatchHosts))) ?? []
     : []
   // The orgs of the added scan roots: the graph names its Domain after the org.
   const addedOrgs = seedDomainNames(
     batchScope(data.domainBatchHosts).filter(g => addedRoots.includes(g.scanRoot)))
   const graphSeeded = legacyGraph.length === 0
-    && await seedProjectDomains(addedOrgs, ctx.token.userId, args.projectId)
+    && await seedProjectDomains(addedOrgs, owner, args.projectId)
 
   const recordingScopeUpdated = batchRescoped && await refreshActiveRecordingScope(prisma, args.projectId, {
     domainBatchMode: true,

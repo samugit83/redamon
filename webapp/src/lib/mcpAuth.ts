@@ -8,8 +8,9 @@
  * Deliberate choices, each because this surface is programmatic, credentialed
  * and internet-reachable:
  *
- *  - `assertMcpProjectAccess` takes the token's user id, never a browser session
- *    or the act-as cookie, and refuses a project of anyone else with a flat 404.
+ *  - `assertMcpProjectAccess` takes the token (its user and its opt-in to shared
+ *    projects), never a browser session or the act-as cookie, and refuses a project
+ *    the token may not reach with a flat 404.
  *  - Scopes are checked on every call. A field that exists but is never read is
  *    fail-open by omission. The scopes a call sees are the minted ones its owner
  *    may still use (RBAC permissions, mcp/scopePermissions.ts), computed once here.
@@ -19,7 +20,8 @@
 import { createHash, randomBytes } from 'crypto'
 import prisma from '@/lib/prisma'
 import { constantTimeEqual } from '@/lib/constantTimeEqual'
-import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
+import { meetsLevel, projectAccess, type ProjectAccess } from '@/lib/authz/projectAccess'
+import type { ProjectLevel } from '@/lib/authz/permissions'
 import { usableScopes } from '@/lib/mcp/scopePermissions'
 
 export const MCP_TOKEN_PREFIX = 'rdmn_mcp_'
@@ -228,13 +230,70 @@ export function resolveExpiryChange(
  * (dropping a scope, an earlier expiry) only narrows, and needs no step-up.
  */
 export function isTokenWidening(
-  before: { scopes: readonly string[]; expiresAt: Date | null },
-  after: { scopes: readonly string[]; expiresAt: Date | null }
+  before: TokenReach,
+  after: TokenReach
 ): boolean {
   if (after.scopes.some(s => !before.scopes.includes(s))) return true
+  if (sharedReachWidens(before, after)) return true
   if (after.expiresAt === null) return before.expiresAt !== null
   if (before.expiresAt === null) return false
   return after.expiresAt.getTime() > before.expiresAt.getTime()
+}
+
+/** What a token edit can widen: its scopes, its expiry and (step 4.10) the shared projects it reaches. */
+export interface TokenReach {
+  scopes: readonly string[]
+  expiresAt: Date | null
+  /** Absent: the edit does not touch the opt-in (and a token minted before sharing reaches none). */
+  includeSharedProjects?: boolean
+  projectAllowlist?: readonly string[]
+}
+
+/**
+ * Opting in to shared projects widens a token; so does emptying its allowlist (empty reaches every
+ * shared project) or naming a project it did not name. Opting out, or naming fewer, only narrows.
+ */
+function sharedReachWidens(before: TokenReach, after: TokenReach): boolean {
+  if (after.includeSharedProjects !== true) return false
+  if (before.includeSharedProjects !== true) return true
+  const was = before.projectAllowlist ?? []
+  const now = after.projectAllowlist ?? []
+  if (was.length === 0) return false
+  return now.length === 0 || now.some(id => !was.includes(id))
+}
+
+/** The most projects one token's allowlist may name. */
+export const MCP_PROJECT_ALLOWLIST_MAX = 100
+
+/**
+ * Validate a token's shared-project opt-in from a mint or edit body. The allowlist holds plain
+ * project ids, deduplicated; an id names no project the token's user could not already reach
+ * (projectAccess decides on every call), so it is not checked against the shares here, which would
+ * tell a caller which ids exist.
+ */
+export function validateSharedReach(
+  include: unknown,
+  allowlist: unknown
+): { includeSharedProjects: boolean; projectAllowlist: string[] } | { error: string } {
+  if (include !== undefined && typeof include !== 'boolean') {
+    return { error: 'includeSharedProjects must be true or false.' }
+  }
+  if (allowlist !== undefined && !Array.isArray(allowlist)) {
+    return { error: 'projectAllowlist must be a list of project ids.' }
+  }
+  const ids: string[] = []
+  for (const raw of (allowlist as unknown[] | undefined) ?? []) {
+    if (typeof raw !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(raw)) {
+      return { error: 'projectAllowlist holds project ids only.' }
+    }
+    if (!ids.includes(raw)) ids.push(raw)
+  }
+  if (ids.length > MCP_PROJECT_ALLOWLIST_MAX) {
+    return { error: `projectAllowlist names at most ${MCP_PROJECT_ALLOWLIST_MAX} projects.` }
+  }
+  const includeSharedProjects = include === true
+  // The allowlist narrows the shared projects only, so without the opt-in it would mean nothing.
+  return { includeSharedProjects, projectAllowlist: includeSharedProjects ? ids : [] }
 }
 
 // --- resolution ----------------------------------------------------------------
@@ -257,6 +316,16 @@ export interface ResolvedMcpToken {
    * requireScope / hasScope and the connect-time instructions read these, never the row's.
    */
   scopes: McpScope[]
+  /**
+   * The token opted in to projects shared with its user (step 4.10): the allowlist narrows them,
+   * empty names none and reaches every one. Absent or null: the token reaches its user's own
+   * projects only, as every token minted before sharing does.
+   */
+  sharedProjects?: McpSharedReach | null
+}
+
+export interface McpSharedReach {
+  allowlist: readonly string[]
 }
 
 export interface McpAuthResult {
@@ -293,6 +362,7 @@ export async function resolveMcpToken(presented: string): Promise<McpAuthResult>
     select: {
       id: true, userId: true, name: true, tokenPrefix: true, tokenHash: true,
       scopes: true, revokedAt: true, expiresAt: true,
+      includeSharedProjects: true, projectAllowlist: true,
     },
   })
   if (!row || !constantTimeEqual(row.tokenHash, hashToken(presented))) {
@@ -323,6 +393,11 @@ export async function resolveMcpToken(presented: string): Promise<McpAuthResult>
       tokenPrefix: row.tokenPrefix,
       name: row.name,
       scopes,
+      // Read whatever the switch: with sharing not in force projectAccess() never answers a
+      // project of someone else, so the opt-in reaches nothing (DV-30).
+      sharedProjects: row.includeSharedProjects === true
+        ? { allowlist: Object.freeze([...(row.projectAllowlist ?? [])]) }
+        : null,
     },
   }
 }
@@ -375,25 +450,83 @@ export class McpAccessDenied extends Error {
 }
 
 /**
- * `requireProjectAccess` for a token's user id, with the same 404
- * anti-enumeration semantics.
- *
- * A project that does not exist and a project owned by someone else are the
- * same answer, so a token holder cannot enumerate other users' project ids.
- * The decision is `projectAccess()`'s, asked for the token's user, and it must reach the owner
- * level: no route permission backs a token's project tools, so access below the owner's never
- * reaches a token through this check.
+ * A project the token may reach, at a level its access does not meet (step 4.10): a project shared
+ * with the token's user at Read, asked by a tool that writes. The token already reaches the project
+ * (it lists it), so the answer says why rather than "not found", which would send an agent off to
+ * retry with another id.
  */
-export async function assertMcpProjectAccess(
-  userId: string,
-  projectId: unknown
-): Promise<{ id: string; userId: string }> {
+export class McpLevelDenied extends McpAccessDenied {
+  constructor(message: string) {
+    super(message)
+    this.name = 'McpLevelDenied'
+  }
+}
+
+/** What a tool's access check needs of the token: its user and its opt-in to shared projects. */
+export interface McpProjectToken {
+  userId: string
+  sharedProjects?: McpSharedReach | null
+}
+
+export interface McpProjectAccess {
+  /** The project and its owner (`userId`): the tenant of every graph, finding and triage read (T9). */
+  project: { id: string; userId: string }
+  access: ProjectAccess
+}
+
+function levelRefusal(needed: ProjectLevel): string {
+  if (needed === 'R*') {
+    return 'This project is shared with your account without Raw data & files, which this tool needs. ' +
+      'Ask the owner to include raw data in the share.'
+  }
+  return 'This project is shared with your account at Read access, so this tool, which changes it or ' +
+    "acts on it, is not available. Only the project's owner can use it."
+}
+
+/**
+ * The token's access to a project, checked at the level the tool needs, with the same 404
+ * anti-enumeration semantics as `requireProjectAccess`.
+ *
+ * A project that does not exist and a project the token may not reach are the same answer, so a
+ * token holder cannot enumerate other users' project ids. The decision is `projectAccess()`'s,
+ * asked for the token's user. The owner reaches every level. Anyone else's project reaches the token
+ * only through a share (step 4.10; SH-42): never oversight or break-glass, which would turn an
+ * admin's opted-in token into a reader of every project; only when the token opted in; and only
+ * when its allowlist is empty or names the project. Then the share must meet `needed`, the level
+ * of the permission behind the tool (`R` for a read, `R*` for raw data); a write level is the
+ * owner's until Phase 5, so `needed` defaults to the owner and a tool that does not name a read
+ * level stays the owner's. A revoked or expired share fails the next call: nothing is cached here.
+ */
+export async function mcpProjectAccess(
+  token: McpProjectToken | string,
+  projectId: unknown,
+  needed: ProjectLevel = 'O'
+): Promise<McpProjectAccess> {
   if (typeof projectId !== 'string' || !projectId) {
     throw new McpAccessDenied('projectId is required')
   }
-  const access = await projectAccess({ userId }, projectId)
-  if (!access || !meetsLevel(access, 'O')) throw new McpAccessDenied()
-  return { id: access.project.id, userId: access.project.userId }
+  const holder: McpProjectToken = typeof token === 'string' ? { userId: token } : token
+  const access = await projectAccess({ userId: holder.userId }, projectId)
+  if (!access) throw new McpAccessDenied()
+  if (access.level !== 'owner') {
+    const reach = holder.sharedProjects
+    if (access.via !== 'share' || !reach) throw new McpAccessDenied()
+    if (reach.allowlist.length > 0 && !reach.allowlist.includes(projectId)) throw new McpAccessDenied()
+    if (!meetsLevel(access, needed)) throw new McpLevelDenied(levelRefusal(needed))
+  }
+  return { project: { id: access.project.id, userId: access.project.userId }, access }
+}
+
+/**
+ * `mcpProjectAccess` for a tool that needs only the project and its owner. `userId` is the owner,
+ * the tenant every graph and triage read of the tool passes on, never the token's user.
+ */
+export async function assertMcpProjectAccess(
+  token: McpProjectToken | string,
+  projectId: unknown,
+  needed: ProjectLevel = 'O'
+): Promise<{ id: string; userId: string }> {
+  return (await mcpProjectAccess(token, projectId, needed)).project
 }
 
 // --- per-token rate limiting ------------------------------------------------------

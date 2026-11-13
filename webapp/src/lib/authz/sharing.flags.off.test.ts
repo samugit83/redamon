@@ -30,6 +30,11 @@
  * off GET /api/projects answers its rows without `myAccess` (route.list.shared.test.ts, and the
  * reports and system/jobs route.shared.test.ts, pin the routes in both states).
  *
+ * Step 4.10 adds the MCP token's opt-in to shared projects (mcpAuth.ts, the token routes and screen):
+ * with sharing not in force an opted-in token reaches only its owner's projects, no share row is read,
+ * and the token routes neither read the opt-in from a body nor list it (route.shares.test.ts,
+ * McpTokensTab.shares.test.tsx, sharedTenant.test.ts pin the list and the screen).
+ *
  * Step 6.2 adds the admin users directory (lib/authz/userDirectory.ts): with sharing not in force it
  * selects no collaborator count (shared counts read null) and lists no user's shares; with it in force
  * a user's shares are listed only while Root's policy lets admins see every share
@@ -162,6 +167,12 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/app/admin/instance/SharingPolicyPanel.tsx',
       // Step 4.2: shows the policy to admins and takes Root's change only with the switch on.
       'src/app/api/admin/instance-settings/route.ts',
+      // Step 4.10: the token routes read and list the opt-in to shared projects only with the switch on
+      // (route.shares.test.ts, "RBAC_SHARING_ENABLED off").
+      'src/app/api/users/[id]/mcp-tokens/[tokenId]/route.ts',
+      'src/app/api/users/[id]/mcp-tokens/route.ts',
+      // Step 4.10: the token screen offers and sends the opt-in only while /api/auth/me reports sharing in force.
+      'src/components/settings/mcp-tokens/McpTokensTab.tsx',
       // Step 4.15: the expiry sweep, which reads the sharing tables only with sharing in force.
       'src/lib/authz/expirySweep.ts',
       // Step 4.3: reads a share and the break-glass rows only with sharing in force (tests below).
@@ -173,6 +184,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       // Step 6.2: the admin users directory counts and lists a person's shares only with sharing in
       // force (the policy read through sharingPolicyInForce; api/admin/users/route.test.ts pins both).
       'src/lib/authz/userDirectory.ts',
+      // Step 4.10: reads a token's opt-in, which reaches nothing while projectAccess() answers no share (below).
+      'src/lib/mcpAuth.ts',
     ]
     const NAMES = new RegExp(
       '\\b(projectCollaborators?|projectBreakGlass|project_collaborators|project_break_glass|includeSharedProjects|' +
@@ -496,5 +509,33 @@ describe('the Instance page with sharing off (step 6.7)', () => {
     expect(panel).not.toMatch(/\bfetch\(/)
     const page = readFileSync(path.join(WEBAPP, 'src/app/admin/instance/page.tsx'), 'utf8')
     expect(page).toMatch(/sharingPolicyShown: sharingPolicyOf\(settings\) !== null/)
+  })
+})
+
+describe('MCP tokens with sharing not in force (step 4.10)', () => {
+  const NOT_IN_FORCE_MCP: Array<[string, Parameters<typeof setFlagsForTests>[0], unknown]> = [
+    ['every switch off', {}, { enabled: true }],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }, { enabled: true }],
+    ['the switch on, the policy disabled (the stored {} after the upgrade)', { identity: true, permissions: true, sharing: true }, {}],
+  ]
+
+  test.each(NOT_IN_FORCE_MCP)('%s: an opted-in token reaches only its own projects, and no share row is read', async (_what, flags, stored) => {
+    const { McpAccessDenied, assertMcpProjectAccess } = await import('@/lib/mcpAuth')
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    instanceFindUnique.mockResolvedValue({ id: 'instance', sharingPolicy: stored } as never)
+    const optedIn = (userId: string) => ({ userId, sharedProjects: { allowlist: [] } })
+    for (const level of ['R', 'R*'] as const) {
+      await expect(assertMcpProjectAccess(optedIn('stranger'), 'P-owner', level)).rejects.toThrow(new McpAccessDenied())
+    }
+    expect(await assertMcpProjectAccess(optedIn('owner'), 'P-owner')).toEqual({ id: 'P-owner', userId: 'owner' })
+    expect(db.collaboratorFindUnique).not.toHaveBeenCalled()
+    expect(db.breakGlassFindFirst).not.toHaveBeenCalled()
+    instanceFindUnique.mockReset().mockResolvedValue({ id: 'instance', sharingPolicy: { enabled: true } } as never)
+  })
+
+  test('list_projects widens past the owned filter only for a token that opted in', () => {
+    const src = readFileSync(path.join(WEBAPP, 'src/lib/mcp/tools.ts'), 'utf8')
+    expect(src).toMatch(/const visible = reach\s*\n\s*\? await visibleProjects\(subject\)\s*\n\s*: \{ where: ownedProjectsWhere\(subject\), withShares: false \}/)
   })
 })

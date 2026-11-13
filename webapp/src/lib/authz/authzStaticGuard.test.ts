@@ -268,12 +268,6 @@ const ALLOWED: Record<string, Allowed> = {
       'const count = await prisma.userProjectPreset.count({ where: { userId: ctx.token.userId } })',
     ],
   },
-  'src/lib/mcp/tools.ts::list_on_caller': {
-    reason: "MCP lists the projects its token user owns: every MCP project tool needs the owner level (mcpAuth.ts assertMcpProjectAccess)",
-    lines: [
-      'where: { userId: ctx.token.userId },',
-    ],
-  },
   'src/lib/plugins/userSkillAdoption.ts::find_by_id_and_owner': {
     reason: `the skill owner's source skill (a per-user row) and ${SKILL_OWNER_PROJECT}, inside the save's transaction`,
     lines: [

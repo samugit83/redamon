@@ -4,7 +4,9 @@ RedAmon can expose itself to **external AI agents** over the Model Context
 Protocol. A customer's own agent, an MCP-capable client, or a scripted pipeline
 connects in, authenticates as **one RedAmon user**, and can do three things
 scoped to that user's own projects: start a full recon pipeline, change a narrow
-set of recon tuning settings, and query the attack-surface graph.
+set of recon tuning settings, and query the attack-surface graph. A token that
+opts in also reads the projects other people shared with its user (see "Shared
+projects reach a token only when it opts in").
 
 > **Two MCP features, opposite directions.** Do not confuse them.
 >
@@ -603,6 +605,46 @@ ALL of them; a scope no permission maps to is never usable.
 
 With the switch off nothing is read and the minted scopes are the usable ones,
 as before.
+
+### Shared projects reach a token only when it opts in
+
+With project sharing in force (`RBAC_SHARING_ENABLED` and Root's
+`sharingPolicy.enabled`), `McpAccessToken.includeSharedProjects` and
+`projectAllowlist` decide whether a token also reaches the projects shared with
+its user (step 4.10, SH-42). Every existing token keeps both at their defaults
+(off, empty) and reaches only its owner's projects.
+
+- **The check.** `mcpProjectAccess(token, projectId, needed)` / `assertMcpProjectAccess`
+  (`webapp/src/lib/mcpAuth.ts`) ask `projectAccess()` for the token's user. The
+  owner reaches every level. Anyone else's project is admitted only through a
+  live share (`via: 'share'`; oversight and break-glass never reach a token),
+  only when the token opted in, and only when its allowlist is empty or names
+  the project. Then the share must meet the tool's level: `R` for the read
+  tools, `R*` for raw Cypher (`query_graph` with `cypher`) and `run_graph_view`
+  (an arbitrary answer can carry attack-chain step content, which is raw data),
+  and the owner's for everything else, so every write, start, queue, Kali and
+  loop tool stays the owner's until Phase 5. A level shortfall answers its own
+  message (`McpLevelDenied`, audited `level_denied`); a project the token does
+  not reach is still `Project not found`. A revoked or expired share fails the
+  next call (nothing is cached).
+- **The tenant.** Every graph, finding, mute and triage read passes the
+  project's owner (the check's `userId`) to the agent, never the token's user,
+  and the result check holds the rows to the owner.
+- **What a reader does not get.** `query_graph` with `question` is refused (it
+  spends the owner's provider key: the browser's `agent:assistants`, `W+A`);
+  `get_recon_settings` drops the `share: secret` columns (the custom header
+  lists); `preflight_scope_check` withholds the authorization record
+  (`authorizationWithheld: true`; `engagement.hasAuthorization` still says one
+  exists); `list_engagement_authorizations` stays the owner's, as the app's list
+  asks `engagement:authorize` (`M`).
+- **`list_projects`.** Owned projects, plus the live shares when the token
+  opted in (narrowed by the allowlist), each row with `myAccess` while the
+  sharing switch is on.
+- **Mint and edit.** The token screen offers **Include projects shared with me**
+  and the shared projects to limit it to, only while `/api/auth/me` reports
+  sharing in force. Opting in, emptying the allowlist or naming another project
+  is a widening (the mint's password, self-only); opting out or naming fewer
+  narrows. With the switch off the routes neither read nor list the two fields.
 
 ### The route is bearer-only
 

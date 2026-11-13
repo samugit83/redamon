@@ -59,7 +59,7 @@ import {
 } from '@/lib/engagement'
 import { describeScanWriters } from '@/lib/graphWriters'
 import { firstHardBlocked } from '@/lib/hard-guardrail'
-import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
+import { assertMcpProjectAccess, mcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { ownsRow } from '@/lib/authz/rowOwner'
 import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
@@ -529,7 +529,7 @@ export async function attachEngagementAuthorization(
   auth: AuthorizationArgs
 ) {
   requireScope(ctx.token, 'engagement:authorize')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId)
   enforceRate(ctx, 'write')
 
   const record = normaliseAuthorization(auth)
@@ -756,7 +756,8 @@ function noOpReason(
  */
 export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const { project: reached, access: { level } } = await mcpProjectAccess(ctx.token, projectId, 'R')
+  const owner = reached.userId
   // The 'query' bucket rather than 'read': this resolves the whole settings
   // tree, the cap list and the authorization record, which is not the cost of
   // an ordinary read.
@@ -834,7 +835,9 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
 
   const exceeds = rates.filter(r => ceiling !== null && r.resolved > ceiling)
 
-  const aiHooks = await resolveAiHooks(row, ctx.token.userId)
+  // The owner's providers: a scan of the project runs the owner's keys (T9),
+  // whoever asks.
+  const aiHooks = await resolveAiHooks(row, owner)
 
   // The scope the next scan runs, derived from the stored target fields exactly
   // as the scan derives it, and the entries the current rules refuse.
@@ -855,7 +858,11 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
   return {
     projectId,
     engagement,
-    authorization,
+    // The authorization record is the owner's to read (the app's list asks
+    // engagement:authorize, a manage level); a reader of a shared project sees
+    // only whether one exists, in engagement.hasAuthorization.
+    authorization: level === 'owner' ? authorization : null,
+    ...(level === 'owner' ? {} : { authorizationWithheld: true }),
     scope: {
       targetDomain: row.targetDomain ?? '',
       targetIps: row.targetIps ?? [],
@@ -893,7 +900,7 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
       hostnamePolicy: row.ipMode === true
         ? {
             ...ipHostnamePolicySummary(row as ScopeFields),
-            ...(await lastRunCounts(getGraphSession, { ...(row as ScopeFields), id: projectId, userId: ctx.token.userId })),
+            ...(await lastRunCounts(getGraphSession, { ...(row as ScopeFields), id: projectId, userId: owner })),
             problem: hostnameProblem,
           }
         : null,
@@ -990,7 +997,7 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
 /** Every authorization ever recorded for a project, newest first. */
 export async function listEngagementAuthorizations(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId)
   enforceRate(ctx, 'read')
 
   const rows = await prisma.engagementAuthorization.findMany({

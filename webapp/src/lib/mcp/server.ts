@@ -47,7 +47,7 @@ const entityIdSchema = z.string().min(1).max(64).regex(
 
 import { writeAudit } from '@/lib/audit'
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js'
-import { McpAccessDenied, McpScopeError, touchTokenUsage, type McpScope } from '@/lib/mcpAuth'
+import { McpAccessDenied, McpLevelDenied, McpScopeError, touchTokenUsage, type McpScope } from '@/lib/mcpAuth'
 import { McpToolError, safeMessage, toolError, toolJson } from '@/lib/mcp/errors'
 import { agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
 import { LOOP_ANSWER_MAX_CHARS, loopGetStep, loopSubmitStep, loopWaitStep } from '@/lib/mcp/loopTools'
@@ -262,6 +262,7 @@ function handler<A>(
     } catch (err) {
       const outcome =
         err instanceof McpScopeError ? 'scope_denied'
+        : err instanceof McpLevelDenied ? 'level_denied'
         : err instanceof McpAccessDenied ? 'access_denied'
         : err instanceof McpToolError ? (err.code ?? 'error')
         : 'error'
@@ -280,8 +281,11 @@ function handler<A>(
       })
 
       // A scope error names the scope; an ownership failure is a flat 404-alike
-      // so a token holder cannot enumerate other users' project ids.
+      // so a token holder cannot enumerate other users' project ids. A level
+      // refusal is only ever raised on a project the token already reaches (a
+      // share it opted in to), so saying why leaks nothing.
       if (err instanceof McpScopeError) return toolError(err.message)
+      if (err instanceof McpLevelDenied) return toolError(err.message)
       if (err instanceof McpAccessDenied) return toolError('Project not found')
       return toolError(safeMessage(err, 'The request could not be completed.', `tool ${tool}`))
     }
@@ -372,8 +376,15 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
       title: 'List projects',
       description:
         'List the RedAmon projects this token can reach. The token belongs to one user and ' +
-        'only ever sees that user\'s own projects. Start here to discover a projectId; every ' +
-        'other tool needs one. This does not report scan state - use get_recon_status for that.\n\n' +
+        'reaches that user\'s own projects, plus the projects other people shared with them ' +
+        'when the token was set to include shared projects (optionally only the ones it names). ' +
+        'Start here to discover a projectId; every other tool needs one. This does not report ' +
+        'scan state - use get_recon_status for that.\n\n' +
+        'When sharing is on, each project carries `myAccess`: `level` owner or read, and for a ' +
+        'shared one who shared it and whether the share includes raw data (`toggles.rawData`). ' +
+        'On a read share only the read tools answer; a tool that changes the project, starts ' +
+        'work on it or spends the owner\'s model key is refused, and raw Cypher and saved views ' +
+        'need raw data.\n\n' +
         'Each project carries `scopeSummary`, its scope in one line, and `enumerateGroupCount`, ' +
         'how many of its scope groups are fully enumerated: that is the difference between a ' +
         'five-host scan and a multi-hour one.',
@@ -489,6 +500,9 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'their public id (e.g. the CVE id) instead. A Node ID is only valid until the next ' +
         'rescan of that data.\n\n' +
         'A finding node\'s `nodeId`, or its `properties.id`, can be passed to mute_findings.\n\n' +
+        'On a project shared with you (`myAccess.level` read in list_projects) "question" is not ' +
+        'available, because it spends the owner\'s model key, and "cypher" needs a share that ' +
+        'includes raw data.\n\n' +
         `${GRAPH_TOOL_USAGE}\n\n${UNTRUSTED_DATA_NOTE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({
@@ -1037,7 +1051,8 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'It needs the raw-Cypher permission even though you do not write the query: choosing ' +
         'which stored query runs is enough, and the stored text is not validated when it is ' +
         'saved. If a view is refused, the message says why - the view is unchanged and the ' +
-        'refusal is not a fault in this tool.\n\n' +
+        'refusal is not a fault in this tool. On a project shared with you it runs only when ' +
+        'the share includes raw data.\n\n' +
         `${UNTRUSTED_DATA_NOTE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['recon:read', 'graph:cypher'] }),

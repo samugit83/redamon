@@ -180,7 +180,8 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
       'Start here, always. Every other tool needs a projectId and this is the only way to learn ' +
       'one. Match the project by name to what the human asked about rather than guessing an id.',
     gotchas: [
-      'You see only this token owner\'s own projects. Another team\'s estate is invisible here, which is not the same as it not existing.',
+      'You see this token owner\'s own projects, and the ones shared with them only if the token was set to include shared projects. Another team\'s estate is invisible otherwise, which is not the same as it not existing.',
+      'A shared project (`myAccess.level` read) answers the read tools only: writes, starts and natural-language questions are refused there, and raw Cypher and saved views need `myAccess.toggles.rawData`.',
       'This reports nothing about scan state. A project in the list may never have been scanned.',
     ],
     workflowRefs: ['find-the-project'],

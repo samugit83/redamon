@@ -256,12 +256,11 @@ ORDER BY knownExploitCount DESC, maxCvss DESC, cveCount DESC
 LIMIT ${TOP_N}`
 
 async function runAnalytics(
-  ctx: McpContext,
-  projectId: string,
+  project: { id: string; userId: string },
   cypher: string,
   what: string
 ): Promise<Record<string, unknown>[]> {
-  const result = await execCypher(ctx.token.userId, projectId, cypher)
+  const result = await execCypher(project.userId, project.id, cypher)
   if (!Array.isArray(result.records)) {
     throw new McpToolError(`The ${what} could not be read.`, 'agent_failed')
   }
@@ -305,9 +304,9 @@ const NO_CVE_LINKS_NOTE =
 export async function getAttackSurfaceOverview(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'query')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const project = await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
-  const rows = await runAnalytics(ctx, projectId, attackSurfaceCypher(), 'attack surface overview')
+  const rows = await runAnalytics(project, attackSurfaceCypher(), 'attack surface overview')
   // The chained aggregation always produces exactly one row, including on an
   // empty project. No row at all means the query did not run as written.
   const row = rows[0]
@@ -331,9 +330,9 @@ export async function getAttackSurfaceOverview(ctx: McpContext, projectId: strin
 export async function listExploitPaths(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'query')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const project = await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
-  const rows = await runAnalytics(ctx, projectId, EXPLOIT_PATHS_CYPHER, 'exploit paths')
+  const rows = await runAnalytics(project, EXPLOIT_PATHS_CYPHER, 'exploit paths')
   return {
     projectId,
     paths: rows,
@@ -356,9 +355,9 @@ export async function listExploitPaths(ctx: McpContext, projectId: string) {
 export async function getBlastRadius(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'query')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const project = await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
-  const rows = await runAnalytics(ctx, projectId, BLAST_RADIUS_CYPHER, 'blast radius')
+  const rows = await runAnalytics(project, BLAST_RADIUS_CYPHER, 'blast radius')
   return {
     projectId,
     technologies: rows,

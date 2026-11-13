@@ -94,7 +94,7 @@ function maskState(raw: unknown): Record<string, unknown> {
 export async function getScanStatus(ctx: McpContext, projectId: string, scanner: string) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const spec = SCANNERS[scanner]
   if (!spec) {

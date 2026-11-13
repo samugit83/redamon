@@ -196,7 +196,7 @@ export async function listFindings(
 ) {
   requireScope(ctx.token, 'recon:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const project = await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const limit = clampLimit(args.limit)
   const offset = Math.max(0, Math.trunc(args.offset ?? 0))
@@ -239,7 +239,7 @@ export async function listFindings(
     ...(args.reviewedVia ? { reviewed_via: args.reviewedVia } : {}),
     ...(args.reviewCurrent ? { review_current: args.reviewCurrent } : {}),
   }
-  const { findings: raw, total } = await listTriageFindings(ctx.token.userId, projectId, want, pushed)
+  const { findings: raw, total } = await listTriageFindings(project.userId, projectId, want, pushed)
   const triageState = await resolveTriageState(
     projectId, raw.some(f => typeof f.triage_run_id === 'string' && f.triage_run_id !== ''))
 
@@ -328,10 +328,10 @@ export async function listMuted(
 ) {
   requireScope(ctx.token, 'triage:read')
   enforceRate(ctx, 'read')
-  await assertMcpProjectAccess(ctx.token.userId, projectId)
+  const project = await assertMcpProjectAccess(ctx.token, projectId, 'R')
 
   const { findings: all, total: exactTotal } =
-    await listMutedFindings(ctx.token.userId, projectId, MUTED_FETCH_CEILING)
+    await listMutedFindings(project.userId, projectId, MUTED_FETCH_CEILING)
   const doc = await loadMutedRuleDoc(projectId)
   // With the agent's uncapped count the total is exact; without it (an older
   // agent), a full window can only say "at least". Saying "42 muted" when
