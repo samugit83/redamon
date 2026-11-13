@@ -46,3 +46,26 @@ p4-oversee-proj-export	4.3	admin_a	GET	/api/projects/${PA_ID}/export	-	403;has=p
 p4-oversee-traffic	4.3	admin_a	GET	/api/traffic/${PA_ID}	-	403;has=traffic:read	req:SH-18 sharing:on
 p4-oversee-workspace	4.3	admin_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	403;has=workspace:read	req:SH-18 sharing:on
 p4-oversee-ws-ticket-terminal	4.3	admin_a	POST	/api/agent/ws-ticket	{"projectId":"${PA_ID}","sessionId":"rbac-ws","socket":"kali-terminal"}	403;has=owner_only;lacks="ticket"	req:SH-18 sharing:on
+
+# ---- step 4.8: the Priority Board and remediations at Read ----
+# The viewer reads PSHARED's board, muted list, mute rules and remediations, from member_c's graph and
+# rows (the seed puts no finding or remediation there, so the answers are empty), and every triage
+# and remediation write answers 403 naming its permission. The remediation write probe also names a
+# column that does not exist, so a guard that let it through would fail in Prisma (500), never create
+# a row; the verdict and mute probes carry no node, so nothing is written past the guard either.
+# admin_a reads rbac-PA by oversight: the sharing:on answers of bl-triage-list-admin and
+# bl-rem-list-admin (tagged sharing:off in baseline.tsv).
+p4-viewer-triage-board	4.8	viewer	GET	/api/triage/findings?projectId=${PSHARED_ID}	-	200;has="findings"	req:SH-07 sharing:on
+p4-viewer-triage-muted	4.8	viewer	GET	/api/triage/muted?projectId=${PSHARED_ID}	-	200;has="findings"	req:SH-07 sharing:on
+p4-viewer-mute-rules	4.8	viewer	GET	/api/projects/${PSHARED_ID}/node-filters	-	200;has="exemptionCounts"	req:SH-07 sharing:on
+p4-viewer-remediations	4.8	viewer	GET	/api/remediations?projectId=${PSHARED_ID}	-	200	req:SH-07 sharing:on
+p4-viewer-triage-verdict	4.8	viewer	POST	/api/triage/verdict	{"projectId":"${PSHARED_ID}"}	403;has=triage:verdict	req:SH-07 sharing:on
+p4-viewer-triage-mute	4.8	viewer	POST	/api/triage/mute	{"projectId":"${PSHARED_ID}"}	403;has=triage:mute	req:SH-07 sharing:on
+p4-viewer-mute-rules-write	4.8	viewer	PUT	/api/projects/${PSHARED_ID}/node-filters	{}	403;has=node_filters:manage	req:SH-07 sharing:on
+p4-viewer-remediation-write	4.8	viewer	POST	/api/remediations	{"projectId":"${PSHARED_ID}","title":"rbac-share-probe","description":"rbac-share-probe","rbacNotAColumn":true}	403;has=remediation:write	req:SH-07 sharing:on
+p4-viewer-ws-ticket-triage	4.8	viewer	POST	/api/agent/ws-ticket	{"projectId":"${PSHARED_ID}","sessionId":"rbac-ws","socket":"cypherfix-triage"}	403;has=triage:run;lacks="ticket"	req:SH-07 sharing:on
+p4-oversee-triage-board	4.8	admin_a	GET	/api/triage/findings?projectId=${PA_ID}	-	200;has="findings"	req:SH-18 sharing:on
+p4-oversee-triage-verdict	4.8	admin_a	POST	/api/triage/verdict	{"projectId":"${PA_ID}"}	403;has=triage:verdict	req:SH-18 sharing:on
+p4-oversee-rem-list	4.8	admin_a	GET	/api/remediations?projectId=${PA_ID}	-	200;has=rbac-remediation	req:SH-18 sharing:on
+p4-oversee-rem-read	4.8	admin_a	GET	/api/remediations/${REM_PA_ID}	-	200;has=rbac-remediation	req:SH-18 sharing:on
+p4-oversee-rem-write	4.8	admin_a	PUT	/api/remediations/${REM_PA_ID}	{"status":"rbac-not-a-status"}	403;has=remediation:write	req:SH-18 sharing:on
