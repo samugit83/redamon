@@ -242,9 +242,10 @@ def build_nuclei_command(
     if new_templates_only:
         cmd.append("-nt")
     
-    # Headless browser
+    # The shipped Alpine image includes a musl-compatible Chromium. Rod's
+    # automatic Chromium download requires glibc and cannot start in this image.
     if headless:
-        cmd.append("-headless")
+        cmd.extend(["-headless", "-system-chrome"])
     
     # System resolvers
     if system_resolvers:
