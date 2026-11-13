@@ -3,6 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Project } from '@prisma/client'
 import { fetchJson, fetchOk } from '@/lib/apiError'
+import type { MyAccess } from '@/lib/authz/projectAccess'
 
 // Lighter type for project list
 export interface ProjectListItem {
@@ -25,6 +26,8 @@ export interface ProjectListItem {
     name: string
     email: string
   }
+  /** RBAC_SHARING_ENABLED on: the person's own access (owner, or a share at read); absent off. */
+  myAccess?: MyAccess
 }
 
 // Full project type

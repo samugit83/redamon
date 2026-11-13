@@ -14,10 +14,19 @@ import type { ActAsDialogTarget } from '@/components/auth/ActAsDialog'
 import { ProjectCard } from '@/components/projects/ProjectCard'
 import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
 import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
+import { accessBadge, isSharedWithMe, sharedByLabel, splitProjectList } from '@/lib/sharedProjects'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import { errorMessage } from '@/lib/apiError'
 import { ImportModal } from './ImportModal'
 import styles from './page.module.css'
+
+type ListFilter = 'all' | 'owned' | 'shared'
+
+const LIST_FILTERS: ReadonlyArray<{ value: ListFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'owned', label: 'My projects' },
+  { value: 'shared', label: 'Shared with me' },
+]
 
 export default function ProjectsPage() {
   const router = useRouter()
@@ -49,6 +58,13 @@ export default function ProjectsPage() {
   // nothing is chosen before the page knows which rule applies.
   const flags = useRbacFlags()
   const rbacOn = flags ? flags.identity || flags.permissions : null
+  // The list holds the projects shared with the effective user too (under act-as, the target's, at
+  // read: D-22). Their own section and the filter show only while sharing is in force (the switch
+  // and Root's policy, as /api/auth/me reports it) and something is shared (step 4.5).
+  const [listFilter, setListFilter] = useState<ListFilter>('all')
+  const sharingInForce = auth?.user?.sharing?.enabled === true
+  const { owned, shared } = splitProjectList(projects ?? [])
+  const showShared = sharingInForce && shared.length > 0
 
   const actAsTarget = (id: string): ActAsDialogTarget | undefined => {
     const picked = users?.find(u => u.id === id)
@@ -139,6 +155,26 @@ export default function ProjectsPage() {
   }
 
   const isLoading = usersLoading || projectsLoading
+
+  // A shared project's card names its owner and the person's level, and offers no delete (the
+  // owner's alone), wherever it is listed.
+  const renderCard = (project: ProjectListItem) => {
+    const sharedRow = isSharedWithMe(project)
+    return (
+      <ProjectCard
+        key={project.id}
+        id={project.id}
+        name={project.name}
+        target={projectTargetLabel(project)}
+        description={project.description}
+        createdAt={project.createdAt}
+        sharedBy={sharedRow ? sharedByLabel(project) : undefined}
+        accessLabel={sharedRow && project.myAccess ? accessBadge(project.myAccess) : undefined}
+        onSelect={() => handleSelectProject(project)}
+        onDelete={sharedRow ? undefined : () => handleDeleteProject(project.id)}
+      />
+    )
+  }
 
   return (
     <div className={styles.container}>
@@ -241,21 +277,48 @@ export default function ProjectsPage() {
             Retry
           </button>
         </div>
+      ) : showShared ? (
+        <>
+          <div className={styles.listFilter} role="group" aria-label="Show projects">
+            {LIST_FILTERS.map(f => (
+              <button
+                key={f.value}
+                type="button"
+                className={`secondaryButton ${listFilter === f.value ? styles.listFilterActive : ''}`}
+                aria-pressed={listFilter === f.value}
+                onClick={() => setListFilter(f.value)}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          {listFilter !== 'shared' && (
+            <section className={styles.listSection} aria-labelledby="projects-owned-heading">
+              <h2 id="projects-owned-heading" className={styles.sectionTitle}>My projects</h2>
+              {owned.length > 0 ? (
+                <div className={styles.grid}>{owned.map(renderCard)}</div>
+              ) : (
+                <div className={styles.sectionEmpty}>
+                  <p>You have no projects of your own yet.</p>
+                  {userId && (
+                    <Link href="/projects/new" className="secondaryButton">
+                      <Plus size={14} />
+                      Create Project
+                    </Link>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+          {listFilter !== 'owned' && (
+            <section className={styles.listSection} aria-labelledby="projects-shared-heading">
+              <h2 id="projects-shared-heading" className={styles.sectionTitle}>Shared with me</h2>
+              <div className={styles.grid}>{shared.map(renderCard)}</div>
+            </section>
+          )}
+        </>
       ) : projects && projects.length > 0 ? (
-        <div className={styles.grid}>
-          {projects.map((project) => (
-            <ProjectCard
-              key={project.id}
-              id={project.id}
-              name={project.name}
-              target={projectTargetLabel(project)}
-              description={project.description}
-              createdAt={project.createdAt}
-              onSelect={() => handleSelectProject(project)}
-              onDelete={() => handleDeleteProject(project.id)}
-            />
-          ))}
-        </div>
+        <div className={styles.grid}>{projects.map(renderCard)}</div>
       ) : (
         <div className={styles.empty}>
           <FolderOpen size={48} />

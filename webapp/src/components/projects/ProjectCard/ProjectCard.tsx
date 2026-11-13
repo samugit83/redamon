@@ -1,6 +1,6 @@
 'use client'
 
-import { Globe, Calendar, Settings, Trash2 } from 'lucide-react'
+import { Globe, Calendar, Settings, Trash2, UserRound } from 'lucide-react'
 import Link from 'next/link'
 import styles from './ProjectCard.module.css'
 
@@ -12,6 +12,9 @@ interface ProjectCardProps {
   description?: string | null
   createdAt: string
   isSelected?: boolean
+  /** A project shared with the person: who shared it ("Name (email)") and their level badge. */
+  sharedBy?: string
+  accessLabel?: string
   onSelect?: () => void
   onDelete?: () => void
 }
@@ -23,6 +26,8 @@ export function ProjectCard({
   description,
   createdAt,
   isSelected,
+  sharedBy,
+  accessLabel,
   onSelect,
   onDelete
 }: ProjectCardProps) {
@@ -43,6 +48,7 @@ export function ProjectCard({
           {description && <p className="cardSubtitle">{description}</p>}
         </div>
         <div className={styles.actions}>
+          {accessLabel && <span className="tag" title="Your access to this project">{accessLabel}</span>}
           <Link
             href={`/projects/${id}/settings`}
             className="iconButton"
@@ -75,6 +81,12 @@ export function ProjectCard({
             <Calendar size={12} />
             <span>{formattedDate}</span>
           </div>
+          {sharedBy && (
+            <div className={styles.metaItem}>
+              <UserRound size={12} />
+              <span>Shared by {sharedBy}</span>
+            </div>
+          )}
         </div>
       </div>
     </div>

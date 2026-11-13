@@ -63,6 +63,46 @@
   gap: var(--space-4);
 }
 
+/* Shared with me (step 4.5): the Owned / Shared filter and the two sections. */
+.listFilter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.listFilterActive {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+.listSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sectionTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.sectionEmpty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-default);
+}
+
+.sectionEmpty p {
+  margin: 0;
+}
+
 .loading {
   display: flex;
   align-items: center;
