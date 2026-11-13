@@ -24,7 +24,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isInternalRequest } from '@/lib/session'
 import { writeAudit } from '@/lib/audit'
-import { withRouteErrors } from '@/lib/routeErrors'
+import { logValue, withRouteErrors } from '@/lib/routeErrors'
 import { ActAsNotAllowedError, can } from '@/lib/authz/can'
 import { rbacFlags } from '@/lib/authz/flags'
 import { loadPrincipal, type Principal } from '@/lib/authz/principal'
@@ -138,7 +138,7 @@ export const POST = withRouteErrors('Could not check the agent decision', async 
   if (verdict.allowed) return NextResponse.json({ allowed: true })
 
   const realActor = check.actorId ?? check.userId
-  console.warn(`[rbac] agent decision refused kind=${check.kind}${check.mode ? ` mode=${check.mode}` : ''} permission=${verdict.permission} reason=${verdict.reason} session=${check.sessionId}`)
+  console.warn(`[rbac] agent decision refused kind=${check.kind}${check.mode ? ` mode=${check.mode}` : ''} permission=${verdict.permission} reason=${verdict.reason} session=${logValue(check.sessionId)}`)
   // Best effort: the refusal stands whether or not its row is written.
   await writeAudit({
     actorId: realActor,

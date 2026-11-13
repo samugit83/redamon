@@ -14,13 +14,21 @@
  * policy; an unreadable source lets the owner through and refuses anyone else.
  *
  * The internal key is global, so this route trusts the ids only as the agent's verified ticket's.
- * Any answer but these two (a failure here, a 401, a webapp older than the agent) the agent reads
- * as unverified, with the same rule: the owner's run starts, anyone else's does not.
+ * The agent reads no answer, or a 5xx (a failure here), as unverified, with the same rule: the
+ * owner's run starts, anyone else's does not. Every other answer (this route's 400, a 401, a 404 from
+ * a webapp older than the agent) refuses everyone, the owner included: the session id is the
+ * browser's, so an answer the body can provoke must never let a run through. The session id follows
+ * the ticket's own rule (isWsSessionId), so a ticket the mint signed is never refused here.
+ *
+ * Asked outside the project's graph lock (projectGraphLock.ts): an agent run holds no lock, and the
+ * lock names an operation, not a person, so a held lock cannot say whose start it is. Two people
+ * starting within the same instant can both pass (README.SECURITY_POSTURE §20).
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { isInternalRequest } from '@/lib/session'
-import { withRouteErrors } from '@/lib/routeErrors'
+import { logValue, withRouteErrors } from '@/lib/routeErrors'
 import { secondWriterResponse } from '@/lib/authz/projectWriters'
+import { isWsSessionId } from '@/lib/wsTicket'
 
 export const runtime = 'nodejs'
 
@@ -38,7 +46,7 @@ const id = (v: unknown): v is string => typeof v === 'string' && v.length > 0 &&
 function parse(body: unknown): WriterCheck | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null
   const b = body as Record<string, unknown>
-  if (!id(b.userId) || !id(b.projectId) || !id(b.sessionId)) return null
+  if (!id(b.userId) || !id(b.projectId) || !isWsSessionId(b.sessionId)) return null
   if (b.actorId !== undefined && b.actorId !== null && !id(b.actorId)) return null
   return { userId: b.userId, projectId: b.projectId, sessionId: b.sessionId, actorId: (b.actorId as string | null | undefined) ?? null }
 }
@@ -53,6 +61,6 @@ export const POST = withRouteErrors('Could not check who else is writing the pro
   }
   const refused = await secondWriterResponse({ projectId: check.projectId, personId: check.userId })
   if (!refused) return NextResponse.json({ allowed: true })
-  console.warn(`[rbac] agent run refused code=project_writer_busy session=${check.sessionId}${check.actorId ? ` actor=${check.actorId}` : ''}`)
+  console.warn(`[rbac] agent run refused code=project_writer_busy session=${logValue(check.sessionId)}${check.actorId ? ` actor=${logValue(check.actorId)}` : ''}`)
   return refused
 })

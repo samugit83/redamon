@@ -51,6 +51,7 @@ import { secondWriterResponse } from '@/lib/authz/projectWriters'
 import { setFlagsForTests, type RbacFlags } from '@/lib/authz/flags'
 import { clearSharingPolicyCacheForTests } from '@/lib/authz/sharingPolicy'
 import { clearInstanceRootCacheForTests } from '@/lib/authz/root'
+import { WS_SESSION_ID_MAX } from '@/lib/wsTicket'
 
 const PATH = '/api/internal/agent/writer-check'
 const SHARING: Partial<RbacFlags> = { identity: true, permissions: true, sharing: true }
@@ -109,6 +110,26 @@ describe('who may call it', () => {
       expect([status, json.code]).toEqual([400, 'invalid_writer_check'])
     }
     expect(h.projectRead).not.toHaveBeenCalled()
+  })
+
+  test("the session id is the ticket's, under the mint's own rule: over the bound or with a control character, 400", async () => {
+    for (const sessionId of ['s'.repeat(WS_SESSION_ID_MAX + 1), 'sess\n[rbac] forged', 'sess\r', 'nul\u0000', 'ls\u2028']) {
+      const [status, json] = await ask(check({ sessionId }))
+      expect([status, json.code]).toEqual([400, 'invalid_writer_check'])
+    }
+    expect(h.projectRead).not.toHaveBeenCalled()
+    expect(await ask(check({ sessionId: 's'.repeat(WS_SESSION_ID_MAX) }))).toEqual([200, { allowed: true }])
+  })
+})
+
+describe('the log line', () => {
+  test('a client value cannot forge a line: no CR/LF reaches the refusal line, and it is bounded', async () => {
+    h.scans = [scan('partial_recon', 'alice')]
+    const forged = 'admin-1\r\n[rbac] agent run allowed session=x'
+    expect((await ask(check({ actorId: forged })))[0]).toBe(409)
+    const line = vi.mocked(console.warn).mock.calls.map(c => String(c[0])).find(l => l.startsWith('[rbac] agent run refused'))
+    expect(line).toBe('[rbac] agent run refused code=project_writer_busy session=sess-bob actor=admin-1??[rbac] agent run allowed session=x')
+    expect(line).not.toMatch(/[\r\n]/)
   })
 })
 

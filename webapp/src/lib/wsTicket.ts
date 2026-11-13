@@ -16,6 +16,21 @@ export function isWsSocket(value: unknown): value is WsSocket {
   return typeof value === 'string' && (WS_SOCKETS as readonly string[]).includes(value)
 }
 
+/**
+ * The one rule for a ticket's session id (`sid`), at the mint (/api/agent/ws-ticket) and in the
+ * agent's per-run writer check (/api/internal/agent/writer-check): 1-200 characters, no control
+ * character or line separator. The agent refuses every run on a socket whose session id the check
+ * refuses, so the ticket never signs one; and the id reaches the agent's log lines, where a CR/LF
+ * would forge one. The browser's ids (useSession, the terminal, CypherFix) stay under 50 characters.
+ */
+export const WS_SESSION_ID_MAX = 200
+// eslint-disable-next-line no-control-regex
+const SESSION_ID_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/
+
+export function isWsSessionId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= WS_SESSION_ID_MAX && !SESSION_ID_UNSAFE.test(value)
+}
+
 export type WsTicketResult =
   /** `ticket` is null when the deployment runs without ticket signing: the agent then accepts the socket. */
   | { ok: true; ticket: string | null }

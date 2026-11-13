@@ -152,6 +152,13 @@ describe('the body', () => {
     expect(userFindUnique).not.toHaveBeenCalled()
   })
 
+  test("a refusal's log line carries no CR/LF from the session id (the agent's client value)", async () => {
+    db.users.set('alice', account('alice', { permissionOverrides: [deny('agent:approve_phase')] }))
+    expect((await ask({ sessionId: 'sess-1\r\n[rbac] agent decision allowed' })).status).toBe(403)
+    const line = vi.mocked(console.warn).mock.calls.map(c => String(c[0])).find(l => l.startsWith('[rbac] agent decision refused'))
+    expect(line).toBe('[rbac] agent decision refused kind=approval permission=agent:approve_phase reason=capability session=sess-1??[rbac] agent decision allowed')
+  })
+
   test('the agent cannot ask for less: a permission or level in the body is ignored, the kind decides', async () => {
     db.users.set('alice', account('alice', { permissionOverrides: [deny('agent:approve_phase')] }))
     const { status, body } = await ask({ permission: 'agent:chat', permissions: ['agent:chat'], level: 'R' })

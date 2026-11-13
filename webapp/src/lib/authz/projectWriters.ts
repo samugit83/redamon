@@ -193,7 +193,9 @@ async function ownerOf(projectId: string): Promise<string | null> {
  * Null when this person may start a writer on the project now, else the 409 that names who holds
  * it. Call it where the start holds the project's graph lock (projectGraphLock.ts), so two people
  * starting at once meet each other here: the second start runs after the first one's orchestrator
- * answer, and sees it. A missing project is null: the start path answers its own 404.
+ * answer, and sees it. The chat ticket and the agent's per-run check ask it outside the lock: an
+ * agent run holds none, so a scan start and an agent run within the same instant can both pass
+ * (README.SECURITY_POSTURE §20). A missing project is null: the start path answers its own 404.
  */
 export async function secondWriterRefusal(
   input: SecondWriterInput,

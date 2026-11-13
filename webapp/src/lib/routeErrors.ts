@@ -42,6 +42,19 @@ export function safeErrorCode(err: unknown): string {
   return 'internal_error'
 }
 
+// eslint-disable-next-line no-control-regex
+const LOG_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g
+
+/**
+ * A value a caller chose (a session id, an id in a body) as a log line may carry it: control
+ * characters and line separators become `?`, so a CR/LF cannot start a forged `[rbac]` line, and it
+ * is cut at `max` characters.
+ */
+export function logValue(value: string, max = 200): string {
+  const clean = value.replace(LOG_UNSAFE, '?')
+  return clean.length > max ? `${clean.slice(0, max)}...` : clean
+}
+
 export interface InternalErrorOptions {
   status?: number
   /** The log line's prefix; defaults to the message. */

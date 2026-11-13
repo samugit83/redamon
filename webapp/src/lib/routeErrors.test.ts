@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import {
-  internalError, readUpstreamBody, safeErrorCode, upstreamErrorResponse, upstreamFailure,
+  internalError, logValue, readUpstreamBody, safeErrorCode, upstreamErrorResponse, upstreamFailure,
   upstreamFailureResponse, withRouteErrors,
 } from './routeErrors'
 
@@ -173,5 +173,22 @@ describe('upstreamErrorResponse', () => {
     const out = await upstreamErrorResponse('runner', new Response('', { status: 401 }), 'Runner refused', { status: 502 })
     expect(out.status).toBe(502)
     expect(await out.json()).toEqual({ error: 'Runner refused', code: 'runner_error', upstreamStatus: 401 })
+  })
+})
+
+describe('logValue: a client-chosen value inside a log line', () => {
+  test('a CR/LF cannot start a forged line: control characters and line separators become ?', () => {
+    expect(logValue('sess\r\n[rbac] agent run allowed')).toBe('sess??[rbac] agent run allowed')
+    expect(logValue('a\u0000b\u001bc\u007fd\u0085e\u2028f\u2029g\th')).toBe('a?b?c?d?e?f?g?h')
+  })
+
+  test('bounded: cut at 200 characters by default, or at the bound given, and marked', () => {
+    expect(logValue('x'.repeat(200))).toBe('x'.repeat(200))
+    expect(logValue('x'.repeat(5000))).toBe(`${'x'.repeat(200)}...`)
+    expect(logValue('abcdef', 3)).toBe('abc...')
+  })
+
+  test('an ordinary id is unchanged', () => {
+    expect(logValue('session_0f0f-3f2c')).toBe('session_0f0f-3f2c')
   })
 })

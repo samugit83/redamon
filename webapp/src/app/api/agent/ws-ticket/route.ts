@@ -10,7 +10,7 @@ import { actorFields, auditActorOf, signedInActor } from '@/lib/auditActor'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { agentTicketCap } from '@/lib/authz/agentCap'
-import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
+import { WS_SESSION_ID_MAX, WS_SOCKETS, isWsSessionId, isWsSocket } from '@/lib/wsTicket'
 import { secondWriterResponse } from '@/lib/authz/projectWriters'
 import { sessionTicketRefusal } from '@/lib/authz/conversationRun'
 import { recordOwnerCredentialSpend, type SpendFeature } from '@/lib/authz/ownerSpend'
@@ -69,6 +69,9 @@ const TERMINAL_REFUSED =
 // graph as X), and an admin can only mint a ticket for a project the simulated
 // user owns. An internal-key caller has no cookie and cannot mint a ticket for anyone.
 //
+// The session id follows the one rule the agent's per-run writer check reads it by
+// (isWsSessionId): a ticket that check would refuse is never signed (400 invalid_session_id).
+//
 // The ticket names its socket (`aud`, HD-25); no `socket` is the chat socket, as a
 // browser bundle from before the update sends. A `kali-terminal` ticket also needs
 // the terminal (HD-04): a root shell in the one sandbox every project shares. The
@@ -93,6 +96,12 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   if (!projectId || !sessionId) {
     return NextResponse.json(
       { error: 'projectId and sessionId are required' },
+      { status: 400 }
+    )
+  }
+  if (!isWsSessionId(sessionId)) {
+    return NextResponse.json(
+      { error: `sessionId must be at most ${WS_SESSION_ID_MAX} characters, with no control characters`, code: 'invalid_session_id' },
       { status: 400 }
     )
   }

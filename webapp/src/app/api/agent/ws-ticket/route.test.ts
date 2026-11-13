@@ -73,6 +73,7 @@ vi.mock('@/lib/prisma', () => ({
 import { POST } from './route'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { resetSharedToolsForTests } from '@/lib/authz/sharedTools'
+import { WS_SESSION_ID_MAX } from '@/lib/wsTicket'
 
 function req(body: unknown): NextRequest {
   return new NextRequest('http://x/api/agent/ws-ticket', {
@@ -140,6 +141,27 @@ describe('POST /api/agent/ws-ticket — S6 + impersonation', () => {
     signedInAs('u1')
     expect((await POST(req({ projectId: 'p' }))).status).toBe(400)
     expect((await POST(req({ sessionId: 's' }))).status).toBe(400)
+  })
+
+  test("a session id the agent's writer check would refuse is never signed: 400 invalid_session_id, nothing read", async () => {
+    // Over the bound, the writer check's 400 refuses every run on the socket; a CR/LF would forge log lines.
+    signedInAs('real-user')
+    for (const socket of ['agent', 'kali-terminal', 'cypherfix-triage', 'cypherfix-codefix']) {
+      for (const sessionId of ['s'.repeat(WS_SESSION_ID_MAX + 1), 's\n[rbac] forged', 's\r', 'nul\u0000']) {
+        const res = await POST(req({ projectId: 'p', sessionId, socket }))
+        expect([socket, res.status, (await res.json()).code]).toEqual([socket, 400, 'invalid_session_id'])
+      }
+    }
+    expect(mockCreateWsTicket).not.toHaveBeenCalled()
+    expect(mockRequireProjectAccess).not.toHaveBeenCalled()
+    expect(mockConversation).not.toHaveBeenCalled()
+  })
+
+  test('a session id at the bound is signed as given', async () => {
+    signedInAs('real-user')
+    const sessionId = 's'.repeat(WS_SESSION_ID_MAX)
+    expect((await POST(req({ projectId: 'p', sessionId }))).status).toBe(200)
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('real-user', 'p', sessionId, 'agent', undefined, ALL_CAP, 'real-user')
   })
 
   test('identity is bound to the EFFECTIVE user, never the body', async () => {
