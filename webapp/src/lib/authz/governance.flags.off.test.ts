@@ -16,6 +16,11 @@
  *   - no production file other than the named readers reads the switch, so every reader is reviewed
  *     against it (GOVERNANCE_READERS below; a later step that adds one names it there).
  *
+ * Step 6.9 adds per-plugin allowlists. With the switch off the rules are ignored and not even read:
+ * every plugin is available to everyone holding plugins:use (lib/plugins/accessRules.ts, its two
+ * readers in GOVERNANCE_READERS; pluginAllowlist.test.ts and pluginAllowlist.routes.test.ts pin the
+ * Gateway, the action start and the plugin screens in both states).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -114,8 +119,10 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
   test('no production code reads the governance switch outside the named readers', () => {
     const GOVERNANCE_READERS = [
       'src/app/admin/layout.tsx',
+      'src/app/plugins/[pluginId]/[[...screen]]/page.tsx',
       'src/app/settings/users/layout.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
+      'src/lib/plugins/accessRules.ts',
     ]
     // A property read (`flags.governance`, `rbacFlags().governance`, `useRbacFlags()?.governance`)
     // or a destructuring of the flags; flags.ts itself defines the switch.
@@ -126,5 +133,28 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       .map((f) => path.relative(WEBAPP, f))
       .sort()
     expect(readers).toEqual(GOVERNANCE_READERS)
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.9): plugin allowlists are ignored', () => {
+  test('a plugin limited to a set the person lacks stays available, and no rule is read', async () => {
+    const readAccessRules = vi.fn(async (pluginId?: string) =>
+      [{ pluginId: 'echo', setId: 'builtin:red-team-operator' }].filter((r) => pluginId === undefined || r.pluginId === pluginId))
+    vi.resetModules()
+    vi.doMock('@/lib/plugins/accessRuleStore', () => ({ readAccessRules }))
+    const { pluginAccessFor, pluginAllowedFor } = await import('@/lib/plugins/accessRules')
+    for (const [identity, permissions] of [['', ''], ['true', 'true']]) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', identity)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', permissions)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect(await pluginAllowedFor('user-1', 'echo')).toBe(true)
+      expect((await pluginAccessFor('user-1')).allows('echo')).toBe(true)
+    }
+    expect(readAccessRules).not.toHaveBeenCalled()
+    // Control: the double is the store accessRules reads once the switch is on.
+    vi.stubEnv('RBAC_GOVERNANCE_ENABLED', 'true')
+    expect(await pluginAllowedFor('user-1', 'other')).toBe(true)
+    expect(readAccessRules).toHaveBeenCalledWith('other')
+    vi.doUnmock('@/lib/plugins/accessRuleStore')
   })
 })

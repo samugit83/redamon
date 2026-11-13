@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma'
 import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
 import { ownsRow } from '@/lib/authz/rowOwner'
 import { isJsonContentType } from '@/lib/jsonBody'
+import { pluginAllowedFor } from './accessRules'
 import { CallTokenConfigError, verifyCallToken, type CallTokenClaims, type CallTokenKind } from './callToken'
 import { now } from './clock'
 import { PluginDataError, type PluginOwner } from './dataStore'
@@ -27,7 +28,8 @@ import { isStorableJson } from './storableText'
  * containers, its text storable); the install row (enabled, ready, not revoked, at the
  * token's version); the permission, granted by the admin AND declared by the stored
  * manifest; the user; the project and session, asked for the token's user (`projectAccess()`
- * at the owner level, `ownsRow`). Strict on purpose: never through requireProjectAccess,
+ * at the owner level, `ownsRow`); the plugin still available to that user (the per-plugin
+ * allowlists, accessRules.ts). Strict on purpose: never through requireProjectAccess,
  * which reads the browser's effective user (RV-33). The frame never reads cookies, the
  * session, the effective user or X-Internal-Key: these routes are cookie-less in
  * middleware.ts and plugin code must not borrow a browser's identity.
@@ -491,6 +493,11 @@ async function run(
   } catch (e) {
     if (!opts.jobEnd || !(e instanceof GatewayError) || e.code !== 'not_found') throw e
     lapsed ??= { code: 'context_gone', message: 'The project or chat session this job ran for no longer exists.' }
+  }
+  if (!(await pluginAllowedFor(claims.sub, claims.pid))) {
+    const message = `Plugin ${claims.pid} is not available to the user this call acts for: an administrator limited it to permission sets that user holds none of.`
+    if (!opts.jobEnd) throw new GatewayError(403, 'plugin_not_allowed', message)
+    lapsed ??= { code: 'plugin_not_allowed', message }
   }
 
   const out = await handler({

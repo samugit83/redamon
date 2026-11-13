@@ -8,6 +8,7 @@ import { auditActor } from '@/lib/auditActor'
 import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
 import { ownsRow } from '@/lib/authz/rowOwner'
 import { getEffectiveUser } from '@/lib/session'
+import { PLUGIN_NOT_ALLOWED_MESSAGE, pluginAllowedFor } from './accessRules'
 import { CallTokenConfigError, mintCallToken } from './callToken'
 import { now } from './clock'
 import { isValidPluginId } from './ids'
@@ -26,9 +27,9 @@ import { actionMaxTimeoutSeconds } from './settings'
  * A plugin action started from the UI (README.PLUGINS.md §7.7): POST
  * /api/plugins/[pluginId]/actions/[actionId] with `{context: {projectId?, sessionId?},
  * params}`. The webapp decides everything the plugin may reach before the runner sees the
- * call: the effective user, the project and session (strictly theirs), the permissions
- * both granted and declared, the timeout; then it mints the call token the plugin's code
- * will hold. A sync action answers its result;
+ * call: the effective user, the plugin available to them (accessRules.ts), the project and
+ * session (strictly theirs), the permissions both granted and declared, the timeout; then it
+ * mints the call token the plugin's code will hold. A sync action answers its result;
  * an async one becomes a job (jobs.ts) and answers 202 `{jobId}`.
  *
  * A result naming a change set to review (`reviewProposal`) is kept only when that change
@@ -211,6 +212,8 @@ async function act(request: NextRequest, pluginId: string, actionId: string, tra
   if (!plugin || ['available', 'installing', 'uninstalling'].includes(plugin.status)) {
     return refuse(404, 'not_found', 'No such plugin action.')
   }
+  trace.step = 'checking who may use the plugin'
+  if (!(await pluginAllowedFor(eff.userId, pluginId))) return refuse(403, 'plugin_not_allowed', PLUGIN_NOT_ALLOWED_MESSAGE)
   if (plugin.revokedReason == null && plugin.enabled && plugin.status === 'updating') {
     return refuse(409, 'plugin_updating', 'This plugin is being updated; try again in a moment.')
   }

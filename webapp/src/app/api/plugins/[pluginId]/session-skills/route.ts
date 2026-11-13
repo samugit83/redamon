@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma'
 import { sessionRunningCheck } from '@/lib/agentSessions'
 import { getEffectiveUser } from '@/lib/session'
 import { strictContext } from '@/lib/plugins/actions'
+import { PLUGIN_NOT_ALLOWED_MESSAGE, pluginAllowedFor } from '@/lib/plugins/accessRules'
 import { isValidPluginId } from '@/lib/plugins/ids'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
@@ -18,8 +19,9 @@ import { requirePermission } from '@/lib/authz/guards'
  * whether the agent is running in the session, and the suggested pick.
  *
  * The same ownership check as an action start, and the same answers when the plugin does
- * not serve, except that an unknown plugin is `plugin_not_found`: the picker tells it from a
- * session that has no conversation yet, which is `not_found`. A built-in skill carries the
+ * not serve or is not available to the person (403 `plugin_not_allowed`, accessRules.ts),
+ * except that an unknown plugin is `plugin_not_found`: the picker tells it from a session
+ * that has no conversation yet, which is `not_found`. A built-in skill carries the
  * version that applies in the project.
  */
 export const runtime = 'nodejs'
@@ -41,6 +43,7 @@ export const GET = pluginRoute('session skills', 'The skills of this session cou
   if (!plugin || ['available', 'installing', 'uninstalling'].includes(plugin.status)) {
     return refuse(404, 'plugin_not_found', 'No such plugin.')
   }
+  if (!(await pluginAllowedFor(eff.userId, pluginId))) return refuse(403, 'plugin_not_allowed', PLUGIN_NOT_ALLOWED_MESSAGE)
   if (plugin.revokedReason == null && plugin.enabled && plugin.status === 'updating') {
     return refuse(409, 'plugin_updating', 'This plugin is being updated; try again in a moment.')
   }
