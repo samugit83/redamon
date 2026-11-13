@@ -37,8 +37,12 @@
 #           identity:on | identity:off (run only while the webapp's RBAC_IDENTITY_ENABLED
 #           is so, read from the container; SKIP otherwise), permissions:on | permissions:off
 #           (the same for RBAC_PERMISSIONS_ENABLED, which reads off while the identity
-#           switch is off, as in the webapp), sharing:on | sharing:off (the same for
-#           RBAC_SHARING_ENABLED, which reads off while the permissions switch is off),
+#           switch is off, as in the webapp), sharing:on | sharing:off (whether sharing
+#           is in force: RBAC_SHARING_ENABLED on, which reads off while the permissions
+#           switch is off, AND Root's policy instance_settings.sharing_policy enabled, as
+#           sharingPolicy.ts reads it; the policy is read by psql once, only when the
+#           switch is on and a selected row is so tagged, and a policy that cannot be read
+#           fails those rows),
 #           origin:<url> (the Origin header
 #           the row sends instead of the webapp's own, e.g. a page of another site)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
@@ -256,6 +260,29 @@ read_switches() { # the webapp's switches (IDENTITY, PERMISSIONS, SHARING = on|o
   [ "$PERMISSIONS" = on ] || SHARING=off
   CACHE_MS="${rest#*|}"; CACHE_MS="${CACHE_MS//[[:space:]]/}"
 }
+# parseSharingPolicy (webapp/src/lib/authz/sharingPolicy.ts) in SQL: `enabled` true and every
+# known setting valid, or the whole policy reads as the defaults (off); no row reads as the
+# defaults too. Always one row, so an empty answer means the read failed.
+SHARING_POLICY_SQL="select coalesce((select case when jsonb_typeof(p) = 'object'
+    and p->'enabled' = 'true'::jsonb
+    and (not p ? 'maxLevel' or p->'maxLevel' in ('\"read\"'::jsonb, '\"write\"'::jsonb))
+    and (not p ? 'membersMayGrantExploit' or jsonb_typeof(p->'membersMayGrantExploit') = 'boolean')
+    and (not p ? 'adminsSeeAllShares' or jsonb_typeof(p->'adminsSeeAllShares') = 'boolean')
+    and (not p ? 'defaultExpiryDays' or jsonb_typeof(p->'defaultExpiryDays') = 'null'
+         or coalesce(case when jsonb_typeof(p->'defaultExpiryDays') = 'number'
+              then (p->>'defaultExpiryDays')::numeric between 1 and 3650
+                   and (p->>'defaultExpiryDays')::numeric % 1 = 0 end, false))
+  then 'on' else 'off' end
+  from (select sharing_policy::jsonb as p from instance_settings where id = 'instance') s), 'off');"
+SHARING_POLICY=""
+read_sharing_policy() { # Root's sharing policy -> SHARING_POLICY = on | off | unknown, read once
+  [ -n "$SHARING_POLICY" ] && return
+  case "$(printf '%s\n' "$SHARING_POLICY_SQL" | db_sql)" in
+    on) SHARING_POLICY=on ;;
+    off) SHARING_POLICY=off ;;
+    *) SHARING_POLICY=unknown ;;
+  esac
+}
 CACHE_SETTLE=""
 cache_settle() { # waits out the webapp's account cache when the identity switch is on
   if [ -z "$CACHE_SETTLE" ]; then
@@ -303,14 +330,30 @@ for line in "${ROWS[@]}"; do
   if [[ " $tags " == *" superseded-by:"* ]]; then
     echo "SKIP  $label  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
   fi
-  off_switch=""
+  off_switch=""; policy_unread=""
   for sw in identity permissions sharing; do
     [[ " $tags " =~ \ $sw:(on|off)\  ]] || continue
     want="${BASH_REMATCH[1]}"
     read_switches
-    case "$sw" in identity) state="$IDENTITY" ;; permissions) state="$PERMISSIONS" ;; *) state="$SHARING" ;; esac
-    if [ "$want" != "$state" ]; then off_switch="$sw switch $state"; break; fi
+    why="$sw switch"
+    case "$sw" in
+      identity) state="$IDENTITY" ;;
+      permissions) state="$PERMISSIONS" ;;
+      *) state="$SHARING"
+         # The switch alone is not sharing in force: with Root's policy still `{}` the
+         # webapp answers owner-only, so the sharing:off rows must run.
+         if [ "$state" = on ]; then
+           read_sharing_policy
+           [ "$SHARING_POLICY" = unknown ] && { policy_unread=1; break; }
+           [ "$SHARING_POLICY" = off ] && { state=off; why="sharing switch on, Root's policy"; }
+         fi ;;
+    esac
+    if [ "$want" != "$state" ]; then off_switch="$why $state"; break; fi
   done
+  if [ -n "$policy_unread" ]; then
+    echo "FAIL  $label  could not read Root's sharing policy (psql in the postgres container)  [$tags]"
+    FAIL=$((FAIL + 1)); continue
+  fi
   if [ -n "$off_switch" ]; then
     echo "SKIP  $label  ($off_switch)  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
   fi

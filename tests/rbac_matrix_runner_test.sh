@@ -9,7 +9,11 @@
 #     select the rows the webapp really serves;
 #   - sharing:on|off the same for RBAC_SHARING_ENABLED, which reads off while
 #     the permissions switch is off (step 4.1: the Phase 4 rows written before
-#     a share can exist skip until the switch is on);
+#     a share can exist skip until the switch is on), and also while Root's
+#     sharing policy is not enabled: sharing is in force only with both
+#     (sharingPolicy.ts), so with the switch on and the policy still `{}` the
+#     owner-only rows run; the policy is read once, by psql, only when a selected
+#     row needs it, and an unreadable policy fails the rows that need it;
 #   - on/true/1/yes in any case and with spaces are on, anything else is off;
 #   - the switches are read from the webapp container once per run, and not at
 #     all when no selected row needs them.
@@ -48,15 +52,30 @@ printf '%s\n' \
   $'s-share-on\t4.1\tanon\tGET\t/api/s/share-on\t-\t200\treq:HD-27 sharing:on' \
   $'s-share-off\t4.1\tanon\tGET\t/api/s/share-off\t-\t200\tsharing:off' \
   > "$T/tests/fixtures/rbac_matrix/s.tsv"
+printf '%s\n' \
+  $'v-plain\t4.3\tanon\tGET\t/api/v/plain\t-\t200\treq:SH-21' \
+  $'v-share-on\t4.3\tanon\tGET\t/api/v/share-on\t-\t200\tsharing:on' \
+  $'v-share-on-2\t4.3\tanon\tGET\t/api/v/share-on-2\t-\t200\tsharing:on' \
+  $'v-share-off\t4.3\tanon\tGET\t/api/v/share-off\t-\t200\tsharing:off' \
+  > "$T/tests/fixtures/rbac_matrix/v.tsv"
 
 # docker: the webapp's switches come from FAKE_* through the runner's own in-container
 # command (run here by sh), the seed prints the keys the runner requires, every call is logged.
+# Root's sharing policy is FAKE_POLICY (on by default; FAIL makes psql fail).
 cat > "$W/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >> "$STUB_LOG"
 case "$*" in
   *"ps --status running"*) echo fake-webapp ;;
-  *" postgres "*) sed -n "s/.*where id = '\([^']*\)'.*/\1/p" ;;
+  *" postgres "*)
+    sql="$(cat)"
+    if grep -q sharing_policy <<<"$sql"; then
+      echo "policy-read" >> "$STUB_LOG"
+      [ "${FAKE_POLICY-on}" = FAIL ] && exit 1
+      printf '%s\n' "${FAKE_POLICY-on}"
+    else
+      sed -n "s/.*where id = '\([^']*\)'.*/\1/p" <<<"$sql"
+    fi ;;
   *" webapp sh -c "*)
     script=""; prev=""
     for a in "$@"; do [ "$prev" = -c ] && script="$a"; prev="$a"; done
@@ -87,19 +106,20 @@ STUB
 printf '#!/usr/bin/env bash\necho "sleep $*" >> "$STUB_LOG"\n' > "$W/bin/sleep"
 chmod +x "$W/bin/docker" "$W/bin/curl" "$W/bin/sleep"
 
-# run <identity> <permissions> [row filter] [matrix file] [cache ms] [sharing]: OUT holds the
-# output, RC the status, LOG the stub calls.
+# run <identity> <permissions> [row filter] [matrix file] [cache ms] [sharing] [policy]: OUT holds
+# the output, RC the status, LOG the stub calls.
 run() {
   : > "$W/calls.log"
   OUT="$(cd "$W" && PATH="$W/bin:$PATH" STUB_LOG="$W/calls.log" BASE_URL=http://rbac-runner-test.invalid \
     FAKE_IDENTITY="$1" FAKE_PERMISSIONS="$2" FAKE_CACHE_MS="${5:-5000}" FAKE_SHARING="${6:-}" RBAC_MATRIX_ROWS="${3:-}" \
-    bash "$T/tests/rbac_matrix_live.sh" "${4:-t}" 2>&1)"; RC=$?
+    FAKE_POLICY="${7-on}" bash "$T/tests/rbac_matrix_live.sh" "${4:-t}" 2>&1)"; RC=$?
   LOG="$(cat "$W/calls.log")"
 }
 line()     { grep -E "^(PASS|SKIP|FAIL) +$1 " <<<"$OUT" | head -1; }
 verdict()  { line "$1" | awk '{print $1}'; }
 requests() { grep '^request ' <<<"$LOG" | sed 's/^request //' | tr '\n' ' '; }
 reads()    { grep -c '^switches-read$' <<<"$LOG"; }
+policy_reads() { grep -c '^policy-read$' <<<"$LOG"; }
 
 # =============================================================================
 section "identity on, permissions on"
@@ -182,12 +202,46 @@ eq "identity off: permissions and sharing read off" "$(verdict s-share-off)" "PA
 run true true '' u 1500 true
 eq "the cache bound still parses after the sharing value" "$(grep '^sleep ' <<<"$LOG" | tr '\n' ' ')" "sleep 3 sleep 3 "
 
+section "Root's sharing policy (4.3 review finding 6): the tag follows the effective state"
+run true true '' v 5000 true off
+eq "switch on, policy off: exit 0" "$RC" "0"
+eq "switch on, policy off: untagged row runs" "$(verdict v-plain)" "PASS"
+eq "switch on, policy off: the owner-only sharing:off row runs" "$(verdict v-share-off)" "PASS"
+eq "switch on, policy off: sharing:on skips" "$(verdict v-share-on)" "SKIP"
+has "the skip names the policy, not the switch alone" "(sharing switch on, Root's policy off)" "$(line v-share-on)"
+eq "the skipped rows never reach the webapp" "$(requests)" "api/v/plain api/v/share-off "
+eq "the policy is read once for three tagged rows" "$(policy_reads)" "1"
+has "result line" "== RESULT: 2 passed, 0 failed, 2 skipped ==" "$OUT"
+run true true '' v 5000 true on
+eq "switch on, policy on: sharing:on runs" "$(verdict v-share-on)" "PASS"
+eq "switch on, policy on: sharing:off skips" "$(verdict v-share-off)" "SKIP"
+has "named as before" "(sharing switch on)" "$(line v-share-off)"
+eq "read once" "$(policy_reads)" "1"
+run true true '' v 5000 '' on
+eq "switch off: sharing:off runs whatever the policy" "$(verdict v-share-off)" "PASS"
+eq "switch off: the policy is not read" "$(policy_reads)" "0"
+run true '' '' v 5000 true on
+eq "permissions off: the policy is not read" "$(policy_reads)" "0"
+run true true '^v-plain$' v 5000 true on
+eq "no tagged row selected: the policy is not read" "$(policy_reads)" "0"
+run true true '' v 5000 true FAIL
+eq "policy unreadable: the tagged rows fail" "$(verdict v-share-on) $(verdict v-share-off)" "FAIL FAIL"
+has "and say why" "could not read Root's sharing policy" "$(line v-share-off)"
+eq "policy unreadable: untagged row still runs" "$(verdict v-plain)" "PASS"
+eq "policy unreadable: exit 1" "$RC" "1"
+eq "policy unreadable: read once" "$(policy_reads)" "1"
+run true true '' v 5000 true 'garbage'
+eq "an answer that is neither on nor off fails the tagged rows" "$(verdict v-share-on)" "FAIL"
+run true true '' v 5000 true ''
+eq "an empty answer fails them too (the query always returns one row)" "$(verdict v-share-off)" "FAIL"
+
 section "the runner documents the tag"
 HEADER="$(sed -n '1,/^set -uo pipefail/p' "$RUNNER")"
 has "permissions:on | permissions:off in the row format" "permissions:on | permissions:off" "$HEADER"
 has "and the chain" "RBAC_PERMISSIONS_ENABLED" "$HEADER"
 has "sharing:on | sharing:off in the row format" "sharing:on | sharing:off" "$HEADER"
 has "and its chain" "RBAC_SHARING_ENABLED" "$HEADER"
+has "and Root's policy" "instance_settings.sharing_policy" "$HEADER"
 
 echo
 echo "-----------------------------------------"
