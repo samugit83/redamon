@@ -5,7 +5,8 @@
  * to the person once and marks them shown. The account keeps them, the newest NOTICE_LIMIT, for
  * its activity list (step 2.11). A change of the sign-in email is told the same way (step 2.11,
  * ID-30): whoever changes it can then reset the password through it. An admin acting as the
- * account is told too (step 3.14, IM-10), unless Root turned it off.
+ * account is told too (step 3.14, IM-10), unless Root turned it off. Root opening break-glass
+ * access to a project tells its owner (step 4.14, SH-18): who, when, why, for how long, which project.
  *
  * The first sign-in after a reset is the one whose account last signed in before the latest
  * reset notice; only that sign-in records its address and browser (DV-11).
@@ -57,7 +58,20 @@ export interface ActedAsNotice {
   shownAt?: string
 }
 
-export type AccountNotice = CredentialsResetNotice | EmailChangedNotice | ActedAsNotice
+export interface BreakGlassNotice {
+  id: string
+  type: 'break_glass'
+  /** When Root opened it (ISO). */
+  at: string
+  /** Root, the person signed in. */
+  by: { id: string; name: string; email: string }
+  reason: string
+  durationMinutes: number
+  project: { id: string; name: string }
+  shownAt?: string
+}
+
+export type AccountNotice = CredentialsResetNotice | EmailChangedNotice | ActedAsNotice | BreakGlassNotice
 
 /** What the person is shown: the notice without the admin's account id. */
 export type NoticeView =
@@ -86,6 +100,15 @@ export type NoticeView =
     reason: string | null
     durationMinutes: number
   }
+  | {
+    id: string
+    type: 'break_glass'
+    at: string
+    by: { name: string; email: string }
+    reason: string
+    durationMinutes: number
+    project: { id: string; name: string }
+  }
 
 const text = (v: unknown): v is string => typeof v === 'string'
 
@@ -102,6 +125,11 @@ function isNotice(v: unknown): v is AccountNotice {
   }
   if (n.type === 'acted_as') {
     return (n.reason === null || text(n.reason)) && Number.isSafeInteger(n.durationMinutes) && (n.durationMinutes as number) >= 1
+  }
+  if (n.type === 'break_glass') {
+    const project = n.project as Record<string, unknown> | null | undefined
+    return text(n.reason) && Number.isSafeInteger(n.durationMinutes) && (n.durationMinutes as number) >= 1
+      && !!project && typeof project === 'object' && text(project.id) && text(project.name)
   }
   return n.type === 'email_changed' && text(n.from) && text(n.to) && typeof n.self === 'boolean'
 }
@@ -127,6 +155,17 @@ export function actedAsNotice(
   { by, at, reason, durationMinutes }: { by: ActedAsNotice['by']; at: Date; reason: string | null; durationMinutes: number },
 ): ActedAsNotice {
   return { id: randomUUID(), type: 'acted_as', at: at.toISOString(), by, reason, durationMinutes }
+}
+
+export function breakGlassNotice(
+  { by, at, reason, durationMinutes, project }: {
+    by: BreakGlassNotice['by']; at: Date; reason: string; durationMinutes: number; project: BreakGlassNotice['project']
+  },
+): BreakGlassNotice {
+  return {
+    id: randomUUID(), type: 'break_glass', at: at.toISOString(), by, reason, durationMinutes,
+    project: { id: project.id, name: project.name },
+  }
 }
 
 /** `stored` with `notice` appended, keeping the newest NOTICE_LIMIT. */
@@ -182,6 +221,9 @@ export function noticeView(n: AccountNotice): NoticeView {
   const by = { name: n.by.name, email: n.by.email }
   if (n.type === 'email_changed') return { id: n.id, type: n.type, at: n.at, by, from: n.from, to: n.to, self: n.self }
   if (n.type === 'acted_as') return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, durationMinutes: n.durationMinutes }
+  if (n.type === 'break_glass') {
+    return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, durationMinutes: n.durationMinutes, project: { id: n.project.id, name: n.project.name } }
+  }
   return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, mode: n.mode }
 }
 

@@ -33,6 +33,7 @@ import { now } from './clock'
 import { rbacFlags } from './flags'
 import { forbiddenResponse, type PermissionContext } from './guards'
 import { takeShareLookup } from './inviteLimits'
+import { auditOversightRead } from './oversight'
 import { projectAccess, type ProjectAccess } from './projectAccess'
 import { DEFAULT_EXPIRY_DAYS_BOUNDS, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
 
@@ -223,8 +224,9 @@ function ownerOf(auth: PermissionContext): string {
 /**
  * GET's guard: the owner (and a co-owner from Phase 5) through `project:share` at Manage; an admin
  * reading the project by oversight when Root's policy lets admins see every share
- * (`adminsSeeAllShares`); Root's break-glass. A read collaborator gets 403, a stranger 404. Under
- * act-as the account acted as decides, so the acting admin's oversight never applies (D-22).
+ * (`adminsSeeAllShares`), which writes the day's `project.oversee` row first (step 4.14); Root's
+ * break-glass. A read collaborator gets 403, a stranger 404. Under act-as the account acted as
+ * decides, so the acting admin's oversight never applies (D-22).
  */
 export async function requireShareListAccess(projectId: string, policy: Readonly<SharingPolicy>): Promise<true | NextResponse> {
   const identity = await getAuthzIdentity()
@@ -235,7 +237,11 @@ export async function requireShareListAccess(projectId: string, policy: Readonly
   if (decision.status === 400) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
   if (!identity.actingAs) {
     const access = await projectAccess({ userId: identity.principal.id }, projectId, { principal: identity.principal })
-    if (access?.via === 'break_glass' || (access?.via === 'oversight' && policy.adminsSeeAllShares)) return true
+    if (access?.via === 'break_glass') return true
+    if (access?.via === 'oversight' && policy.adminsSeeAllShares) {
+      await auditOversightRead(identity, access, SHARE_PERMISSION)
+      return true
+    }
   }
   return forbiddenResponse(SHARE_PERMISSION)
 }

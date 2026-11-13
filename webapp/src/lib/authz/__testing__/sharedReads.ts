@@ -13,8 +13,9 @@
  * (importOriginal) leaves the guard holding the real getAuthzIdentity. Add `getEffectiveUser` for a
  * route that reads it. Plus a double of each upstream the route calls (the graph, the agent). Prisma answers the reads
  * the guard makes (the project, the share, break-glass, the instance row, the permission sets),
- * then the route's own models from `h.models`; any other model rejects and is recorded in
- * `h.refused`.
+ * and the overseer's audit row (step 4.14: a transaction, its advisory lock, the day's lookup and
+ * insert, kept in `h.audit` when the state has one), then the route's own models from `h.models`;
+ * any other model rejects and is recorded in `h.refused`.
  *
  * This module is imported by the Prisma mock's factory, so it imports nothing that reads
  * '@/lib/prisma' at load (the factory would wait on itself): the authz modules whose caches it
@@ -43,6 +44,8 @@ export interface SharedReadState {
   /** The route's own Prisma models (read past the guard). */
   models: Record<string, unknown>
   refused: AnyMock
+  /** The audit rows the guard wrote (an overseer's day row); optional, kept only when present. */
+  audit?: Array<Record<string, unknown>>
 }
 
 export const OWNER = 'alice'
@@ -70,7 +73,10 @@ export const ACTORS: Readonly<Record<string, Principal>> = Object.freeze({
   [OVERSEER]: principal(OVERSEER, { role: 'admin' }),
 })
 
-const GUARD_MODELS = new Set(['project', 'projectCollaborator', 'projectBreakGlass', 'instanceSettings', 'permissionSet', 'auditLog', 'user'])
+const GUARD_MODELS = new Set([
+  'project', 'projectCollaborator', 'projectBreakGlass', 'instanceSettings', 'permissionSet', 'auditLog', 'user',
+  '$transaction', '$executeRaw',
+])
 
 export function sharedReadPrisma(h: SharedReadState): unknown {
   const refused = (model: string) => new Proxy({}, {
@@ -94,16 +100,25 @@ export function sharedReadPrisma(h: SharedReadState): unknown {
       }),
     },
     permissionSet: { findMany: async () => [] },
-    auditLog: { findFirst: async () => null },
+    auditLog: {
+      findFirst: async () => null,
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        h.audit?.push(data)
+        return data
+      },
+    },
     user: { findUnique: async () => null },
+    $executeRaw: async () => 1,
   }
-  return new Proxy(guard, {
+  const client: unknown = new Proxy(guard, {
     get: (target, prop: string) => {
       if (Object.hasOwn(h.models, prop)) return h.models[prop]
       if (GUARD_MODELS.has(prop)) return target[prop]
       return prop === 'then' ? undefined : refused(prop)
     },
   })
+  guard.$transaction = async (fn: unknown) => (typeof fn === 'function' ? fn(client) : [])
+  return client
 }
 
 /** Every switch on, the policy enabled, the two shares in place, caches empty. Await in beforeEach. */
@@ -130,6 +145,7 @@ export async function clearCaches(): Promise<void> {
   ;(await import('@/lib/authz/root')).clearInstanceRootCacheForTests()
   ;(await import('@/lib/authz/principal')).clearPrincipalCacheForTests()
   ;(await import('@/lib/authz/sharedTools')).resetSharedToolsForTests()
+  ;(await import('@/lib/authz/oversight')).clearOversightMemoForTests()
 }
 
 export async function endSharedReads(): Promise<void> {

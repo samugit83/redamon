@@ -9,7 +9,10 @@
  * - a share is keyed by (projectId, userId): `create` of an existing pair raises the real P2002,
  *   `updateMany` / `deleteMany` answer `{count}`; `where` matches equality and `{lte}` / `{gt}` on
  *   dates; a read returns the row with its `user` (`select` and `include` are not applied);
- * - `$queryRaw` answers only the recipient lookup (`lower(email) = lower($1)`);
+ * - `$queryRaw` answers only the recipient lookup (`lower(email) = lower($1)`); `$executeRaw` takes
+ *   the advisory locks (`locks()` lists their keys) and the notice update is not doubled;
+ * - break-glass rows can be created, listed and deleted (step 4.14); an audit row gets its
+ *   `createdAt` from the clock, and `auditLog.findFirst` matches equality and `{gte, lt}` dates;
  * - `failAudit(action)` makes the audit insert of that action throw, as a lost database would;
  *   `failRead()` makes the next share read throw; `raceCreate()` makes the next share insert raise
  *   P2002, as another copy's insert between the read and the write would.
@@ -73,18 +76,30 @@ type Where = Record<string, unknown>
 function matches(row: Record<string, unknown>, where: Where): boolean {
   return Object.entries(where).every(([k, cond]) => {
     if (cond === undefined) return true
+    if (k === 'OR') return (cond as Where[]).some(w => matches(row, w))
     const v = row[k]
     if (cond instanceof Date) return v instanceof Date && v.getTime() === cond.getTime()
     if (cond && typeof cond === 'object') {
-      const c = cond as { lte?: Date; gt?: Date; in?: unknown[] }
+      const c = cond as { lte?: Date; gt?: Date; gte?: Date; lt?: Date; in?: unknown[] }
       if (c.in) return c.in.includes(v)
       if (!(v instanceof Date)) return false
       if (c.lte && !(v.getTime() <= c.lte.getTime())) return false
       if (c.gt && !(v.getTime() > c.gt.getTime())) return false
+      if (c.gte && !(v.getTime() >= c.gte.getTime())) return false
+      if (c.lt && !(v.getTime() < c.lt.getTime())) return false
       return true
     }
     return v === cond
   })
+}
+
+export interface BreakGlassRow {
+  id: string
+  projectId: string
+  userId: string
+  reason: string
+  expiresAt: Date
+  createdAt: Date
 }
 
 function p2002(): Error {
@@ -95,7 +110,9 @@ export function createShareDb(clock: () => Date = () => new Date()) {
   let users = new Map<string, ShareAccount>()
   let projects = new Map<string, { id: string; userId: string; name: string }>()
   let shares = new Map<string, ShareRow>()
-  let breakGlass: Array<{ projectId: string; userId: string; expiresAt: Date }> = []
+  let breakGlass: BreakGlassRow[] = []
+  let glassSeq = 0
+  const locks: string[] = []
   let audit: AuditRow[] = []
   let policy: unknown = { enabled: true }
   let root: { userId: string | null; confirmedAt: Date | null } = { userId: null, confirmedAt: null }
@@ -119,6 +136,7 @@ export function createShareDb(clock: () => Date = () => new Date()) {
     },
     project: {
       findUnique: async ({ where }: { where: { id: string } }) => projects.get(where.id) ?? null,
+      findMany: async () => [...projects.values()].map(p => ({ ...p, user: users.get(p.userId) ?? null })),
     },
     projectCollaborator: {
       findUnique: async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) => {
@@ -168,6 +186,18 @@ export function createShareDb(clock: () => Date = () => new Date()) {
     projectBreakGlass: {
       findFirst: async ({ where }: { where: { projectId: string; userId: string; expiresAt: { gt: Date } } }) =>
         breakGlass.find(b => b.projectId === where.projectId && b.userId === where.userId && b.expiresAt > where.expiresAt.gt) ?? null,
+      findMany: async ({ where }: { where: Where }) => breakGlass.filter(b => matches(b as never, where)),
+      create: async ({ data }: { data: Omit<BreakGlassRow, 'id' | 'createdAt'> }) => {
+        glassSeq += 1
+        const row: BreakGlassRow = { id: `bg${glassSeq}`, createdAt: clock(), ...data }
+        breakGlass.push(row)
+        return row
+      },
+      deleteMany: async ({ where }: { where: Where }) => {
+        const before = breakGlass.length
+        breakGlass = breakGlass.filter(b => !matches(b as never, where))
+        return { count: before - breakGlass.length }
+      },
     },
     instanceSettings: {
       findUnique: async () => ({
@@ -179,10 +209,15 @@ export function createShareDb(clock: () => Date = () => new Date()) {
     auditLog: {
       create: async ({ data }: { data: AuditRow }) => {
         if (failing.has(data.action)) throw new Error('audit insert failed')
-        audit.push(data)
-        return data
+        const row = { createdAt: clock(), ...data }
+        audit.push(row)
+        return row
       },
-      findFirst: async () => null,
+      findFirst: async ({ where }: { where?: Where } = {}) => (where ? audit.find(r => matches(r, where)) ?? null : null),
+    },
+    $executeRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      locks.push(String(values[0]))
+      return 1
     },
     $queryRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
       const email = String(values[0]).toLowerCase()
@@ -216,7 +251,12 @@ export function createShareDb(clock: () => Date = () => new Date()) {
         expiresAt: null, note: null, grantedById: 'owner', createdAt: at, updatedAt: at, ...row,
       })
     },
-    addBreakGlass(projectId: string, userId: string, expiresAt: Date) { breakGlass.push({ projectId, userId, expiresAt }) },
+    addBreakGlass(projectId: string, userId: string, expiresAt: Date) {
+      glassSeq += 1
+      breakGlass.push({ id: `bg${glassSeq}`, projectId, userId, expiresAt, reason: 'seeded', createdAt: clock() })
+    },
+    breakGlassRows: () => breakGlass,
+    locks: () => locks,
     share(projectId: string, userId: string): ShareRow | undefined { return shares.get(key(projectId, userId)) },
     shareCount: () => shares.size,
     audit: () => audit,

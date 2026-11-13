@@ -14,6 +14,12 @@
  * permission}` for a permission the caller does not hold or does not reach on the project; a
  * coded 500 (`internalError`) when a read fails, never a pass.
  *
+ * Oversight and break-glass (step 4.14) are a person's own: under act-as, a project the account acted
+ * as reaches only by its own oversight or break-glass answers 404 (can() already keeps the acting
+ * admin's own out, D-22). A request an admin's oversight allowed writes the day's `project.oversee`
+ * audit row first (oversight.ts); when that row cannot be written the answer is a coded 500, never an
+ * unaudited read.
+ *
  * Name the project in the options whenever the route acts on one: the route manifest classes a
  * call as a project guard when it passes the permission as a string literal, the permission acts
  * on a project, and a literal options object has a `projectId` key (scripts/gen-route-manifest.mjs
@@ -27,6 +33,7 @@ import { actsOnProject, can, type CanDecision } from './can'
 import type { Capabilities } from './capabilities'
 import { PERMISSIONS, assertKnownPermission, type PermissionId, type ProjectLevel } from './permissions'
 import { meetsLevel, type ProjectAccess } from './projectAccess'
+import { auditOversightRead } from './oversight'
 
 export interface PermissionContext extends AuthzIdentity {
   /** Whose data the request touches: the account acted as, else the signed-in account. */
@@ -83,6 +90,17 @@ async function decide(
     return internalError(err, 'Could not check the permission')
   }
   if (decision.allowed) {
+    const via = decision.access?.via
+    if (identity.actingAs && (via === 'oversight' || via === 'break_glass')) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    }
+    if (via === 'oversight') {
+      try {
+        await auditOversightRead(identity, decision.access, permission)
+      } catch (err) {
+        return internalError(err, 'Could not record the oversight read')
+      }
+    }
     return {
       ...identity,
       effective: { userId: (identity.actingAs ?? identity.principal).id },

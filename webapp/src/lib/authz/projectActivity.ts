@@ -22,6 +22,7 @@ import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { getAuthzIdentity } from '@/lib/session'
 import { auditActionLabel, auditGroupTerms, isAuditGroup, type AuditGroup } from './auditLabels'
+import { auditOversightRead } from './oversight'
 import { projectAccess } from './projectAccess'
 import { accountTypeOf, loadInstanceRoot, type AccountType } from './root'
 import type { SharingPolicy } from './sharingPolicy'
@@ -100,7 +101,8 @@ export function parseActivityQuery(params: URLSearchParams): ActivityQuery | Nex
 /**
  * The second way in, after `project:share` refused with 403: an admin reading the project by
  * oversight, or Root by break-glass, never while acting as someone (the account acted as decides,
- * D-22). Null when neither applies (the route then answers its 403).
+ * D-22). Null when neither applies (the route then answers its 403). An oversight read writes the
+ * day's `project.oversee` row first (step 4.14); a failed write throws, so the feed is not read.
  */
 export async function oversightActivityAccess(
   projectId: string,
@@ -110,7 +112,10 @@ export async function oversightActivityAccess(
   if (!identity || identity.actingAs) return null
   const access = await projectAccess({ userId: identity.principal.id }, projectId, { principal: identity.principal })
   if (access?.via === 'break_glass') return { hideShares: false }
-  if (access?.via === 'oversight') return { hideShares: !policy.adminsSeeAllShares }
+  if (access?.via === 'oversight') {
+    await auditOversightRead(identity, access, 'project:share')
+    return { hideShares: !policy.adminsSeeAllShares }
+  }
   return null
 }
 

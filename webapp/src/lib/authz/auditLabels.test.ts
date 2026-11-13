@@ -138,6 +138,9 @@ const INDIRECT_WRITERS: Readonly<Record<string, string>> = {
   'src/lib/mcp/kaliTools.ts: action': "auditExec(ctx, id, 'mcp.kali_…', …) literals (the audit call rule)",
   'src/app/api/internal/agent/decisions/route.ts: action': "the KINDS table's `action:` literals",
   'src/app/api/agent/sessions/sessionDrive.ts: action': 'a parameter typed with the three agent.* literals',
+  'src/lib/authz/oversight.ts: OVERSEE_ACTION': 'the OVERSEE_ACTION constant (step 4.14)',
+  'src/lib/authz/breakGlass.ts: BREAKGLASS_ACTION': 'the BREAKGLASS_ACTION constant (step 4.14)',
+  'src/lib/authz/breakGlass.ts: BREAKGLASS_END_ACTION': 'the BREAKGLASS_END_ACTION constant (step 4.14)',
   'scripts/backfill-nuclei-template-owners.mjs: MARKER_ACTION': 'the MARKER_ACTION constant',
   'scripts/backfill-rbac-root.mjs: ASSIGNED_ACTION': 'the ASSIGNED_ACTION constant',
   'scripts/set-root.mjs: action': "audit(tx, 'root.…', …) literals (the audit call rule)",
@@ -169,8 +172,6 @@ function templateExpansions(): Record<string, string[] | { family: string }> {
 
 /** Labelled before any code writes them, with the step that will. */
 const WRITTEN_LATER: Readonly<Record<string, string>> = {
-  'project.oversee': 'step 4.14: one row per admin, project and day of oversight reads',
-  'project.breakglass': "step 4.14: Root's break-glass on a project",
   'scan_schedule.confirmed': 'step 5.5: the owner confirms a paused schedule (schedules/[scheduleId]/confirm)',
 }
 
@@ -223,6 +224,7 @@ describe('audit action labels (step 4.13, UI-08, AU-09)', () => {
     }
     expect(auditActionLabel('project.oversee').group).toBe('oversight')
     expect(auditActionLabel('project.breakglass').group).toBe('oversight')
+    expect(auditActionLabel('project.breakglass.end').group).toBe('oversight')
     expect(auditActionLabel('act_as.refused').group).toBe('acting')
   })
 

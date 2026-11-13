@@ -46,11 +46,12 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'project.share.expired': 'A share expired',
     'project.share.lookup': 'Looked up an account to share with',
   }),
-  // Written by step 4.14 (oversight reads and Root's break-glass); labelled now so the owner's feed
-  // names them from the first row.
+  // Step 4.14: one row per admin, project and day of oversight reads; Root's break-glass, opened and
+  // closed early (its expiry is named by the opening row).
   ...g('oversight', {
     'project.oversee': 'Read the project by oversight',
     'project.breakglass': 'Opened break-glass access',
+    'project.breakglass.end': 'Closed break-glass access',
   }),
   ...g('acting', {
     'act_as.start': 'Started acting as an account',
@@ -149,6 +150,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'user.password_changed': 'Changed their own password',
     'user.password_change_required': 'Asked for a new password at the next sign-in',
     'user.sessions_revoked': 'Signed an account out everywhere',
+    'user.session_revoked': 'Signed one browser of an account out',
     'user.invite': 'Invited an account',
     'user.invite_resent': 'Sent an invitation again',
     'user.invite_cancelled': 'Cancelled an invitation',
@@ -180,11 +182,11 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
   ...g('platform', {
     'instance.settings_changed': 'Changed the instance settings',
     'instance.default_member_set_changed': "Changed the new members' permission set",
-    'audit.exported': 'Exported the audit log',
     'instance.llm_provider_created': 'Added an instance LLM provider',
     'instance.llm_provider_updated': 'Changed an instance LLM provider or its permission sets',
     'instance.llm_provider_deleted': 'Deleted an instance LLM provider',
     'instance.llm_policy_changed': 'Changed the bring-your-own LLM provider policy',
+    'audit.exported': 'Exported the audit log',
     'permission_set.created': 'Created a permission set',
     'permission_set.updated': 'Changed a permission set',
     'permission_set.deleted': 'Deleted a permission set',

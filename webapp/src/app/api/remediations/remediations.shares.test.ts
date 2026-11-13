@@ -33,6 +33,7 @@ import { clearSharingPolicyCacheForTests } from '@/lib/authz/sharingPolicy'
 import { clearCapabilityCachesForTests } from '@/lib/authz/capabilities'
 import { clearInstanceRootCacheForTests } from '@/lib/authz/root'
 import { clearPrincipalCacheForTests } from '@/lib/authz/principal'
+import { clearOversightMemoForTests } from '@/lib/authz/oversight'
 import {
   COLLABORATOR, OVERSEER, OWNER, SHARED_PROJECT, STRANGER, identityOf, resetSharedProjectDb, shareWith,
 } from '@/lib/authz/__testing__/sharedProjectDb'
@@ -73,6 +74,12 @@ const READERS: Array<{ name: string; who: string; arrange: () => void }> = [
   { name: 'an admin by oversight', who: OVERSEER, arrange: () => {} },
 ]
 
+/**
+ * The one write an overseer's read makes: the day's `project.oversee` audit row, in its transaction
+ * (step 4.14; this double records the transaction, not what runs in it). Nothing of the project.
+ */
+const OVERSIGHT_AUDIT = [{ model: '$client', method: '$transaction' }]
+
 beforeEach(() => {
   resetSharedProjectDb(h.db)
   h.listed.length = 0
@@ -89,6 +96,7 @@ beforeEach(() => {
   clearCapabilityCachesForTests()
   clearInstanceRootCacheForTests()
   clearPrincipalCacheForTests()
+  clearOversightMemoForTests()
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
@@ -104,7 +112,7 @@ describe.each(READERS)('$name reads the project\'s remediations and changes none
     const res = await call()
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(expected)
-    expect(h.db.writes).toEqual([])
+    expect(h.db.writes).toEqual(who === OVERSEER ? OVERSIGHT_AUDIT : [])
   })
 
   test.each(WRITES)('$route: 403 naming remediation:write, nothing written', async ({ call }) => {

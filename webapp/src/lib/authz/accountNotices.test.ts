@@ -16,6 +16,7 @@ vi.mock('@/lib/prisma', () => ({
 
 import {
   NOTICE_LIMIT,
+  breakGlassNotice,
   credentialsResetNotice,
   emailChangedNotice,
   firstSignInAfterReset,
@@ -178,5 +179,48 @@ describe('the email change notice (step 2.11, ID-30)', () => {
   test('it is no reset: the first sign-in after a reset ignores it', () => {
     expect(latestReset([changed()])).toBeNull()
     expect(firstSignInAfterReset(null, [changed()])).toBe(false)
+  })
+})
+
+describe('the break-glass notice to the owner (step 4.14, SH-18)', () => {
+  const ROOT = { id: 'root-1', name: 'Rita Root', email: 'root@e2e.local' }
+  const opened = () => breakGlassNotice({
+    by: ROOT, at: AT, reason: 'incident 7: credential leak', durationMinutes: 60, project: { id: 'P1', name: 'Client X' },
+  })
+
+  test('owner notified: who, when, why, for how long and which project', () => {
+    expect(opened()).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      type: 'break_glass',
+      at: '2026-11-12T10:00:00.000Z',
+      by: ROOT,
+      reason: 'incident 7: credential leak',
+      durationMinutes: 60,
+      project: { id: 'P1', name: 'Client X' },
+    })
+  })
+
+  test("is read, kept and handed over like the others, without Root's account id", async () => {
+    const list = withNotice([reset()], opened())
+    expect(readNotices(list).map((n) => n.type)).toEqual(['credentials_reset', 'break_glass'])
+    expect(noticeView(readNotices(list)[1])).toEqual({
+      id: expect.any(String), type: 'break_glass', at: '2026-11-12T10:00:00.000Z',
+      by: { name: 'Rita Root', email: 'root@e2e.local' }, reason: 'incident 7: credential leak', durationMinutes: 60,
+      project: { id: 'P1', name: 'Client X' },
+    })
+    const shown = await handOverNotices('owner-1', list)
+    expect(shown.map((n) => n.type)).toEqual(['credentials_reset', 'break_glass'])
+    expect(JSON.stringify(shown)).not.toContain('root-1')
+  })
+
+  test('a malformed one reads as none, and it is no reset', () => {
+    const good = opened()
+    for (const bad of [
+      { ...good, reason: null }, { ...good, durationMinutes: 0 }, { ...good, durationMinutes: 1.5 },
+      { ...good, project: null }, { ...good, project: { id: 'P1' } }, { ...good, by: { name: 'x' } },
+    ]) {
+      expect(readNotices([bad])).toEqual([])
+    }
+    expect(latestReset([good])).toBeNull()
   })
 })

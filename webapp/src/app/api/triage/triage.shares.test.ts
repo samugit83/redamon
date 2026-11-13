@@ -47,6 +47,7 @@ import { clearSharingPolicyCacheForTests } from '@/lib/authz/sharingPolicy'
 import { clearCapabilityCachesForTests } from '@/lib/authz/capabilities'
 import { clearInstanceRootCacheForTests } from '@/lib/authz/root'
 import { clearPrincipalCacheForTests } from '@/lib/authz/principal'
+import { clearOversightMemoForTests } from '@/lib/authz/oversight'
 import type { PermissionId } from '@/lib/authz/permissions'
 import {
   COLLABORATOR, OVERSEER, OWNER, SHARED_PROJECT, STRANGER, identityOf, resetSharedProjectDb, shareWith,
@@ -143,6 +144,12 @@ const READERS: Array<{ name: string; who: string; arrange: () => void; rawData: 
   { name: 'an admin by oversight', who: OVERSEER, arrange: () => {}, rawData: false, via: 'oversight' },
 ]
 
+/**
+ * The one write an overseer's read makes: the day's `project.oversee` audit row, in its transaction
+ * (step 4.14; this double records the transaction, not what runs in it). Nothing of the project.
+ */
+const OVERSIGHT_AUDIT = [{ model: '$client', method: '$transaction' }]
+
 beforeEach(() => {
   resetSharedProjectDb(h.db)
   h.db.models.nodeFilterRun = { findFirst: () => ({ id: 'run-1', status: 'completed' }) }
@@ -154,6 +161,7 @@ beforeEach(() => {
   clearCapabilityCachesForTests()
   clearInstanceRootCacheForTests()
   clearPrincipalCacheForTests()
+  clearOversightMemoForTests()
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
@@ -175,7 +183,7 @@ describe.each(READERS)('$name reads the Priority Board from the owner\'s graph (
     for (const sent of h.agentCalls) {
       expect([sent.op, sent.user_id, sent.project_id]).toEqual([sent.op, OWNER, SHARED_PROJECT])
     }
-    expect(h.db.writes).toEqual([])
+    expect(h.db.writes).toEqual(who === OVERSEER ? OVERSIGHT_AUDIT : [])
   })
 
   test.each(WRITES)('$route: 403 naming $permission, nothing reaches the agent or the database', async (c) => {

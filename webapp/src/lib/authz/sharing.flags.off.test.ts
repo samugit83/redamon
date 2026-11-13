@@ -30,6 +30,11 @@
  * off GET /api/projects answers its rows without `myAccess` (route.list.shared.test.ts, and the
  * reports and system/jobs route.shared.test.ts, pin the routes in both states).
  *
+ * Step 4.14 adds oversight and Root's break-glass (oversight.ts, breakGlass.ts): with sharing not in
+ * force no break-glass row and no other account's project is read (projectAccess answers null, so the
+ * guard writes no `project.oversee` row), and the break-glass routes and the oversight list answer
+ * 404 having read nothing (below; their route tests pin the three states).
+ *
  * Step 4.10 adds the MCP token's opt-in to shared projects (mcpAuth.ts, the token routes and screen):
  * with sharing not in force an opted-in token reaches only its owner's projects, no share row is read,
  * and the token routes neither read the opt-in from a body nor list it (route.shares.test.ts,
@@ -173,8 +178,12 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/app/api/users/[id]/mcp-tokens/route.ts',
       // Step 4.10: the token screen offers and sends the opt-in only while /api/auth/me reports sharing in force.
       'src/components/settings/mcp-tokens/McpTokensTab.tsx',
+      // Step 4.14: Root's break-glass writers, behind the break-glass routes' gate (below).
+      'src/lib/authz/breakGlass.ts',
       // Step 4.15: the expiry sweep, which reads the sharing tables only with sharing in force.
       'src/lib/authz/expirySweep.ts',
+      // Step 4.14: the oversight list's own shares and break-glass rows, behind its route's gate (below).
+      'src/lib/authz/oversight.ts',
       // Step 4.3: reads a share and the break-glass rows only with sharing in force (tests below).
       'src/lib/authz/projectAccess.ts',
       // Step 4.4: the share writers, behind the share routes' gate (sharingPolicyForRoutes, below).
@@ -201,9 +210,13 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
     const ROW_READERS: string[] = [
       // Step 4.4: the live matrix's fixtures write the Read shares the p4 rows sign in with (run by hand).
       'scripts/e2e-rbac-seed.mjs',
+      // Step 4.14: opens and closes break-glass rows, reached only past the break-glass routes' gate (below).
+      'src/lib/authz/breakGlass.ts',
       // Step 4.15: removes expired rows only with sharing in force (switch and policy); the switch
       // states are pinned in api/internal/rbac/sweep/route.test.ts.
       'src/lib/authz/expirySweep.ts',
+      // Step 4.14: the oversight list's shares and break-glass rows, reached only past its route's gate (below).
+      'src/lib/authz/oversight.ts',
       // Step 4.3: projectAccess() and the lists' share filter, both only with sharing in force (tests below).
       'src/lib/authz/projectAccess.ts',
       // Step 4.4: the share writers, reached only past the share routes' gate (below).
@@ -509,6 +522,49 @@ describe('the Instance page with sharing off (step 6.7)', () => {
     expect(panel).not.toMatch(/\bfetch\(/)
     const page = readFileSync(path.join(WEBAPP, 'src/app/admin/instance/page.tsx'), 'utf8')
     expect(page).toMatch(/sharingPolicyShown: sharingPolicyOf\(settings\) !== null/)
+  })
+})
+
+// Step 4.14: oversight and Root's break-glass. With sharing not in force the break-glass routes and the
+// oversight list do not exist: 404 before any project, share or break-glass row is read (requirePermission
+// stands for the owner here, so a gate that let the request through would read the project or fail).
+describe('oversight and break-glass with sharing not in force (step 4.14)', () => {
+  const NOT_IN_FORCE: Array<[string, Parameters<typeof setFlagsForTests>[0], unknown]> = [
+    ['every switch off', {}, { enabled: true }],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }, { enabled: true }],
+    ['the sharing switch set without permissions', { identity: true, sharing: true }, { enabled: true }],
+    ['the switch on, the policy disabled (the stored {} after the upgrade)', { identity: true, permissions: true, sharing: true }, {}],
+  ]
+
+  test.each(NOT_IN_FORCE)('%s: break-glass open and close and the oversight list answer 404, nothing read', async (_what, flags, stored) => {
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    instanceFindUnique.mockResolvedValue({ id: 'instance', sharingPolicy: stored } as never)
+    const { NextRequest } = await import('next/server')
+    const glass = await import('@/app/api/projects/[id]/breakglass/route')
+    const list = await import('@/app/api/projects/oversight/route')
+    const params = { params: Promise.resolve({ id: 'P-owner' }) }
+    const json = { 'Content-Type': 'application/json', Origin: 'http://x' }
+    const body = JSON.stringify({ reason: 'r', durationMinutes: 10, stepUpPassword: 'p' })
+    expect((await glass.POST(new NextRequest('http://x/api/projects/P-owner/breakglass', { method: 'POST', headers: json, body }), params)).status).toBe(404)
+    expect((await glass.DELETE(new NextRequest('http://x/api/projects/P-owner/breakglass', { method: 'DELETE', headers: { Origin: 'http://x' } }), params)).status).toBe(404)
+    expect((await list.GET(new NextRequest('http://x/api/projects/oversight'))).status).toBe(404)
+    expect(db.projectFindUnique).not.toHaveBeenCalled()
+    expect(db.projectFindMany).not.toHaveBeenCalled()
+    expect(db.collaboratorFindUnique).not.toHaveBeenCalled()
+    expect(db.breakGlassFindFirst).not.toHaveBeenCalled()
+    if (!rbacFlags().sharing) expect(instanceFindUnique).not.toHaveBeenCalled()
+    instanceFindUnique.mockReset().mockResolvedValue({ id: 'instance', sharingPolicy: { enabled: true } } as never)
+  })
+
+  test('each of their handlers answers 404 before anything else while the switch is off', () => {
+    for (const file of ['src/app/api/projects/[id]/breakglass/route.ts', 'src/app/api/projects/oversight/route.ts']) {
+      const handlers = readFileSync(path.join(WEBAPP, file), 'utf8').split(/^export const /m).slice(1)
+      expect(handlers.length, file).toBeGreaterThan(0)
+      for (const handler of handlers) {
+        expect(handler, `${file} ${handler.slice(0, 6)}`).toMatch(/^[A-Z]+ = withRouteErrors\([^\n]*\n\s*if \(!rbacFlags\(\)\.sharing\) return routeNotFound\(\)/)
+      }
+    }
   })
 })
 
