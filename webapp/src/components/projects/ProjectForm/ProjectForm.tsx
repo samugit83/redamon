@@ -102,7 +102,7 @@ import { ReconPresetModal } from './ReconPresetModal'
 import { ProviderRequiredModal, ModelSelectionModal } from './ProjectLlmGate'
 import {
   seedInitialModels, needsModelGate, hasNoConfiguredProvider, providerGateApplies,
-  pipelineModelOptional, loopModelOffered,
+  pipelineModelOptional, loopModelOffered, instanceModelOffered,
 } from './projectLlmGate.logic'
 import { fetchModelOptions } from '@/components/shared/modelOptions'
 import { LOOP_MODEL_ID } from '@/lib/agentInTheLoop'
@@ -432,6 +432,9 @@ export function ProjectForm({
   // Agent in the Loop needs no provider: offered from the provider gate while
   // the deployment has it on (the model list then carries it).
   const [loopAvailable, setLoopAvailable] = useState(false)
+  // An instance LLM provider an administrator assigned to the person's sets (step 6.11) is a
+  // configured provider too: its models are in the person's model list.
+  const [instanceAvailable, setInstanceAvailable] = useState(false)
   const [noProvider, setNoProvider] = useState(false)
   // create mode: false until the provider check resolves; gates the form render
   // so a no-provider user sees the "configure provider" gate immediately, not
@@ -745,9 +748,14 @@ export function ProjectForm({
     fetchJson<unknown>(`/api/users/${userId}/llm-providers`, undefined, 'Could not check your LLM providers')
       .then(async (providers) => {
         if (hasNoConfiguredProvider(providers)) {
-          setNoProvider(true)
-          setLoopAvailable(await fetchModelOptions(userId).then(loopModelOffered, () => false))
-          setShowProviderGate(true)
+          const models = await fetchModelOptions(userId).catch(() => null)
+          setLoopAvailable(models ? loopModelOffered(models) : false)
+          const instance = models ? instanceModelOffered(models) : false
+          setInstanceAvailable(instance)
+          if (!instance) {
+            setNoProvider(true)
+            setShowProviderGate(true)
+          }
         }
         setProviderChecked(true)
       })
@@ -962,8 +970,8 @@ export function ProjectForm({
     if (mode !== 'create' || !userId) return true
     try {
       const providers = await fetchJson<unknown>(`/api/users/${userId}/llm-providers`, undefined, 'Could not check your LLM providers')
-      setNoProvider(hasNoConfiguredProvider(providers))
-      if (providerGateApplies(providers, formData.agentOpenaiModel as string, loopAvailable)) {
+      setNoProvider(hasNoConfiguredProvider(providers) && !instanceAvailable)
+      if (providerGateApplies(providers, formData.agentOpenaiModel as string, loopAvailable, instanceAvailable)) {
         setShowProviderGate(true)
         return false
       }
