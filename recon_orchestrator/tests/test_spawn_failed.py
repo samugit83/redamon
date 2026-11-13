@@ -47,7 +47,7 @@ def _manager():
     m.sca_intel_volume = "intel"
     m.ledger = _Ledger()
 
-    async def admit(kind, project_id, run_id=None, user_id=None):
+    async def admit(kind, project_id, run_id=None, user_id=None, **_quota):
         return m._scan_key(kind, project_id, run_id)
 
     m._admit_scan = admit

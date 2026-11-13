@@ -38,6 +38,11 @@ class ReconStartRequest(BaseModel):
     # (an owner's start, an older webapp) means the tenant. Every start request
     # model carries it.
     actor_user_id: Optional[str] = None
+    # Step 6.8 (GV-10): the actor's maxConcurrentScans quota, when one is set. Admission
+    # caps the actor at the smaller of it and RECON_MAX_CONCURRENT_PER_USER; absent means
+    # no quota (an unlimited actor, the governance switch off, an older webapp). Every start
+    # request model carries it.
+    actor_max_concurrent: Optional[int] = Field(default=None, ge=0)
 
 
 class CaptureProxyConfig(BaseModel):
@@ -147,6 +152,7 @@ class GvmStartRequest(BaseModel):
     webapp_api_url: str
     job_credential: Optional[str] = None
     actor_user_id: Optional[str] = None
+    actor_max_concurrent: Optional[int] = Field(default=None, ge=0)
 
 
 class GvmState(BaseModel):
@@ -197,6 +203,7 @@ class GithubHuntStartRequest(BaseModel):
     webapp_api_url: str
     job_credential: Optional[str] = None
     actor_user_id: Optional[str] = None
+    actor_max_concurrent: Optional[int] = Field(default=None, ge=0)
 
 
 class GithubHuntState(BaseModel):
@@ -266,6 +273,7 @@ class TrufflehogStartRequest(BaseModel):
     secrets: dict = Field(default_factory=dict)
     job_credential: Optional[str] = None
     actor_user_id: Optional[str] = None
+    actor_max_concurrent: Optional[int] = Field(default=None, ge=0)
 
 
 class TrufflehogState(BaseModel):
@@ -347,6 +355,7 @@ class SupplyChainStartRequest(BaseModel):
     repo_override_deep: Optional[bool] = None
     job_credential: Optional[str] = None
     actor_user_id: Optional[str] = None
+    actor_max_concurrent: Optional[int] = Field(default=None, ge=0)
 
 
 class GuarddogRequest(BaseModel):
@@ -413,6 +422,7 @@ class PartialReconStartRequest(BaseModel):
     settings_overrides: dict = {}             # optional per-tool settings
     job_credential: Optional[str] = None
     actor_user_id: Optional[str] = None
+    actor_max_concurrent: Optional[int] = Field(default=None, ge=0)
 
 
 class PartialReconState(BaseModel):
@@ -480,6 +490,7 @@ class AiAttackSurfaceStartRequest(BaseModel):
     auth_scheme: str = ""
     job_credential: Optional[str] = None
     actor_user_id: Optional[str] = None
+    actor_max_concurrent: Optional[int] = Field(default=None, ge=0)
     # The project's IP-mode scope, from its row (design §11): the scanner admits
     # each target by it. None = not stated, which the scanner refuses for a
     # project whose graph is IP mode.

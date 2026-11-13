@@ -171,13 +171,28 @@ class ReservationLedger:
 
     # --- admission ------------------------------------------------------------
 
-    async def try_admit(self, key: str, envelope: int, user_id: Optional[str] = None) -> AdmissionResult:
+    def _quota_refusal(self, user_id: str, max_per_user: int) -> AdmissionResult:
+        cur = self.user_active_count(user_id)
+        return AdmissionResult(
+            False, limit_type="hard", current=cur, ceiling=max_per_user,
+            setting_name="maxConcurrentScans",
+            detail=f"{cur} of {max_per_user} concurrent scans allowed by this person's quota")
+
+    async def try_admit(self, key: str, envelope: int, user_id: Optional[str] = None,
+                        max_per_user: Optional[int] = None) -> AdmissionResult:
         """Reserve `envelope` bytes for `key` if it fits; otherwise reject with a
         typed reason. Idempotent: re-admitting an already-committed key is a no-op
         success (keeps retries safe). `user_id` (when supplied) is subject to the
-        per-user concurrent-scan ceiling (D3) and tracked for release symmetry."""
+        per-user concurrent-scan ceiling (D3) and tracked for release symmetry.
+        `max_per_user` is that person's quota (step 6.8, the webapp's
+        maxConcurrentScans): the ceiling is the smaller of it and
+        RECON_MAX_CONCURRENT_PER_USER. Unlike the memory checks, the quota is an
+        administrator's rule, so it applies with the governor off too."""
+        quota = max_per_user if user_id is not None and max_per_user is not None and max_per_user >= 0 else None
         if not rg.governor_enabled():
             async with self._lock:
+                if key not in self._committed and quota is not None and self.user_active_count(user_id) >= quota:
+                    return self._quota_refusal(user_id, quota)
                 self._committed[key] = envelope
                 if user_id is not None:
                     self._key_user[key] = user_id
@@ -207,6 +222,8 @@ class ReservationLedger:
             if user_id is not None:
                 per_user = self.max_concurrent_per_user()
                 cur = self.user_active_count(user_id)
+                if quota is not None and quota < per_user and cur >= quota:
+                    return self._quota_refusal(user_id, quota)
                 if cur >= per_user:
                     return AdmissionResult(
                         False, limit_type="hard", current=cur, ceiling=per_user,

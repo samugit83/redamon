@@ -231,7 +231,7 @@ def _drive(m, kind, state_cls, project_id, tenant, actor, admit=None):
     admitted, states = [], []
     real_cls = getattr(cm, state_cls)
 
-    async def recording_admit(k, pid, run_id=None, user_id=None):
+    async def recording_admit(k, pid, run_id=None, user_id=None, **_quota):
         admitted.append(user_id)
         if admit is not None:
             await admit(k, pid, run_id, user_id=user_id)

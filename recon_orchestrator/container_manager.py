@@ -694,15 +694,16 @@ class ContainerManager:
         return f"partial_recon:{tool_id}" if tool_id else "partial_recon"
 
     async def _admit_scan(self, kind: str, project_id: str, run_id: Optional[str] = None,
-                          user_id: Optional[str] = None) -> str:
+                          user_id: Optional[str] = None, max_per_user: Optional[int] = None) -> str:
         """Reserve RAM for a scan of `kind`; raise AdmissionError if it doesn't fit.
         Returns the reservation key (release via reconcile / release_nowait).
         `user_id` (D3) subjects the scan to the per-user concurrent-scan ceiling: the
         start's ACTOR (step 5.5, D-14), never its tenant, so a collaborator's scans on
-        another person's project count against the collaborator."""
+        another person's project count against the collaborator. `max_per_user` is that
+        actor's maxConcurrentScans quota (step 6.8), when the webapp sent one."""
         key = self._scan_key(kind, project_id, run_id)
         envelope = self.ledger.envelope_for(kind)
-        result = await self.ledger.try_admit(key, envelope, user_id=user_id)
+        result = await self.ledger.try_admit(key, envelope, user_id=user_id, max_per_user=max_per_user)
         if not result.admitted:
             logger.info(f"[governor] admission denied for {key} for {user_id or '-'}: "
                         f"{result.limit_type} - {result.detail}")
@@ -1225,6 +1226,7 @@ class ContainerManager:
         scan_mode: Optional[str] = None,
         job_credential: Optional[str] = None,
         actor_user_id: Optional[str] = None,
+        actor_max_concurrent: Optional[int] = None,
     ) -> ReconState:
         """Start a recon container for a project.
 
@@ -1251,7 +1253,7 @@ class ContainerManager:
 
         # Memory admission (Part 1): reserve this scan's RAM envelope or reject.
         actor = actor_user_id or user_id
-        await self._admit_scan("full_recon", project_id, user_id=actor)
+        await self._admit_scan("full_recon", project_id, user_id=actor, max_per_user=actor_max_concurrent)
 
         # Lazy-on-scan OSV DB + incident-intel refresh for the L2 supply-chain
         # module (GROUP 5.5). Fired in the BACKGROUND so a >24h-old feed's delta
@@ -2620,6 +2622,7 @@ class ContainerManager:
         custom_templates_path: str = "",
         job_credential: Optional[str] = None,
         actor_user_id: Optional[str] = None,
+        actor_max_concurrent: Optional[int] = None,
     ) -> PartialReconState:
         """Start a partial recon container for a specific tool.
 
@@ -2650,7 +2653,8 @@ class ContainerManager:
         # Tool-qualified: SupplyChainRecon costs ~3x a normal partial step.
         partial_kind = self._partial_kind(tool_id)
         actor = actor_user_id or config.get("user_id")
-        await self._admit_scan(partial_kind, project_id, run_id, user_id=actor)
+        await self._admit_scan(partial_kind, project_id, run_id, user_id=actor,
+                               max_per_user=actor_max_concurrent)
 
         # Lazy-on-scan OSV DB refresh, but ONLY for the supply-chain partial tool -
         # other partial tools have nothing to do with the OSV feed. TTL-guarded +
@@ -3010,6 +3014,7 @@ class ContainerManager:
         run_config: dict,
         ai_attack_path: str,
         actor_user_id: Optional[str] = None,
+        actor_max_concurrent: Optional[int] = None,
     ) -> AiAttackSurfaceState:
         """Spawn an AI Attack Surface job: ensure the Ollama judge is up
         (ref-counted), write the run config, and start the scan container.
@@ -3033,7 +3038,8 @@ class ContainerManager:
 
         # Memory admission (Part 1): reserve this run's RAM envelope or reject.
         actor = actor_user_id or user_id
-        await self._admit_scan("ai_attack", project_id, run_id, user_id=actor)
+        await self._admit_scan("ai_attack", project_id, run_id, user_id=actor,
+                               max_per_user=actor_max_concurrent)
 
         state = AiAttackSurfaceState(
             project_id=project_id, run_id=run_id, tool=tool,
@@ -3375,6 +3381,7 @@ class ContainerManager:
         gvm_scan_path: str,
         job_credential: Optional[str] = None,
         actor_user_id: Optional[str] = None,
+        actor_max_concurrent: Optional[int] = None,
     ) -> GvmState:
         """Start a GVM vulnerability scanner container for a project"""
 
@@ -3389,7 +3396,7 @@ class ContainerManager:
 
         # Memory admission (Part 1): reserve this scan's RAM envelope or reject.
         actor = actor_user_id or user_id
-        await self._admit_scan("gvm", project_id, user_id=actor)
+        await self._admit_scan("gvm", project_id, user_id=actor, max_per_user=actor_max_concurrent)
 
         # Clean up any existing container
         container_name = self._get_gvm_container_name(project_id)
@@ -3859,6 +3866,7 @@ class ContainerManager:
         github_hunt_path: str,
         job_credential: Optional[str] = None,
         actor_user_id: Optional[str] = None,
+        actor_max_concurrent: Optional[int] = None,
     ) -> GithubHuntState:
         """Start a GitHub secret hunt container for a project"""
 
@@ -3869,7 +3877,7 @@ class ContainerManager:
 
         # Memory admission (Part 1): reserve this scan's RAM envelope or reject.
         actor = actor_user_id or user_id
-        await self._admit_scan("github_hunt", project_id, user_id=actor)
+        await self._admit_scan("github_hunt", project_id, user_id=actor, max_per_user=actor_max_concurrent)
 
         # Clean up any existing container
         container_name = self._get_github_hunt_container_name(project_id)
@@ -5032,13 +5040,14 @@ exit $RC
                                  repo_override_scope: Optional[str] = None,
                                  repo_override_deep: Optional[bool] = None,
                                  job_credential: Optional[str] = None,
-                                 actor_user_id: Optional[str] = None) -> "SupplyChainState":
+                                 actor_user_id: Optional[str] = None,
+                                 actor_max_concurrent: Optional[int] = None) -> "SupplyChainState":
         current = await self.get_supply_chain_status(project_id)
         if current.status in (SupplyChainStatus.RUNNING, SupplyChainStatus.PAUSED):
             raise ValueError(f"Supply-chain scan already active for project {project_id}")
 
         actor = actor_user_id or user_id
-        await self._admit_scan("supply_chain", project_id, user_id=actor)
+        await self._admit_scan("supply_chain", project_id, user_id=actor, max_per_user=actor_max_concurrent)
 
         # Lazy-on-scan: refresh the offline OSV DB if it is stale (TTL-guarded, so
         # this is a ~1s no-op when already fresh). Best-effort - never blocks the
@@ -5336,6 +5345,7 @@ exit $RC
         common: Optional[dict] = None,
         secrets: Optional[dict] = None,
         actor_user_id: Optional[str] = None,
+        actor_max_concurrent: Optional[int] = None,
     ) -> TrufflehogState:
         """Start ONE TruffleHog source for a project.
 
@@ -5421,7 +5431,7 @@ exit $RC
             # Memory admission on the source-qualified kind; the reconcile key in
             # _active_scan_keys is built the same way or the reaper frees this.
             await self._admit_scan(self._trufflehog_kind(source), project_id, source,
-                                   user_id=actor)
+                                   user_id=actor, max_per_user=actor_max_concurrent)
         except Exception:
             # Release the slot: a rejected admission must not leave a phantom
             # STARTING run that blocks every later start of this source.
