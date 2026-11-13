@@ -129,6 +129,31 @@ describe('gen-rbac-matrix-rows', () => {
     expect(pluginLogs.allow).toBe('400;has="code":"invalid_plugin_id"')
   })
 
+  // A body naming the project under a key its route ignores reaches the guard with no project, which
+  // answers 400 before the permission check: the deny row fails and the allow and off rows prove nothing.
+  test('a body names its project under the key its route reads', () => {
+    for (const [permission, r] of Object.entries(REPRESENTATIVES) as [string, { body: string; route: string }][]) {
+      if (!r.body.includes('{P}')) continue
+      const key = Object.entries(JSON.parse(r.body)).find(([, v]) => v === '{P}')![0]
+      const route = readFileSync(join(WEBAPP, 'src', 'app', `${r.route}`, 'route.ts'), 'utf8')
+      const reads = new RegExp(`\\bbody\\.${key}\\b`).test(route)
+        || new RegExp(`const \\{[^}]*\\b${key}\\b[^}]*\\} = (parsed\\.)?body\\b`).test(route)
+      expect(reads, `${permission}: ${r.route} reads ${key}`).toBe(true)
+    }
+  })
+
+  // text-to-cypher refuses nothing itself after its permission check: it relays the agent, whose
+  // request model requires a question, so the agent answers 422 before any model call.
+  test('the assistants holder reaches the agent, which refuses the missing question', () => {
+    const assistants = REPRESENTATIVES['agent:assistants']
+    expect(JSON.parse(assistants.body)).not.toHaveProperty('question')
+    expect(assistants.allow).toBe('422;has="upstreamStatus":422')
+    const agent = readFileSync(join(WEBAPP, '..', 'agentic', 'api.py'), 'utf8')
+    expect(agent).toMatch(/class TextToCypherRequest\(BaseModel\):\n(?: {4}"""[^\n]*"""\n)? {4}question: str\n/)
+    const route = readFileSync(join(WEBAPP, 'src', 'app', 'api', 'agent', 'text-to-cypher', 'route.ts'), 'utf8')
+    expect(route).toContain('upstreamStatus: resp.status')
+  })
+
   test('every row has the runner\'s eight columns', () => {
     const lines = renderRows(rows).split('\n').filter((l: string) => l && !l.startsWith('#'))
     for (const l of lines) expect(l.split('\t')).toHaveLength(8)

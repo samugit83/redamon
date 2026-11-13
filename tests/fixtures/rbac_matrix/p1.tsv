@@ -77,8 +77,10 @@ p1-admin-acting-writes-member-skill-batch	1.6	admin_a_as_member_a	POST	/api/user
 p1-admin-reads-other-masked	1.6	admin_a	GET	/api/users/${MEMBER_A_ID}/mcp	-	200;has=rbac-fake-server;has=••••••••0001;lacks=${A_MCP_BEARER}	req:HD-23
 # revoking another account's token stays an admin action: the gate admits it (no such token: 404)
 p1-admin-revokes-other-token-gate	1.6	admin_a	DELETE	/api/users/${MEMBER_A_ID}/mcp-tokens/rbac-no-such-token	-	404	req:HD-23
-# a passwordless managed account is written through act-as, and only through it
-p1-admin-acting-managed-writes	1.6	admin_a_as_managed	POST	/api/users/${MANAGED_ID}/chat-skills	{}	400;has=name is required	req:HD-23
+# a passwordless managed account is written through act-as, and only through it; with the
+# permissions switch on its chat skills stay with it even then (3.14's never-list, IM-08)
+p1-admin-acting-managed-writes	1.6	admin_a_as_managed	POST	/api/users/${MANAGED_ID}/chat-skills	{}	400;has=name is required	req:HD-23 permissions:off
+p1-admin-acting-managed-writes-on	3.14	admin_a_as_managed	POST	/api/users/${MANAGED_ID}/chat-skills	{}	403;has="code":"not_while_acting_as";has="action":"write_chat_skills"	req:HD-23 req:IM-08 permissions:on
 p1-admin-not-acting-writes-managed	1.6	admin_a	POST	/api/users/${MANAGED_ID}/chat-skills	{}	403;has=own_account_only	req:HD-23
 p1-owner-writes-own-control	1.6	member_a	POST	/api/users/${MEMBER_A_ID}/chat-skills	{}	400;has=name is required	req:HD-23
 # the owner re-pointing a saved MCP server (save or test) with the masked token is refused

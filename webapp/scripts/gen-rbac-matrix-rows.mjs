@@ -85,7 +85,9 @@ export const REPRESENTATIVES = {
   'preset:write': { method: 'POST', path: '/api/presets', route: '/api/presets', body: '{}', allow: '400;has=Preset name is required' },
   // Step 3.9: agent, analysis, data, self-service, plugins, platform.
   'agent:chat': { method: 'POST', path: '/api/agent/ws-ticket', route: '/api/agent/ws-ticket', body: '{"projectId":"{P}","sessionId":"rbac-probe-chat"}', allow: `200${NOT_REFUSED}` },
-  'agent:assistants': { method: 'POST', path: '/api/agent/text-to-cypher', route: '/api/agent/text-to-cypher', body: '{"projectId":"{P}"}', allow: `400${NOT_REFUSED}` },
+  // The route refuses nothing itself after its permission check: it relays the agent, which refuses
+  // the missing question (422, before any model call; it counts one call against the caller's cap).
+  'agent:assistants': { method: 'POST', path: '/api/agent/text-to-cypher', route: '/api/agent/text-to-cypher', body: '{"project_id":"{P}"}', allow: '422;has="upstreamStatus":422' },
   'agent:sessions': { method: 'GET', path: '/api/agent/sessions', route: '/api/agent/sessions', body: '-', allow: `200|502|503${NOT_REFUSED}` },
   'workspace:read': { method: 'GET', path: '/api/agent/workspace/list?projectId={P}&path=.', route: '/api/agent/workspace/list', body: '-', allow: `200|404|502|503${NOT_REFUSED}` },
   'graph:read': { method: 'GET', path: '/api/analytics/graph-overview?projectId={P}', route: '/api/analytics/graph-overview', body: '-', allow: `200|500|503${NOT_REFUSED}` },
