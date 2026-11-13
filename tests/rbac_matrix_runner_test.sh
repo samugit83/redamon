@@ -7,6 +7,9 @@
 #     webapp's own flags.ts chain does (permissions requires identity), so the
 #     PE-28 equivalence runs (step 3.2: identity on, permissions on and off)
 #     select the rows the webapp really serves;
+#   - sharing:on|off the same for RBAC_SHARING_ENABLED, which reads off while
+#     the permissions switch is off (step 4.1: the Phase 4 rows written before
+#     a share can exist skip until the switch is on);
 #   - on/true/1/yes in any case and with spaces are on, anything else is off;
 #   - the switches are read from the webapp container once per run, and not at
 #     all when no selected row needs them.
@@ -40,6 +43,11 @@ printf '%s\n' \
   > "$T/tests/fixtures/rbac_matrix/t.tsv"
 printf '%s\n' $'u-revoked\t3.2\tmember_a_revoked\tGET\t/api/t/revoked\t-\t200\tpermissions:on' \
   > "$T/tests/fixtures/rbac_matrix/u.tsv"
+printf '%s\n' \
+  $'s-plain\t4.1\tanon\tGET\t/api/s/plain\t-\t200\treq:HD-27' \
+  $'s-share-on\t4.1\tanon\tGET\t/api/s/share-on\t-\t200\treq:HD-27 sharing:on' \
+  $'s-share-off\t4.1\tanon\tGET\t/api/s/share-off\t-\t200\tsharing:off' \
+  > "$T/tests/fixtures/rbac_matrix/s.tsv"
 
 # docker: the webapp's switches come from FAKE_* through the runner's own in-container
 # command (run here by sh), the seed prints the keys the runner requires, every call is logged.
@@ -54,7 +62,7 @@ case "$*" in
     for a in "$@"; do [ "$prev" = -c ] && script="$a"; prev="$a"; done
     echo "switches-read" >> "$STUB_LOG"
     env -i PATH="$PATH" RBAC_IDENTITY_ENABLED="${FAKE_IDENTITY-}" RBAC_PERMISSIONS_ENABLED="${FAKE_PERMISSIONS-}" \
-      RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
+      RBAC_SHARING_ENABLED="${FAKE_SHARING-}" RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
   *" node "*)
     if grep -q SEED; then
       printf 'PA_ID=pa\nPB_ID=pb\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
@@ -79,12 +87,12 @@ STUB
 printf '#!/usr/bin/env bash\necho "sleep $*" >> "$STUB_LOG"\n' > "$W/bin/sleep"
 chmod +x "$W/bin/docker" "$W/bin/curl" "$W/bin/sleep"
 
-# run <identity> <permissions> [row filter] [matrix file] [cache ms]: OUT holds the output,
-# RC the status, LOG the stub calls.
+# run <identity> <permissions> [row filter] [matrix file] [cache ms] [sharing]: OUT holds the
+# output, RC the status, LOG the stub calls.
 run() {
   : > "$W/calls.log"
   OUT="$(cd "$W" && PATH="$W/bin:$PATH" STUB_LOG="$W/calls.log" BASE_URL=http://rbac-runner-test.invalid \
-    FAKE_IDENTITY="$1" FAKE_PERMISSIONS="$2" FAKE_CACHE_MS="${5:-5000}" RBAC_MATRIX_ROWS="${3:-}" \
+    FAKE_IDENTITY="$1" FAKE_PERMISSIONS="$2" FAKE_CACHE_MS="${5:-5000}" FAKE_SHARING="${6:-}" RBAC_MATRIX_ROWS="${3:-}" \
     bash "$T/tests/rbac_matrix_live.sh" "${4:-t}" 2>&1)"; RC=$?
   LOG="$(cat "$W/calls.log")"
 }
@@ -154,10 +162,32 @@ eq "the switches and the bound are read once" "$(reads)" "1"
 run true true '' u ''
 eq "no bound set: 5 s, plus 1 s" "$(grep -m1 '^sleep ' <<<"$LOG")" "sleep 6"
 
+section "the sharing switch (step 4.1)"
+run true true '' s 5000 true
+eq "sharing on: untagged row runs" "$(verdict s-plain)" "PASS"
+eq "sharing on: sharing:on runs" "$(verdict s-share-on)" "PASS"
+eq "sharing on: sharing:off skips" "$(verdict s-share-off)" "SKIP"
+has "the skip names the sharing switch" "(sharing switch on)" "$(line s-share-off)"
+eq "the switches are read once" "$(reads)" "1"
+run true true '' s 5000 ''
+eq "sharing unset: sharing:on skips" "$(verdict s-share-on)" "SKIP"
+has "named off" "(sharing switch off)" "$(line s-share-on)"
+eq "sharing unset: sharing:off runs" "$(verdict s-share-off)" "PASS"
+eq "the skipped row never reaches the webapp" "$(requests)" "api/s/plain api/s/share-off "
+run true '' '' s 5000 true
+eq "permissions off: sharing reads off, whatever it says" "$(verdict s-share-on)" "SKIP"
+has "named off" "(sharing switch off)" "$(line s-share-on)"
+run false true '' s 5000 true
+eq "identity off: permissions and sharing read off" "$(verdict s-share-off)" "PASS"
+run true true '' u 1500 true
+eq "the cache bound still parses after the sharing value" "$(grep '^sleep ' <<<"$LOG" | tr '\n' ' ')" "sleep 3 sleep 3 "
+
 section "the runner documents the tag"
 HEADER="$(sed -n '1,/^set -uo pipefail/p' "$RUNNER")"
 has "permissions:on | permissions:off in the row format" "permissions:on | permissions:off" "$HEADER"
 has "and the chain" "RBAC_PERMISSIONS_ENABLED" "$HEADER"
+has "sharing:on | sharing:off in the row format" "sharing:on | sharing:off" "$HEADER"
+has "and its chain" "RBAC_SHARING_ENABLED" "$HEADER"
 
 echo
 echo "-----------------------------------------"

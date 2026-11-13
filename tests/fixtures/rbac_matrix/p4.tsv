@@ -1,0 +1,26 @@
+# Live RBAC route matrix: Phase 4 (sharing, read-only). Each step adds the rows of the behaviour it
+# changes; a row of an earlier file whose answer a step changes is tagged superseded-by:p4 there.
+# Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
+#
+# Every row here needs a share, so each is tagged sharing:on and SKIPs while RBAC_SHARING_ENABLED
+# reads off. Run with the switch on and the instance policy enabled (sharing_policy.enabled by SQL
+# on the shared instance), after step 4.4, whose seed (webapp/scripts/e2e-rbac-seed.mjs) provides:
+#   viewer      a member account (rbac-viewer@e2e.local) holding a Read share, without Raw data,
+#               on PSHARED
+#   PSHARED_ID  a project owned by member_c, never PA (baseline rows expect member_b to get 404 on
+#               PA), whose cypherfixGithubToken, graphqlAuthValue and one httpxCustomHeaders entry
+#               hold the literal rbac-fake-share-secret-0001
+#
+# id	since	actor	method	path	body	expect	tags
+#
+# ---- step 4.1: owner secrets withheld from every non-owner read ----
+# The owner row proves the fake secret is really on the row, so the viewer's lacks= is not vacuous.
+# The RoE downloads refuse a non-owner before any lookup (OQ-53), so no document needs seeding: the
+# owner reaches the lookup (404, nothing uploaded), the viewer gets owner_only for both downloads,
+# and the revision list (metadata) stays a read.
+p4-viewer-secrets-owner	4.1	member_c	GET	/api/projects/${PSHARED_ID}	-	200;has=rbac-fake-share-secret-0001	req:HD-27 sharing:on
+p4-viewer-secrets	4.1	viewer	GET	/api/projects/${PSHARED_ID}	-	200;has=${PSHARED_ID};lacks=rbac-fake-share-secret-0001	req:HD-27 req:SH-28 sharing:on
+p4-viewer-roe-download-owner	4.1	member_c	GET	/api/projects/${PSHARED_ID}/roe/download	-	404;has=No RoE document uploaded	req:SH-28 sharing:on
+p4-viewer-roe-download	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/download	-	403;has=owner_only;has=roe:read	req:SH-28 sharing:on
+p4-viewer-roe-revision-download	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/revisions/rbac-no-such-revision/download	-	403;has=owner_only	req:SH-28 sharing:on
+p4-viewer-roe-revisions	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/revisions	-	200;has="revisions"	req:SH-28 sharing:on
