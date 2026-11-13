@@ -26,6 +26,7 @@ _AGENTIC_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_AGENTIC_DIR))
 
 import orchestrator_helpers.chain_graph_writer as cg  # noqa: E402
+from state import ExecutionStep  # noqa: E402
 
 NEO4J = ("bolt://unused", "neo4j", "pw")
 OWNER, PID = "owner-1", "p-owner"
@@ -33,6 +34,7 @@ OTHER, OTHER_PID = "reader-1", "p-reader"
 CHAIN = "s-owner-session"
 SHORT_STEP = "abcd1234"
 WRITER_SRC = (_AGENTIC_DIR / "orchestrator_helpers" / "chain_graph_writer.py").read_text()
+NODES = _AGENTIC_DIR / "orchestrator_helpers" / "nodes"
 
 
 class _Result:
@@ -214,6 +216,18 @@ class EveryStepWriteCarriesTheTenant(unittest.TestCase):
                 self.assertIn("project_id:", props, f"{label} {{{props}}}")
         self.assertGreaterEqual(patterns, 20, "the scan must see the writes it guards")
         self.assertEqual(WRITER_SRC.count("MATCH (ac:AttackChain {chain_id: $chain_id})"), 1, "the probe only")
+
+
+class NewStepIdsAreFullLength(unittest.TestCase):
+    def test_an_execution_step_gets_a_full_uuid(self):
+        step = ExecutionStep(iteration=1, phase="informational", thought="t", reasoning="r")
+        self.assertGreaterEqual(len(step.step_id.replace("-", "")), 32)
+
+    def test_no_node_cuts_a_step_id_short(self):
+        offenders = [f"{p.name}:{n}" for p in sorted(NODES.glob("*.py"))
+                     for n, line in enumerate(p.read_text().splitlines(), 1)
+                     if re.search(r"step_id\W.*uuid4\(\)[^\n]*\[:\d+\]", line)]
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

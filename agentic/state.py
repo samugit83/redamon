@@ -168,7 +168,9 @@ class TodoItem(BaseModel):
 
 class ExecutionStep(BaseModel):
     """Single step in the Thought-Tool-Output execution trace."""
-    step_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    # Full length: the ChainStep it becomes sits under a database-wide uniqueness
+    # constraint on step_id, where 32 bits collide across tenants.
+    step_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     iteration: int
     timestamp: datetime = Field(default_factory=utc_now)
     phase: Phase

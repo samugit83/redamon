@@ -1722,7 +1722,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             combined_extracted = analysis.extracted_info.model_dump() if hasattr(analysis.extracted_info, 'model_dump') else {}
 
         for i, plan_step in enumerate(plan_steps):
-            step_id = uuid4().hex[:8]
+            step_id = uuid4().hex
             step_thought = f"[Wave] {plan_step.get('rationale', '')}"
             step_reasoning = pending_plan.get("plan_rationale", "")
             step_output_analysis = analysis.interpretation if analysis else (plan_step.get("tool_output") or "")[:20000]
