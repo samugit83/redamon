@@ -291,6 +291,7 @@ export function ChatArea({
                 filename={file.filename}
                 description={file.description}
                 source={file.source}
+                projectId={file.projectId}
               />
             )
           } else {

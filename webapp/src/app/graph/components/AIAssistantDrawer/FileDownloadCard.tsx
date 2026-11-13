@@ -10,19 +10,31 @@ interface FileDownloadCardProps {
   filename: string
   description: string
   source: string
+  /** The run's project, whose workspace holds the file. A card from an older message has none. */
+  projectId?: string
 }
 
-export function FileDownloadCard({ filepath, filename, description, source }: FileDownloadCardProps) {
+/**
+ * Cards of messages written before downloads were scoped to a project point at the shared
+ * sandbox's /tmp and name no project: the route refuses them, so say why instead of asking.
+ */
+const OUTSIDE_WORKSPACE = 'This file was saved outside the project\'s workspace and cannot be downloaded from the chat. Ask the agent to save it again.'
+
+export function FileDownloadCard({ filepath, filename, description, source, projectId }: FileDownloadCardProps) {
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [downloaded, setDownloaded] = useState(false)
 
   const handleDownload = async () => {
+    if (!projectId) {
+      setError(OUTSIDE_WORKSPACE)
+      return
+    }
     setDownloading(true)
     setError(null)
 
     try {
-      const resp = await fetch(`/api/agent/files?path=${encodeURIComponent(filepath)}`)
+      const resp = await fetch(`/api/agent/files?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(filepath)}`)
 
       if (!resp.ok) throw await readApiError(resp, 'Download failed')
 

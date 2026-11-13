@@ -48,6 +48,7 @@ export interface FileDownloadItem {
   filename: string
   description: string
   source: string
+  projectId?: string
 }
 
 export type ChatItem =

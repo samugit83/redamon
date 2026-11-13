@@ -570,6 +570,8 @@ export interface FileReadyPayload {
   filename: string
   source: string
   description: string
+  /** The run's project, whose workspace holds the file (absent in messages saved before). */
+  projectId?: string
 }
 
 // =============================================================================

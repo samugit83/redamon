@@ -317,3 +317,25 @@ describe('useConversationRestoration - failures the person is told about (G-10, 
     expect(deps.handleNewChat).toHaveBeenCalled()
   })
 })
+
+describe('useConversationRestoration - download cards keep their project (4.9 review)', () => {
+  const fileReady = (data: any) => ({ id: `fr-${t}`, type: 'file_ready', data, createdAt: at() })
+  const files = (items: ChatItem[]) => items.filter(i => (i as any).type === 'file_download')
+
+  test('a card the agent saved with its project restores with it, so it can download', async () => {
+    const cap = { items: [] as ChatItem[] }
+    await restore([fileReady({
+      filepath: '/workspace/p1/notes/payload.exe', filename: 'payload.exe', source: 'msfvenom',
+      description: 'Generated payload: payload.exe', projectId: 'p1',
+    })], cap)
+    expect(files(cap.items)).toHaveLength(1)
+    expect((files(cap.items)[0] as any).projectId).toBe('p1')
+  })
+
+  test('a card from before (a /tmp file, no project) restores without one', async () => {
+    const cap = { items: [] as ChatItem[] }
+    await restore([fileReady({ filepath: '/tmp/payload.exe', filename: 'payload.exe', source: 'msfvenom', description: 'd' })], cap)
+    expect(files(cap.items)).toHaveLength(1)
+    expect((files(cap.items)[0] as any).projectId).toBeUndefined()
+  })
+})

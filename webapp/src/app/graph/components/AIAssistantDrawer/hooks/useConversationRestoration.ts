@@ -324,6 +324,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
           filename: data.filename || '',
           description: data.description || '',
           source: data.source || '',
+          projectId: data.projectId || undefined,
         } as FileDownloadItem
       } else if (msg.type === 'todo_update') {
         lastTodoList = data.todo_list || []

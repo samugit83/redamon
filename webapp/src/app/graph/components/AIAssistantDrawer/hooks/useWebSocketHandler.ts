@@ -974,6 +974,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
           filename: message.payload.filename,
           description: message.payload.description,
           source: message.payload.source,
+          projectId: message.payload.projectId,
         }
         setChatItems(prev => [...prev, fileItem])
         break
