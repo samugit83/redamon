@@ -61,14 +61,16 @@ export interface SettingsVerdict {
 
 /**
  * The gates the Exploitation & shells toggle relies on (§6.2): approval before exploitation and
- * post-exploitation, the dangerous-tool confirmation, the post-exploitation phase, the tunnels
- * that give a shell its reach, Kali installs and Kali exec over MCP.
+ * post-exploitation, the dangerous-tool confirmation, the post-exploitation phase, the tool phase
+ * map (a dangerous tool opened in an earlier phase runs before those approvals), the tunnels that
+ * give a shell its reach, Kali installs and Kali exec over MCP.
  */
 export const EXPLOIT_GATES: ReadonlySet<string> = new Set([
   'agentRequireApprovalForExploitation',
   'agentRequireApprovalForPostExploitation',
   'agentRequireToolConfirmation',
   'agentActivatePostExplPhase',
+  'agentToolPhaseMap',
   'agentChiselTunnelEnabled',
   'agentNgrokTunnelEnabled',
   'agentKaliInstallEnabled',
@@ -95,6 +97,12 @@ export type OwnDirection =
   | 'disable'
   /** A cap: raising it widens. */
   | 'raise'
+  /** Moving up the field's ordered `values` widens; a value outside them is refused before this. */
+  | 'higher'
+  /** A value the engagement requires once set: clearing or replacing it widens, a first one narrows. */
+  | 'kept'
+  /** The agent's tool phase map: a dangerous tool admitted in a phase earlier than any it had loosens. */
+  | 'phases'
   /** Recomputed by the server from another field, never trusted from a body: never widens alone. */
   | 'derived'
 
@@ -125,6 +133,10 @@ export const OWN_DIRECTIONS: Readonly<Record<string, OwnDirection>> = {
   supplyChainRepoUrl: 'any',
   // Derived (non-zero rate ceiling, exclusions or the window): off means no limit applies.
   roeEnabled: 'disable',
+  roeSensitiveDataHandling: 'higher',
+  engagementIdentityHeader: 'kept',
+  cypherfixRequireApproval: 'disable',
+  agentToolPhaseMap: 'phases',
   agentKaliInstallAllowedPackages: 'allowlist',
   agentKaliInstallForbiddenPackages: 'removal',
   mcpKaliExecEnabled: 'enable',
@@ -216,7 +228,46 @@ function subdomainWidening(before: unknown, after: unknown, targetDomain: unknow
   return added.length ? `adds ${added.join(', ')}` : null
 }
 
-function ownReason(direction: OwnDirection, before: unknown, after: unknown, afterRow: Record<string, unknown>): string | null {
+/**
+ * The tools the agent asks a person to confirm before running (`DANGEROUS_TOOLS`,
+ * agentic/project_settings.py; a test pins the two lists together).
+ */
+export const DANGEROUS_AGENT_TOOLS: readonly string[] = Object.freeze([
+  'execute_nmap', 'execute_naabu', 'execute_nuclei', 'execute_curl', 'execute_httpx', 'msf_restart', 'kali_shell',
+  'metasploit_console', 'execute_code', 'execute_hydra', 'execute_playwright', 'execute_wpscan', 'execute_arjun',
+  'execute_ffuf', 'execute_amass', 'execute_gau', 'execute_katana', 'proxy_brain', 'execute_guarddog',
+])
+
+/** The agent's phases, earliest first; exploitation and post-exploitation each start behind an approval. */
+const AGENT_PHASES: readonly string[] = ['informational', 'exploitation', 'post_exploitation']
+
+/** The phases (as indexes) one map entry admits, as the agent's `phase in entry` reads it. */
+function admittedPhases(entry: unknown): number[] {
+  const admits = (phase: string): boolean =>
+    Array.isArray(entry) ? entry.includes(phase)
+      // Python's `in` on text is a substring test: 'post_exploitation' admits exploitation too.
+      : typeof entry === 'string' ? entry.includes(phase)
+        : entry !== null && typeof entry === 'object' ? Object.prototype.hasOwnProperty.call(entry, phase)
+          : false
+  return AGENT_PHASES.flatMap((phase, i) => (admits(phase) ? [i] : []))
+}
+
+function phaseMapLoosening(before: unknown, after: unknown): string | null {
+  const asMap = (v: unknown): Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
+  const was = asMap(before)
+  const now = asMap(after)
+  const opened: string[] = []
+  for (const tool of DANGEROUS_AGENT_TOOLS) {
+    // A tool the map does not name runs in no phase: any phase is earlier than none.
+    const earliest = Math.min(...admittedPhases(was[tool]))
+    const earlier = admittedPhases(now[tool]).filter(i => i < earliest)
+    if (earlier.length) opened.push(`${tool} in ${AGENT_PHASES[earlier[0]]}`)
+  }
+  return opened.length ? `opens ${opened.join(', ')}, ahead of the approvals its old phases sat behind` : null
+}
+
+function ownReason(key: string, direction: OwnDirection, before: unknown, after: unknown, afterRow: Record<string, unknown>): string | null {
   switch (direction) {
     case 'any':
       return 'changes a target'
@@ -246,6 +297,18 @@ function ownReason(direction: OwnDirection, before: unknown, after: unknown, aft
       const b = Number(before)
       return !Number.isFinite(b) || Number(after) > b ? 'raises a cap' : null
     }
+    case 'higher': {
+      const order = field(key)?.values ?? []
+      return order.indexOf(String(after)) > order.indexOf(String(before)) ? `moves up to ${String(after)}` : null
+    }
+    case 'kept': {
+      const was = typeof before === 'string' ? before.trim() : ''
+      const now = typeof after === 'string' ? after.trim() : ''
+      if (!was || now === was) return null
+      return now ? 'replaces it' : 'clears it'
+    }
+    case 'phases':
+      return phaseMapLoosening(before, after)
     case 'derived':
       return null
   }
@@ -265,7 +328,7 @@ function unreadable(key: string, spec: RegistryField, after: unknown): string | 
 
 /** Why `before -> after` loosens a gate or widens scope, or null. */
 function widens(key: string, before: unknown, after: unknown, beforeRow: Record<string, unknown>, afterRow: Record<string, unknown>): string | null {
-  if (Object.prototype.hasOwnProperty.call(OWN_DIRECTIONS, key)) return ownReason(OWN_DIRECTIONS[key], before, after, afterRow)
+  if (Object.prototype.hasOwnProperty.call(OWN_DIRECTIONS, key)) return ownReason(key, OWN_DIRECTIONS[key], before, after, afterRow)
   return wideningReason(key, before, after, beforeRow, afterRow)
 }
 

@@ -1327,6 +1327,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: deny
     validator: json_object
     group: agent
@@ -2218,6 +2219,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: gate
     group: agent
     meaning: >-
       Whether a CypherFix patch must be approved by a human before it is pushed.
@@ -2529,6 +2531,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     validator: http_header
     meaning: >-
       A header every request carries so the target's operators can attribute the
@@ -7985,6 +7988,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: scope
     roe_parse: allow
     values: ["no_access", "prove_access_only", "limited_collection", "full_access"]
     validator: free_text
@@ -8040,7 +8044,8 @@ fields:
     group: engagement_limits
     meaning: >-
       Days of the week on which scanning is permitted, lower-case English names.
-      Empty means every day, once the window is switched on.
+      Empty means no day: once the window is switched on, every reader refuses
+      a scan on a day the list does not name.
     form_section: "TargetSection"
   roeTimeWindowEnabled:
     tool: roe

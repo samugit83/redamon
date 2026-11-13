@@ -154,11 +154,15 @@ is pinned to it by a shared fixture table.
   (`webapp/src/lib/authz/settingsRisk.ts`, asked by every writer of the project
   row). Ordinary columns are Write's. A `gate` is a safety gate: Write may
   tighten it, loosening it needs Manage, plus Exploitation & shells for the
-  agent's approval, tunnel and Kali switches. A `scope` column decides what the
+  agent's approval, tool-phase, tunnel and Kali switches. A `scope` column decides what the
   engagement targets or permits: Manage narrows it, only the owner widens it.
   "Looser" and "wider" are the RoE review's `wideningReason`
   (`webapp/src/lib/roe/roeWidening.ts`), which reads `roe_safe_value`; the
-  fields it does not judge have a row in `settingsRisk.ts`. The build makes every
+  fields it does not judge have a row in `settingsRisk.ts`. Both judge a value by
+  what its readers do with it: a value outside its `values` or bounds, or a time or
+  date not in the HH:MM / YYYY-MM-DD form the readers parse, sits on no order and
+  is judged wider; the window's two ends are judged together, an end before the
+  start crossing midnight; an empty subdomain list scans every subdomain. The build makes every
   `roe_parse: tighten_only` switch a `gate` and every field of the `scope` and
   `engagement_limits` groups `scope` (the ownership token stays `secret`), so a
   safety switch or target column added later is not an editor's by default.

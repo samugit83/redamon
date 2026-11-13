@@ -160,6 +160,20 @@ describe('an editor (Read + Write)', () => {
     expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/^\[rbac\] settings_refused .*keys=agentRequireToolConfirmation/))
   })
 
+  test('an editor cannot drop the CypherFix approval or open a dangerous tool in an earlier phase', async () => {
+    as('editor')
+    h.stored = { ...STORED, cypherfixRequireApproval: true, agentToolPhaseMap: { kali_shell: ['exploitation'] } }
+    const off = await put({ cypherfixRequireApproval: false })
+    expect(off.status).toBe(403)
+    expect((await off.json()).refused).toEqual([expect.objectContaining({ key: 'cypherfixRequireApproval', needs: 'manage' })])
+    const earlier = await put({ agentToolPhaseMap: { kali_shell: ['informational', 'exploitation'] } })
+    expect(earlier.status).toBe(403)
+    expect((await earlier.json()).refused).toEqual([expect.objectContaining({ key: 'agentToolPhaseMap', needs: 'manage+exploit' })])
+    expect(wrote()).toBe(false)
+    // Closing a phase stays an editor's call.
+    expect((await put({ agentToolPhaseMap: { kali_shell: [] } })).status).toBe(200)
+  })
+
   test('tightening a gate in a single-field auto-save is an editor\'s call', async () => {
     as('editor')
     h.stored = { ...STORED, agentRequireToolConfirmation: false }

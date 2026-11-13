@@ -54,8 +54,11 @@ TIGHTEN_ONLY_SWITCHES = {
     "agentKaliInstallEnabled", "agentNgrokTunnelEnabled", "agentRequireApprovalForExploitation",
     "agentRequireApprovalForPostExploitation", "agentRequireToolConfirmation", "jsReconValidateKeys",
 }
+# Beside the switches: the Kali package lists, Kali exec over MCP, the tool phase map (a dangerous
+# tool opened in an earlier phase skips its approval gate) and the CypherFix push approval.
 SHARE_GATE = TIGHTEN_ONLY_SWITCHES | {
     "agentKaliInstallAllowedPackages", "agentKaliInstallForbiddenPackages", "mcpKaliExecEnabled",
+    "agentToolPhaseMap", "cypherfixRequireApproval",
 }
 SCOPE_GROUP = {
     "domainBatchGroups", "domainBatchHosts", "domainBatchMode", "ipHostnameExclude",
@@ -77,9 +80,11 @@ ENGAGEMENT_LIMITS = {
 # widening: a wider value is a wider RoE, which OQ-23 keeps for the owner.
 ENFORCED_RECORD_TERMS = {
     "roeAllowDataExfiltration", "roeAllowPhysicalAccess", "roeAllowProductionTesting",
-    "roeEngagementEndDate", "roeEngagementStartDate",
+    "roeEngagementEndDate", "roeEngagementStartDate", "roeSensitiveDataHandling",
 }
-SHARE_SCOPE = SCOPE_GROUP | OTHER_TARGETS | ENGAGEMENT_LIMITS | ENFORCED_RECORD_TERMS
+# The attribution header a program requires on every request: clearing it is a wider engagement.
+ENGAGEMENT_ATTRIBUTION = {"engagementIdentityHeader"}
+SHARE_SCOPE = SCOPE_GROUP | OTHER_TARGETS | ENGAGEMENT_LIMITS | ENFORCED_RECORD_TERMS | ENGAGEMENT_ATTRIBUTION
 
 
 def _minimal_document(**field_overrides) -> dict:

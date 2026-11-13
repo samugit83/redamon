@@ -494,12 +494,17 @@ describe("HD-27 the columns that stay the owner's when a project is shared", () 
 // --- SH-08, SH-28: the writes a collaborator needs more than Write for ---------------------
 
 describe('SH-08 safety gates and scope are classed, not ordinary', () => {
-  test('every tighten_only switch is a gate, beside the Kali package lists and MCP Kali exec', () => {
+  test('every tighten_only switch is a gate, beside the Kali package lists, MCP Kali exec, the tool phase map and the CypherFix approval', () => {
     const tighten = fieldsWhere(f => f.roe_parse === 'tighten_only').map(f => f.key)
     const gates = fieldsWhere(f => f.share === 'gate').map(f => f.key)
     expect(gates).toEqual(
-      [...tighten, 'agentKaliInstallAllowedPackages', 'agentKaliInstallForbiddenPackages', 'mcpKaliExecEnabled'].sort()
+      [...tighten, 'agentKaliInstallAllowedPackages', 'agentKaliInstallForbiddenPackages', 'mcpKaliExecEnabled',
+        'agentToolPhaseMap', 'cypherfixRequireApproval'].sort()
     )
+  })
+
+  test('the engagement terms outside the target groups that the agent or the traffic enforce are scope', () => {
+    for (const key of ['roeSensitiveDataHandling', 'engagementIdentityHeader']) expect([key, fields[key]?.share]).toEqual([key, 'scope'])
   })
 
   test('every field of the scope and engagement_limits groups is scope, the ownership token secret', () => {

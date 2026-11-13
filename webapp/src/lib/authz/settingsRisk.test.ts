@@ -11,10 +11,10 @@ import { fieldKeys, fieldsWhere, loadRegistry } from '@/lib/reconSettings/regist
 import { directionOf, wideningReason } from '@/lib/roe/roeWidening'
 import { RECON_PRESETS } from '@/lib/recon-presets'
 import { effectiveToggles, type ProjectAccess } from './projectAccess'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import {
-  EXPLOIT_GATES, NEED_LEVELS, OWN_DIRECTIONS, RISK_CONTEXT_KEYS, classifyChange, classifyField, riskSelect, settingsRefusal,
+  DANGEROUS_AGENT_TOOLS, EXPLOIT_GATES, NEED_LEVELS, OWN_DIRECTIONS, RISK_CONTEXT_KEYS, classifyChange, classifyField, riskSelect, settingsRefusal,
 } from './settingsRisk'
 
 // The level decision is the real meetsLevel table (write rows from step 5.2a): write reaches R, R*
@@ -315,6 +315,58 @@ describe('the directions the generic rules get wrong or do not cover', () => {
     expect(wideningReason('roeTimeWindowEndTime', '18:00', '9:00', on, { ...on, roeTimeWindowEndTime: '9:00' })).toMatch(/HH:MM/)
   })
 
+  test('the CypherFix push approval is a gate: off loosens (Manage), on tightens (Write)', () => {
+    expect(classifyField('cypherfixRequireApproval', true, false)).toMatchObject({ share: 'gate', needs: 'manage' })
+    expect(classifyField('cypherfixRequireApproval', false, true)).toMatchObject({ share: 'gate', needs: 'write' })
+  })
+
+  test('the tool phase map: a dangerous tool opened in an earlier phase loosens the approval gates', () => {
+    const map = (over: Record<string, unknown> = {}) => ({
+      kali_shell: ['exploitation', 'post_exploitation'], execute_nuclei: ['informational', 'exploitation'],
+      metasploit_console: ['post_exploitation'], tradecraft_lookup: ['exploitation', 'post_exploitation'], ...over,
+    })
+    const judge = (over: Record<string, unknown>, before = map()) => classifyField('agentToolPhaseMap', before, map(over))
+    // A shell before the exploitation approval: Manage and Exploitation & shells.
+    expect(judge({ kali_shell: ['informational', 'exploitation', 'post_exploitation'] }))
+      .toMatchObject({ share: 'gate', needs: 'manage+exploit', reason: expect.stringMatching(/kali_shell in informational/) })
+    expect(judge({ metasploit_console: ['exploitation', 'post_exploitation'] }).needs).toBe('manage+exploit')
+    // A dangerous tool the map had off, opened at all.
+    const { kali_shell: _off, ...withoutShell } = map()
+    expect(classifyField('agentToolPhaseMap', withoutShell, map()).needs).toBe('manage+exploit')
+    // The agent reads `phase in entry`: a text entry matches by substring, so 'post_exploitation' admits exploitation.
+    expect(judge({ metasploit_console: 'post_exploitation' }).needs).toBe('manage+exploit')
+    // Tightening, a later phase, or a tool with no confirmation gate stays an editor's.
+    expect(judge({ kali_shell: ['post_exploitation'] }).needs).toBe('write')
+    expect(judge({ execute_nuclei: ['informational', 'exploitation', 'post_exploitation'] }).needs).toBe('write')
+    expect(judge({ tradecraft_lookup: ['informational', 'exploitation', 'post_exploitation'] }).needs).toBe('write')
+    expect(judge({ kali_shell: [] }).needs).toBe('write')
+  })
+
+  // The agent's source is outside webapp/: a webapp-only checkout skips this pin.
+  const agentSettings = path.resolve(__dirname, '../../../../agentic/project_settings.py')
+  test.skipIf(!existsSync(agentSettings))('the tool phase map knows the agent\'s dangerous tools', () => {
+    const block = readFileSync(agentSettings, 'utf8').match(/^DANGEROUS_TOOLS = frozenset\(\{([\s\S]*?)\}\)/m)
+    expect(block).not.toBeNull()
+    const python = [...block![1].replace(/#.*$/gm, '').matchAll(/'([a-z_]+)'/g)].map(m => m[1]).sort()
+    expect([...DANGEROUS_AGENT_TOOLS].sort()).toEqual(python)
+  })
+
+  test('the sensitive-data rule is scope: a looser rule needs the owner, a stricter one Manage', () => {
+    expect(classifyField('roeSensitiveDataHandling', 'no_access', 'full_access')).toMatchObject({ share: 'scope', needs: 'owner' })
+    expect(classifyField('roeSensitiveDataHandling', 'prove_access_only', 'limited_collection').needs).toBe('owner')
+    expect(classifyField('roeSensitiveDataHandling', 'full_access', 'no_access').needs).toBe('manage')
+    expect(classifyField('roeSensitiveDataHandling', 'no_access', 'anything').needs).toBe('owner')
+  })
+
+  test('the engagement identity header is scope: clearing or replacing it needs the owner, setting a first one Manage', () => {
+    const set = 'X-Bug-Bounty: rbac-fake-handle'
+    expect(classifyField('engagementIdentityHeader', set, '')).toMatchObject({ share: 'scope', needs: 'owner', reason: expect.stringMatching(/clears/) })
+    expect(classifyField('engagementIdentityHeader', set, 'X-Bug-Bounty: rbac-other-handle').needs).toBe('owner')
+    expect(classifyField('engagementIdentityHeader', '', set).needs).toBe('manage')
+    expect(verdictOf({ engagementIdentityHeader: '' }, { engagementIdentityHeader: set }, EDITOR).refused)
+      .toEqual([expect.objectContaining({ key: 'engagementIdentityHeader', needs: 'manage' })])
+  })
+
   test('the derived batch groups never decide on their own', () => {
     expect(classifyField('domainBatchGroups', [], [{ rootDomain: 'x.test', prefixes: ['*'], hosts: [], wildcard: true }]).needs).toBe('manage')
   })
@@ -376,12 +428,12 @@ describe('the tables cover the registry', () => {
     expect([...EXPLOIT_GATES].filter(k => !gates.has(k))).toEqual([])
   })
 
-  test('the exploit gates are the agent approval, phase, tunnel and Kali switches', () => {
+  test('the exploit gates are the agent approval, phase, tool-phase, tunnel and Kali switches', () => {
     expect([...EXPLOIT_GATES].sort()).toEqual([
       'agentActivatePostExplPhase', 'agentChiselTunnelEnabled', 'agentKaliInstallAllowedPackages',
       'agentKaliInstallEnabled', 'agentKaliInstallForbiddenPackages', 'agentNgrokTunnelEnabled',
       'agentRequireApprovalForExploitation', 'agentRequireApprovalForPostExploitation',
-      'agentRequireToolConfirmation', 'mcpKaliExecEnabled',
+      'agentRequireToolConfirmation', 'agentToolPhaseMap', 'mcpKaliExecEnabled',
     ])
   })
 
