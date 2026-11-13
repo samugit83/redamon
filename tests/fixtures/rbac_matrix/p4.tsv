@@ -26,13 +26,17 @@ p4-viewer-roe-revision-download	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/r
 p4-viewer-roe-revisions	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/revisions	-	200;has="revisions"	req:SH-28 sharing:on
 
 # ---- step 4.3: projectAccess() with shares, oversight; my-access; the terminal stays the owner's ----
-# The first two rows need no share and run in either switch state. With sharing in force admin_a
+# p4-myaccess-other needs no share and runs in either switch state. With RBAC_SHARING_ENABLED off
+# /my-access does not exist (404, the owner too) and the project GET carries no myAccess (DV-30):
+# the two *-off rows; the owner's my-access answer is a sharing:on row. With sharing in force admin_a
 # (Full admin, projects:oversee) reads rbac-PA at Read without Raw data: the twelve admin_a rows of
 # baseline.tsv are tagged sharing:off, and these are their answers for the routes whose oversight
 # answer is settled; the graph, conversation, remediation, report, schedule, triage and recon status
 # rows come with the read waves (4.6-4.8) and 4.14.
-p4-myaccess-owner	4.3	member_a	GET	/api/projects/${PA_ID}/my-access	-	200;has="level":"owner";has="via":"owner"	req:PE-21
+p4-myaccess-owner	4.3	member_a	GET	/api/projects/${PA_ID}/my-access	-	200;has="level":"owner";has="via":"owner"	req:PE-21 sharing:on
 p4-myaccess-other	4.3	member_b	GET	/api/projects/${PA_ID}/my-access	-	404;lacks="myAccess"	req:PE-21
+p4-myaccess-owner-off	4.3	member_a	GET	/api/projects/${PA_ID}/my-access	-	404;lacks="myAccess"	req:PE-21 req:DV-30 sharing:off
+p4-proj-read-no-myaccess-off	4.3	member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA;lacks="myAccess"	req:PE-21 req:DV-30 sharing:off
 p4-myaccess-viewer	4.3	viewer	GET	/api/projects/${PSHARED_ID}/my-access	-	200;has="level":"read";has="rawData":false;has="via":"share"	req:PE-21 req:SH-02 sharing:on
 p4-viewer-myaccess-on-read	4.3	viewer	GET	/api/projects/${PSHARED_ID}	-	200;has="myAccess";has="via":"share"	req:PE-21 sharing:on
 p4-viewer-settings-write	4.3	viewer	PUT	/api/projects/${PSHARED_ID}	{"updatedAt":"rbac-not-a-date"}	403;has=project:settings	req:SH-02 sharing:on
