@@ -10,6 +10,7 @@ import { sessionHolds } from '@/lib/authz/adminPermission'
 import { forbiddenResponse } from '@/lib/authz/guards'
 import { requireSelfPermission } from '@/lib/authz/selfService'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
+import { agentProviderList } from '@/lib/instanceProviders/entitlement'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -51,9 +52,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       orderBy: { createdAt: 'asc' },
     })
 
-    // Unmasked only for internal-key callers that explicitly request it.
+    // Unmasked only for internal-key callers that explicitly request it. The agent's list also
+    // carries the instance providers the account may use, as marked rows (step 6.11): every agent
+    // path reads its keys here, and the account is the project's owner on a project run (C1).
     if (internalReq && wantUnmasked) {
-      return NextResponse.json(providers)
+      return NextResponse.json(await agentProviderList(id, providers))
     }
 
     return NextResponse.json(providers.map(p => maskProvider(p as unknown as Record<string, unknown>)))

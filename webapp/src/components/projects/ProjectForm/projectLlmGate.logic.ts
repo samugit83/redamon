@@ -8,6 +8,7 @@
 
 import { isChatProvider } from '@/lib/llmProviderKinds'
 import { isLoopModel } from '@/lib/agentInTheLoop'
+import { isInstanceModel } from '@/lib/instanceProviders/rows'
 
 /** Shape of the bits of the user record the gate cares about. */
 export interface UserModelDefaults {
@@ -74,14 +75,18 @@ export function bothModelsSelected(
 /**
  * Whether the provider gate blocks creation. Agent in the Loop needs no
  * provider (the person's own Claude Code or Codex answers), so a loop agent
- * model passes while the deployment has it on.
+ * model passes while the deployment has it on. An instance provider an
+ * administrator assigned to the person's sets (step 6.11) is a configured
+ * provider too: its models are in the person's model list.
  */
 export function providerGateApplies(
   providers: unknown,
   agentModel: string | null | undefined,
   loopAvailable: boolean,
+  instanceAvailable = false,
 ): boolean {
   if (loopAvailable && isLoopModel(agentModel)) return false
+  if (instanceAvailable) return false
   return hasNoConfiguredProvider(providers)
 }
 
@@ -97,6 +102,14 @@ export function pipelineModelOptional(agentModel: string | null | undefined, noP
 /** Whether the model list offers Agent in the Loop (it does only while the switch is on). */
 export function loopModelOffered(models: Record<string, { id: string }[]> | null | undefined): boolean {
   return Object.values(models ?? {}).some(list => list.some(m => isLoopModel(m.id)))
+}
+
+/**
+ * Whether the model list offers an instance provider's model (`instance/<providerId>/<model>`): one
+ * the person may use through a permission set they hold, offered only with RBAC_GOVERNANCE_ENABLED on.
+ */
+export function instanceModelOffered(models: Record<string, { id: string }[]> | null | undefined): boolean {
+  return Object.values(models ?? {}).some(list => Array.isArray(list) && list.some(m => isInstanceModel(m.id)))
 }
 
 /**

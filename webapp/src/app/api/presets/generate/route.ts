@@ -8,6 +8,8 @@ import { readFeatureModelCode } from '@/lib/llmFeatures'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { isChatProvider } from '@/lib/llmProviderKinds'
 import { isLoopModel } from '@/lib/agentInTheLoop'
+import { entitledInstanceProviders } from '@/lib/instanceProviders/entitlement'
+import { isInstanceModel, splitInstanceModel, type InstanceLlmProviderRecord } from '@/lib/instanceProviders/rows'
 import { builtinSendsTemperature, customSendsTemperature, rejectsTemperature } from '@/lib/llmTemperature'
 
 // ---------------------------------------------------------------------------
@@ -81,6 +83,16 @@ function resolveModel(model: string): Resolved {
     return { kind: 'builtin', providerType: 'anthropic', modelId: model }
   }
   return { kind: 'builtin', providerType: 'openai', modelId: model }
+}
+
+/**
+ * Whether an instance provider of `kind` serves the resolved model: an OpenAI-compatible endpoint
+ * only its own `custom/<providerId>`, a keyed provider only the models of its kind (the agent's rule,
+ * agentic/llm_builder.py `instance_build_args`).
+ */
+function instanceServes(kind: string, providerId: string, resolved: Resolved): boolean {
+  if (resolved.kind === 'custom') return kind === 'openai_compatible' && resolved.providerId === providerId
+  return resolved.providerType === kind
 }
 
 /**
@@ -299,7 +311,19 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    const resolved = resolveModel(model)
+    // An instance provider's model (step 6.11) is built from that provider's row alone, and only
+    // while the person may use it; otherwise refused, never sent on to OpenAI with their own key.
+    const instanceRef = splitInstanceModel(model)
+    const instanceRow = instanceRef
+      ? (await entitledInstanceProviders(userId)).find((p) => p.id === instanceRef.providerId) ?? null
+      : null
+    const resolved = resolveModel(instanceRef ? instanceRef.model : model)
+    if (isInstanceModel(model) && (!instanceRow || !instanceServes(instanceRow.providerType, instanceRow.id, resolved))) {
+      return featureModelErrorResponse('model_unavailable', 'preset_generator', {
+        model,
+        error: `The instance provider of your preset model "${model}" is not available to you. Choose another model.`,
+      })
+    }
 
     if (resolved.kind === 'builtin' && resolved.providerType === 'bedrock') {
       return featureModelErrorResponse('model_unavailable', 'preset_generator', {
@@ -311,7 +335,9 @@ export async function POST(request: NextRequest) {
     // Chat providers only: a non-chat row (a Jev provider) is never a model to call, and
     // `custom/<id>` accepts any row id, so without this the token would be posted to
     // whatever base URL such a row held.
-    const providers = (await prisma.userLlmProvider.findMany({ where: { userId } })).filter(isChatProvider)
+    const providers: InstanceLlmProviderRecord[] = instanceRow
+      ? [instanceRow]
+      : (await prisma.userLlmProvider.findMany({ where: { userId } })).filter(isChatProvider)
 
     let rawResponse: string
 

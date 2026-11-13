@@ -47,6 +47,15 @@
  * before it reads the instance row or an account, so a project create, an import and a scan start
  * go on as before (the test at the end).
  *
+ * Step 6.11 adds instance LLM providers. With the switch off none is offered or resolved and nothing
+ * of them is read: the agent's provider list (GET /api/users/[id]/llm-providers?internal=true) is the
+ * account's own rows, bring-your-own providers are never withheld, /api/models refuses an account
+ * without self:llm_providers as before, and Root's routes /api/admin/llm-providers (+ /[providerId],
+ * /policy) and the account's /api/account/llm-providers answer 404 before the session or the database
+ * is read (lib/instanceProviders/entitlement.ts, the one reader in GOVERNANCE_READERS; the test at the
+ * end, instanceProviders.test.ts and the routes' tests). A project saved on an `instance/` model then
+ * fails closed in the agent (instance_provider_unavailable, agentic/tests/test_instance_providers.py).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -152,6 +161,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/components/settings/InstanceTunnelSection.tsx',
+      'src/lib/instanceProviders/entitlement.ts',
       'src/lib/authz/quotas.ts',
       'src/lib/plugins/accessRules.ts',
     ]
@@ -298,5 +308,48 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.8): no quota is enforced or read',
     }
     expect(touched).not.toHaveBeenCalled()
     vi.doUnmock('@/lib/prisma')
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.11): instance LLM providers are neither offered nor resolved', () => {
+  test("the agent list is the account's own rows, nothing of the providers is read, and their routes answer 404", async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    vi.doMock('@/lib/session', () => ({
+      requireSession: vi.fn(async () => { touched('session'); return { userId: 'root-1', role: 'admin' } }),
+      getEffectiveUser: vi.fn(async () => { touched('session'); return { userId: 'root-1' } }),
+    }))
+    vi.doMock('@/lib/instanceProviders/store', async (orig) => {
+      const actual = (await orig()) as Record<string, unknown>
+      return Object.fromEntries(Object.entries(actual).map(([k, v]) =>
+        [k, typeof v === 'function' && /^(read|create|update|delete|write|providers)/.test(k) ? (...a: unknown[]) => { touched(`store.${k}`); return (v as (...x: unknown[]) => unknown)(...a) } : v]))
+    })
+    const { agentProviderList } = await import('@/lib/instanceProviders/entitlement')
+    const { GET: list, POST: create } = await import('@/app/api/admin/llm-providers/route')
+    const { PUT: change, DELETE: remove } = await import('@/app/api/admin/llm-providers/[providerId]/route')
+    const { PUT: policy } = await import('@/app/api/admin/llm-providers/policy/route')
+    const { GET: mine } = await import('@/app/api/account/llm-providers/route')
+    const own = [{ id: 'own-1', providerType: 'openai', apiKey: 'sk-own' }]
+    const write = (method: string) => new Request('http://redamon.test/api/admin/llm-providers', {
+      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stepUpPassword: 'x' }),
+    }) as never
+    const params = { params: Promise.resolve({ providerId: 'p1' }) }
+    for (const [identity, permissions] of [['', ''], ['true', 'true']]) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', identity)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', permissions)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect(await agentProviderList('owner-1', own)).toEqual(own)
+      const answers = [await list(), await create(write('POST')), await change(write('PUT'), params), await remove(write('DELETE'), params),
+        await policy(write('PUT')), await mine(new Request('http://redamon.test/api/account/llm-providers') as never)]
+      expect(answers.map((r) => r.status)).toEqual([404, 404, 404, 404, 404, 404])
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/session')
+    vi.doUnmock('@/lib/instanceProviders/store')
   })
 })

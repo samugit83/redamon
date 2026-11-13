@@ -180,6 +180,10 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
   ...g('platform', {
     'instance.settings_changed': 'Changed the instance settings',
     'instance.default_member_set_changed': "Changed the new members' permission set",
+    'instance.llm_provider_created': 'Added an instance LLM provider',
+    'instance.llm_provider_updated': 'Changed an instance LLM provider or its permission sets',
+    'instance.llm_provider_deleted': 'Deleted an instance LLM provider',
+    'instance.llm_policy_changed': 'Changed the bring-your-own LLM provider policy',
     'permission_set.created': 'Created a permission set',
     'permission_set.updated': 'Changed a permission set',
     'permission_set.deleted': 'Deleted a permission set',

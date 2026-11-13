@@ -25,6 +25,7 @@ import {
   providerGateApplies,
   pipelineModelOptional,
   loopModelOffered,
+  instanceModelOffered,
 } from './projectLlmGate.logic'
 
 // ---------------------------------------------------------------------------
@@ -264,5 +265,22 @@ describe('Agent in the Loop and the provider gate', () => {
     expect(loopModelOffered({ Anthropic: [{ id: 'claude-opus-4-6' }] })).toBe(false)
     expect(loopModelOffered({})).toBe(false)
     expect(loopModelOffered(null)).toBe(false)
+  })
+})
+
+describe('instance providers and the provider gate (step 6.11)', () => {
+  test('an instance provider model in the list is a configured provider', () => {
+    expect(providerGateApplies([], 'gpt-5', false, true)).toBe(false)
+    expect(providerGateApplies(null, '', false, true)).toBe(false)
+    // Without one the gate is the one before.
+    expect(providerGateApplies([], 'gpt-5', false, false)).toBe(true)
+    expect(providerGateApplies([], 'gpt-5', false)).toBe(true)
+  })
+
+  test('the model list says whether an instance provider is offered', () => {
+    expect(instanceModelOffered({ 'Instance: Shared': [{ id: 'instance/p1/gpt-5' }] })).toBe(true)
+    expect(instanceModelOffered({ Custom: [{ id: 'custom/p1' }], 'Agent in the Loop': [{ id: 'loop/mcp' }] })).toBe(false)
+    expect(instanceModelOffered({})).toBe(false)
+    expect(instanceModelOffered(null)).toBe(false)
   })
 })

@@ -22,6 +22,8 @@ import { readFeatureModel } from '@/lib/featureModels'
 import { agentTriage, TriageActionError, type TriageChannel, type TriageTenant } from '@/lib/triage/actions'
 import { MAX_REVIEW_BUDGET } from '@/lib/triage/limits'
 import { isChatProvider } from '@/lib/llmProviderKinds'
+import { entitledInstanceProviders } from '@/lib/instanceProviders/entitlement'
+import { splitInstanceModel } from '@/lib/instanceProviders/rows'
 
 export { MAX_REVIEW_BUDGET }
 
@@ -127,8 +129,16 @@ export async function computePreflight(
   )
 
   // "Does the configured model have a key" is a yes/no; the key itself never
-  // leaves the server, and its absence is not an error.
-  const hasKey = Boolean(model) && providers.filter(isChatProvider).some((p) => Boolean(p.apiKey))
+  // leaves the server, and its absence is not an error. An instance provider's
+  // model (step 6.11) has one only while the owner may use that provider: the
+  // agent builds it from that provider alone, never from the owner's own keys.
+  const instanceRef = splitInstanceModel(model)
+  const hasKey = Boolean(model) && (instanceRef
+    ? (await entitledInstanceProviders(caller.userId).catch((err) => {
+        console.error('[triage] instance providers unreadable:', err)
+        return []
+      })).some((p) => p.id === instanceRef.providerId)
+    : providers.filter(isChatProvider).some((p) => Boolean(p.apiKey)))
 
   let blockedReason: string | null = null
   if (liveRun) {

@@ -70,7 +70,7 @@ const ALLOWED: Record<string, Allowed> = {
   'src/app/api/models/route.ts::list_on_caller': {
     reason: "the caller's own LLM providers: a per-user row",
     lines: [
-      'const rows = await prisma.userLlmProvider.findMany({ where: { userId: eff.userId } })',
+      'const rows = await prisma.userLlmProvider.findMany({ where: { userId: effectiveUserId } })',
     ],
   },
   'src/app/api/mute-rule-presets/route.ts::row_owner_helper': {
