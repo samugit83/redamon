@@ -75,6 +75,7 @@
         "written_by": { "type": "string" },
         "readable": { "type": "boolean" },
         "read_deny_reason": { "$ref": "#/definitions/read_deny_reason" },
+        "share": { "enum": ["ordinary", "secret"], "default": "ordinary" },
         "group": { "type": "string" },
         "form_section": { "type": ["string", "null"] },
         "governor": { "$ref": "#/definitions/governor" },

@@ -98,6 +98,15 @@ describe('the page says the things a reader would otherwise get wrong', () => {
     }
   })
 
+  test("a share:secret field says it stays the owner's, and only those", () => {
+    const page = renderSettingsReference()
+    const rows = new Map(page.split('\n').filter(l => l.startsWith('| `')).map(l => [l.split('`')[1], l]))
+    for (const f of fieldsWhere(() => true)) {
+      const says = rows.get(f.key)?.includes('never shown to a collaborator')
+      expect(says, f.key).toBe(f.share === 'secret')
+    }
+  })
+
   test('a create-only field says it is fixed at creation', () => {
     const page = renderSettingsReference()
     const row = page.split('\n').find(l => l.startsWith('| `targetDomain` |'))

@@ -156,12 +156,37 @@ def load_yaml() -> dict:
     return yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
 
 
+#: The one MCP read refusal that is not the owner's secret: the owner's id names the owner,
+#: which every project read returns anyway.
+SHAREABLE_READ_DENY_REASONS = frozenset({"other_user"})
+
+
+def check_share_classes(fields: dict) -> None:
+    """A column withheld from MCP reads is withheld from collaborators too (`share: secret`).
+
+    Absent `share` means ordinary, which a collaborator reads, so a credential column added
+    with `readable: false` and no `share` would reach every person the project is shared with.
+    """
+    leaks = sorted(
+        name for name, f in fields.items()
+        if f.get("readable") is False
+        and f.get("read_deny_reason") not in SHAREABLE_READ_DENY_REASONS
+        and f.get("share") != "secret"
+    )
+    if leaks:
+        raise RegistryError(
+            "a column withheld from MCP reads must also be share: secret, or a collaborator "
+            "reads it: " + ", ".join(leaks)
+        )
+
+
 def build(document: dict | None = None) -> dict:
     """Validate the YAML and join Prisma's type and default onto every field."""
     from prisma_project_columns import project_columns
 
     doc = document if document is not None else load_yaml()
     validate(doc)
+    check_share_classes(doc["fields"])
 
     columns = project_columns()
     fields = doc["fields"]

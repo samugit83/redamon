@@ -137,6 +137,20 @@ is pinned to it by a shared fixture table.
   beside its tool automatically. An explicit `null` means "no input anywhere",
   which the parity test reads to tell a deliberate omission from a forgotten one.
 
+## Who may read a field: `readable:` and `share:`
+
+- **`readable: false`** withholds the column from every MCP read
+  (`mcpReadableFields`), with `read_deny_reason` saying why. Absent means readable.
+- **`share: secret`** keeps the column the owner's when the project is shared:
+  `projectReadView` (`webapp/src/lib/authz/projectReadView.ts`) removes it from
+  every project read by anyone else. Absent means `ordinary`. It covers every
+  `readable: false` column except `userId` (the owner's id names the owner, which
+  the project read returns anyway) and the custom request-header lists, which an
+  owner's token reads but which is where an operator puts an API key. The build
+  refuses a `readable: false` column that is not `share: secret` unless its
+  reason is `other_user`, so a credential column added later is never shared by
+  default. `share` is not `deny_reason: secret`, which refuses an MCP write.
+
 ## Bounds are not decoration
 
 The form input and the MCP validator are both generated from `bounds`, so a fake

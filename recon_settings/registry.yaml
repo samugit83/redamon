@@ -682,6 +682,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: never
+    share: secret
     stealth: { set: [] }
     deny_reason: secret
     readable: false
@@ -1679,6 +1680,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     validator: http_header
     group: headers
     meaning: >-
@@ -2175,6 +2177,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     readable: false
     validator: free_text
     deny_reason: secret
@@ -2587,6 +2590,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     validator: http_header
     group: headers
     meaning: >-
@@ -3346,6 +3350,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     roe_parse: deny
     readable: false
     validator: free_text
@@ -3800,6 +3805,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     validator: http_header
     group: headers
     meaning: >-
@@ -4003,6 +4009,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     validator: http_header
     group: headers
     meaning: >-
@@ -4899,6 +4906,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     validator: http_header
     group: headers
     meaning: >-
@@ -5365,6 +5373,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     validator: http_header
     group: headers
     meaning: >-
@@ -5568,6 +5577,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     validator: http_header
     group: not-tuning
     meaning: >-
@@ -6934,6 +6944,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: secret
     readable: false
     validator: free_text
     read_deny_reason: credential
@@ -7132,6 +7143,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     roe_parse: deny
     readable: false
     validator: free_text
@@ -7471,6 +7483,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     roe_parse: allow
     readable: false
     validator: free_text
@@ -7488,6 +7501,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     roe_parse: allow
     readable: false
     validator: free_text
@@ -7505,6 +7519,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     roe_parse: allow
     readable: false
     validator: free_text
@@ -7522,6 +7537,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     roe_parse: allow
     readable: false
     validator: free_text
@@ -7585,6 +7601,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     readable: false
     validator: free_text
     deny_reason: upload-managed
@@ -7606,6 +7623,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     readable: false
     validator: free_text
     read_deny_reason: document_blob
@@ -7623,6 +7641,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     readable: false
     validator: free_text
     read_deny_reason: document_blob
@@ -7640,6 +7659,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     roe_parse: allow
     readable: false
     validator: free_text
@@ -7872,6 +7892,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     readable: false
     validator: json_object
     read_deny_reason: document_blob
@@ -7890,6 +7911,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: secret
     readable: false
     validator: free_text
     read_deny_reason: document_blob
@@ -11257,6 +11279,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: secret
     validator: http_header
     group: headers
     meaning: >-

@@ -96,6 +96,9 @@ function meaningCell(f: NamedField): string {
   if (f.readable === false) {
     notes.push('Withheld from every read on the MCP surface.')
   }
+  if (f.share === 'secret') {
+    notes.push("The owner's only: never shown to a collaborator.")
+  }
   // What stealth mode does to this field. An operator choosing a value wants to
   // know it will be overwritten before they spend time on it, and a `ceiling`
   // behaves differently from a `set`: it leaves an already-quieter value alone.

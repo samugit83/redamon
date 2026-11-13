@@ -460,6 +460,37 @@ describe('T16 exactly the documented columns are closed', () => {
   })
 })
 
+// --- HD-27: the owner's secrets are named -------------------------------------------------
+
+describe("HD-27 the columns that stay the owner's when a project is shared", () => {
+  const CUSTOM_HEADER_LISTS = [
+    'arjunCustomHeaders', 'ffufCustomHeaders', 'hakrawlerCustomHeaders', 'httpxCustomHeaders',
+    'jsReconEndpointCustomHeaders', 'katanaCustomHeaders', 'kiterunnerHeaders',
+    'zapAjaxSpiderCustomHeaders',
+  ]
+
+  test('share is ordinary or secret, and absent means ordinary', () => {
+    const problems = offenders(f =>
+      f.share !== undefined && f.share !== 'ordinary' && f.share !== 'secret' ? `share '${f.share}'` : null
+    )
+    expect(problems).toEqual([])
+  })
+
+  test('every readable:false column except userId is secret', () => {
+    const problems = fieldsWhere(f => f.readable === false)
+      .filter(f => f.key !== 'userId' && f.share !== 'secret')
+      .map(f => `${f.key}: withheld from MCP reads but shared with collaborators`)
+    expect(problems).toEqual([])
+    expect(fields.userId.share).not.toBe('secret')
+  })
+
+  test('the secret set is exactly the withheld columns and the custom header lists', () => {
+    const withheld = fieldsWhere(f => f.readable === false).map(f => f.key).filter(k => k !== 'userId')
+    const secret = fieldsWhere(f => f.share === 'secret').map(f => f.key)
+    expect(secret).toEqual([...withheld, ...CUSTOM_HEADER_LISTS].sort())
+  })
+})
+
 // --- T4: every field belongs to a real tool -------------------------------------------------
 
 describe('T4 fields and tools agree', () => {
