@@ -217,6 +217,9 @@ const SAME_ORIGIN_ROUTES = [
   '/api/auth/act-as',
   '/api/auth/sessions/revoke-all',
   '/api/invite/accept',
+  '/api/projects/[id]/collaborators',
+  '/api/projects/[id]/collaborators/[userId]',
+  '/api/projects/[id]/leave',
   '/api/root/transfer',
   '/api/root/transfer/accept',
   '/api/root/transfer/cancel',
@@ -236,7 +239,7 @@ const SAME_ORIGIN_ROUTES = [
   '/api/users/invite',
 ]
 
-/** The families a new route joins the list from: accounts, credentials, sessions, Root, instance and access policy. */
+/** The families a new route joins the list from: accounts, credentials, sessions, Root, instance and access policy, shares. */
 const SAME_ORIGIN_FAMILIES = [
   /^\/api\/users(\/invite)?$/,
   /^\/api\/users\/\[id\](\/(password|permissions|disable|enable|revoke-sessions|reset-credentials|settings|invite\/[^/]+|mcp-tokens(\/\[tokenId\])?))?$/,
@@ -245,6 +248,7 @@ const SAME_ORIGIN_FAMILIES = [
   /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?)$/,
   /^\/api\/invite\//,
   /^\/api\/account\//,
+  /^\/api\/projects\/\[id\]\/(collaborators(\/\[userId\])?|leave)$/,
 ]
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])

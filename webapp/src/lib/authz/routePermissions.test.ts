@@ -47,6 +47,7 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'GET /api/js-recon/trufflehog/available': 'whether the TruffleHog image is present: an instance fact the JS recon tab reads, no project data',
   'GET /api/projects': 'the projects the account can see (visibleProjectsWhere): seeing one is project access, and each action on it asks its own permission',
   'GET /api/projects/defaults': 'the default values of a new project form: registry data, no project, nothing written',
+  'POST /api/projects/[id]/leave': "giving up one's own share of the project (the effective user's share row; none answers 404, 404 too with sharing not in force): one's own share is always one's to leave, so no permission gates it (step 4.4)",
   'GET /api/projects/[id]/my-access': "the account's own access to the project (projectAccess) for the stale-access poll: any signed-in account asks about itself, a project it cannot see answers 404, nothing written (step 4.3)",
   'GET /api/nuclei-templates': 'the templates the account may select or manage, scoped by owner inside (own and instance ones; every one with platform:nuclei_templates): reading the library changes nothing',
   'GET /api/account/activity': "the signed-in account's own notices and the audit rows about it (404 with the identity switch off): an account reads its own history",
@@ -86,6 +87,7 @@ const ASKED_IN_LIB: Readonly<Record<string, string>> = {
   'POST /api/admin/admin-profiles': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
   'PUT /api/admin/admin-profiles/[id]': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
   'DELETE /api/admin/admin-profiles/[id]': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
+  'GET /api/projects/[id]/collaborators': "projectShares.requireShareListAccess asks project:share on the project (the owner, at Manage), and lets an overseer (projects:oversee, Read) or Root's break-glass list the shares too, which can() at Manage would refuse (step 4.4)",
   'GET /api/users/[id]/permissions': 'userPermissionAdmin.readUserPermissions asks users:assign_permissions (admins:manage for an admin)',
   'PUT /api/users/[id]/permissions': 'userPermissionAdmin.changeUserPermissions asks users:assign_permissions (admins:manage for an admin)',
 }
@@ -115,6 +117,7 @@ const NO_ROWS: Readonly<Record<string, string>> = {
   'root:transfer': 'Root\'s own (rootOnly): no seeded account other than Root holds it; p2.tsv covers the transfer',
   'roles:manage': 'no seeded admin lacks it and a member is refused by the switch-off 404 as well; the route tests cover it',
   'admin_profiles:manage': 'Root\'s own (rootOnly); the route tests cover it',
+  'project:share': 'every holder request that passes the route\'s own checks looks up an account (counted against a per-person ceiling and audited) or changes a share; p4.tsv covers the share routes by hand (step 4.4)',
 }
 
 /**
@@ -278,8 +281,10 @@ describe('route permissions: every route (steps 3.8, 3.9; PE-19, PE-22)', () => 
       expect(isPermissionId(p) && PERMISSIONS[p].gatesExisting, `${p} in ENFORCED_ELSEWHERE`).toBe(true)
       expect(used.has(p), `${p} is named by a route now: drop it from ENFORCED_ELSEWHERE`).toBe(false)
     }
-    // A later phase's feature is that phase's to wire (each later manifest test requires its own).
-    expect(PERMISSION_IDS.filter(p => !PERMISSIONS[p].gatesExisting && named().includes(p))).toEqual([])
+    // A later phase's feature is that phase's to wire (each later manifest test requires its own); the
+    // ones a step has wired are listed here.
+    const WIRED_NEW_FEATURES = new Set<string>(['project:share'])
+    expect(PERMISSION_IDS.filter(p => !PERMISSIONS[p].gatesExisting && named().includes(p) && !WIRED_NEW_FEATURES.has(p))).toEqual([])
   })
 
   test('every permission a route names has generated live rows, or NO_ROWS says why; p3_generated.tsv is up to date', () => {
