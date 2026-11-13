@@ -249,6 +249,18 @@ bearer, the shell runs as the ticket's user and project whatever the init frame 
 `POST /ws/close` ends the open terminal with close 4403. It also needs the `agent` and
 `kali-sandbox` containers.
 
+`tests/ghsa_w454_msf_lease_live.sh` checks GHSA-w454-6hwp-fm58 against a real `msfconsole`
+without touching the stack's own. It feeds `tests/ghsa_w454_msf_lease_live.py` to the running
+`kali-sandbox`, which starts a second Metasploit server from the mounted `mcp/servers` on
+loopback ports 18003/18013 with a 20-second idle window, and opens a loopback reverse shell as
+one project's session. Another project's `sessions -l`, `sessions -c "id" -i <id>`, `irb`,
+`sessions -K`, `jobs -K` and `msf_restart` must be refused, and its forged session link
+answered 409. The owner's session must survive and still answer `id`. Once the owner ends it
+and goes idle, the other project gets a restarted console. It takes 3 to 6 minutes and needs
+only the `kali-sandbox` container. Pointed at the code before the fix
+(`MSF_SERVER_DIR=<dir>` passed to the Python file), those refusal checks fail, which is the
+advisory reproduced.
+
 `tests/rbac_graph_counts_live.sh` checks that a read collaborator sees the owner's graph node for
 node: it gives `rbac-member-c` a throwaway project `rbac-graph-counts` with a Read share for
 `rbac-member-b`, writes three `Domain` nodes (each with a `Subdomain`) under it with `cypher-shell`,
