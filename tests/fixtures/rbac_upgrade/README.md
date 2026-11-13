@@ -16,6 +16,7 @@ user, host, scan result or secret is in any file here.
 | `expected/<scenario>.after.permissions.out` | the same with `RBAC_IDENTITY_ENABLED` and `RBAC_PERMISSIONS_ENABLED` on (the harness picks it when both read on) |
 | `expected/<scenario>.capabilities.out`, `.capabilities.identity.out`, `.capabilities.permissions.out` | what each account may do after the upgrade, as `/api/auth/me` must answer it in `serve-check`, picked by the switches as the `.after` files are (below) |
 | `preview_after.sql` | what the startup list wrote, in the lines the `preview` mode makes of the upgrade preview, run after the list only |
+| `downgrade_state.sql` | the `downgrade` mode's RBAC state: a row in every table and a value in every column the release adds, around its own `dg-*@e2e.local` accounts (psql variable `pw`, the shared password's hash) |
 
 ## Scenarios
 
@@ -132,6 +133,22 @@ run left. The preview must also write nothing and exit 10 exactly when `preview_
 says it has something to review (`review|yes`), else 0, when it prints only `root` and
 `instance_settings`. `legacy_grants` after a boot with the permissions switch on is what
 members keep once the conversion ran: only the grants kept as overrides, none in any fixture.
+
+## The downgrade (`downgrade`)
+
+`downgrade` boots the new image's list with every RBAC switch on, loads `downgrade_state.sql`
+(a table or column the image lacks is skipped), signs `dg-member` in and revokes its device
+session, then runs the new image's `rbac-upgrade-preview.mjs --downgrade` (exit 10; the
+accounts, the revoked session, the `instance/` project and the backup command named) and pipes
+its `--downgrade-sql` into psql. The pinned 7.7.2 image's list must then drop every table and
+column the report listed as present, keep every account and project, and its server must refuse
+the disabled and invited accounts, give the No-access member a member's rights, hide the shared
+project from the collaborator and accept the revoked session until it restarts with another
+`AUTH_SECRET`. The new image's list again must recreate the tables, choose `dg-admin` as an
+unconfirmed Root, copy the instance settings from the same accounts, give the fixture members
+the legacy grants they had after the first upgrade, and bring `dg-disabled` back active without
+a password, which `scripts/reset-password.mjs` fixes. `RBAC_UPGRADE_PREVIEW_SCRIPT` feeds a
+working-tree preview, as in `preview`.
 
 ## The pinned 7.7.2 image
 

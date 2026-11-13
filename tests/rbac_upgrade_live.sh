@@ -48,6 +48,20 @@
 #             role}, no sv, no sid, signed with the fake AUTH_SECRET) must answer the
 #             same, one signed with another secret 401; /api/projects must list each
 #             account's own projects only. The server is removed after each scenario.
+#   downgrade the new image's list with every RBAC switch on, then RBAC state in every
+#             table and column the release adds (downgrade_state.sql, dg-*@e2e.local) and a
+#             device session revoked after a real sign-in; the new image's
+#             `rbac-upgrade-preview.mjs --downgrade` must exit 10 and name it, its
+#             `--downgrade-sql` must leave no `instance/` model id; then the pinned 7.7.2
+#             image's list on the same database (its `db push --accept-data-loss`) must drop
+#             every table and column the report listed and keep the 7.7.2 rows, and its
+#             server must refuse the disabled and invited accounts, give a No-access member
+#             a member's rights (fail open), hide the shared project from the collaborator
+#             (fail closed) and accept the revoked session until AUTH_SECRET changes. Last,
+#             the new image's list again: the tables come back, Root is chosen again
+#             (unconfirmed), the instance settings and legacy grants are derived again, the
+#             disabled account is active without a password and signs in after
+#             scripts/reset-password.mjs. Publishes 127.0.0.1:3901, as serve-check does.
 #   serve <scenario>   the list, then the image's server on 127.0.0.1:3901 with fake
 #             secrets, until Ctrl-C: the disposable instance for destructive identity
 #             checks (Root transfer, set-root, upgrade, downgrade). Webapp only: no
@@ -84,6 +98,7 @@
 #
 # Run:  bash tests/rbac_upgrade_live.sh all twice parallel failure preview serve-check
 #       bash tests/rbac_upgrade_live.sh selftest
+#       bash tests/rbac_upgrade_live.sh downgrade
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-grants bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=nuclei-template-owners bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-instance-settings bash tests/rbac_upgrade_live.sh failure
@@ -439,7 +454,7 @@ LABEL="redamon.rbac-upgrade=$PFX"
 DB_URL="postgresql://postgres:${PG_PASSWORD}@${PG}:5432/redamon"
 
 usage() {
-  echo "usage: bash tests/rbac_upgrade_live.sh <all|twice|parallel|failure|preview|serve-check>... | serve <scenario> | regen | selftest" >&2
+  echo "usage: bash tests/rbac_upgrade_live.sh <all|twice|parallel|failure|preview|serve-check|downgrade>... | serve <scenario> | regen | selftest" >&2
   echo "  scenarios: $(cd "$FIX/seed" 2>/dev/null && ls -- *.sql 2>/dev/null | sed 's/\.sql$//' | tr '\n' ' ')" >&2
   exit 2
 }
@@ -458,7 +473,7 @@ case "$1" in
     MODES=("$1") ;;
   *)
     for m in "$@"; do
-      case "$m" in all|twice|parallel|failure|preview|serve-check) MODES+=("$m") ;; *) usage ;; esac
+      case "$m" in all|twice|parallel|failure|preview|serve-check|downgrade) MODES+=("$m") ;; *) usage ;; esac
     done ;;
 esac
 HAS_SERVE_CHECK=0
@@ -466,6 +481,7 @@ NEEDS_PYTHON=0
 for m in "${MODES[@]}"; do
   case "$m" in
     serve-check) HAS_SERVE_CHECK=1; NEEDS_PYTHON=1 ;;
+    downgrade) HAS_SERVE_CHECK=1 ;; # publishes the server's port too
     preview|selftest) NEEDS_PYTHON=1 ;;
   esac
 done
@@ -898,6 +914,203 @@ mode_serve_check() {
     else fail "$scn serve-check: a cookie signed with another secret is refused (got $code)"; fi
   fi
   docker rm -f "$PFX-web" >/dev/null 2>&1
+}
+
+# ---- downgrade ---------------------------------------------------------------------------
+# The new image runs with every RBAC switch on whatever the environment says (the downgrade
+# leaves the most state behind then); 7.7.2 reads none of them. No authorization cache, so a
+# revoke shows at the next request.
+DG_SWITCH_ARGS=(-e RBAC_IDENTITY_ENABLED=true -e RBAC_PERMISSIONS_ENABLED=true -e RBAC_SHARING_ENABLED=true
+                -e RBAC_SHARING_WRITE_ENABLED=true -e RBAC_GOVERNANCE_ENABLED=true -e RBAC_AUTHZ_CACHE_MS=0)
+ROTATED_AUTH_SECRET=rbac-upgrade-rotated-auth-secret-0001
+
+run_list_as() { # image log docker-args... -> exit code of the list
+  local image="$1" log="$2"; shift 2
+  docker run --rm --label "$LABEL" --network "$NET" -e DATABASE_URL="$DB_URL" -e CHECKPOINT_DISABLE=1 "$@" \
+    --entrypoint sh "$image" -c "$LIST_CMD" > "$log" 2>&1
+}
+
+start_web() { # image auth_secret docker-args... -> 0 once /api/health answers 200 on $SERVE_PORT
+  local image="$1" secret="$2" web="$PFX-web" i code; shift 2
+  docker rm -f "$web" >/dev/null 2>&1
+  docker run -d --name "$web" --label "$LABEL" --network "$NET" -p "127.0.0.1:$SERVE_PORT:3000" \
+    -e DATABASE_URL="$DB_URL" -e CHECKPOINT_DISABLE=1 -e AUTH_SECRET="$secret" \
+    -e INTERNAL_API_KEY="$FAKE_INTERNAL_API_KEY" -e SCANNER_API_KEY="$FAKE_SCANNER_API_KEY" "$@" \
+    --entrypoint sh "$image" -c 'eval "$(tail -n 1 /app/entrypoint.sh)"' >/dev/null || return 1
+  for i in $(seq 1 120); do
+    code="$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$SERVE_BASE/api/health" 2>/dev/null || true)"
+    [ "$code" = 200 ] && return 0
+    sleep 1
+  done
+  docker logs "$web" 2>&1 | tail -n 40 | sed 's/^/    | /'
+  return 1
+}
+stop_web() { docker rm -f "$PFX-web" >/dev/null 2>&1; }
+
+run_report() { # out err args... -> exit code: the new image's preview (or RBAC_UPGRADE_PREVIEW_SCRIPT) with args
+  local out="$1" err="$2"; shift 2
+  local args=(--rm --label "$LABEL" --network "$NET" -e DATABASE_URL="$DB_URL" -e CHECKPOINT_DISABLE=1
+              "${DG_SWITCH_ARGS[@]}" -w /app --entrypoint node)
+  if [ -n "$PREVIEW_SCRIPT" ]; then
+    docker run -i "${args[@]}" "$IMAGE" --input-type=module - "$@" < "$PREVIEW_SCRIPT" > "$out" 2> "$err"
+  else
+    docker run "${args[@]}" "$IMAGE" scripts/rbac-upgrade-preview.mjs "$@" < /dev/null > "$out" 2> "$err"
+  fi
+}
+
+listed_drops() { # report "Tables dropped" | "Columns dropped" -> the names it lists as present
+  awk -v head="  $2" 'index($0, head) == 1 { on = 1; next }
+    on && $0 == "" { exit }
+    on && /^    [^ ]/ && $0 !~ /not in this database/ { print $1 }' "$1"
+}
+
+cookie_of() { awk -F'\t' -v name="$AUTH_COOKIE" '$6 == name { print $7 }' "$1"; }
+
+expect_code() { # label want(regex) got
+  if [[ "$3" =~ ^($2)$ ]]; then pass "$1 ($3)"; else fail "$1 (want $2, got $3)"; fi
+}
+
+expect_eq() { # label want got
+  if [ "$2" = "$3" ]; then pass "$1"; else fail "$1"; echo "    want: $2"; echo "    got:  $3"; fi
+}
+
+instance_ids_left() {
+  psql_db -c "SELECT (SELECT count(*) FROM projects WHERE agent_openai_model LIKE 'instance/%'
+                        OR ai_pipeline_model LIKE 'instance/%' OR cypherfix_llm_model LIKE 'instance/%')
+                   + (SELECT count(*) FROM users WHERE default_agent_model LIKE 'instance/%'
+                        OR default_ai_pipeline_model LIKE 'instance/%')
+                   + (SELECT count(*) FROM user_tradecraft_resources WHERE llm_model LIKE 'instance/%')
+                   + (SELECT count(*) FROM user_project_presets WHERE settings::text LIKE '%\"instance/%')"
+}
+
+mode_downgrade() {
+  local scn="$1" hash code rc cookie t c gone kept want
+  local up="$scn downgrade"
+  prepare "$scn" || return
+  run_list_as "$IMAGE" "$TMP/dg-up1.log" "${DG_SWITCH_ARGS[@]}"
+  list_ok "$scn" "downgrade: new image, every switch on" "$TMP/dg-up1.log" $? || return
+  psql_db -c "SELECT email || '|' || array_to_string(legacy_grants, ',') FROM users ORDER BY email" > "$TMP/dg-grants.before"
+  psql_db -c "SELECT coalesce(tunnel_source_user_id, '-') || '|' || coalesce(capture_source_user_id, '-') FROM instance_settings" > "$TMP/dg-sources.before"
+
+  hash="$(docker run --rm --entrypoint node "$IMAGE" -e 'process.stdout.write(require("bcryptjs").hashSync(process.argv[1], 10))' "$FIXTURE_PASSWORD")"
+  if [[ "$hash" == '$2'* ]] && psql_db -v pw="$hash" < "$FIX/downgrade_state.sql" > "$TMP/dg-state.log" 2>&1; then
+    pass "$up: RBAC state written in every table and column the release adds"
+  else
+    fail "$up: RBAC state written in every table and column the release adds"; show_log "$TMP/dg-state.log"; return
+  fi
+
+  # A real device session, then its revoke, on the new release.
+  start_web "$IMAGE" "$FAKE_AUTH_SECRET" "${DG_SWITCH_ARGS[@]}" || { fail "$up: new server starts"; stop_web; return; }
+  rm -f "$TMP/jar"
+  expect_code "$up: dg-member signs in on the new release" 200 "$(login dg-member@e2e.local "$TMP/jar")"
+  cookie="$(cookie_of "$TMP/jar")"
+  rm -f "$TMP/jar2"
+  expect_code "$up: dg-collab signs in on the new release" 200 "$(login dg-collab@e2e.local "$TMP/jar2")"
+  code="$(http_get /api/projects -b "$TMP/jar2")"
+  if [ "$code" = 200 ] && grep -q '"dg-p1"' "$TMP/body"; then pass "$up: the collaborator lists the shared project on the new release"
+  else fail "$up: the collaborator lists the shared project on the new release (status $code)"; fi
+  expect_eq "$up: the device session revoked (one row)" 1 \
+    "$(psql_db -c "WITH r AS (UPDATE user_sessions SET revoked_at = now(), revoked_by_id = 'dg-admin', ended_by = 'admin'
+                     WHERE user_id = 'dg-member' AND revoked_at IS NULL RETURNING 1) SELECT count(*) FROM r")"
+  expect_code "$up: the revoked session is refused on the new release" 401 "$(http_get /api/auth/me -H "Cookie: $AUTH_COOKIE=$cookie")"
+  stop_web
+
+  # The procedure: read the report, reset the instance model ids.
+  run_report "$TMP/dg-report.txt" "$TMP/dg-report.err" --downgrade; rc=$?
+  expect_code "$up: the downgrade report exits 10 (something would be lost)" 10 "$rc"
+  local said=1
+  for want in '^RBAC downgrade preview: going back to 7\.7\.2' 'dg-noaccess@e2e\.local +permission set No access' \
+              'dg-custom@e2e\.local +permission set dg scanners only \(custom\)' 'dg-usermgr@e2e\.local +admin profile User manager' \
+              'dg-disabled@e2e\.local +disabled' 'dg-invited@e2e\.local +invited' '1 device session revoked' \
+              'dg shared project \(dg-owner@e2e\.local\) +agent model' 'pg_dump'; do
+    grep -Eq -- "$want" "$TMP/dg-report.txt" || { said=0; echo "    missing: $want"; }
+  done
+  if [ "$said" -eq 1 ]; then pass "$up: the report names the accounts, the revoked session, the instance model and the backup"
+  else fail "$up: the report names the accounts, the revoked session, the instance model and the backup"; show_log "$TMP/dg-report.txt"; fi
+  listed_drops "$TMP/dg-report.txt" 'Tables dropped' > "$TMP/dg-tables"
+  listed_drops "$TMP/dg-report.txt" 'Columns dropped' > "$TMP/dg-columns"
+  if [ -s "$TMP/dg-tables" ] && [ -s "$TMP/dg-columns" ]; then
+    pass "$up: the report lists $(wc -l < "$TMP/dg-tables") tables and $(wc -l < "$TMP/dg-columns") columns present here"
+  else fail "$up: the report lists the tables and columns to drop"; show_log "$TMP/dg-report.txt"; return; fi
+  if awk '/^  Tables dropped/ { on = 1; next } on && $0 == "" { exit } on && / 0 rows /' "$TMP/dg-report.txt" | grep -q .; then
+    fail "$up: every dropped table holds a row of the state"
+    awk '/^  Tables dropped/ { on = 1; next } on && $0 == "" { exit } on && / 0 rows /' "$TMP/dg-report.txt" | sed 's/^/    /'
+  else pass "$up: every dropped table holds a row of the state"; fi
+  run_report "$TMP/dg-reset.sql" "$TMP/dg-reset.err" --downgrade-sql; rc=$?
+  if [ "$rc" -eq 0 ] && psql_db < "$TMP/dg-reset.sql" > "$TMP/dg-reset.log" 2>&1; then pass "$up: --downgrade-sql runs"
+  else fail "$up: --downgrade-sql runs (exit $rc)"; show_log "$TMP/dg-reset.err"; show_log "$TMP/dg-reset.log"; fi
+  expect_eq "$up: no instance/ model id left" 0 "$(instance_ids_left)"
+
+  # 7.7.2's own list on the same database.
+  local users_before projects_before
+  users_before="$(psql_db -c 'SELECT count(*) FROM users')"
+  projects_before="$(psql_db -c 'SELECT count(*) FROM projects')"
+  run_list_as "$OLD_IMAGE" "$TMP/dg-old.log"
+  list_ok "$scn" "downgrade: 7.7.2 list on the upgraded database" "$TMP/dg-old.log" $? || return
+  gone=""
+  while read -r t; do
+    [ "$(psql_db -c "SELECT to_regclass('public.$t') IS NULL")" = t ] || gone+=" $t"
+  done < "$TMP/dg-tables"
+  while IFS=. read -r t c; do
+    [ "$(psql_db -c "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public'
+                       AND table_name = '$t' AND column_name = '$c'")" = 0 ] || gone+=" $t.$c"
+  done < "$TMP/dg-columns"
+  if [ -z "$gone" ]; then pass "$up: 7.7.2's db push dropped every table and column the report listed"
+  else fail "$up: 7.7.2's db push dropped every table and column the report listed (still there:$gone)"; fi
+  expect_eq "$up: 7.7.2 keeps every account and project" "$users_before|$projects_before" \
+    "$(psql_db -c 'SELECT count(*) FROM users')|$(psql_db -c 'SELECT count(*) FROM projects')"
+  expect_eq "$up: the disabled account still has no password" "" "$(psql_db -c "SELECT password FROM users WHERE id = 'dg-disabled'")"
+
+  # 7.7.2's server, same AUTH_SECRET, then a new one.
+  start_web "$OLD_IMAGE" "$FAKE_AUTH_SECRET" || { fail "$up: 7.7.2 server starts"; stop_web; return; }
+  expect_code "$up: the revoked session is valid again on 7.7.2" 200 "$(http_get /api/auth/me -H "Cookie: $AUTH_COOKIE=$cookie")"
+  rm -f "$TMP/jar"
+  expect_code "$up: the disabled account cannot sign in on 7.7.2" '4[0-9][0-9]' "$(login dg-disabled@e2e.local "$TMP/jar")"
+  expect_code "$up: the invited account cannot sign in on 7.7.2" '4[0-9][0-9]' "$(login dg-invited@e2e.local "$TMP/jar")"
+  rm -f "$TMP/jar"
+  expect_code "$up: the No-access member signs in on 7.7.2" 200 "$(login dg-noaccess@e2e.local "$TMP/jar")"
+  code="$(http_get /api/auth/me -b "$TMP/jar")"
+  if [ "$code" = 200 ] && grep -q '"role":"standard"' "$TMP/body"; then pass "$up: the No-access member is a plain member on 7.7.2 (fail open)"
+  else fail "$up: the No-access member is a plain member on 7.7.2 (status $code)"; fi
+  expect_code "$up: the No-access member lists projects on 7.7.2" 200 "$(http_get /api/projects -b "$TMP/jar")"
+  rm -f "$TMP/jar"
+  expect_code "$up: the collaborator signs in on 7.7.2" 200 "$(login dg-collab@e2e.local "$TMP/jar")"
+  code="$(http_get /api/projects -b "$TMP/jar")"
+  if [ "$code" = 200 ] && ! grep -q '"dg-p1"' "$TMP/body"; then pass "$up: the shared project is gone from the collaborator's list (fail closed)"
+  else fail "$up: the shared project is gone from the collaborator's list (status $code)"; fi
+  expect_code "$up: the collaborator cannot open the shared project on 7.7.2" '403|404' "$(http_get /api/projects/dg-p1 -b "$TMP/jar")"
+  stop_web
+  start_web "$OLD_IMAGE" "$ROTATED_AUTH_SECRET" || { fail "$up: 7.7.2 server starts with a new AUTH_SECRET"; stop_web; return; }
+  expect_code "$up: a new AUTH_SECRET ends the revoked session" 401 "$(http_get /api/auth/me -H "Cookie: $AUTH_COOKIE=$cookie")"
+  stop_web
+
+  # Upgrading again.
+  run_list_as "$IMAGE" "$TMP/dg-up2.log" "${DG_SWITCH_ARGS[@]}"
+  list_ok "$scn" "downgrade: the new image again (re-upgrade)" "$TMP/dg-up2.log" $? || return
+  kept=""
+  while read -r t; do
+    [ "$(psql_db -c "SELECT to_regclass('public.$t') IS NOT NULL")" = t ] || kept+=" $t"
+  done < "$TMP/dg-tables"
+  if [ -z "$kept" ]; then pass "$up: re-upgrade: every dropped table exists again"
+  else fail "$up: re-upgrade: every dropped table exists again (missing:$kept)"; fi
+  expect_eq "$up: re-upgrade: Root chosen again, unconfirmed" 'dg-admin|unconfirmed|automatic' \
+    "$(psql_db -c "SELECT root_user_id || '|' || coalesce(root_confirmed_at::text, 'unconfirmed') || '|' || coalesce(root_assigned_by, '')
+                     FROM instance_settings")"
+  expect_eq "$up: re-upgrade: the instance settings copied again from the same accounts" "$(cat "$TMP/dg-sources.before")" \
+    "$(psql_db -c "SELECT coalesce(tunnel_source_user_id, '-') || '|' || coalesce(capture_source_user_id, '-') FROM instance_settings")"
+  psql_db -c "SELECT email || '|' || array_to_string(legacy_grants, ',') FROM users WHERE email NOT LIKE 'dg-%' ORDER BY email" > "$TMP/dg-grants.after"
+  assert_same "$up: re-upgrade: the legacy grants derived again as at the first upgrade" "$TMP/dg-grants.before" "$TMP/dg-grants.after"
+  expect_eq "$up: re-upgrade: the disabled account is active again, without a password" 'active|' \
+    "$(psql_db -c "SELECT status || '|' || password FROM users WHERE id = 'dg-disabled'")"
+  if docker run --rm --label "$LABEL" --network "$NET" -e DATABASE_URL="$DB_URL" -e CHECKPOINT_DISABLE=1 "${DG_SWITCH_ARGS[@]}" \
+       -e RESET_EMAIL=dg-disabled@e2e.local -e RESET_PASSWORD="$FIXTURE_PASSWORD" -w /app --entrypoint node "$IMAGE" \
+       scripts/reset-password.mjs > "$TMP/dg-resetpw.log" 2>&1; then
+    pass "$up: re-upgrade: scripts/reset-password.mjs sets the disabled account's password"
+  else fail "$up: re-upgrade: scripts/reset-password.mjs sets the disabled account's password"; show_log "$TMP/dg-resetpw.log"; fi
+  start_web "$IMAGE" "$FAKE_AUTH_SECRET" "${DG_SWITCH_ARGS[@]}" || { fail "$up: re-upgraded server starts"; stop_web; return; }
+  rm -f "$TMP/jar"
+  expect_code "$up: re-upgrade: the account signs in after the reset" 200 "$(login dg-disabled@e2e.local "$TMP/jar")"
+  stop_web
 }
 
 mode_regen() {

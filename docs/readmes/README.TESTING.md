@@ -356,6 +356,7 @@ bash tests/rbac_upgrade_live.sh all twice parallel failure preview serve-check  
 RBAC_UPGRADE_SCENARIOS='^one_admin$' bash tests/rbac_upgrade_live.sh twice
 bash tests/rbac_upgrade_live.sh serve several_admins   # 127.0.0.1:3901 until Ctrl-C
 bash tests/rbac_upgrade_live.sh selftest               # offline: oracles, preview reader, cookie minter
+bash tests/rbac_upgrade_live.sh downgrade              # back to the pinned 7.7.2 image, then up again
 ```
 
 `twice` runs the list twice; `parallel` starts two containers at once (several webapp copies);
@@ -373,7 +374,15 @@ sources, stdio servers that stop loading, bearers read from the environment), di
 `capabilities` of `/api/auth/me` must equal `expected/<scenario>.capabilities[.identity|.permissions].out`
 (picked by the switches as the `.after` files are), a 7.7.x cookie (`{sub, role}`, no `sv`, no
 `sid`) must answer the same and one signed with another secret 401, and each account must list
-only its own projects. `serve` boots the server on the scenario database with fake secrets, the
+only its own projects. `downgrade` boots the new image with every switch on, writes RBAC state in
+every table and column the release adds (`downgrade_state.sql`), revokes a real device session,
+runs the preview's `--downgrade` report and its `--downgrade-sql` reset, then the pinned 7.7.2
+image's list: its `db push --accept-data-loss` must drop every table and column the report
+listed, and its server must refuse the disabled and invited accounts, give a restricted member
+a member's rights, hide the shared project and accept the revoked session until `AUTH_SECRET`
+changes; the new image's list again recreates the defaults (Root unconfirmed, instance settings,
+legacy grants) and the disabled account signs in after `scripts/reset-password.mjs`.
+`serve` boots the server on the scenario database with fake secrets, the
 disposable instance for checks that would move or sign out the dev stack's own admin. It needs
 Docker, `redamon-webapp:latest`, `redamon-webapp:rbac-7.7.2` and `postgres:16-alpine` (and
 `python3` for `preview`, `serve-check` and `selftest`), and prints `SKIP` without one (it never
