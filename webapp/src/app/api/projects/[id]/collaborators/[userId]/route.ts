@@ -13,9 +13,11 @@ interface RouteParams {
 }
 
 /**
- * PATCH /api/projects/[id]/collaborators/[userId] (step 4.4): change a share's level (Read only in
- * this phase), Raw data & files, expiry or note; audited `project.share.update`. Same-origin JSON;
- * refused while acting as the owner. Sharing in force only (404 otherwise).
+ * PATCH /api/projects/[id]/collaborators/[userId] (step 4.4): change a share's level, Raw data &
+ * files, expiry or note; audited `project.share.update`. Read + Write and its toggles only with write
+ * sharing in force, within what the person changing it holds; turning Exploitation & shells on takes
+ * their password (step 5.14). Same-origin JSON; refused while acting as the owner. Sharing in force
+ * only (404 otherwise).
  */
 export const PATCH = withRouteErrors('Could not change the share', async (request: NextRequest, { params }: RouteParams) => {
   if (!rbacFlags().sharing) return routeNotFound()
@@ -29,7 +31,7 @@ export const PATCH = withRouteErrors('Could not change the share', async (reques
   if (parsed instanceof NextResponse) return parsed
   const acting = await refuseWhileActingAs({ session: auth.session, targetUserId: auth.access?.project.userId }, 'change_shares')
   if (acting) return acting
-  return updateShare(auth, policy, userId, parsed.body)
+  return updateShare(auth, policy, userId, parsed.body, request)
 })
 
 /**

@@ -12,10 +12,14 @@
  *   (`takeShareLookup`) and audited (`project.share.lookup`, the email as a hash only) before it is
  *   answered: no row, no answer. Two accounts whose emails differ only in case (accounts created
  *   before step 1.2) name nobody: 409, never a pick.
- * - Read only in this phase: a `write` level, or a toggle of Read + Write, is refused with 409
- *   (`write_sharing_off`, or `above_max_level` when Root's policy allows Read only). With write sharing
- *   in force a toggle that spends the owner's credentials is refused first while the owner has not
- *   consented (409 `owner_consent_required`, step 5.6).
+ * - Read + Write and its toggles only with write sharing in force (step 5.14: RBAC_SHARING_WRITE_ENABLED
+ *   and Root's `maxLevel: 'write'`); otherwise a `write` level or a toggle is refused with 409
+ *   (`write_sharing_off`, or `above_max_level` when Root's policy allows Read only) and every answer is
+ *   Phase 4's. A toggle that spends the owner's credentials is refused first while the owner has not
+ *   consented (409 `owner_consent_required`, step 5.6). Nobody grants more than they hold (§4.1 rule 5):
+ *   a co-owner only the toggles of their own share (403 `grant_above_held`); a member grants
+ *   Exploitation & shells only when Root's policy lets members (`membersMayGrantExploit`, 409
+ *   `exploit_admins_only`), and whoever grants it confirms with their password (step-up, ID-25).
  * - Every change is written with its audit row in one transaction (`writeAuditTx`): no row, no
  *   change. A revoke, a leave or a change that narrows the share then stops the person's live work
  *   on the project (`onAccessReduced`, step 5.9), best effort: the change stands when the agent is
@@ -37,18 +41,46 @@ import { forbiddenResponse, type PermissionContext } from './guards'
 import { takeShareLookup } from './inviteLimits'
 import { auditOversightRead } from './oversight'
 import { projectAccess, type ProjectAccess } from './projectAccess'
-import { spendToggleConsentRefusal } from './ownerConsent'
+import { ConsentStoreMissing, readOwnerConsent, SPEND_TOGGLES, spendToggleConsentRefusal } from './ownerConsent'
 import { isAccessReduction, onAccessReduced, type ProjectReduction } from './revocation'
 import { accountTypeOf, loadInstanceRoot, type AccountType } from './root'
-import { DEFAULT_EXPIRY_DAYS_BOUNDS, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
+import { DEFAULT_EXPIRY_DAYS_BOUNDS, maxShareLevel, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
+import { requireStepUp } from './stepUp'
 
 export const SHARE_PERMISSION = 'project:share'
 export const NOTE_MAX_LENGTH = 500
 const EMAIL_MAX_LENGTH = 320
 const DAY_MS = 86_400_000
 const MAX_EXPIRY_MS = DEFAULT_EXPIRY_DAYS_BOUNDS[1] * DAY_MS
-/** The toggles of Read + Write (§6.1): Phase 5's, refused here. */
+/** The toggles of Read + Write (§6.1), granted only with write sharing in force (step 5.14). */
 const WRITE_TOGGLES = ['runScans', 'useAgent', 'exploit', 'manage'] as const
+export type WriteToggle = (typeof WRITE_TOGGLES)[number]
+
+const TOGGLE_LABELS: Record<WriteToggle, string> = {
+  runScans: 'Run scans', useAgent: 'Use AI agent', exploit: 'Exploitation & shells', manage: 'Manage',
+}
+const EXPLOIT_ADMINS_ONLY = 'The instance sharing policy lets only administrators grant Exploitation & shells.'
+const CONSENT_FIRST = "The project's owner must first allow collaborators to spend its credentials (keys and providers)."
+const notHeld = (toggle: WriteToggle) => `You can grant only what you hold yourself: your share has no ${TOGGLE_LABELS[toggle]}.`
+
+/** Why the asker may not grant a toggle (GET's `grantable`; the writers refuse with the same rule). */
+export type GrantRefusalCode = 'not_held' | 'owner_consent_required' | 'exploit_admins_only'
+export type GrantableToggle = { grantable: true } | { grantable: false; code: GrantRefusalCode; reason: string }
+
+/** What the person asking may grant, for the share dialog (only with write sharing in force). */
+export interface ShareGrantable {
+  /** The owner, or a co-owner (a Read + Write share with Manage), who grants at most what they hold. */
+  grantor: 'owner' | 'co_owner'
+  toggles: Record<WriteToggle, GrantableToggle>
+  /** The owner's consent to spend the project's credentials (step 5.6); only the owner gives it. */
+  ownerConsent: boolean
+}
+
+/** The person who may change shares, as the list's guard decided (null for an oversight or break-glass reader). */
+export interface ShareGrantor {
+  access: ProjectAccess
+  principal: { id: string; role: string }
+}
 
 /** An account a share names, as the share dialog shows it (ID-31): name, email and account type. */
 export interface SharePerson {
@@ -73,6 +105,11 @@ export interface ShareView {
   grantedBy: SharePerson | null
   createdAt: string
   updatedAt: string
+  /** The Read + Write toggles as stored: only with write sharing in force (Phase 4's answer otherwise, DV-30). */
+  runScans?: boolean
+  useAgent?: boolean
+  exploit?: boolean
+  manage?: boolean
 }
 
 interface ShareRecord {
@@ -116,7 +153,8 @@ function auditView(row: ShareRecord): Record<string, unknown> {
   }
 }
 
-function shareView(row: ShareRecord, at: number): ShareView {
+function shareView(row: ShareRecord, at: number, writeTerms = false): ShareView {
+  const toggles = writeTerms ? { runScans: row.runScans, useAgent: row.useAgent, exploit: row.exploit, manage: row.manage } : {}
   return {
     user: {
       id: row.userId, name: row.user?.name ?? null, email: row.user?.email ?? null, status: row.user?.status ?? null,
@@ -131,6 +169,7 @@ function shareView(row: ShareRecord, at: number): ShareView {
     grantedBy: null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    ...toggles,
   }
 }
 
@@ -202,9 +241,9 @@ export function recipientRefusal(recipientId: string, { actorId, ownerId }: { ac
 }
 
 /**
- * The level a body asks for: Read only in this phase. A `write` level or a Read + Write toggle is
- * refused (409) whatever the switches say; with the write switch on and Root's policy at Read the
- * refusal names the policy.
+ * The level a body asks for. With write sharing in force any level and toggle passes here (the grantor
+ * checks follow); otherwise a `write` level or a Read + Write toggle is refused (409), naming Root's
+ * policy when the write switch is on and the policy allows Read only.
  */
 function levelRefusal(body: Record<string, unknown>, policy: Readonly<SharingPolicy>, required: boolean): NextResponse | null {
   if (required || 'access' in body) {
@@ -214,11 +253,85 @@ function levelRefusal(body: Record<string, unknown>, policy: Readonly<SharingPol
     if (toggle in body && typeof body[toggle] !== 'boolean') return invalidField(toggle, `${toggle} must be true or false`)
   }
   const asksWrite = body.access === 'write' || WRITE_TOGGLES.some(t => body[t] === true)
-  if (!asksWrite) return null
+  if (!asksWrite || maxShareLevel(policy) === 'write') return null
   if (rbacFlags().sharingWrite && policy.maxLevel === 'read') {
     return refusal(409, 'above_max_level', 'The instance sharing policy allows Read shares only.', { maxLevel: 'read' })
   }
   return refusal(409, 'write_sharing_off', 'Read + Write sharing is not available yet: share at Read.')
+}
+
+/**
+ * Root's `membersMayGrantExploit` (§6.5): off, only an administrator grants Exploitation & shells. The
+ * account type comes from the role alone: the Root's role is admin too (User.role follows the account
+ * type), so no Root read is needed to tell a member apart.
+ */
+function exploitReservedToAdmins(principal: { id: string; role: string }, policy: Readonly<SharingPolicy>): boolean {
+  return !policy.membersMayGrantExploit && accountTypeOf(principal, null) === 'member'
+}
+
+/** Whether `access` lets its holder change shares, and as whom: the owner, or a co-owner (write + Manage). */
+function grantorKind(access: ProjectAccess): ShareGrantable['grantor'] | null {
+  if (access.level === 'owner') return 'owner'
+  return access.level === 'write' && access.toggles.manage === true ? 'co_owner' : null
+}
+
+/**
+ * One toggle as the grantor may grant it. The owner grants every toggle (the spend toggles after their
+ * consent, which the dialog asks for); a co-owner only what their own share holds now, so without the
+ * owner's consent no spend toggle (projectAccess reads them off then).
+ */
+function toggleGrant(toggle: WriteToggle, grantor: ShareGrantor, policy: Readonly<SharingPolicy>, consent: boolean): GrantableToggle {
+  const refused = (code: GrantRefusalCode, reason: string): GrantableToggle => ({ grantable: false, code, reason })
+  if (toggle === 'exploit' && exploitReservedToAdmins(grantor.principal, policy)) return refused('exploit_admins_only', EXPLOIT_ADMINS_ONLY)
+  if (grantor.access.level === 'owner') return { grantable: true }
+  if ((SPEND_TOGGLES as readonly string[]).includes(toggle) && !consent) return refused('owner_consent_required', CONSENT_FIRST)
+  return grantor.access.toggles[toggle] === true ? { grantable: true } : refused('not_held', notHeld(toggle))
+}
+
+/** What `grantor` may grant on the project, or null when write sharing is not in force or they change no share. */
+export async function shareGrantable(grantor: ShareGrantor, policy: Readonly<SharingPolicy>): Promise<ShareGrantable | null> {
+  if (maxShareLevel(policy) !== 'write') return null
+  const kind = grantorKind(grantor.access)
+  if (!kind) return null
+  let consent = false
+  try {
+    consent = (await readOwnerConsent(grantor.access.project.id)) !== null
+  } catch (err) {
+    if (!(err instanceof ConsentStoreMissing)) throw err
+  }
+  const toggles = Object.fromEntries(WRITE_TOGGLES.map(t => [t, toggleGrant(t, grantor, policy, consent)])) as Record<WriteToggle, GrantableToggle>
+  return { grantor: kind, toggles, ownerConsent: consent }
+}
+
+/**
+ * The writers' grantor checks, on the toggles a body turns on (write sharing in force): Root's policy
+ * on Exploitation first (409), then the co-owner's "never more than held" (403). The owner's consent
+ * was asked already (`spendToggleConsentRefusal`).
+ */
+function grantorRefusal(auth: PermissionContext, policy: Readonly<SharingPolicy>, body: Record<string, unknown>): NextResponse | null {
+  const access = auth.access
+  if (!access || maxShareLevel(policy) !== 'write') return null
+  for (const toggle of WRITE_TOGGLES) {
+    if (body[toggle] !== true) continue
+    if (toggle === 'exploit' && exploitReservedToAdmins(auth.principal, policy)) {
+      return refusal(409, 'exploit_admins_only', EXPLOIT_ADMINS_ONLY)
+    }
+    if (access.level !== 'owner' && access.toggles[toggle] !== true) {
+      return refusal(403, 'grant_above_held', notHeld(toggle), { toggle, permission: SHARE_PERMISSION })
+    }
+  }
+  return null
+}
+
+/** Granting Exploitation & shells takes the granting person's password (ID-25); other grants do not. */
+async function exploitStepUp(request: { headers?: Headers }, body: Record<string, unknown>): Promise<NextResponse | null> {
+  return body.exploit === true ? requireStepUp(request, body.stepUpPassword) : null
+}
+
+/** A Read + Write toggle asked on a share that is (or stays) Read: 400 naming it. */
+function toggleOnReadRefusal(asked: Partial<Record<WriteToggle, unknown>>): NextResponse | null {
+  const toggle = WRITE_TOGGLES.find(t => asked[t] === true)
+  return toggle ? invalidField(toggle, `${toggle} applies to Read + Write shares only: set access to "write"`) : null
 }
 
 type Parsed<T> = { value: T } | { response: NextResponse }
@@ -273,39 +386,58 @@ function ownerOf(auth: PermissionContext): string {
 }
 
 /**
- * GET's guard: the owner (and a co-owner from Phase 5) through `project:share` at Manage; an admin
- * reading the project by oversight when Root's policy lets admins see every share
- * (`adminsSeeAllShares`), which writes the day's `project.oversee` row first (step 4.14); Root's
- * break-glass. A read collaborator gets 403, a stranger 404. Under act-as the account acted as
- * decides, so the acting admin's oversight never applies (D-22).
+ * GET's guard: the owner and a co-owner through `project:share` at Manage (their `grantor`, for what
+ * they may grant; null under act-as, where nothing can be changed); an admin reading the project by
+ * oversight when Root's policy lets admins see every share (`adminsSeeAllShares`), which writes the
+ * day's `project.oversee` row first (step 4.14); Root's break-glass (both `grantor: null`). A read
+ * collaborator gets 403, a stranger 404. Under act-as the account acted as decides, so the acting
+ * admin's oversight never applies (D-22).
  */
-export async function requireShareListAccess(projectId: string, policy: Readonly<SharingPolicy>): Promise<true | NextResponse> {
+export async function requireShareListAccess(projectId: string, policy: Readonly<SharingPolicy>): Promise<{ grantor: ShareGrantor | null } | NextResponse> {
   const identity = await getAuthzIdentity()
   if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const decision = await can(identity.principal, SHARE_PERMISSION, { projectId, actingAs: identity.actingAs })
-  if (decision.allowed) return true
+  if (decision.allowed) {
+    return { grantor: identity.actingAs || !decision.access ? null : { access: decision.access, principal: identity.principal } }
+  }
   if (decision.status === 404) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (decision.status === 400) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
   if (!identity.actingAs) {
     const access = await projectAccess({ userId: identity.principal.id }, projectId, { principal: identity.principal })
-    if (access?.via === 'break_glass') return true
+    if (access?.via === 'break_glass') return { grantor: null }
     if (access?.via === 'oversight' && policy.adminsSeeAllShares) {
       await auditOversightRead(identity, access, SHARE_PERMISSION)
-      return true
+      return { grantor: null }
     }
   }
   return forbiddenResponse(SHARE_PERMISSION)
 }
 
-/** Every share of the project, expired ones included (marked), oldest first. */
-export async function listShares(projectId: string): Promise<ShareView[]> {
+/**
+ * Every share of the project, expired ones included (marked), oldest first; `writeTerms` adds each
+ * share's Read + Write toggles (only with write sharing in force).
+ */
+export async function listShares(projectId: string, { writeTerms = false }: { writeTerms?: boolean } = {}): Promise<ShareView[]> {
   const rows = await prisma.projectCollaborator.findMany({
     where: { projectId },
     select: SHARE_SELECT,
     orderBy: { createdAt: 'asc' },
   }) as ShareRecord[]
   const at = now().getTime()
-  return withPeople(rows.map(r => shareView(r, at)))
+  return withPeople(rows.map(r => shareView(r, at, writeTerms)))
+}
+
+/**
+ * GET .../collaborators' answer: Phase 4's `{collaborators}` unless write sharing is in force; then each
+ * share's toggles and, for the owner or a co-owner, what they may grant (`grantable`).
+ */
+export async function shareListAnswer(projectId: string, policy: Readonly<SharingPolicy>, grantor: ShareGrantor | null): Promise<Record<string, unknown>> {
+  if (maxShareLevel(policy) !== 'write') return { collaborators: await listShares(projectId) }
+  const [collaborators, grantable] = await Promise.all([
+    listShares(projectId, { writeTerms: true }),
+    grantor ? shareGrantable(grantor, policy) : null,
+  ])
+  return { collaborators, grantable }
 }
 
 class AlreadyShared extends Error {}
@@ -326,8 +458,17 @@ async function writeLookupRow(auth: PermissionContext, email: string, result: 'h
   })
 }
 
-/** POST .../collaborators: share the project at Read with the account an email names. */
-export async function grantShare(auth: PermissionContext, policy: Readonly<SharingPolicy>, body: Record<string, unknown>): Promise<NextResponse> {
+/**
+ * POST .../collaborators: share the project with the account an email names, at Read, or with write
+ * sharing in force at Read + Write with the toggles the granting person may grant. Exploitation &
+ * shells takes their password, asked before any lookup.
+ */
+export async function grantShare(
+  auth: PermissionContext,
+  policy: Readonly<SharingPolicy>,
+  body: Record<string, unknown>,
+  request: { headers?: Headers },
+): Promise<NextResponse> {
   const at = now().getTime()
   const email = parseEmail(body.email)
   if ('response' in email) return email.response
@@ -335,6 +476,10 @@ export async function grantShare(auth: PermissionContext, policy: Readonly<Shari
   if (consent) return consent
   const level = levelRefusal(body, policy, true)
   if (level) return level
+  const writeTerms = maxShareLevel(policy) === 'write'
+  const access = writeTerms && body.access === 'write' ? 'write' : 'read'
+  const onRead = access === 'read' ? toggleOnReadRefusal(body) : null
+  if (onRead) return onRead
   const rawData = 'rawData' in body ? parseRawData(body.rawData) : { value: false }
   if ('response' in rawData) return rawData.response
   const defaultExpiry = policy.defaultExpiryDays ? new Date(at + policy.defaultExpiryDays * DAY_MS) : null
@@ -342,6 +487,11 @@ export async function grantShare(auth: PermissionContext, policy: Readonly<Shari
   if ('response' in expiresAt) return expiresAt.response
   const note = 'note' in body ? parseNote(body.note) : { value: null }
   if ('response' in note) return note.response
+  const beyond = grantorRefusal(auth, policy, body)
+  if (beyond) return beyond
+  const stepUp = await exploitStepUp(request, body)
+  if (stepUp) return stepUp
+  const toggles = Object.fromEntries(WRITE_TOGGLES.map(t => [t, access === 'write' && body[t] === true])) as Record<WriteToggle, boolean>
 
   const limit = takeShareLookup(auth.session.userId)
   if (!limit.ok) {
@@ -378,7 +528,7 @@ export async function grantShare(auth: PermissionContext, policy: Readonly<Shari
       if (existing) await tx.projectCollaborator.deleteMany({ where: { projectId, userId: recipient.id } })
       const row = await tx.projectCollaborator.create({
         data: {
-          projectId, userId: recipient.id, access: 'read', rawData: rawData.value, expiresAt: expiresAt.value,
+          projectId, userId: recipient.id, access, ...toggles, rawData: rawData.value, expiresAt: expiresAt.value,
           note: note.value, grantedById: auth.effective.userId,
         },
         select: SHARE_SELECT,
@@ -402,23 +552,42 @@ export async function grantShare(auth: PermissionContext, policy: Readonly<Shari
     }
     throw err
   }
-  const view = shareView({ ...created, user: { id: recipient.id, name: recipient.name, email: recipient.email, status: recipient.status } }, at)
+  const view = shareView({ ...created, user: { id: recipient.id, name: recipient.name, email: recipient.email, status: recipient.status } }, at, writeTerms)
   return NextResponse.json({ collaborator: await withPeopleAfterCommit(view) }, { status: 201 })
 }
 
-/** PATCH .../collaborators/[userId]: change a share's level, Raw data, expiry or note. */
+type SharePatchData = Partial<Record<WriteToggle, boolean>> & {
+  access?: 'read' | 'write'
+  rawData?: boolean
+  expiresAt?: Date | null
+  note?: string | null
+}
+
+/**
+ * PATCH .../collaborators/[userId]: change a share's level, Raw data, expiry or note, and with write
+ * sharing in force its toggles (within what the person changing it may grant; a share lowered to Read
+ * loses its toggles). Turning Exploitation & shells on takes the password.
+ */
 export async function updateShare(
   auth: PermissionContext,
   policy: Readonly<SharingPolicy>,
   userId: string,
   body: Record<string, unknown>,
+  request: { headers?: Headers },
 ): Promise<NextResponse> {
   const at = now().getTime()
   const consent = await spendToggleConsentRefusal(auth.access!.project.id, policy, body)
   if (consent) return consent
   const level = levelRefusal(body, policy, false)
   if (level) return level
-  const patch: { rawData?: boolean; expiresAt?: Date | null; note?: string | null } = {}
+  const writeTerms = maxShareLevel(policy) === 'write'
+  const patch: SharePatchData = {}
+  if (writeTerms) {
+    if (body.access === 'read' || body.access === 'write') patch.access = body.access
+    for (const t of WRITE_TOGGLES) if (t in body) patch[t] = body[t] === true
+    const onRead = patch.access === 'read' ? toggleOnReadRefusal(patch) : null
+    if (onRead) return onRead
+  }
   if ('rawData' in body) {
     const v = parseRawData(body.rawData)
     if ('response' in v) return v.response
@@ -437,6 +606,10 @@ export async function updateShare(
   if (!('access' in body) && Object.keys(patch).length === 0) {
     return refusal(400, 'invalid_field', 'Name at least one of access, rawData, expiresAt and note.')
   }
+  const beyond = grantorRefusal(auth, policy, body)
+  if (beyond) return beyond
+  const stepUp = await exploitStepUp(request, body)
+  if (stepUp) return stepUp
   const access = auth.access
   if (!access) throw new Error('[rbac] a share route checked no project')
   const projectId = access.project.id
@@ -446,13 +619,21 @@ export async function updateShare(
     if (!before) return { kind: 'missing' as const }
     const protectedRow = coOwnerRefusal(access, before)
     if (protectedRow) return { kind: 'refused' as const, response: protectedRow }
-    const changed = (Object.keys(patch) as Array<keyof typeof patch>).filter((k) => {
-      const next = patch[k]
+    const data: SharePatchData = { ...patch }
+    if (writeTerms && (data.access ?? before.access) !== 'write') {
+      const onRead = toggleOnReadRefusal(data)
+      if (onRead) return { kind: 'refused' as const, response: onRead }
+      // A Read share holds no Read + Write toggle: lowering the level drops them, so raising it later
+      // never brings back toggles nobody granted again.
+      for (const t of WRITE_TOGGLES) data[t] = false
+    }
+    const changed = (Object.keys(data) as Array<keyof SharePatchData>).filter((k) => {
+      const next = data[k]
       const prev = before[k]
       return next instanceof Date || prev instanceof Date ? iso(next as Date | null) !== iso(prev as Date | null) : next !== prev
     })
     if (changed.length === 0) return { kind: 'done' as const, row: before }
-    const { count } = await tx.projectCollaborator.updateMany({ where: { projectId, userId }, data: patch })
+    const { count } = await tx.projectCollaborator.updateMany({ where: { projectId, userId }, data })
     if (count !== 1) return { kind: 'missing' as const }
     const after = await tx.projectCollaborator.findUnique({ where, select: SHARE_SELECT }) as ShareRecord
     await writeAuditTx(tx, {
@@ -471,7 +652,7 @@ export async function updateShare(
   if (outcome.kind === 'missing') return noSuchShare()
   if (outcome.kind === 'refused') return outcome.response
   if ('narrowed' in outcome && outcome.narrowed) await stopLiveWork(projectId, userId, 'share_reduced', access.project.userId)
-  return NextResponse.json({ collaborator: await withPeopleAfterCommit(shareView(outcome.row, at)) })
+  return NextResponse.json({ collaborator: await withPeopleAfterCommit(shareView(outcome.row, at, writeTerms)) })
 }
 
 /** Stops the person's live work on the project; false when the agent did not confirm the sockets closed (logged). */

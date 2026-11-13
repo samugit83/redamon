@@ -323,11 +323,12 @@ describe('POST: share at Read (step 4.4)', () => {
     const res = await grant({ email: 'bob@example.test', access: 'write' })
     expect(res.status).toBe(409)
     expect(await res.json()).toMatchObject({ code: 'above_max_level', maxLevel: 'read' })
-    // The policy at write still gets no write share in this phase.
+    expect(db.shareCount()).toBe(0)
+    // With the policy at write the same grant goes through (step 5.14 opens write grants; route.writeGrants.test.ts).
     clearSharingPolicyCacheForTests()
     db.setPolicy({ enabled: true, maxLevel: 'write' })
-    expect(await (await grant({ email: 'bob@example.test', access: 'write' })).json()).toMatchObject({ code: 'write_sharing_off' })
-    expect(db.shareCount()).toBe(0)
+    expect((await grant({ email: 'bob@example.test', access: 'write' })).status).toBe(201)
+    expect(db.share('P1', 'bob')).toMatchObject({ access: 'write' })
   })
 
   test('toggle refused without consent (step 5.6): with write sharing in force a run toggle needs the owner\'s consent first', async () => {
@@ -339,10 +340,10 @@ describe('POST: share at Read (step 4.4)', () => {
       expect(res.status).toBe(409)
       expect(await res.json()).toMatchObject({ code: 'owner_consent_required', toggles: [toggle] })
     }
-    // Manage spends nothing: it meets this phase's write refusal, not the consent.
-    expect(await (await grant({ email: 'bob@example.test', access: 'write', manage: true })).json()).toMatchObject({ code: 'write_sharing_off' })
     expect(db.audit()).toEqual([])
     expect(db.shareCount()).toBe(0)
+    // Manage spends nothing: it needs no consent (step 5.14 grants it; route.writeGrants.test.ts).
+    expect((await grant({ email: 'bob@example.test', access: 'write', manage: true })).status).toBe(201)
   })
 
   test('default expiry applied from the policy; an explicit expiry or null wins', async () => {
