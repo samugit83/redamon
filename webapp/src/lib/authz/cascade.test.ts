@@ -125,3 +125,22 @@ describe('deleting an account: device sessions (step 6.10)', () => {
     expect(session.fields.revokedById.line).not.toContain('@relation')
   })
 })
+
+// Step 6.11: an assignment goes with its instance provider and names its set by plain id (a built-in
+// set has no row, and deleteSet refuses a set an assignment names); a usage row goes with its account.
+describe('deleting a provider or an account: instance LLM providers (step 6.11)', () => {
+  test('PermissionSetProvider rows cascade with the provider; the set and the author are no foreign key', () => {
+    const assignment = now.PermissionSetProvider
+    expect(assignment, 'model PermissionSetProvider').toBeDefined()
+    expect(assignment.fields.provider.line).toMatch(/@relation\(\s*fields:\s*\[providerId\],\s*references:\s*\[id\],\s*onDelete:\s*Cascade\s*\)/)
+    expect(now.InstanceLlmProvider.fields.sets?.type).toBe('PermissionSetProvider[]')
+    for (const plain of ['setId', 'createdById']) expect(assignment.fields[plain].line).not.toContain('@relation')
+  })
+
+  test('QuotaUsage rows cascade with the user; an instance provider names its author by plain id', () => {
+    expect(now.QuotaUsage.fields.user.line).toMatch(/@relation\(\s*fields:\s*\[userId\],\s*references:\s*\[id\],\s*onDelete:\s*Cascade\s*\)/)
+    expect(now.User.fields.quotaUsage?.type).toBe('QuotaUsage[]')
+    const provider = now.InstanceLlmProvider
+    expect(Object.values(provider.fields).filter((f) => f.line.includes('@relation'))).toEqual([])
+  })
+})

@@ -114,3 +114,22 @@ describe('the device sessions schema is additive (step 6.10)', () => {
     expect(now[baseType(now.User.fields.deviceSessions.type)]).toBeDefined()
   })
 })
+
+// Step 6.11: three new tables, a back-relation on User and one InstanceSettings column with a default.
+describe('the instance LLM providers schema is additive (step 6.11)', () => {
+  test.each([
+    ['InstanceLlmProvider', 'instance_llm_providers'],
+    ['PermissionSetProvider', 'permission_set_providers'],
+    ['QuotaUsage', 'quota_usage'],
+  ])('%s is new: no 7.7.2 table is reused (%s)', (model, table) => {
+    expect(old[model]).toBeUndefined()
+    expect(Object.values(old).map((m) => m.table)).not.toContain(table)
+  })
+
+  test('User gains a relation field only, never a column; byoLlmForbidden is new with a default', () => {
+    expect(old.User.fields.quotaUsage).toBeUndefined()
+    expect(now[baseType(now.User.fields.quotaUsage.type)]).toBeDefined()
+    expect(old.InstanceSettings?.fields.byoLlmForbidden).toBeUndefined()
+    expect(now.InstanceSettings.fields.byoLlmForbidden.line).toContain('@default(false)')
+  })
+})

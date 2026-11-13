@@ -74,6 +74,8 @@ model User {
   collaborations      ProjectCollaborator[]
   breakGlass          ProjectBreakGlass[]
   deviceSessions      UserSession[]
+  // Daily use counted against a budget (step 6.11): goes with the account.
+  quotaUsage          QuotaUsage[]
 
   @@map("users")
 }
@@ -109,6 +111,9 @@ model InstanceSettings {
   quotas                      Json      @default("{}")
   // Null keeps every audit row; placeholder until the owner answers OQ-40.
   auditRetentionDays          Int?      @map("audit_retention_days")
+  // On: the agent stops using the LLM providers an account added itself when the account lacks
+  // self:llm_providers (step 6.11). Off keeps every account's own providers, as before.
+  byoLlmForbidden             Boolean   @default(false) @map("byo_llm_forbidden")
 
   // Moved from UserSettings: same columns, types and defaults as there, so the
   // backfill copies each value unchanged. The *SourceUserId fields name the user row
@@ -337,6 +342,68 @@ model UserLlmProvider {
 
   @@index([userId])
   @@map("user_llm_providers")
+}
+
+/// An LLM provider the confirmed Root adds for the whole instance (step 6.11, GV-15). The same shape
+/// and storage as UserLlmProvider (plaintext key columns, masked on every browser read, OQ-52); chat
+/// kinds only. Offered to whoever holds a permission set it is assigned to (PermissionSetProvider),
+/// and reaches the agent only as a marked row of that account's provider list.
+model InstanceLlmProvider {
+  id               String   @id @default(cuid())
+  providerType     String   @map("provider_type")
+  name             String
+  apiKey           String   @default("") @map("api_key")
+  baseUrl          String   @default("") @map("base_url")
+  modelIdentifier  String   @default("") @map("model_identifier")
+  defaultHeaders   Json     @default("{}") @map("default_headers")
+  timeout          Int      @default(120)
+  temperature      Float    @default(0)
+  maxTokens        Int      @default(16384) @map("max_tokens")
+  sslVerify        Boolean  @default(true) @map("ssl_verify")
+  reasoningEnabled Boolean  @default(false) @map("reasoning_enabled")
+  reasoningEffort  String   @default("high") @map("reasoning_effort")
+  awsRegion        String   @default("us-east-1") @map("aws_region")
+  awsAccessKeyId   String   @default("") @map("aws_access_key_id")
+  awsSecretKey     String   @default("") @map("aws_secret_key")
+  awsBearerToken   String   @default("") @map("aws_bearer_token")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  createdById      String?  @map("created_by_id")
+  updatedById      String?  @map("updated_by_id")
+  sets             PermissionSetProvider[]
+
+  @@map("instance_llm_providers")
+}
+
+/// One assignment: the instance provider is offered to the holders of the set. `setId` names a
+/// stored permission set or a built-in one (`builtin:<slug>`), so it has no foreign key; deleteSet
+/// refuses a set a row still names. The row goes with its provider.
+model PermissionSetProvider {
+  setId       String              @map("set_id")
+  providerId  String              @map("provider_id")
+  provider    InstanceLlmProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  createdById String?             @map("created_by_id")
+  createdAt   DateTime            @default(now()) @map("created_at")
+
+  @@id([setId, providerId])
+  @@index([providerId])
+  @@map("permission_set_providers")
+}
+
+/// Calls counted per person and UTC day against a daily budget (step 6.11, GV-12): the agent reports
+/// its in-process counts to POST /api/internal/llm-usage; `kind` names the budget
+/// (`llm_instance_calls` first). Goes with the account.
+model QuotaUsage {
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  day       DateTime @db.Date
+  kind      String
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@id([userId, day, kind])
+  @@index([day])
+  @@map("quota_usage")
 }
 
 /// One configured TruffleHog source for a project. Runs are keyed by source, so

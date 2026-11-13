@@ -259,13 +259,3 @@ describe('model ids and the agent twin', () => {
     expect([...pyKinds, 'openai_compatible'].sort()).toEqual([...INSTANCE_PROVIDER_KINDS].sort())
   })
 })
-
-describe('the store before its tables exist', () => {
-  test('no provider, no assignment, own providers never hidden; a write refuses with a code', async () => {
-    const realStore = await vi.importActual<typeof import('./store')>('./store')
-    expect(await realStore.readInstanceProviders()).toEqual([])
-    expect(await realStore.readProviderAssignments()).toEqual([])
-    expect(await realStore.readByoLlmForbidden()).toBe(false)
-    await expect(realStore.deleteInstanceProvider({} as never, 'x')).rejects.toMatchObject({ code: 'instance_providers_not_ready' })
-  })
-})

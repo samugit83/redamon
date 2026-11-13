@@ -30,6 +30,7 @@ import { writeAuditTx } from '@/lib/audit'
 import { auditedTransaction } from '@/lib/auditForward'
 import type { Session } from '@/lib/session'
 import { pluginsLimitedToSet } from '@/lib/plugins/accessRuleStore'
+import { providersAssignedToSet } from '@/lib/instanceProviders/store'
 import { BUILTIN_SETS, builtinSet } from './builtinSets'
 import { invalidatePermissionSets } from './capabilities'
 import { stepUpPermissionsIn, unheld, type Manager } from './hierarchy'
@@ -389,7 +390,7 @@ export async function deleteSet(request: NextRequest, session: Session, kind: Se
   const words = WORDS[kind]
   type Outcome =
     | { kind: 'missing' | 'default' } | { kind: 'in_use'; holders: number } | { kind: 'plugin_rules'; plugins: string[] }
-    | { kind: 'deleted' }
+    | { kind: 'llm_providers'; providers: string[] } | { kind: 'deleted' }
   const outcome = await auditedTransaction(prisma, async (tx): Promise<Outcome> => {
     await lockPermissions(tx)
     const row = await tx.permissionSet.findUnique({ where: { id }, select: ROW_SELECT }) as StoredRow | null
@@ -400,6 +401,10 @@ export async function deleteSet(request: NextRequest, session: Session, kind: Se
     if (holders > 0) return { kind: 'in_use', holders }
     const plugins = await pluginsLimitedToSet(tx, id)
     if (plugins.length > 0) return { kind: 'plugin_rules', plugins }
+    // An assignment names its set by plain id: deleting the set would leave the provider offered to
+    // nobody without anyone choosing it.
+    const providers = await providersAssignedToSet(id, tx)
+    if (providers.length > 0) return { kind: 'llm_providers', providers }
     if (kind === 'member' && (await instanceDefaultId(tx)) === id) return { kind: 'default' }
     await tx.permissionSet.delete({ where: { id } })
     await writeAuditTx(tx, await personAuditEntry(request, session, {
@@ -417,6 +422,10 @@ export async function deleteSet(request: NextRequest, session: Session, kind: Se
       return conflict('set_in_plugin_rules',
         `Plugins are limited to this ${words.one} (${outcome.plugins.join(', ')}): remove it from their access rules first.`,
         { plugins: outcome.plugins })
+    case 'llm_providers':
+      return conflict('set_in_llm_providers',
+        `${outcome.providers.length} instance LLM provider(s) are assigned to this ${words.one}: remove it from them on the Instance page first.`,
+        { providers: outcome.providers })
     case 'default':
       return conflict('set_is_default', 'This set is the default for new members: choose another default first.')
   }

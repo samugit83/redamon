@@ -59,3 +59,5 @@ project_allowlist|ARRAY[]::text[]|YES
 0
 == user sessions [step 6.10]
 0
+== instance llm providers, assignments, usage, byo policy [step 6.11]
+0|0|0|false

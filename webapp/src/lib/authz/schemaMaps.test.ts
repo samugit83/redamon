@@ -396,3 +396,77 @@ describe('the device sessions schema (step 6.10)', () => {
     expect(Object.values(now.UserSession.fields).filter((f) => isRelation(f.type)).map((f) => f.type)).toEqual(['User'])
   })
 })
+
+// Step 6.11 (phase_06): instance LLM providers, their assignments to permission sets, the daily usage
+// a budget counts, and the bring-your-own policy. The tables arrive empty and the policy off, so no
+// provider is offered and every account keeps its own providers until Root changes something.
+describe('the instance LLM providers schema (step 6.11)', () => {
+  const columnsOf = (model: string) =>
+    Object.entries(now[model]?.fields ?? {}).filter(([, f]) => !isRelation(f.type)).map(([name]) => name)
+
+  test('the new tables map to instance_llm_providers, permission_set_providers and quota_usage', () => {
+    expect(now.InstanceLlmProvider?.table).toBe('instance_llm_providers')
+    expect(now.PermissionSetProvider?.table).toBe('permission_set_providers')
+    expect(now.QuotaUsage?.table).toBe('quota_usage')
+  })
+
+  // The provider row is the user provider row without its account: the same columns, types and
+  // defaults, so the agent builds both the same way (llm_builder.instance_build_args).
+  test('an instance provider has the user provider columns, without the account', () => {
+    const userColumns = columnsOf('UserLlmProvider').filter((c) => c !== 'userId')
+    expect(columnsOf('InstanceLlmProvider')).toEqual(userColumns)
+    for (const name of userColumns) {
+      const mine = field('InstanceLlmProvider', name)
+      const theirs = field('UserLlmProvider', name)
+      expect(mine.type, name).toBe(theirs.type)
+      expect(mine.column, name).toBe(theirs.column)
+      expect(mine.line.match(/@default\([^)]*\)+/)?.[0] ?? null, name).toBe(theirs.line.match(/@default\([^)]*\)+/)?.[0] ?? null)
+    }
+    expect(field('InstanceLlmProvider', 'id').line).toMatch(/@id\s+@default\(cuid\(\)\)/)
+  })
+
+  test.each([
+    ['PermissionSetProvider', 'setId', 'String', 'set_id'],
+    ['PermissionSetProvider', 'providerId', 'String', 'provider_id'],
+    ['PermissionSetProvider', 'createdById', 'String?', 'created_by_id'],
+    ['PermissionSetProvider', 'createdAt', 'DateTime', 'created_at'],
+    ['QuotaUsage', 'userId', 'String', 'user_id'],
+    ['QuotaUsage', 'day', 'DateTime', 'day'],
+    ['QuotaUsage', 'kind', 'String', 'kind'],
+    ['QuotaUsage', 'count', 'Int', 'count'],
+    ['QuotaUsage', 'updatedAt', 'DateTime', 'updated_at'],
+  ])('%s.%s is %s in column %s', (model, name, type, column) => {
+    expect(field(model, name)).toMatchObject({ type, column })
+  })
+
+  test('one assignment per set and provider, found by provider; one usage row per account, day and kind', () => {
+    expect(columnsOf('PermissionSetProvider')).toEqual(['setId', 'providerId', 'createdById', 'createdAt'])
+    expect(now.PermissionSetProvider.blockAttributes).toContain('@@id([setId, providerId])')
+    expect(now.PermissionSetProvider.blockAttributes).toContain('@@index([providerId])')
+    expect(columnsOf('QuotaUsage')).toEqual(['userId', 'day', 'kind', 'count', 'updatedAt'])
+    expect(now.QuotaUsage.blockAttributes).toContain('@@id([userId, day, kind])')
+    expect(now.QuotaUsage.blockAttributes).toContain('@@index([day])')
+    expect(field('QuotaUsage', 'day').line).toContain('@db.Date')
+    expect(field('QuotaUsage', 'count').line).toContain('@default(0)')
+  })
+
+  test('InstanceSettings.byoLlmForbidden is Boolean, default false (every account keeps its own providers)', () => {
+    expect(field('InstanceSettings', 'byoLlmForbidden')).toMatchObject({ type: 'Boolean', column: 'byo_llm_forbidden' })
+    expect(field('InstanceSettings', 'byoLlmForbidden').line).toContain('@default(false)')
+  })
+
+  // T7: a set id may be a built-in (code, no row), so an assignment names it by plain id; it goes with
+  // its provider. A usage row goes with its account. Nothing else points at the new tables.
+  test('the relations: an assignment with its provider, usage with its account, no foreign key to a set', () => {
+    expect(Object.values(now.PermissionSetProvider.fields).filter((f) => isRelation(f.type)).map((f) => f.type)).toEqual(['InstanceLlmProvider'])
+    expect(field('InstanceLlmProvider', 'sets').type).toBe('PermissionSetProvider[]')
+    expect(Object.values(now.QuotaUsage.fields).filter((f) => isRelation(f.type)).map((f) => f.type)).toEqual(['User'])
+    expect(field('User', 'quotaUsage').type).toBe('QuotaUsage[]')
+    const pointing = (target: string) => Object.entries(now)
+      .filter(([, m]) => Object.values(m.fields).some((f) => baseType(f.type) === target))
+      .map(([name]) => name)
+    expect(pointing('InstanceLlmProvider')).toEqual(['PermissionSetProvider'])
+    expect(pointing('PermissionSetProvider')).toEqual(['InstanceLlmProvider'])
+    expect(pointing('QuotaUsage')).toEqual(['User'])
+  })
+})

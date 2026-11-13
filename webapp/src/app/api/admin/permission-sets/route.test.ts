@@ -321,6 +321,16 @@ describe('DELETE (PE-17)', () => {
     expect(db().pluginRules()).toHaveLength(3)
   })
 
+  test('a set an instance LLM provider is assigned to is refused, naming the providers (GV-15, step 6.11)', async () => {
+    db().seedProviderSet('inst-b', 'set-unused')
+    db().seedProviderSet('inst-a', 'builtin:recon-operator', 'set-unused')
+    const before = state()
+    expect(await remove('admin-1', 'set-unused')).toMatchObject({ status: 409, body: { code: 'set_in_llm_providers', providers: ['inst-a', 'inst-b'] } })
+    expect(state()).toBe(before)
+    expect(db().providerSets()).toHaveLength(3)
+    expect(db().sets().map((s) => s.id)).toContain('set-unused')
+  })
+
   test('an unused set is deleted with its audit row; a second delete is 404', async () => {
     expect(await remove('admin-1', 'set-unused')).toMatchObject({ status: 200, body: { id: 'set-unused', deleted: true } })
     expect(db().sets().map((s) => s.id)).not.toContain('set-unused')

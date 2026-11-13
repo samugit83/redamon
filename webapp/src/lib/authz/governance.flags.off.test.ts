@@ -195,11 +195,11 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/components/settings/InstanceTunnelSection.tsx',
-      'src/lib/instanceProviders/entitlement.ts',
       'src/lib/authz/auditRetention.ts',
       'src/lib/authz/deviceSessions.ts',
       'src/lib/authz/expirySweep.ts',
       'src/lib/authz/quotas.ts',
+      'src/lib/instanceProviders/entitlement.ts',
       'src/lib/plugins/accessRules.ts',
     ]
     // A property read (`flags.governance`, `rbacFlags().governance`, `useRbacFlags()?.governance`)
@@ -402,7 +402,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.11): instance LLM providers are ne
       vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
       expect(await agentProviderList('owner-1', own)).toEqual(own)
       const answers = [await list(), await create(write('POST')), await change(write('PUT'), params), await remove(write('DELETE'), params),
-        await policy(write('PUT')), await mine(new Request('http://redamon.test/api/account/llm-providers') as never)]
+        await policy(write('PUT')), await mine()]
       expect(answers.map((r) => r.status)).toEqual([404, 404, 404, 404, 404, 404])
     }
     expect(touched).not.toHaveBeenCalled()

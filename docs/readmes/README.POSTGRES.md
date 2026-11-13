@@ -136,6 +136,18 @@ Five tables hold the plugin platform's state ([README.PLUGINS.md](README.PLUGINS
 
 For the complete schema, see [webapp/prisma/schema.prisma](../../webapp/prisma/schema.prisma).
 
+### Instance LLM Provider Tables
+
+Three tables back the LLM providers Root adds for the whole instance (Instance page, Root only), read only with `RBAC_GOVERNANCE_ENABLED` on.
+
+| Table (model) | One row per | What it holds |
+|---|---|---|
+| `instance_llm_providers` (`InstanceLlmProvider`) | instance provider | The columns of `user_llm_providers` without the account: kind, name, key fields (stored as in `user_llm_providers` and masked on every browser read), endpoint, model and options. Never sent to a browser or a scan container: the agent receives it, with its key, only in the provider list of an account that may use it |
+| `permission_set_providers` (`PermissionSetProvider`) | provider and permission set | Who may use a provider: the holders of a listed set (built-in or custom; an admin profile counts). `set_id` has no foreign key (built-in sets have no row), so a set a row names cannot be deleted; the rows go with their provider |
+| `quota_usage` (`QuotaUsage`) | account, UTC day and kind | Calls counted against a daily budget (`llm_instance_calls` first); the rows go with their account |
+
+`instance_settings.byo_llm_forbidden` (default false): when true, the agent no longer uses the providers an account added itself if that account lacks the permission to add them.
+
 ## Docker Configuration
 
 ### docker-compose.yml

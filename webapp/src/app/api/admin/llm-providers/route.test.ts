@@ -75,13 +75,21 @@ vi.mock('@/lib/authz/permissionAdmin', () => ({
 }))
 vi.mock('@/lib/audit', () => ({ writeAuditTx: vi.fn(async (_tx: unknown, entry: Record<string, unknown>) => { audits.push(entry) }) }))
 vi.mock('@/lib/prisma', () => {
+  // A database whose boot `db push` has not created the provider tables yet: Prisma's P2021.
+  const missing = async () => { throw Object.assign(new Error('The table `instance_llm_providers` does not exist'), { code: 'P2021' }) }
+  const noTable = { findMany: missing, findUnique: missing, create: missing, update: missing, delete: missing, deleteMany: missing, createMany: missing }
   const tx = {
     permissionSet: { findMany: async ({ where }: { where: { id: { in: string[] } } }) => where.id.in.filter((id) => h.storedSets.includes(id)).map((id) => ({ id })) },
+    instanceLlmProvider: noTable,
+    permissionSetProvider: noTable,
   }
   return {
     default: {
       $transaction: async (fn: (t: unknown) => unknown) => fn(tx),
       permissionSet: { findMany: async () => [{ id: 'set-red', name: 'Red team', kind: 'member' }, { id: 'set-x', name: 'Ops', kind: 'admin' }] },
+      instanceLlmProvider: noTable,
+      permissionSetProvider: noTable,
+      instanceSettings: { findUnique: async () => ({ byoLlmForbidden: false }) },
     },
   }
 })
@@ -314,15 +322,16 @@ describe('the policy', () => {
   })
 })
 
-describe('before the provider tables exist', () => {
-  test('a write answers 503 instance_providers_not_ready and leaves no audit row', async () => {
+describe('a database the boot db push has not given the tables yet (P2021)', () => {
+  test('a read or a write answers 503 instance_providers_not_ready and leaves no audit row', async () => {
     h.realStore = true
     const res = await POST(req('', 'POST', NEW))
     expect(res.status).toBe(503)
     expect((await res.json()).code).toBe('instance_providers_not_ready')
     expect(audits).toEqual([])
-    const view = await (await GET()).json()
-    expect(view.providers).toEqual([])
+    const read = await GET()
+    expect(read.status).toBe(503)
+    expect((await read.json()).code).toBe('instance_providers_not_ready')
   })
 })
 

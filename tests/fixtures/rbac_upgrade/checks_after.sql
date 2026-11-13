@@ -117,3 +117,9 @@ SELECT count(*) FROM plugin_access_rules;
 -- goes on as before.
 \echo == user sessions [step 6.10]
 SELECT count(*) FROM user_sessions;
+
+-- Instance LLM providers arrive empty and the policy off (step 6.11): no provider is offered, no
+-- assignment exists, no usage is counted, and every account keeps its own providers.
+\echo == instance llm providers, assignments, usage, byo policy [step 6.11]
+SELECT (SELECT count(*) FROM instance_llm_providers) || '|' || (SELECT count(*) FROM permission_set_providers)
+  || '|' || (SELECT count(*) FROM quota_usage) || '|' || coalesce((SELECT byo_llm_forbidden::text FROM instance_settings), 'no row');

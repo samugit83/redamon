@@ -264,6 +264,9 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
       // Step 3.11: an account's sets and overrides, read and written only through a route that
       // answers 404 with the switch off.
       'src/lib/authz/userPermissionAdmin.ts',
+      // Step 6.11: the permission sets an instance LLM provider may be assigned to, read only through
+      // Root's provider routes, which answer 404 with the governance switch off (it needs this one).
+      'src/lib/instanceProviders/admin.ts',
       // Step 6.9: the member sets a plugin's access rule may name, read only through the access-rules
       // route, which answers 404 with the governance switch off (and that switch needs this one).
       'src/lib/plugins/accessRuleAdmin.ts',

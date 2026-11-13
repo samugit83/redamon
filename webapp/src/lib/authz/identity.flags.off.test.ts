@@ -247,6 +247,11 @@ const IDENTITY_READERS: string[] = [
   // Step 3.11: an admin's profile and the session version a removal raises, reached only through
   // a route that answers 404 with the permissions switch off.
   'src/lib/authz/userPermissionAdmin.ts',
+  // Step 6.11: the instance LLM providers' policy (`byoLlmForbidden`) on the instance row and its audit
+  // target, read and written only with the governance switch on, which needs this switch
+  // (governance.flags.off.test.ts: the agent list and every provider route).
+  'src/lib/instanceProviders/admin.ts',
+  'src/lib/instanceProviders/store.ts',
   // Compares the session version whatever the switch, the status only with it on.
   'src/lib/session.ts',
   // Step 2.4: the tunnel and capture readers read the instance settings row only with the

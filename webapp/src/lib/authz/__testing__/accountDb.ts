@@ -28,6 +28,8 @@
  * - (step 6.10) the device sessions (`userSession`: create, find, update and delete many), deleted
  *   with their account as the schema's cascade, rolled back with the rest; `where` also matches
  *   `{lte}` on dates.
+ * - (step 6.11) the instance LLM provider assignments (`permissionSetProvider`: find, count, delete
+ *   and create many, unique per set and provider), rolled back with the rest.
  */
 import { Prisma } from '@prisma/client'
 
@@ -100,6 +102,7 @@ export function createAccountDb() {
     overrides: [] as Row[],
     pluginRules: [] as Row[],
     sessions: [] as Row[],
+    providerSets: [] as Row[],
   }
   const failing = new Set<string>()
   const rawCalls: string[] = []
@@ -320,12 +323,13 @@ export function createAccountDb() {
       return state.sets.splice(i, 1)[0]
     },
   }
-  const ROW_KEY: Record<'assignments' | 'overrides' | 'pluginRules', (x: Row) => string> = {
+  const ROW_KEY: Record<'assignments' | 'overrides' | 'pluginRules' | 'providerSets', (x: Row) => string> = {
     assignments: (x) => `${x.userId}|${x.setId}`,
     overrides: (x) => `${x.userId}|${x.permission}`,
     pluginRules: (x) => `${x.pluginId}|${x.setId}`,
+    providerSets: (x) => `${x.setId}|${x.providerId}`,
   }
-  const rowsOf = (key: 'assignments' | 'overrides' | 'pluginRules') => ({
+  const rowsOf = (key: 'assignments' | 'overrides' | 'pluginRules' | 'providerSets') => ({
     findMany: async (a: { where?: Row; select?: Row } = {}) =>
       state[key].filter((x) => matches(x, a.where)).map((x) => pick(x, a.select)),
     count: async (a: { where?: Row } = {}) => state[key].filter((x) => matches(x, a.where)).length,
@@ -348,6 +352,7 @@ export function createAccountDb() {
   const userPermissionSet = rowsOf('assignments')
   const userPermissionOverride = rowsOf('overrides')
   const pluginAccessRule = rowsOf('pluginRules')
+  const permissionSetProvider = rowsOf('providerSets')
   let sessionSeq = 0
   const userSession = {
     create: async (a: { data: Row; select?: Row }) => {
@@ -386,7 +391,8 @@ export function createAccountDb() {
   }
   const client = {
     user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, userInvite,
-    permissionSet, userPermissionSet, userPermissionOverride, pluginAccessRule, userSession, $executeRaw, $queryRaw,
+    permissionSet, userPermissionSet, userPermissionOverride, pluginAccessRule, userSession, permissionSetProvider,
+    $executeRaw, $queryRaw,
   }
 
   async function $transaction<T>(fn: ((tx: typeof client) => Promise<T>) | Promise<unknown>[]): Promise<T> {
@@ -409,6 +415,7 @@ export function createAccountDb() {
         state.overrides = snapshot.overrides
         state.pluginRules = snapshot.pluginRules
         state.sessions = snapshot.sessions
+        state.providerSets = snapshot.providerSets
         throw e
       }
     })
@@ -478,6 +485,11 @@ export function createAccountDb() {
       for (const setId of setIds) state.pluginRules.push({ pluginId, setId, createdById: 'admin-1', createdAt: new Date(0) })
     },
     pluginRules: () => state.pluginRules.map((x) => ({ ...x })),
+    /** An instance LLM provider's assignment rows (step 6.11), one per set. */
+    seedProviderSet(providerId: string, ...setIds: string[]) {
+      for (const setId of setIds) state.providerSets.push({ setId, providerId, createdById: 'root-1', createdAt: new Date(0) })
+    },
+    providerSets: () => state.providerSets.map((x) => ({ ...x })),
     /** A device session row (step 6.10), its other columns defaulted: live, never seen since `createdAt`. */
     seedSession(row: { id: string; userId: string; sessionVersion: number; expiresAt: Date } & Row) {
       const createdAt = (row.createdAt as Date | undefined) ?? new Date(0)
@@ -507,6 +519,7 @@ export function createAccountDb() {
       state.overrides = []
       state.pluginRules = []
       state.sessions = []
+      state.providerSets = []
       sessionSeq = 0
       inviteSeq = 0
       setSeq = 0
