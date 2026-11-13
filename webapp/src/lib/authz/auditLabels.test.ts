@@ -260,7 +260,10 @@ describe('audit action labels (step 4.13, UI-08, AU-09)', () => {
         'project.share.expired', 'project.share.grant', 'project.share.leave', 'project.share.lookup', 'project.share.revoke', 'project.share.update',
         // Step 5.12: an ownership transfer, from the offer to its end.
         'project.transfer.accept', 'project.transfer.cancel', 'project.transfer.completed', 'project.transfer.decline',
-        'project.transfer.expired', 'project.transfer.failed', 'project.transfer.offer',
+        'project.transfer.expired', 'project.transfer.failed',
+        // Step 5.13: Root's transfer of a project of an account being deleted, without acceptance.
+        'project.transfer.forced',
+        'project.transfer.offer',
       ],
       prefixes: [],
     })

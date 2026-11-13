@@ -53,6 +53,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'project.transfer.accept': 'Accepted the ownership transfer offer',
     'project.transfer.completed': 'The project changed owner',
     'project.transfer.failed': 'An ownership transfer attempt failed',
+    // Step 5.13 (SH-17): Root gave a project of an account being deleted without the recipient's acceptance.
+    'project.transfer.forced': 'Transferred the project without the recipient\'s acceptance',
     // Step 5.6 (C1): the owner's consent to collaborators spending the project's credentials, and each
     // collaborator spend of them.
     'project.owner_consent.grant': "Allowed collaborators to spend the owner's credentials",

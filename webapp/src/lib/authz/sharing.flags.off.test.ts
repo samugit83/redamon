@@ -204,6 +204,9 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/lib/authz/projectShares.ts',
       // Step 4.2: the policy's shape and reader; the reader reads only with the switch on.
       'src/lib/authz/sharingPolicy.ts',
+      // Step 5.13: the deletion plan and the user DELETE's check read the account's shares only with write sharing
+      // switched on, which needs this switch (sharingWrite.flags.off.test.ts, the deletion block).
+      'src/lib/authz/userDeletion.ts',
       // Step 6.2: the admin users directory counts and lists a person's shares only with sharing in
       // force (the policy read through sharingPolicyInForce; api/admin/users/route.test.ts pins both).
       'src/lib/authz/userDirectory.ts',
@@ -242,6 +245,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/lib/authz/projectAccess.ts',
       // Step 4.4: the share writers, reached only past the share routes' gate (below).
       'src/lib/authz/projectShares.ts',
+      // Step 5.13: the deletion plan and the user DELETE's check, only with write sharing switched on (above).
+      'src/lib/authz/userDeletion.ts',
       // Step 6.2: the users directory's shared counts and a user's shares, only with sharing in force (above).
       'src/lib/authz/userDirectory.ts',
       'src/lib/authz/visibleProjects.ts',

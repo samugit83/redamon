@@ -50,6 +50,8 @@ import { maxShareLevel, sharingPolicyInForce } from './sharingPolicy'
 import { requireStepUp } from './stepUp'
 
 export const TRANSFER_PERMISSION = 'project:transfer'
+/** A transfer without the recipient's acceptance: the confirmed Root's (step 5.13). */
+export const FORCE_PERMISSION = 'projects:administer'
 export const TRANSFER_OFFER_DAYS = 7
 export const OLD_OWNER_ROLES = ['co-owner', 'leave'] as const
 export type OldOwnerRole = (typeof OLD_OWNER_ROLES)[number]
@@ -684,7 +686,8 @@ export async function acceptTransfer(request: Request, identity: AuthzIdentity, 
   return held.heldBy === 'transfer' ? IN_PROGRESS() : busyResponse(GRAPH_LOCK_HOLDER_PHRASE[held.heldBy])
 }
 
-async function acceptUnderLock(offer: TransferRow, actor: AuditActor): Promise<NextResponse> {
+/** `forced`: an admin's transfer without the recipient's acceptance (step 5.13), audited as such. */
+async function acceptUnderLock(offer: TransferRow, actor: AuditActor, { forced = false }: { forced?: boolean } = {}): Promise<NextResponse> {
   const { projectId } = offer
   if (!(await acquireTransferLock(projectId, offer.id, offer.fromUserId))) return lockRefusal(projectId)
   const beat = setInterval(() => { void refreshTransferLock(projectId).catch(() => undefined) }, LOCK_HEARTBEAT_MS)
@@ -696,18 +699,18 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor): Promise<N
       await lockOffers(tx, projectId)
       const { count } = await tx.projectTransfer.updateMany({
         where: { id: offer.id, status: offer.status },
-        data: { status: 'in_progress', error: null },
+        data: { status: 'in_progress', error: null, ...(forced ? { forced: true } : {}) },
       })
       if (count !== 1) return false
       await writeAuditTx(tx, {
         ...actor,
         projectId,
-        permission: TRANSFER_PERMISSION,
-        action: 'project.transfer.accept',
+        permission: forced ? FORCE_PERMISSION : TRANSFER_PERMISSION,
+        action: forced ? 'project.transfer.forced' : 'project.transfer.accept',
         targetType: 'user',
         targetId: offer.toUserId,
         before: { transferId: offer.id, status: offer.status },
-        after: { status: 'in_progress' },
+        after: { status: 'in_progress', ...(forced ? { forced: true } : {}) },
         source: 'api',
       })
       return true
@@ -980,4 +983,111 @@ async function moveInPostgres(
   })
   const shares = await tx.projectCollaborator.findMany({ where: { projectId }, select: { userId: true } })
   return { cleared, projectName: project.name, consentCleared: consent.count > 0, collaborators: shares.map((c) => c.userId) }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// For an account being deleted (step 5.13; SH-17): the deletion plan's offers, forced transfers and
+// cancels. The route (api/users/[id]/deletion-plan) checked users:delete, that the account owns the
+// project, that nobody acts as anyone, and the admin's own password (Root's for a forced transfer).
+
+/** The deletion plan's admin, the person signed in. */
+type DeletionIdentity = Pick<AuthzIdentity, 'session'>
+
+/** The open offer of each of these projects that has one (a lapsed one expired first). */
+export async function openOffersOf(projectIds: readonly string[]): Promise<Map<string, TransferView>> {
+  const out = new Map<string, TransferView>()
+  const rows: TransferRow[] = []
+  for (const projectId of projectIds) {
+    const row = await openOffer(projectId)
+    if (row) rows.push(row)
+  }
+  if (rows.length === 0) return out
+  const projects = await prisma.project.findMany({ where: { id: { in: rows.map((r) => r.projectId) } }, select: { id: true, name: true } })
+  const names = new Map(projects.map((p) => [p.id, p]))
+  const byId = await people(rows.flatMap((r) => [r.fromUserId, r.toUserId]))
+  for (const row of rows) out.set(row.projectId, viewOf(row, names.get(row.projectId) ?? { id: row.projectId, name: '' }, byId))
+  return out
+}
+
+/**
+ * A pending offer of `ownerId`'s project to `toUserId`, made by the deletion plan's admin: the owner leaves
+ * with the account, so the old owner's role is `leave`. Audited `project.transfer.offer`, the admin as
+ * actor and the account being deleted named.
+ */
+async function deletionOffer(identity: DeletionIdentity, projectId: string, ownerId: string, toUserId: string): Promise<TransferRow | NextResponse> {
+  if (toUserId === ownerId) {
+    return refusal(400, 'own_account', 'The account being deleted cannot receive its own project: pick one of its collaborators.')
+  }
+  const recipient = await recipientProblem(prisma, projectId, toUserId)
+  if (recipient) return recipientRefusal(recipient)
+  if (await openOffer(projectId)) return alreadyOffered()
+  return refusable(() => auditedTransaction(prisma, async (tx) => {
+    await lockOffers(tx, projectId)
+    const open = await tx.projectTransfer.findFirst({ where: { projectId, status: { in: OPEN } } }) as TransferRow | null
+    if (open) throw new Refused(alreadyOffered())
+    const problem = await recipientProblem(tx, projectId, toUserId)
+    if (problem) throw new Refused(recipientRefusal(problem))
+    const row = await tx.projectTransfer.create({
+      data: { projectId, fromUserId: ownerId, toUserId, oldOwnerRole: 'leave', status: 'pending' },
+    }) as TransferRow
+    await writeAuditTx(tx, {
+      ...actorOf(identity, identity.session.userId),
+      projectId,
+      permission: 'users:delete',
+      action: 'project.transfer.offer',
+      targetType: 'user',
+      targetId: toUserId,
+      after: { transferId: row.id, oldOwnerRole: 'leave', expiresAt: expiresAt(row).toISOString(), accountDeleted: ownerId },
+      source: 'api',
+    })
+    return row
+  }))
+}
+
+/**
+ * The deletion plan offers a project of the account being deleted to one of its active collaborators,
+ * who accepts it as any offer (the header banner, their own password) or declines it. 201 with the offer.
+ */
+export async function offerForDeletion(identity: DeletionIdentity, projectId: string, ownerId: string, toUserId: string): Promise<NextResponse> {
+  const made = await deletionOffer(identity, projectId, ownerId, toUserId)
+  if (made instanceof NextResponse) return made
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, name: true } })
+  const byId = await people([ownerId, toUserId])
+  return NextResponse.json({ offer: viewOf(made, project ?? { id: projectId, name: '' }, byId) }, { status: 201 })
+}
+
+/**
+ * A forced transfer: the project goes to the collaborator now, without their acceptance, through the
+ * acceptance's own path (both locks, the busy check, every socket closed, the graph, one Postgres
+ * transaction, the revocation path, both notices). Its start is audited `project.transfer.forced` and
+ * the offer keeps `forced`. An open offer to the same collaborator is the one forced; an offer to
+ * someone else is refused (cancel it first). Refused with 409 `project_busy` while work runs, before
+ * any offer is made.
+ */
+export async function forceTransferForDeletion(
+  identity: DeletionIdentity, projectId: string, ownerId: string, toUserId: string,
+): Promise<NextResponse> {
+  const busy = await transferBusy(projectId)
+  if (busy) return busyResponse(busy)
+  let offer = await openOffer(projectId)
+  if (offer) {
+    if (offer.toUserId !== toUserId) return alreadyOffered()
+    if (offer.status === 'in_progress' && (await graphHold(projectId)) === 'transferring') return IN_PROGRESS()
+    const eligible = await recipientProblem(prisma, projectId, toUserId)
+    if (eligible) return recipientRefusal(eligible)
+  } else {
+    const made = await deletionOffer(identity, projectId, ownerId, toUserId)
+    if (made instanceof NextResponse) return made
+    offer = made
+  }
+  const forcing = offer
+  const actor = actorOf(identity, identity.session.userId)
+  const held = await tryWithGraphLock(projectId, 'transfer', () => acceptUnderLock(forcing, actor, { forced: true }))
+  if (held.acquired) return held.value
+  return held.heldBy === 'transfer' ? IN_PROGRESS() : busyResponse(GRAPH_LOCK_HOLDER_PHRASE[held.heldBy])
+}
+
+/** The deletion plan withdraws a project's open offer (audited `project.transfer.cancel`, the admin as actor). */
+export async function cancelForDeletion(identity: DeletionIdentity, projectId: string): Promise<NextResponse> {
+  return withdraw(identity, identity.session.userId, projectId, 'owner')
 }

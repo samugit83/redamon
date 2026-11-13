@@ -29,6 +29,8 @@ import { forbiddenResponse } from '@/lib/authz/guards'
 import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
 import { endOpenImpersonationsQuietly } from '@/lib/authz/actAs'
 import { reassignConversationsOfDeletedAuthor } from '@/lib/authz/conversationAccess'
+import { onAccessReduced } from '@/lib/authz/revocation'
+import { deletionWizardOff, endDeletedAccountWork, resolveSharedProjects, unresolvedResponse } from '@/lib/authz/userDeletion'
 import type { Session } from '@/lib/session'
 
 interface RouteParams {
@@ -237,6 +239,7 @@ async function updateWithIdentity(
         return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
       }
       invalidatePrincipal(id)
+      await onAccessReduced(null, id, 'sessions_revoked')
       return NextResponse.json(publicUser(result.value))
     }
 
@@ -252,6 +255,8 @@ async function updateWithIdentity(
     if ('refused' in result) return rootGuardAnswer(request, session, id, result.refused, attempted)
     if ('missing' in result) return NextResponse.json({ error: 'User not found' }, { status: 404 })
     invalidatePrincipal(id)
+    // The raised session version ends the cookies signed for the old role; its open sockets close too (step 5.9).
+    if (roleChange) await onAccessReduced(null, id, 'sessions_revoked')
     return NextResponse.json(publicUser(result.user))
   } catch (err) {
     if (err instanceof AccountChanged) return NextResponse.json(ACCOUNT_CHANGED, { status: 409 })
@@ -501,11 +506,12 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const rootRefusal = await rootProtectedRefusal(request, session, id, 'delete')
     if (rootRefusal) return rootRefusal
     const targetIsAdmin = target?.role === 'admin'
+    // A member's DELETE has no body unless the deletion plan names projects to delete anyway.
+    const body = await request.json().catch(() => null)
     // Identity switch on: deleting an admin is the confirmed Root's power (step 2.6), or an
     // `admins:manage` holder's over a strict subset (permissions switch on).
     let rootPower = targetIsAdmin && rbacFlags().identity
     if (targetIsAdmin) {
-      const body = await request.json().catch(() => null)
       const managed = rootPower
         ? await adminsManagePath(request, session, id, 'delete', body?.stepUpPassword, ROOT_ONLY_DELETE)
         : null
@@ -528,6 +534,15 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
         if (allowed.refused) return rootGuardAnswer(request, session, id, allowed.refused, 'delete')
         return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
       }
+    }
+
+    // Write sharing on (step 5.13, SH-17): a shared project is transferred through the deletion plan
+    // or named in `deleteAnyway`; while one is left, nothing is torn down.
+    let deletedAnyway: string[] | null = null
+    if (!deletionWizardOff()) {
+      const shared = await resolveSharedProjects(id, body)
+      if ('unresolved' in shared) return unresolvedResponse(id, shared.unresolved)
+      deletedAnyway = shared.deletedAnyway
     }
 
     // Each project goes through the project-delete teardown first (HD-11): the
@@ -601,12 +616,18 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     // A deleted admin never sends its act-as cookie again: the impersonations it held end here,
     // and what it opened acting closes (permissions switch on, step 3.14).
     if (targetIsAdmin && rbacFlags().permissions) await endOpenImpersonationsQuietly(id, 'invalidated')
+    // Its shares went with the row; what it still ran on other people's projects stops (step 5.9).
+    await endDeletedAccountWork(id)
 
     await writeUserAudit(request, session, {
       action: 'user.delete',
       targetId: id,
       before: auditBefore,
-      after: { projectsDeleted, templatesReassigned, ...(conversationsReassigned === null ? {} : { conversationsReassigned }) },
+      after: {
+        projectsDeleted, templatesReassigned,
+        ...(conversationsReassigned === null ? {} : { conversationsReassigned }),
+        ...(deletedAnyway === null ? {} : { deletedAnyway }),
+      },
     })
 
     return NextResponse.json({ success: true })
