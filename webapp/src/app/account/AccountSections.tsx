@@ -207,7 +207,7 @@ function RootTransferRow({ selfId }: { selfId: string }) {
 
 interface NoticeItem {
   id: string
-  type: 'credentials_reset' | 'email_changed' | 'break_glass'
+  type: 'credentials_reset' | 'email_changed' | 'break_glass' | 'schedule_paused'
   at: string
   by: { name: string; email: string }
   reason?: string | null
@@ -217,6 +217,7 @@ interface NoticeItem {
   self?: boolean
   durationMinutes?: number
   project?: { id: string; name: string }
+  schedule?: { id: string; label: string }
   shownAt: string | null
 }
 
@@ -244,6 +245,10 @@ function noticeText(n: NoticeItem): string {
   if (n.type === 'email_changed') return `Your sign-in email was changed from ${n.from} to ${n.to}`
   if (n.type === 'break_glass') {
     return `Break-glass access to your project "${n.project?.name ?? ''}" was opened for up to ${n.durationMinutes ?? 0} min${n.reason ? ` (reason: ${n.reason})` : ''}`
+  }
+  if (n.type === 'schedule_paused') {
+    const who = n.by.name || n.by.email || 'the person it ran as'
+    return `A scan schedule${n.schedule?.label ? ` "${n.schedule.label}"` : ''} on your project "${n.project?.name ?? ''}" paused: ${who} no longer has access`
   }
   return `Your password was reset with ${n.mode === 'link' ? 'a reset link' : 'a temporary password'}${n.reason ? ` (reason: ${n.reason})` : ''}`
 }

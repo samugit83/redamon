@@ -1,7 +1,9 @@
 /**
  * Scan Timeline - one schedule (Section 7.2).
  *
- * PATCH  enable/disable, retime, change scan mode or label
+ * PATCH  enable/disable, retime, change scan mode or label. A schedule that paused itself because
+ *        its actor lost access (`pausedReason`, step 5.5) is not turned back on here: the
+ *        confirmation route makes the person confirming its actor (D-13); 409 schedule_paused.
  * DELETE remove the schedule (its ScanJob history survives, schedule_id -> NULL)
  */
 import { NextRequest, NextResponse } from 'next/server'
@@ -42,6 +44,18 @@ export const PATCH = withRouteErrors('Failed to update the schedule', async (req
   if (!existing) return NOT_FOUND()
 
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
+  // Re-enabling would run it again as the person who lost access to the project.
+  if (body.enabled === true && existing.pausedReason) {
+    return NextResponse.json(
+      {
+        error: 'This schedule paused because the person it runs as no longer has access to this project. ' +
+          'Confirm it to run it as you instead.',
+        code: 'schedule_paused',
+        pausedReason: existing.pausedReason,
+      },
+      { status: 409 },
+    )
+  }
   // Turning a schedule on lets it start full recons as its author; overwrite mode replaces the graph.
   const refused = (body.enabled === true ? requireAlso(auth, 'recon:scan') : null)
     ?? (body.scanMode === 'overwrite' ? requireAlso(auth, 'recon:overwrite') : null)

@@ -45,7 +45,8 @@ const FUTURE = new Date(Date.now() + 86_400_000)
 
 const PAUSED = {
   id: 's1', projectId: SHARED_PROJECT, userId: COLLABORATOR, label: 'nightly', mode: 'interval', runAt: null,
-  intervalMinutes: 60, cronExpr: null, scanMode: 'new', enabled: false, nextRunAt: null, lastRunAt: new Date(0),
+  intervalMinutes: 60, cronExpr: null, scanMode: 'new', enabled: false, pausedReason: 'actor_no_access',
+  nextRunAt: null, lastRunAt: new Date(0),
   estimatedEnvelopeBytes: null, createdAt: new Date(0), updatedAt: new Date(0),
 }
 
@@ -115,26 +116,27 @@ describe('confirm makes the confirmer the actor', () => {
     const res = await confirm()
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.schedule).toMatchObject({ id: 's1', userId: OWNER, enabled: true })
+    expect(body.schedule).toMatchObject({ id: 's1', userId: OWNER, enabled: true, pausedReason: null })
     expect(h.updates).toHaveLength(1)
     const { where, data } = h.updates[0]
     expect(where).toEqual({ id: 's1' })
     expect(data.userId).toBe(OWNER)
     expect(data.enabled).toBe(true)
+    expect(data.pausedReason).toBeNull()
     // An interval schedule counts from the confirmation, not from the missed occurrence.
     expect((data.nextRunAt as Date).getTime()).toBeGreaterThanOrEqual(before + 60 * 60_000)
     expect(h.audit).toHaveBeenCalledWith({
       actorId: OWNER, onBehalfOfUserId: null, actorEmail: `${OWNER}@example.test`,
       projectId: SHARED_PROJECT, permission: 'recon:schedule',
       action: 'scan_schedule.confirmed', targetType: 'scanSchedule', targetId: 's1',
-      before: { userId: COLLABORATOR, enabled: false },
+      before: { userId: COLLABORATOR, enabled: false, pausedReason: 'actor_no_access' },
       after: { userId: OWNER, enabled: true, nextRunAt: data.nextRunAt },
     })
   })
 
   test('the same confirmation twice leaves the same schedule (same event twice)', async () => {
     expect((await confirm()).status).toBe(200)
-    h.schedule = { ...PAUSED, userId: OWNER, enabled: true }
+    h.schedule = { ...PAUSED, userId: OWNER, enabled: true, pausedReason: null }
     expect((await confirm()).status).toBe(200)
     expect(h.updates.map((u) => [u.data.userId, u.data.enabled])).toEqual([[OWNER, true], [OWNER, true]])
   })

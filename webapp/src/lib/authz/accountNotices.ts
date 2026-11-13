@@ -7,6 +7,8 @@
  * ID-30): whoever changes it can then reset the password through it. An admin acting as the
  * account is told too (step 3.14, IM-10), unless Root turned it off. Root opening break-glass
  * access to a project tells its owner (step 4.14, SH-18): who, when, why, for how long, which project.
+ * A scan schedule that paused itself because the person it runs as lost access to the project tells
+ * the project's owner (step 5.5, D-13): which schedule, which project, whose access ended.
  *
  * The first sign-in after a reset is the one whose account last signed in before the latest
  * reset notice; only that sign-in records its address and browser (DV-11).
@@ -71,7 +73,22 @@ export interface BreakGlassNotice {
   shownAt?: string
 }
 
-export type AccountNotice = CredentialsResetNotice | EmailChangedNotice | ActedAsNotice | BreakGlassNotice
+export interface SchedulePausedNotice {
+  id: string
+  type: 'schedule_paused'
+  /** When the schedule paused itself (ISO). */
+  at: string
+  /**
+   * The person the schedule ran as, whose access to the project ended (the schedule paused itself;
+   * nobody paused it). Name and email are empty for an account that no longer exists.
+   */
+  by: { id: string; name: string; email: string }
+  project: { id: string; name: string }
+  schedule: { id: string; label: string }
+  shownAt?: string
+}
+
+export type AccountNotice = CredentialsResetNotice | EmailChangedNotice | ActedAsNotice | BreakGlassNotice | SchedulePausedNotice
 
 /** What the person is shown: the notice without the admin's account id. */
 export type NoticeView =
@@ -109,6 +126,14 @@ export type NoticeView =
     durationMinutes: number
     project: { id: string; name: string }
   }
+  | {
+    id: string
+    type: 'schedule_paused'
+    at: string
+    by: { name: string; email: string }
+    project: { id: string; name: string }
+    schedule: { id: string; label: string }
+  }
 
 const text = (v: unknown): v is string => typeof v === 'string'
 
@@ -130,6 +155,12 @@ function isNotice(v: unknown): v is AccountNotice {
     const project = n.project as Record<string, unknown> | null | undefined
     return text(n.reason) && Number.isSafeInteger(n.durationMinutes) && (n.durationMinutes as number) >= 1
       && !!project && typeof project === 'object' && text(project.id) && text(project.name)
+  }
+  if (n.type === 'schedule_paused') {
+    const project = n.project as Record<string, unknown> | null | undefined
+    const schedule = n.schedule as Record<string, unknown> | null | undefined
+    return !!project && typeof project === 'object' && text(project.id) && text(project.name)
+      && !!schedule && typeof schedule === 'object' && text(schedule.id) && text(schedule.label)
   }
   return n.type === 'email_changed' && text(n.from) && text(n.to) && typeof n.self === 'boolean'
 }
@@ -165,6 +196,17 @@ export function breakGlassNotice(
   return {
     id: randomUUID(), type: 'break_glass', at: at.toISOString(), by, reason, durationMinutes,
     project: { id: project.id, name: project.name },
+  }
+}
+
+export function schedulePausedNotice(
+  { by, at, project, schedule }: {
+    by: SchedulePausedNotice['by']; at: Date; project: SchedulePausedNotice['project']; schedule: SchedulePausedNotice['schedule']
+  },
+): SchedulePausedNotice {
+  return {
+    id: randomUUID(), type: 'schedule_paused', at: at.toISOString(), by,
+    project: { id: project.id, name: project.name }, schedule: { id: schedule.id, label: schedule.label },
   }
 }
 
@@ -223,6 +265,12 @@ export function noticeView(n: AccountNotice): NoticeView {
   if (n.type === 'acted_as') return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, durationMinutes: n.durationMinutes }
   if (n.type === 'break_glass') {
     return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, durationMinutes: n.durationMinutes, project: { id: n.project.id, name: n.project.name } }
+  }
+  if (n.type === 'schedule_paused') {
+    return {
+      id: n.id, type: n.type, at: n.at, by,
+      project: { id: n.project.id, name: n.project.name }, schedule: { id: n.schedule.id, label: n.schedule.label },
+    }
   }
   return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, mode: n.mode }
 }

@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
   projectFindUnique: vi.fn(),
   userFindMany: vi.fn(),
   actorRefusal: vi.fn(),
+  notice: vi.fn(),
 }))
 
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => h.isInternal(...a) }))
@@ -62,6 +63,7 @@ vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }
 vi.mock('@/lib/authz/scanActor', async (orig) => ({
   ...(await orig<typeof import('@/lib/authz/scanActor')>()),
   actorScanRefusal: (...a: unknown[]) => h.actorRefusal(...a),
+  noticeSchedulePaused: (...a: unknown[]) => h.notice(...a),
 }))
 vi.mock('@/lib/scanTimeline', async orig => ({
   ...(await orig<typeof import('@/lib/scanTimeline')>()),
@@ -97,6 +99,7 @@ beforeEach(() => {
   h.agent.mockResolvedValue('idle')
   h.jqFindFirst.mockResolvedValue(null)
   h.actorRefusal.mockResolvedValue(null)
+  h.notice.mockResolvedValue(true)
 })
 
 describe('authentication', () => {
@@ -469,7 +472,7 @@ describe('POST /run: a schedule whose actor lost access to the project (step 5.5
   const LOST = { userId: 'collab-1', permission: 'recon:scan', reason: 'project_level' }
 
   beforeEach(() => {
-    h.findSchedule.mockResolvedValue({ ...SCHEDULE, userId: 'collab-1' })
+    h.findSchedule.mockResolvedValue({ ...SCHEDULE, userId: 'collab-1', label: 'nightly' })
     vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
   afterEach(() => vi.restoreAllMocks())
@@ -490,7 +493,9 @@ describe('POST /run: a schedule whose actor lost access to the project (step 5.5
     expect(h.updateManySchedule).toHaveBeenCalledTimes(1)
     const update = h.updateManySchedule.mock.calls[0][0]
     expect(update.where).toEqual({ id: 's1', userId: 'collab-1' })
-    expect(update.data).toMatchObject({ enabled: false, lastRunAt: expect.any(Date), nextRunAt: expect.any(Date) })
+    expect(update.data).toMatchObject({
+      enabled: false, pausedReason: 'actor_no_access', lastRunAt: expect.any(Date), nextRunAt: expect.any(Date),
+    })
     // D-13: the schedule keeps its actor until a person confirms it.
     expect(update.data).not.toHaveProperty('userId')
     expect(h.audit).toHaveBeenCalledWith({
@@ -500,6 +505,16 @@ describe('POST /run: a schedule whose actor lost access to the project (step 5.5
     })
     expect(console.warn).toHaveBeenCalledWith(
       '[rbac] schedule s1 paused: actor collab-1 lost recon:scan on project p1 (project_level)')
+    // The owner is told (the notice helper reads the owner and writes the notice itself).
+    expect(h.notice).toHaveBeenCalledWith({ projectId: 'p1', scheduleId: 's1', label: 'nightly', actorUserId: 'collab-1' })
+  })
+
+  test('a notice that cannot be written leaves the pause standing', async () => {
+    h.actorRefusal.mockResolvedValue(LOST)
+    h.notice.mockResolvedValue(false)
+    const body = await (await runIt()).json()
+    expect(body).toMatchObject({ paused: true, code: 'actor_no_access' })
+    expect(h.updateManySchedule).toHaveBeenCalledTimes(1)
   })
 
   test('a confirmation that landed while it fired is not undone (two at once)', async () => {
@@ -511,6 +526,7 @@ describe('POST /run: a schedule whose actor lost access to the project (step 5.5
     expect(await res.json()).toEqual({ ok: false, skipped: 'actor_changed' })
     expect(h.start).not.toHaveBeenCalled()
     expect(h.audit).not.toHaveBeenCalled()
+    expect(h.notice).not.toHaveBeenCalled()
   })
 
   test('an overwrite schedule needs recon:overwrite of its actor too', async () => {
@@ -526,6 +542,7 @@ describe('POST /run: a schedule whose actor lost access to the project (step 5.5
     expect(h.actorRefusal).toHaveBeenCalledWith('u1', 'p1', ['recon:scan'])
     expect(h.start.mock.calls[0][0]).toMatchObject({ actorUserId: 'u1', scheduleId: 's1', trigger: 'scheduled' })
     expect(h.audit).not.toHaveBeenCalled()
+    expect(h.notice).not.toHaveBeenCalled()
   })
 
   test('an access check that cannot be read starts nothing and keeps the occurrence due (never)', async () => {

@@ -10,6 +10,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 
 const alertError = vi.fn()
+const confirmModal = vi.fn()
 const dangerConfirm = vi.fn()
 const toastInfo = vi.fn()
 
@@ -20,6 +21,7 @@ const toastInfo = vi.fn()
 vi.mock('@/components/ui', () => ({
   useAlertModal: () => ({
     alertError: (...a: unknown[]) => alertError(...a),
+    confirm: (...a: unknown[]) => confirmModal(...a),
     dangerConfirm: (...a: unknown[]) => dangerConfirm(...a),
   }),
   useToast: () => ({ info: (...a: unknown[]) => toastInfo(...a) }),
@@ -264,5 +266,65 @@ describe('ScanScheduleTable', () => {
     fireEvent.click(screen.getByText(/Delete selected \(1\)/))
     await waitFor(() => expect(dangerConfirm).toHaveBeenCalled())
     expect(fetchMock.mock.calls.find(c => c[1]?.method === 'DELETE')).toBeUndefined()
+  })
+
+  // Step 5.5 (D-13): a schedule whose actor lost access pauses itself; a person takes it over by
+  // confirming it, never by re-enabling it as the person who lost access.
+  describe('a schedule paused because its actor lost access', () => {
+    const PAUSED = {
+      ...SCHEDULE, enabled: false, pausedReason: 'actor_no_access',
+      createdBy: { name: 'Bob Collab', email: 'bob@e2e.local' },
+    }
+
+    test('says who lost access and offers Confirm instead of Enable', async () => {
+      fetchMock.mockResolvedValue(ok({ schedules: [PAUSED], jobs: [] }))
+      render(<ScanScheduleTable projectId="p1" />)
+      await waitFor(() => expect(screen.getByText(/Bob Collab no longer has access to this project/)).toBeTruthy())
+      expect(screen.getByRole('button', { name: 'Confirm schedule' })).toBeTruthy()
+      expect(screen.queryByTitle('Enable')).toBeNull()
+    })
+
+    test('Confirm asks first, then POSTs the confirmation and reloads', async () => {
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) =>
+        init?.method === 'POST' ? ok({ schedule: { ...PAUSED, enabled: true, pausedReason: null } }) : ok({ schedules: [PAUSED], jobs: [] }))
+      confirmModal.mockResolvedValue(true)
+      render(<ScanScheduleTable projectId="p1" />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm schedule' }))
+      await waitFor(() => expect(toastInfo).toHaveBeenCalledWith('Schedule confirmed: it now runs as you'))
+      expect(confirmModal.mock.calls[0][0]).toMatch(/as you from now on\? Bob Collab no longer has access/)
+      const post = fetchMock.mock.calls.find(c => c[1]?.method === 'POST')
+      expect(post?.[0]).toBe('/api/projects/p1/schedules/s1/confirm')
+      expect(post?.[1]).toMatchObject({ headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      await waitFor(() => expect(scheduleGets().length).toBeGreaterThanOrEqual(2))
+    })
+
+    test('declining the prompt sends nothing', async () => {
+      fetchMock.mockResolvedValue(ok({ schedules: [PAUSED], jobs: [] }))
+      confirmModal.mockResolvedValue(false)
+      render(<ScanScheduleTable projectId="p1" />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm schedule' }))
+      await waitFor(() => expect(confirmModal).toHaveBeenCalled())
+      expect(fetchMock.mock.calls.some(c => c[1]?.method === 'POST')).toBe(false)
+    })
+
+    test('a refused confirmation shows the route\'s reason', async () => {
+      fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+        init?.method === 'POST'
+          ? fail(403, { error: 'Your access to this project does not reach this action (recon:schedule, level M).', code: 'forbidden' })
+          : ok({ schedules: [PAUSED], jobs: [] }))
+      confirmModal.mockResolvedValue(true)
+      render(<ScanScheduleTable projectId="p1" />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm schedule' }))
+      await waitFor(() => expect(alertError).toHaveBeenCalled())
+      expect(alertError.mock.calls[0][0]).toMatch(/level M/)
+    })
+
+    test('a schedule a person turned off keeps its plain Enable button', async () => {
+      fetchMock.mockResolvedValue(ok({ schedules: [{ ...SCHEDULE, enabled: false, pausedReason: null }], jobs: [] }))
+      render(<ScanScheduleTable projectId="p1" />)
+      await waitFor(() => expect(screen.getByTitle('Enable')).toBeTruthy())
+      expect(screen.queryByRole('button', { name: 'Confirm schedule' })).toBeNull()
+      expect(screen.queryByText(/no longer has access/)).toBeNull()
+    })
   })
 })

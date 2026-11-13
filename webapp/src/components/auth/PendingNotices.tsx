@@ -42,6 +42,15 @@ export type AccountNoticeView =
     /** The person's project Root opened (step 4.14). */
     project: { id: string; name: string }
   }
+  | {
+    id: string
+    type: 'schedule_paused'
+    at: string
+    /** The person the schedule ran as, whose access ended (step 5.5); empty for a deleted account. */
+    by: { name: string; email: string }
+    project: { id: string; name: string }
+    schedule: { id: string; label: string }
+  }
 
 type Alerts = ReturnType<typeof useOptionalAlertModal>
 
@@ -50,6 +59,7 @@ const TITLES: Record<AccountNoticeView['type'], string> = {
   email_changed: 'Your sign-in email was changed',
   acted_as: 'An administrator acted as you',
   break_glass: 'Root opened break-glass access to your project',
+  schedule_paused: 'A scan schedule on your project paused',
 }
 
 function isView(v: unknown): v is AccountNoticeView {
@@ -69,6 +79,12 @@ function isView(v: unknown): v is AccountNoticeView {
     const project = n.project as Record<string, unknown> | null | undefined
     return typeof n.reason === 'string' && Number.isSafeInteger(n.durationMinutes) && (n.durationMinutes as number) >= 1
       && !!project && typeof project === 'object' && typeof project.id === 'string' && typeof project.name === 'string'
+  }
+  if (n.type === 'schedule_paused') {
+    const project = n.project as Record<string, unknown> | null | undefined
+    const schedule = n.schedule as Record<string, unknown> | null | undefined
+    return !!project && typeof project === 'object' && typeof project.id === 'string' && typeof project.name === 'string'
+      && !!schedule && typeof schedule === 'object' && typeof schedule.id === 'string' && typeof schedule.label === 'string'
   }
   return n.type === 'email_changed' && typeof n.from === 'string' && typeof n.to === 'string' && typeof n.self === 'boolean'
 }
@@ -101,6 +117,14 @@ export function noticeMessage(n: AccountNoticeView): string {
     return `${n.by.name} (${n.by.email}), the instance's Root, opened break-glass access to your project "${n.project.name}" on ${when}, `
       + `for up to ${n.durationMinutes} min: read access to everything in it, raw data and files included. Reason: ${n.reason}. `
       + "The project's Activity page lists it."
+  }
+  if (n.type === 'schedule_paused') {
+    // A schedule runs as the person who set it up; it never moves to someone else on its own (D-13).
+    const who = n.by.name || n.by.email ? `${n.by.name || n.by.email}${n.by.name && n.by.email ? ` (${n.by.email})` : ''}` : 'The person it ran as'
+    const which = n.schedule.label ? `"${n.schedule.label}"` : 'A scan schedule'
+    return `${which} on your project "${n.project.name}" paused on ${when}: ${who} no longer has access to the project, `
+      + 'and the schedule ran as them. It stays paused until you or a co-owner confirm it in the Scans tab; '
+      + 'it then runs as whoever confirms it.'
   }
   const how = n.mode === 'link' ? 'with a reset link' : 'with a temporary password'
   const why = n.reason ? `Reason: ${n.reason}.` : 'No reason was given.'

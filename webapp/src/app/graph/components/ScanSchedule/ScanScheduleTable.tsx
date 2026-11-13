@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { Loader2, Plus, Play, Pause, Trash2, CalendarClock } from 'lucide-react'
+import { Loader2, Plus, Play, Pause, Trash2, CalendarClock, UserCheck } from 'lucide-react'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import { ScanQueuePanel, kindLabel } from './ScanQueuePanel'
 import { usePaged, Pager } from './pagination'
@@ -23,6 +23,11 @@ interface Schedule {
   lastRunAt: string | null
   /** Who created it (absent from an older server). */
   createdBy?: Person | null
+  /**
+   * Why the schedule stopped itself (step 5.5): `actor_no_access` when the person it runs as lost
+   * access to the project. Only a confirmation turns it back on. Absent from an older server.
+   */
+  pausedReason?: string | null
 }
 
 /** A person the timeline names: who created a schedule or started a run. */
@@ -73,6 +78,8 @@ function duration(job: Job): string {
   return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`
 }
 
+const pausedForAccess = (s: Schedule) => s.pausedReason === 'actor_no_access'
+
 function describeSchedule(s: Schedule): string {
   if (s.mode === 'once') return `once at ${fmt(s.runAt)}`
   if (s.mode === 'interval') return `every ${s.intervalMinutes} min`
@@ -88,7 +95,7 @@ function describeSchedule(s: Schedule): string {
  * with the reason, rather than silently not happening.
  */
 export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
-  const { alertError, dangerConfirm } = useAlertModal()
+  const { alertError, confirm, dangerConfirm } = useAlertModal()
   // A read share lists schedules and runs (recon:read) and changes none (step 4.11).
   const scheduleRefusal = useRefusal('recon:schedule', projectId)?.text ?? null
   const historyRefusal = useRefusal('scan:versions_delete', projectId)?.text ?? null
@@ -182,6 +189,32 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
       load()
     } catch (err) {
       alertError(toApiError(err, 'Could not update the schedule').message, 'Schedule')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // A schedule paused because its actor lost access is taken over, never re-enabled as that person
+  // (D-13): the confirmation makes the person confirming its actor.
+  const confirmSchedule = async (s: Schedule) => {
+    if (!projectId) return
+    const yes = await confirm(
+      `Run this schedule (${describeSchedule(s)}) as you from now on? ${personLabel(s.createdBy)} no longer has ` +
+      'access to this project, so it paused. Its next run is counted from now; missed runs are not caught up.',
+      'Confirm schedule',
+    )
+    if (!yes) return
+    setBusyId(s.id)
+    try {
+      await fetchJson(`/api/projects/${projectId}/schedules/${s.id}/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }, 'Could not confirm the schedule')
+      toast.info('Schedule confirmed: it now runs as you')
+      load()
+    } catch (err) {
+      alertError(toApiError(err, 'Could not confirm the schedule').message, 'Schedule')
     } finally {
       setBusyId(null)
     }
@@ -345,6 +378,11 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                   <span className={s.enabled ? styles.badgeOn : styles.badgeOff}>
                     {s.enabled ? 'Enabled' : 'Disabled'}
                   </span>
+                  {pausedForAccess(s) && (
+                    <span className={styles.accessBadge}>
+                      paused: {personLabel(s.createdBy)} no longer has access to this project; confirm to run it as you
+                    </span>
+                  )}
                   {scopeProblem && (
                     <span className={styles.scopeBadge} title={scopeProblem.message}>
                       {s.enabled ? 'next run will be refused' : 'paused'}: the saved scope is no longer valid
@@ -354,14 +392,26 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                   )}
                 </td>
                 <td className={styles.actions}>
-                  <button
-                    className={styles.iconBtn}
-                    disabled={busyId === s.id || (!s.enabled && !!scopeProblem) || !!scheduleRefusal}
-                    onClick={() => patch(s, { enabled: !s.enabled })}
-                    title={scheduleRefusal ? scheduleRefusal : s.enabled ? 'Disable' : scopeProblem ? 'Fix the target list before enabling' : 'Enable'}
-                  >
-                    {s.enabled ? <Pause size={13} /> : <Play size={13} />}
-                  </button>
+                  {pausedForAccess(s) && !s.enabled ? (
+                    <button
+                      className={styles.iconBtn}
+                      disabled={busyId === s.id || !!scopeProblem || !!scheduleRefusal}
+                      onClick={() => confirmSchedule(s)}
+                      title={scheduleRefusal ?? (scopeProblem ? 'Fix the target list before confirming' : 'Confirm: run it as you')}
+                      aria-label="Confirm schedule"
+                    >
+                      <UserCheck size={13} />
+                    </button>
+                  ) : (
+                    <button
+                      className={styles.iconBtn}
+                      disabled={busyId === s.id || (!s.enabled && !!scopeProblem) || !!scheduleRefusal}
+                      onClick={() => patch(s, { enabled: !s.enabled })}
+                      title={scheduleRefusal ? scheduleRefusal : s.enabled ? 'Disable' : scopeProblem ? 'Fix the target list before enabling' : 'Enable'}
+                    >
+                      {s.enabled ? <Pause size={13} /> : <Play size={13} />}
+                    </button>
+                  )}
                   <button
                     className={`${styles.iconBtn} ${styles.dangerBtn}`}
                     disabled={busyId === s.id || !!scheduleRefusal}

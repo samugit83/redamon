@@ -14,7 +14,10 @@
  * queued.
  */
 import prisma from '@/lib/prisma'
+import { safeErrorCode } from '@/lib/routeErrors'
+import { appendNotice, schedulePausedNotice } from './accountNotices'
 import { can } from './can'
+import { now } from './clock'
 import { rbacFlags } from './flags'
 import type { PermissionId } from './permissions'
 import { loadPrincipal } from './principal'
@@ -107,4 +110,35 @@ export function actorScanRefusalReason(refusal: ActorScanRefusal, done: 'schedul
     deleted: 'no longer exists',
   }[refusal.reason]
   return `the account that ${done} it ${why}`
+}
+
+/**
+ * Tells the project's owner that a schedule paused itself because the person it runs as lost access
+ * (step 5.5, D-13), through the account's notices (shown at the next sign-in, kept in My account).
+ * Best effort: the pause stands whatever happens here; a failure is logged with its code and
+ * answers false.
+ */
+export async function noticeSchedulePaused(input: {
+  projectId: string
+  scheduleId: string
+  label: string
+  actorUserId: string
+}): Promise<boolean> {
+  try {
+    const [project, actor] = await Promise.all([
+      prisma.project.findUnique({ where: { id: input.projectId }, select: { userId: true, name: true } }),
+      prisma.user.findUnique({ where: { id: input.actorUserId }, select: { name: true, email: true } }),
+    ])
+    if (!project) return false
+    await appendNotice(project.userId, schedulePausedNotice({
+      at: now(),
+      by: { id: input.actorUserId, name: actor?.name ?? '', email: actor?.email ?? '' },
+      project: { id: input.projectId, name: project.name },
+      schedule: { id: input.scheduleId, label: input.label },
+    }))
+    return true
+  } catch (err) {
+    console.error(`[rbac] schedule pause notice failed schedule=${input.scheduleId} code=${safeErrorCode(err)}`)
+    return false
+  }
 }

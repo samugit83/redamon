@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   dispatchStart: vi.fn(),
   startFullScan: vi.fn(),
   audit: vi.fn(),
+  notices: [] as Array<{ userId: string; notice: Record<string, unknown> }>,
 }))
 
 vi.mock('@/lib/prisma', async () => ({ default: (await import('@/lib/authz/__testing__/sharedProjectDb')).sharedProjectPrisma(h) }))
@@ -29,6 +30,10 @@ vi.mock('@/lib/session', async (orig) => ({
   isInternalRequest: () => true,
 }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
+vi.mock('@/lib/authz/accountNotices', async (orig) => ({
+  ...(await orig<typeof import('@/lib/authz/accountNotices')>()),
+  appendNotice: async (userId: string, notice: Record<string, unknown>) => { h.notices.push({ userId, notice }) },
+}))
 vi.mock('@/lib/startScan', () => ({
   dispatchStart: (...a: unknown[]) => h.dispatchStart(...a),
   stopScan: async () => undefined,
@@ -88,7 +93,7 @@ const queued = (userId: string) => ({
   status: 'queued', attempts: 0, maxAttempts: 20,
 })
 const scheduled = (userId: string) => ({
-  id: 's1', projectId: SHARED_PROJECT, userId, mode: 'interval', scanMode: 'new', intervalMinutes: 60,
+  id: 's1', projectId: SHARED_PROJECT, userId, label: 'nightly', mode: 'interval', scanMode: 'new', intervalMinutes: 60,
   cronExpr: null, enabled: true, lastRunAt: null,
 })
 
@@ -108,6 +113,7 @@ beforeEach(() => {
   h.schedule = null
   h.jobUpdates.length = 0
   h.scheduleUpdates.length = 0
+  h.notices.length = 0
   h.dispatchStart.mockReset().mockResolvedValue({ ok: true, status: 200, runId: '', scanJobId: 'sj1' })
   h.startFullScan.mockReset().mockResolvedValue({ ok: true, versionId: 'v2', versionSeq: 2, scanJobId: 'sj2', frozenVersionId: 'v1' })
   h.audit.mockReset()
@@ -146,8 +152,18 @@ describe('a Read collaborator\'s deferred work', () => {
     expect(await runIt()).toMatchObject({ ok: false, paused: true, code: 'actor_no_access' })
     expect(h.startFullScan).not.toHaveBeenCalled()
     expect(h.scheduleUpdates).toHaveLength(1)
-    expect(h.scheduleUpdates[0]).toMatchObject({ where: { id: 's1', userId: COLLABORATOR }, data: { enabled: false } })
+    expect(h.scheduleUpdates[0]).toMatchObject({
+      where: { id: 's1', userId: COLLABORATOR }, data: { enabled: false, pausedReason: 'actor_no_access' },
+    })
     expect(h.audit.mock.calls[0][0]).toMatchObject({ action: 'scan_schedule.paused', projectId: SHARED_PROJECT })
+    // The owner is told which schedule paused and whose access ended.
+    expect(h.notices).toEqual([{
+      userId: OWNER,
+      notice: expect.objectContaining({
+        type: 'schedule_paused', by: { id: COLLABORATOR, name: COLLABORATOR, email: `${COLLABORATOR}@example.test` },
+        project: { id: SHARED_PROJECT, name: 'rbac-shared' }, schedule: { id: 's1', label: 'nightly' },
+      }),
+    }])
   })
 })
 
@@ -172,5 +188,6 @@ describe.each([
     expect(await runIt()).toMatchObject({ ok: true })
     expect(h.startFullScan.mock.calls[0][0]).toMatchObject({ actorUserId: OWNER, scheduleId: 's1' })
     expect(h.audit).not.toHaveBeenCalled()
+    expect(h.notices).toEqual([])
   })
 })

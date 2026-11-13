@@ -181,6 +181,20 @@ describe('My activity', () => {
     expect(text[3]).toMatch(/Password reset with a reset link.*Locked out/)
   })
 
+  test('a paused schedule notice names the schedule, the project and whose access ended (step 5.5)', async () => {
+    h.activity.body = {
+      notices: [{
+        id: 'n1', type: 'schedule_paused', at: '2026-11-12T10:00:00.000Z', by: { name: 'Bob Collab', email: 'bob@e2e.local' },
+        project: { id: 'P1', name: 'Client X' }, schedule: { id: 's1', label: 'nightly' }, shownAt: '2026-11-12T11:00:00.000Z',
+      }],
+      events: [],
+    }
+    renderPage()
+    const region = screen.getByRole('region', { name: 'My activity' })
+    const items = await within(region).findAllByRole('listitem')
+    expect(items[0].textContent).toMatch(/A scan schedule "nightly" on your project "Client X" paused: Bob Collab no longer has access/)
+  })
+
   test('an act-as row says why, for how long and how it ended, when the row holds it', async () => {
     const laura = { name: 'Laura', email: 'laura@e2e.local' }
     h.activity.body = {

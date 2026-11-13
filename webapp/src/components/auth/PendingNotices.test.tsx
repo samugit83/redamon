@@ -184,3 +184,39 @@ describe('the break-glass notice (step 4.14, SH-18)', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
   })
 })
+
+describe('the schedule pause notice (step 5.5, D-13)', () => {
+  const paused = (over: Record<string, unknown> = {}) => ({
+    id: 'p1', type: 'schedule_paused', at: '2026-11-12T10:00:00.000Z', by: { name: 'Bob Collab', email: 'bob@e2e.local' },
+    project: { id: 'P1', name: 'Client X' }, schedule: { id: 's1', label: 'nightly' }, ...over,
+  })
+
+  test('owner notified: the schedule, the project, whose access ended, and how to resume it', () => {
+    const text = noticeMessage(readNoticeViews([paused()])[0])
+    expect(text).toContain('"nightly"')
+    expect(text).toContain('"Client X"')
+    expect(text).toContain('Bob Collab (bob@e2e.local) no longer has access')
+    expect(text).toMatch(/confirm it in the Scans tab/)
+    expect(text).toMatch(/runs as whoever confirms it/)
+  })
+
+  test('an unnamed schedule and an account that is gone still read', () => {
+    const text = noticeMessage(readNoticeViews([paused({ schedule: { id: 's1', label: '' }, by: { name: '', email: '' } })])[0])
+    expect(text).toMatch(/^A scan schedule on your project "Client X" paused/)
+    expect(text).toContain('The person it ran as no longer has access')
+  })
+
+  test('only well-formed ones are read', () => {
+    expect(readNoticeViews([paused({ project: null }), paused({ schedule: { id: 's1' } }), paused()])).toHaveLength(1)
+  })
+
+  test('shown in the app dialog under its own title', async () => {
+    const onDone = vi.fn()
+    render(<AlertProvider><Harness notices={[paused()]} onDone={onDone} /></AlertProvider>)
+    const dialog = await screen.findByRole('dialog', { name: 'A scan schedule on your project paused' })
+    expect(dialog).toHaveTextContent('nightly')
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
+  })
+})
+

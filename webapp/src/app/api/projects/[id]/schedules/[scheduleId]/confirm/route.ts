@@ -82,7 +82,7 @@ export const POST = withRouteErrors('Could not confirm the schedule', async (req
   const actorUserId = auth.effective.userId
   const updated = await prisma.scanSchedule.update({
     where: { id: scheduleId },
-    data: { userId: actorUserId, enabled: true, nextRunAt },
+    data: { userId: actorUserId, enabled: true, nextRunAt, pausedReason: null },
   })
   await writeAudit({
     ...auditActorOf(auth.principal, actorUserId),
@@ -91,7 +91,7 @@ export const POST = withRouteErrors('Could not confirm the schedule', async (req
     action: 'scan_schedule.confirmed',
     targetType: 'scanSchedule',
     targetId: scheduleId,
-    before: { userId: schedule.userId, enabled: schedule.enabled },
+    before: { userId: schedule.userId, enabled: schedule.enabled, pausedReason: schedule.pausedReason },
     after: { userId: actorUserId, enabled: true, nextRunAt },
   })
   return NextResponse.json({

@@ -21,8 +21,9 @@
  * The schedule starts its scans as the person who created it (or last confirmed it), so
  * that person must still be allowed to start a full recon here when it fires (step 5.5,
  * DV-38, D-13): a collaborator whose share was revoked, expired or narrowed since. A
- * schedule whose actor lost access is paused (`enabled: false`), audited
- * `scan_schedule.paused`, never re-attributed: the owner or a co-owner confirms it
+ * schedule whose actor lost access is paused (`enabled: false`, `pausedReason:
+ * 'actor_no_access'`), audited `scan_schedule.paused`, with a notice to the owner, never
+ * re-attributed: the owner or a co-owner confirms it
  * (`POST /api/projects/[id]/schedules/[scheduleId]/confirm`) and becomes its actor.
  */
 
@@ -61,7 +62,9 @@ import { classifyStartFailure } from '@/lib/scanStartOutcome'
 import { enqueueJob } from '@/lib/enqueueJob'
 import { writeAudit } from '@/lib/audit'
 import { checkAgentSessions, describeAgentSessionState } from '@/lib/agentSessions'
-import { actorScanRefusal, actorScanRefusalReason, inactiveScanAccount, inactiveScanReason } from '@/lib/authz/scanActor'
+import {
+  actorScanRefusal, actorScanRefusalReason, inactiveScanAccount, inactiveScanReason, noticeSchedulePaused,
+} from '@/lib/authz/scanActor'
 import { queuedJobPermissions } from '@/lib/authz/queuedJobPermissions'
 
 export const runtime = 'nodejs'
@@ -133,7 +136,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       // above made someone else its actor, and pausing would undo it (two at once).
       const paused = await prisma.scanSchedule.updateMany({
         where: { id: scheduleId, userId: schedule.userId },
-        data: { lastRunAt: now, nextRunAt, enabled: false },
+        data: { lastRunAt: now, nextRunAt, enabled: false, pausedReason: 'actor_no_access' },
       })
       if (paused.count === 0) {
         console.info(`[scanScheduler] schedule ${scheduleId} changed actor while firing; left to its next run`)
@@ -155,6 +158,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           userId: refusal.userId, permission: refusal.permission, refusal: refusal.reason,
         },
         source: 'system',
+      })
+      await noticeSchedulePaused({
+        projectId: schedule.projectId, scheduleId: schedule.id, label: schedule.label, actorUserId: refusal.userId,
       })
       return NextResponse.json(
         { ok: false, paused: true, code: 'actor_no_access', error: `paused: ${reason}`, nextRunAt },

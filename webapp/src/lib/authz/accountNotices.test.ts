@@ -25,6 +25,7 @@ import {
   handOverNotices,
   pendingNotices,
   readNotices,
+  schedulePausedNotice,
   withNotice,
 } from './accountNotices'
 import type { CredentialsResetNotice } from './accountNotices'
@@ -218,6 +219,52 @@ describe('the break-glass notice to the owner (step 4.14, SH-18)', () => {
     for (const bad of [
       { ...good, reason: null }, { ...good, durationMinutes: 0 }, { ...good, durationMinutes: 1.5 },
       { ...good, project: null }, { ...good, project: { id: 'P1' } }, { ...good, by: { name: 'x' } },
+    ]) {
+      expect(readNotices([bad])).toEqual([])
+    }
+    expect(latestReset([good])).toBeNull()
+  })
+})
+
+describe('the schedule pause notice to the owner (step 5.5, D-13)', () => {
+  const COLLAB = { id: 'collab-1', name: 'Bob Collab', email: 'bob@e2e.local' }
+  const paused = (over: Partial<Parameters<typeof schedulePausedNotice>[0]> = {}) => schedulePausedNotice({
+    by: COLLAB, at: AT, project: { id: 'P1', name: 'Client X' }, schedule: { id: 's1', label: 'nightly' }, ...over,
+  })
+
+  test('schedule paused with a notice: which schedule, which project, whose access ended, when', () => {
+    expect(paused()).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      type: 'schedule_paused',
+      at: '2026-11-12T10:00:00.000Z',
+      by: COLLAB,
+      project: { id: 'P1', name: 'Client X' },
+      schedule: { id: 's1', label: 'nightly' },
+    })
+  })
+
+  test("is read, kept and handed over like the others, without the person's account id", async () => {
+    const list = withNotice([reset()], paused())
+    expect(readNotices(list).map((n) => n.type)).toEqual(['credentials_reset', 'schedule_paused'])
+    expect(noticeView(readNotices(list)[1])).toEqual({
+      id: expect.any(String), type: 'schedule_paused', at: '2026-11-12T10:00:00.000Z',
+      by: { name: 'Bob Collab', email: 'bob@e2e.local' }, project: { id: 'P1', name: 'Client X' },
+      schedule: { id: 's1', label: 'nightly' },
+    })
+    const shown = await handOverNotices('owner-1', list)
+    expect(shown.map((n) => n.type)).toEqual(['credentials_reset', 'schedule_paused'])
+    expect(JSON.stringify(shown)).not.toContain('collab-1')
+  })
+
+  test('an account that no longer exists is named by nothing, still a notice', () => {
+    expect(readNotices([paused({ by: { id: 'gone', name: '', email: '' } })])).toHaveLength(1)
+  })
+
+  test('a malformed one reads as none, and it is no reset', () => {
+    const good = paused()
+    for (const bad of [
+      { ...good, project: null }, { ...good, project: { id: 'P1' } }, { ...good, schedule: null },
+      { ...good, schedule: { id: 's1' } }, { ...good, by: { name: 'x' } },
     ]) {
       expect(readNotices([bad])).toEqual([])
     }
