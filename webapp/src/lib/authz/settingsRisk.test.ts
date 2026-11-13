@@ -8,7 +8,7 @@
  */
 import { describe, test, expect } from 'vitest'
 import { fieldKeys, fieldsWhere, loadRegistry } from '@/lib/reconSettings/registry'
-import { directionOf } from '@/lib/roe/roeWidening'
+import { directionOf, wideningReason } from '@/lib/roe/roeWidening'
 import { RECON_PRESETS } from '@/lib/recon-presets'
 import { effectiveToggles, type ProjectAccess } from './projectAccess'
 import { readFileSync } from 'node:fs'
@@ -280,6 +280,39 @@ describe('the directions the generic rules get wrong or do not cover', () => {
       expect.objectContaining({ key: 'roeTimeWindowEndTime', needs: 'owner' }),
     ])
     expect(RISK_CONTEXT_KEYS).toEqual(expect.arrayContaining(['roeTimeWindowStartTime', 'roeTimeWindowEndTime']))
+  })
+
+  test('a value outside the field\'s set or format widens before any order is read', () => {
+    // The agent reads an unknown phase as post_exploitation (roe_gate.py): no cap at all.
+    expect(classifyField('roeMaxSeverityPhase', 'exploitation', 'none')).toMatchObject({ needs: 'owner', reason: expect.stringMatching(/must be one of/) })
+    expect(classifyField('roeMaxSeverityPhase', 'exploitation', 'informational').needs).toBe('manage')
+    // A date the agent's strptime cannot read is no end date at all.
+    for (const bad of ['1', '2026-02-30', '2026-1-5', '30/12/2026']) {
+      expect(classifyField('roeEngagementEndDate', '2026-12-01', bad), bad).toMatchObject({ needs: 'owner', reason: expect.stringMatching(/YYYY-MM-DD/) })
+      expect(classifyField('roeEngagementStartDate', '2026-11-01', bad).needs, bad).toBe('owner')
+    }
+    expect(classifyField('roeEngagementEndDate', '2026-12-01', '2026-11-30').needs).toBe('manage')
+    // The readers compare HH:MM text: '9:00' sorts after '18:00'. Refused whether or not the window is on.
+    for (const bad of ['9:00', '25:00', '18:00:00', '6pm']) {
+      expect(classifyField('roeTimeWindowEndTime', '18:00', bad).needs, bad).toBe('owner')
+    }
+    // Below the field's bound, or not a number: no ordering applies.
+    expect(classifyField('roeGlobalMaxRps', 10, -1).needs).toBe('owner')
+    expect(classifyField('ipHostnameMaxScanned', 100, 'lots').needs).toBe('owner')
+    expect(classifyField('ipHostnameMode', 'record_only', 'everything').needs).toBe('owner')
+    // A gate given a value of the wrong type loosens.
+    expect(classifyField('agentGuardrailEnabled', true, 'yes').needs).toBe('manage')
+    expect(classifyField('agentGuardrailEnabled', false, true).needs).toBe('write')
+  })
+
+  test('the RoE review reads the same: an unknown phase or an unreadable date widens, an unreadable stored date was none', () => {
+    expect(wideningReason('roeMaxSeverityPhase', 'post_exploitation', 'none')).toBeTruthy()
+    expect(wideningReason('roeMaxSeverityPhase', 'informational', 'nonsense')).toBeTruthy()
+    expect(wideningReason('roeEngagementEndDate', '2026-12-01', '1')).toMatch(/YYYY-MM-DD/)
+    expect(wideningReason('roeEngagementStartDate', '2026-11-01', 'next week')).toMatch(/YYYY-MM-DD/)
+    expect(wideningReason('roeEngagementEndDate', 'garbage', '2026-12-01')).toBeNull()
+    const on = { roeTimeWindowEnabled: true, roeTimeWindowStartTime: '09:00', roeTimeWindowEndTime: '18:00' }
+    expect(wideningReason('roeTimeWindowEndTime', '18:00', '9:00', on, { ...on, roeTimeWindowEndTime: '9:00' })).toMatch(/HH:MM/)
   })
 
   test('the derived batch groups never decide on their own', () => {

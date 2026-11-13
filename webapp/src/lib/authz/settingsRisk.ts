@@ -28,7 +28,8 @@
  */
 import { field, type RegistryField, type ShareClass } from '@/lib/reconSettings/registry'
 import { sameValue } from '@/lib/reconSettings/roeParse'
-import { wideningReason } from '@/lib/roe/roeWidening'
+import { validateValue } from '@/lib/reconSettings/validators'
+import { formatProblem, wideningReason } from '@/lib/roe/roeWidening'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
 import { meetsLevel, type ProjectAccess } from './projectAccess'
 import type { ProjectLevel } from './permissions'
@@ -250,6 +251,18 @@ function ownReason(direction: OwnDirection, before: unknown, after: unknown, aft
   }
 }
 
+/**
+ * Why the readers would not read `after` as written: outside the field's values or bound, the wrong
+ * type, or a time or date not in the format they parse. Such a value sits on no order, so the order
+ * cannot call it narrower: an unknown phase cap reads as no cap, an unreadable end date as none.
+ * The derived columns are the server's own output, never a caller's.
+ */
+function unreadable(key: string, spec: RegistryField, after: unknown): string | null {
+  if (OWN_DIRECTIONS[key] === 'derived') return null
+  const problem = validateValue(key, spec, after) ?? formatProblem(key, after)
+  return problem && `${problem}: a value its readers do not read as written`
+}
+
 /** Why `before -> after` loosens a gate or widens scope, or null. */
 function widens(key: string, before: unknown, after: unknown, beforeRow: Record<string, unknown>, afterRow: Record<string, unknown>): string | null {
   if (Object.prototype.hasOwnProperty.call(OWN_DIRECTIONS, key)) return ownReason(OWN_DIRECTIONS[key], before, after, afterRow)
@@ -276,7 +289,7 @@ export function classifyField(
       : { key, share, needs: 'write', reason: null }
   }
   if (share === 'secret') return { key, share, needs: 'owner', reason: "the owner's secret" }
-  const reason = widens(key, before, after, beforeRow, afterRow)
+  const reason = unreadable(key, spec, after) ?? widens(key, before, after, beforeRow, afterRow)
   if (share === 'gate') {
     if (!reason) return { key, share, needs: 'write', reason: null }
     return { key, share, needs: EXPLOIT_GATES.has(key) ? 'manage+exploit' : 'manage', reason: `loosens a safety gate: ${reason}` }

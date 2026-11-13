@@ -277,6 +277,19 @@ describe('a co-owner (Manage)', () => {
     expect(selects().some(s => s.roeTimeWindowEndTime === true && s.roeTimeWindowStartTime === true)).toBe(true)
   })
 
+  test('a value its readers do not know is no narrowing: an unknown phase cap or an unreadable end date needs the owner', async () => {
+    as('co-owner')
+    h.stored = { ...STORED, roeMaxSeverityPhase: 'exploitation', roeEngagementEndDate: '2026-12-01' }
+    for (const change of [{ roeMaxSeverityPhase: 'none' }, { roeEngagementEndDate: '1' }]) {
+      vi.clearAllMocks()
+      const res = await put(change)
+      expect(res.status, JSON.stringify(change)).toBe(403)
+      expect((await res.json()).refused).toEqual([expect.objectContaining({ key: Object.keys(change)[0], needs: 'owner' })])
+      expect(wrote()).toBe(false)
+    }
+    expect((await put({ roeMaxSeverityPhase: 'informational', roeEngagementEndDate: '2026-11-30' })).status).toBe(200)
+  })
+
   test('the same day added while the window is off widens nothing', async () => {
     as('co-owner')
     const res = await put({ roeTimeWindowDays: ['mon', 'sun'] })
