@@ -11,11 +11,16 @@
  *      so it is empty for scans that predate the orchestrator's last restart.
  * Deduplicated on kind|projectId|runId, preferring the source that carries the
  * most identity: a queue row (has cancel/re-confirm) > a ScanJob > a live entry.
+ *
+ * With sharing in force (step 4.5) "own rows" are also every job and scan of a project the
+ * caller sees, a shared one included, each naming who started it (`initiator`: id and name,
+ * null when no person did: a schedule, the agent, a live entry); the anonymous count is their
+ * complement. Not in force, the rows and their shape are the ones before.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser } from '@/lib/access'
-import { visibleProjectsWhere } from '@/lib/authz/visibleProjects'
+import { jobQueueScope, visibleProjects } from '@/lib/authz/visibleProjects'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
 
@@ -40,10 +45,21 @@ type Row = {
   finishedAt: Date | null
   scanJobId: string | null
   runId: string
+  /** Who queued it: selected only with sharing in force. */
+  userId?: string
   project: { name: string } | null
 }
 
-function serialize(r: Row) {
+interface Initiator { id: string; name: string | null }
+
+/** Who started a row, by account id; null when no person did. Present only with sharing in force. */
+type People = (userId: string | null | undefined) => Initiator | null
+
+function initiatorField(people: People | null, userId: string | null | undefined) {
+  return people ? { initiator: people(userId) } : {}
+}
+
+function serialize(r: Row, people: People | null) {
   return {
     id: r.id,
     projectId: r.projectId,
@@ -63,6 +79,7 @@ function serialize(r: Row) {
     // 'queue' rows are cancellable through /api/job-queue/{id}; 'scan' rows are a
     // running scan that was never queued, so the UI must not offer queue actions.
     source: 'queue' as const,
+    ...initiatorField(people, r.userId),
   }
 }
 
@@ -80,10 +97,12 @@ type ScanRow = {
   runId: string
   startedAt: Date | null
   createdAt: Date
+  /** Selected only with sharing in force. */
+  initiatedByUserId?: string | null
   project: { name: string } | null
 }
 
-function serializeScan(s: ScanRow) {
+function serializeScan(s: ScanRow, people: People | null) {
   return {
     id: s.id,
     projectId: s.projectId,
@@ -101,6 +120,7 @@ function serializeScan(s: ScanRow) {
     startedAt: s.startedAt ? s.startedAt.toISOString() : null,
     finishedAt: null,
     source: 'scan' as const,
+    ...initiatorField(people, s.initiatedByUserId),
   }
 }
 
@@ -114,7 +134,7 @@ interface LiveScan {
   started_at: string | null
 }
 
-function serializeLive(s: LiveScan, projectName: string) {
+function serializeLive(s: LiveScan, projectName: string, people: People | null) {
   return {
     id: `${s.kind}:${s.project_id}:${s.run_id}`,
     projectId: s.project_id,
@@ -134,6 +154,7 @@ function serializeLive(s: LiveScan, projectName: string) {
     startedAt: s.started_at,
     finishedAt: null,
     source: 'live' as const,
+    ...initiatorField(people, null),
   }
 }
 
@@ -167,44 +188,61 @@ const SCAN_SELECT = {
   project: { select: { name: true } },
 } as const
 
+const SELECT_WITH_INITIATOR = { ...SELECT, userId: true } as const
+const SCAN_SELECT_WITH_INITIATOR = { ...SCAN_SELECT, initiatedByUserId: true } as const
+
+/** The names of the accounts that started the listed rows, in one read. */
+async function peopleOf(ids: Array<string | null | undefined>): Promise<People> {
+  const wanted = [...new Set(ids.filter((id): id is string => typeof id === 'string' && id !== ''))]
+  const rows = wanted.length === 0 ? [] : await prisma.user.findMany({
+    where: { id: { in: wanted } },
+    select: { id: true, name: true },
+  })
+  const names = new Map(rows.map(u => [u.id, u.name]))
+  return (userId) => (userId ? { id: userId, name: names.get(userId) ?? null } : null)
+}
+
 export const GET = withRouteErrors('Could not load scan activity', async (_request: NextRequest) => {
   const eff = await requireEffectiveUser()
   if (eff instanceof NextResponse) return eff
 
   try {
-    // One filter for the three reads below, so they agree on what "mine" is.
-    const mineWhere = await visibleProjectsWhere(eff)
+    // One filter for every read below, so they agree on what "mine" is.
+    const visible = await visibleProjects(eff)
+    const mineWhere = visible.where
+    const queueScope = jobQueueScope(eff, visible)
+    const select = visible.withShares ? SELECT_WITH_INITIATOR : SELECT
     const [
       mine, recent, othersActive, othersNeedsReview, runningScans, othersRunningScans,
       myProjects, liveScans,
     ] = await Promise.all([
       prisma.jobQueue.findMany({
-        where: { userId: eff.userId, status: { in: ['running', 'dispatching', 'queued', 'needs_review'] } },
+        where: { ...queueScope.mine, status: { in: ['running', 'dispatching', 'queued', 'needs_review'] } },
         orderBy: [{ priority: 'desc' }, { enqueuedAt: 'asc' }],
-        select: SELECT,
+        select,
       }),
       prisma.jobQueue.findMany({
-        where: { userId: eff.userId, status: { in: ['done', 'failed', 'canceled'] } },
+        where: { ...queueScope.mine, status: { in: ['done', 'failed', 'canceled'] } },
         orderBy: { finishedAt: 'desc' },
         take: RECENT_LIMIT,
-        select: SELECT,
+        select,
       }),
       prisma.jobQueue.groupBy({
         // Grouped by the ScanJob a row started, so a dispatched scan already
         // counted from its ScanJob is not counted again from its queue row.
         by: ['status', 'scanJobId'],
-        where: { userId: { not: eff.userId }, status: { in: ['running', 'dispatching', 'queued'] } },
+        where: { ...queueScope.others, status: { in: ['running', 'dispatching', 'queued'] } },
         _count: { _all: true },
       }),
       prisma.jobQueue.count({
-        where: { userId: { not: eff.userId }, status: 'needs_review' },
+        where: { ...queueScope.others, status: 'needs_review' },
       }),
       // Scoped by the projects the operator sees, not by initiator: a scan the agent
       // or a schedule started has no initiator, and it is still this operator's scan.
       prisma.scanJob.findMany({
         where: { status: 'running', project: mineWhere },
         orderBy: { startedAt: 'desc' },
-        select: SCAN_SELECT,
+        select: visible.withShares ? SCAN_SELECT_WITH_INITIATOR : SCAN_SELECT,
       }),
       prisma.scanJob.count({
         where: { status: 'running', project: { NOT: mineWhere } },
@@ -229,8 +267,14 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
       })(),
     ])
 
-    const queued = mine.filter(r => r.status === 'queued').map(serialize)
-    const needsReview = mine.filter(r => r.status === 'needs_review').map(serialize)
+    const people = visible.withShares
+      ? await peopleOf([
+        ...mine.map(r => (r as Row).userId), ...recent.map(r => (r as Row).userId),
+        ...runningScans.map(s => (s as ScanRow).initiatedByUserId),
+      ])
+      : null
+    const queued = mine.filter(r => r.status === 'queued').map(r => serialize(r, people))
+    const needsReview = mine.filter(r => r.status === 'needs_review').map(r => serialize(r, people))
 
     const projectNames = new Map(myProjects.map(p => [p.id, p.name]))
 
@@ -293,9 +337,9 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
     })
 
     const running = [
-      ...queueRunning.map(serialize),
-      ...freeScans.map(serializeScan),
-      ...freeLive.map(s => serializeLive(s, projectNames.get(s.project_id) ?? '')),
+      ...queueRunning.map(r => serialize(r, people)),
+      ...freeScans.map(s => serializeScan(s, people)),
+      ...freeLive.map(s => serializeLive(s, projectNames.get(s.project_id) ?? '', people)),
     ]
 
     // Everyone else's in-flight work, as one anonymised number. Counted from the DB
@@ -327,7 +371,7 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
     }
 
     return NextResponse.json({
-      mine: { running, queued, needsReview, recent: recent.map(serialize) },
+      mine: { running, queued, needsReview, recent: recent.map(r => serialize(r, people)) },
       others: othersAgg,
       ledger,
     })

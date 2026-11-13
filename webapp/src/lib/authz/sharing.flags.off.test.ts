@@ -24,6 +24,12 @@
  * the switch off, so every share route answers 404 having read no share (each route test pins the
  * 404 in the three states, and that no share is read or written).
  *
+ * Step 4.5 adds what the lists show with shares (visibleProjects.ts): each project row's own access
+ * and the scan activity view's split of the job queue. With sharing not in force no share is
+ * selected, the queue split is the person's own rows against everyone else's, and with the switch
+ * off GET /api/projects answers its rows without `myAccess` (route.list.shared.test.ts, and the
+ * reports and system/jobs route.shared.test.ts, pin the routes in both states).
+ *
  * Step 6.2 adds the admin users directory (lib/authz/userDirectory.ts): with sharing not in force it
  * selects no collaborator count (shared counts read null) and lists no user's shares; with it in force
  * a user's shares are listed only while Root's policy lets admins see every share
@@ -71,6 +77,7 @@ import { clearSharingPolicyCacheForTests, sharingInForce, sharingPolicyInForce }
 import { sharingPolicyForRoutes } from './projectShares'
 import { projectAccess } from './projectAccess'
 import { ownedProjectsWhere, visibleProjectIds, visibleProjectsWhere } from './visibleProjects'
+import { jobQueueScope, myShareSelect, visibleProjects } from './visibleProjects'
 import { clearPrincipalCacheForTests } from './principal'
 import { clearCapabilityCachesForTests } from './capabilities'
 import { clearInstanceRootCacheForTests } from './root'
@@ -368,5 +375,103 @@ describe('the admin console with sharing off (step 6.1)', () => {
     expect(src.match(/\/api\/admin\/instance-settings/g)).toHaveLength(1)
     expect(src).toMatch(/useAllSharesView\(user\?\.sharing\?\.enabled === true[ )]/)
     expect(src).toMatch(/return ask \? answer : 'no'/)
+  })
+})
+
+describe('the project lists with sharing not in force (step 4.5)', () => {
+  const NOT_IN_FORCE: Array<[string, Parameters<typeof setFlagsForTests>[0], unknown]> = [
+    ['every switch off', {}, { enabled: true }],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }, { enabled: true }],
+    ['the sharing switch set without permissions', { identity: true, sharing: true }, { enabled: true }],
+    ['the switch on, the policy disabled (the stored {} after the upgrade)', { identity: true, permissions: true, sharing: true }, {}],
+    ['the switch on, the stored policy invalid (reads as disabled)', { identity: true, permissions: true, sharing: true }, { enabled: 'yes' }],
+  ]
+  const OWNED_ROW = { id: 'P-owner', userId: 'owner', name: 'p', user: { id: 'owner', name: 'Owner', email: 'owner@example.test' } }
+
+  async function listProjects() {
+    const { GET } = await import('@/app/api/projects/route')
+    db.projectFindMany.mockResolvedValueOnce([OWNED_ROW] as never)
+    return GET()
+  }
+
+  beforeEach(() => {
+    ownAccess.eff = { userId: 'owner' }
+  })
+
+  test.each(NOT_IN_FORCE)('%s: no share is selected and the job queue split is the person\'s own rows', async (_what, flags, stored) => {
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    instanceFindUnique.mockResolvedValue({ id: 'instance', sharingPolicy: stored } as never)
+    const visible = await visibleProjects({ userId: 'u1' })
+    expect(visible).toEqual({ where: { userId: 'u1' }, withShares: false })
+    expect(myShareSelect({ userId: 'u1' }, visible)).toEqual({})
+    expect(jobQueueScope({ userId: 'u1' }, visible)).toEqual({ mine: { userId: 'u1' }, others: { userId: { not: 'u1' } } })
+    if (!rbacFlags().sharing) expect(instanceFindUnique).not.toHaveBeenCalled()
+    instanceFindUnique.mockReset().mockResolvedValue({ id: 'instance', sharingPolicy: { enabled: true } } as never)
+  })
+
+  test.each(NOT_IN_FORCE.slice(0, 3))('%s: GET /api/projects answers the owned rows as before, without myAccess', async (_what, flags) => {
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const res = await listProjects()
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual([OWNED_ROW])
+    const args = (db.projectFindMany.mock.calls.at(-1) as unknown[] | undefined)?.[0] as { where: unknown; select: Record<string, unknown> }
+    expect(args.where).toEqual({ userId: 'owner' })
+    expect(args.select).not.toHaveProperty('collaborators')
+    expect(db.collaboratorFindUnique).not.toHaveBeenCalled()
+    expect(instanceFindUnique).not.toHaveBeenCalled()
+  })
+
+  test('the switch on, the policy disabled: the owned rows, each as the owner (as the project GET), no share selected', async () => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true })
+    instanceFindUnique.mockResolvedValue({ id: 'instance', sharingPolicy: {} } as never)
+    const rows = await (await listProjects()).json()
+    expect(rows).toEqual([{ ...OWNED_ROW, myAccess: { level: 'owner', toggles: { rawData: true }, via: 'owner', owner: { name: 'Owner', email: 'owner@example.test' } } }])
+    const args = (db.projectFindMany.mock.calls.at(-1) as unknown[] | undefined)?.[0] as { where: unknown; select: Record<string, unknown> }
+    expect(args.where).toEqual({ userId: 'owner' })
+    expect(args.select).not.toHaveProperty('collaborators')
+    instanceFindUnique.mockReset().mockResolvedValue({ id: 'instance', sharingPolicy: { enabled: true } } as never)
+  })
+})
+
+// Step 4.13: the project activity feed (GET /api/projects/[id]/activity, lib/authz/projectActivity.ts).
+// With sharing not in force it does not exist: 404 before any audit row is read, and with the switch off
+// before the policy is read. The prisma double here has no audit log and requirePermission stands for
+// the owner, so a gate that let the request through would answer 500, not 404. The settings page links
+// to it only while /api/auth/me reports sharing in force (the page test pins both states).
+describe('the project activity feed with sharing not in force (step 4.13)', () => {
+  const NOT_IN_FORCE: Array<[string, Parameters<typeof setFlagsForTests>[0], unknown]> = [
+    ['every switch off', {}, { enabled: true }],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }, { enabled: true }],
+    ['the sharing switch set without permissions', { identity: true, sharing: true }, { enabled: true }],
+    ['the switch on, the policy disabled (the stored {} after the upgrade)', { identity: true, permissions: true, sharing: true }, {}],
+  ]
+
+  test.each(NOT_IN_FORCE)('%s: GET /activity answers the owner 404, reading no audit row', async (_what, flags, stored) => {
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    instanceFindUnique.mockResolvedValue({ id: 'instance', sharingPolicy: stored } as never)
+    const { NextRequest } = await import('next/server')
+    const { GET } = await import('@/app/api/projects/[id]/activity/route')
+    const res = await GET(new NextRequest('http://x/api/projects/P-owner/activity'), { params: Promise.resolve({ id: 'P-owner' }) })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Not found' })
+    if (!rbacFlags().sharing) expect(instanceFindUnique).not.toHaveBeenCalled()
+    instanceFindUnique.mockReset().mockResolvedValue({ id: 'instance', sharingPolicy: { enabled: true } } as never)
+  })
+
+  test('its handler answers 404 before anything else while the switch is off', () => {
+    const src = readFileSync(path.join(WEBAPP, 'src/app/api/projects/[id]/activity/route.ts'), 'utf8')
+    const handlers = src.split(/^export const /m).slice(1)
+    expect(handlers).toHaveLength(1)
+    expect(handlers[0]).toMatch(/^GET = withRouteErrors\([^\n]*\n\s*if \(!rbacFlags\(\)\.sharing\) return routeNotFound\(\)/)
+  })
+
+  test('the settings page offers the Activity link only when /api/auth/me reports sharing in force', () => {
+    const src = readFileSync(path.join(WEBAPP, 'src/app/projects/[id]/settings/page.tsx'), 'utf8')
+    expect(src).toMatch(/const sharingInForce = useOptionalAuth\(\)\?\.user\?\.sharing\?\.enabled === true/)
+    expect(src).toMatch(/const showActivity = sharingInForce && /)
+    expect(src.match(/\/activity`/g)).toHaveLength(1)
   })
 })

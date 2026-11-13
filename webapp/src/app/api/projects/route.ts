@@ -5,7 +5,7 @@ import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmGate.logic'
 import { requireEffectiveUser } from '@/lib/access'
-import { visibleProjectsWhere } from '@/lib/authz/visibleProjects'
+import { myShareSelect, visibleProjects, withMyAccess } from '@/lib/authz/visibleProjects'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { numericBoundsRefusal } from '@/lib/reconSettings/numericBounds'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
@@ -31,13 +31,18 @@ const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
 // GET /api/projects - List the effective user's projects.
 // The client-supplied ?userId is ignored as an auth input: the list is always
 // scoped to the caller's effective user (admin -> own, unless simulating X).
+// With sharing in force it also holds the projects shared with that user
+// (step 4.5); with RBAC_SHARING_ENABLED on every row carries `myAccess`, the
+// person's own access as the project GET answers it (owner, or read with its
+// Raw data toggle), beside `user`, the owner.
 export async function GET() {
   try {
     const eff = await requireEffectiveUser()
     if (eff instanceof NextResponse) return eff
 
+    const visible = await visibleProjects(eff)
     const projects = await prisma.project.findMany({
-      where: await visibleProjectsWhere(eff),
+      where: visible.where,
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -61,11 +66,12 @@ export async function GET() {
             name: true,
             email: true
           }
-        }
+        },
+        ...myShareSelect(eff, visible),
       }
     })
 
-    return NextResponse.json(projects)
+    return NextResponse.json(withMyAccess(eff, projects))
   } catch (error) {
     return internalError(error, 'Failed to fetch projects')
   }

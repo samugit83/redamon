@@ -98,25 +98,6 @@ const ALLOWED: Record<string, Allowed> = {
       'where: { userId: eff.userId },',
     ],
   },
-  'src/app/api/system/jobs/route.ts::list_on_caller': {
-    reason: "the caller's own queue rows (JobQueue.userId is the actor who queued them): a per-user row; the running scans go by the projects the caller sees (visibleProjects.ts)",
-    lines: [
-      "where: { userId: eff.userId, status: { in: ['running', 'dispatching', 'queued', 'needs_review'] } },",
-      "where: { userId: eff.userId, status: { in: ['done', 'failed', 'canceled'] } },",
-    ],
-  },
-  'src/app/api/traffic/[projectId]/[id]/route.ts::row_owner_helper': {
-    reason: CAPTURE_TENANT,
-    lines: [
-      'where: { id, projectId, ...ownerScope(eff) },',
-    ],
-  },
-  'src/app/api/traffic/[projectId]/facets/route.ts::row_owner_helper': {
-    reason: CAPTURE_TENANT,
-    lines: [
-      'const where = { projectId, ...ownerScope(eff) }',
-    ],
-  },
   'src/app/api/traffic/[projectId]/route.ts::row_owner_helper': {
     reason: CAPTURE_TENANT,
     lines: [

@@ -64,7 +64,7 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'GET /api/user/preferences': "the signed-in account's own interface preferences",
   'PATCH /api/user/preferences': "the signed-in account's own interface preferences",
   'GET /api/ws': 'the WebSocket upgrade stub: no data; each socket is opened by its ticket, which asks its permission',
-  'GET /api/system/jobs': "the account's own running and queued jobs and only a count of others': platform:operations is Phase 6's operations view",
+  'GET /api/system/jobs': "the account's own jobs and, with sharing in force, those of every project it sees (a shared one included), and only a count of the rest: platform:operations is Phase 6's operations view",
   'DELETE /api/auth/act-as': 'ending act-as clears the cookie of the admin who set it: always allowed, never a new power',
   'GET /api/agent/emergency-stop-all': 'the scope a press would have: every account stops its own runs; platform:emergency_stop decides the global scope inside (sharedToolAccess)',
   'POST /api/agent/emergency-stop-all': 'every account stops its own runs (a safety stop is never refused); platform:emergency_stop decides the global scope inside (sharedToolAccess)',

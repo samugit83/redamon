@@ -7,7 +7,8 @@
  *   (an internal start, which no route permission backs);
  * - a mute-rule preset and an MCP token are their owner's rows (`ownsRow()`);
  * - the project list, the reports and the running scans of the jobs view list the projects
- *   `visibleProjectsWhere()` names, and the jobs view counts the others' scans as its complement.
+ *   `visibleProjectsWhere()` / `visibleProjects()` name, and the jobs view counts the others' scans
+ *   as its complement; with shares listed its queue rows follow `jobQueueScope()` (step 4.5).
  *
  * Each test turns the policy's answer against the stored row; the code must follow the policy.
  * What each answers in the ordinary case is pinned by its own test files, unchanged.
@@ -38,13 +39,13 @@ vi.mock('./rowOwner', async (orig) => {
 })
 vi.mock('./visibleProjects', async (orig) => {
   const actual = await orig<typeof import('./visibleProjects')>()
-  return { ...actual, visibleProjectsWhere: vi.fn(actual.visibleProjectsWhere) }
+  return { ...actual, visibleProjectsWhere: vi.fn(actual.visibleProjectsWhere), visibleProjects: vi.fn(actual.visibleProjects) }
 })
 
 import { createFakePrisma, type FakePrisma } from '@/lib/plugins/__testing__/fakePrisma'
 import { projectAccess, type ProjectAccess } from './projectAccess'
 import { ownsRow } from './rowOwner'
-import { visibleProjectsWhere } from './visibleProjects'
+import { visibleProjects, visibleProjectsWhere } from './visibleProjects'
 import { refuseTriageStart } from '@/lib/triageRun'
 import { GET as readMutePreset } from '@/app/api/mute-rule-presets/[id]/route'
 import { GET as listProjects } from '@/app/api/projects/route'
@@ -69,6 +70,7 @@ beforeEach(() => {
   vi.mocked(projectAccess).mockClear()
   vi.mocked(ownsRow).mockClear()
   vi.mocked(visibleProjectsWhere).mockClear()
+  vi.mocked(visibleProjects).mockClear()
 })
 
 describe('a triage run starts on a project the policy lets the actor see, at the owner level', () => {
@@ -126,14 +128,14 @@ describe('a mute-rule preset is its owner\'s row (ownsRow)', () => {
   })
 })
 
-describe('the "my projects" lists go by visibleProjectsWhere', () => {
+describe('the "my projects" lists go by visibleProjectsWhere / visibleProjects', () => {
   const SEEN = { id: { in: ['p-bob'] } }
 
   test('the project list', async () => {
-    vi.mocked(visibleProjectsWhere).mockResolvedValueOnce(SEEN)
+    vi.mocked(visibleProjects).mockResolvedValueOnce({ where: SEEN, withShares: false })
     const rows = await (await listProjects()).json() as Array<{ id: string }>
     expect(rows.map((r) => r.id)).toEqual(['p-bob'])
-    expect(visibleProjectsWhere).toHaveBeenCalledWith({ userId: 'alice' })
+    expect(visibleProjects).toHaveBeenCalledWith({ userId: 'alice' })
   })
 
   test('the reports, by their project', async () => {
@@ -154,13 +156,33 @@ describe('the "my projects" lists go by visibleProjectsWhere', () => {
       scanJob: { findMany: scanFind, count: scanCount },
       project: { findMany: projectFind },
     }
-    // One filter per request (step 4.3: it may read the sharing policy), used by all three reads.
-    vi.mocked(visibleProjectsWhere).mockResolvedValueOnce(SEEN)
+    // One filter per request (step 4.3: it may read the sharing policy), used by every read.
+    vi.mocked(visibleProjects).mockResolvedValueOnce({ where: SEEN, withShares: false })
     expect((await jobsView(new NextRequest('http://redamon.test/api/system/jobs'))).status).toBe(200)
-    expect(visibleProjectsWhere).toHaveBeenCalledTimes(1)
-    expect(visibleProjectsWhere).toHaveBeenCalledWith({ userId: 'alice' })
+    expect(visibleProjects).toHaveBeenCalledTimes(1)
+    expect(visibleProjects).toHaveBeenCalledWith({ userId: 'alice' })
     expect(scanFind).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'running', project: SEEN } }))
     expect(scanCount).toHaveBeenCalledWith({ where: { status: 'running', project: { NOT: SEEN } } })
     expect(projectFind).toHaveBeenCalledWith(expect.objectContaining({ where: SEEN }))
+  })
+
+  test('the jobs view with shares listed: the queue rows of every project seen; the others\' are the complement', async () => {
+    const queueFind = vi.fn(async () => [])
+    const groupBy = vi.fn(async () => [])
+    const queueCount = vi.fn(async () => 0)
+    h.db = {
+      ...h.db,
+      jobQueue: { findMany: queueFind, groupBy, count: queueCount },
+      scanJob: { findMany: vi.fn(async () => []), count: vi.fn(async () => 0) },
+      project: { findMany: vi.fn(async () => []) },
+    }
+    vi.mocked(visibleProjects).mockResolvedValueOnce({ where: SEEN, withShares: true })
+    expect((await jobsView(new NextRequest('http://redamon.test/api/system/jobs'))).status).toBe(200)
+    const mine = { OR: [{ userId: 'alice' }, { project: SEEN }] }
+    const others = { userId: { not: 'alice' }, project: { NOT: SEEN } }
+    expect(queueFind).toHaveBeenCalledWith(expect.objectContaining({ where: { ...mine, status: { in: ['running', 'dispatching', 'queued', 'needs_review'] } } }))
+    expect(queueFind).toHaveBeenCalledWith(expect.objectContaining({ where: { ...mine, status: { in: ['done', 'failed', 'canceled'] } } }))
+    expect(groupBy).toHaveBeenCalledWith(expect.objectContaining({ where: { ...others, status: { in: ['running', 'dispatching', 'queued'] } } }))
+    expect(queueCount).toHaveBeenCalledWith({ where: { ...others, status: 'needs_review' } })
   })
 })
