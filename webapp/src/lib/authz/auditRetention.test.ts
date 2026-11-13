@@ -27,7 +27,9 @@ vi.mock('@/lib/prisma', () => {
 vi.mock('./deviceSessions', () => ({ sweepDeviceSessions: h.devices }))
 
 import {
-  AUDIT_RETENTION_MIN_DAYS, KEPT_AUDIT_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES, keptRuleFor, sweepAuditRetention,
+  AUDIT_RETENTION_DELAY_DAYS, AUDIT_RETENTION_MIN_DAYS, KEPT_AUDIT_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES,
+  activateDueRetention, keptRuleFor, parsePendingRetention, parseRetentionDays, retentionChangeOf, retentionState,
+  sweepAuditRetention,
 } from './auditRetention'
 import { LEGACY_KEEP_DAYS } from './legacyOverrides'
 import { setFlagsForTests } from './flags'
@@ -379,5 +381,81 @@ describe('the expiry sweep runs the part (lib/authz/expirySweep.ts)', () => {
     expect(result.auditRetention).toBeNull()
     expect(result.removed).toMatchObject({ devices: 2, overrides: 0, links: 0 })
     expect(err.mock.calls.map((c) => String(c[0]))).toEqual(['[rbac] sweep failed part=auditRetention:'])
+  })
+})
+
+describe('pending change applies after 7 days (injected clock)', () => {
+  const pending = (days: number | null, effectiveInDays: number) => ({
+    days, requestedAt: daysAgo(AUDIT_RETENTION_DELAY_DAYS - effectiveInDays).toISOString(),
+    effectiveAt: new Date(NOW.getTime() + effectiveInDays * DAY).toISOString(), requestedById: 'root-1',
+  })
+
+  test('the floor, the delay and the values a request may carry', () => {
+    expect([AUDIT_RETENTION_MIN_DAYS, AUDIT_RETENTION_DELAY_DAYS]).toEqual([90, 7])
+    expect(parseRetentionDays(null)).toEqual({ days: null })
+    expect(parseRetentionDays(90)).toEqual({ days: 90 })
+    for (const bad of [89, 30, 0, -1, 90.5, '120', true, undefined, {}]) expect(parseRetentionDays(bad), String(bad)).toHaveProperty('error')
+  })
+
+  test('the stored pending change: read when whole, ignored (and logged) otherwise, never a source of deletion', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(parsePendingRetention(pending(120, 3))).toEqual(pending(120, 3))
+    expect(parsePendingRetention(null)).toBeNull()
+    for (const bad of [{ days: 30, requestedAt: NOW.toISOString(), effectiveAt: NOW.toISOString() }, { days: 120 }, 'x', [1]]) {
+      expect(parsePendingRetention(bad)).toBeNull()
+    }
+    expect(err).toHaveBeenCalledTimes(4)
+  })
+
+  test('in force: the stored value until the change\'s date, the change from its date on (lazily)', () => {
+    const row = { auditRetentionDays: 365, auditRetentionPending: pending(120, 1) }
+    expect(retentionState(row, NOW)).toEqual({ days: 365, pending: pending(120, 1), due: null })
+    const at = new Date(NOW.getTime() + DAY)
+    expect(retentionState(row, at)).toEqual({ days: 120, pending: null, due: pending(120, 1) })
+    expect(retentionState(null, NOW)).toEqual({ days: null, pending: null, due: null })
+  })
+
+  test('what a request changes: nothing, a request or a cancel', () => {
+    const idle = { days: 365, pending: null, due: null }
+    const waiting = { days: 365, pending: pending(120, 3), due: null }
+    expect(retentionChangeOf(idle, 365)).toBeNull()
+    expect(retentionChangeOf(idle, 120)).toBe('request')
+    expect(retentionChangeOf(idle, null)).toBe('request')
+    expect(retentionChangeOf(waiting, 120)).toBeNull()
+    expect(retentionChangeOf(waiting, 365)).toBe('cancel')
+    expect(retentionChangeOf(waiting, 200)).toBe('request')
+  })
+
+  test('the sweep deletes by a change whose date has passed at once, and moves it into force, audited', async () => {
+    state.instance = { id: 'instance', auditRetentionDays: 365, auditRetentionPending: pending(120, -1) }
+    state.audit = [row('user.update', daysAgo(200), { id: 'between' }), row('user.update', daysAgo(400), { id: 'old' })]
+    expect(await sweepAuditRetention(NOW)).toEqual({ days: 120, deleted: 2, activated: true })
+    expect(state.instance).toMatchObject({ auditRetentionDays: 120, auditRetentionPending: null })
+    // The activation row is new, so it stays.
+    expect(state.audit.map((r) => r.action)).toEqual(['instance.audit_retention_activated'])
+    expect(state.audit[0]).toMatchObject({ actorId: null, source: 'system', before: { days: 365 }, after: { days: 120, requestedById: 'root-1' } })
+  })
+
+  test('a change still waiting does not delete: the stored value applies', async () => {
+    state.instance = { id: 'instance', auditRetentionDays: 365, auditRetentionPending: pending(120, 1) }
+    state.audit = [row('user.update', daysAgo(200), { id: 'between' })]
+    expect(await sweepAuditRetention(NOW)).toEqual({ days: 365, deleted: 0 })
+    expect(state.instance).toMatchObject({ auditRetentionDays: 365, auditRetentionPending: pending(120, 1) })
+  })
+
+  test('two copies activating at once: moved once, one activation row', async () => {
+    state.instance = { id: 'instance', auditRetentionDays: null, auditRetentionPending: pending(180, -2) }
+    const [a, b] = await Promise.all([activateDueRetention(NOW), activateDueRetention(NOW)])
+    expect([a, b].filter(Boolean)).toHaveLength(1)
+    expect(state.audit.filter((r) => r.action === 'instance.audit_retention_activated')).toHaveLength(1)
+    expect(state.instance).toMatchObject({ auditRetentionDays: 180, auditRetentionPending: null })
+  })
+
+  test('a failed activation row moves nothing (the sweep retries)', async () => {
+    state.instance = { id: 'instance', auditRetentionDays: null, auditRetentionPending: pending(180, -2) }
+    state.failAudit = true
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await expect(activateDueRetention(NOW)).rejects.toMatchObject({ code: 'P1001' })
+    expect(state.instance).toMatchObject({ auditRetentionDays: null, auditRetentionPending: pending(180, -2) })
   })
 })

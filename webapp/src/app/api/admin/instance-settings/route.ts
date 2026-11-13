@@ -31,6 +31,8 @@ import {
   applyQuotaPatch, changedQuotaKeys, parseQuotaPatch, parseQuotaStore, quotasInForce, quotaStoreToJson,
   quotaTargetsView, unknownQuotaTargets, type QuotaPatch,
 } from '@/lib/authz/quotas'
+import { now } from '@/lib/authz/clock'
+import { changeRetention, parseRetentionDays, retentionChangeOf, retentionState, retentionView } from '@/lib/authz/auditRetention'
 
 /**
  * The settings the instance shares because it runs one of each (step 2.4, ID-32): the
@@ -74,6 +76,15 @@ import {
  * a value out of bounds is 400 `invalid_field`, a new entry for a set or account that does not exist
  * 400 `unknown_quota_target`. The audit row names the changed keys (`defaults.maxProjects`,
  * `perUser.<id>`), never the values. With the switch off nothing is shown or read from a body.
+ *
+ * The audit retention (step 6.6, AU-04, OQ-40) is the confirmed Root's, with RBAC_GOVERNANCE_ENABLED on
+ * only: every administrator account reads `auditRetention` (the days in force, a change waiting with
+ * its date, the floor and the delay); a PUT's `auditRetentionDays` (null = keep every row, else whole
+ * days from the floor up, 400 `invalid_field` otherwise) by anyone else is 403 `root_only`, and Root's
+ * takes its password. It never applies at once: it waits its delay as a pending change (audited
+ * `instance.audit_retention_requested`), and sending the value in force while one waits cancels it
+ * (`instance.audit_retention_cancelled`); lib/authz/auditRetention.ts, in its own transaction after
+ * the other groups. With the switch off nothing is shown or read from a body.
  */
 
 const TUNNEL_STRINGS = ['ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
@@ -125,6 +136,7 @@ async function access(fresh: boolean): Promise<Access | NextResponse> {
 
 const ROOT_ONLY_POLICY = 'Only Root can change the instance security policy.'
 const ROOT_ONLY_SHARING = 'Only Root can change the instance sharing policy.'
+const ROOT_ONLY_RETENTION = 'Only Root can change the audit retention.'
 
 /** What a browser sees: the secrets masked, each group only for whoever holds it, the security policy for an admin. */
 function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings: SaveWarning[] = []) {
@@ -145,6 +157,9 @@ function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings
       : {}),
     ...(a.admin && rbacFlags().sharing
       ? { sharingPolicy: parseSharingPolicy(row.sharingPolicy), canManageSharingPolicy: standing === 'confirmed' }
+      : {}),
+    ...(a.admin && rbacFlags().governance
+      ? { auditRetention: retentionView(row, now()), canManageAuditRetention: standing === 'confirmed' }
       : {}),
     ...(warnings.length ? { warnings } : {}),
   }
@@ -195,6 +210,10 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   if ('error' in quotaPatch) {
     return NextResponse.json({ error: quotaPatch.error.message, code: 'invalid_field', field: quotaPatch.error.field }, { status: 400 })
   }
+  const retentionAsk = rbacFlags().governance && 'auditRetentionDays' in body ? parseRetentionDays(body.auditRetentionDays) : null
+  if (retentionAsk && 'error' in retentionAsk) {
+    return NextResponse.json({ error: retentionAsk.error, code: 'invalid_field', field: 'auditRetentionDays' }, { status: 400 })
+  }
 
   const row = await instanceSettingsInForce()
   if (!row) return notReady()
@@ -213,9 +232,12 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   }
   const policyChanges = changedSecurityPolicyFields(stored, policy.patch)
   const sharingChanges = changedSharingPolicyFields(parseSharingPolicy(row.sharingPolicy), sharing.patch)
-  const standing = a.admin || policyChanges.length || sharingChanges.length ? await rootStanding(a.session.userId) : 'none'
+  const retentionChange = retentionAsk ? retentionChangeOf(retentionState(row, now()), retentionAsk.days) : null
+  const standing = a.admin || policyChanges.length || sharingChanges.length || retentionChange
+    ? await rootStanding(a.session.userId) : 'none'
   if (policyChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_POLICY)
   if (sharingChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_SHARING)
+  if (retentionChange && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_RETENTION)
   const storedQuotas = parseQuotaStore(row.quotas)
   const nextQuotas = applyQuotaPatch(storedQuotas, quotaPatch.patch)
   const quotaChanges = changedQuotaKeys(storedQuotas, nextQuotas)
@@ -236,13 +258,16 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   // configured tunnel takes the person's password (ID-25); before anything is written.
   const reentry = settingsSecretReentry(stored, body)
   if (reentry) return secretReentryResponse(reentry)
-  if (settingsEndpointChange(stored, body) || policyChanges.length || sharingChanges.length) {
+  if (settingsEndpointChange(stored, body) || policyChanges.length || sharingChanges.length || retentionChange) {
     const refused = await requireStepUp(request, body.stepUpPassword)
     if (refused) return refused
   }
 
-  if (!tunnelChanges.length && !captureChanges.length && !policyChanges.length && !sharingChanges.length && !quotaChanges.length) {
-    return answer(row, a, standing)
+  const otherChanges = tunnelChanges.length || captureChanges.length || policyChanges.length || sharingChanges.length || quotaChanges.length
+  if (!otherChanges && !retentionChange) return answer(row, a, standing)
+  if (!otherChanges) {
+    await changeRetention(retentionAsk!.days, auditActorOf(sessionActor(a.session)), now())
+    return answer((await instanceSettingsInForce()) ?? row, a, standing)
   }
 
   const data: Record<string, unknown> = {}
@@ -281,6 +306,10 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   if (tunnelChanges.length) {
     const tunnelWarning = await pushTunnelConfig(saved)
     if (tunnelWarning) warnings.push(tunnelWarning)
+  }
+  if (retentionChange) {
+    await changeRetention(retentionAsk!.days, auditActorOf(sessionActor(a.session)), now())
+    return answer((await instanceSettingsInForce()) ?? saved, a, standing, warnings)
   }
   return answer(saved, a, standing, warnings)
 })

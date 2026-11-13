@@ -47,7 +47,9 @@
  * database (the three route files are readers in GOVERNANCE_READERS; the test at the end, and
  * api/admin/audit/route.test.ts), and /admin/audit sits under /admin, which does not exist. Audit
  * retention deletes nothing: lib/authz/auditRetention.ts (a reader) reads neither the instance row nor
- * an audit row, whatever retention Root set while the switch was on (auditRetention.test.ts).
+ * an audit row, whatever retention Root set while the switch was on (auditRetention.test.ts). Root's
+ * retention setting is neither shown nor read from a body of /api/admin/instance-settings (a reader;
+ * api/admin/instance-settings/route.auditRetention.test.ts).
  *
  * Step 6.8 adds quotas. With the switch off none is enforced and none is read: lib/authz/quotas.ts
  * (a reader in GOVERNANCE_READERS, and the only one of the step) answers every account unlimited
@@ -194,6 +196,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/api/admin/audit/[id]/route.ts',
       'src/app/api/admin/audit/export/route.ts',
       'src/app/api/admin/audit/route.ts',
+      'src/app/api/admin/instance-settings/route.ts',
       'src/app/api/admin/operations/agent-runs/stop/route.ts',
       'src/app/api/admin/operations/route.ts',
       'src/app/api/admin/projects/[id]/route.ts',

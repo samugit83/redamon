@@ -62,6 +62,7 @@ let fetchMock: ReturnType<typeof vi.fn>
 let list: (url: URL) => Response | Promise<Response>
 let rowDetail: (id: string) => Response
 let exportAnswer: (url: URL) => Response
+let instanceSettings: () => Response
 
 beforeEach(() => {
   h.search = ''
@@ -72,8 +73,10 @@ beforeEach(() => {
     status: 200,
     headers: { 'content-disposition': 'attachment; filename="redamon-audit-audit-20261113T120000Z.csv"', 'x-audit-export-rows': '1', 'x-audit-export-total': '1', 'x-audit-export-truncated': 'false' },
   })
+  instanceSettings = () => json({ error: 'Forbidden', code: 'forbidden', permission: 'platform:tunnels' }, 403)
   fetchMock = vi.fn(async (input: string) => {
     const url = new URL(String(input), 'http://redamon.test')
+    if (url.pathname === '/api/admin/instance-settings') return instanceSettings()
     if (url.pathname === '/api/admin/audit') return list(url)
     if (url.pathname === '/api/admin/audit/export') return exportAnswer(url)
     if (url.pathname.startsWith('/api/admin/audit/')) return rowDetail(decodeURIComponent(url.pathname.split('/').pop()!))
@@ -337,5 +340,37 @@ describe('labels and keyboard', () => {
     expect(screen.getByRole('button', { name: /^Details: Changed an account, / })).toBeInTheDocument()
     const untabbable = [...container.querySelectorAll('[tabindex="-1"]')].filter((el) => el.getAttribute('role') !== 'tab')
     expect(untabbable).toEqual([])
+  })
+})
+
+// Step 6.6 part 2: one line on how long rows are kept, read from the instance settings.
+describe('the retention line', () => {
+  const RETENTION = { days: 365, pending: { days: 120, requestedAt: '2026-11-13T12:00:00.000Z', effectiveAt: '2026-11-20T12:00:00.000Z' }, minDays: 90, delayDays: 7 }
+
+  test('the retention in force and the waiting change; Root gets the link to change it', async () => {
+    instanceSettings = () => json({ securityPolicy: {}, auditRetention: RETENTION, canManageAuditRetention: true })
+    renderPage()
+    const line = await screen.findByText(/Audit rows: deleted after 365 days\./)
+    expect(line).toHaveTextContent(/From .*: deleted after 120 days\./)
+    expect(within(line).getByRole('link', { name: 'Change the audit retention' })).toHaveAttribute('href', '/admin/instance#retention')
+  })
+
+  test('an administrator other than Root reads it without the link', async () => {
+    instanceSettings = () => json({ securityPolicy: {}, auditRetention: { ...RETENTION, days: null, pending: null }, canManageAuditRetention: false })
+    renderPage()
+    const line = await screen.findByText('Audit rows: kept forever.')
+    expect(within(line).queryByRole('link')).toBeNull()
+  })
+
+  test('no line when the settings carry no retention (switch off) or cannot be read; the viewer works', async () => {
+    renderPage()
+    await screen.findByText('No row recorded yet.')
+    expect(screen.queryByText(/Audit rows:/)).toBeNull()
+    cleanup()
+    instanceSettings = () => json({ securityPolicy: {} })
+    renderPage()
+    await screen.findByText('No row recorded yet.')
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === '/api/admin/instance-settings')).toBe(true))
+    expect(screen.queryByText(/Audit rows:/)).toBeNull()
   })
 })

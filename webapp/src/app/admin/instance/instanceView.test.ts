@@ -16,6 +16,8 @@ import {
   type InstanceSettingsView,
 } from './instanceView'
 import { EXPIRY_DAYS_BOUNDS } from './SharingPolicyPanel'
+import { RETENTION_MAX_DAYS, retentionProblem } from './AuditRetentionPanel'
+import { AUDIT_RETENTION_MAX_DAYS, AUDIT_RETENTION_MIN_DAYS, parseRetentionDays } from '@/lib/authz/auditRetention'
 
 const profile = (slug: string) => BUILTIN_ADMIN_PROFILES.find((s) => s.id === `builtin:${slug}`)!.permissions
 const holding = (held: readonly PermissionId[]) => (p: PermissionId) => held.includes(p)
@@ -116,6 +118,38 @@ describe('the panels each profile sees', () => {
     for (const t of lines) {
       expect(PERMISSION_IDS).toContain(t.permission)
       expect(t.href.startsWith('/')).toBe(true)
+    }
+  })
+})
+
+// Step 6.6: the audit retention panel, to administrators, only when the route carries it (governance on).
+describe('the audit retention panel (step 6.6)', () => {
+  const RETENTION = { days: null, pending: null, minDays: 90, delayDays: 7 }
+
+  test('after the sharing policy, for every administrator, when the route carries it', () => {
+    const settings = { ...ADMIN_SETTINGS, auditRetention: RETENTION }
+    expect(visiblePanels({ holds: holding(profile('full-admin')), settings, sharingPolicyShown: true }).slice(0, 4))
+      .toEqual(['security', 'public-url', 'sharing', 'retention'])
+    const userManager = { ...settings, canManageTunnels: false, canManageCapture: false }
+    expect(visiblePanels({ holds: holding(profile('user-manager')), settings: userManager, sharingPolicyShown: false }))
+      .toEqual(['security', 'public-url', 'retention', 'default-set'])
+  })
+
+  test('not without it (RBAC_GOVERNANCE_ENABLED off), nor for a member', () => {
+    expect(visiblePanels({ holds: holding(profile('full-admin')), settings: ADMIN_SETTINGS, sharingPolicyShown: false })).not.toContain('retention')
+    const member: InstanceSettingsView = { canManageTunnels: true, canManageCapture: false, auditRetention: RETENTION }
+    expect(visiblePanels({ holds: holding(['platform:tunnels']), settings: member, sharingPolicyShown: false })).toEqual(['tunnels'])
+  })
+
+  test('the panel bound is the retention module bound, and its floor check refuses what the route refuses', () => {
+    expect(RETENTION_MAX_DAYS).toBe(AUDIT_RETENTION_MAX_DAYS)
+    for (const text of ['30', '89', '90.5', '', 'x', String(AUDIT_RETENTION_MAX_DAYS + 1)]) {
+      expect(retentionProblem(text, AUDIT_RETENTION_MIN_DAYS), text).not.toBeNull()
+      expect('error' in parseRetentionDays(Number(text) || text)).toBe(true)
+    }
+    for (const text of ['90', '120', String(AUDIT_RETENTION_MAX_DAYS)]) {
+      expect(retentionProblem(text, AUDIT_RETENTION_MIN_DAYS), text).toBeNull()
+      expect(parseRetentionDays(Number(text))).toEqual({ days: Number(text) })
     }
   })
 })

@@ -9,7 +9,7 @@ import type { Holds } from '../consoleSections'
  * tool without a panel here lives.
  *
  * The page only hides; each write goes to the route that decides it: the security policy, the
- * public base URL, the sharing policy, the tunnel and the TrafficMind settings to
+ * public base URL, the sharing policy, the audit retention, the tunnel and the TrafficMind settings to
  * /api/admin/instance-settings, the default member set to /api/admin/permission-sets/[id], the
  * Nuclei templates to /api/nuclei-templates.
  */
@@ -128,7 +128,7 @@ export function baseUrlOf(policy: Record<string, unknown> | undefined): string {
 }
 
 export type PanelId =
-  | 'security' | 'public-url' | 'sharing' | 'default-set' | 'llm-providers' | 'quotas' | 'tunnels' | 'traffic' | 'nuclei' | 'plugins'
+  | 'security' | 'public-url' | 'sharing' | 'retention' | 'default-set' | 'llm-providers' | 'quotas' | 'tunnels' | 'traffic' | 'nuclei' | 'plugins'
   | 'other-tools'
 
 export interface PanelInput {
@@ -145,6 +145,8 @@ export function visiblePanels({ holds, settings, sharingPolicyShown }: PanelInpu
   const admin = !!settings?.securityPolicy
   if (admin) panels.push('security', 'public-url')
   if (admin && sharingPolicyShown) panels.push('sharing')
+  // The audit retention: to administrators, with RBAC_GOVERNANCE_ENABLED on (the route carries it then only).
+  if (admin && settings?.auditRetention) panels.push('retention')
   if (admin && (holds('roles:manage') || holds('users:assign_permissions'))) panels.push('default-set')
   // Root's alone: instance:settings is held only by the confirmed Root (rootOnly).
   if (holds('instance:settings')) panels.push('llm-providers')

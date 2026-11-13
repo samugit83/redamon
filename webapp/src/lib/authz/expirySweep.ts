@@ -13,9 +13,10 @@
  *   is audited and names the expiry). A used link is kept, the record of how an account was set up.
  * - device sessions (step 6.10): a row revoked or expired more than 30 days ago is removed, with the
  *   address and browser it kept (no audit row: the revocation was audited, an expiry is not news).
- * - audit retention (step 6.6): the audit_log rows older than Root's retention, except the rows the
- *   code reads back (lib/authz/auditRetention.ts); with RBAC_GOVERNANCE_ENABLED only, and its answer's
- *   `auditRetention` exists only then.
+ * - audit retention (step 6.6): Root's change whose delay is over moves into force (audited
+ *   `instance.audit_retention_activated`), then the audit_log rows older than the retention go, except
+ *   the rows the code reads back (lib/authz/auditRetention.ts); with RBAC_GOVERNANCE_ENABLED only, and
+ *   its answer's `auditRetention` exists only then.
  *
  * Each part runs only with its switch on, so with a switch off nothing of it is read
  * (*.flags.off.test.ts): shares and break-glass with sharing in force (RBAC_SHARING_ENABLED and the
@@ -212,13 +213,14 @@ export async function sweepExpired(): Promise<SweepResult> {
   }
 
   const socketCloseFailed = ended.length ? await closeEndedShares(ended) : 0
-  if (Object.values(removed).some((n) => n) || auditRetention?.deleted) {
+  if (Object.values(removed).some((n) => n) || auditRetention?.deleted || auditRetention?.activated) {
     const shown = (n: number | null) => (n === null ? 'off' : String(n))
     console.info(
       `[rbac] sweep removed shares=${shown(removed.shares)} breakglass=${shown(removed.breakGlass)} `
       + `overrides=${shown(removed.overrides)} links=${shown(removed.links)}`
       + (removed.devices !== undefined ? ` devices=${shown(removed.devices)}` : '')
       + (auditRetention?.deleted ? ` audit_rows=${auditRetention.deleted} (retention ${auditRetention.days} days)` : '')
+      + (auditRetention?.activated ? ' audit_retention_change_applied' : '')
       + (socketCloseFailed ? ` socket_close_failed=${socketCloseFailed}` : ''),
     )
   }

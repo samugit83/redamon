@@ -20,6 +20,7 @@ import { NucleiTemplatesPanel } from './NucleiTemplatesPanel'
 import { TrafficMindPanel } from './TrafficMindPanel'
 import { LlmProvidersPanel } from './LlmProvidersPanel'
 import { QuotasPanel } from './QuotasPanel'
+import { AuditRetentionPanel } from './AuditRetentionPanel'
 import styles from './instance.module.css'
 
 type State =
@@ -34,6 +35,7 @@ const TITLES: Record<PanelId, string> = {
   security: 'Security policy',
   'public-url': 'Public address',
   sharing: 'Sharing policy',
+  retention: 'Audit retention',
   'default-set': 'Defaults for new members',
   'llm-providers': 'Instance LLM providers',
   quotas: 'Quotas',
@@ -109,6 +111,8 @@ export default function InstancePage() {
         return <PublicUrlPanel key={id} settings={settings!} unconfirmedRoot={unconfirmedRoot} onSaved={onSaved} />
       case 'sharing':
         return <SharingPolicyPanel key={id} settings={settings!} unconfirmedRoot={unconfirmedRoot} onSaved={onSaved} />
+      case 'retention':
+        return <AuditRetentionPanel key={id} settings={settings!} unconfirmedRoot={unconfirmedRoot} onSaved={onSaved} />
       case 'default-set':
         return <DefaultSetPanel key={id} canEdit={isConfirmedRoot && holds('roles:manage')} unconfirmedRoot={unconfirmedRoot} />
       case 'llm-providers':

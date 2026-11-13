@@ -9,6 +9,7 @@ import { fetchJson, readApiError, toApiError } from '@/lib/apiError'
 import type { AuditEntryView, AuditPage, AuditTable } from '@/lib/authz/auditReader'
 import { AuditDetails } from './AuditDetails'
 import { AuditRows } from './AuditRows'
+import { RetentionStatus } from './RetentionStatus'
 import {
   GROUP_OPTIONS, TABS, TAB_FILTERS, downloadName, hasFilters, queryOf, viewFrom, type Filters, type ViewState,
 } from './auditView'
@@ -157,6 +158,7 @@ export default function AdminAuditPage() {
       <p className={consoleStyles.lead}>
         Who did what and when. Rows are never deleted from here; the instance&apos;s audit retention decides how long they are kept.
       </p>
+      <RetentionStatus />
 
       <div role="tablist" aria-label="Audit tables" className={styles.tabs}>
         {TABS.map((t, i) => (

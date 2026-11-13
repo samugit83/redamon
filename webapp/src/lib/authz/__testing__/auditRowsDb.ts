@@ -10,11 +10,14 @@
  *   filter wrongly finds the wrong rows;
  * - `findMany` honours `orderBy` (an array of `{field: 'asc' | 'desc'}`), `take` and `select`;
  *   `count`, `findUnique`, `findFirst`, `deleteMany` (atomic, as a Postgres DELETE), `create`,
- *   `updateMany` (the instance row);
+ *   `update` / `updateMany` (the instance row; `Prisma.DbNull` stores null);
+ * - `$transaction` runs one at a time, as the advisory lock every retention writer takes makes them;
  * - `$transaction(fn)` rolls back the audit rows and the instance row when `fn` throws;
  * - `failAudit` makes the next audit insert throw, as a lost database would; every call is counted in
  *   `calls` so a test can prove a table was not read.
  */
+import { Prisma } from '@prisma/client'
+
 export type Row = Record<string, unknown>
 
 type Where = Record<string, unknown>
@@ -91,9 +94,13 @@ export interface AuditRowsState {
   calls: string[]
 }
 
+const stored = (data: Row): Row =>
+  Object.fromEntries(Object.entries(data).map(([k, v]) => [k, v === Prisma.DbNull || v === Prisma.JsonNull ? null : v]))
+
 /** `clock` stamps the rows `create` adds (the database's `now()`). */
 export function auditRowsDb(state: AuditRowsState, clock: () => Date = () => new Date()) {
   let nextId = 1
+  let queue: Promise<unknown> = Promise.resolve()
   const table = (name: string, rows: () => Row[], set: (r: Row[]) => void) => ({
     findMany: async (a: { where?: Where; orderBy?: unknown; take?: number; select?: unknown } = {}) => {
       state.calls.push(`${name}.findMany`)
@@ -144,20 +151,30 @@ export function auditRowsDb(state: AuditRowsState, clock: () => Date = () => new
       updateMany: async ({ where, data }: { where?: Where; data: Row }) => {
         state.calls.push('instanceSettings.updateMany')
         if (!state.instance || !matches(state.instance, where)) return { count: 0 }
-        state.instance = { ...state.instance, ...data }
+        state.instance = { ...state.instance, ...stored(data) }
         return { count: 1 }
+      },
+      update: async ({ data }: { where: Where; data: Row }) => {
+        state.calls.push('instanceSettings.update')
+        if (!state.instance) throw Object.assign(new Error('Record to update not found'), { code: 'P2025' })
+        state.instance = { ...state.instance, ...stored(data) }
+        return { ...state.instance }
       },
     },
     $executeRaw: async () => 0,
     $transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => {
-      const snapshot = { audit: [...state.audit], instance: state.instance ? { ...state.instance } : null }
-      try {
-        return await fn(client)
-      } catch (err) {
-        state.audit = snapshot.audit
-        state.instance = snapshot.instance
-        throw err
-      }
+      const turn = queue.then(async () => {
+        const snapshot = { audit: [...state.audit], instance: state.instance ? { ...state.instance } : null }
+        try {
+          return await fn(client)
+        } catch (err) {
+          state.audit = snapshot.audit
+          state.instance = snapshot.instance
+          throw err
+        }
+      })
+      queue = turn.catch(() => undefined)
+      return turn
     },
   }
   return client
