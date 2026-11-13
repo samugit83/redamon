@@ -1,7 +1,8 @@
 /**
- * The list of a project's shares in the share dialog (step 4.12; UI-07, ID-31): each person as an
- * IdentityLabel with their level, toggles, end date, who granted it and the note; change (only what
- * changed is sent) and revoke, whose confirmation goes through useAlertModal (the real AlertProvider).
+ * The list of a project's shares in the share dialog (steps 4.12, 5.14; UI-07, ID-31, OQ-34): each
+ * person as an IdentityLabel with their level, toggles, end date, who granted it and the note; change
+ * (only what changed is sent; with write sharing in force the toggles too, within what the person may
+ * grant) and revoke, whose confirmation goes through useAlertModal (the real AlertProvider).
  *
  * Run: npx vitest run --no-file-parallelism src/components/sharing/CollaboratorList.test.tsx
  */
@@ -157,5 +158,57 @@ describe('change', () => {
     expect(screen.queryByRole('button', { name: 'Change access for Bob Reader' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Revoke access for Bob Reader' })).toBeNull()
     expect(item('Bob Reader').getByText('Viewer (Read)')).toBeInTheDocument()
+  })
+})
+
+
+// Step 5.14: write sharing in force (writeRefusal null), the list's `grantable` answer.
+describe('Read + Write shares (step 5.14)', () => {
+  const OK = { grantable: true as const }
+  const writeShare = (over: Record<string, unknown> = {}) =>
+    share({ access: 'write', rawData: true, runScans: true, useAgent: false, exploit: false, manage: false, ...over })
+  const grantable = (over: Record<string, unknown> = {}) => ({
+    grantor: 'owner', ownerConsent: true, toggles: { runScans: OK, useAgent: OK, exploit: OK, manage: OK }, ...over,
+  }) as never
+
+  test('a write share shows its preset and toggles; the editor sends only the toggles that changed', async () => {
+    const { onChange } = renderList([writeShare()], { writeRefusal: null, grantable: grantable() })
+    const bob = item('Bob Reader')
+    expect(bob.getByText('Custom (Read + Write + Run scans)')).toBeInTheDocument()
+    expect(bob.getByText('Toggles: Raw data & files, Run scans')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Change access for Bob Reader' }))
+    const form = within(screen.getByRole('form', { name: 'Change access for Bob Reader' }))
+    expect(form.getByRole('checkbox', { name: /^Run scans/ })).toBeChecked()
+    expect(form.getByRole('radio', { name: /^Custom/ })).toBeChecked()
+    fireEvent.click(form.getByRole('checkbox', { name: /^Use AI agent/ }))
+    // Inside Custom a flipped toggle stays Custom (from a preset it would move to Operator).
+    expect(form.getByRole('radio', { name: /^Custom/ })).toBeChecked()
+    fireEvent.click(form.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(expect.anything(), { useAgent: true }))
+  })
+
+  test('a toggle the person may not grant any more can still be cleared (narrowing is never blocked)', async () => {
+    const refused = { grantable: false, code: 'exploit_admins_only', reason: 'Only administrators.' }
+    const { onChange } = renderList([writeShare({ exploit: true })], { writeRefusal: null, grantable: grantable({ toggles: { runScans: OK, useAgent: OK, manage: OK, exploit: refused } }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Change access for Bob Reader' }))
+    const form = within(screen.getByRole('form', { name: 'Change access for Bob Reader' }))
+    const exploit = form.getByRole('checkbox', { name: /^Exploitation & shells/ })
+    expect(exploit).toBeChecked()
+    expect(exploit).toBeEnabled()
+    fireEvent.click(exploit)
+    expect(exploit).toBeDisabled()
+    fireEvent.click(form.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(expect.anything(), { exploit: false }))
+  })
+
+  test("a co-owner changes an editor's share but not a co-owner's (OQ-34); the owner changes both", () => {
+    const coOwner = writeShare({ manage: true, user: { id: 'dan', name: 'Dan Coowner', email: 'dan@example.test', status: 'active', accountType: 'member' } })
+    renderList([writeShare(), coOwner], { writeRefusal: null, grantable: grantable({ grantor: 'co_owner' }) })
+    expect(screen.getByRole('button', { name: 'Change access for Bob Reader' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Change access for Dan Coowner' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Revoke access for Dan Coowner' })).toBeNull()
+    cleanup()
+    renderList([coOwner], { writeRefusal: null, grantable: grantable() })
+    expect(screen.getByRole('button', { name: 'Revoke access for Dan Coowner' })).toBeInTheDocument()
   })
 })

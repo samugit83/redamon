@@ -1,10 +1,13 @@
 /**
- * The share dialog (step 4.12; UI-07, SH-05, SH-20, SH-29, HD-22, ID-31; E2E P4-01, P4-02, P4-04):
- * an owner shares a project at Read by exact email with a preset (Viewer, Analyst, Custom with the
- * Raw data toggle), an optional end date and a note, sees the person the server bound as an
- * IdentityLabel, and lists, changes and revokes the shares. The Read + Write presets are offered
- * disabled. States: loading, empty, error, denied, sharing unavailable, rate-limited, acting as the
- * owner. The routes are 4.4's (fetch is the double); revoke's confirmation is the real AlertProvider.
+ * The share dialog (steps 4.12, 5.14; UI-07, SH-05, SH-20, SH-29, HD-22, ID-25, ID-31; E2E P4-01,
+ * P4-02, P4-04, P5-01, P5-02): an owner shares a project by exact email with a preset (Viewer, Analyst,
+ * Custom; with write sharing in force Editor, Operator, Red-teamer, Co-owner and Custom's toggles), an
+ * optional end date and a note, sees the person the server bound as an IdentityLabel, and lists,
+ * changes and revokes the shares. With write sharing not in force the Read + Write presets are offered
+ * disabled. Within it: the consent prompt, the step-up for Exploitation & shells, Root's policy limits,
+ * the co-owner cap and the warnings. States: loading, empty, error, denied, sharing unavailable,
+ * rate-limited, acting as the owner. The routes are 4.4's (fetch is the double); confirmations are the
+ * real AlertProvider and StepUpModal.
  *
  * Run: npx vitest run --no-file-parallelism src/components/sharing/ShareDialog.test.tsx
  */
@@ -245,13 +248,24 @@ describe('warnings and the Read + Write presets', () => {
     }
   })
 
-  test('write switch on: still disabled in this phase, saying why', async () => {
-    h.user = { ...h.user, flags: { ...(h.user!.flags as object), sharingWrite: true }, sharing: { enabled: true, maxLevel: 'write' } }
+  // By design (step 5.14, SH-05/UI-07): 4.12 kept the write presets disabled with the switch on; 5.14 opens them.
+  test("write switch on: Root's policy at Read keeps them disabled, saying why; at write they are offered", async () => {
+    h.user = { ...h.user, flags: { ...(h.user!.flags as object), sharingWrite: true }, sharing: { enabled: true, maxLevel: 'read' } }
     renderDialog()
     await dialog().findByText('Not shared with anyone yet.')
-    const write = dialog().getByRole('group', { name: /Read \+ Write/ })
-    expect(within(write).getByText('Read + Write sharing is not available yet')).toBeInTheDocument()
+    let write = dialog().getByRole('group', { name: /Read \+ Write/ })
+    expect(within(write).getByText('The instance sharing policy allows Read shares only')).toBeInTheDocument()
     expect(within(write).getByRole('radio', { name: /^Editor/ })).toBeDisabled()
+    cleanup()
+
+    h.user = { ...h.user, sharing: { enabled: true, maxLevel: 'write' } }
+    renderDialog()
+    await dialog().findByText('Not shared with anyone yet.')
+    write = dialog().getByRole('group', { name: /Read \+ Write/ })
+    expect(within(write).queryByText(/allows Read shares only|Coming when/)).toBeNull()
+    for (const name of ['Editor', 'Operator', 'Red-teamer', 'Co-owner']) {
+      expect(within(write).getByRole('radio', { name: new RegExp(`^${name}`) })).toBeEnabled()
+    }
   })
 
   test('keyboard and labels: every control is named, Viewer chosen first, Escape closes', async () => {
@@ -322,5 +336,212 @@ describe('the ownership transfer section (step 5.12)', () => {
     await dialog().findByRole('button', { name: 'Revoke access for Bob Reader' })
     expect(dialog().queryByRole('region', { name: 'Transfer ownership' })).toBeNull()
     expect(transferGets()).toEqual([])
+  })
+})
+
+
+// Step 5.14: with write sharing in force (the switch and Root's policy at write) the list answers what the
+// person may grant (`grantable`), and the dialog grants Read + Write: the consent prompt for a spend toggle
+// the owner has not allowed yet (POST .../access-policy with the password, step 5.6), the step-up for
+// Exploitation & shells (the password goes with the grant), one prompt when both apply; Root's policy limits
+// shown disabled with why; a co-owner offered only what they hold; the warnings.
+describe('Read + Write grants (step 5.14)', () => {
+  const OK = { grantable: true }
+  const grantable = (over: Record<string, unknown> = {}) => ({
+    grantor: 'owner', ownerConsent: false, toggles: { runScans: OK, useAgent: OK, exploit: OK, manage: OK }, ...over,
+  })
+  let consentAnswer: () => Response
+  let patchAnswer: () => Response
+
+  beforeEach(() => {
+    h.user = { ...h.user!, flags: { ...(h.user!.flags as object), sharingWrite: true }, sharing: { enabled: true, maxLevel: 'write' } }
+    consentAnswer = () => json({ ownerCredentialConsent: true, consentAt: '2026-11-13T12:00:00.000Z', changed: true })
+    patchAnswer = () => json({ collaborator: share() })
+    const base = h.fetch.getMockImplementation()!
+    h.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/projects/P1/transfer' && !init?.method) return json({ role: 'none', offer: null })
+      if (url === '/api/projects/P1/access-policy' && init?.method === 'POST') return consentAnswer()
+      if (url === '/api/projects/P1/collaborators/bob' && init?.method === 'PATCH') return patchAnswer()
+      return base(url, init)
+    })
+  })
+
+  const ready = async (answer: Record<string, unknown> = { collaborators: [], grantable: grantable() }) => {
+    listAnswers.push(() => json(answer))
+    renderDialog()
+    await dialog().findByRole('group', { name: /Read \+ Write/ })
+    await waitFor(() => expect(calls('GET').length).toBeGreaterThan(0))
+  }
+  const consentPosts = () => calls('POST').filter(([url]) => url === '/api/projects/P1/access-policy')
+  const grantPosts = () => calls('POST').filter(([url]) => url === '/api/projects/P1/collaborators')
+  const bodyOf = (call: unknown[]) => JSON.parse(String((call[1] as RequestInit).body))
+  const prompt = (name: string) => screen.findByRole('dialog', { name })
+  const typePassword = async (box: HTMLElement, value: string, button: string) => {
+    fireEvent.change(within(box).getByLabelText('Your password'), { target: { value } })
+    fireEvent.click(within(box).getByRole('button', { name: button }))
+  }
+
+  test('presets: Editor sends Read + Write without a toggle and asks no password', async () => {
+    await ready()
+    fireEvent.click(dialog().getByRole('radio', { name: /^Editor/ }))
+    fillEmail('bob@example.test')
+    submit()
+    await waitFor(() => expect(grantPosts()).toHaveLength(1))
+    expect(bodyOf(grantPosts()[0])).toEqual({
+      email: 'bob@example.test', access: 'write', rawData: true, runScans: false, useAgent: false, exploit: false, manage: false,
+    })
+    expect(consentPosts()).toHaveLength(0)
+    expect(screen.queryByRole('dialog', { name: /Allow spending|Grant Exploitation/ })).toBeNull()
+  })
+
+  test('consent prompt: Operator before the owner allowed it asks the consent with the password, then shares', async () => {
+    await ready()
+    expect(dialog().getByRole('status', { name: 'Spending your credentials' })).toHaveTextContent(/cannot spend this project's credentials yet/)
+    fireEvent.click(dialog().getByRole('radio', { name: /^Operator/ }))
+    fillEmail('bob@example.test')
+    submit()
+    const box = await prompt('Allow spending your credentials')
+    expect(box).toHaveTextContent(/spend this project's credentials/)
+    expect(grantPosts()).toHaveLength(0)
+    await typePassword(box, 'pw-1', 'Allow and share')
+    await waitFor(() => expect(grantPosts()).toHaveLength(1))
+    expect(bodyOf(consentPosts()[0])).toEqual({ ownerCredentialConsent: true, stepUpPassword: 'pw-1' })
+    // The consent is the owner's step-up; the grant itself carries no password (no Exploitation).
+    expect(bodyOf(grantPosts()[0])).toMatchObject({ access: 'write', runScans: true, useAgent: true, exploit: false })
+    expect(bodyOf(grantPosts()[0])).not.toHaveProperty('stepUpPassword')
+    await dialog().findByRole('status', { name: 'Shared' })
+  })
+
+  test('consent prompt cancelled: nothing is sent and the form says so', async () => {
+    await ready()
+    fireEvent.click(dialog().getByRole('radio', { name: /^Operator/ }))
+    fillEmail('bob@example.test')
+    submit()
+    fireEvent.click(within(await prompt('Allow spending your credentials')).getByRole('button', { name: 'Cancel' }))
+    expect(await dialog().findByRole('alert')).toHaveTextContent('Not shared: the password was not confirmed.')
+    expect(consentPosts()).toHaveLength(0)
+    expect(grantPosts()).toHaveLength(0)
+  })
+
+  test('step-up for exploit: Red-teamer asks the password; a wrong one keeps the prompt open; the right one goes with the grant', async () => {
+    await ready({ collaborators: [], grantable: grantable({ ownerConsent: true }) })
+    fireEvent.click(dialog().getByRole('radio', { name: /^Red-teamer/ }))
+    fillEmail('bob@example.test')
+    grantAnswer = () => json({ error: 'Password is incorrect', code: 'step_up_failed' }, 403)
+    submit()
+    const box = await prompt('Grant Exploitation & shells')
+    expect(box).toHaveTextContent(/approve exploitation and dangerous tools/)
+    await typePassword(box, 'wrong', 'Share')
+    expect(await within(box).findByRole('alert')).toHaveTextContent('Password is incorrect')
+    grantAnswer = () => json({ collaborator: share({ access: 'write', rawData: true }) }, 201)
+    await typePassword(box, 'right', 'Share')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Grant Exploitation & shells' })).toBeNull())
+    expect(bodyOf(grantPosts().at(-1)!)).toMatchObject({ access: 'write', exploit: true, stepUpPassword: 'right' })
+    expect(consentPosts()).toHaveLength(0)
+  })
+
+  test('consent and step-up together: one prompt, the consent first, then the grant with the same password', async () => {
+    await ready()
+    fireEvent.click(dialog().getByRole('radio', { name: /^Co-owner/ }))
+    fillEmail('bob@example.test')
+    submit()
+    const box = await prompt('Allow spending your credentials')
+    expect(box).toHaveTextContent(/approve exploitation/)
+    await typePassword(box, 'pw-2', 'Allow and share')
+    await waitFor(() => expect(grantPosts()).toHaveLength(1))
+    expect(bodyOf(consentPosts()[0])).toEqual({ ownerCredentialConsent: true, stepUpPassword: 'pw-2' })
+    expect(bodyOf(grantPosts()[0])).toMatchObject({ manage: true, exploit: true, stepUpPassword: 'pw-2' })
+  })
+
+  test("policy limits: Exploitation kept to admins is disabled with Root's reason, and so are Red-teamer and Co-owner", async () => {
+    const reason = 'The instance sharing policy lets only administrators grant Exploitation & shells.'
+    await ready({ collaborators: [], grantable: grantable({ toggles: { runScans: OK, useAgent: OK, manage: OK, exploit: { grantable: false, code: 'exploit_admins_only', reason } } }) })
+    const write = dialog().getByRole('group', { name: /Read \+ Write/ })
+    expect(within(write).getByRole('checkbox', { name: /^Exploitation & shells/ })).toBeDisabled()
+    expect(within(write).getByRole('radio', { name: /^Red-teamer/ })).toBeDisabled()
+    expect(within(write).getByRole('radio', { name: /^Co-owner/ })).toBeDisabled()
+    expect(within(write).getByRole('radio', { name: /^Operator/ })).toBeEnabled()
+    expect(within(write).getAllByText(new RegExp(reason.replace(/[.&]/g, '\\$&'))).length).toBeGreaterThan(0)
+  })
+
+  test("co-owner cap: a co-owner sees only what they hold, and no Change or Revoke on a co-owner's share", async () => {
+    const notHeld = { grantable: false, code: 'not_held', reason: 'You do not hold it.' }
+    await ready({
+      collaborators: [share({ access: 'write', rawData: true, runScans: true, useAgent: false, exploit: false, manage: true, user: { id: 'carol', name: 'Carol Coowner', email: 'carol@example.test', status: 'active', accountType: 'member' } })],
+      grantable: grantable({ grantor: 'co_owner', ownerConsent: true, toggles: { runScans: OK, manage: OK, useAgent: notHeld, exploit: notHeld } }),
+    })
+    const write = dialog().getByRole('group', { name: /Read \+ Write/ })
+    expect(within(write).queryByRole('checkbox', { name: /^Use AI agent/ })).toBeNull()
+    expect(within(write).queryByRole('checkbox', { name: /^Exploitation & shells/ })).toBeNull()
+    expect(within(write).getByRole('checkbox', { name: /^Run scans/ })).toBeEnabled()
+    for (const name of ['Operator', 'Red-teamer', 'Co-owner']) expect(within(write).queryByRole('radio', { name: new RegExp(`^${name}`) })).toBeNull()
+    expect(within(write).getByRole('radio', { name: /^Editor/ })).toBeEnabled()
+    expect(dialog().queryByRole('status', { name: 'Spending your credentials' })).toBeNull()
+    const carol = within(dialog().getByRole('listitem', { name: 'Carol Coowner' }))
+    expect(carol.queryByRole('button', { name: /Change access/ })).toBeNull()
+    expect(carol.queryByRole('button', { name: /Revoke access/ })).toBeNull()
+    expect(carol.getByText(/Only the project's owner can change or revoke a co-owner's share/)).toBeInTheDocument()
+    expect(carol.getByText('Toggles: Raw data & files, Run scans, Manage (co-owner)')).toBeInTheDocument()
+  })
+
+  test('warnings shown: the copy warning with Read + Write; the shared sandbox and the target credentials beside their toggles', async () => {
+    await ready()
+    expect(dialog().queryByText(/can copy what they see/)).toBeNull()
+    fireEvent.click(dialog().getByRole('radio', { name: /^Editor/ }))
+    expect(dialog().getByText(/can copy what they see/)).toBeInTheDocument()
+    const write = dialog().getByRole('group', { name: /Read \+ Write/ })
+    expect(within(write).getByRole('checkbox', { name: /^Use AI agent/ })).toHaveAccessibleDescription(/sandbox shared by every project.*target credentials/)
+    expect(within(write).getByRole('checkbox', { name: /^Run scans/ })).toHaveAccessibleDescription(/target credentials/)
+  })
+
+  test('Custom: the level and each toggle; a toggle flipped from a preset moves to the preset it makes', async () => {
+    await ready({ collaborators: [], grantable: grantable({ ownerConsent: true }) })
+    fireEvent.click(dialog().getByRole('radio', { name: /^Operator/ }))
+    fireEvent.click(dialog().getByRole('checkbox', { name: /^Run scans/ }))
+    expect(dialog().getByRole('radio', { name: /^Custom/ })).toBeChecked()
+    fireEvent.click(dialog().getByRole('checkbox', { name: /^Run scans/ }))
+    expect(dialog().getByRole('radio', { name: /^Custom/ })).toBeChecked()
+    fireEvent.click(dialog().getByRole('radio', { name: /^Viewer/ }))
+    fireEvent.click(dialog().getByRole('checkbox', { name: /^Manage/ }))
+    expect(dialog().getByRole('radio', { name: /^Custom/ })).toBeChecked()
+    expect(dialog().getByRole('checkbox', { name: /^Read \+ Write/ })).toBeChecked()
+    expect(dialog().getByRole('checkbox', { name: /Raw data & files/ })).toBeDisabled()
+    fillEmail('bob@example.test')
+    submit()
+    await waitFor(() => expect(grantPosts()).toHaveLength(1))
+    expect(bodyOf(grantPosts()[0])).toMatchObject({ access: 'write', rawData: true, runScans: false, useAgent: false, exploit: false, manage: true })
+  })
+
+  test('the owner withdraws the consent from the dialog (confirmed first)', async () => {
+    await ready({ collaborators: [], grantable: grantable({ ownerConsent: true }) })
+    listAnswers.push(() => json({ collaborators: [], grantable: grantable() }))
+    const line = dialog().getByRole('status', { name: 'Spending your credentials' })
+    fireEvent.click(within(line).getByRole('button', { name: 'Withdraw' }))
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Withdraw your consent' })).getByRole('button', { name: 'Withdraw' }))
+    await waitFor(() => expect(consentPosts()).toHaveLength(1))
+    expect(bodyOf(consentPosts()[0])).toEqual({ ownerCredentialConsent: false })
+    await waitFor(() => expect(dialog().getByRole('status', { name: 'Spending your credentials' })).toHaveTextContent(/cannot spend/))
+  })
+
+  test('change: turning Exploitation on asks the password and the PATCH carries it; lowering to Viewer sends the level only', async () => {
+    const operatorShare = share({ access: 'write', rawData: true, runScans: true, useAgent: true, exploit: false, manage: false })
+    await ready({ collaborators: [operatorShare], grantable: grantable({ ownerConsent: true }) })
+    listAnswers.push(() => json({ collaborators: [operatorShare], grantable: grantable({ ownerConsent: true }) }))
+    fireEvent.click(dialog().getByRole('button', { name: 'Change access for Bob Reader' }))
+    let form = within(dialog().getByRole('form', { name: 'Change access for Bob Reader' }))
+    expect(form.getByRole('radio', { name: /^Operator/ })).toBeChecked()
+    fireEvent.click(form.getByRole('radio', { name: /^Red-teamer/ }))
+    fireEvent.click(form.getByRole('button', { name: 'Save' }))
+    await typePassword(await prompt('Grant Exploitation & shells'), 'pw-3', 'Save')
+    await waitFor(() => expect(calls('PATCH')).toHaveLength(1))
+    expect(lastBody('PATCH')).toEqual({ exploit: true, stepUpPassword: 'pw-3' })
+
+    await waitFor(() => expect(dialog().queryByRole('form', { name: 'Change access for Bob Reader' })).toBeNull())
+    fireEvent.click(dialog().getByRole('button', { name: 'Change access for Bob Reader' }))
+    form = within(dialog().getByRole('form', { name: 'Change access for Bob Reader' }))
+    fireEvent.click(form.getByRole('radio', { name: /^Viewer/ }))
+    fireEvent.click(form.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(calls('PATCH')).toHaveLength(2))
+    expect(lastBody('PATCH')).toEqual({ access: 'read', rawData: false })
   })
 })

@@ -1,7 +1,9 @@
 /**
- * The share dialog's presets and toggles as data (step 4.12; SH-05, UI-07, HD-22, SH-29; feature
- * document §6.1): what each preset grants, which preset a share is, the body a grant sends, why the
- * Read + Write presets are offered disabled in Phase 4, and which share control a project row offers.
+ * The share dialog's presets and toggles as data (steps 4.12, 5.14; SH-05, UI-07, HD-22, SH-29, ID-25;
+ * feature document §6.1, §6.5): what each preset grants, which preset a share is, the body a grant
+ * sends, when the Read + Write presets are offered (write sharing in force) and, within it, what the
+ * person may grant (Root's policy, a co-owner's own toggles, the owner's consent), the warnings, and
+ * which share control a project row offers.
  *
  * Run: npx vitest run --no-file-parallelism src/components/sharing/sharePresets.test.ts
  * @vitest-environment node
@@ -10,21 +12,27 @@ import { describe, test, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import {
+  COPY_WARNING,
   NOTE_MAX_CHARS,
   RAW_DATA_WARNING,
+  SPEND_TOGGLE_IDS,
   READ_SHOWS_FINDINGS_WARNING,
   SANDBOX_NOTICE,
   SHARE_PRESETS,
   SHARE_TOGGLES,
   TARGET_CREDENTIALS_WARNING,
   WRITE_PRESETS_COMING,
+  consentNeeded,
+  copyWarningApplies,
   dateInputValue,
   endOfDayIso,
   presetById,
   presetOf,
+  presetOffer,
   shareActions,
   shareTermsLabel,
   termsToBody,
+  toggleOffer,
   writePresetsRefusal,
 } from './sharePresets'
 import type { MyAccess } from '@/lib/authz/projectAccess'
@@ -107,16 +115,79 @@ describe('toggles and their warnings (HD-22, SH-29)', () => {
   })
 })
 
-describe('the Read + Write presets in Phase 4', () => {
+describe('the Read + Write presets', () => {
   test('write switch off: disabled, "Coming when write sharing is on"', () => {
     expect(WRITE_PRESETS_COMING).toBe('Coming when write sharing is on')
     expect(writePresetsRefusal({ sharingWrite: false }, { enabled: true, maxLevel: 'read' })).toBe(WRITE_PRESETS_COMING)
     expect(writePresetsRefusal(null, null)).toBe(WRITE_PRESETS_COMING)
   })
 
-  test('write switch on: still disabled in this phase, naming why', () => {
+  // By design (step 5.14, SH-05/UI-07): with write sharing in force the presets are offered (4.12 kept them disabled).
+  test("write switch on: Root's policy at Read names why; at write they are offered", () => {
     expect(writePresetsRefusal({ sharingWrite: true }, { enabled: true, maxLevel: 'read' })).toBe('The instance sharing policy allows Read shares only')
-    expect(writePresetsRefusal({ sharingWrite: true }, { enabled: true, maxLevel: 'write' })).toBe('Read + Write sharing is not available yet')
+    expect(writePresetsRefusal({ sharingWrite: true }, { enabled: true, maxLevel: 'write' })).toBeNull()
+  })
+})
+
+describe('what the person may grant (step 5.14)', () => {
+  const ok = { grantable: true as const }
+  const grantable = (over: Record<string, unknown> = {}) => ({
+    toggles: { runScans: ok, useAgent: ok, exploit: ok, manage: ok, ...over },
+  }) as never
+
+  test('presets: with write sharing in force and nothing refused, every preset and toggle is offered', () => {
+    for (const p of SHARE_PRESETS) expect([p.id, presetOffer(p, null, grantable())]).toEqual([p.id, { state: 'offered' }])
+    expect(toggleOffer('exploit', null, grantable())).toEqual({ state: 'offered' })
+    // No grantable answer yet (or an older server): offered, the route decides.
+    expect(toggleOffer('exploit', null, null)).toEqual({ state: 'offered' })
+  })
+
+  test('write sharing not in force: every write preset and toggle disabled with that reason; the read presets offered', () => {
+    expect(presetOffer(presetById('editor'), WRITE_PRESETS_COMING, null)).toEqual({ state: 'disabled', reason: WRITE_PRESETS_COMING })
+    expect(toggleOffer('manage', WRITE_PRESETS_COMING, null)).toEqual({ state: 'disabled', reason: WRITE_PRESETS_COMING })
+    expect(presetOffer(presetById('analyst'), WRITE_PRESETS_COMING, null)).toEqual({ state: 'offered' })
+  })
+
+  test("policy limits: Exploitation kept to admins disables it and every preset holding it, with Root's reason", () => {
+    const g = grantable({ exploit: { grantable: false, code: 'exploit_admins_only', reason: 'Only administrators.' } })
+    expect(toggleOffer('exploit', null, g)).toEqual({ state: 'disabled', reason: 'Only administrators.' })
+    expect(presetOffer(presetById('red_teamer'), null, g)).toEqual({ state: 'disabled', reason: 'Only administrators.' })
+    expect(presetOffer(presetById('co_owner'), null, g)).toEqual({ state: 'disabled', reason: 'Only administrators.' })
+    expect(presetOffer(presetById('operator'), null, g)).toEqual({ state: 'offered' })
+  })
+
+  test('co-owner cap: what a co-owner does not hold is not shown, nor any preset holding it', () => {
+    const g = grantable({
+      useAgent: { grantable: false, code: 'not_held', reason: 'not held' },
+      exploit: { grantable: false, code: 'not_held', reason: 'not held' },
+    })
+    expect(toggleOffer('useAgent', null, g)).toEqual({ state: 'hidden' })
+    expect(toggleOffer('runScans', null, g)).toEqual({ state: 'offered' })
+    expect(['editor', 'operator', 'red_teamer', 'co_owner'].map(id => presetOffer(presetById(id as never), null, g).state))
+      .toEqual(['offered', 'hidden', 'hidden', 'hidden'])
+  })
+
+  test("consent prompt: needed for a spend toggle until the owner consented; Manage never needs it", () => {
+    expect(SPEND_TOGGLE_IDS).toEqual(['runScans', 'useAgent', 'exploit'])
+    const src = readFileSync(path.resolve(__dirname, '../../lib/authz/ownerConsent.ts'), 'utf8')
+    expect(src).toContain("export const SPEND_TOGGLES = ['runScans', 'useAgent', 'exploit'] as const")
+    expect(consentNeeded({ runScans: true }, { ownerConsent: false })).toBe(true)
+    expect(consentNeeded({ exploit: true }, { ownerConsent: false })).toBe(true)
+    expect(consentNeeded({ manage: true }, { ownerConsent: false })).toBe(false)
+    expect(consentNeeded({ useAgent: true }, { ownerConsent: true })).toBe(false)
+    expect(consentNeeded({ useAgent: true }, null)).toBe(false)
+  })
+
+  test('warnings shown: what a collaborator sees can be copied, with Raw data, Read + Write or the agent', () => {
+    expect(COPY_WARNING).toMatch(/can copy what they see/)
+    expect(copyWarningApplies(presetById('viewer').terms!)).toBe(false)
+    expect(copyWarningApplies(presetById('analyst').terms!)).toBe(true)
+    expect(copyWarningApplies(presetById('editor').terms!)).toBe(true)
+  })
+
+  test('a Custom Read + Write share is labelled with its toggles', () => {
+    expect(shareTermsLabel({ access: 'write', rawData: true, manage: true })).toBe('Custom (Read + Write + Manage (co-owner))')
+    expect(shareTermsLabel({ access: 'write', rawData: true, exploit: true })).toBe('Custom (Read + Write + Exploitation & shells)')
   })
 })
 
@@ -143,6 +214,12 @@ describe('the share control a project row or the header offers', () => {
     expect(shareActions({ myAccess: access({ level: 'owner', via: 'owner' }) }, true)).toEqual({ share: true, leave: false })
     expect(shareActions({ myAccess: access({}) }, true)).toEqual({ share: false, leave: true })
     expect(shareActions({ myAccess: access({ toggles: { rawData: true } }) }, true)).toEqual({ share: false, leave: true })
+  })
+
+  test('a co-owner (Read + Write with Manage) also gets Share; an editor without Manage only Leave', () => {
+    const write = { rawData: true, runScans: false, useAgent: false, exploit: false }
+    expect(shareActions({ myAccess: access({ level: 'write', toggles: { ...write, manage: true } }) }, true)).toEqual({ share: true, leave: true })
+    expect(shareActions({ myAccess: access({ level: 'write', toggles: { ...write, manage: false } }) }, true)).toEqual({ share: false, leave: true })
   })
 
   test('oversight and break-glass are not shares: nothing to share, nothing to leave', () => {

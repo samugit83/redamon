@@ -3,26 +3,29 @@
 import { useId, useState, type FormEvent } from 'react'
 import { useAlertModal } from '@/components/ui'
 import { ACCOUNT_TYPE_LABEL, IdentityLabel } from '@/components/auth/IdentityLabel'
-import type { ShareView } from '@/lib/authz/projectShares'
-import { AccessPicker, termsOf, type AccessChoice } from './AccessPicker'
+import type { ShareGrantable, ShareView } from '@/lib/authz/projectShares'
+import { AccessPicker, choiceOf, termsOf, type AccessChoice } from './AccessPicker'
 import {
   NOTE_MAX_CHARS,
   dateInputValue,
   endOfDayIso,
-  presetOf,
+  fullTerms,
   shareTermsLabel,
   todayInputValue,
   toggleLabels,
+  type WriteToggleId,
 } from './sharePresets'
 import styles from './ShareDialog.module.css'
 
 /** The fields PATCH .../collaborators/[userId] takes; only what changed is sent. */
-export interface SharePatch {
+export interface SharePatch extends Partial<Record<WriteToggleId, boolean>> {
   access?: 'read' | 'write'
   rawData?: boolean
   expiresAt?: string | null
   note?: string | null
 }
+
+const WRITE_TOGGLE_IDS: readonly WriteToggleId[] = ['runScans', 'useAgent', 'exploit', 'manage']
 
 interface CollaboratorListProps {
   projectName: string
@@ -30,6 +33,8 @@ interface CollaboratorListProps {
   /** The person signed in (the account acted as, under act-as): "Granted by you". */
   viewerId: string | null
   writeRefusal: string | null
+  /** What the person may grant (write sharing in force); a co-owner changes no co-owner's share (OQ-34). */
+  grantable?: ShareGrantable | null
   /** Nothing can be changed (acting as the owner): neither change nor revoke is offered. */
   readOnly?: boolean
   /** Throws to keep the editor open with the error's message. */
@@ -64,12 +69,13 @@ function grantedByText(share: ShareView, viewerId: string | null): string {
 }
 
 /**
- * Who holds a share of the project, in the share dialog (step 4.12; UI-07, ID-31): each person as an
- * IdentityLabel (name, email, account type: a display name alone is not an identity) with the level,
- * toggles, end date, who granted it and the note, and Change and Revoke. Revoke asks first, through
- * useAlertModal; a change sends only the fields that changed.
+ * Who holds a share of the project, in the share dialog (steps 4.12, 5.14; UI-07, ID-31): each person
+ * as an IdentityLabel (name, email, account type: a display name alone is not an identity) with the
+ * level, toggles, end date, who granted it and the note, and Change and Revoke. Revoke asks first,
+ * through useAlertModal; a change sends only the fields that changed. A co-owner sees the other
+ * co-owners' shares (and their own) without Change or Revoke: only the owner changes those (OQ-34).
  */
-export function CollaboratorList({ projectName, shares, viewerId, writeRefusal, readOnly = false, onChange, onRevoke }: CollaboratorListProps) {
+export function CollaboratorList({ projectName, shares, viewerId, writeRefusal, grantable = null, readOnly = false, onChange, onRevoke }: CollaboratorListProps) {
   const { dangerConfirm } = useAlertModal()
   const [editing, setEditing] = useState<string | null>(null)
   const [revoking, setRevoking] = useState<string | null>(null)
@@ -95,11 +101,13 @@ export function CollaboratorList({ projectName, shares, viewerId, writeRefusal, 
         const name = displayName(share)
         const toggles = toggleLabels(share)
         const inactive = share.user.status && share.user.status !== 'active' ? share.user.status : null
+        const ownersOnly = grantable?.grantor === 'co_owner' && share.manage === true
+        const changeable = !readOnly && !ownersOnly
         return (
           <li key={share.user.id} className={styles.person} aria-label={name}>
             <div className={styles.personHead}>
               <IdentityLabel name={share.user.name ?? ''} email={share.user.email ?? ''} accountType={share.user.accountType ?? undefined} />
-              {!readOnly && editing !== share.user.id && (
+              {changeable && editing !== share.user.id && (
                 <span className={styles.personActions}>
                   <button
                     type="button"
@@ -128,12 +136,14 @@ export function CollaboratorList({ projectName, shares, viewerId, writeRefusal, 
               <span>{grantedByText(share, viewerId)}</span>
             </div>
             {inactive && <p className={styles.warnText}>{`This account is ${inactive}: the share gives no access while it is.`}</p>}
+            {ownersOnly && !readOnly && <p className={styles.hint}>Only the project&apos;s owner can change or revoke a co-owner&apos;s share.</p>}
             {share.note && <p className={styles.note}>{share.note}</p>}
             {editing === share.user.id && (
               <ShareEditor
                 share={share}
                 name={name}
                 writeRefusal={writeRefusal}
+                grantable={grantable}
                 onCancel={() => setEditing(null)}
                 onSave={async (patch) => {
                   if (Object.keys(patch).length > 0) await onChange(share, patch)
@@ -152,14 +162,15 @@ interface ShareEditorProps {
   share: ShareView
   name: string
   writeRefusal: string | null
+  grantable: ShareGrantable | null
   onCancel: () => void
   onSave: (patch: SharePatch) => Promise<void>
 }
 
-function ShareEditor({ share, name, writeRefusal, onCancel, onSave }: ShareEditorProps) {
+function ShareEditor({ share, name, writeRefusal, grantable, onCancel, onSave }: ShareEditorProps) {
   const ids = { ends: useId(), note: useId(), endsHint: useId() }
   const initialDay = dateInputValue(share.expiresAt)
-  const [choice, setChoice] = useState<AccessChoice>({ presetId: presetOf(share), customRaw: share.rawData })
+  const [choice, setChoice] = useState<AccessChoice>(() => choiceOf(share))
   const [endsOn, setEndsOn] = useState(initialDay)
   const [note, setNote] = useState(share.note ?? '')
   const [error, setError] = useState('')
@@ -169,9 +180,12 @@ function ShareEditor({ share, name, writeRefusal, onCancel, onSave }: ShareEdito
     e.preventDefault()
     if (pending) return
     const terms = termsOf(choice)
+    const held = fullTerms(share)
     const patch: SharePatch = {}
     if (terms.access !== share.access) patch.access = terms.access
     if (terms.rawData !== share.rawData) patch.rawData = terms.rawData
+    // A share lowered to Read loses its toggles on the server; only a Read + Write result sends them.
+    if (terms.access === 'write') for (const t of WRITE_TOGGLE_IDS) if (terms[t] !== held[t]) patch[t] = terms[t]
     if (endsOn !== initialDay) patch.expiresAt = endsOn ? endOfDayIso(endsOn) : null
     const trimmed = note.trim()
     if (trimmed !== (share.note ?? '')) patch.note = trimmed || null
@@ -187,7 +201,7 @@ function ShareEditor({ share, name, writeRefusal, onCancel, onSave }: ShareEdito
 
   return (
     <form className={styles.editor} aria-label={`Change access for ${name}`} onSubmit={save} noValidate>
-      <AccessPicker value={choice} onChange={setChoice} writeRefusal={writeRefusal} disabled={pending} />
+      <AccessPicker value={choice} onChange={setChoice} writeRefusal={writeRefusal} grantable={grantable} disabled={pending} />
       <div className={styles.row}>
         <div className={styles.field}>
           <label className={styles.label} htmlFor={ids.ends}>Ends on</label>

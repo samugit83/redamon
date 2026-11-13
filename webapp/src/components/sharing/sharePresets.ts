@@ -4,15 +4,19 @@
  * grant sends, and which share control a project row or the header offers. Data only (no React,
  * no request), so the switch-off test can import it.
  *
- * Phase 4 grants Read only: the four Read + Write presets and their toggles are listed but offered
- * disabled (`writePresetsRefusal` always answers a reason). Step 5.14 enables them when Root's
- * policy allows write (me's `sharing.maxLevel === 'write'`) by changing that function alone.
+ * The four Read + Write presets and their toggles are offered only with write sharing in force (step
+ * 5.14: the write switch and Root's policy at write, me's `sharing.maxLevel === 'write'`); otherwise
+ * they are listed disabled with the reason (`writePresetsRefusal`). Within write sharing the share
+ * list says what the person may grant (`grantable`: Root's policy on Exploitation, a co-owner's own
+ * toggles), and `toggleOffer` / `presetOffer` turn that into offered, disabled (with why) or hidden.
  */
 import type { MyAccess } from '@/lib/authz/projectAccess'
+import type { ShareGrantable } from '@/lib/authz/projectShares'
 import { PERMISSIONS } from '@/lib/authz/permissions'
 
 export type ShareAccessLevel = 'read' | 'write'
 export type ShareToggleId = 'rawData' | 'runScans' | 'useAgent' | 'exploit' | 'manage'
+export type WriteToggleId = Exclude<ShareToggleId, 'rawData'>
 export type SharePresetId = 'viewer' | 'analyst' | 'editor' | 'operator' | 'red_teamer' | 'co_owner' | 'custom'
 
 export interface ShareTerms {
@@ -43,7 +47,25 @@ export const TARGET_CREDENTIALS_WARNING = "Run scans and Use AI agent carry the 
 export const READ_SHOWS_FINDINGS_WARNING =
   'Every level shows what recon found as you see it, found secrets and reports included; the project settings never show your own keys and tokens.'
 
+/** A collaborator who reads raw files or drives the agent can keep a copy of what they see. */
+export const COPY_WARNING = 'A collaborator with Raw data or the agent can copy what they see: revoking ends the access, not the copies.'
+
 export const WRITE_PRESETS_COMING = 'Coming when write sharing is on'
+
+/**
+ * The toggles that spend the owner's credentials, which need the owner's consent first (step 5.6;
+ * lib/authz/ownerConsent.ts SPEND_TOGGLES, which this client module cannot import).
+ */
+export const SPEND_TOGGLE_IDS: readonly WriteToggleId[] = ['runScans', 'useAgent', 'exploit']
+
+/** The consent prompt (step 5.6, C1): the owner allows collaborators to spend the project's credentials. */
+export const CONSENT_PROMPT =
+  "Run scans, Use AI agent and Exploitation & shells spend this project's credentials: your LLM providers and keys, " +
+  "your scan keys and the target's credentials. Allow the collaborators you grant them to use them on this project? " +
+  'You can withdraw it here at any time.'
+/** The step-up's words when Exploitation & shells is granted (ID-25). */
+export const EXPLOIT_STEP_UP =
+  'Exploitation & shells lets them approve exploitation and dangerous tools and open shells on this project.'
 
 /** A share's note, at most (lib/authz/projectShares.ts NOTE_MAX_LENGTH, which this module cannot import). */
 export const NOTE_MAX_CHARS = 500
@@ -113,7 +135,7 @@ export const SHARE_PRESETS: readonly SharePresetInfo[] = [
     id: 'co_owner', label: 'Co-owner', summary: 'Everything but delete and transfer', level: 'write',
     terms: { ...WRITE, runScans: true, useAgent: true, exploit: true, manage: true },
   },
-  { id: 'custom', label: 'Custom', summary: 'Read, with the toggles you choose', level: 'read', terms: null },
+  { id: 'custom', label: 'Custom', summary: 'The level and each toggle you choose', level: 'read', terms: null },
 ]
 
 export function presetById(id: SharePresetId): SharePresetInfo {
@@ -139,14 +161,17 @@ export function presetOf(terms: ShareTermsLike): SharePresetId {
   return SHARE_PRESETS.find(p => p.terms && sameTerms(p.terms, full))?.id ?? 'custom'
 }
 
-/** "Viewer (Read)", "Analyst (Read + Raw data & files)", "Custom (Read + Write)". */
+/** "Viewer (Read)", "Analyst (Read + Raw data & files)", "Custom (Read + Write + Exploitation & shells)". */
 export function shareTermsLabel(terms: ShareTermsLike): string {
   const id = presetOf(terms)
   if (id !== 'custom') {
     const preset = presetById(id)
     return `${preset.label} (${preset.summary})`
   }
-  return `Custom (${terms.access === 'write' ? 'Read + Write' : terms.rawData ? 'Read + Raw data & files' : 'Read'})`
+  if (terms.access !== 'write') return `Custom (${terms.rawData ? 'Read + Raw data & files' : 'Read'})`
+  const full = fullTerms(terms)
+  const on = SHARE_TOGGLES.filter(t => t.level === 'write' && full[t.id]).map(t => t.label)
+  return `Custom (${['Read + Write', ...on].join(' + ')})`
 }
 
 /** The labels of the toggles a share holds, Raw data included once Read + Write includes it. */
@@ -168,23 +193,63 @@ export function termsToBody(terms: ShareTerms): Record<string, unknown> {
 }
 
 /**
- * Why the Read + Write presets and toggles are offered disabled, or null once they may be granted.
- * In Phase 4 always a reason: 4.4's POST refuses a write body (409 `write_sharing_off`, or
- * `above_max_level` under a Read-only policy) whatever the write switch says.
+ * Why the Read + Write presets and toggles are offered disabled, or null once they may be granted:
+ * write sharing in force (the write switch on and Root's policy at write; the routes refuse a write
+ * body otherwise, 409 `write_sharing_off` or `above_max_level`).
  */
 export function writePresetsRefusal(
   flags: { sharingWrite?: boolean } | null | undefined,
   sharing: { enabled?: boolean; maxLevel: ShareAccessLevel } | null | undefined,
-): string {
+): string | null {
   if (flags?.sharingWrite !== true) return WRITE_PRESETS_COMING
   if (sharing?.maxLevel !== 'write') return 'The instance sharing policy allows Read shares only'
-  return 'Read + Write sharing is not available yet'
+  return null
+}
+
+/** How the dialog offers a toggle or preset: as is, disabled with the reason, or not at all (a co-owner's "only what they hold"). */
+export type ShareOffer = { state: 'offered' } | { state: 'disabled'; reason: string } | { state: 'hidden' }
+
+const OFFERED: ShareOffer = { state: 'offered' }
+
+/**
+ * A Read + Write toggle as the person may grant it. Without a `grantable` answer (none yet, or an
+ * older server) every toggle is offered and the route decides.
+ */
+export function toggleOffer(id: WriteToggleId, writeRefusal: string | null, grantable: Pick<ShareGrantable, 'toggles'> | null | undefined): ShareOffer {
+  if (writeRefusal) return { state: 'disabled', reason: writeRefusal }
+  const grant = grantable?.toggles[id]
+  if (!grant || grant.grantable) return OFFERED
+  return grant.code === 'not_held' ? { state: 'hidden' } : { state: 'disabled', reason: grant.reason }
+}
+
+/** A preset as the person may grant it: hidden when it holds a toggle they cannot see, disabled when it holds one they cannot grant. */
+export function presetOffer(preset: SharePresetInfo, writeRefusal: string | null, grantable: Pick<ShareGrantable, 'toggles'> | null | undefined): ShareOffer {
+  if (preset.level === 'read' || !preset.terms) return OFFERED
+  if (writeRefusal) return { state: 'disabled', reason: writeRefusal }
+  const terms = preset.terms
+  const offers = SHARE_TOGGLES.filter(t => t.level === 'write' && terms[t.id]).map(t => toggleOffer(t.id as WriteToggleId, null, grantable))
+  return offers.find(o => o.state === 'hidden') ?? offers.find(o => o.state === 'disabled') ?? OFFERED
 }
 
 /**
- * The share control a project row or the header offers: Share on the person's own project, Leave on
- * one shared with them; nothing while sharing is not in force or the row was read without `myAccess`
- * (DV-30). Oversight and break-glass are no share, so they offer neither. The routes still decide.
+ * Whether turning these toggles on needs the owner's consent first: a spend toggle while the owner has
+ * not allowed it. Unknown without a `grantable` answer (the route then answers 409 `owner_consent_required`).
+ */
+export function consentNeeded(turnedOn: Partial<Record<WriteToggleId, boolean>>, grantable: Pick<ShareGrantable, 'ownerConsent'> | null | undefined): boolean {
+  if (!grantable || grantable.ownerConsent) return false
+  return SPEND_TOGGLE_IDS.some(t => turnedOn[t] === true)
+}
+
+/** Raw data, Read + Write (which includes it) or the agent: what the collaborator sees can be copied. */
+export function copyWarningApplies(terms: ShareTerms): boolean {
+  return terms.access === 'write' || terms.rawData || terms.useAgent
+}
+
+/**
+ * The share control a project row or the header offers: Share on the person's own project and on one
+ * they co-own (Read + Write with Manage: they grant what they hold), Leave on one shared with them;
+ * nothing while sharing is not in force or the row was read without `myAccess` (DV-30). Oversight and
+ * break-glass are no share, so they offer neither. The routes still decide.
  */
 export function shareActions(
   row: { myAccess?: MyAccess | null } | null | undefined,
@@ -192,7 +257,9 @@ export function shareActions(
 ): { share: boolean; leave: boolean } {
   const access = row?.myAccess
   if (!sharingInForce || !access) return { share: false, leave: false }
-  return { share: access.level === 'owner', leave: access.level !== 'owner' && access.via === 'share' }
+  const shared = access.level !== 'owner' && access.via === 'share'
+  const coOwner = shared && access.level === 'write' && access.toggles.manage === true
+  return { share: access.level === 'owner' || coOwner, leave: shared }
 }
 
 /** A date input's day as the end of that day in the browser's time zone, ISO (what POST/PATCH take). */
