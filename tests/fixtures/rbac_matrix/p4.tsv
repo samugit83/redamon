@@ -144,3 +144,29 @@ p4-oversee-reports	4.7	admin_a	GET	/api/projects/${PA_ID}/reports	-	200	req:SH-1
 p4-oversee-schedules	4.7	admin_a	GET	/api/projects/${PA_ID}/schedules	-	200;has="schedules"	req:SH-18 sharing:on
 p4-oversee-recon-status	4.7	admin_a	GET	/api/recon/${PA_ID}/status	-	200|404|502|503;lacks="code":"forbidden"	req:SH-18 sharing:on
 p4-oversee-recon-download	4.7	admin_a	GET	/api/recon/${PA_ID}/download	-	403;has=recon:read;has="level":"R*"	req:SH-18 req:SH-47 sharing:on
+
+# ---- step 4.6: collaborator reads, wave A: graph, Insights, attack chains, text-to-cypher ----
+# The viewer reads the owner's graph and Insights of PSHARED (every graph read filters on the project, never the
+# caller); every graph write and the NL generator (agent:assistants, a write level that spends a key) answer 403.
+# The owner rows keep the viewer's 200s from being vacuous. admin_a (projects:oversee) reads rbac-PA the same way:
+# these are the graph answers of baseline's sharing:off admin_a rows. Identical node counts for owner, viewer and
+# overseer (RM:p4-graph-counts) need seeded graph nodes: tests/rbac_graph_counts_live.sh.
+p4-graph-read-owner	4.6	member_c	GET	/api/graph?projectId=${PSHARED_ID}	-	200;has="nodes"	req:SH-07 sharing:on
+p4-viewer-graph-read	4.6	viewer	GET	/api/graph?projectId=${PSHARED_ID}	-	200;has="nodes";has=${PSHARED_ID}	req:SH-07 sharing:on
+p4-viewer-graph-overview	4.6	viewer	GET	/api/analytics/graph-overview?projectId=${PSHARED_ID}	-	200;has="nodeCounts"	req:SH-07 sharing:on
+p4-viewer-attack-chains	4.6	viewer	GET	/api/analytics/attack-chains?projectId=${PSHARED_ID}	-	200;lacks="code":"forbidden"	req:SH-07 sharing:on
+p4-viewer-redzone-secrets	4.6	viewer	GET	/api/analytics/redzone/secrets?projectId=${PSHARED_ID}	-	200;lacks="code":"forbidden"	req:SH-07 sharing:on
+p4-viewer-unseen	4.6	viewer	POST	/api/analytics/unseen	{"projectId":"${PSHARED_ID}"}	200;has="counts"	req:SH-07 sharing:on
+p4-viewer-graph-views-list	4.6	viewer	GET	/api/graph-views?projectId=${PSHARED_ID}	-	200;lacks="code":"forbidden"	req:SH-07 sharing:on
+p4-viewer-graph-views-execute	4.6	viewer	POST	/api/graph-views/execute	{"projectId":"${PSHARED_ID}","cypherQuery":"MATCH (d:Domain) RETURN d"}	200;has="nodes"	req:SH-07 sharing:on
+p4-viewer-graph-views-create	4.6	viewer	POST	/api/graph-views	{"projectId":"${PSHARED_ID}","name":"rbac-viewer-view","cypherQuery":"MATCH (d:Domain) RETURN d"}	403;has=graph:views	req:SH-07 sharing:on
+p4-viewer-graph-node-delete	4.6	viewer	DELETE	/api/graph?projectId=${PSHARED_ID}&nodeId=rbac-no-such-node	-	403;has=graph:edit	req:SH-07 sharing:on
+p4-viewer-purge-orphan-chains	4.6	viewer	POST	/api/projects/${PSHARED_ID}/purge-orphan-chains	-	403;has=graph:edit	req:SH-07 sharing:on
+p4-graph-t2c-owner	4.6	member_c	POST	/api/agent/text-to-cypher	{"project_id":"${PSHARED_ID}"}	422;has="upstreamStatus":422	req:SH-35 req:NF-11 sharing:on
+p4-viewer-text-to-cypher	4.6	viewer	POST	/api/agent/text-to-cypher	{"project_id":"${PSHARED_ID}"}	403;has=agent:assistants;lacks="upstreamStatus"	req:SH-35 req:NF-11 sharing:on
+p4-graph-read-not-shared	4.6	member_b	GET	/api/graph?projectId=${PSHARED_ID}	-	404;lacks="nodes"	req:SH-07 sharing:on
+p4-oversee-graph-read	4.6	admin_a	GET	/api/graph?projectId=${PA_ID}	-	200;has="nodes"	req:SH-18 sharing:on
+p4-oversee-graph-overview	4.6	admin_a	GET	/api/analytics/graph-overview?projectId=${PA_ID}	-	200;has="nodeCounts"	req:SH-18 sharing:on
+p4-oversee-graph-views-execute	4.6	admin_a	POST	/api/graph-views/execute	{"projectId":"${PA_ID}","cypherQuery":"MATCH (d:Domain) RETURN d"}	200;has="nodes"	req:SH-18 sharing:on
+p4-oversee-graph-node-delete	4.6	admin_a	DELETE	/api/graph?projectId=${PA_ID}&nodeId=rbac-no-such-node	-	403;has=graph:edit	req:SH-18 sharing:on
+p4-oversee-text-to-cypher	4.6	admin_a	POST	/api/agent/text-to-cypher	{"project_id":"${PA_ID}"}	403;has=agent:assistants;lacks="upstreamStatus"	req:SH-18 sharing:on

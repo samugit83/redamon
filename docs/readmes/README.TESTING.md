@@ -249,6 +249,15 @@ bearer, the shell runs as the ticket's user and project whatever the init frame 
 `POST /ws/close` ends the open terminal with close 4403. It also needs the `agent` and
 `kali-sandbox` containers.
 
+`tests/rbac_graph_counts_live.sh` checks that a read collaborator sees the owner's graph node for
+node: it gives `rbac-member-c` a throwaway project `rbac-graph-counts` with a Read share for
+`rbac-member-b`, writes three `Domain` nodes (each with a `Subdomain`) under it with `cypher-shell`,
+and compares what `/api/graph`, `/api/analytics/graph-overview` and `/api/graph-views/execute`
+count for the owner, the collaborator and an overseer (`rbac-admin-a`). With sharing in force
+(the three switches on and `instance_settings.sharing_policy` enabled) all three see 3 of each and
+the collaborator's text-to-cypher and node delete answer 403; otherwise the collaborator gets 404.
+A member the project is not shared with gets 404 either way. It also needs the `neo4j` container.
+
 `tests/rbac_legacy_review_live.sh` checks the admin review of legacy grants: a member is refused
 `/api/admin/legacy-grants` and gets no `rbac` block from `/api/auth/me`; no request adds a grant;
 an admin's Keep and Remove each write one audit row; removing the `kali_terminal` grant closes the
