@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { CalendarClock, GitCompare, Waypoints, Table2, Terminal, Shield, Search, Download, Loader2, SquareTerminal, Filter, Plus, Trash2, X, ChevronDown, Code, Target, Zap, Flag, Key, Server, Boxes, LockKeyhole, Bug, Network, Mail, ShieldAlert, Package, PackageSearch, History, Layers, Bot, Radiation, Swords, Droplets, DoorOpen, ListOrdered, EyeOff, SlidersHorizontal } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import { useCan, useRbacFlags } from '@/hooks/useCan'
+import { useProjectAccess } from '@/hooks/useRefusal'
+import { myAccessMeets } from '@/lib/readOnlyProject'
 import { AUTO_2D_THRESHOLD } from '../GraphCanvas'
 import styles from './ViewTabs.module.css'
 
@@ -265,6 +267,10 @@ export const ViewTabs = memo(function ViewTabs({
   // permission, so the tab stays and the ticket route answers.
   const canOpenTerminal = useCan('platform:kali_terminal')
   const sharedToolsCompat = useRbacFlags()?.sharedToolsCompat === true
+  // The terminal's ticket asks the owner level of the open project (its run credential takes the ticket's
+  // account as the graph tenant): a shared project never offers it (step 4.11). No myAccess (sharing
+  // off): the owner's own project, as before.
+  const terminalForThisProject = myAccessMeets(useProjectAccess(), 'O')
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [tableMenuOpen, setTableMenuOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -666,7 +672,7 @@ export const ViewTabs = memo(function ViewTabs({
             <span className={styles.badge}>{sessionCount}</span>
           )}
         </button>
-        {(canOpenTerminal || sharedToolsCompat) && (
+        {(canOpenTerminal || sharedToolsCompat) && terminalForThisProject && (
           <button
             role="tab"
             aria-selected={activeView === 'terminal'}

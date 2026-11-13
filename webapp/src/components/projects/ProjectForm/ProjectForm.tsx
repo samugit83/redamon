@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useContext, useMemo, useRef, type ReactNode } from 'react'
 import { Save, X, Loader2, Download, ShieldAlert, Zap, Bookmark, FolderOpen, List, GitBranch, Play, Check } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
@@ -13,6 +13,11 @@ import { ipModeRoot, resolveProjectRoots } from '@/lib/partialReconScope'
 import { tabForAnchor } from '@/lib/projectSettingsLinks'
 import { graphScanHref, type ScanModal } from '@/lib/scanModalLink'
 import { useProject } from '@/providers/ProjectProvider'
+import { ProjectAccessContext } from '@/providers/projectAccessContext'
+import type { MyAccess } from '@/lib/authz/projectAccess'
+import { levelRefusalText } from '@/lib/readOnlyProject'
+import { RefusalNotice } from '@/components/auth/ForbiddenNotice'
+import { RegistryFieldsReadOnly } from './RegistryFields'
 import { JevSelectionProvider } from '@/hooks/useHasJevProvider'
 import useReconStatus from '@/hooks/useReconStatus'
 import { useScanControls } from '@/hooks/useScanControls'
@@ -488,6 +493,26 @@ export function ProjectForm({
   const projectId =
     projectIdFromRoute ?? (initialData as { id?: string } | undefined)?.id ?? (mode === 'create' ? generatedId : undefined)
 
+  // Read-only mode (step 4.11): the person's access to this project, from the header's project when it
+  // is this one (the stale-access poll keeps that fresh), else from the read the form was opened with.
+  // A read share sees every setting and saves none. With RBAC_SHARING_ENABLED off no read carries
+  // `myAccess` and nothing here changes (DV-30).
+  const headerAccess = useContext(ProjectAccessContext)
+  const formAccess: MyAccess | null = mode !== 'edit' ? null
+    : (headerAccess?.projectId === projectId ? headerAccess?.myAccess : null)
+      ?? (initialData as { myAccess?: MyAccess | null } | undefined)?.myAccess
+      ?? null
+  const readOnlyText = levelRefusalText(formAccess, 'project:settings')
+  const readOnly = readOnlyText !== null
+  const presetRefusal = levelRefusalText(formAccess, 'preset:apply')
+  const exportRefusal = levelRefusalText(formAccess, 'project:export')
+  const reconStartRefusal = levelRefusalText(formAccess, 'recon:scan')
+  // Every control under the form asks about this project, not the header's (create mode: none yet).
+  const formAccessScope = useMemo(
+    () => ({ projectId: projectId ?? null, myAccess: formAccess }),
+    [projectId, formAccess],
+  )
+
   // The row's updatedAt as this form last saw it written. A full save sends it
   // back and the PUT refuses a stale one with 409, so an MCP agent's change made
   // while the form sat open is not silently reverted by the next save. Kept out
@@ -725,6 +750,8 @@ export function ProjectForm({
     field: K,
     value: ProjectFormData[K]
   ) => {
+    // A control the read-only fieldset cannot disable (one drawn without a form element) still changes nothing.
+    if (readOnly) return
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
@@ -733,7 +760,7 @@ export function ProjectForm({
     field: K,
     value: ProjectFormData[K]
   ) => {
-    if (!projectId || mode !== 'edit') return
+    if (!projectId || mode !== 'edit' || readOnly) return
     try {
       const res = await fetch(`/api/projects/${projectId}`, {
         method: 'PUT',
@@ -757,9 +784,10 @@ export function ProjectForm({
     } catch (err) {
       toast.error(toApiError(err, 'Failed to save setting').message)
     }
-  }, [projectId, mode, toast, setBaseline, adoptSavedVersion, savedDespiteError])
+  }, [projectId, mode, readOnly, toast, setBaseline, adoptSavedVersion, savedDespiteError])
 
   const updateMultipleFields = (fields: Partial<ProjectFormData>) => {
+    if (readOnly) return
     setFormData(prev => ({ ...prev, ...fields }))
   }
 
@@ -930,6 +958,7 @@ export function ProjectForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (readOnly) return
 
     if (!formData.name.trim()) {
       alertWarning('Project name is required')
@@ -1011,7 +1040,7 @@ export function ProjectForm({
    *  back to the graph with their unsaved input and only a transient alert to
    *  explain it. */
   const handleSaveAndStay = async (after?: () => void): Promise<boolean> => {
-    if (!onSaveAndStay) return false
+    if (!onSaveAndStay || readOnly) return false
 
     if (!formData.name.trim()) {
       // Jump to the tab that owns the offending field, so the operator is not
@@ -1237,6 +1266,8 @@ export function ProjectForm({
   }
 
   return (
+    <ProjectAccessContext.Provider value={formAccessScope}>
+    <RegistryFieldsReadOnly.Provider value={readOnly}>
     <JevSelectionProvider
       ownerUserId={mode === 'create' ? userId : initialData?.userId ?? null}
       ownerUnavailable={mode === 'edit' && !initialData?.userId}
@@ -1258,8 +1289,8 @@ export function ProjectForm({
                 type="button"
                 className={`reconStartButton${isReconBusy ? ' reconStartButtonActive' : ''}`}
                 onClick={() => guardedNavigate(() => router.push(isReconBusy ? `/graph?project=${projectId}&openlogs=recon` : `/graph?project=${projectId}&autostart=true`))}
-                disabled={isSubmitting || runningPartialToolIds.size > 0}
-                title={runningPartialToolIds.size > 0 ? 'Partial recon is running -- stop it first' : isReconRunning ? 'Recon is running -- click to view progress' : isReconPaused ? 'Recon is paused -- click to view' : reconStatusError ? `${reconStatusError} -- a recon may be running; the graph page shows it` : 'Navigate to the graph page and start the full recon pipeline'}
+                disabled={isSubmitting || runningPartialToolIds.size > 0 || (!isReconBusy && !!reconStartRefusal)}
+                title={!isReconBusy && reconStartRefusal ? reconStartRefusal : runningPartialToolIds.size > 0 ? 'Partial recon is running -- stop it first' : isReconRunning ? 'Recon is running -- click to view progress' : isReconPaused ? 'Recon is paused -- click to view' : reconStatusError ? `${reconStatusError} -- a recon may be running; the graph page shows it` : 'Navigate to the graph page and start the full recon pipeline'}
               >
                 {isReconRunning ? (
                   <Loader2 size={14} className={styles.spinner} />
@@ -1298,8 +1329,8 @@ export function ProjectForm({
             type="button"
             className="secondaryButton"
             onClick={() => setIsUserPresetDrawerOpen(true)}
-            disabled={isSubmitting || isLoadingDefaults}
-            title="Replace this project's settings with a saved preset. Asks first, and saves the project straight away. The target, RoE, uploaded files and credentials are kept"
+            disabled={isSubmitting || isLoadingDefaults || !!presetRefusal}
+            title={presetRefusal ?? "Replace this project's settings with a saved preset. Asks first, and saves the project straight away. The target, RoE, uploaded files and credentials are kept"}
           >
             <FolderOpen size={14} />
             Load Preset
@@ -1319,8 +1350,8 @@ export function ProjectForm({
               type="button"
               className="secondaryButton"
               onClick={() => void exportProject()}
-              disabled={isExporting}
-              title="Download a full project backup as a ZIP file including settings, conversations, graph data, reports, and artifacts"
+              disabled={isExporting || !!exportRefusal}
+              title={exportRefusal ?? "Download a full project backup as a ZIP file including settings, conversations, graph data, reports, and artifacts"}
             >
               {isExporting ? <Loader2 size={14} className={styles.spinner} /> : <Download size={14} />}
               {isExporting ? 'Exporting...' : 'Export'}
@@ -1329,9 +1360,9 @@ export function ProjectForm({
           <button
             type="submit"
             className="primaryButton"
-            disabled={!canSubmit || !isDirty}
+            disabled={!canSubmit || !isDirty || readOnly}
             aria-describedby={saveBlockedReason ? 'project-save-blocked' : undefined}
-            title={saveBlockedReason ?? (mode === 'create' ? 'Create the project with the current settings and start working' : !isDirty ? 'No unsaved changes' : 'Save all changes to the project settings')}
+            title={readOnlyText ?? saveBlockedReason ?? (mode === 'create' ? 'Create the project with the current settings and start working' : !isDirty ? 'No unsaved changes' : 'Save all changes to the project settings')}
           >
             {isLoadingDefaults ? (
               <>
@@ -1347,6 +1378,9 @@ export function ProjectForm({
           </button>
         </div>
       </div>
+      {readOnlyText && (
+        <RefusalNotice refusal={{ kind: 'level', permission: 'project:settings', text: readOnlyText }} className={styles.readOnlyNotice} />
+      )}
       {saveBlockedReason && (
         <p id="project-save-blocked" className={styles.saveBlockedReason} role="status">{saveBlockedReason}</p>
       )}
@@ -1404,9 +1438,11 @@ export function ProjectForm({
                               key={tab.id}
                               type="button"
                               className={`tab ${activeTab === tab.id ? 'tabActive' : ''} ${styles.compactTab} ${tab.id === 'preset' ? styles.presetTab : ''} ${tab.id !== 'preset' && viewMode !== 'tabs' ? styles.hiddenTab : ''}`}
+                              disabled={tab.id === 'preset' && !!presetRefusal}
+                              title={tab.id === 'preset' && presetRefusal ? presetRefusal : undefined}
                               onClick={() => {
                                 if ((tab.id as string) === 'preset') {
-                                  setIsPresetModalOpen(true)
+                                  if (!presetRefusal) setIsPresetModalOpen(true)
                                 } else if (viewMode === 'tabs') {
                                   setActiveTab(tab.id)
                                 }
@@ -1464,6 +1500,7 @@ export function ProjectForm({
           </div>
 
           <div className={viewMode === 'workflow' && RECON_TAB_IDS.has(activeTab) ? styles.contentWorkflow : styles.content}>
+            <ReadOnlyFieldset readOnly={readOnly}>
             {/* Workflow view -- replaces recon tab content when in workflow mode */}
             {viewMode === 'workflow' && RECON_TAB_IDS.has(activeTab) && (
               <WorkflowView
@@ -1471,7 +1508,7 @@ export function ProjectForm({
                 updateField={updateField}
                 projectId={projectId}
                 mode={mode}
-                onSave={onSaveAndStay ? handleSaveAndStay : undefined}
+                onSave={onSaveAndStay && !readOnly ? handleSaveAndStay : undefined}
                 onRunPartial={(toolId) => setPartialReconToolId(toolId)}
                 runningPartialToolIds={runningPartialToolIds}
                 onAutoSaveField={autoSaveField}
@@ -1620,6 +1657,7 @@ export function ProjectForm({
         {activeTab === 'cypherfix' && (
           <CypherFixSettingsSection data={formData} updateField={updateField} />
         )}
+            </ReadOnlyFieldset>
           </div>
         </>
       )}
@@ -1788,7 +1826,15 @@ export function ProjectForm({
       />
     </form>
     </JevSelectionProvider>
+    </RegistryFieldsReadOnly.Provider>
+    </ProjectAccessContext.Provider>
   )
+}
+
+/** The settings sections behind one disabled fieldset at read: every input, select and button in them. */
+function ReadOnlyFieldset({ readOnly, children }: { readOnly: boolean; children: ReactNode }) {
+  if (!readOnly) return <>{children}</>
+  return <fieldset disabled className={styles.readOnlyFieldset}>{children}</fieldset>
 }
 
 export default ProjectForm

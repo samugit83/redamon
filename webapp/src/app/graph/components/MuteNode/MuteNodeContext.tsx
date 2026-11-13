@@ -31,6 +31,8 @@ interface MuteNodeContextValue {
   userId: string | null
   /** A saved version is a read-only snapshot, so nothing on it may be muted. */
   readOnly: boolean
+  /** Why, when it is not the saved version (a read share: "Read access, shared by <owner>"). */
+  readOnlyReason?: string
   /** Open Muted Nodes, optionally filtered (one Multi mute batch). */
   onViewMuted?: (focus?: MutedNodesFocus) => void
   /** Bumped after every mute and every stale-node reload. */
@@ -52,6 +54,8 @@ const MuteNodeContext = createContext<MuteNodeContextValue>({
 interface MuteNodeProviderProps {
   projectId: string | null
   readOnly: boolean
+  /** The disabled buttons' tooltip when it is not the saved version's (step 4.11). */
+  readOnlyReason?: string
   onViewMuted?: (focus?: MutedNodesFocus) => void
   /** Refetch the graph; the drawer, Node Inspector and All Nodes read from it. */
   onGraphChanged?: () => void
@@ -67,7 +71,7 @@ interface MultiMuteRequest {
 }
 
 export function MuteNodeProvider({
-  projectId, readOnly, onViewMuted, onGraphChanged, onOpenMuteRules, children,
+  projectId, readOnly, readOnlyReason, onViewMuted, onGraphChanged, onOpenMuteRules, children,
 }: MuteNodeProviderProps) {
   // Optional, not useProject(): tests and embeds render this provider alone,
   // and Multi mute's gate degrades to "could not load your models" without one.
@@ -86,8 +90,8 @@ export function MuteNodeProvider({
   const closeMultiMute = useCallback(() => setMulti(null), [])
 
   const value = useMemo(
-    () => ({ projectId, userId, readOnly, onViewMuted, epoch, notifyMuted, openMultiMute }),
-    [projectId, userId, readOnly, onViewMuted, epoch, notifyMuted, openMultiMute],
+    () => ({ projectId, userId, readOnly, readOnlyReason, onViewMuted, epoch, notifyMuted, openMultiMute }),
+    [projectId, userId, readOnly, readOnlyReason, onViewMuted, epoch, notifyMuted, openMultiMute],
   )
   return (
     <MuteNodeContext.Provider value={value}>
@@ -167,12 +171,12 @@ export function MuteNodeButton(props: MuteNodeButtonProps) {
 
 /** Split out so the alert and toast hooks only run inside the page's providers. */
 function ProvidedMuteButton({ name, graphId, nodeId, label, onMuted }: MuteNodeButtonProps) {
-  const { projectId, readOnly, onViewMuted, notifyMuted } = useMuteNodeContext()
+  const { projectId, readOnly, readOnlyReason, onViewMuted, notifyMuted } = useMuteNodeContext()
   const { mute, mutingKey } = useMuteNode(projectId, onViewMuted)
   const gid = formatNodeId(graphId)
 
   const reason = readOnly
-    ? READ_ONLY_REASON
+    ? readOnlyReason ?? READ_ONLY_REASON
     : label && !muteableLabel([label]) ? unmuteableReason(label) : undefined
 
   return (

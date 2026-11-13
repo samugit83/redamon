@@ -3298,3 +3298,17 @@ details[open] > .disclosureSummary {
   text-align: right;
   color: var(--form-danger);
 }
+
+/* A read share (step 4.11): whose access it is, under the header. */
+.readOnlyNotice {
+  margin: 0 0 var(--space-3);
+}
+
+/* Disables every form control in the sections without adding a box of its own. */
+.readOnlyFieldset {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}

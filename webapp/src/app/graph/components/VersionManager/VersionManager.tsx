@@ -7,6 +7,7 @@ import type { ReconStatus } from '@/lib/recon-types'
 import { readApiError, toApiError, type ApiError } from '@/lib/apiError'
 import type { ScanVersionSummary } from '../../hooks/useScanVersions'
 import styles from './VersionManager.module.css'
+import { useRefusal } from '@/hooks/useRefusal'
 import { UpdatedAtCell } from '../RedZoneTables/updatedAt'
 
 interface VersionManagerProps {
@@ -82,6 +83,10 @@ export function VersionManager({
   onSelectVersion,
   liveScanStatus,
 }: VersionManagerProps) {
+  // Save, activate, rename and pin ask scan:versions; delete scan:versions_delete (route manifest). A
+  // read share views versions only (step 4.11): the rest says whose read access it is.
+  const versionsRefusal = useRefusal('scan:versions', projectId)?.text ?? null
+  const deleteRefusal = useRefusal('scan:versions_delete', projectId)?.text ?? null
   const liveBadge = liveScanBadge(liveScanStatus)
   const { alertError, dangerConfirm } = useAlertModal()
   const toast = useToast()
@@ -237,7 +242,8 @@ export function VersionManager({
             <strong> View</strong> renders a snapshot read-only; <strong>Activate</strong> makes it the live
             graph the agent, RedZone analytics and partial recon work on.
           </p>
-          <button className={styles.saveCurrent} onClick={saveCurrent} disabled={savingCurrent}>
+          <button className={styles.saveCurrent} onClick={saveCurrent} disabled={savingCurrent || !!versionsRefusal}
+            title={versionsRefusal ?? undefined}>
             {savingCurrent ? <Loader2 size={13} className={styles.spinner} /> : <Save size={13} />}
             <span>Save current graph as a version</span>
           </button>
@@ -333,9 +339,10 @@ export function VersionManager({
                         <button
                           className={styles.actionBtn}
                           onClick={() => activate(v)}
-                          disabled={busy || v.isCurrent || !v.activatable}
+                          disabled={busy || v.isCurrent || !v.activatable || !!versionsRefusal}
                           title={
-                            v.isCurrent ? 'Already the active version'
+                            versionsRefusal ? versionsRefusal
+                              : v.isCurrent ? 'Already the active version'
                               : !v.activatable ? 'This version has no stored snapshot, so it cannot be activated'
                               : 'Make this the live graph'
                           }
@@ -346,8 +353,8 @@ export function VersionManager({
                         <button
                           className={styles.actionBtn}
                           onClick={() => startRename(v)}
-                          disabled={busy}
-                          title="Rename"
+                          disabled={busy || !!versionsRefusal}
+                          title={versionsRefusal ?? 'Rename'}
                         >
                           <Pencil size={12} />
                           <span>Rename</span>
@@ -355,8 +362,8 @@ export function VersionManager({
                         <button
                           className={styles.actionBtn}
                           onClick={() => togglePin(v)}
-                          disabled={busy}
-                          title={v.pinned ? 'Unpin (allow automatic cleanup)' : 'Pin (protect from automatic cleanup)'}
+                          disabled={busy || !!versionsRefusal}
+                          title={versionsRefusal ? versionsRefusal : v.pinned ? 'Unpin (allow automatic cleanup)' : 'Pin (protect from automatic cleanup)'}
                         >
                           {v.pinned ? <PinOff size={12} /> : <Pin size={12} />}
                           <span>{v.pinned ? 'Unpin' : 'Pin'}</span>
@@ -364,9 +371,10 @@ export function VersionManager({
                         <button
                           className={`${styles.actionBtn} ${styles.dangerBtn}`}
                           onClick={() => remove(v)}
-                          disabled={busy || v.isCurrent || v.pinned}
+                          disabled={busy || v.isCurrent || v.pinned || !!deleteRefusal}
                           title={
-                            v.isCurrent ? 'The current version is the live graph and cannot be deleted'
+                            deleteRefusal ? deleteRefusal
+                              : v.isCurrent ? 'The current version is the live graph and cannot be deleted'
                               : v.pinned ? 'Unpin it first'
                               : 'Delete this version and its snapshot'
                           }

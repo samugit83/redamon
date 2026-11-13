@@ -7,8 +7,8 @@ import type { ScanMode } from '@/hooks/useReconStatus'
 import { type ScopeGroup, groupLabel, ipHostnameModeOf } from '@/lib/scopeGroups'
 import { IP_HOSTNAME_SECTION_LABEL, ipHostnameModeLabel } from '@/lib/ipHostnameModeLabels'
 import { useOptionalProject } from '@/providers/ProjectProvider'
-import { usePermissionRefused } from '@/hooks/useCan'
-import { ForbiddenNotice, forbiddenNoticeText } from '@/components/auth/ForbiddenNotice'
+import { useRefusal } from '@/hooks/useRefusal'
+import { RefusalNotice } from '@/components/auth/ForbiddenNotice'
 import styles from './ReconConfirmModal.module.css'
 
 /** What the dialog says about an IP project's hostname policy. */
@@ -88,7 +88,8 @@ export function ReconConfirmModal({
     if (isOpen) setScanMode('new')
   }, [isOpen])
   // The start route asks recon:overwrite on top of recon:scan for this mode (route manifest).
-  const overwriteRefused = usePermissionRefused('recon:overwrite')
+  const overwriteRefusal = useRefusal('recon:overwrite')
+  const overwriteRefused = overwriteRefusal !== null
   useEffect(() => {
     if (overwriteRefused) setScanMode('new')
   }, [overwriteRefused])
@@ -191,7 +192,7 @@ export function ReconConfirmModal({
 
               <label
                 className={`${styles.modeOption} ${scanMode === 'overwrite' ? styles.modeOptionActive : ''}`}
-                title={overwriteRefused ? forbiddenNoticeText('recon:overwrite') : undefined}
+                title={overwriteRefusal?.text}
               >
                 <input
                   type="radio"
@@ -210,7 +211,7 @@ export function ReconConfirmModal({
                 </span>
               </label>
             </div>
-            {overwriteRefused && <ForbiddenNotice permission="recon:overwrite" />}
+            {overwriteRefusal && <RefusalNotice refusal={overwriteRefusal} />}
           </>
         ) : (
           <div className={styles.ready}>

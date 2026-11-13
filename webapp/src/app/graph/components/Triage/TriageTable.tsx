@@ -44,6 +44,7 @@ import {
 } from './triageLayers'
 import { triageBodyErrorText } from '@/lib/triage/errorText'
 import { toApiError } from '@/lib/apiError'
+import { useRefusal } from '@/hooks/useRefusal'
 import styles from './TriageTable.module.css'
 
 const BOARD_LOAD_FAILED = 'The Priority Board could not be loaded'
@@ -218,6 +219,9 @@ interface TriageTableProps {
 }
 
 export function TriageTable({ projectId, onViewMuted }: TriageTableProps) {
+  // A read share reads the board and changes nothing on it (step 4.11): each row action says why.
+  const verdictRefusal = useRefusal('triage:verdict', projectId)?.text ?? null
+  const muteRefusal = useRefusal('triage:mute', projectId)?.text ?? null
   const [findings, setFindings] = useState<TriageFinding[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -856,9 +860,9 @@ export function TriageTable({ projectId, onViewMuted }: TriageTableProps) {
                           <td className={styles.rowActions} onClick={e => e.stopPropagation()}>
                             <button
                               className={styles.verdictButton}
-                              disabled={busy || (decided && f.triage_status === 'confirmed')}
+                              disabled={busy || !!verdictRefusal || (decided && f.triage_status === 'confirmed')}
                               onClick={() => void rowVerdict(f, 'confirmed')}
-                              title={decided && f.triage_status === 'confirmed'
+                              title={verdictRefusal ? verdictRefusal : decided && f.triage_status === 'confirmed'
                                 ? 'Already marked real'
                                 : 'Mark this real. It counts as 100% real and no run changes it.'}
                             >
@@ -866,9 +870,9 @@ export function TriageTable({ projectId, onViewMuted }: TriageTableProps) {
                             </button>
                             <button
                               className={styles.verdictButton}
-                              disabled={busy || (decided && f.triage_status === 'likely_noise')}
+                              disabled={busy || !!verdictRefusal || (decided && f.triage_status === 'likely_noise')}
                               onClick={() => void rowVerdict(f, 'likely_noise')}
-                              title={decided && f.triage_status === 'likely_noise'
+                              title={verdictRefusal ? verdictRefusal : decided && f.triage_status === 'likely_noise'
                                 ? 'Already marked a false positive'
                                 : 'Mark this a false positive. It is not muted.'}
                             >
@@ -877,9 +881,9 @@ export function TriageTable({ projectId, onViewMuted }: TriageTableProps) {
                             {decided && (
                               <button
                                 className={styles.verdictButton}
-                                disabled={busy}
+                                disabled={busy || !!verdictRefusal}
                                 onClick={() => void rowVerdict(f, 'unreviewed')}
-                                title="Remove your decision; the rules and any review rank it again."
+                                title={verdictRefusal ?? 'Remove your decision; the rules and any review rank it again.'}
                               >
                                 <RotateCcw size={13} /> Reset
                               </button>
@@ -891,6 +895,8 @@ export function TriageTable({ projectId, onViewMuted }: TriageTableProps) {
                             />
                             <MuteButton
                               busy={busy}
+                              disabled={!!muteRefusal}
+                              title={muteRefusal ?? undefined}
                               onClick={() => void mute(f)}
                             />
                             {rowError && (

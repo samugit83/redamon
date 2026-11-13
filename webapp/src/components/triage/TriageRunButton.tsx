@@ -25,6 +25,7 @@ import { useAlertModal } from '@/components/ui'
 import { useFeatureModelGate } from '@/components/shared/FeatureModelGate'
 import { featureModelMessage, readFeatureModelCode } from '@/lib/llmFeatures'
 import { readApiError, toApiError } from '@/lib/apiError'
+import { useRefusal } from '@/hooks/useRefusal'
 import { runOrigin, type LiveTriageRun } from './TriageRunBanner'
 import styles from './TriageRunButton.module.css'
 
@@ -210,6 +211,8 @@ export function TriageRunButton({
   const [checking, setChecking] = useState(false)
   // null = nothing authoritative yet, so fall back to the caller's hint.
   const [lastRunSeen, setLastRunSeen] = useState<boolean | null>(null)
+  // The run route asks triage:run on the project; a read share cannot start one (step 4.11).
+  const refusal = useRefusal('triage:run', projectId)?.text ?? null
 
   const start = useCallback(async () => {
     if (!projectId) return
@@ -281,8 +284,8 @@ export function TriageRunButton({
       type="button"
       className={`${styles.button} ${className ?? ''}`}
       onClick={() => void start()}
-      disabled={busy || disabled || !projectId}
-      title="Score, group and review every finding, then rebuild the fix list"
+      disabled={busy || disabled || !projectId || !!refusal}
+      title={refusal ?? 'Score, group and review every finding, then rebuild the fix list'}
     >
       {busy ? (
         <Loader2 className={styles.spin} size={14} />

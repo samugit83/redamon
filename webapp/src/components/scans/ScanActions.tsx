@@ -4,6 +4,7 @@ import { Download, Loader2, Shield, Github, Pause, Square } from 'lucide-react'
 import type { ScanControls } from '@/hooks/useScanControls'
 import { useToast } from '@/components/ui'
 import { ScanStatusWarning } from './ScanStatusWarning'
+import { useRefusal } from '@/hooks/useRefusal'
 import styles from '@/app/graph/components/GraphToolbar/GraphToolbar.module.css'
 
 /**
@@ -33,11 +34,14 @@ export function ScanActions({
   const { gvm, githubHunt, trufflehog } = scans
   const toast = useToast()
   const blocked = Boolean(disabledReason)
+  // GVM's start, resume, pause and stop ask scan:gvm on the open project, as on the graph toolbar.
+  const gvmRefusal = useRefusal('scan:gvm')?.text ?? ''
 
   // The graph toolbar's GVM preconditions, kept in the same order so the two
   // surfaces agree on WHY the button is off, not just that it is.
   const gvmBlockedReason =
     disabledReason ? disabledReason
+    : gvmRefusal ? gvmRefusal
     : !gvm.isAvailable ? gvm.unavailableReason
     : stealthMode && !gvm.isPaused ? 'GVM scanning is disabled in Stealth Mode (generates ~50,000 active probes per target)'
     : !scans.hasReconData && !gvm.isPaused ? 'Run recon first'
@@ -86,8 +90,8 @@ export function ScanActions({
             type="button"
             className={styles.pauseButton}
             onClick={() => void gvm.pauseGvm()}
-            disabled={gvm.isPausing}
-            title={gvm.isPausing ? 'Pausing...' : 'Pause GVM Scan'}
+            disabled={gvm.isPausing || !!gvmRefusal}
+            title={gvmRefusal || (gvm.isPausing ? 'Pausing...' : 'Pause GVM Scan')}
           >
             <Pause size={14} />
           </button>
@@ -98,8 +102,8 @@ export function ScanActions({
             type="button"
             className={styles.stopButton}
             onClick={() => void gvm.stopGvm()}
-            disabled={gvm.isStopping}
-            title="Stop GVM Scan"
+            disabled={gvm.isStopping || !!gvmRefusal}
+            title={gvmRefusal || 'Stop GVM Scan'}
           >
             <Square size={14} />
           </button>

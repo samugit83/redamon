@@ -18,6 +18,7 @@ import {
   type TriagePhase,
 } from '@/lib/cypherfix-types'
 import styles from './TriageRunBanner.module.css'
+import { useRefusal } from '@/hooks/useRefusal'
 
 /** `liveRun` from GET /api/triage/preflight. */
 export interface LiveTriageRun {
@@ -78,6 +79,8 @@ export function TriageRunBanner({
   const run = useLiveTriageRun(projectId, true)
   const origin = runOrigin(run)
   const publishing = phase === 'publishing'
+  // Stopping is the run's own permission; a read share watches the owner's run (step 4.11).
+  const stopRefusal = useRefusal('triage:run', projectId)?.text ?? null
 
   return (
     <div className={styles.banner} role="status">
@@ -99,8 +102,8 @@ export function TriageRunBanner({
           type="button"
           className={styles.button}
           onClick={onStop}
-          disabled={publishing}
-          title={publishing ? PUBLISHING_STOP_REFUSAL : 'Stop the run; nothing is published'}
+          disabled={publishing || !!stopRefusal}
+          title={stopRefusal ?? (publishing ? PUBLISHING_STOP_REFUSAL : 'Stop the run; nothing is published')}
         >
           Stop
         </button>

@@ -17,6 +17,8 @@ export interface UploadMenuProps {
   onFolder: () => void
   onArchive: () => void
   onImportUrl: () => void
+  /** Why nothing may be uploaded or imported here (a read share), or null: the control is disabled. */
+  disabledReason?: string | null
 }
 
 const TRIGGER = '[aria-haspopup="menu"]'
@@ -26,8 +28,18 @@ const TRIGGER = '[aria-haspopup="menu"]'
  * picker, and the chevron beside it opens the menu of every upload kind and
  * of the import from a URL.
  */
-export function UploadMenu({ onFiles, onFolder, onArchive, onImportUrl }: UploadMenuProps) {
+export function UploadMenu({ onFiles, onFolder, onArchive, onImportUrl, disabledReason = null }: UploadMenuProps) {
   const wrapRef = useRef<HTMLSpanElement>(null)
+
+  if (disabledReason) {
+    return (
+      <span className={styles.uploadSplit}>
+        <button className={styles.actionBtn} disabled title={disabledReason} aria-label="Upload">
+          <UploadIcon size={12} />
+        </button>
+      </span>
+    )
+  }
 
   // Menu opens on Enter/Space but leaves focus on its trigger, and its items
   // are out of the tab order, so a keyboard user could not reach them. Keys

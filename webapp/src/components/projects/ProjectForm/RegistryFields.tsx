@@ -1,12 +1,18 @@
 'use client'
 
-import { useState } from 'react'
+import { createContext, useContext, useState } from 'react'
 import type { Project } from '@prisma/client'
 
 import { field, type RegistryField } from '@/lib/reconSettings/registry'
 import styles from './ProjectForm.module.css'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
+
+/**
+ * True while the whole form is read-only (a read share, step 4.11): every RegistryFields under it
+ * renders read-only without each section passing the prop.
+ */
+export const RegistryFieldsReadOnly = createContext(false)
 
 interface RegistryFieldsProps {
   /**
@@ -45,8 +51,9 @@ interface RegistryFieldsProps {
  * replacement for the sections that explain what a setting does.
  */
 export function RegistryFields({
-  keys, data, updateField, title, description, readOnly = false,
+  keys, data, updateField, title, description, readOnly: readOnlyProp = false,
 }: RegistryFieldsProps) {
+  const readOnly = useContext(RegistryFieldsReadOnly) || readOnlyProp
   const specs = keys
     .map(key => ({ key, spec: field(key) }))
     .filter((e): e is { key: string; spec: RegistryField } => Boolean(e.spec))

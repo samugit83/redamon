@@ -133,6 +133,13 @@
   font-size: var(--text-xs);
 }
 
+/* A project the person reads through a share: why Generate is off. */
+.readOnlyNote {
+  padding: var(--space-2) 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
 /* ── Empty state ── */
 
 .empty {

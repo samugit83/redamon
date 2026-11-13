@@ -43,3 +43,24 @@ export function ForbiddenNotice({ permission, className }: ForbiddenNoticeProps)
     </div>
   )
 }
+
+interface RefusalNoticeProps {
+  /** What `useRefusal` / `useRefusalCheck` answered (hooks/useCan.ts). */
+  refusal: { kind: 'level' | 'permission'; permission: string; text: string }
+  className?: string
+}
+
+/**
+ * The notice for a control refused up front: the permission notice above, or, when the person's
+ * access to the project does not reach what the control needs (step 4.11), that access in one line
+ * ("Read access, shared by <owner>").
+ */
+export function RefusalNotice({ refusal, className }: RefusalNoticeProps) {
+  if (refusal.kind === 'permission') return <ForbiddenNotice permission={refusal.permission} className={className} />
+  return (
+    <div role="status" className={className ? `${styles.notice} ${className}` : styles.notice}>
+      <p className={styles.title}>{refusal.text}.</p>
+      <p className={styles.body}>You can see this project but not change it.</p>
+    </div>
+  )
+}

@@ -7,6 +7,7 @@ import { ScanQueuePanel, kindLabel } from './ScanQueuePanel'
 import { usePaged, Pager } from './pagination'
 import { scopeStartProblem } from '@/lib/scopeGroups'
 import { fetchJson, toApiError } from '@/lib/apiError'
+import { useRefusal } from '@/hooks/useRefusal'
 import styles from './ScanScheduleTable.module.css'
 
 interface Schedule {
@@ -88,6 +89,9 @@ function describeSchedule(s: Schedule): string {
  */
 export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
   const { alertError, dangerConfirm } = useAlertModal()
+  // A read share lists schedules and runs (recon:read) and changes none (step 4.11).
+  const scheduleRefusal = useRefusal('recon:schedule', projectId)?.text ?? null
+  const historyRefusal = useRefusal('scan:versions_delete', projectId)?.text ?? null
   const toast = useToast()
   const [schedules, setSchedules] = useState<Schedule[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
@@ -311,7 +315,8 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
             Label
             <input className={styles.input} value={label} maxLength={120} onChange={e => setLabel(e.target.value)} placeholder="optional" />
           </label>
-          <button className={styles.createBtn} onClick={create} disabled={creating || !projectId}>
+          <button className={styles.createBtn} onClick={create} disabled={creating || !projectId || !!scheduleRefusal}
+            title={scheduleRefusal ?? undefined}>
             {creating ? <Loader2 size={13} className={styles.spinner} /> : <Plus size={13} />}
             <span>Add schedule</span>
           </button>
@@ -351,17 +356,17 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                 <td className={styles.actions}>
                   <button
                     className={styles.iconBtn}
-                    disabled={busyId === s.id || (!s.enabled && !!scopeProblem)}
+                    disabled={busyId === s.id || (!s.enabled && !!scopeProblem) || !!scheduleRefusal}
                     onClick={() => patch(s, { enabled: !s.enabled })}
-                    title={s.enabled ? 'Disable' : scopeProblem ? 'Fix the target list before enabling' : 'Enable'}
+                    title={scheduleRefusal ? scheduleRefusal : s.enabled ? 'Disable' : scopeProblem ? 'Fix the target list before enabling' : 'Enable'}
                   >
                     {s.enabled ? <Pause size={13} /> : <Play size={13} />}
                   </button>
                   <button
                     className={`${styles.iconBtn} ${styles.dangerBtn}`}
-                    disabled={busyId === s.id}
+                    disabled={busyId === s.id || !!scheduleRefusal}
                     onClick={() => remove(s)}
-                    title="Delete schedule"
+                    title={scheduleRefusal ?? 'Delete schedule'}
                   >
                     <Trash2 size={13} />
                   </button>
@@ -381,7 +386,8 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
         <div className={styles.historyHead}>
           <h3 className={styles.heading}>Run history</h3>
           {selected.size > 0 && (
-            <button className={styles.clearBtn} onClick={deleteSelected} disabled={clearing}>
+            <button className={styles.clearBtn} onClick={deleteSelected} disabled={clearing || !!historyRefusal}
+              title={historyRefusal ?? undefined}>
               {clearing ? <Loader2 size={13} className={styles.spinner} /> : <Trash2 size={13} />}
               <span>Delete selected ({selected.size})</span>
             </button>

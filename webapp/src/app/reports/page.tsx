@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { FileText, Download, ExternalLink, Trash2, Loader2, AlertCircle, Sparkles, ChevronDown } from 'lucide-react'
 import { useAllReports, type ReportMeta } from '@/hooks/useReports'
 import { useProjects } from '@/hooks/useProjects'
@@ -9,6 +9,8 @@ import { projectTargetLabel } from '@/lib/projectSummary'
 import { useToast, WikiInfoButton } from '@/components/ui'
 import { errorMessage, readApiError, toApiError } from '@/lib/apiError'
 import { FeatureModelLine } from '@/components/shared/FeatureModelGate'
+import { useRefusalCheck } from '@/hooks/useRefusal'
+import type { MyAccess } from '@/lib/authz/projectAccess'
 import styles from './page.module.css'
 
 function formatBytes(bytes: number): string {
@@ -54,6 +56,18 @@ export default function ReportsPage() {
   const { data: projects } = useProjects(userId || undefined)
   const [selectedProjectId, setSelectedProjectId] = useState<string>('')
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
+  // Reports span projects, so each action reads its own project's access from the list rows
+  // (`myAccess`, RBAC_SHARING_ENABLED on): a read share downloads and opens, and neither generates
+  // nor deletes (step 4.11). Without `myAccess` nothing is refused here.
+  const refusalCheck = useRefusalCheck()
+  const accessOf = useMemo(() => {
+    const byId = new Map<string, MyAccess>()
+    for (const p of projects ?? []) if (p.myAccess) byId.set(p.id, p.myAccess)
+    return (projectId: string) => byId.get(projectId) ?? null
+  }, [projects])
+  const generateRefusal = selectedProjectId
+    ? refusalCheck('reports:generate', accessOf(selectedProjectId))?.text ?? null
+    : null
 
   const handleGenerate = useCallback(async () => {
     if (!selectedProjectId) return
@@ -136,7 +150,8 @@ export default function ReportsPage() {
           <button
             className={styles.generateBtn}
             onClick={handleGenerate}
-            disabled={isGenerating || !selectedProjectId}
+            disabled={isGenerating || !selectedProjectId || !!generateRefusal}
+            title={generateRefusal ?? undefined}
           >
             {isGenerating ? (
               <>
@@ -153,6 +168,12 @@ export default function ReportsPage() {
           <FeatureModelLine featureId="report_narratives" label="Narratives model" />
         </div>
       </div>
+
+      {generateRefusal && (
+        <p className={styles.readOnlyNote} role="note">
+          {generateRefusal}: you can download and open this project&apos;s reports, not generate them.
+        </p>
+      )}
 
       {generateError && (
         <div className={styles.error}>
@@ -182,7 +203,9 @@ export default function ReportsPage() {
         </div>
       ) : (
         <div className={styles.list}>
-          {reports.map(report => (
+          {reports.map(report => {
+            const deleteRefusal = refusalCheck('reports:delete', accessOf(report.projectId))?.text ?? null
+            return (
             <div key={report.id} className={styles.row}>
               <div className={styles.rowMain}>
                 <div className={styles.rowTitle}>
@@ -280,14 +303,17 @@ export default function ReportsPage() {
                   <button
                     className={`${styles.actionBtn} ${styles.deleteBtn}`}
                     onClick={() => setDeleteConfirm(report.id)}
-                    title="Delete report"
+                    disabled={!!deleteRefusal}
+                    title={deleteRefusal ?? 'Delete report'}
+                    aria-label="Delete report"
                   >
                     <Trash2 size={14} />
                   </button>
                 )}
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

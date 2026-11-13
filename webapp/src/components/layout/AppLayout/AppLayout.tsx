@@ -4,6 +4,7 @@ import { GlobalHeader } from '../GlobalHeader'
 import { Footer } from '../Footer'
 import { DisclaimerGate } from '../DisclaimerGate'
 import { UpdateNotification } from '../UpdateNotification'
+import { AccessNoticeToast } from '../AccessNoticeToast'
 import styles from './AppLayout.module.css'
 
 interface AppLayoutProps {
@@ -19,6 +20,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       </main>
       <Footer />
       <UpdateNotification />
+      <AccessNoticeToast />
     </div>
   )
 }

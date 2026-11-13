@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Loader2, Terminal, Square, X } from 'lucide-react'
 import { WORKFLOW_TOOLS } from '@/components/projects/ProjectForm/WorkflowView/workflowDefinition'
 import type { PartialReconState } from '@/lib/recon-types'
+import { useRefusal } from '@/hooks/useRefusal'
 import styles from './PartialReconBadges.module.css'
 
 interface PartialReconBadgesProps {
@@ -23,6 +24,8 @@ export function PartialReconBadges({
   maxVisible = 3,
 }: PartialReconBadgesProps) {
   const [isOverflowOpen, setIsOverflowOpen] = useState(false)
+  // The stop route asks recon:partial on the open project (a read share cannot stop the owner's run).
+  const stopRefusal = useRefusal('recon:partial')?.text ?? null
 
   if (activePartialRecons.length === 0) return null
 
@@ -37,6 +40,7 @@ export function PartialReconBadges({
             isLogsActive={activeLogsRunId === run.run_id}
             onToggleLogs={onToggleLogs}
             onStop={onStop}
+            stopRefusal={stopRefusal}
           />
         ))}
       </>
@@ -80,9 +84,9 @@ export function PartialReconBadges({
                     <button
                       type="button"
                       onClick={() => onStop(run.run_id)}
-                      disabled={isStopping}
+                      disabled={isStopping || !!stopRefusal}
                       className={styles.badgeBtn}
-                      title="Stop"
+                      title={stopRefusal ?? 'Stop'}
                     >
                       <Square size={13} />
                     </button>
@@ -102,11 +106,13 @@ function BadgeItem({
   isLogsActive,
   onToggleLogs,
   onStop,
+  stopRefusal,
 }: {
   run: PartialReconState
   isLogsActive: boolean
   onToggleLogs: (runId: string) => void
   onStop: (runId: string) => void
+  stopRefusal: string | null
 }) {
   const isBusy = run.status === 'running' || run.status === 'starting'
   const isStopping = run.status === 'stopping'
@@ -128,9 +134,9 @@ function BadgeItem({
       <button
         type="button"
         className={styles.badgeBtn}
-        disabled={isStopping}
+        disabled={isStopping || !!stopRefusal}
         onClick={() => onStop(run.run_id)}
-        title="Stop"
+        title={stopRefusal ?? 'Stop'}
       >
         <Square size={12} />
       </button>

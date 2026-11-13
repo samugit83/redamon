@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Network, PanelRightOpen, Copy, Settings } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
 import { useCan } from '@/hooks/useCan'
+import { useRefusal } from '@/hooks/useRefusal'
 import { Drawer, useToast, useAlertModal, WikiInfoButton } from '@/components/ui'
 import { TrafficCaptureStatus } from '@/components/traffic/TrafficCaptureStatus'
 import { TrafficMindSettingsModal } from '@/components/traffic/TrafficMindSettingsModal'
@@ -65,6 +66,8 @@ function toCurl(d: TrafficDetail): string {
 export default function TrafficPage() {
   const { projectId, userId, currentProject, isLoading: projectLoading } = useProject()
   const canManageCapture = useCan('platform:traffic_capture')
+  // A read share with Raw data & files reads and exports the owner's traffic and deletes none (4.11).
+  const deleteRefusal = useRefusal('traffic:delete', projectId)?.text ?? null
   const router = useRouter()
   const toast = useToast()
 
@@ -189,10 +192,12 @@ export default function TrafficPage() {
         <a className={styles.pageBtn} href={exportUrl('csv')}>Export CSV</a>
         <a className={styles.pageBtn} href={exportUrl('json')}>Export JSON</a>
         {selected.size > 0 && (
-          <button className={styles.clearBtn} onClick={handleDeleteSelected}>Delete selected ({selected.size})</button>
+          <button className={styles.clearBtn} onClick={handleDeleteSelected} disabled={!!deleteRefusal}
+            title={deleteRefusal ?? undefined}>Delete selected ({selected.size})</button>
         )}
         {total > 0 && (
-          <button className={styles.clearBtn} onClick={handleDeleteAllMatching}>Delete all matching</button>
+          <button className={styles.clearBtn} onClick={handleDeleteAllMatching} disabled={!!deleteRefusal}
+            title={deleteRefusal ?? undefined}>Delete all matching</button>
         )}
         {canManageCapture && (
           <button className={styles.settingsBtn} onClick={() => setSettingsOpen(true)} title="TrafficMind global settings">

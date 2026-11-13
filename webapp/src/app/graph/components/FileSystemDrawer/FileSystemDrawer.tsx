@@ -37,6 +37,7 @@ import { TransfersPanel } from './TransfersPanel'
 import { ImportUrlDialog, importKindLabel, importSavesFile, isRepositoryKind, type ImportJob } from './ImportUrlDialog'
 import { isActive, useTransfers, type Transfer } from './useTransfers'
 import styles from './FileSystemDrawer.module.css'
+import { useRefusal } from '@/hooks/useRefusal'
 
 // =============================================================================
 // Types
@@ -185,6 +186,9 @@ export function FileSystemDrawer({
   // RedAmon-styled modal dialogs (replaces browser-native alert/confirm).
   // Provider is mounted in app/layout.tsx.
   const { alertError, alertWarning, dangerConfirm } = useAlertModal()
+  // Upload, new folder, rename, delete, clean all and re-sync change the workspace (workspace:write,
+  // workspace:import): a read share with Raw data & files lists, previews and downloads only (4.11).
+  const writeRefusal = useRefusal('workspace:write', projectId)?.text ?? null
 
   const [tab, setTab] = useState<Tab>(initialTab)
   const [currentPath, setCurrentPath] = useState(initialPath)
@@ -642,13 +646,15 @@ export function FileSystemDrawer({
   // --- Drag-and-drop --------------------------------------------------------
 
   const handleDragOver = useCallback((ev: React.DragEvent) => {
+    // Not preventing the default refuses the drop: the browser shows "no drop" over the drawer.
+    if (writeRefusal) return
     if (ev.dataTransfer.types.includes('Files')) {
       ev.preventDefault()
       ev.dataTransfer.dropEffect = 'copy'
       setIsDragging(true)
       setDropRowPath(null)
     }
-  }, [])
+  }, [writeRefusal])
 
   const handleDragLeave = useCallback((ev: React.DragEvent) => {
     // Only clear when the pointer leaves the drawer, not when it crosses
@@ -665,6 +671,7 @@ export function FileSystemDrawer({
     ev.preventDefault()
     setIsDragging(false)
     setDropRowPath(null)
+    if (writeRefusal) return
     // Synchronous on purpose: the browser empties dataTransfer.items once
     // this handler returns, so the entries are taken now and walked after.
     const snapshot = snapshotDrop(ev.dataTransfer)
@@ -672,20 +679,20 @@ export function FileSystemDrawer({
       (picked) => startUploads(picked, destDir),
       (e) => alertError(errorMessage(e, 'Could not read the dropped items'), 'Upload failed'),
     )
-  }, [startUploads, alertError])
+  }, [startUploads, alertError, writeRefusal])
 
   const handleDrop = useCallback((ev: React.DragEvent) => {
     dropInto(ev, currentPath)
   }, [dropInto, currentPath])
 
   const handleRowDragOver = useCallback((ev: React.DragEvent, entry: Entry) => {
-    if (!ev.dataTransfer.types.includes('Files')) return
+    if (writeRefusal || !ev.dataTransfer.types.includes('Files')) return
     ev.preventDefault()
     ev.stopPropagation()
     ev.dataTransfer.dropEffect = 'copy'
     setIsDragging(true)
     setDropRowPath(entry.path)
-  }, [])
+  }, [writeRefusal])
 
   const handleRowDrop = useCallback((ev: React.DragEvent, entry: Entry) => {
     ev.stopPropagation()
@@ -1005,7 +1012,8 @@ export function FileSystemDrawer({
             <button
               className={styles.actionBtn}
               onClick={handleMkdirToggle}
-              title="New folder in current directory"
+              disabled={!!writeRefusal}
+              title={writeRefusal ?? 'New folder in current directory'}
             >
               <FolderPlus size={12} />
             </button>
@@ -1014,6 +1022,7 @@ export function FileSystemDrawer({
               onFolder={handleFolderPick}
               onArchive={handleArchivePick}
               onImportUrl={() => setImportOpen(true)}
+              disabledReason={writeRefusal}
             />
             <button
               className={styles.actionBtn}
@@ -1025,11 +1034,18 @@ export function FileSystemDrawer({
             <button
               className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
               onClick={handleCleanAll}
-              title="Clean all - reset workspace to 4 empty default folders"
+              disabled={!!writeRefusal}
+              title={writeRefusal ?? 'Clean all - reset workspace to 4 empty default folders'}
             >
               <Eraser size={12} />
             </button>
           </div>
+
+          {writeRefusal && (
+            <div className={styles.truncatedNotice} role="note">
+              {writeRefusal}: you can open and download these files, not change them.
+            </div>
+          )}
 
           {mkdirInput !== null && (
             <div className={styles.mkdirRow}>
@@ -1126,8 +1142,8 @@ export function FileSystemDrawer({
               <button
                 className={`${styles.bulkBtn} ${styles.bulkBtnDanger}`}
                 onClick={handleBulkDeleteRequest}
-                disabled={bulkActionLoading}
-                title="Delete selected (protected entries are skipped)"
+                disabled={bulkActionLoading || !!writeRefusal}
+                title={writeRefusal ?? 'Delete selected (protected entries are skipped)'}
               >
                 <TrashIcon size={12} /> Delete
               </button>
@@ -1236,7 +1252,8 @@ export function FileSystemDrawer({
                         <button
                           className={styles.actionBtn}
                           onClick={(ev) => { ev.stopPropagation(); handleResync(e) }}
-                          title="Re-sync from its source"
+                          disabled={!!writeRefusal}
+                          title={writeRefusal ?? 'Re-sync from its source'}
                           aria-label={`Re-sync ${e.name}`}
                         >
                           <RefreshCw size={12} />
@@ -1254,14 +1271,16 @@ export function FileSystemDrawer({
                           <button
                             className={styles.actionBtn}
                             onClick={(ev) => { ev.stopPropagation(); startRename(e) }}
-                            title="Rename"
+                            disabled={!!writeRefusal}
+                            title={writeRefusal ?? 'Rename'}
                           >
                             <PencilIcon size={12} />
                           </button>
                           <button
                             className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
                             onClick={(ev) => { ev.stopPropagation(); handleDeleteRequest(e) }}
-                            title="Delete"
+                            disabled={!!writeRefusal}
+                            title={writeRefusal ?? 'Delete'}
                           >
                             <TrashIcon size={12} />
                           </button>

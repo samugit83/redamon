@@ -8,6 +8,7 @@
  */
 import { type ScopeGroup, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
 import { ipHostnameModeLabel } from '@/lib/ipHostnameModeLabels'
+import type { MyAccess } from '@/lib/authz/projectAccess'
 
 export interface ProjectSummary {
   id: string
@@ -36,6 +37,9 @@ export interface ProjectSummary {
   roeGlobalMaxRps?: number
   roeExcludedHosts?: string[]
   roeTimeWindowEnabled?: boolean
+  /** The person's own access, when the read carried it (RBAC_SHARING_ENABLED on, step 4.3); absent
+   *  is the person's own project as before sharing (DV-30). The read-only screens read it (4.11). */
+  myAccess?: MyAccess
   createdAt: string
   updatedAt: string
 }
@@ -87,6 +91,7 @@ type ProjectRead = ScopeLabelFields & {
   roeGlobalMaxRps?: number
   roeExcludedHosts?: string[]
   roeTimeWindowEnabled?: boolean
+  myAccess?: MyAccess | null
   ipHostnameInclude?: readonly string[] | null
   ipHostnameExclude?: readonly string[] | null
   ipHostnameScanAllConfirmed?: boolean | null
@@ -133,6 +138,7 @@ export function toProjectSummary(project: ProjectRead): ProjectSummary {
     roeGlobalMaxRps: project.roeGlobalMaxRps,
     roeExcludedHosts: project.roeExcludedHosts,
     roeTimeWindowEnabled: project.roeTimeWindowEnabled,
+    ...(project.myAccess ? { myAccess: project.myAccess } : {}),
     createdAt: isoString(project.createdAt),
     updatedAt: isoString(project.updatedAt),
   }

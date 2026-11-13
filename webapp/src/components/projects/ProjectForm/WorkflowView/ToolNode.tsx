@@ -3,8 +3,7 @@
 import { memo, useCallback } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { AlertTriangle, Settings, Play, Loader2 } from 'lucide-react'
-import { usePermissionRefused } from '@/hooks/useCan'
-import { forbiddenNoticeText } from '@/components/auth/ForbiddenNotice'
+import { useRefusal } from '@/hooks/useRefusal'
 import styles from './WorkflowView.module.css'
 
 interface ToolNodeData {
@@ -55,7 +54,8 @@ function ToolNodeComponent({ data }: NodeProps) {
     toggleLockReason,
   } = data as unknown as ToolNodeData
   // The partial-recon route asks recon:partial (route manifest).
-  const partialRefused = usePermissionRefused('recon:partial')
+  const partialRefusal = useRefusal('recon:partial')
+  const partialRefused = partialRefusal !== null
 
   const handleToggle = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
@@ -139,7 +139,7 @@ function ToolNodeComponent({ data }: NodeProps) {
           <span
             className={`${styles.partialReconPlay} ${styles.partialReconRefused}`}
             onClick={swallowClick}
-            title={forbiddenNoticeText('recon:partial')}
+            title={partialRefusal?.text}
             aria-disabled="true"
           >
             <Play size={12} />

@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { useAuth } from './AuthProvider'
 import { useCan, useRbacFlags } from '@/hooks/useCan'
@@ -8,6 +8,9 @@ import { type ProjectSummary, toProjectSummary } from '@/lib/projectSummary'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
 import { ActAsDialog, type ActAsDialogTarget } from '@/components/auth/ActAsDialog'
 import { ACT_AS_PICK_KEY, forgetActAsPick, recallActAsPick, rememberActAsPick } from '@/lib/actAsPick'
+import type { MyAccess } from '@/lib/authz/projectAccess'
+import { sameMyAccess } from '@/lib/readOnlyProject'
+import { ProjectAccessContext } from './projectAccessContext'
 
 export type { ProjectSummary } from '@/lib/projectSummary'
 
@@ -33,6 +36,63 @@ interface ProjectContextValue {
    * shows the message.
    */
   userSwitchError: ApiError | null
+  /**
+   * The open project's access ended or changed under the person (a share revoked, expired or left,
+   * or narrowed), as the stale-access poll found it. This provider sits above the toast layer, so a
+   * component under it shows the message and dismisses it.
+   */
+  accessNotice: AccessNotice | null
+  dismissAccessNotice: () => void
+  /** Ask /my-access now instead of at the next poll (after leaving a share, for one). */
+  checkAccessNow: () => Promise<void>
+}
+
+export interface AccessNotice {
+  kind: 'ended' | 'changed'
+  projectName: string
+  /** `changed`: the access now in force. */
+  myAccess?: MyAccess
+}
+
+/**
+ * How often an open project asks whether the person still has it (step 4.11): one request per open
+ * page every 30 s, well inside nginx's /api/ zone. A failed answer doubles the wait up to the cap.
+ */
+export const ACCESS_POLL_MS = 30_000
+export const ACCESS_POLL_MAX_MS = 5 * 60_000
+
+type AccessAnswer =
+  | { kind: 'access'; myAccess: MyAccess }
+  | { kind: 'gone' }
+  | { kind: 'ownerView' }
+  | { kind: 'retry' }
+
+/**
+ * The person's own access to `projectId` now. /my-access answers 404 both when the access ended and
+ * when RBAC_SHARING_ENABLED is off (the route does not exist then), so a 404 is confirmed with the
+ * project read: 404 there too is "gone"; a project answered without `myAccess` is the owner's own
+ * view with the switch off, never a reason to send the owner away.
+ */
+async function readOwnAccess(projectId: string): Promise<AccessAnswer> {
+  const id = encodeURIComponent(projectId)
+  const res = await fetch(`/api/projects/${id}/my-access`, { cache: 'no-store' })
+  if (res.ok) {
+    const body = await res.json().catch(() => null)
+    return body?.myAccess ? { kind: 'access', myAccess: body.myAccess } : { kind: 'retry' }
+  }
+  if (res.status !== 404) return { kind: 'retry' }
+  const project = await fetch(`/api/projects/${id}`, { cache: 'no-store' })
+  if (project.status === 404) return { kind: 'gone' }
+  if (!project.ok) return { kind: 'retry' }
+  const row = await project.json().catch(() => null)
+  if (!row) return { kind: 'retry' }
+  return row.myAccess ? { kind: 'access', myAccess: row.myAccess } : { kind: 'ownerView' }
+}
+
+function withoutAccess(project: ProjectSummary): ProjectSummary {
+  const rest = { ...project }
+  delete rest.myAccess
+  return rest
 }
 
 export interface SetUserIdOptions {
@@ -53,6 +113,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [userId, setUserIdState] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [userSwitchError, setUserSwitchError] = useState<ApiError | null>(null)
+  const [accessNotice, setAccessNotice] = useState<AccessNotice | null>(null)
+  const currentProjectRef = useRef<ProjectSummary | null>(null)
+  const checkAccessRef = useRef<(() => Promise<void>) | null>(null)
   // Gates data loads until the server-side act-as cookie has been reconciled with
   // the restored (localStorage) impersonation selection, so an admin's first load
   // after a refresh never fetches with a stale/absent cookie (which would 404
@@ -166,8 +229,15 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
   }, [searchParams, authLoading, impersonationSynced])
 
+  useEffect(() => { currentProjectRef.current = currentProject }, [currentProject])
+
   const setCurrentProject = useCallback((project: ProjectSummary | null) => {
-    setCurrentProjectState(project)
+    // A summary built from a read that carries no access (a save's answer) keeps the access known.
+    setCurrentProjectState(prev => (
+      project && !project.myAccess && prev?.id === project.id && prev.myAccess
+        ? { ...project, myAccess: prev.myAccess }
+        : project
+    ))
     if (project) {
       localStorage.setItem(STORAGE_KEY_PROJECT, project.id)
       // Update URL without navigation if we're on a page that uses project context
@@ -185,6 +255,87 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       router.replace(newUrl, { scroll: false })
     }
   }, [searchParams, router, pathname])
+
+  // The stale-access poll (step 4.11, SH-11): only while the open project's read carried `myAccess`,
+  // which it does only with RBAC_SHARING_ENABLED on (DV-30: with it off nothing is asked).
+  const pollProjectId = currentProject?.myAccess ? currentProject.id : null
+  // Read through refs so a navigation does not restart the poll's timer.
+  const navigationRef = useRef({ pathname, router })
+  useEffect(() => { navigationRef.current = { pathname, router } }, [pathname, router])
+
+  const applyAccessAnswer = useCallback((projectId: string, answer: AccessAnswer) => {
+    const open = currentProjectRef.current
+    if (!open || open.id !== projectId) return
+    if (answer.kind === 'access') {
+      if (sameMyAccess(open.myAccess, answer.myAccess)) return
+      setCurrentProjectState(p => (p && p.id === projectId ? { ...p, myAccess: answer.myAccess } : p))
+      setAccessNotice({ kind: 'changed', projectName: open.name, myAccess: answer.myAccess })
+    } else if (answer.kind === 'ownerView') {
+      setCurrentProjectState(p => (p && p.id === projectId ? withoutAccess(p) : p))
+    } else if (answer.kind === 'gone') {
+      setCurrentProjectState(p => (p && p.id === projectId ? null : p))
+      if (localStorage.getItem(STORAGE_KEY_PROJECT) === projectId) localStorage.removeItem(STORAGE_KEY_PROJECT)
+      setAccessNotice({ kind: 'ended', projectName: open.name })
+      const nav = navigationRef.current
+      if (nav.pathname !== '/projects') nav.router.replace('/projects')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!pollProjectId) return
+    let cancelled = false
+    let inFlight = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let delay = ACCESS_POLL_MS
+    let lastAsked = Date.now()
+    const schedule = (ms: number) => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => { void check() }, ms)
+    }
+    const check = async (): Promise<void> => {
+      if (cancelled || inFlight) return
+      // A hidden tab asks nothing; it asks at once when shown again.
+      if (document.visibilityState === 'hidden') { schedule(delay); return }
+      inFlight = true
+      lastAsked = Date.now()
+      let answer: AccessAnswer
+      try {
+        answer = await readOwnAccess(pollProjectId)
+      } catch {
+        answer = { kind: 'retry' }
+      }
+      inFlight = false
+      if (cancelled) return
+      applyAccessAnswer(pollProjectId, answer)
+      // Gone or the owner's own view: the project or its `myAccess` is cleared, which ends the poll.
+      if (answer.kind === 'gone' || answer.kind === 'ownerView') return
+      delay = answer.kind === 'retry' ? Math.min(delay * 2, ACCESS_POLL_MAX_MS) : ACCESS_POLL_MS
+      schedule(delay)
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastAsked >= ACCESS_POLL_MS) schedule(0)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    checkAccessRef.current = check
+    schedule(delay)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      if (checkAccessRef.current === check) checkAccessRef.current = null
+    }
+  }, [pollProjectId, applyAccessAnswer])
+
+  const checkAccessNow = useCallback(async () => {
+    await checkAccessRef.current?.()
+  }, [])
+
+  const dismissAccessNotice = useCallback(() => setAccessNotice(null), [])
+
+  const accessScope = useMemo(() => ({
+    projectId: currentProject?.id ?? null,
+    myAccess: currentProject?.myAccess ?? null,
+  }), [currentProject?.id, currentProject?.myAccess])
 
   /** Permissions switch on: start (from the dialog) or stop an impersonation; the server holds it. */
   const switchOnServer = useCallback(async (id: string | null, opts?: SetUserIdOptions): Promise<ApiError | null> => {
@@ -313,8 +464,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       setUserId,
       isLoading,
       userSwitchError,
+      accessNotice,
+      dismissAccessNotice,
+      checkAccessNow,
     }}>
-      {children}
+      <ProjectAccessContext.Provider value={accessScope}>
+        {children}
+      </ProjectAccessContext.Provider>
       {serverOwned && (
         <ActAsDialog
           isOpen={actAsRequest !== null}

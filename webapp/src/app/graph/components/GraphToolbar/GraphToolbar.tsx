@@ -8,8 +8,7 @@ import { PartialReconBadges } from '@/components/PartialReconBadges'
 import { VersionSwitch } from '../VersionSwitch'
 import { ScanStatusWarning } from '@/components/scans/ScanStatusWarning'
 import { GVM_NOT_INSTALLED } from '@/components/scans/scanErrors'
-import { usePermissionRefused } from '@/hooks/useCan'
-import { forbiddenNoticeText } from '@/components/auth/ForbiddenNotice'
+import { useRefusal } from '@/hooks/useRefusal'
 import type { ScanVersionSummary } from '../../hooks/useScanVersions'
 import { emergencyPauseTitle, type EmergencyStopScope } from './emergencyStopScope'
 import styles from './GraphToolbar.module.css'
@@ -212,9 +211,10 @@ export function GraphToolbar({
   const isTrufflehogBusy = isTrufflehogRunning
   const isTrufflehogActive = isTrufflehogRunning
   const hasActivePartialRecons = activePartialRecons.length > 0
-  // What the start and resume routes ask (route manifest): without it the button says why.
-  const reconRefused = usePermissionRefused('recon:scan', projectId)
-  const gvmRefused = usePermissionRefused('scan:gvm', projectId)
+  // What the start, resume, pause and stop routes ask (route manifest): refused, the button says why,
+  // in the words of the refusal (a read share's level, or the missing permission).
+  const reconRefusal = useRefusal('recon:scan', projectId)
+  const gvmRefusal = useRefusal('scan:gvm', projectId)
 
   // Agent status derived values
   const runningAgent = agentConversations.find(c => c.agentRunning)
@@ -326,8 +326,8 @@ export function GraphToolbar({
               <button
                 className={`${styles.reconButton} ${isReconActive ? styles.reconButtonActive : ''}`}
                 onClick={isReconPaused ? onResumeRecon : onStartRecon}
-                disabled={reconRefused || isReconRunning || hasActivePartialRecons || viewingPastVersion || isActivatingVersion}
-                title={reconRefused ? forbiddenNoticeText('recon:scan') : viewingPastVersion ? 'You are viewing a saved version -- switch back to the active version to scan' : isActivatingVersion ? 'A version activation is in progress' : hasActivePartialRecons ? 'Partial recon is running -- stop it first' : isReconStopping ? 'Stopping...' : isReconRunning ? 'Recon in progress...' : isReconPaused ? 'Resume Recon' : 'Start Reconnaissance'}
+                disabled={!!reconRefusal || isReconRunning || hasActivePartialRecons || viewingPastVersion || isActivatingVersion}
+                title={reconRefusal ? reconRefusal.text : viewingPastVersion ? 'You are viewing a saved version -- switch back to the active version to scan' : isActivatingVersion ? 'A version activation is in progress' : hasActivePartialRecons ? 'Partial recon is running -- stop it first' : isReconStopping ? 'Stopping...' : isReconRunning ? 'Recon in progress...' : isReconPaused ? 'Resume Recon' : 'Start Reconnaissance'}
               >
                 {isReconRunning ? (
                   <Loader2 size={14} className={styles.spinner} />
@@ -341,8 +341,8 @@ export function GraphToolbar({
                 <button
                   className={styles.pauseButton}
                   onClick={onPauseRecon}
-                  disabled={isReconPausing}
-                  title={isReconPausing ? 'Pausing...' : 'Pause Recon'}
+                  disabled={!!reconRefusal || isReconPausing}
+                  title={reconRefusal ? reconRefusal.text : isReconPausing ? 'Pausing...' : 'Pause Recon'}
                 >
                   {isReconPausing ? <Loader2 size={14} className={styles.spinner} /> : <Pause size={14} />}
                 </button>
@@ -352,8 +352,8 @@ export function GraphToolbar({
                 <button
                   className={styles.stopButton}
                   onClick={onStopRecon}
-                  disabled={isReconStopping}
-                  title="Stop Recon"
+                  disabled={!!reconRefusal || isReconStopping}
+                  title={reconRefusal ? reconRefusal.text : 'Stop Recon'}
                 >
                   <Square size={14} />
                 </button>
@@ -394,10 +394,10 @@ export function GraphToolbar({
               <button
                 className={`${styles.gvmButton} ${isGvmActive ? styles.gvmButtonActive : ''}`}
                 onClick={isGvmPaused ? onResumeGvm : onStartGvm}
-                disabled={gvmRefused || !gvmAvailable || isGvmRunning || (!hasReconData && !isGvmPaused) || (stealthMode && !isGvmPaused) || viewingPastVersion || isActivatingVersion}
+                disabled={!!gvmRefusal || !gvmAvailable || isGvmRunning || (!hasReconData && !isGvmPaused) || (stealthMode && !isGvmPaused) || viewingPastVersion || isActivatingVersion}
                 title={
-                  gvmRefused
-                    ? forbiddenNoticeText('scan:gvm')
+                  gvmRefusal
+                    ? gvmRefusal.text
                     : viewingPastVersion
                     ? 'Viewing a saved version - switch back to the active version to scan'
                     : isActivatingVersion
@@ -429,8 +429,8 @@ export function GraphToolbar({
                 <button
                   className={styles.pauseButton}
                   onClick={onPauseGvm}
-                  disabled={isGvmPausing}
-                  title={isGvmPausing ? 'Pausing...' : 'Pause GVM Scan'}
+                  disabled={!!gvmRefusal || isGvmPausing}
+                  title={gvmRefusal ? gvmRefusal.text : isGvmPausing ? 'Pausing...' : 'Pause GVM Scan'}
                 >
                   {isGvmPausing ? <Loader2 size={14} className={styles.spinner} /> : <Pause size={14} />}
                 </button>
@@ -440,8 +440,8 @@ export function GraphToolbar({
                 <button
                   className={styles.stopButton}
                   onClick={onStopGvm}
-                  disabled={isGvmStopping}
-                  title="Stop GVM Scan"
+                  disabled={!!gvmRefusal || isGvmStopping}
+                  title={gvmRefusal ? gvmRefusal.text : 'Stop GVM Scan'}
                 >
                   <Square size={14} />
                 </button>

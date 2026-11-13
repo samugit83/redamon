@@ -70,6 +70,7 @@ import { useErrorToast } from '@/hooks/useErrorToast'
 import { useProjectById } from '@/hooks/useProjects'
 import { useScanStartFailure } from '@/hooks/useScanStartFailure'
 import { usePermissionRefused } from '@/hooks/useCan'
+import { useRefusal } from '@/hooks/useRefusal'
 import { useDrawerOffsets } from '@/hooks/useDrawerOffsets'
 import { useGraphTypeFilterPrefs, useGraphViewPrefs } from '@/hooks/useUserPreferences'
 import { useProject } from '@/providers/ProjectProvider'
@@ -110,6 +111,10 @@ export default function GraphPage() {
   const reconRefused = usePermissionRefused('recon:scan', projectId)
   const gvmRefused = usePermissionRefused('scan:gvm', projectId)
   const agentRefused = usePermissionRefused('agent:chat', projectId)
+  // A read share (step 4.11) mutes nothing and deletes no node: the mute buttons say whose read access
+  // it is, and node delete is not offered, as on a saved version.
+  const muteRefusal = useRefusal('triage:mute', projectId)
+  const graphEditRefused = usePermissionRefused('graph:edit', projectId)
 
   const [activeView, setActiveView] = useState<ViewMode>('graph')
 
@@ -1882,7 +1887,7 @@ export default function GraphPage() {
             node={selectedNode}
             isOpen={drawerOpen}
             onClose={clearSelection}
-            onDeleteNode={isViewingPastVersion ? undefined : handleDeleteNode}
+            onDeleteNode={isViewingPastVersion || graphEditRefused ? undefined : handleDeleteNode}
             expandedChild={expandedChild}
             onExpandChild={expandChild}
             onCollapseChild={collapseChild}
@@ -2282,7 +2287,8 @@ export default function GraphPage() {
   return (
     <MuteNodeProvider
       projectId={projectId}
-      readOnly={isViewingPastVersion}
+      readOnly={isViewingPastVersion || muteRefusal !== null}
+      readOnlyReason={isViewingPastVersion ? undefined : muteRefusal?.text}
       onViewMuted={viewMutedNodes}
       onGraphChanged={refetchGraph}
       onOpenMuteRules={openMuteRulesKind}

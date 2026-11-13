@@ -18,8 +18,10 @@ const JS_FILE_REASON =
   'finding found in it.'
 
 /** Why Multi mute cannot start from this node, or null when it can. */
-export function multiMuteDisabledReason(seed: Pick<MultiMuteSeed, 'label' | 'findingType'>, readOnly: boolean): string | null {
-  if (readOnly) return READ_ONLY_REASON
+export function multiMuteDisabledReason(
+  seed: Pick<MultiMuteSeed, 'label' | 'findingType'>, readOnly: boolean, readOnlyReason?: string,
+): string | null {
+  if (readOnly) return readOnlyReason ?? READ_ONLY_REASON
   const label = seed.label
   if (!label) return null
   if (!muteableLabel([label])) return unmuteableReason(label)
@@ -39,10 +41,10 @@ interface MultiMuteButtonProps extends MultiMuteOptions {
  * `MuteNodeProvider`, or for a row that is not one node.
  */
 export function MultiMuteButton({ seed, compact = false, onSeedMuted, onMuted }: MultiMuteButtonProps) {
-  const { projectId, readOnly, openMultiMute } = useMuteNodeContext()
+  const { projectId, readOnly, readOnlyReason, openMultiMute } = useMuteNodeContext()
   const graphId = formatNodeId(seed.graphId)
   if (!projectId || !(seed.nodeId || graphId)) return null
-  const reason = multiMuteDisabledReason(seed, readOnly)
+  const reason = multiMuteDisabledReason(seed, readOnly, readOnlyReason)
 
   return (
     <button

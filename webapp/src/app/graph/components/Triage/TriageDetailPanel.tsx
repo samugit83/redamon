@@ -24,6 +24,7 @@ import { DispositionLine } from './DispositionChip'
 import { readDisposition } from '@/lib/triage/disposition'
 import { triageBodyErrorText } from '@/lib/triage/errorText'
 import { toApiError } from '@/lib/apiError'
+import { useRefusal } from '@/hooks/useRefusal'
 import styles from './TriageDetailPanel.module.css'
 
 interface GroupMember {
@@ -98,6 +99,8 @@ export function TriageDetailPanel({
 }: TriageDetailPanelProps) {
   const [detail, setDetail] = useState<Load<FindingDetail>>({ kind: 'loading' })
   const [evidence, setEvidence] = useState<Load<EvidenceAnswer>>({ kind: 'loading' })
+  // A person's decision is triage:verdict's; a read share reads the decision and makes none (4.11).
+  const verdictRefusal = useRefusal('triage:verdict', projectId)?.text ?? null
   const [detailTry, setDetailTry] = useState(0)
   const [evidenceTry, setEvidenceTry] = useState(0)
   /** The board row as it was when the detail loaded. A different object later
@@ -261,6 +264,7 @@ export function TriageDetailPanel({
               busy={busy}
               error={decisionError}
               onDecide={decide}
+              refusal={verdictRefusal}
             />
             <EvidenceSection
               evidence={evidence}
@@ -465,9 +469,11 @@ interface DecisionSectionProps {
   busy: VerdictStatus | null
   error: string | null
   onDecide: (status: VerdictStatus) => void
+  /** Why this person cannot decide, or null. */
+  refusal: string | null
 }
 
-function DecisionSection({ row, reason, onReason, busy, error, onDecide }: DecisionSectionProps) {
+function DecisionSection({ row, reason, onReason, busy, error, onDecide, refusal }: DecisionSectionProps) {
   const chip = decisionChip(row)
   const decided = personDecided(row)
   return (
@@ -489,34 +495,36 @@ function DecisionSection({ row, reason, onReason, busy, error, onDecide }: Decis
           maxLength={500}
           rows={2}
           onChange={e => onReason(e.target.value)}
+          disabled={!!refusal}
           placeholder="Kept with your decision"
         />
       </label>
       <div className={styles.decisionButtons}>
         <button
-          type="button" className={styles.button} disabled={busy !== null}
+          type="button" className={styles.button} disabled={busy !== null || !!refusal}
           onClick={() => onDecide('confirmed')}
-          title="Mark this real: it counts as 100% real and no run changes it."
+          title={refusal ?? 'Mark this real: it counts as 100% real and no run changes it.'}
         >
           {busy === 'confirmed' ? <Loader2 size={13} className={styles.spin} /> : <Check size={13} />} Real
         </button>
         <button
-          type="button" className={styles.button} disabled={busy !== null}
+          type="button" className={styles.button} disabled={busy !== null || !!refusal}
           onClick={() => onDecide('likely_noise')}
-          title="Mark this a false positive. It is not muted."
+          title={refusal ?? 'Mark this a false positive. It is not muted.'}
         >
           {busy === 'likely_noise' ? <Loader2 size={13} className={styles.spin} /> : <X size={13} />} False positive
         </button>
         {decided && (
           <button
-            type="button" className={styles.button} disabled={busy !== null}
+            type="button" className={styles.button} disabled={busy !== null || !!refusal}
             onClick={() => onDecide('unreviewed')}
-            title="Remove your decision; the rules and any review rank it again."
+            title={refusal ?? 'Remove your decision; the rules and any review rank it again.'}
           >
             {busy === 'unreviewed' ? <Loader2 size={13} className={styles.spin} /> : <RotateCcw size={13} />} Reset
           </button>
         )}
       </div>
+      {refusal && <p className={styles.muted} role="note">{refusal}.</p>}
       {error && <p className={styles.inlineError} role="alert">{error}</p>}
     </Section>
   )
