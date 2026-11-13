@@ -116,6 +116,13 @@ describe('PATCH: change a share (step 4.4, SH-10)', () => {
     expect(JSON.stringify(db.audit())).not.toContain('second note')
   })
 
+  test('the answer names the person\'s account type and who granted the share (step 4.12, ID-31)', async () => {
+    signIn('alice')
+    const { collaborator } = await (await change('bob', { rawData: true })).json()
+    expect(collaborator.user).toMatchObject({ id: 'bob', accountType: 'member' })
+    expect(collaborator.grantedBy).toEqual({ id: 'alice', name: 'Alice Owner', email: 'alice@example.test', accountType: 'member' })
+  })
+
   test('the expiry removed with null; the access kept at read', async () => {
     db.addShare({ projectId: 'P1', userId: 'carol', expiresAt: new Date('2026-12-01T00:00:00Z') })
     signIn('alice')

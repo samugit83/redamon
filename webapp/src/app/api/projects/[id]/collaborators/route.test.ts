@@ -105,9 +105,26 @@ describe('GET: who holds a share (step 4.4)', () => {
     expect(res.status).toBe(200)
     const { collaborators } = await res.json()
     expect(collaborators).toEqual([
-      expect.objectContaining({ user: { id: 'bob', name: 'Bob Reader', email: 'bob@example.test', status: 'active' }, access: 'read', rawData: true, expired: false, note: 'until the engagement ends', expiresAt: null }),
+      expect.objectContaining({ user: { id: 'bob', name: 'Bob Reader', email: 'bob@example.test', status: 'active', accountType: 'member' }, access: 'read', rawData: true, expired: false, note: 'until the engagement ends', expiresAt: null }),
       expect.objectContaining({ user: expect.objectContaining({ id: 'carol' }), expired: true, expiresAt: new Date(T0.getTime() - 1000).toISOString() }),
     ])
+  })
+
+  test('each share names the person\'s account type and who granted it (step 4.12, ID-31)', async () => {
+    add(shareAccount('root', { role: 'admin', name: 'Rita Root' }))
+    db.setRoot('root', new Date('2026-10-01T00:00:00Z'))
+    db.addShare({ projectId: 'P1', userId: 'bob', grantedById: 'alice' })
+    db.addShare({ projectId: 'P1', userId: 'admin-1', grantedById: 'alice' })
+    db.addShare({ projectId: 'P1', userId: 'root', grantedById: 'gone-account' })
+    signIn('alice')
+    const { collaborators } = await (await list()).json()
+    expect(collaborators.map((c: { user: { id: string; accountType: string } }) => [c.user.id, c.user.accountType])).toEqual([
+      ['bob', 'member'], ['admin-1', 'admin'], ['root', 'root'],
+    ])
+    expect(collaborators[0].grantedBy).toEqual({ id: 'alice', name: 'Alice Owner', email: 'alice@example.test', accountType: 'member' })
+    // The account that granted it is gone: said as null, never guessed.
+    expect(collaborators[2].grantedBy).toBeNull()
+    expect(collaborators[2].grantedById).toBe('gone-account')
   })
 
   test('oversight read: an admin with projects:oversee lists them', async () => {
@@ -187,6 +204,27 @@ describe('POST: share at Read (step 4.4)', () => {
     expect(db.audit()[0]).toMatchObject({ actorId: 'alice', projectId: 'P1', targetId: 'bob', permission: 'project:share', after: { result: 'hit', emailSha256: sha('bob@example.test') } })
     expect(db.audit()[1]).toMatchObject({ actorId: 'alice', projectId: 'P1', targetType: 'user', targetId: 'bob', after: { access: 'read', rawData: false, expiresAt: null, grantedById: 'alice' } })
     expect(JSON.stringify(db.audit())).not.toContain('bob@example.test')
+  })
+
+  test('the grant names the recipient\'s account type and who granted it (step 4.12, ID-31, SH-20)', async () => {
+    signIn('alice')
+    const { collaborator } = await (await grant({ email: 'admin-1@example.test', access: 'read' })).json()
+    expect(collaborator.user).toMatchObject({ id: 'admin-1', accountType: 'admin' })
+    expect(collaborator.grantedBy).toEqual({ id: 'alice', name: 'Alice Owner', email: 'alice@example.test', accountType: 'member' })
+  })
+
+  test('the accounts unreadable after the grant committed: still 201, the type and granter null, logged', async () => {
+    signIn('alice')
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const users = (db.client as unknown as { user: { findMany: () => Promise<unknown> } }).user
+    vi.spyOn(users, 'findMany').mockRejectedValueOnce(Object.assign(new Error('connection lost'), { code: 'P1001' }))
+    const res = await grant({ email: 'bob@example.test', access: 'read' })
+    expect(res.status).toBe(201)
+    const { collaborator } = await res.json()
+    expect(collaborator.user).toMatchObject({ id: 'bob', name: 'Bob Reader', email: 'bob@example.test', accountType: null })
+    expect(collaborator.grantedBy).toBeNull()
+    expect(db.share('P1', 'bob')).toBeDefined()
+    expect(error).toHaveBeenCalledWith("[rbac] could not read the share's accounts: P1001")
   })
 
   test('the email is exact but normalised: surrounding spaces and letter case are ignored', async () => {

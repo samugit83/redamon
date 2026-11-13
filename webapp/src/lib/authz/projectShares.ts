@@ -25,6 +25,7 @@ import { writeAuditTx, type AuditTx } from '@/lib/audit'
 import { auditedTransaction } from '@/lib/auditForward'
 import { auditActor, auditActorOf, sessionActor, type AuditActor } from '@/lib/auditActor'
 import { closeAgentSockets } from '@/lib/agentSockets'
+import { safeErrorCode } from '@/lib/routeErrors'
 import { getAuthzIdentity, type EffectiveUser } from '@/lib/session'
 import { WS_SOCKETS } from '@/lib/wsTicket'
 import { normalizeEmail } from './accountEmail'
@@ -35,6 +36,7 @@ import { forbiddenResponse, type PermissionContext } from './guards'
 import { takeShareLookup } from './inviteLimits'
 import { auditOversightRead } from './oversight'
 import { projectAccess, type ProjectAccess } from './projectAccess'
+import { accountTypeOf, loadInstanceRoot, type AccountType } from './root'
 import { DEFAULT_EXPIRY_DAYS_BOUNDS, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
 
 export const SHARE_PERMISSION = 'project:share'
@@ -45,9 +47,18 @@ const MAX_EXPIRY_MS = DEFAULT_EXPIRY_DAYS_BOUNDS[1] * DAY_MS
 /** The toggles of Read + Write (§6.1): Phase 5's, refused here. */
 const WRITE_TOGGLES = ['runScans', 'useAgent', 'exploit', 'manage'] as const
 
+/** An account a share names, as the share dialog shows it (ID-31): name, email and account type. */
+export interface SharePerson {
+  id: string
+  name: string | null
+  email: string | null
+  accountType: AccountType
+}
+
 /** One share as its screens show it (the owner's list, the grant's answer). */
 export interface ShareView {
-  user: { id: string; name: string | null; email: string | null; status: string | null }
+  /** `accountType` null when the accounts could not be read after a change that committed. */
+  user: { id: string; name: string | null; email: string | null; status: string | null; accountType: AccountType | null }
   access: string
   rawData: boolean
   expiresAt: string | null
@@ -55,6 +66,8 @@ export interface ShareView {
   expired: boolean
   note: string | null
   grantedById: string
+  /** Who granted it; null when that account is gone (or could not be read after a committed change). */
+  grantedBy: SharePerson | null
   createdAt: string
   updatedAt: string
 }
@@ -104,6 +117,7 @@ function shareView(row: ShareRecord, at: number): ShareView {
   return {
     user: {
       id: row.userId, name: row.user?.name ?? null, email: row.user?.email ?? null, status: row.user?.status ?? null,
+      accountType: null,
     },
     access: row.access,
     rawData: row.rawData,
@@ -111,8 +125,42 @@ function shareView(row: ShareRecord, at: number): ShareView {
     expired: row.expiresAt !== null && row.expiresAt.getTime() <= at,
     note: row.note,
     grantedById: row.grantedById,
+    grantedBy: null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  }
+}
+
+/**
+ * Each collaborator's account type and who granted each share (ID-31: a display name alone is not an
+ * identity), from one read of the accounts both name and the Root. A failed read throws.
+ */
+async function withPeople(views: ShareView[]): Promise<ShareView[]> {
+  if (views.length === 0) return views
+  const ids = [...new Set(views.flatMap(v => [v.user.id, v.grantedById]))]
+  const [accounts, root] = await Promise.all([
+    prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, email: true, role: true } }),
+    loadInstanceRoot(),
+  ])
+  const byId = new Map(accounts.map(a => [a.id, a]))
+  const person = (id: string): SharePerson | null => {
+    const a = byId.get(id)
+    return a ? { id: a.id, name: a.name ?? null, email: a.email ?? null, accountType: accountTypeOf(a, root) } : null
+  }
+  return views.map(v => ({
+    ...v,
+    user: { ...v.user, accountType: person(v.user.id)?.accountType ?? null },
+    grantedBy: person(v.grantedById),
+  }))
+}
+
+/** withPeople for the answer to a change that already committed: a failed read leaves the names bare, never a 500. */
+async function withPeopleAfterCommit(view: ShareView): Promise<ShareView> {
+  try {
+    return (await withPeople([view]))[0]
+  } catch (err) {
+    console.error(`[rbac] could not read the share's accounts: ${safeErrorCode(err)}`)
+    return view
   }
 }
 
@@ -254,7 +302,7 @@ export async function listShares(projectId: string): Promise<ShareView[]> {
     orderBy: { createdAt: 'asc' },
   }) as ShareRecord[]
   const at = now().getTime()
-  return rows.map(r => shareView(r, at))
+  return withPeople(rows.map(r => shareView(r, at)))
 }
 
 class AlreadyShared extends Error {}
@@ -350,7 +398,7 @@ export async function grantShare(auth: PermissionContext, policy: Readonly<Shari
     throw err
   }
   const view = shareView({ ...created, user: { id: recipient.id, name: recipient.name, email: recipient.email, status: recipient.status } }, at)
-  return NextResponse.json({ collaborator: view }, { status: 201 })
+  return NextResponse.json({ collaborator: await withPeopleAfterCommit(view) }, { status: 201 })
 }
 
 /** PATCH .../collaborators/[userId]: change a share's level, Raw data, expiry or note. */
@@ -415,7 +463,7 @@ export async function updateShare(
   })
   if (outcome.kind === 'missing') return noSuchShare()
   if (outcome.kind === 'refused') return outcome.response
-  return NextResponse.json({ collaborator: shareView(outcome.row, at) })
+  return NextResponse.json({ collaborator: await withPeopleAfterCommit(shareView(outcome.row, at)) })
 }
 
 /** Asks the agent to close the person's sockets on the project; false when it did not confirm (logged). */

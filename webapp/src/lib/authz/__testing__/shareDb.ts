@@ -11,6 +11,7 @@
  *   dates; a read returns the row with its `user` (`select` and `include` are not applied);
  * - `$queryRaw` answers only the recipient lookup (`lower(email) = lower($1)`); `$executeRaw` takes
  *   the advisory locks (`locks()` lists their keys) and the notice update is not doubled;
+ * - `user.findMany` matches `{id: {in}}` (the share answers' account types, step 4.12);
  * - break-glass rows can be created, listed and deleted (step 4.14); an audit row gets its
  *   `createdAt` from the clock, and `auditLog.findFirst` matches equality and `{gte, lt}` dates;
  * - `failAudit(action)` makes the audit insert of that action throw, as a lost database would;
@@ -133,6 +134,7 @@ export function createShareDb(clock: () => Date = () => new Date()) {
   const client = {
     user: {
       findUnique: async ({ where }: { where: { id: string } }) => users.get(where.id) ?? null,
+      findMany: async ({ where }: { where: Where }) => [...users.values()].filter(u => matches(u as never, where)),
     },
     project: {
       findUnique: async ({ where }: { where: { id: string } }) => projects.get(where.id) ?? null,
