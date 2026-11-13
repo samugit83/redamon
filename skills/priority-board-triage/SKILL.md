@@ -12,7 +12,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.1.0"
   scope: [root, agentic, webapp]
   auto_invoke:
     - "Changing how a triage score, review or verdict is computed or written"
@@ -64,7 +64,17 @@ For the Cypher itself, also follow `graph-db-writes`; for a new MCP tool,
   to T1 "proven" at its next rescore. (The mute guards' `_PROVEN` does read it,
   on purpose: refusing a mute on a compromised host is the safe direction.)
 - **An `app` decision is never changed or reset over MCP** (`decided_in_app`).
-  Only `app`-channel decisions by the user themself teach a detector's prior.
+  Only the owner's own `app`-channel decisions teach a detector's prior
+  (`coalesce(triage_verdict_by, user_id)` is the owner, in
+  `agentic/cypherfix_triage/fact_queries.py`): a
+  collaborator's verdict never does.
+- **The tenant is the project's owner; the person goes in a field of its own.**
+  Every triage call and write carries the owner as `user_id` (`triageCaller(auth)`
+  in [routeCaller.ts](../../webapp/src/lib/triage/routeCaller.ts),
+  `assertMcpProjectAccess(...).userId` over MCP). Who acted is `triagePerson(auth)`:
+  `verdictBy` (stored as `triage_verdict_by`, sent only when not the owner),
+  `muted_by`, the audit actor, and a run's `actor_user_id`. A collaborator's id
+  as `user_id` reads and writes an empty graph of their own.
 - **A review is valid only while `triage_ai_evidence_hash == triage_evidence_hash`.**
   The hash is `bundle_hash(build_bundle(...))`: normalised, secret-redacted,
   capped. Changing the bundle, the redaction or the cap changes every hash and
@@ -143,4 +153,4 @@ cd webapp && npx vitest run src/lib/triage src/lib/mcp src/app/api/triage
 - [Priority-Board.md](../../redamon.wiki/Priority-Board.md) - the user-facing model: layers, Decided by, Reset, the detail panel, MCP
 - [README.CYPHERFIX_AGENTS.md](../../docs/readmes/README.CYPHERFIX_AGENTS.md) - run steps, publish, run protocol
 - [graph_db/schema_sections.md](../../graph_db/schema_sections.md) - every `triage_*` property, by layer
-- Related skills: `graph-db-writes`, `mcp-server-tools`, `redamon-testing`
+- Related skills: `graph-db-writes`, `mcp-server-tools`, `rbac-authz`, `redamon-testing`

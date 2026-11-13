@@ -11,7 +11,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.1.0"
+  version: "1.2.0"
   scope: [webapp]
   auto_invoke:
     - "Adding, removing or changing a tool on the inbound MCP server"
@@ -81,7 +81,19 @@ the generated reference page, never by this skill.
   [scopeCopy.ts](../../webapp/src/lib/mcp/scopeCopy.ts) is `read` or `write` except `kali:exec`,
   the one `read-write` scope. A tool that only reads what a write needs (`get_finding_evidence`
   for `submit_finding_review`) belongs under the read scope, so a read-only token can see
-  what an agent would act on.
+  what an agent would act on. A new scope also needs a registry permission whose `mcpScopes`
+  names it ([permissions.ts](../../webapp/src/lib/authz/permissions.ts)): every call keeps only
+  the scopes the token's owner may use now (`usableScopes`,
+  [scopePermissions.ts](../../webapp/src/lib/mcp/scopePermissions.ts)), and an unmapped scope is
+  never usable with the permissions switch on.
+- **ALWAYS reach a project through `assertMcpProjectAccess(ctx.token, projectId, level)`**
+  ([mcpAuth.ts](../../webapp/src/lib/mcpAuth.ts)). Pass the whole token (a bare user id never
+  reaches a shared project) and the level of the permission behind the tool, as the app's route
+  asks it; the default `'O'` keeps the tool the owner's. The returned `userId` is the project's
+  owner: the tenant of every graph, finding, mute and triage call, never `ctx.token.userId`
+  ([sharedTenant.test.ts](../../webapp/src/lib/mcp/sharedTenant.test.ts)). To tell the owner from a
+  collaborator read `mcpProjectAccess()`'s `access.level`; an id comparison fails
+  `authzStaticGuard.test.ts` (`b54b78fe`). The rest is the `rbac-authz` skill.
 - **Order the body's checks: `requireScope` first, then no `McpToolError` before the first
   backend read.** The apiReference test proves declared scopes by calling each example and
   expecting the mocked database failure; a refusal on the example's placeholder arguments
@@ -124,4 +136,4 @@ git commit -m "docs: regenerate MCP API reference"
 
 - [MCP-Server.md](../../redamon.wiki/MCP-Server.md), section "Regenerating the API reference" - what the page is built from, and the stale-page test
 - [README.MCP.SERVER.md](../../docs/readmes/README.MCP.SERVER.md) - security model, settings allowlist, deploy wiring; §3.1-3.2 cover Agent Profiles (never an authorization input) and how the onboarding pack is generated
-- Related skills: `agentic-tool-integration`, `project-settings-cascade`, `redamon-testing`
+- Related skills: `agentic-tool-integration`, `project-settings-cascade`, `rbac-authz`, `redamon-testing`

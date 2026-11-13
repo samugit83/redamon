@@ -14,7 +14,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.1.0"
   scope: [root, webapp, agentic]
   auto_invoke:
     - "Editing the plugin platform: the plugins lib or routes, the plugin runner, or the Gateway"
@@ -62,14 +62,20 @@ for an LLM call path, `llm-provider-integration`; for tests, `redamon-testing`.
 - **ALWAYS serve a Gateway call through `withGateway`** ([gateway.ts](../../webapp/src/lib/plugins/gateway.ts)).
   It re-authorizes every call: the call token, `action_ended`/`job_ended` (a token must not outlive
   its action or job; found by the phase 04 review), the plugin still serving (enabled, ready, not
-  revoked), the permission an admin granted, and the tenancy of the session. A route that reads
-  the token itself skips some of these.
-- **NEVER let a plugin write what the agent runs.** A plugin may only `propose`; approval, reset
-  and deletion are core routes that check the scope owner strictly
-  ([changeSetAccess.ts](../../webapp/src/lib/plugins/changeSetAccess.ts): `ownsScope`, and
-  `bodyOwnerMatches` because the act-as cookie is site-wide), and admin lifecycle routes re-read the
-  role from the database because the session JWT outlives a demotion
-  ([lifecycleRoutes.ts](../../webapp/src/lib/plugins/lifecycleRoutes.ts)). A `reviewProposal` that
+  revoked), the permission an admin granted, and the tenancy (`checkTenancy`): `projectAccess` for
+  the token's `sub` (as acted under `act`) meets every level `pluginProjectLevels` gives the
+  plugin's permissions (`W`, `W+A` for `llm:invoke`, `O` with none), the project's owner is still
+  the token's `ten`, and a session's conversation is reached only through `conversationReachable`.
+  Every shortfall is the same 404. A model call spends `ten`'s model and keys, never the person's.
+  A route that reads the token itself skips some of these.
+- **NEVER let a plugin write what the agent runs.** A plugin may only `propose`; approval, rejection,
+  reset and deletion are core routes that decide the scope with `scopeRefusal`
+  ([changeSetAccess.ts](../../webapp/src/lib/plugins/changeSetAccess.ts)): a user scope is its
+  account's own (`ownsRow`, plus `bodyOwnerMatches` because the act-as cookie is site-wide), a
+  project scope needs Manage on the project (403 level `M` to a collaborator below it, 404 to
+  anyone else). Admin lifecycle routes ask `platform:plugins` of the account read fresh
+  (`requirePluginAdmin`, [lifecycleRoutes.ts](../../webapp/src/lib/plugins/lifecycleRoutes.ts))
+  because the session JWT outlives a demotion. A `reviewProposal` that
   a job reports is validated in
   [jobs/complete](../../webapp/src/app/api/plugin-gateway/v1/jobs/complete/route.ts) like a sync
   result, never trusted.
@@ -126,4 +132,4 @@ bash tests/plugins_isolation_live.sh          # live: needs ./redamon.sh up
 - [docs/readmes/README.PLUGINS.md](../../docs/readmes/README.PLUGINS.md) - design, lifecycle, trust model
 - [docs/readmes/README.PLUGIN_SDK.md](../../docs/readmes/README.PLUGIN_SDK.md) - the plugin author's contract
 - [docs/readmes/README.TESTING.md](../../docs/readmes/README.TESTING.md) - "The plugin platform" test map
-- Related skills: `builtin-agent-skill`, `llm-provider-integration`, `redamon-testing`
+- Related skills: `builtin-agent-skill`, `llm-provider-integration`, `rbac-authz`, `redamon-testing`

@@ -12,7 +12,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.1.0"
   scope: [root, agentic, webapp]
   auto_invoke:
     - "Editing the Agent in the Loop broker, adapter, routes or loop MCP tools"
@@ -63,8 +63,17 @@ metadata:
   `toolConfirmation`, and `false` puts a red risk icon next to the Agent in the Loop chip
   ([loopStatus.ts](../../webapp/src/app/graph/components/AIAssistantDrawer/hooks/loopStatus.ts)).
   It stays out of the driver's view and the step (a step change bumps `contractVersion`).
-- **Only a person answers approvals, questions and dangerous-tool confirmations.** No MCP
-  tool may answer them ([loopTools.ts](../../webapp/src/lib/mcp/loopTools.ts)).
+- **Only a person answers approvals, questions and dangerous-tool confirmations, and only one
+  who may take that decision.** No MCP tool may answer them
+  ([loopTools.ts](../../webapp/src/lib/mcp/loopTools.ts)). Before anything runs or is saved the
+  socket checks the answer twice: `_refused_without` against the ticket's `cap`, then
+  `_refused_now`, which asks the webapp again and refuses when it cannot be reached; an admitted
+  answer is saved with `decision_actor()` (`sub`, `act` under act-as), as `_record_decision` does
+  ([websocket_api.py](../../agentic/websocket_api.py)). A new kind of answer takes all three.
+- **A loop step belongs to the person, never the tenant.** Run scopes and steps are keyed by the
+  session's person (`get_identifiers`; the token's user on the MCP side); the project's owner is
+  only the graph tenant (`get_tenant_id`). A driver reaches a shared project only at
+  `agent:loop`'s level through `mcpProjectAccess` (`loopProjects` in loopTools.ts).
 - **A driver token holds no write or exec scope besides `agent:loop`.** Compute it from
   `MCP_SCOPE_COPY` with `loopTokenProblem`, never a hand list; the loop tools refuse wider
   tokens ([loopScopes.ts](../../webapp/src/lib/mcp/loopScopes.ts)).
@@ -96,4 +105,4 @@ metadata:
 
 - [docs/readmes/README.MCP.SERVER.md](../../docs/readmes/README.MCP.SERVER.md) - the inbound MCP server and its security model
 - The wiki page `Agent-in-the-Loop` - setup for Claude Code and Codex, how it works, limits
-- Related skills: `llm-provider-integration`, `mcp-server-tools`, `redamon-testing`
+- Related skills: `llm-provider-integration`, `mcp-server-tools`, `rbac-authz`, `redamon-testing`
