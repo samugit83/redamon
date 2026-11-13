@@ -37,21 +37,23 @@ export async function POST(
       // All attack chains in Neo4j for this project.
       const res = await neo4jSession.run(
         `MATCH (ac:AttackChain { project_id: $projectId })
-         RETURN ac.chain_id AS chainId, ac.user_id AS userId`,
+         RETURN ac.chain_id AS chainId`,
         { projectId }
       )
       const orphans = res.records
-        .map(r => ({ chainId: r.get('chainId') as string, userId: r.get('userId') as string }))
+        .map(r => ({ chainId: r.get('chainId') as string }))
         .filter(c => c.chainId && !liveSessionIds.has(c.chainId))
 
-      // Stop each orphan's running agent task (best-effort) so it can't re-seed.
+      // Stop each orphan's running agent task (best-effort) so it can't re-seed. By project and
+      // session, with no user: a chain names the project's owner (the graph tenant, step 5.3),
+      // not the person whose run keys it, and session ids are unique.
       const AGENT_API_URL = process.env.AGENT_API_URL || process.env.NEXT_PUBLIC_AGENT_API_URL || 'http://agent:8080'
       for (const orphan of orphans) {
         try {
           await fetch(`${AGENT_API_URL}/agent-session/stop`, {
             method: 'POST',
             headers: internalKeyHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ user_id: orphan.userId, project_id: projectId, session_id: orphan.chainId }),
+            body: JSON.stringify({ project_id: projectId, session_id: orphan.chainId }),
           })
           stopped.push(orphan.chainId)
         } catch (e) {

@@ -112,6 +112,11 @@ export async function DELETE(
       return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
     }
 
+    // The graph tenant: the project's owner, whose id every chain node carries whoever ran it
+    // (step 5.3), from the access the guard read. The agent's run is keyed on its person, the
+    // author, so the stop below names them. Without an owner, the author: what it deleted before.
+    const tenantUserId = auth.access?.project.userId || conversation.userId
+
     // STOP the running agent task for this session FIRST. Deleting a conversation
     // used to leave its agent loop running headlessly: it kept iterating and
     // re-MERGEing its AttackChain into Neo4j, so the graph repopulated moments
@@ -155,7 +160,7 @@ export async function DELETE(
            DETACH DELETE n`,
           {
             chainId: conversation.sessionId,
-            userId: conversation.userId,
+            userId: tenantUserId,
             projectId: conversation.projectId,
           }
         )

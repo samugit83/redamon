@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthzIdentity, type AuthzIdentity } from '@/lib/session'
-import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
+import { meetsLevel, projectAccess, type ProjectAccess } from '@/lib/authz/projectAccess'
 import { requirePermission } from '@/lib/authz/guards'
 import { createWsTicket } from '@/lib/auth'
 import { assertGraphNotActivating } from '@/lib/activationLock'
@@ -13,12 +13,12 @@ import { agentTicketCap } from '@/lib/authz/agentCap'
 import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 
 /**
- * The signed-in person, read fresh, when the effective user owns the project a terminal ticket
- * names. The owner only (step 4.3), as for the MCP and plugin checks no route permission backs:
- * the terminal's run credential takes the ticket's `sub` as the graph tenant (T15), which for a
- * collaborator would be the wrong one, until step 5.3 gives the ticket its tenant.
+ * The signed-in person, read fresh, and the effective user's access, when they own the project a
+ * terminal ticket names. The owner only (step 4.3), as for the MCP and plugin checks no route
+ * permission backs. The ticket now names the project's owner as the tenant the terminal's run
+ * credential takes (`ten`, step 5.3); the hold stays until the level table opens `W+X` (step 5.2).
  */
-async function terminalIdentity(projectId: string): Promise<AuthzIdentity | NextResponse> {
+async function terminalIdentity(projectId: string): Promise<{ identity: AuthzIdentity; access: ProjectAccess } | NextResponse> {
   const identity = await getAuthzIdentity({ fresh: true })
   if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const access = await projectAccess({ userId: (identity.actingAs ?? identity.principal).id }, projectId, { fresh: true })
@@ -26,7 +26,7 @@ async function terminalIdentity(projectId: string): Promise<AuthzIdentity | Next
   if (!meetsLevel(access, 'O')) {
     return NextResponse.json({ error: TERMINAL_OWNER_ONLY, code: 'owner_only', permission: 'platform:kali_terminal' }, { status: 403 })
   }
-  return identity
+  return { identity, access }
 }
 
 const TERMINAL_OWNER_ONLY = "Only the project's owner can open the Kali terminal on it."
@@ -53,6 +53,10 @@ const TERMINAL_REFUSED =
 // the agent enforces the person holds on the project, under act-as only those both the
 // admin and the account acted as hold (authz/agentCap.ts).
 //
+// Every ticket names the project's owner as `ten` (step 5.3): the graph, the traffic and
+// the credentials the socket's work uses are the owner's, while `sub` stays the person.
+// The owner comes from the access the project check above read, never from the body.
+//
 // Each socket is its permission on the ticket's project (step 3.9), read fresh: the chat
 // `agent:chat`, CypherFix triage `triage:run`, CypherFix CodeFix `codefix:run`. The terminal
 // needs the project (the effective user's, as for every socket) and its platform tool below.
@@ -74,15 +78,20 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
     )
   }
 
-  const identity = socket === 'agent'
+  const checked = socket === 'agent'
     ? await requirePermission(request, 'agent:chat', { projectId, fresh: true })
     : socket === 'cypherfix-triage'
       ? await requirePermission(request, 'triage:run', { projectId, fresh: true })
       : socket === 'cypherfix-codefix'
         ? await requirePermission(request, 'codefix:run', { projectId, fresh: true })
         : await terminalIdentity(projectId)
-  if (identity instanceof NextResponse) return identity
+  if (checked instanceof NextResponse) return checked
+  const identity = 'identity' in checked ? checked.identity : checked
   const eff = { userId: (identity.actingAs ?? identity.principal).id }
+  // Every check above named the project and read its access; one without an owner is a bug
+  // there, and a ticket without its tenant is never minted (a coded 500, not a ticket for `sub`).
+  const tenant = checked.access?.project.userId
+  if (!tenant) throw new Error('[rbac] ws-ticket: the project check named no owner for the ticket tenant')
 
   let actor: string | undefined
   let actorEmail: string | null = null
@@ -118,11 +127,9 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   const realActor = actor && actor !== eff.userId ? actor : undefined
   let ticket: string | null
   if (socket === 'agent') {
-    ticket = await createWsTicket(eff.userId, projectId, sessionId, socket, realActor, await agentTicketCap(identity, projectId))
+    ticket = await createWsTicket(eff.userId, projectId, sessionId, socket, realActor, await agentTicketCap(identity, projectId), tenant)
   } else {
-    ticket = realActor
-      ? await createWsTicket(eff.userId, projectId, sessionId, socket, realActor)
-      : await createWsTicket(eff.userId, projectId, sessionId, socket)
+    ticket = await createWsTicket(eff.userId, projectId, sessionId, socket, realActor, undefined, tenant)
   }
 
   if (ticket && socket === 'kali-terminal' && actor) {

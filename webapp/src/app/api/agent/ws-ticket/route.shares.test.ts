@@ -134,7 +134,7 @@ describe('a read collaborator mints no ticket on the shared project (step 4.3)',
     signedInAs(account('alice'))
     expect((await post('agent')).status).toBe(200)
     expect(h.createWsTicket).toHaveBeenLastCalledWith('alice', 'P-alice', 's', 'agent', undefined,
-      ['agent:approve_phase', 'agent:approve_dangerous', 'agent:fireteam', 'agent:kali_exec'])
+      ['agent:approve_phase', 'agent:approve_dangerous', 'agent:fireteam', 'agent:kali_exec'], 'alice')
     expect((await post('cypherfix-triage')).status).toBe(200)
   })
 })

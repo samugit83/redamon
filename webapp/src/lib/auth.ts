@@ -127,14 +127,22 @@ export async function createWsTicket(
   // An `agent` ticket's agent permissions (authz/agentCap.ts). The agent refuses the
   // approvals they do not cover; an empty list holds none, while no claim at all is
   // a ticket from before step 3.9b, which the agent treats as today's behaviour.
-  cap?: readonly AgentTicketCap[]
+  cap?: readonly AgentTicketCap[],
+  // The project's owner (`ten`, step 5.3): the graph tenant whose graph, traffic and
+  // credentials the socket's work uses, while `userId` (`sub`) stays the person, who
+  // keys the session, the chat and the loop. The ticket route always passes it; the
+  // agent reads a ticket without it as `sub`, which only an owner's ticket ever was.
+  tenantUserId?: string
 ): Promise<string | null> {
   const key = getWsTicketSecret()
   if (!key) return null
+  // An empty tenant would run the socket's work on nobody's graph: refused, never omitted.
+  if (tenantUserId !== undefined && !tenantUserId) throw new Error('A ticket tenant is a non-empty user id')
   // A plain string claim, not setAudience(), which may write a list: the agent
   // compares `aud` with its socket name and accepts exactly one string.
   return new SignJWT({
     sub: userId, pid: projectId, sid: sessionId, aud: socket,
+    ...(tenantUserId ? { ten: tenantUserId } : {}),
     ...(realActorUserId && realActorUserId !== userId ? { act: realActorUserId } : {}),
     ...(cap ? { cap: [...cap] } : {}),
   })

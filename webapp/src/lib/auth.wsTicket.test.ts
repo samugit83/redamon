@@ -1,7 +1,8 @@
 /**
- * createWsTicket writes the socket it opens into `aud` (HD-25). The claim set
- * here is the one agentic/tests/test_ws_ticket_interop.py signs with jose and
- * verifies with the agent's Python verifier: keep the two in step.
+ * createWsTicket writes the socket it opens into `aud` (HD-25) and the project's
+ * owner into `ten` (step 5.3). The claim set here is the one
+ * agentic/tests/test_ws_ticket_interop.py signs with jose and verifies with the
+ * agent's Python verifier: keep the two in step.
  *
  * Run: npx vitest run src/lib/auth.wsTicket.test.ts
  *
@@ -55,6 +56,22 @@ describe('createWsTicket', () => {
     expect(none).toMatchObject({ cap: [], act: 'admin-1' })
     const without = (await jwtVerify((await createWsTicket('u1', 'p1', 's1', 'agent'))!, key)).payload
     expect(without).not.toHaveProperty('cap')
+  })
+
+  test('the tenant rides along as ten, the project owner, beside the person in sub (step 5.3)', async () => {
+    vi.stubEnv('AGENT_WS_TICKET_SECRET', SECRET)
+    const shared = (await jwtVerify((await createWsTicket('collab', 'p1', 's1', 'agent', undefined, [], 'owner'))!, key)).payload
+    expect(Object.keys(shared).sort()).toEqual(['aud', 'cap', 'exp', 'iat', 'pid', 'sid', 'sub', 'ten'])
+    expect(shared).toMatchObject({ sub: 'collab', ten: 'owner', pid: 'p1', sid: 's1', aud: 'agent' })
+    // Written for an owner too: the agent never has to guess whose graph it is.
+    const own = (await jwtVerify((await createWsTicket('owner', 'p1', 's1', 'kali-terminal', 'admin-1', undefined, 'owner'))!, key)).payload
+    expect(own).toMatchObject({ sub: 'owner', ten: 'owner', act: 'admin-1' })
+    expect(own).not.toHaveProperty('cap')
+  })
+
+  test('an empty tenant is refused, never written or left out', async () => {
+    vi.stubEnv('AGENT_WS_TICKET_SECRET', SECRET)
+    await expect(createWsTicket('u1', 'p1', 's1', 'agent', undefined, [], '')).rejects.toThrow('A ticket tenant is a non-empty user id')
   })
 
   test('no ticket without a secret, or with the compose placeholder', async () => {

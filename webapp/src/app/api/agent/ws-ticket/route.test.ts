@@ -7,7 +7,9 @@
  * a REAL signed-in user who holds the terminal (admin, legacy grant, or the
  * escape hatch): an admin acting as a member never borrows the member's grant.
  * An `agent` ticket carries `cap` (step 3.9b, SH-34): the agent permissions agentTicketCap
- * (authz/agentCap.ts, tested there) gives the identity on the ticket's project.
+ * (authz/agentCap.ts, tested there) gives the identity on the ticket's project. Every ticket
+ * names the project's owner, from the project check, as its tenant (`ten`, step 5.3, SH-33);
+ * the doubles' project belongs to `real-user` unless a case says otherwise.
  * session, auth and agentCap are mocked; sharedToolAccess is the real one.
  *
  * Run: npx vitest run "src/app/api/agent/ws-ticket/route.test.ts"
@@ -138,7 +140,7 @@ describe('POST /api/agent/ws-ticket — S6 + impersonation', () => {
     const res = await POST(req({ userId: 'victim', projectId: 'p', sessionId: 's' }))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ticket: 'signed.ticket.value' })
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('real-user', 'p', 's', 'agent', undefined, ALL_CAP)
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('real-user', 'p', 's', 'agent', undefined, ALL_CAP, 'real-user')
   })
 
   test('admin simulating X → ticket minted for X (impersonation-consistent)', async () => {
@@ -147,14 +149,14 @@ describe('POST /api/agent/ws-ticket — S6 + impersonation', () => {
     const res = await POST(req({ projectId: 'p', sessionId: 's' }))
     expect(res.status).toBe(200)
     expect(mockRequireProjectAccess).toHaveBeenCalledWith({ userId: 'user-X' }, 'p')
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('user-X', 'p', 's', 'agent', 'admin-1', ALL_CAP)
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('user-X', 'p', 's', 'agent', 'admin-1', ALL_CAP, 'user-X')
   })
 
   test('the real admin behind an act-as is carried as the actor', async () => {
     signedIn(principal('admin-1', 'admin'), 'user-X')
     const res = await POST(req({ projectId: 'p', sessionId: 's', socket: 'cypherfix-triage' }))
     expect(res.status).toBe(200)
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('user-X', 'p', 's', 'cypherfix-triage', 'admin-1')
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('user-X', 'p', 's', 'cypherfix-triage', 'admin-1', undefined, 'real-user')
   })
 
   test('EXPLOIT: minting a ticket for a project the effective user does not own → blocked, no ticket', async () => {
@@ -190,15 +192,15 @@ describe('the ticket names its socket (HD-25)', () => {
       mockCreateWsTicket.mockClear()
       const res = await POST(req({ projectId: 'p', sessionId: 's', socket }))
       expect(res.status, socket).toBe(200)
-      if (socket === 'agent') expect(mockCreateWsTicket).toHaveBeenCalledWith('admin-1', 'p', 's', socket, undefined, ALL_CAP)
-      else expect(mockCreateWsTicket).toHaveBeenCalledWith('admin-1', 'p', 's', socket)
+      if (socket === 'agent') expect(mockCreateWsTicket).toHaveBeenCalledWith('admin-1', 'p', 's', socket, undefined, ALL_CAP, 'real-user')
+      else expect(mockCreateWsTicket).toHaveBeenCalledWith('admin-1', 'p', 's', socket, undefined, undefined, 'real-user')
     }
   })
 
   test('no socket in the body is the chat socket (a browser bundle from before the update)', async () => {
     signedInAs('u1')
     expect((await POST(req({ projectId: 'p', sessionId: 's' }))).status).toBe(200)
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('u1', 'p', 's', 'agent', undefined, ALL_CAP)
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('u1', 'p', 's', 'agent', undefined, ALL_CAP, 'real-user')
   })
 
   test('unknown socket 400', async () => {
@@ -241,7 +243,7 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
       signedIn(who)
       const res = await POST(terminal())
       expect(res.status, who.id).toBe(200)
-      expect(mockCreateWsTicket).toHaveBeenCalledWith(who.id, 'p', 's', 'kali-terminal')
+      expect(mockCreateWsTicket).toHaveBeenCalledWith(who.id, 'p', 's', 'kali-terminal', undefined, undefined, 'real-user')
       expect(mockWriteAudit).toHaveBeenCalledWith({
         actorId: who.id, action: 'agent.terminal_opened', targetType: 'project', targetId: 'p',
         after: { via }, source: 'ui',
@@ -277,7 +279,7 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
     signedIn(principal('admin-1', 'admin'), 'member-new')
     const res = await POST(terminal())
     expect(res.status).toBe(200)
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('member-new', 'p', 's', 'kali-terminal', 'admin-1')
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('member-new', 'p', 's', 'kali-terminal', 'admin-1', undefined, 'real-user')
     expect(mockWriteAudit).toHaveBeenCalledWith(expect.objectContaining({
       actorId: 'admin-1', action: 'agent.terminal_opened', targetId: 'p',
       after: { via: 'admin', actingAsUserId: 'member-new' },
@@ -349,14 +351,14 @@ describe('the agent ticket carries the approval permissions (step 3.9b, SH-34)',
     const [identity, projectId] = mockAgentCap.mock.calls[0]
     expect(projectId).toBe('p')
     expect(identity).toMatchObject({ principal: { id: 'member-b' }, actingAs: null })
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('member-b', 'p', 's', 'agent', undefined, ['agent:fireteam'])
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('member-b', 'p', 's', 'agent', undefined, ['agent:fireteam'], 'real-user')
   })
 
   test('holding none is written as an empty cap, never left out (no claim = everything)', async () => {
     signedInAs('u1')
     mockAgentCap.mockResolvedValue([])
     await POST(req({ projectId: 'p', sessionId: 's' }))
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('u1', 'p', 's', 'agent', undefined, [])
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('u1', 'p', 's', 'agent', undefined, [], 'real-user')
   })
 
   test('under act-as the cap is asked of both people: the admin and the account acted as', async () => {
@@ -364,7 +366,7 @@ describe('the agent ticket carries the approval permissions (step 3.9b, SH-34)',
     await POST(req({ projectId: 'p', sessionId: 's' }))
     const [identity] = mockAgentCap.mock.calls[0]
     expect(identity).toMatchObject({ principal: { id: 'admin-1' }, actingAs: { id: 'member-a' } })
-    expect(mockCreateWsTicket).toHaveBeenCalledWith('member-a', 'p', 's', 'agent', 'admin-1', ALL_CAP)
+    expect(mockCreateWsTicket).toHaveBeenCalledWith('member-a', 'p', 's', 'agent', 'admin-1', ALL_CAP, 'real-user')
   })
 
   test('the other sockets carry no cap and ask for none', async () => {
@@ -390,5 +392,32 @@ describe('the agent ticket carries the approval permissions (step 3.9b, SH-34)',
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Could not issue a ticket for the agent connection', code: 'P1001' })
     expect(mockCreateWsTicket).not.toHaveBeenCalled()
+  })
+})
+
+describe('every ticket names the project\'s owner as its tenant (step 5.3, SH-33)', () => {
+  test.each(['agent', 'kali-terminal', 'cypherfix-triage', 'cypherfix-codefix'])(
+    '%s: the tenant is the owner the project check read, never the effective user or the body', async (socket) => {
+      // An admin holds the terminal; the effective user differs from the owner the check answers.
+      signedIn(principal('admin-1', 'admin'))
+      mockRequireProjectAccess.mockResolvedValue({ project: { id: 'p', userId: 'owner-1' } })
+      const res = await POST(req({ projectId: 'p', sessionId: 's', socket, ten: 'victim', tenantUserId: 'victim', userId: 'victim' }))
+      expect(res.status).toBe(200)
+      const args = mockCreateWsTicket.mock.calls[0]
+      expect(args[0]).toBe('admin-1')
+      expect(args[6]).toBe('owner-1')
+    })
+
+  test('a project check that names no owner mints nothing: a coded 500, never a ticket for sub alone', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    signedIn(principal('admin-1', 'admin'))
+    mockRequireProjectAccess.mockResolvedValue({ project: { id: 'p', userId: '' } })
+    for (const socket of ['agent', 'kali-terminal', 'cypherfix-triage', 'cypherfix-codefix']) {
+      const res = await POST(req({ projectId: 'p', sessionId: 's', socket }))
+      expect(res.status, socket).toBe(500)
+      expect((await res.json()).error).toBe('Could not issue a ticket for the agent connection')
+    }
+    expect(mockCreateWsTicket).not.toHaveBeenCalled()
+    expect(mockWriteAudit).not.toHaveBeenCalled()
   })
 })

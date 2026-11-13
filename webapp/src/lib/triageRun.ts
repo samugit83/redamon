@@ -22,6 +22,7 @@
 import prisma from '@/lib/prisma'
 import { isActivationInProgress } from '@/lib/activationLock'
 import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
+import { PERMISSIONS } from '@/lib/authz/permissions'
 import { MCP_RUN_COOLDOWN_MS, MCP_RUNS_PER_DAY } from '@/lib/triage/limits'
 
 /** Statuses in which a run still intends to write. */
@@ -270,10 +271,14 @@ export async function refuseTriageStart(
   actorUserId: string,
 ): Promise<StartRefusal | null> {
   // A project that does not exist and one the actor cannot see are the same
-  // answer, so this cannot be used to enumerate project ids. The owner's level:
-  // no route permission backs this internal start.
+  // answer, so this cannot be used to enumerate project ids. The actor is the
+  // person the run is for, who may be a collaborator (step 5.3: the agent sends
+  // the ticket's `sub`, while the run reads the owner's graph): their access must
+  // reach `triage:run`'s level, as the ticket route and the MCP start asked of the
+  // permission itself. Below that level a run never starts.
   const access = await projectAccess({ userId: actorUserId }, projectId)
-  if (!access || !meetsLevel(access, 'O')) {
+  const level = PERMISSIONS['triage:run'].level
+  if (!access || level === null || !meetsLevel(access, level)) {
     return { reason: 'Not found' }
   }
 
