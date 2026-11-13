@@ -25,7 +25,7 @@
  * message text reaches an MCP client; the code and its details go to the audit
  * row through `McpToolError`'s `audit` argument.
  */
-import { requireScope, assertMcpProjectAccess } from '@/lib/mcpAuth'
+import { requireScope, assertMcpProjectAccess, mcpProjectAccess } from '@/lib/mcpAuth'
 import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
 import {
@@ -369,9 +369,10 @@ export async function startTriageRun(ctx: McpContext, projectId: string) {
   // on a refusal cannot run it unmetered. triage:run's level (W+A, Use AI agent with the owner's
   // consent) on a shared project, step 5.10: the run reads the owner's graph and names the token's
   // user as its person, whom the webapp checks again and records as spending the owner's model.
-  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId, 'W+A')
-  const tenant: TriageTenant = { userId: owner, projectId }
-  const actor = ctx.token.userId !== owner ? { actorUserId: ctx.token.userId } : {}
+  const { project, access } = await mcpProjectAccess(ctx.token, projectId, 'W+A')
+  const tenant: TriageTenant = { userId: project.userId, projectId }
+  // The owner's own run names nobody beside the tenant, as before.
+  const actor = access.level === 'owner' ? {} : { actorUserId: ctx.token.userId }
 
   let live
   try {
