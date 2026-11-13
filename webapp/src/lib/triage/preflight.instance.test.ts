@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   own: [] as { providerType: string; apiKey: string }[],
   entitled: [] as { id: string }[],
   entitledFails: false,
+  withheld: false,
 }))
 
 vi.mock('@/lib/prisma', () => ({
@@ -43,6 +44,7 @@ vi.mock('@/lib/instanceProviders/entitlement', () => ({
     if (h.entitledFails) throw new Error('db down')
     return id === 'owner-1' ? h.entitled : []
   },
+  ownProvidersWithheld: async () => h.withheld,
 }))
 
 import { computePreflight } from './preflight'
@@ -54,6 +56,7 @@ beforeEach(() => {
   h.own = []
   h.entitled = []
   h.entitledFails = false
+  h.withheld = false
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
@@ -81,5 +84,16 @@ describe('hasModelKey with instance providers', () => {
     expect((await computePreflight(caller))?.hasModelKey).toBe(false)
     h.own = [{ providerType: 'openai', apiKey: 'sk-own' }]
     expect((await computePreflight(caller))?.hasModelKey).toBe(true)
+  })
+})
+
+describe('withheld own providers (fix of the 6.11 review, finding 2)', () => {
+  test('an own key the agent will not use is no key: the run would fail llm_not_configured', async () => {
+    h.model = 'gpt-5'
+    h.own = [{ providerType: 'openai', apiKey: 'sk-own' }]
+    h.withheld = true
+    const preflight = await computePreflight(caller)
+    expect(preflight?.hasModelKey).toBe(false)
+    expect(preflight?.estimatedAiCalls).toBe(0)
   })
 })

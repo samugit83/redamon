@@ -26,7 +26,11 @@ vi.mock('@/lib/prisma', () => ({
 }))
 vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: async () => ({ userId: 'alice' }) }))
-vi.mock('@/lib/instanceProviders/entitlement', () => ({ entitledInstanceProviders: (id: string) => entitled(id) }))
+const withheld = vi.fn(async (_id: string) => false)
+vi.mock('@/lib/instanceProviders/entitlement', () => ({
+  entitledInstanceProviders: (id: string) => entitled(id),
+  ownProvidersWithheld: (id: string) => withheld(id),
+}))
 
 import { POST } from './route'
 
@@ -51,6 +55,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockProviders.mockResolvedValue([OWN_OPENAI])
   entitled.mockResolvedValue([instance()])
+  withheld.mockResolvedValue(false)
   vi.stubGlobal('fetch', fetchMock)
   fetchMock.mockResolvedValue(new Response(JSON.stringify({
     choices: [{ message: { content: '{"naabuEnabled": true}' } }],
@@ -84,12 +89,42 @@ describe('an instance provider model', () => {
     ['a model of another kind', 'instance/inst-1/claude-opus-4-6', null],
     ['an endpoint naming another custom id', 'instance/inst-1/custom/own-1', null],
     ['a malformed id', 'instance/inst-1', null],
+    ['a loop id behind the prefix (agent-in-the-loop: never outside a chat run)', 'instance/inst-1/loop/mcp', null],
+    ['a nested instance id', 'instance/inst-1/instance/inst-1/gpt-5', null],
+    ['a legacy openai_compat id behind the prefix', 'instance/inst-1/openai_compat/llama3', null],
   ])('%s → model_unavailable, never sent with the own key', async (_name, model, rows) => {
     if (rows) entitled.mockResolvedValue(rows)
     saved(model)
     const res = await generate()
     expect(res.status).toBe(503)
     expect(await res.json()).toMatchObject({ code: 'model_unavailable', model })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('byoLlmForbidden (fix of the 6.11 review, finding 1)', () => {
+  test('withheld own providers: a model on them is model_unavailable, the own rows are never read or sent', async () => {
+    withheld.mockResolvedValue(true)
+    saved('gpt-5')
+    const res = await generate()
+    expect(res.status).toBe(503)
+    expect(await res.json()).toMatchObject({ code: 'model_unavailable', model: 'gpt-5' })
+    expect(withheld).toHaveBeenCalledWith('alice')
+    expect(mockProviders).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('an instance model is not the account\'s own provider: it still works while the own ones are withheld', async () => {
+    withheld.mockResolvedValue(true)
+    saved('instance/inst-1/gpt-5')
+    expect((await generate()).status).toBe(200)
+    expect(sentAuth().Authorization).toBe(`Bearer ${INSTANCE_KEY}`)
+  })
+
+  test('a legacy openai_compat model is refused, never sent to OpenAI with the own key', async () => {
+    saved('openai_compat/llama3')
+    const res = await generate()
+    expect(res.status).toBe(503)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })

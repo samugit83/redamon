@@ -8,7 +8,7 @@ import { readFeatureModelCode } from '@/lib/llmFeatures'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { isChatProvider } from '@/lib/llmProviderKinds'
 import { isLoopModel } from '@/lib/agentInTheLoop'
-import { entitledInstanceProviders } from '@/lib/instanceProviders/entitlement'
+import { entitledInstanceProviders, ownProvidersWithheld } from '@/lib/instanceProviders/entitlement'
 import { isInstanceModel, splitInstanceModel, type InstanceLlmProviderRecord } from '@/lib/instanceProviders/rows'
 import { builtinSendsTemperature, customSendsTemperature, rejectsTemperature } from '@/lib/llmTemperature'
 
@@ -51,6 +51,12 @@ ${RECON_PARAMETER_CATALOG}
 type Resolved =
   | { kind: 'custom'; providerId: string }
   | { kind: 'builtin'; providerType: string; modelId: string }
+  /** A prefix no provider row serves here: Agent in the Loop, an instance id, the legacy env-var endpoint. */
+  | { kind: 'unsupported' }
+
+// The agent's parse_model_provider routes these to no keyed provider; read as OpenAI they would
+// post a key to api.openai.com with a model it does not have.
+const UNSUPPORTED_PREFIXES = ['loop/', 'instance/', 'openai_compat/']
 
 /**
  * Resolve a model string to either a specific custom provider id or a builtin
@@ -60,6 +66,7 @@ type Resolved =
  * - All other prefixes encode the api model name after the prefix.
  */
 function resolveModel(model: string): Resolved {
+  if (UNSUPPORTED_PREFIXES.some((prefix) => model.startsWith(prefix))) return { kind: 'unsupported' }
   if (model.startsWith('custom/')) {
     return { kind: 'custom', providerId: model.slice('custom/'.length) }
   }
@@ -91,6 +98,7 @@ function resolveModel(model: string): Resolved {
  * agentic/llm_builder.py `instance_build_args`).
  */
 function instanceServes(kind: string, providerId: string, resolved: Resolved): boolean {
+  if (resolved.kind === 'unsupported') return false
   if (resolved.kind === 'custom') return kind === 'openai_compatible' && resolved.providerId === providerId
   return resolved.providerType === kind
 }
@@ -325,6 +333,13 @@ export async function POST(request: NextRequest) {
       })
     }
 
+    if (resolved.kind === 'unsupported') {
+      return featureModelErrorResponse('model_unavailable', 'preset_generator', {
+        model,
+        error: `Preset generation cannot use "${model}". Choose an OpenAI, Anthropic, OpenAI-Compatible, or other provider model.`,
+      })
+    }
+
     if (resolved.kind === 'builtin' && resolved.providerType === 'bedrock') {
       return featureModelErrorResponse('model_unavailable', 'preset_generator', {
         model,
@@ -335,9 +350,12 @@ export async function POST(request: NextRequest) {
     // Chat providers only: a non-chat row (a Jev provider) is never a model to call, and
     // `custom/<id>` accepts any row id, so without this the token would be posted to
     // whatever base URL such a row held.
+    // byoLlmForbidden: the agent would not use the account's own rows, so neither does this call.
     const providers: InstanceLlmProviderRecord[] = instanceRow
       ? [instanceRow]
-      : (await prisma.userLlmProvider.findMany({ where: { userId } })).filter(isChatProvider)
+      : (await ownProvidersWithheld(userId))
+        ? []
+        : (await prisma.userLlmProvider.findMany({ where: { userId } })).filter(isChatProvider)
 
     let rawResponse: string
 
