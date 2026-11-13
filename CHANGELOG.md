@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.8.0] - 2026-11-11
+
 ### Added
 
+- **Every secret the recon pipeline finds is now readable in the UI.** A secret shows as `••••` and its last four characters, with a button that copies the full value; the tooltip gives only its length, so a screenshot or a shared screen shows no more than four characters. This applies to the Red Zone **Secrets** screen (a new *Secret* column, with the other half of a key pair, such as an AWS secret access key, under it), the **JS Recon** Secrets tab, a new **Secrets** column on the **Route Exposure** screen, and every graph view (node drawer, Node Inspector, expanded rows, Recon Delta). The CSV, JSON and Markdown exports carry the full values; the PDF report prints only the last four characters. A secret is never a filter column, since a filter lists every value of its column.
+- **Every link that carried a secret opens whole.** A leaked reset or invite link, a URL with an API key or a JWT in it, a quarantined Endpoint and a urlscan redirect now link to the full URL, value included, where they opened the masked `***` / `{token}` form. The node drawer, the all-nodes table, the Param Matrix and the Secrets screen's Source URL all prefer the full link. A grouped finding keeps up to 25 of its distinct links, newest first.
+- **Recon keeps the value it found, beside the masked form.** New display-only properties, listed in `graph_db/display_only.py` (mirrored in `webapp/src/lib/secrets/secretProps.ts`):
+  - **urlscan**: `Secret.secret_value` and `unmasked_url`; `unmasked_url` / `unmasked_urls` on its `urlscan_leak` findings and quarantined Endpoints; `unmasked_redirect_from_urls` on an ExternalDomain. A quarantined visit also keeps its screenshot and urlscan scan ID, and a web-shell trace its scan ID.
+  - **JS Recon**: `secret_value` (a keyword rule's quoted value, a private key's whole PEM block, else the match) and `raw_context` (the code around it, unmasked), plus `paired_secret` from the TruffleHog engine; an AI SDK key's `JsReconFinding.secret_value`.
+  - **jsluice**: `secret_value`, `paired_secret` (AWS) and `raw_context`.
+  - **Route Exposure**: `secret_values` and `secret_value_types` on a finding whose response held a secret (at most 20 per response).
+- **Leaked links and secrets in the web archives' URLs become findings** (`source: 'url_archive'`, shown as "web archives"). GAU and ParamSpider used to drop the archive URLs the quarantine holds and log only a count. They are still never requested; their leaked one-time links and secrets are now written like urlscan's, one finding per host, path and kind and one Secret per value (its HMAC), in full and partial runs. They are pruned with resource enumeration and filtered under the "urlscan history" and Secrets node-filter kinds. ParamSpider replaces every value with `FUZZ`, so only a token in a path can come from it.
 - **Hostnames on target IPs: four modes for an IP-mode project.** One server often hosts several sites, and an HTTPS site usually answers only to its own name, so the Target section of an IP project now says what RedAmon does with the hostnames it sees on the target addresses (`ipHostnameMode`):
   - **IP only** (`ip_only`, the default): the addresses are scanned and the scan looks up no hostname: no reverse DNS, no passive-DNS name source, no name sent as SNI or Host. The agent's target guardrail still reverse-resolves the public target IPs (see *Upgrade*).
   - **Record hostnames** (`record_only`): the names seen on each target IP are collected and recorded, and only the IPs are scanned. Sources: every reverse-DNS answer, the certificate names from tlsx, httpx and IP attribution, redirect targets, and the passive sources you enabled (Shodan, OTX passive DNS, Censys, FOFA, Netlas, ZoomEye).
@@ -39,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The agent never reads the secrets kept for the UI.** The agent's `query_graph`, `/graph/exec` and `/graph/nl-query` (MCP `query_graph` and the sandbox's `redagraph`) refuse a query that names a display-only property, with a message pointing at the masked fields, and drop those properties from every node and map they return. "Ask the agent about this node" leaves them out too. The quarantine is unchanged: RedAmon still never opens a leaked link or reuses a found token by itself; only your click does. Route Exposure's `evidence_snippet`, which the agent reads, stays masked. The masked fields remain the identities and the inputs of every request list.
+- **Neo4j now holds these values in clear**, and so do graph snapshots, project exports and the recon JSON. Treat database access and exported files like the credentials they contain. The one-off urlscan backfill (`tooling/scripts/urlscan_backfill.py`) never touches the display-only fields.
 - **No signed-in user can act on another user's runs, sessions, tunnel, templates, MCP servers, secrets or graph any more** (the RBAC hardening). Five tools act on the whole instance, so they are now an admin's: the Kali terminal, every user's shell sessions, the reverse-shell tunnel, the instance-wide emergency stop and every Nuclei template. Members who used them keep what they had as reviewable legacy grants (see *Changed*).
 - **The role and the account come from the database on every request.** A demoted admin loses admin powers, and a deleted account its session, at the next request instead of when the 7-day login token expires; an act-as cookie stops working when its admin is demoted or its target is deleted.
 - **Admins cannot silently take each other over.** Acting as, resetting the password of, demoting or deleting another admin asks for your own password, with the login lockout behind it; the last admin with a password cannot be demoted or deleted, even by two admins at once; changing your own password asks for the current one, admins included.
@@ -70,8 +82,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **IP-mode partial recon no longer sends the project's placeholder root to third parties.** urlscan, Shodan domain DNS and the OSINT domain lookups received `ip-targets.<project id>`; they skip it now.
 - **The hard guardrail covers the hostnames of an IP project**: the include entries when they are saved (form and MCP), when a full or partial scan starts (the recon orchestrator) and when an agent session starts, every candidate name before it is scanned, and every hostname typed into partial recon.
 
+### Fixed
+
+- **jsluice secrets had an empty sample.** The writer read a `match` key that jsluice never emits (it gives `data: {key, secret}`), so every jsluice Secret was stored with an empty sample; it now reads the key.
+- **The AWS secret access key TruffleHog found in a JS file was thrown away.** JS Recon used it only to mask the context; it is now `paired_secret`, also set on a key the regex engine found and TruffleHog confirmed, and kept on a run without TruffleHog.
+- **IP mode: placeholders, duplicates and IPv6.** The per-IP placeholder names no longer reach naabu and httpx as hostnames, naabu no longer scans each IP twice, IPv6 targets are bracketed in every URL, and two target IPs that share a reverse-DNS name no longer overwrite each other.
+- **IP mode: names collected and never written.** Censys reverse DNS, FOFA hosts and domains, Netlas hosts and ZoomEye hostnames were collected and dropped, and Shodan and OTX wrote the same kind of name with different edges and lost OTX's dates. One writer now records them all (the recording modes) with every source's evidence.
+- **A pure-IP run's hostname security checks ran on nothing** (headers, authentication, application, rate limit, TLS); they now run on the target IPs' live web ports.
+- **Partial recon in IP mode** compares typed addresses with the target list as addresses, CIDR- and IPv6-aware, and expands ranges before any builder reads them.
+- **Creating or importing a project runs every cross-field rule**, and a save checks them against the stored project merged with the change, not the request alone.
+- **Names found late by httpx** (certificate SANs, late subdomains) now carry their redirect targets and summary into the HTTP probe results, in domain mode too.
+
 ### Changed
 
+- The URLScan *Secrets in URLs* setting, the JS Recon help, the workflow tooltip, the agent's graph schema and the wiki now say that the value and the full link are shown in the UI and refused to the agent.
+- The urlscan lab checks the new fields: `no_token` looks outside the display-only fields, and row S-06b asserts that the value and the full links are kept beside the masked forms.
 - **Legacy grants and their review.** At the first boot after the update, each member who existed before it and has a password keeps the Kali terminal and all shell sessions as legacy grants, and one who had configured a tunnel keeps the tunnel settings. Admins review them on the **Users** page (**Keep** or **Remove** per grant, **Keep all**, **Remove all (recommended for shared servers)**, **Decide later**); removing the terminal closes that member's open terminals, and every decision is audited. A banner under the header counts the grants waiting for review, and a one-time **What changed in this update** card summarises the changes. Nothing is shown on an install whose only account that can sign in is one admin.
 - **Escape hatch `REDAMON_SHARED_TOOLS_COMPAT`** (default `false`): `true` gives the five shared tools back to every account created before the update, with a red banner for admins and an audit row per use. Accounts created later never get them through it.
 - **`./redamon.sh update` previews the RBAC changes.** When the webapp is rebuilt, a read-only report lists who keeps which grant, the tunnel rows, members' stdio MCP servers and whether `SCANNER_API_KEY` is set; in a terminal, the update asks before restarting when something changes. `./redamon.sh update --preview` prints it and stops before any restart.
@@ -90,17 +115,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Red Zone's DNS drift ignores names only recorded on target IPs (a redirect target stays), and Recon Delta ignores the per-run `ip_hostname_evaluated_at`.
 - **Presets never set the hostname mode.** Their texts no longer say reverse DNS runs on every target IP, and applying *Internal Network & Active Directory* or *Network Perimeter - Large Scale* to an IP-only project says that no hostname will be looked up (in the drawer and in MCP `apply_recon_preset`).
 
-### Fixed
-
-- **IP mode: placeholders, duplicates and IPv6.** The per-IP placeholder names no longer reach naabu and httpx as hostnames, naabu no longer scans each IP twice, IPv6 targets are bracketed in every URL, and two target IPs that share a reverse-DNS name no longer overwrite each other.
-- **IP mode: names collected and never written.** Censys reverse DNS, FOFA hosts and domains, Netlas hosts and ZoomEye hostnames were collected and dropped, and Shodan and OTX wrote the same kind of name with different edges and lost OTX's dates. One writer now records them all (the recording modes) with every source's evidence.
-- **A pure-IP run's hostname security checks ran on nothing** (headers, authentication, application, rate limit, TLS); they now run on the target IPs' live web ports.
-- **Partial recon in IP mode** compares typed addresses with the target list as addresses, CIDR- and IPv6-aware, and expands ranges before any builder reads them.
-- **Creating or importing a project runs every cross-field rule**, and a save checks them against the stored project merged with the change, not the request alone.
-- **Names found late by httpx** (certificate SANs, late subdomains) now carry their redirect targets and summary into the HTTP probe results, in domain mode too.
-
 ### Upgrade
 
+- **Run `./redamon.sh update`.** It rebuilds the agent (graph reads) and the webapp (the screens). Recon reads its source mount, so the next scan writes the new properties.
+- **No migration.** Findings written before this release keep their masked form, and a urlscan Secret shows a *masked* chip and its length until the next scan writes its value.
+- The standalone TruffleHog scanner and the GitHub Secret Hunt still store only a redacted form; their rows show it with a *partial* chip.
 - **Run `./redamon.sh update`** (or `./deploy.sh update`). The webapp, the agent, the Kali sandbox and the recon orchestrator must move together, since the ticket audience, the run and job credentials and the sandbox's bearer change on both sides; `update` rebuilds and restarts them.
 - **`SCANNER_API_KEY` must be set.** `update` generates it when missing; without it scan starts answer 503 `scanner_key_missing`. A scan running during the update may fail its next call back: start it again.
 - **Data changes are additive**: a `users.legacy_grants` column and a `nuclei_templates` table, filled by two boot backfills that log `[rbac] ...` counts and never fail the boot (they retry at the next one). Several webapp copies serialize the schema push and the backfills.
@@ -124,40 +143,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
 
   The older release scans IP mode as before (reverse-DNS names scanned, the target-list leak back) and ignores what this one wrote in the graph (`SEEN_ON`, the `ip_hostname_*` properties, Domains marked `ip_hostname_org`); its next full run clears them. On re-upgrade the columns come back at their defaults (`ip_only`): restore each project from the CSV with one `UPDATE` per row. Rolling back only part of it (recon without the webapp, or the reverse) is unsupported, because the settings registry and the settings cascade must move together.
-
-## [7.8.0] - 2026-11-11
-
-### Added
-
-- **Every secret the recon pipeline finds is now readable in the UI.** A secret shows as `••••` and its last four characters, with a button that copies the full value; the tooltip gives only its length, so a screenshot or a shared screen shows no more than four characters. This applies to the Red Zone **Secrets** screen (a new *Secret* column, with the other half of a key pair, such as an AWS secret access key, under it), the **JS Recon** Secrets tab, a new **Secrets** column on the **Route Exposure** screen, and every graph view (node drawer, Node Inspector, expanded rows, Recon Delta). The CSV, JSON and Markdown exports carry the full values; the PDF report prints only the last four characters. A secret is never a filter column, since a filter lists every value of its column.
-- **Every link that carried a secret opens whole.** A leaked reset or invite link, a URL with an API key or a JWT in it, a quarantined Endpoint and a urlscan redirect now link to the full URL, value included, where they opened the masked `***` / `{token}` form. The node drawer, the all-nodes table, the Param Matrix and the Secrets screen's Source URL all prefer the full link. A grouped finding keeps up to 25 of its distinct links, newest first.
-- **Recon keeps the value it found, beside the masked form.** New display-only properties, listed in `graph_db/display_only.py` (mirrored in `webapp/src/lib/secrets/secretProps.ts`):
-  - **urlscan**: `Secret.secret_value` and `unmasked_url`; `unmasked_url` / `unmasked_urls` on its `urlscan_leak` findings and quarantined Endpoints; `unmasked_redirect_from_urls` on an ExternalDomain. A quarantined visit also keeps its screenshot and urlscan scan ID, and a web-shell trace its scan ID.
-  - **JS Recon**: `secret_value` (a keyword rule's quoted value, a private key's whole PEM block, else the match) and `raw_context` (the code around it, unmasked), plus `paired_secret` from the TruffleHog engine; an AI SDK key's `JsReconFinding.secret_value`.
-  - **jsluice**: `secret_value`, `paired_secret` (AWS) and `raw_context`.
-  - **Route Exposure**: `secret_values` and `secret_value_types` on a finding whose response held a secret (at most 20 per response).
-- **Leaked links and secrets in the web archives' URLs become findings** (`source: 'url_archive'`, shown as "web archives"). GAU and ParamSpider used to drop the archive URLs the quarantine holds and log only a count. They are still never requested; their leaked one-time links and secrets are now written like urlscan's, one finding per host, path and kind and one Secret per value (its HMAC), in full and partial runs. They are pruned with resource enumeration and filtered under the "urlscan history" and Secrets node-filter kinds. ParamSpider replaces every value with `FUZZ`, so only a token in a path can come from it.
-
-### Security
-
-- **The agent never reads the secrets kept for the UI.** The agent's `query_graph`, `/graph/exec` and `/graph/nl-query` (MCP `query_graph` and the sandbox's `redagraph`) refuse a query that names a display-only property, with a message pointing at the masked fields, and drop those properties from every node and map they return. "Ask the agent about this node" leaves them out too. The quarantine is unchanged: RedAmon still never opens a leaked link or reuses a found token by itself; only your click does. Route Exposure's `evidence_snippet`, which the agent reads, stays masked. The masked fields remain the identities and the inputs of every request list.
-- **Neo4j now holds these values in clear**, and so do graph snapshots, project exports and the recon JSON. Treat database access and exported files like the credentials they contain. The one-off urlscan backfill (`tooling/scripts/urlscan_backfill.py`) never touches the display-only fields.
-
-### Fixed
-
-- **jsluice secrets had an empty sample.** The writer read a `match` key that jsluice never emits (it gives `data: {key, secret}`), so every jsluice Secret was stored with an empty sample; it now reads the key.
-- **The AWS secret access key TruffleHog found in a JS file was thrown away.** JS Recon used it only to mask the context; it is now `paired_secret`, also set on a key the regex engine found and TruffleHog confirmed, and kept on a run without TruffleHog.
-
-### Changed
-
-- The URLScan *Secrets in URLs* setting, the JS Recon help, the workflow tooltip, the agent's graph schema and the wiki now say that the value and the full link are shown in the UI and refused to the agent.
-- The urlscan lab checks the new fields: `no_token` looks outside the display-only fields, and row S-06b asserts that the value and the full links are kept beside the masked forms.
-
-### Upgrade
-
-- **Run `./redamon.sh update`.** It rebuilds the agent (graph reads) and the webapp (the screens). Recon reads its source mount, so the next scan writes the new properties.
-- **No migration.** Findings written before this release keep their masked form, and a urlscan Secret shows a *masked* chip and its length until the next scan writes its value.
-- The standalone TruffleHog scanner and the GitHub Secret Hunt still store only a redacted form; their rows show it with a *partial* chip.
 
 ## [7.7.2] - 2026-11-10
 
