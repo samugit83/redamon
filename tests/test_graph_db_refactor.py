@@ -69,6 +69,7 @@ class TestSyntax(unittest.TestCase):
         "graph_db/mixins/recon/resource_mixin.py",
         "graph_db/mixins/recon/js_recon_mixin.py",
         "graph_db/mixins/recon/user_input_mixin.py",
+        "graph_db/mixins/tenancy_mixin.py",
     ]
 
     def test_all_files_parse(self):
@@ -209,6 +210,7 @@ class TestMethodPresence(unittest.TestCase):
                 "_extract_gvm_technologies", "_merge_gvm_technology",
                 "_parse_traceroute", "update_graph_from_gvm_scan",
             },
+            "graph_db/mixins/tenancy_mixin.py": {"retenant_project"},
             "graph_db/mixins/secret_mixin.py": {
                 "clear_github_hunt_data", "update_graph_from_github_hunt",
                 "clear_trufflehog_data", "update_graph_from_trufflehog",
@@ -251,7 +253,8 @@ class TestNeo4jClientOrchestrator(unittest.TestCase):
         bases = [b.id if isinstance(b, ast.Name) else b.attr for b in cls.bases]
         self.assertEqual(bases,
                          ["BaseMixin", "ReconMixin", "GvmMixin", "SecretMixin", "OsintMixin",
-                          "GraphQLMixin", "CacheMixin", "SupplyChainMixin", "NodeFilterMixin"])
+                          "GraphQLMixin", "CacheMixin", "SupplyChainMixin", "NodeFilterMixin",
+                          "TenancyMixin"])
 
     def test_init_py_unchanged(self):
         src = open(os.path.join(_REPO, "graph_db/__init__.py")).read()
