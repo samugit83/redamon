@@ -387,16 +387,62 @@ def test_scan_container_path_refuses_an_instance_id_the_owner_lost(api_module):
     chat_openai.assert_not_called()
 
 
-def test_text_to_cypher_on_an_instance_model_fails_closed(api_module):
-    """text-to-cypher passes no provider config for a non-custom id, so an
-    instance model is refused there (400), never built on the owner's key."""
+def _cypher_manager(api_module, model, rows):
+    """text-to-cypher's (and /graph/nl-query's) builder with the project on `model` and the
+    owner's provider list `rows`: (the manager or the _CypherSetupError, ChatOpenAI mock)."""
     import project_settings as ps
     from orchestrator_helpers import llm_setup
-    with patch.object(ps, "fetch_agent_settings", return_value={"OPENAI_MODEL": "instance/inst-1/gpt-5"}), \
-            patch("requests.get", return_value=_providers_response([OWN_OPENAI, INST_OPENAI])), \
-            patch.object(llm_setup, "ChatOpenAI") as chat_openai:
-        with pytest.raises(api_module._CypherSetupError) as err:
-            asyncio.run(api_module._build_cypher_manager("owner-1", "p1"))
+    with patch.object(ps, "fetch_agent_settings", return_value={"OPENAI_MODEL": model}), \
+            patch("requests.get", return_value=_providers_response(rows)) as get, \
+            patch.object(llm_setup, "ChatOpenAI") as chat_openai, \
+            patch("langchain_community.graphs.Neo4jGraph", MagicMock()):
+        try:
+            result = asyncio.run(api_module._build_cypher_manager("owner-1", "p1"))
+        except api_module._CypherSetupError as e:
+            result = e
+    assert "/api/users/owner-1/llm-providers?internal=true" in get.call_args.args[0]
+    return result, chat_openai
+
+
+def test_text_to_cypher_builds_an_instance_model_from_its_row(api_module):
+    """The project's `instance/` model is built from exactly the owner's marked row,
+    with that row's key, never the owner's own."""
+    result, chat_openai = _cypher_manager(api_module, "instance/inst-1/gpt-5",
+                                          [OWN_OPENAI, OWN_CUSTOM, INST_OPENAI])
+    assert not isinstance(result, api_module._CypherSetupError), getattr(result, "message", "")
+    kwargs = chat_openai.call_args.kwargs
+    assert kwargs["model"] == "gpt-5"
+    assert kwargs["api_key"] == INSTANCE_KEY
+    assert "base_url" not in kwargs
+
+
+def test_text_to_cypher_builds_an_openai_compatible_instance_model(api_module):
+    result, chat_openai = _cypher_manager(api_module, "instance/inst-3/custom/inst-3",
+                                          [OWN_CUSTOM, INST_COMPAT])
+    assert not isinstance(result, api_module._CypherSetupError), getattr(result, "message", "")
+    assert chat_openai.call_args.kwargs["api_key"] == "k-compat"
+    assert chat_openai.call_args.kwargs["base_url"] == "http://llm.example.com/v1"
+
+
+@pytest.mark.parametrize("model,rows", [
+    ("instance/inst-1/gpt-5", [OWN_OPENAI]),                      # never the owner's own key
+    ("instance/inst-1/gpt-5", [OWN_OPENAI, OWN_CUSTOM]),          # never the first custom provider
+    ("instance/inst-1/gpt-5", [OWN_OPENAI, dict(INST_OPENAI, id="inst-9")]),  # never another instance row
+    ("instance/inst-1/gpt-5", []),
+    ("instance/inst-1/claude-opus-4-6", [OWN_OPENAI, INST_OPENAI]),  # a model of another kind
+])
+def test_text_to_cypher_refuses_an_instance_model_the_owner_lacks(api_module, model, rows):
+    """An `instance/` id the owner's list cannot serve fails closed (400) with its code,
+    and no client is built on any key."""
+    result, chat_openai = _cypher_manager(api_module, model, rows)
+    assert isinstance(result, api_module._CypherSetupError)
+    assert result.status == 400
+    assert result.fields.get("code") == "instance_provider_unavailable"
     chat_openai.assert_not_called()
-    assert err.value.status == 400
-    assert INSTANCE_KEY not in err.value.message and OWNER_KEY not in err.value.message
+    assert INSTANCE_KEY not in result.message and OWNER_KEY not in result.message
+
+
+def test_text_to_cypher_custom_models_resolve_as_before(api_module):
+    result, chat_openai = _cypher_manager(api_module, "custom/own-2", [OWN_OPENAI, OWN_CUSTOM, INST_OPENAI])
+    assert not isinstance(result, api_module._CypherSetupError), getattr(result, "message", "")
+    assert chat_openai.call_args.kwargs["api_key"] == "k-own"

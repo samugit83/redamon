@@ -3388,12 +3388,17 @@ async def _build_cypher_manager(user_id: str, project_id: str):
     except Exception as e:
         logger.warning(f"text-to-cypher: failed to fetch user LLM providers: {e}")
 
+    from llm_builder import (InstanceProviderUnavailable, custom_provider_or_fallback,
+                             split_instance_model)
+
     llm = None
     try:
-        if model_name.startswith("custom/"):
-            from llm_builder import custom_provider_or_fallback
+        is_instance = split_instance_model(model_name) is not None
+        if model_name.startswith("custom/") or is_instance:
+            # An `instance/` id gets its exact row of the owner's list or None, never a
+            # fallback; setup_llm refuses it without one.
             matched = custom_provider_or_fallback(user_providers, model_name)
-            if not matched:
+            if not matched and not is_instance:
                 raise _CypherSetupError(
                     400, "Custom LLM provider not found. Configure an AI model in settings."
                 )
@@ -3422,6 +3427,9 @@ async def _build_cypher_manager(user_id: str, project_id: str):
             )
     except _CypherSetupError:
         raise
+    except InstanceProviderUnavailable:
+        raise _CypherSetupError(400, InstanceProviderUnavailable.message,
+                                {"code": InstanceProviderUnavailable.code})
     except Exception as e:
         logger.error(f"text-to-cypher: failed to create LLM: {e}")
         raise _CypherSetupError(
