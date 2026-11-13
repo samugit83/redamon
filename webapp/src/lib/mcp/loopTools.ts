@@ -6,13 +6,18 @@
  * and a person in the UI answers every approval, question and dangerous-tool
  * confirmation: no tool here can.
  *
- * Order in each body: requireScope, the switch, the DB read of the user's owned
- * loop projects, the token rule, argument checks, the rate bucket, the agent call.
+ * Order in each body: requireScope, the switch, the DB read of the user's loop
+ * projects, the token rule, argument checks, the rate bucket, the agent call.
  * Those project ids go to the agent, whose broker serves only steps of those
- * projects (a deleted or transferred project's steps never reach a driver).
+ * projects (a deleted or transferred project's steps never reach a driver), and
+ * only the steps of runs the token's user started (`_claimable` matches the
+ * person): on a shared project a driver answers its own person's runs, never the
+ * owner's or another collaborator's.
  */
 import prisma from '@/lib/prisma'
-import { requireScope } from '@/lib/mcpAuth'
+import { McpAccessDenied, mcpProjectAccess, requireScope, type ResolvedMcpToken } from '@/lib/mcpAuth'
+import { PERMISSIONS } from '@/lib/authz/permissions'
+import { visibleProjects } from '@/lib/authz/visibleProjects'
 import { LOOP_PREFIX, agentInTheLoopEnabled, isLoopModel } from '@/lib/agentInTheLoop'
 import { McpToolError } from './errors'
 import { enforceRate, type McpContext } from './tools'
@@ -43,24 +48,29 @@ function assertLoopEnabled(): void {
   }
 }
 
+// A project a loop run can be in NOW: on a loop model, or with a chat running (a project
+// switched to another model mid-run still serves its open step).
+const LOOP_OR_RUNNING = [
+  { agentOpenaiModel: { startsWith: LOOP_PREFIX } },
+  { conversations: { some: { agentRunning: true } } },
+]
+
 /**
- * The user's owned projects NOW that a loop run can be in: on a loop model, or with
- * a chat running (a project switched to another model mid-run still serves its
- * open step). Ownership is the filter; the narrow list keeps a user with thousands
- * of projects under the agent's limit.
+ * The projects where the token's user may use the loop NOW (step 5.10): the ones they own, and
+ * with the token's opt-in (step 4.10; its allowlist narrows them) the ones shared with them where
+ * `agent:loop`'s level holds (Use AI agent, which counts only with the owner's consent), each asked
+ * of `projectAccess()` through the token's rule. The narrow list keeps a user with thousands of
+ * projects under the agent's limit.
  */
-async function ownedProjects(userId: string): Promise<{ ids: string[]; anyLoop: boolean }> {
-  const rows = await prisma.project.findMany({
-    where: {
-      userId,
-      OR: [
-        { agentOpenaiModel: { startsWith: LOOP_PREFIX } },
-        { conversations: { some: { agentRunning: true } } },
-      ],
-    },
+async function loopProjects(token: ResolvedMcpToken): Promise<{ ids: string[]; anyLoop: boolean }> {
+  const owned = await prisma.project.findMany({
+    where: { userId: token.userId, OR: LOOP_OR_RUNNING },
     select: { id: true, agentOpenaiModel: true },
     take: MAX_LOOP_PROJECT_IDS + 1,
   })
+  const rows = owned.length > MAX_LOOP_PROJECT_IDS
+    ? owned
+    : [...owned, ...(await sharedLoopProjects(token, MAX_LOOP_PROJECT_IDS + 1 - owned.length))]
   if (rows.length > MAX_LOOP_PROJECT_IDS) {
     throw new McpToolError(
       `More than ${MAX_LOOP_PROJECT_IDS} of your projects use Agent in the Loop or have a chat ` +
@@ -69,6 +79,41 @@ async function ownedProjects(userId: string): Promise<{ ids: string[]; anyLoop: 
     )
   }
   return { ids: rows.map((r) => r.id), anyLoop: rows.some((r) => isLoopModel(r.agentOpenaiModel)) }
+}
+
+const LOOP_LEVEL = PERMISSIONS['agent:loop'].level ?? 'O'
+
+/** The loop projects shared with the token's user that it reaches at `agent:loop`'s level; none without the opt-in. */
+async function sharedLoopProjects(
+  token: ResolvedMcpToken,
+  take: number,
+): Promise<Array<{ id: string; agentOpenaiModel: string }>> {
+  const reach = token.sharedProjects ?? null
+  if (!reach) return []
+  const visible = await visibleProjects({ userId: token.userId })
+  if (!visible.withShares) return []
+  const candidates = await prisma.project.findMany({
+    where: {
+      AND: [
+        visible.where,
+        { NOT: { userId: token.userId } },
+        { OR: LOOP_OR_RUNNING },
+        ...(reach.allowlist.length > 0 ? [{ id: { in: [...reach.allowlist] } }] : []),
+      ],
+    },
+    select: { id: true, agentOpenaiModel: true },
+    take,
+  })
+  const kept: Array<{ id: string; agentOpenaiModel: string }> = []
+  for (const row of candidates) {
+    try {
+      await mcpProjectAccess(token, row.id, LOOP_LEVEL)
+      kept.push(row)
+    } catch (err) {
+      if (!(err instanceof McpAccessDenied)) throw err
+    }
+  }
+  return kept
 }
 
 function assertNarrowToken(ctx: McpContext): void {
@@ -82,11 +127,11 @@ function assertNarrowToken(ctx: McpContext): void {
   }
 }
 
-/** Shared preamble: scope, switch, owned projects, token rule. */
+/** Shared preamble: scope, switch, the user's loop projects, token rule. */
 async function prepare(ctx: McpContext): Promise<{ ids: string[]; anyLoop: boolean }> {
   requireScope(ctx.token, 'agent:loop')
   assertLoopEnabled()
-  const owned = await ownedProjects(ctx.token.userId)
+  const owned = await loopProjects(ctx.token)
   assertNarrowToken(ctx)
   return owned
 }

@@ -11,7 +11,10 @@
  * command, it is WHO CAN REACH THIS AT ALL.
  *
  *  - THREE independent switches, all of which must be on, each owned by a
- *    different decision-maker:
+ *    different decision-maker (and on a project shared with the token's user,
+ *    a Read + Write share with Exploitation & shells, `agent:kali_exec`'s W+X,
+ *    which counts only with the owner's consent; the `kali:exec` scope itself
+ *    stays only while the user holds `agent:kali_exec`, step 3.10):
  *      1. MCP_KALI_EXEC_ENABLED  - the operator, once per deployment. Default on.
  *      2. the `kali:exec` scope  - the user, password-confirmed at mint time.
  *         Ticked by default, so unticking it is what keeps a token off the shell.
@@ -142,7 +145,7 @@ export async function execCommand(
 ) {
   requireScope(ctx.token, 'kali:exec')
   assertEnabled()
-  await assertMcpProjectAccess(ctx.token, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'W+X')
   await assertProjectOptedIn(projectId)
 
   const trimmed = typeof command === 'string' ? command.trim() : ''
@@ -191,7 +194,7 @@ export async function readCommandOutput(
 ) {
   requireScope(ctx.token, 'kali:exec')
   assertEnabled()
-  await assertMcpProjectAccess(ctx.token, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'W+X')
   await assertProjectOptedIn(projectId)
   if (!jobId) throw new McpToolError('A jobId is required.', 'bad_args')
   if (cursor !== undefined && (!Number.isInteger(cursor) || cursor < 0)) {
@@ -207,7 +210,7 @@ export async function readCommandOutput(
 export async function cancelCommand(ctx: McpContext, projectId: string, jobId: string) {
   requireScope(ctx.token, 'kali:exec')
   assertEnabled()
-  await assertMcpProjectAccess(ctx.token, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'W+X')
   await assertProjectOptedIn(projectId)
   if (!jobId) throw new McpToolError('A jobId is required.', 'bad_args')
   enforceRate(ctx, 'write')

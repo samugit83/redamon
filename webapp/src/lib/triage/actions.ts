@@ -493,12 +493,15 @@ export async function submitReview(tenant: TriageTenant, input: ReviewInput) {
 export async function startRun(
   tenant: TriageTenant,
   opts: { trigger: TriageChannel; tokenId?: string; realActorUserId?: string | null;
-          maxReviewBudget?: number },
+          maxReviewBudget?: number;
+          /** The person the run is for when not the owner (a collaborator over MCP, step 5.10). */
+          actorUserId?: string },
 ): Promise<{ runId: string | null; attached: boolean }> {
   const body = await agentTriage('start', tenant, {
     user_id: tenant.userId,
     project_id: tenant.projectId,
     trigger: opts.trigger,
+    ...(opts.actorUserId ? { actor_user_id: opts.actorUserId } : {}),
     ...(opts.tokenId ? { token_id: opts.tokenId } : {}),
     ...(opts.realActorUserId ? { real_actor_user_id: opts.realActorUserId } : {}),
     ...(opts.maxReviewBudget !== undefined ? { max_review_budget: opts.maxReviewBudget } : {}),

@@ -166,6 +166,22 @@ class WaitAndAnswer(BrokerCase):
         self.assertEqual((await self.wait())["step"]["stepId"], second.id)
         self.assertEqual((await self.wait(user="u2"))["sessions"], [])
 
+    async def test_shared_project_each_driver_serves_its_own_person(self):
+        # Step 5.10: on a project shared with a collaborator, the webapp sends both drivers the
+        # same project id; the broker still matches the person who started each run, so a driver
+        # never claims, reads or answers another person's step there.
+        owner_run = await self.open(await self.scope(user="owner", project="shared", session="s-own"))
+        self.clock.t += 1
+        collab_run = await self.open(await self.scope(user="collab", project="shared", session="s-col"))
+        got = await self.wait(user="collab", projects=("shared",), token="t-col")
+        self.assertEqual(got["step"]["stepId"], collab_run.id)
+        self.assertEqual([s["sessionId"] for s in got["sessions"]], ["s-col"])
+        self.assertIsNone(self.broker.get("collab", ["shared"], owner_run.id, "t-col", "cc-a", 0, False))
+        res = await self.broker.answer("collab", ["shared"], owner_run.id, text="x")
+        self.assertEqual(res, {"ok": False, "code": "step_closed"})
+        self.assertEqual((await self.wait(user="owner", projects=("shared",), token="t-own"))["step"]["stepId"],
+                         owner_run.id)
+
     async def test_session_filter(self):
         a = await self.scope(session="s1")
         b = await self.scope(session="s2")

@@ -627,11 +627,16 @@ its user (step 4.10, SH-42). Every existing token keeps both at their defaults
   `update_recon_settings`, `apply_recon_preset`, `set_finding_verdict`,
   `submit_finding_review`, `mute_findings` and `unmute_findings`; `W+S` (Run
   scans) for `start_recon`, `stop_recon`, `queue_recon` and `cancel_queued_scan`;
-  `M` (Manage) for `update_project_scope` and `list_engagement_authorizations`.
-  The owner's alone: `attach_engagement_authorization` (and `update_project_scope`'s
-  `authorization`), `start_triage_run` / `stop_triage_run` (until the run names
-  its person, step 5.10), the Kali and loop tools (step 5.10), and capturing a
-  project into a preset. A collaborator's settings, preset and scope changes are
+  `M` (Manage) for `update_project_scope` and `list_engagement_authorizations`;
+  `W+A` (Use AI agent) for `start_triage_run` / `stop_triage_run` (the run reads
+  the owner's graph and names the token's user as its person, `actor_user_id`,
+  whom the webapp checks again and records as spending the owner's model, step
+  5.10); `W+X` (Exploitation & shells) for `kali_exec`, `kali_output` and
+  `kali_cancel` (with the `kali:exec` scope, which needs `agent:kali_exec`, and
+  the project's own sandbox opt-in; the sandbox is shared by every project on the
+  server, as the share dialog's notice says). The owner's alone:
+  `attach_engagement_authorization` (and `update_project_scope`'s
+  `authorization`) and capturing a project into a preset. A collaborator's settings, preset and scope changes are
   judged key by key as the project save judges them (step 5.1b). A level
   shortfall answers its own message naming the toggle the share lacks
   (`McpLevelDenied`, audited `level_denied`); a project the token does not reach
@@ -650,6 +655,12 @@ its user (step 4.10, SH-42). Every existing token keeps both at their defaults
 - **`list_projects`.** Owned projects, plus the live shares when the token
   opted in (narrowed by the allowlist), each row with `myAccess` while the
   sharing switch is on.
+- **Agent in the Loop.** The project list a driver sends the agent is the
+  projects where its user may use the loop (step 5.10): owned ones, and with the
+  opt-in (narrowed by the allowlist) the shared ones where `agent:loop`'s `W+A`
+  holds. The broker serves only the steps of runs that user started, so on a
+  shared project a driver never claims the owner's or another collaborator's
+  steps; approvals stay a person's in the app.
 - **Mint and edit.** The token screen offers **Include projects shared with me**
   and the shared projects to limit it to, only while `/api/auth/me` reports
   sharing in force. Opting in, emptying the allowlist or naming another project

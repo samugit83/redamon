@@ -366,10 +366,12 @@ export async function startTriageRun(ctx: McpContext, projectId: string) {
   // able to consume a project's window. The cheap refusals (a live run, the
   // spacing and the daily cap) come before the rate token and cost nothing;
   // the preflight, which reads the graph, only after it, so a caller looping
-  // on a refusal cannot run it unmetered. The owner's alone until the run names its person
-  // (step 5.10): a collaborator's run started here would spend and be recorded as the owner's.
-  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId)
+  // on a refusal cannot run it unmetered. triage:run's level (W+A, Use AI agent with the owner's
+  // consent) on a shared project, step 5.10: the run reads the owner's graph and names the token's
+  // user as its person, whom the webapp checks again and records as spending the owner's model.
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId, 'W+A')
   const tenant: TriageTenant = { userId: owner, projectId }
+  const actor = ctx.token.userId !== owner ? { actorUserId: ctx.token.userId } : {}
 
   let live
   try {
@@ -423,7 +425,7 @@ export async function startTriageRun(ctx: McpContext, projectId: string) {
   let started
   try {
     started = await startRun(tenant, {
-      trigger: 'mcp', tokenId: ctx.token.tokenId, maxReviewBudget,
+      trigger: 'mcp', tokenId: ctx.token.tokenId, maxReviewBudget, ...actor,
     })
   } catch (err) {
     refused(err)
@@ -445,7 +447,8 @@ export async function startTriageRun(ctx: McpContext, projectId: string) {
 
 export async function stopTriageRun(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'triage:run')
-  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId)
+  // The project's run, whoever started it: a person who may start one may stop it, as in the app.
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId, 'W+A')
   const tenant: TriageTenant = { userId: owner, projectId }
 
   let live

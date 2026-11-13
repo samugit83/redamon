@@ -33,8 +33,14 @@ vi.mock('@/lib/mcp/kaliClient', () => ({
   kaliJobStatus: (...a: unknown[]) => h.status(...a),
   kaliJobCancel: (...a: unknown[]) => h.cancel(...a),
 }))
+// The real policy unless a test answers for it (step 5.10: a share's level and toggles).
+vi.mock('@/lib/authz/projectAccess', async (orig) => {
+  const actual = await orig<typeof import('@/lib/authz/projectAccess')>()
+  return { ...actual, projectAccess: vi.fn(actual.projectAccess) }
+})
 
-import { McpScopeError, McpAccessDenied, __resetRateLimiter, type McpScope } from '@/lib/mcpAuth'
+import { McpScopeError, McpAccessDenied, McpLevelDenied, __resetRateLimiter, type McpScope } from '@/lib/mcpAuth'
+import { projectAccess, type ProjectAccess, type ProjectAccessToggles } from '@/lib/authz/projectAccess'
 import { McpToolError } from './errors'
 import { cancelCommand, execCommand, kaliExecEnabled, readCommandOutput } from './kaliTools'
 import type { McpContext } from './tools'
@@ -331,5 +337,77 @@ describe('a finished job that FAILED', () => {
     const r = await readCommandOutput(ctx(), 'p1', 'j1') as Record<string, unknown>
     expect(r.note).toMatch(/TOOL failing, not RedAmon refusing/)
     expect(r.failure).toBeUndefined()
+  })
+})
+
+// Step 5.10 (SH-49): on a project shared with the token's user the sandbox tools need the token's
+// opt-in to shared projects (step 4.10), the `kali:exec` scope (kept only while the user holds
+// `agent:kali_exec`, step 3.10) and agent:kali_exec's level W+X: a Read + Write share with
+// Exploitation & shells, which counts only with the owner's consent. The audit names the person.
+describe('a project shared with the token user (step 5.10)', () => {
+  const policy = vi.mocked(projectAccess)
+  const shared = (level: 'read' | 'write', toggles: Partial<ProjectAccessToggles> = {}, via: ProjectAccess['via'] = 'share') =>
+    ({ project: { id: 'p1', userId: 'owner' }, level, toggles: { rawData: level === 'write', ...toggles }, via }) as ProjectAccess
+  const collab = (sharedProjects: { allowlist: string[] } | null = { allowlist: [] }): McpContext => ({
+    token: { tokenId: 't2', userId: 'collab', tokenPrefix: 'rdmn_mcp_bbbbbbbb', name: 'agent', scopes: ['kali:exec'], sharedProjects },
+  })
+  const all = (c: McpContext) => [
+    () => execCommand(c, 'p1', 'curl https://acme.tld'),
+    () => readCommandOutput(c, 'p1', 'j1'),
+    () => cancelCommand(c, 'p1', 'j1'),
+  ]
+
+  afterEach(async () => {
+    const actual = await vi.importActual<typeof import('@/lib/authz/projectAccess')>('@/lib/authz/projectAccess')
+    policy.mockImplementation(actual.projectAccess)
+  })
+
+  test('shared project needs W+X: with Exploitation & shells the command runs, audited as the person', async () => {
+    policy.mockResolvedValue(shared('write', { exploit: true }))
+    const out = await execCommand(collab(), 'p1', 'curl https://acme.tld')
+    expect(out).toMatchObject({ projectId: 'p1', status: 'done' })
+    expect(h.exec).toHaveBeenCalledWith('p1', 'curl https://acme.tld', undefined)
+    expect(h.writeAudit).toHaveBeenCalledWith(expect.objectContaining({ actorId: 'collab', action: 'mcp.kali_exec', targetId: 'p1' }))
+    await readCommandOutput(collab(), 'p1', 'j1')
+    await cancelCommand(collab(), 'p1', 'j1')
+    expect(h.status).toHaveBeenCalled()
+    expect(h.cancel).toHaveBeenCalled()
+  })
+
+  test('shared project needs W+X: Read + Write without Exploitation & shells is refused by name, nothing runs', async () => {
+    policy.mockResolvedValue(shared('write', { useAgent: true, runScans: true, manage: true }))
+    for (const call of all(collab())) {
+      const err = await call().catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(McpLevelDenied)
+      expect((err as Error).message).toMatch(/without Exploitation & shells/)
+    }
+    expect(h.exec).not.toHaveBeenCalled()
+    expect(h.status).not.toHaveBeenCalled()
+    expect(h.cancel).not.toHaveBeenCalled()
+    expect(h.findProject).not.toHaveBeenCalled()
+  })
+
+  test('shared project needs W+X: a read share is refused, oversight is not found', async () => {
+    policy.mockResolvedValue(shared('read', { rawData: true }))
+    await expect(execCommand(collab(), 'p1', 'id')).rejects.toBeInstanceOf(McpLevelDenied)
+    policy.mockResolvedValue(shared('read', {}, 'oversight'))
+    const err = await execCommand(collab(), 'p1', 'id').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(McpAccessDenied)
+    expect(err).not.toBeInstanceOf(McpLevelDenied)
+    expect(h.exec).not.toHaveBeenCalled()
+  })
+
+  test('shared project needs W+X: a token that did not opt in to shared projects is not found', async () => {
+    policy.mockResolvedValue(shared('write', { exploit: true }))
+    await expect(execCommand(collab(null), 'p1', 'id')).rejects.toBeInstanceOf(McpAccessDenied)
+    await expect(execCommand(collab({ allowlist: ['p-other'] }), 'p1', 'id')).rejects.toBeInstanceOf(McpAccessDenied)
+    expect(h.exec).not.toHaveBeenCalled()
+  })
+
+  test("shared project needs W+X: the project's own opt-in still applies to a collaborator", async () => {
+    policy.mockResolvedValue(shared('write', { exploit: true }))
+    h.findProject.mockResolvedValue({ id: 'p1', userId: 'owner', mcpKaliExecEnabled: false })
+    await expect(execCommand(collab(), 'p1', 'id')).rejects.toMatchObject({ code: 'project_opt_out' })
+    expect(h.exec).not.toHaveBeenCalled()
   })
 })

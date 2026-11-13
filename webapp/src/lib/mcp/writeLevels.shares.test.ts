@@ -6,8 +6,9 @@
  *     (triage:verdict), submit_finding_review (triage:review), mute_findings / unmute_findings (triage:mute);
  *   - W+S: start_recon / stop_recon (recon:scan), queue_recon / cancel_queued_scan (recon:schedule);
  *   - M: update_project_scope (project:rescope), list_engagement_authorizations (the app's list asks M);
- *   - the owner's alone: attach_engagement_authorization, start/stop_triage_run (until the run names its
- *     person, step 5.10), the Kali sandbox tools (step 5.10), and capturing a project into a preset.
+ *   - W+A: start/stop_triage_run (triage:run; the run names its person, step 5.10);
+ *   - W+X: the Kali sandbox tools kali_exec / kali_output / kali_cancel (agent:kali_exec, step 5.10);
+ *   - the owner's alone: attach_engagement_authorization and capturing a project into a preset.
  * A shortfall on a reached project is `McpLevelDenied` naming the toggle the share lacks; a read share's
  * refusal and the owner's reach are unchanged.
  *
@@ -103,9 +104,11 @@ describe('each write tool asks its permission\'s level (the map above)', () => {
     ['scopeTools.ts', 'updateProjectScope', 'M'],
     ['engagementTools.ts', 'listEngagementAuthorizations', 'M'],
     ['engagementTools.ts', 'attachEngagementAuthorization', 'O'],
-    ['triageTools.ts', 'startTriageRun', 'O'],
-    ['triageTools.ts', 'stopTriageRun', 'O'],
-    ['kaliTools.ts', 'execCommand', 'O'],
+    ['triageTools.ts', 'startTriageRun', 'W+A'],
+    ['triageTools.ts', 'stopTriageRun', 'W+A'],
+    ['kaliTools.ts', 'execCommand', 'W+X'],
+    ['kaliTools.ts', 'readCommandOutput', 'W+X'],
+    ['kaliTools.ts', 'cancelCommand', 'W+X'],
   ])('%s %s asks %s', (file, fn, level) => {
     expect(levelAsked(file, fn)).toBe(level)
   })

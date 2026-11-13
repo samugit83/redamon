@@ -255,6 +255,13 @@ describe('reads and runs', () => {
                            token_id: 'tok1', max_review_budget: 1000 })
   })
 
+  test("startRun names a collaborator's run's person beside the tenant (step 5.10)", async () => {
+    h.fetch.mockResolvedValue(answer({ runId: 'run-9', attached: false }, 202))
+    await startRun(T, { trigger: 'mcp', tokenId: 'tok1', maxReviewBudget: 1000, actorUserId: 'bob' })
+    expect(sent().body).toEqual({ user_id: 'alice', project_id: 'p1', trigger: 'mcp', actor_user_id: 'bob',
+                                  token_id: 'tok1', max_review_budget: 1000 })
+  })
+
   test('stopRun reports a refusal while publishing', async () => {
     h.fetch.mockResolvedValue(answer({ stopped: false, reason: 'publishing', runId: 'r1' }))
     expect(await stopRun(T, 'mcp')).toEqual({ stopped: false, reason: 'publishing', runId: 'r1' })
