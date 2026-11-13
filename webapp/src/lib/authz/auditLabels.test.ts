@@ -141,6 +141,7 @@ const INDIRECT_WRITERS: Readonly<Record<string, string>> = {
   'src/lib/authz/oversight.ts: OVERSEE_ACTION': 'the OVERSEE_ACTION constant (step 4.14)',
   'src/lib/authz/breakGlass.ts: BREAKGLASS_ACTION': 'the BREAKGLASS_ACTION constant (step 4.14)',
   'src/lib/authz/breakGlass.ts: BREAKGLASS_END_ACTION': 'the BREAKGLASS_END_ACTION constant (step 4.14)',
+  'src/lib/authz/actAsReads.ts: ACT_AS_READ_ACTION': 'the ACT_AS_READ_ACTION constant (IM-07)',
   'scripts/backfill-nuclei-template-owners.mjs: MARKER_ACTION': 'the MARKER_ACTION constant',
   'scripts/backfill-rbac-root.mjs: ASSIGNED_ACTION': 'the ASSIGNED_ACTION constant',
   'scripts/set-root.mjs: action': "audit(tx, 'root.…', …) literals (the audit call rule)",
@@ -226,6 +227,7 @@ describe('audit action labels (step 4.13, UI-08, AU-09)', () => {
     expect(auditActionLabel('project.breakglass').group).toBe('oversight')
     expect(auditActionLabel('project.breakglass.end').group).toBe('oversight')
     expect(auditActionLabel('act_as.refused').group).toBe('acting')
+    expect(auditActionLabel('project.read_acting')).toEqual({ label: 'Opened the project', group: 'acting', known: true })
   })
 
   test('each label is a short sentence and each group is a known one', () => {

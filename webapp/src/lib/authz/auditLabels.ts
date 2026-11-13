@@ -62,6 +62,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'act_as.start': 'Started acting as an account',
     'act_as.end': 'Stopped acting as an account',
     'act_as.refused': 'Refused while acting as an account',
+    // IM-07: one row per admin, account acted as, project and day of reads through that account's share.
+    'project.read_acting': 'Opened the project',
   }),
   ...g('project', {
     'project.update': 'Changed the project settings',

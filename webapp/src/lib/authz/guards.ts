@@ -18,7 +18,8 @@
  * as reaches only by its own oversight or break-glass answers 404 (can() already keeps the acting
  * admin's own out, D-22). A request an admin's oversight allowed writes the day's `project.oversee`
  * audit row first (oversight.ts); when that row cannot be written the answer is a coded 500, never an
- * unaudited read.
+ * unaudited read. Likewise a request allowed through the share of the account an admin acts as writes
+ * the day's `project.read_acting` row (actAsReads.ts), so the owner's feed names the admin (IM-07).
  *
  * Name the project in the options whenever the route acts on one: the route manifest classes a
  * call as a project guard when it passes the permission as a string literal, the permission acts
@@ -34,6 +35,7 @@ import type { Capabilities } from './capabilities'
 import { PERMISSIONS, assertKnownPermission, type PermissionId, type ProjectLevel } from './permissions'
 import { meetsLevel, type ProjectAccess } from './projectAccess'
 import { auditOversightRead } from './oversight'
+import { auditActAsRead } from './actAsReads'
 
 export interface PermissionContext extends AuthzIdentity {
   /** Whose data the request touches: the account acted as, else the signed-in account. */
@@ -99,6 +101,13 @@ async function decide(
         await auditOversightRead(identity, decision.access, permission)
       } catch (err) {
         return internalError(err, 'Could not record the oversight read')
+      }
+    }
+    if (via === 'share' && identity.actingAs) {
+      try {
+        await auditActAsRead(identity, decision.access, permission)
+      } catch (err) {
+        return internalError(err, 'Could not record the read made while acting as an account')
       }
     }
     return {
