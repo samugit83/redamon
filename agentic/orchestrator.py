@@ -947,7 +947,7 @@ class AgentOrchestrator:
                 "messages": [HumanMessage(content=fence_node_context(question))]
             }
 
-            async with self._mcp_toolset_lease(user_id):
+            async with self._mcp_toolset_lease(tenant_user_id or user_id):
                 final_state = await self.graph.ainvoke(input_data, config)
 
             return self._build_response(final_state)
@@ -1073,7 +1073,7 @@ class AgentOrchestrator:
     # =========================================================================
 
     @asynccontextmanager
-    async def _mcp_toolset_lease(self, user_id: str):
+    async def _mcp_toolset_lease(self, tenant_id: str):
         """Hold the agent's user MCP toolset for this run (RBAC OQ-41, NF-06).
 
         Raises McpToolsetBusy when the run's owner's server set is not the loaded
@@ -1081,11 +1081,15 @@ class AgentOrchestrator:
         lease are one synchronous step; then the owner's set is loaded (after any
         load already queued) and only then does the run go on, so it never sees or
         calls a tool of a set it was not admitted on.
+
+        Keyed on `tenant_id`, the project's owner, never the person running: the
+        set is the owner's USER_MCP_SERVERS, and one person's runs under two owners
+        would otherwise count as one owner and swap the set under a live run.
         """
         servers = get_setting('USER_MCP_SERVERS', []) or []
-        lease = toolset_guard().admit_run(user_id, servers)
+        lease = toolset_guard().admit_run(tenant_id, servers)
         try:
-            await self._ensure_mcp_toolset(servers, user_id)
+            await self._ensure_mcp_toolset(servers, tenant_id)
             yield
         finally:
             toolset_guard().release_run(lease)
@@ -1103,7 +1107,8 @@ class AgentOrchestrator:
         """
         uses_loop = is_loop_llm(self.llm)
         final_state = None
-        async with self._mcp_toolset_lease(user_id):
+        tenant_id = (config.get("configurable") or {}).get("tenant_user_id") or user_id
+        async with self._mcp_toolset_lease(tenant_id):
             if on_admitted is not None:
                 on_admitted()
             # Every node and Fireteam member runs in a task created inside astream,

@@ -460,7 +460,35 @@ class TheOrchestratorSplitsThem(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["configurable"]["user_id"], COLLAB)
         self.assertEqual(seen["configurable"]["thread_id"], f"{COLLAB}:{PID}:{SID}")
         self.assertEqual(seen["scope"], (COLLAB, PID, SID), "a loop model answers in the collaborator's scope")
+        self.assertEqual(seen["lease"], OWNER, "the MCP toolset is the owner's USER_MCP_SERVERS: leased by tenant")
         callback.on_error.assert_not_awaited()
+
+    async def test_a_plain_invoke_leases_the_toolset_by_tenant(self):
+        seen = {}
+
+        class Graph:
+            async def ainvoke(self, _input, config):
+                seen["configurable"] = dict(config["configurable"])
+                return {"messages": [AIMessage(content="done")], "task_complete": True}
+
+        @asynccontextmanager
+        async def lease(tenant):
+            seen["lease"] = tenant
+            yield
+
+        orch = orchestrator_mod.AgentOrchestrator()
+        orch._initialized = True
+        orch.graph = Graph()
+        orch.llm = mock.MagicMock()
+        orch._apply_project_settings = lambda _pid: None
+        orch._mcp_toolset_lease = lease
+        await orch.invoke(question="list the hosts", user_id=COLLAB, project_id=PID, session_id=SID,
+                          tenant_user_id=OWNER)
+        self.assertEqual(seen["lease"], OWNER)
+        self.assertEqual(seen["configurable"]["user_id"], COLLAB)
+        seen.clear()
+        await orch.invoke(question="list the hosts", user_id=OWNER, project_id=PID, session_id=SID)
+        self.assertEqual(seen["lease"], OWNER, "a config without a tenant is its person's, as before")
 
 
 @unittest.skipUnless(_HAVE, "agent deps unavailable (run in-container)")
