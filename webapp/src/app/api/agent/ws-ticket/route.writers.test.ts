@@ -37,6 +37,8 @@ vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => h
 vi.mock('@/lib/agentSessions', () => ({ runningSessionAuthors: async () => ({ userIds: [...h.authors] }) }))
 vi.mock('@/lib/prisma', () => ({
   default: {
+    // A ticket's session that no conversation holds yet (5.3 review: sessionTicketRefusal).
+    conversation: { findUnique: async () => null },
     project: { findUnique: async ({ where }: { where: { id: string } }) => (where.id === 'P-alice' ? { id: 'P-alice', userId: 'alice' } : null) },
     projectCollaborator: { findUnique: async () => null },
     projectBreakGlass: { findFirst: async () => null },

@@ -51,6 +51,8 @@ vi.mock('@/lib/activationLock', () => ({ assertGraphNotActivating: async () => n
 vi.mock('@/lib/auth', () => ({ createWsTicket: (...a: unknown[]) => h.createWsTicket(...a) }))
 vi.mock('@/lib/prisma', () => ({
   default: {
+    // A ticket's session that no conversation holds yet (5.3 review: sessionTicketRefusal).
+    conversation: { findUnique: async () => null },
     auditLog: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         if (h.auditFails && data.action === 'credits.used') throw new Error('audit table down')

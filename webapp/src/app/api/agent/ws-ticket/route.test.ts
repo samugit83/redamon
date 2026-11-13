@@ -27,6 +27,8 @@ const mockCreateWsTicket = vi.fn()
 const mockWriteAudit = vi.fn()
 const mockCutoff = vi.fn()
 const mockAgentCap = vi.fn()
+// The conversation a ticket's session id already names (5.3 review: sessionTicketRefusal); none by default.
+const mockConversation = vi.fn()
 
 vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overAuthzIdentity()))
 vi.mock('@/lib/session', () => ({
@@ -62,7 +64,10 @@ vi.mock('@/lib/activationLock', () => ({
   assertGraphNotActivating: async () => null,
 }))
 vi.mock('@/lib/prisma', () => ({
-  default: { auditLog: { findFirst: (...a: unknown[]) => mockCutoff(...a) } },
+  default: {
+    auditLog: { findFirst: (...a: unknown[]) => mockCutoff(...a) },
+    conversation: { findUnique: (...a: unknown[]) => mockConversation(...a) },
+  },
 }))
 
 import { POST } from './route'
@@ -117,6 +122,7 @@ beforeEach(() => {
   mockCreateWsTicket.mockReset().mockResolvedValue('signed.ticket.value')
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
   mockCutoff.mockReset().mockResolvedValue({ createdAt: CUTOFF })
+  mockConversation.mockReset().mockResolvedValue(null)
   resetSharedToolsForTests()
   setFlagsForTests({})
 })
@@ -424,5 +430,64 @@ describe('every ticket names the project\'s owner as its tenant (step 5.3, SH-33
     }
     expect(mockCreateWsTicket).not.toHaveBeenCalled()
     expect(mockWriteAudit).not.toHaveBeenCalled()
+  })
+})
+
+// 5.3 review (HIGH, last piece): the session id comes from the body, and a reader of a shared project sees
+// its attack-chain ids, so a ticket for a session must be refused unless the session is new or a
+// conversation of the ticket's person on the ticket's project (lib/authz/conversationRun.ts).
+describe('the session a ticket names is new or the person\'s own on this project (5.3 review)', () => {
+  test("another person's session -> 403 session_not_yours, nothing minted, for every socket", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    signedIn(principal('admin-1', 'admin'))
+    mockConversation.mockResolvedValue({ userId: 'someone-else', projectId: 'p' })
+    for (const socket of ['agent', 'kali-terminal', 'cypherfix-triage', 'cypherfix-codefix']) {
+      const res = await POST(req({ projectId: 'p', sessionId: 'their-session', socket }))
+      expect(res.status, socket).toBe(403)
+      expect(await res.json()).toMatchObject({ code: 'session_not_yours' })
+    }
+    expect(mockConversation).toHaveBeenCalledWith({ where: { sessionId: 'their-session' }, select: { userId: true, projectId: true } })
+    expect(mockCreateWsTicket).not.toHaveBeenCalled()
+    expect(mockWriteAudit).not.toHaveBeenCalled()
+  })
+
+  test("the person's own session on another project -> 403, nothing minted", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    signedInAs('real-user')
+    mockConversation.mockResolvedValue({ userId: 'real-user', projectId: 'another-project' })
+    const res = await POST(req({ projectId: 'p', sessionId: 'mine-elsewhere' }))
+    expect(res.status).toBe(403)
+    expect(mockCreateWsTicket).not.toHaveBeenCalled()
+  })
+
+  test('own session and a new one -> minted', async () => {
+    signedInAs('real-user')
+    mockConversation.mockResolvedValueOnce({ userId: 'real-user', projectId: 'p' })
+    expect((await POST(req({ projectId: 'p', sessionId: 'mine' }))).status).toBe(200)
+    mockConversation.mockResolvedValueOnce(null)
+    expect((await POST(req({ projectId: 'p', sessionId: 'brand-new' }))).status).toBe(200)
+    expect(mockCreateWsTicket).toHaveBeenCalledTimes(2)
+  })
+
+  test('under act-as the session is judged for the account acted as', async () => {
+    signedIn(principal('admin-1', 'admin'), 'member-x')
+    mockConversation.mockResolvedValue({ userId: 'member-x', projectId: 'p' })
+    expect((await POST(req({ projectId: 'p', sessionId: 'members-session' }))).status).toBe(200)
+  })
+
+  test('a failed read is a coded 500 and mints nothing', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    signedInAs('real-user')
+    mockConversation.mockRejectedValue(Object.assign(new Error('db down'), { code: 'P1001' }))
+    const res = await POST(req({ projectId: 'p', sessionId: 's' }))
+    expect(res.status).toBe(500)
+    expect(mockCreateWsTicket).not.toHaveBeenCalled()
+  })
+
+  test('a project the caller cannot see answers 404 before the session is read', async () => {
+    signedInAs('intruder')
+    mockRequireProjectAccess.mockResolvedValue(NOT_FOUND)
+    expect((await POST(req({ projectId: 'p', sessionId: 's' }))).status).toBe(404)
+    expect(mockConversation).not.toHaveBeenCalled()
   })
 })

@@ -44,6 +44,8 @@ vi.mock('@/lib/graphWriters', () => ({ describeScanWriters: async () => null }))
 vi.mock('@/lib/nodeFilterRun', () => ({ describeNodeFilterWriter: (...a: unknown[]) => h.nodeFilterWriter(...a) }))
 vi.mock('@/lib/prisma', () => ({
   default: {
+    // A ticket's session that no conversation holds yet (5.3 review: sessionTicketRefusal).
+    conversation: { findUnique: async () => null },
     project: {
       findUnique: async () => ({ id: 'p1', userId: 'owner', targetDomain: 'x.tld', ipMode: false, targetIps: [] }),
     },

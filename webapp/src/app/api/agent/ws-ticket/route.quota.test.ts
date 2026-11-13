@@ -64,7 +64,11 @@ vi.mock('@/lib/authz/projectWriters', () => ({ secondWriterResponse: async () =>
 vi.mock('@/lib/activationLock', () => ({ assertGraphNotActivating: async () => null }))
 vi.mock('@/lib/auth', () => ({ createWsTicket: (...a: unknown[]) => h.createWsTicket(...a) }))
 vi.mock('@/lib/prisma', () => ({
-  default: { auditLog: { create: async ({ data }: { data: Record<string, unknown> }) => { h.audit.push(data); return data } } },
+  default: {
+    auditLog: { create: async ({ data }: { data: Record<string, unknown> }) => { h.audit.push(data); return data } },
+    // A ticket's session that no conversation holds yet (5.3 review: sessionTicketRefusal).
+    conversation: { findUnique: async () => null },
+  },
 }))
 
 import { POST } from './route'

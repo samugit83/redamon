@@ -48,6 +48,8 @@ vi.mock('@/lib/authz/projectAccess', async (orig) => {
 })
 vi.mock('@/lib/prisma', () => ({
   default: {
+    // A ticket's session that no conversation holds yet (5.3 review: sessionTicketRefusal).
+    conversation: { findUnique: async () => null },
     project: { findUnique: async ({ where }: { where: { id: string } }) => (where.id === 'P-alice' ? { id: 'P-alice', userId: 'alice' } : null) },
     projectCollaborator: {
       findUnique: async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) => {

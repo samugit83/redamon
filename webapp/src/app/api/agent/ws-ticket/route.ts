@@ -12,6 +12,7 @@ import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools
 import { agentTicketCap } from '@/lib/authz/agentCap'
 import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 import { secondWriterResponse } from '@/lib/authz/projectWriters'
+import { sessionTicketRefusal } from '@/lib/authz/conversationRun'
 import { recordOwnerCredentialSpend, type SpendFeature } from '@/lib/authz/ownerSpend'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { agentRunQuotaRefusal } from '@/lib/authz/quotas'
@@ -117,6 +118,11 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   // there, and a ticket without its tenant is never minted (a coded 500, not a ticket for `sub`).
   const tenant = checked.access?.project.userId
   if (!tenant) throw new Error('[rbac] ws-ticket: the project check named no owner for the ticket tenant')
+  // The session id comes from the body, and a reader of a shared project sees its attack-chain ids: a
+  // session another person's or another project's conversation holds is refused (5.3 review); a new one is
+  // allowed. A failed read throws: a coded 500, never a ticket.
+  const sessionRefused = await sessionTicketRefusal({ sessionId, userId: eff.userId, projectId })
+  if (sessionRefused) return sessionRefused
 
   let actor: string | undefined
   let actorEmail: string | null = null

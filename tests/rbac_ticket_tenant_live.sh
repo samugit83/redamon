@@ -11,7 +11,10 @@
 #     agent): an empty `ten` is refused; a collaborator's chat socket on A's project opens, and a
 #     close for the collaborator ends it and leaves A's open; a session stop without user_id is
 #     accepted; the collaborator's Kali terminal shell runs as A (REDAMON_USER_ID), and only a
-#     close for the collaborator ends it.
+#     close for the collaborator ends it;
+#   - a ticket names a session that is new or the person's own on its project (5.3 review): member B
+#     asking a ticket on its own project PB for member A's conversation session on PA gets 403
+#     `session_not_yours`.
 # The run by a collaborator whose attack chain lands under the owner (RM:p5-graph-counts) needs
 # the owner's stub-LLM provider (M9) and a collaborator with Use AI agent (step 5.6): pending.
 #
@@ -75,10 +78,10 @@ seed_out="$(webapp_node e2e-rbac-seed.mjs)" || { echo "seed failed"; exit 1; }
 while IFS= read -r kv; do
   [[ "$kv" =~ ^([A-Z][A-Z0-9_]*)=([A-Za-z0-9@._:-]*)$ ]] && SEED[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]}"
 done <<< "$seed_out"
-for k in MEMBER_A_EMAIL MEMBER_A_ID MEMBER_B_ID PA_ID CONV_PA_SESSION RBAC_PASSWORD; do
+for k in MEMBER_A_EMAIL MEMBER_A_ID MEMBER_B_EMAIL MEMBER_B_ID PA_ID PB_ID CONV_PA_SESSION RBAC_PASSWORD; do
   [ -n "${SEED[$k]:-}" ] || { echo "seed output lacks $k"; exit 1; }
 done
-for k in MEMBER_A_ID MEMBER_B_ID PA_ID CONV_PA_SESSION; do
+for k in MEMBER_A_ID MEMBER_B_ID PA_ID PB_ID CONV_PA_SESSION; do
   [[ "${SEED[$k]}" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "unexpected $k"; exit 1; }
 done
 
@@ -104,6 +107,22 @@ for socket in agent cypherfix-triage cypherfix-codefix; do
   check "member A's $socket ticket names A as ten and sub -> $code" "$ok"
 done
 rm -f "$TMP/t"
+
+echo "== A ticket's session is new or the person's own on its project (5.3 review) =="
+JAR_B="$TMP/jar_b"
+printf '{"email":"%s","password":"%s"}' "${SEED[MEMBER_B_EMAIL]}" "${SEED[RBAC_PASSWORD]}" > "$TMP/login.json"
+code="$(curl -s -m 30 -o /dev/null -w '%{http_code}' -c "$JAR_B" -X POST "$BASE/api/auth/login" \
+  -H 'Content-Type: application/json' --data-binary @"$TMP/login.json")"
+if [ "$code" != 200 ]; then
+  check "sign-in as rbac-member-b" 0 "answered $code"
+else
+  printf '{"projectId":"%s","sessionId":"%s","socket":"agent"}' "${SEED[PB_ID]}" "${SEED[CONV_PA_SESSION]}" > "$TMP/req"
+  code="$(curl -s -m 30 -o "$TMP/body" -w '%{http_code}' -X POST -b "$JAR_B" -H "Origin: $BASE" \
+    -H 'Content-Type: application/json' --data-binary @"$TMP/req" "$BASE/api/agent/ws-ticket")"
+  ok=0; [ "$code" = 403 ] && grep -q '"session_not_yours"' "$TMP/body" && ! grep -q '"ticket"' "$TMP/body" && ok=1
+  check "member B gets no ticket on PB for member A's PA session -> $code" "$ok"
+  rm -f "$TMP/body"
+fi
 
 echo "== The agent splits tenant and person (agent container) =="
 { printf 'OWNER_ID = "%s"\nOWNER_PID = "%s"\nCOLLAB_ID = "%s"\nSESSION_ID = "%s"\n' \
