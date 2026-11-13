@@ -1890,7 +1890,7 @@ model ProjectAccessPolicy {
 /// An offer to give a project to one of its collaborators, and what came of it (RBAC Phase 5, SH-15).
 /// The recipient accepts with their own password, or declines; the owner may cancel; an offer lapses
 /// after 7 days. Accepting re-tenants the project's graph, then moves the project in Postgres in one
-/// transaction with the status (lib/authz/projectTransfer.ts). Read only with write sharing in force.
+/// transaction with the status (lib/authz/ownershipTransfer.ts). Read only with write sharing in force.
 /// It goes with the project; both people are plain ids, so the record outlives either account.
 model ProjectTransfer {
   id            String    @id @default(cuid())
