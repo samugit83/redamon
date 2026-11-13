@@ -20,13 +20,20 @@
 # ---- step 6.1: the console shell; /api/auth/me carries the switch every screen reads ----
 # /admin and every page under it are Next's 404 with the switch off, decided in the server layout; on, the shell renders
 # for any signed-in account (the sections it lists are decided in the browser from the same capabilities).
+# The page rows check the body, not only the status: the layout's notFound() is thrown under the root layout's
+# <Suspense>, after the 200 has streamed, so the off answer is Next's not-found page with status 200 (a soft 404;
+# a real 404 if the status is ever decided before streaming). NEXT_HTTP_ERROR_FALLBACK is the digest notFound() leaves
+# in the page (Next's "This page could not be found" text is in every page's payload, so it proves nothing); the
+# AdminConsole client reference sits in the payload whenever the layout renders the console, and "Admin console" /
+# "the admin console" are its navigation, heading and loading or denied states. Off: the not-found page and nothing of
+# the console; on: the console and no not-found (a 200 alone passed on the soft 404 too).
 p6-me-flag-on	6.1	member_a	GET	/api/auth/me	-	200;has="governance":true	req:UI-10 governance:on
 p6-me-flag-off	6.1	member_a	GET	/api/auth/me	-	200;has="governance":false	req:UI-10 req:DV-30 governance:off
-p6-page-admin-on	6.1	admin_a	GET	/admin	-	200	req:UI-10 governance:on
-p6-page-admin-off	6.1	admin_a	GET	/admin	-	404	req:UI-10 req:DV-30 governance:off
-p6-page-admin-users-off	6.2	admin_a	GET	/admin/users	-	404	req:GV-01 req:DV-30 governance:off
-p6-page-admin-instance-on	6.7	admin_a	GET	/admin/instance	-	200	req:GV-08 governance:on
-p6-page-admin-instance-off	6.7	admin_a	GET	/admin/instance	-	404	req:GV-08 req:DV-30 governance:off
+p6-page-admin-on	6.1	admin_a	GET	/admin	-	200;has=AdminConsole;lacks=NEXT_HTTP_ERROR_FALLBACK	req:UI-10 governance:on
+p6-page-admin-off	6.1	admin_a	GET	/admin	-	200|404;has=NEXT_HTTP_ERROR_FALLBACK;lacks=AdminConsole;lacks=Admin console;lacks=the admin console	req:UI-10 req:DV-30 governance:off
+p6-page-admin-users-off	6.2	admin_a	GET	/admin/users	-	200|404;has=NEXT_HTTP_ERROR_FALLBACK;lacks=AdminConsole;lacks=Admin console;lacks=the admin console	req:GV-01 req:DV-30 governance:off
+p6-page-admin-instance-on	6.7	admin_a	GET	/admin/instance	-	200;has=AdminConsole;lacks=NEXT_HTTP_ERROR_FALLBACK	req:GV-08 governance:on
+p6-page-admin-instance-off	6.7	admin_a	GET	/admin/instance	-	200|404;has=NEXT_HTTP_ERROR_FALLBACK;lacks=AdminConsole;lacks=Admin console;lacks=the admin console	req:GV-08 req:DV-30 governance:off
 p6-page-admin-anon	6.1	anon	GET	/admin	-	307;hdr=/login	req:UI-10
 
 # ---- step 6.2: the users directory and one account's detail (users:read) ----

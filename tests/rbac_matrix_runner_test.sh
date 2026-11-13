@@ -122,19 +122,25 @@ case "$*" in
   *) echo "unexpected docker call" >&2; exit 1 ;;
 esac
 STUB
-# curl: every request answers 200; the URL of each row's request is logged.
+# curl: every request answers 200 with an empty body; the URL of each row's request is logged.
+# A row's request (not the health probe or a sign-in) answers FAKE_STATUS with the body in the file
+# FAKE_BODY when they are set.
 cat > "$W/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-url=""; prev=""
+url=""; prev=""; out=""; row=1
 for a in "$@"; do
   case "$prev" in
-    -o) [ "$a" = /dev/null ] || : > "$a" ;;
+    -o) [ "$a" = /dev/null ] || out="$a" ;;
     -D) printf 'HTTP/1.1 200 OK\r\n' > "$a" ;;
   esac
+  case "$a" in */api/health|*/api/auth/login) row="" ;; esac
   prev="$a"; url="$a"
 done
+if [ -n "$out" ]; then
+  if [ -n "$row" ] && [ -n "${FAKE_BODY:-}" ]; then cat "$FAKE_BODY" > "$out"; else : > "$out"; fi
+fi
 case "$url" in */api/health) ;; *) echo "request ${url#*://*/}" >> "$STUB_LOG" ;; esac
-printf 200
+if [ -n "$row" ]; then printf '%s' "${FAKE_STATUS:-200}"; else printf 200; fi
 STUB
 printf '#!/usr/bin/env bash\necho "sleep $*" >> "$STUB_LOG"\n' > "$W/bin/sleep"
 chmod +x "$W/bin/docker" "$W/bin/curl" "$W/bin/sleep"
@@ -336,6 +342,57 @@ run true true '^g-plain$' g 5000 '' on '' on true
 eq "no tagged row selected: no switch read" "$(reads)" "0"
 run true true '' u 1500 true on true on true
 eq "the cache bound still parses after the governance value" "$(grep '^sleep ' <<<"$LOG" | tr '\n' ' ')" "sleep 3 sleep 3 "
+
+section "the console pages with governance off (p6.tsv as committed): Next's not-found page, never the console"
+# The admin layout's notFound() streams under the root <Suspense> after a 200 (S0 red, 2026-11-13), so the
+# rows accept 200 or 404 and decide on the body. The bodies hold the markers a real answer of each kind
+# carries: the digest notFound() leaves, Next's not-found text (in every page's payload, so not a marker),
+# and, when the layout renders the console, its client reference and its loading state.
+cp "$REPO_ROOT/tests/fixtures/rbac_matrix/p6.tsv" "$T/tests/fixtures/rbac_matrix/p6.tsv"
+NOT_FOUND_PAGE='<meta name="robots" content="noindex"/><title>404: This page could not be found.</title><h1 class="next-error-h1">404</h1><h2>This page could not be found.</h2><script>self.__next_f.push([1,"a:E{\"digest\":\"NEXT_HTTP_ERROR_FALLBACK;404\"}\n"])</script>'
+CONSOLE_REF='<script>self.__next_f.push([1,"7:I[749583,[\"/_next/static/chunks/e2db446e.js\"],\"AdminConsole\"]\n"])</script>'
+printf '%s' "$NOT_FOUND_PAGE" > "$W/body.soft404"
+printf '%s<div><p role="status">Loading the admin console…</p></div><h2>This page could not be found.</h2>' "$CONSOLE_REF" > "$W/body.console"
+printf '<nav aria-label="Admin console"><p aria-hidden="true">Admin console</p></nav>%s' "$NOT_FOUND_PAGE" > "$W/body.console_around_404"
+printf '%s%s' "$CONSOLE_REF" "$NOT_FOUND_PAGE" > "$W/body.console_ref_only"
+: > "$W/body.empty"
+OFF_ROWS='^p6-page-admin(-users|-instance)?-off$'
+ON_ROWS='^p6-page-admin(-instance)?-on$'
+page_rows() { # body status rows governance -> OUT
+  FAKE_BODY="$W/body.$1" FAKE_STATUS="$2"; export FAKE_BODY FAKE_STATUS
+  run true true "$3" p6 5000 '' on '' on "$4"
+  unset FAKE_BODY FAKE_STATUS
+}
+page_rows soft404 200 "$OFF_ROWS" ''
+eq "off, the soft 404 (200 + the not-found page): the three rows pass" \
+  "$(verdict p6-page-admin-off) $(verdict p6-page-admin-users-off) $(verdict p6-page-admin-instance-off)" "PASS PASS PASS"
+has "result line" "== RESULT: 3 passed, 0 failed, 0 skipped ==" "$OUT"
+page_rows soft404 404 "$OFF_ROWS" ''
+eq "off, a real 404 with the same page: pass" "$(verdict p6-page-admin-off) $(verdict p6-page-admin-users-off)" "PASS PASS"
+page_rows console 200 "$OFF_ROWS" ''
+eq "mutation: the console rendered (200, its loading state): the three rows fail" \
+  "$(verdict p6-page-admin-off) $(verdict p6-page-admin-users-off) $(verdict p6-page-admin-instance-off)" "FAIL FAIL FAIL"
+has "and say the not-found digest is missing" "body lacks NEXT_HTTP_ERROR_FALLBACK" "$(line p6-page-admin-off)"
+page_rows console_around_404 200 "$OFF_ROWS" ''
+eq "mutation: the console's shell around a not-found (gate moved into a page): fail" "$(verdict p6-page-admin-off)" "FAIL"
+has "on the console's markup" "body contains Admin console" "$(line p6-page-admin-off)"
+page_rows console_ref_only 200 "$OFF_ROWS" ''
+eq "mutation: the not-found digest but the console's client reference in the payload: fail" "$(verdict p6-page-admin-users-off)" "FAIL"
+has "on the reference" "body contains AdminConsole" "$(line p6-page-admin-users-off)"
+page_rows empty 200 "$OFF_ROWS" ''
+eq "mutation: a 200 with no not-found page (status alone no longer passes): fail" "$(verdict p6-page-admin-instance-off)" "FAIL"
+has "on the body" "body lacks NEXT_HTTP_ERROR_FALLBACK" "$(line p6-page-admin-instance-off)"
+page_rows soft404 500 "$OFF_ROWS" ''
+eq "mutation: another status with the not-found page: fail" "$(verdict p6-page-admin-off)" "FAIL"
+has "on the status" "expected 200|404, got 500" "$(line p6-page-admin-off)"
+page_rows console 200 "$ON_ROWS" true
+eq "on, the console rendered: the two rows pass" "$(verdict p6-page-admin-on) $(verdict p6-page-admin-instance-on)" "PASS PASS"
+page_rows soft404 200 "$ON_ROWS" true
+eq "mutation: on but the not-found page (the switch not read on): the two rows fail" \
+  "$(verdict p6-page-admin-on) $(verdict p6-page-admin-instance-on)" "FAIL FAIL"
+has "on the body" "body lacks AdminConsole" "$(line p6-page-admin-on)"
+page_rows soft404 200 "$ON_ROWS" ''
+eq "governance off: the on rows skip" "$(verdict p6-page-admin-on)" "SKIP"
 
 section "Root's stored policy through the runner's own SQL (Phase 7 kickoff: no maxLevel means write)"
 # The stubbed answers above cannot catch a wrong query. Here each policy is stored in a
