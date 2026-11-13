@@ -5,8 +5,7 @@
 # Proves per-user isolation end-to-end with real login sessions:
 #   - a standard user cannot read another user's project / graph / export
 #   - a standard user's project list is scoped to themselves
-#   - an admin NOT simulating sees only their own data (no see-all); with sharing in force (the switch
-#     and Root's policy) a Full admin reads another's project at Read by oversight, one audit row a day
+#   - an admin NOT simulating sees only their own data (no see-all)
 #   - an admin simulating user A sees A's project, but pasting user B's project
 #     URL while simulating A is BLOCKED (the operator-reported impersonation bug)
 #   - a standard user cannot call the admin-only act-as endpoint
@@ -92,20 +91,6 @@ esac
 # flags.ts: the permissions switch requires the identity switch and reads off without it.
 [ "$IDENTITY" = on ] || PERMISSIONS=off
 echo "== Permissions switch: $PERMISSIONS =="
-# Sharing is in force with RBAC_SHARING_ENABLED (which needs permissions) and Root's instance policy
-# enabled; then a Full admin reads any project at Read by oversight (step 4.14, OQ-03), audited once a day.
-env_line="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s" "${RBAC_SHARING_ENABLED:-}"' 2>/dev/null)"
-case "$(printf '%s' "$env_line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
-  true|1|yes) SHARING=on ;;
-  *) SHARING=off ;;
-esac
-[ "$PERMISSIONS" = on ] || SHARING=off
-if [ "$SHARING" = on ]; then
-  policy="$(cd "$ROOT" && docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
-    "SELECT COALESCE(sharing_policy->>'enabled', 'false') FROM instance_settings LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
-  [ "$policy" = true ] || SHARING=off
-fi
-echo "== Sharing in force (switch and instance policy): $SHARING =="
 
 echo "== Removing an earlier run's fixtures =="
 # A fresh account every run: the escape hatch covers only accounts older than the upgrade.
@@ -193,11 +178,7 @@ if [ -n "$B_USAGE_BEFORE" ] && [ "$B_USAGE_BEFORE" = "$B_USAGE_AFTER" ]; then ok
 check "B reads OWN api-usage (the 403s are real)"   200 "$(code "$TMP/b.jar" GET "/api/users/$B_ID/settings/api-usage")"
 
 echo "== Admin scoping + impersonation =="
-if [ "$SHARING" = on ]; then
-  check "admin (not simulating) reads A's project -> 200 by oversight (audited)" 200 "$(code "$TMP/admin.jar" GET "/api/projects/$PA_ID")"
-else
-  check "admin (not simulating) reads A's project -> blocked (no see-all)" 404 "$(code "$TMP/admin.jar" GET "/api/projects/$PA_ID")"
-fi
+check "admin (not simulating) reads A's project -> blocked (no see-all)" 404 "$(code "$TMP/admin.jar" GET "/api/projects/$PA_ID")"
 check "admin (not simulating) reads A's api-usage -> blocked" 403 "$(code "$TMP/admin.jar" GET "/api/users/$A_ID/settings/api-usage")"
 check "admin (not simulating) runs A's api-usage -> blocked"  403 "$(code "$TMP/admin.jar" POST "/api/users/$A_ID/settings/api-usage" '{"overwrite":true}')"
 # With RBAC_PERMISSIONS_ENABLED on an impersonation takes a reason, a duration and the admin's own
@@ -208,14 +189,7 @@ check "admin simulating A pastes B's project -> BLOCKED"  404 "$(code "$TMP/admi
 check "admin simulating A reads A's api-usage"            200 "$(code "$TMP/admin.jar" GET "/api/users/$A_ID/settings/api-usage")"
 check "admin simulating A reads B's api-usage -> BLOCKED" 403 "$(code "$TMP/admin.jar" GET "/api/users/$B_ID/settings/api-usage")"
 check "admin stops simulating"                            200 "$(code "$TMP/admin.jar" DELETE /api/auth/act-as)"
-if [ "$SHARING" = on ]; then
-  check "admin (stopped) reads A's project -> 200 by oversight again" 200 "$(code "$TMP/admin.jar" GET "/api/projects/$PA_ID")"
-  OVERSEE_ROWS="$(cd "$ROOT" && docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
-    "SELECT count(*) FROM audit_log WHERE action = 'project.oversee' AND actor_id = '$ADMIN_ID' AND project_id = '$PA_ID'" 2>/dev/null | tr -d '[:space:]')"
-  check "two oversight reads of A's project write one project.oversee row (DV-24)" 1 "$OVERSEE_ROWS"
-else
-  check "admin (stopped) reads A's project -> blocked again" 404 "$(code "$TMP/admin.jar" GET "/api/projects/$PA_ID")"
-fi
+check "admin (stopped) reads A's project -> blocked again" 404 "$(code "$TMP/admin.jar" GET "/api/projects/$PA_ID")"
 
 echo "== Owner path still works (non-breaking) =="
 check "A reads OWN analytics vulns"                 200 "$(code "$TMP/a.jar" GET "/api/analytics/vulnerabilities?projectId=$PA_ID")"
