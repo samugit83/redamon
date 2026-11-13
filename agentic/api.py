@@ -3345,8 +3345,13 @@ async def register_non_msf_session(body: dict):
 class TextToCypherRequest(BaseModel):
     """Request model for text-to-cypher conversion."""
     question: str
+    # Whose provider key pays, and whose rate-limit bucket and daily cap count the call.
     user_id: str
     project_id: str
+    # The graph tenant: the project's owner, whose id the project's nodes carry (RBAC
+    # T9). It differs from `user_id` once a collaborator may ask on a shared project;
+    # absent or empty, it is `user_id` (redagraph and older webapps send none).
+    tenant_user_id: Optional[str] = None
     # Default True for backward compatibility with the webapp graph view, which
     # needs whole nodes/relationships to render. CLI callers (e.g. redagraph)
     # should send False so the LLM is free to return scalar properties.
@@ -3505,11 +3510,17 @@ async def _build_cypher_manager(user_id: str, project_id: str):
     return manager
 
 
+def _graph_tenant(body) -> str:
+    """The graph tenant a master-key request names: `tenant_user_id`, else `user_id`."""
+    return body.tenant_user_id or body.user_id
+
+
 async def _generate_validated_cypher(
-    manager, question: str, user_id: str, project_id: str, for_graph_view: bool
+    manager, question: str, tenant_user_id: str, project_id: str, for_graph_view: bool
 ) -> str:
-    """Generate Cypher and prove it parses, scopes and runs. Returns the RAW
-    (un-scoped) Cypher, which is what a caller saves or re-scopes itself.
+    """Generate Cypher and prove it parses, scopes and runs under the graph tenant
+    (the project's owner, never the key owner). Returns the RAW (un-scoped) Cypher,
+    which is what a caller saves or re-scopes itself.
 
     Raises _CypherSetupError. Retries feed the previous error back to the model;
     an unscopable pattern raises TenantScopeError, which the loop treats the same
@@ -3545,11 +3556,11 @@ async def _generate_validated_cypher(
             # Validate by executing (with the tenant filter) to catch syntax
             # errors. Bounded (P0-4): the rows are discarded, so ask for one
             # under a transaction timeout rather than materialising a result.
-            filtered = manager._scope_query(cypher, user_id, project_id)
+            filtered = manager._scope_query(cypher, tenant_user_id, project_id)
             await asyncio.to_thread(
                 _graph_exec_run,
                 filtered,
-                {"tenant_user_id": user_id, "tenant_project_id": project_id},
+                {"tenant_user_id": tenant_user_id, "tenant_project_id": project_id},
                 1,
             )
             return cypher
@@ -3602,16 +3613,21 @@ async def text_to_cypher(body: TextToCypherRequest, run_cred: Optional[dict] = D
     BILLED: one request can cost up to 9 provider calls (3 attempts, each wrapped
     in retry_llm_call), spending one user's provider key. The gate applies the
     token bucket and the daily spend cap. With the master key (the webapp, which
-    resolved the identity it sends) that user is the body's; with a terminal's run
-    credential (redagraph `ask`) it is the credential's, and the body's ids are
-    ignored. The scanner key alone is refused.
+    resolved the identity it sends) that user is the body's `user_id` and the graph
+    is scoped to its `tenant_user_id` (the project's owner); with a terminal's run
+    credential (redagraph `ask`) both are the credential's tenant, and the body's
+    ids are ignored. The scanner key alone is refused.
     """
     cred = run_credential_claims(run_cred)
-    user_id, project_id = (cred["ten"], cred["pid"]) if cred else (body.user_id, body.project_id)
+    if cred:
+        user_id = tenant_user_id = cred["ten"]
+        project_id = cred["pid"]
+    else:
+        user_id, tenant_user_id, project_id = body.user_id, _graph_tenant(body), body.project_id
     try:
         manager = await _build_cypher_manager(user_id, project_id)
         cypher = await _generate_validated_cypher(
-            manager, body.question, user_id, project_id, body.for_graph_view
+            manager, body.question, tenant_user_id, project_id, body.for_graph_view
         )
     except _CypherSetupError as e:
         return JSONResponse(content={"error": e.message, **e.fields}, status_code=e.status)
@@ -3630,6 +3646,8 @@ class GraphNlQueryRequest(BaseModel):
     question: str
     user_id: str
     project_id: str
+    # As in TextToCypherRequest: the graph tenant, `user_id` when absent.
+    tenant_user_id: Optional[str] = None
 
 
 @app.post(
@@ -3648,13 +3666,14 @@ async def graph_nl_query(body: GraphNlQueryRequest):
     """
     if not body.user_id or not body.project_id:
         return JSONResponse(status_code=400, content={"error": "missing tenant identity"})
+    tenant_user_id = _graph_tenant(body)
 
     try:
         manager = await _build_cypher_manager(body.user_id, body.project_id)
         # for_graph_view=False: an external agent wants the values it asked
         # about, not whole nodes to render.
         cypher = await _generate_validated_cypher(
-            manager, body.question, body.user_id, body.project_id, False
+            manager, body.question, tenant_user_id, body.project_id, False
         )
     except _CypherSetupError as e:
         return JSONResponse(
@@ -3664,7 +3683,7 @@ async def graph_nl_query(body: GraphNlQueryRequest):
     from graph_db.tenant_filter import scope_query, TenantScopeError
 
     try:
-        final = scope_query(cypher, body.user_id, body.project_id)
+        final = scope_query(cypher, tenant_user_id, body.project_id)
     except TenantScopeError:
         # The generator already proved this scopes, so reaching here means the
         # query changed under us. Refuse rather than run anything unscoped.
@@ -3674,7 +3693,7 @@ async def graph_nl_query(body: GraphNlQueryRequest):
             content={"error": "Could not scope that query to your project.", "stage": "generate"},
         )
 
-    params = {"tenant_user_id": body.user_id, "tenant_project_id": body.project_id}
+    params = {"tenant_user_id": tenant_user_id, "tenant_project_id": body.project_id}
     async with _graph_exec_mcp_semaphore():
         resp = await asyncio.to_thread(_graph_exec_respond, final, params)
 
