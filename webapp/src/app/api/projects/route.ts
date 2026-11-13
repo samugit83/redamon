@@ -24,6 +24,7 @@ import { internalError } from '@/lib/routeErrors'
 import { cleanOpenApiSources, normalizeOpenApiSourceIds, validateOpenApiSettings } from '@/lib/validation/openapiSettings'
 import { projectModelProblem } from '@/lib/agentInTheLoop'
 import { ownershipTokenForCreate } from '@/lib/ownershipToken'
+import { projectQuotaRefusal } from '@/lib/authz/quotas'
 
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
 const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
@@ -212,6 +213,10 @@ export async function POST(request: NextRequest) {
         { status: 404 }
       )
     }
+
+    // The owner's maxProjects quota (step 6.8), before the guardrail spends an agent call.
+    const overQuota = await projectQuotaRefusal(userId)
+    if (overQuota) return overQuota
 
     const rawSubdomains = optionalParams.subdomainList
     const rawInclude = optionalParams.ipHostnameInclude

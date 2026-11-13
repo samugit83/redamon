@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { forbiddenResponse, requirePermission } from '@/lib/authz/guards'
+import { projectQuotaRefusal } from '@/lib/authz/quotas'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
@@ -160,6 +161,10 @@ export async function POST(request: NextRequest) {
     if (auth instanceof NextResponse) return auth
     const eff = auth.effective
     const userId = eff.userId
+
+    // The importer's maxProjects quota (step 6.8): an import creates a project they own.
+    const overQuota = await projectQuotaRefusal(userId)
+    if (overQuota) return overQuota
 
     // D10: zip-bomb defense. Cap the upload size, the total DECLARED uncompressed
     // size, and the entry count BEFORE decompressing any entry, so a small crafted
