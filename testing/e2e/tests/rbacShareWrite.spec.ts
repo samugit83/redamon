@@ -62,6 +62,19 @@ async function skipUnlessWriteSharing(page: Page): Promise<void> {
     'write sharing is not in force (RBAC_SHARING_WRITE_ENABLED and the instance policy at write)')
 }
 
+/**
+ * The webapp keeps Root's policy per process for RBAC_AUTHZ_CACHE_MS (6 s by default, sharingPolicy.ts), and
+ * skipUnlessWriteSharing's /api/auth/me has just filled it: a dialog opened at once after a psql flip still offers
+ * the old value. Wait, bounded, until the share list the dialog reads answers the value just set.
+ */
+async function waitForExploitGrantable(page: Page, projectId: string, grantable: boolean): Promise<void> {
+  await expect.poll(async () => {
+    const res = await page.request.get(`/api/projects/${projectId}/collaborators`)
+    const body = res.ok() ? await res.json() : null
+    return body?.grantable?.toggles?.exploit?.grantable === true
+  }, { timeout: 20_000, intervals: [1_000] }).toBe(grantable)
+}
+
 async function openShareDialog(page: Page) {
   await page.goto('/projects')
   await page.getByRole('button', { name: `Share ${PROJECT}` }).click()
@@ -116,6 +129,8 @@ test('P5-01: Operator asks the owner\'s consent first; the collaborator then rea
 })
 
 test('P5-02: Red-teamer asks the password; with membersMayGrantExploit off it is refused by policy', async ({ browser, baseURL }) => {
+  // Two policy-cache waits (up to 20 s and the closing 90 s poll) on top of the dialog work: above the default 60 s.
+  test.setTimeout(180_000)
   const seed = readRbacSeed()
   const owner = await browser.newContext({ baseURL })
   try {
@@ -123,6 +138,7 @@ test('P5-02: Red-teamer asks the password; with membersMayGrantExploit off it is
     await loginAs(page, 'MEMBER_C')
     await skipUnlessWriteSharing(page)
     setMembersMayGrantExploit(true)
+    await waitForExploitGrantable(page, seed.PSHARED_ID, true)
     const { row } = await changePreset(page, 'Red-teamer', seed.RBAC_PASSWORD)
     await expect(row).toContainText('Exploitation & shells')
 
