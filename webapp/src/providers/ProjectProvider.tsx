@@ -7,6 +7,7 @@ import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { type ProjectSummary, toProjectSummary } from '@/lib/projectSummary'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
 import { ActAsDialog, type ActAsDialogTarget } from '@/components/auth/ActAsDialog'
+import { ACT_AS_PICK_KEY, forgetActAsPick, recallActAsPick, rememberActAsPick } from '@/lib/actAsPick'
 
 export type { ProjectSummary } from '@/lib/projectSummary'
 
@@ -46,7 +47,6 @@ export interface SetUserIdOptions {
 const ProjectContext = createContext<ProjectContextValue | null>(null)
 
 const STORAGE_KEY_PROJECT = 'redamon-current-project'
-const STORAGE_KEY_USER = 'redamon-current-user'
 
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const [currentProject, setCurrentProjectState] = useState<ProjectSummary | null>(null)
@@ -66,7 +66,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const canSwitchUser = useCan('users:impersonate')
   // Permissions switch on (step 3.14): the server says whom the admin acts as (/api/auth/me
   // `actingAs`), with a time limit the browser must not outlive, so nothing is restored here.
-  const serverOwned = useRbacFlags()?.permissions === true
+  const rbacFlags = useRbacFlags()
+  const serverOwned = rbacFlags?.permissions === true
+  // Identity switch on: only a pick the signed-in admin made is remembered and restored (lib/actAsPick).
+  // Then only a person's pick asks for another account here: the projects page chooses nobody (3.16c).
+  const identityOn = rbacFlags?.identity === true || serverOwned
   const actingAsId = authUser?.actingAs?.id ?? null
   // The act-as dialog waiting for an answer, and who is waiting for its outcome.
   const [actAsRequest, setActAsRequest] = useState<{ target: ActAsDialogTarget; settle: (r: ApiError | null) => void } | null>(null)
@@ -81,13 +85,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
     if (serverOwned) {
       // No silent restore (IM-02): a selection a previous version remembered is dropped.
-      localStorage.removeItem(STORAGE_KEY_USER)
+      forgetActAsPick()
       setUserIdState(actingAsId ?? authUserId)
       setImpersonationSynced(true)
     } else if (canSwitchUser) {
       // Restore the saved impersonation target (or own id).
-      const savedUserId = localStorage.getItem(STORAGE_KEY_USER)
-      const target = savedUserId && savedUserId !== authUserId ? savedUserId : null
+      const target = recallActAsPick(authUserId, identityOn)
       setUserIdState(target || authUserId)
       // Make the server-side impersonation match, THEN allow loads.
       ;(async () => {
@@ -105,7 +108,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             // the user_id foreign key as an opaque 500. Fall back to the
             // admin's own id and forget the stale selection.
             if (!resp.ok) {
-              localStorage.removeItem(STORAGE_KEY_USER)
+              forgetActAsPick()
               if (!cancelled) setUserIdState(authUserId)
               await fetch('/api/auth/act-as', { method: 'DELETE' }).catch(() => {})
             } else {
@@ -123,11 +126,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     } else {
       // Anyone who may not act as others: always locked to own id; no impersonation cookie.
       setUserIdState(authUserId)
-      localStorage.setItem(STORAGE_KEY_USER, authUserId)
+      // Switches off the own id is saved, as before (DV-30); with identity on a pick is an admin's.
+      if (identityOn) forgetActAsPick()
+      else localStorage.setItem(ACT_AS_PICK_KEY, authUserId)
       setImpersonationSynced(true)
     }
     return () => { cancelled = true }
-  }, [authUserId, authLoading, canSwitchUser, refreshSession, serverOwned, actingAsId])
+  }, [authUserId, authLoading, canSwitchUser, refreshSession, serverOwned, identityOn, actingAsId])
 
   // Initialize from URL or localStorage (after impersonation is reconciled)
   useEffect(() => {
@@ -233,7 +238,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         return toApiError(e, 'Could not switch user')
       }
-      localStorage.setItem(STORAGE_KEY_USER, id)
+      rememberActAsPick(id, authUser?.id, identityOn)
       setUserSwitchError(null)
       setUserIdState(id)
       // What may be used follows the act-as cookie (/api/auth/me answers it).
@@ -244,9 +249,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // authorization - the server derives the effective user from the signed
     // `redamon-act-as` cookie set below (admin-only, verified server-side).
     if (id && id !== authUser?.id) {
-      localStorage.setItem(STORAGE_KEY_USER, id)
+      rememberActAsPick(id, authUser?.id, identityOn)
     } else {
-      localStorage.removeItem(STORAGE_KEY_USER)
+      forgetActAsPick()
     }
     // Set the server cookie FIRST, then flip the effective userId so that the data
     // fetches it triggers already carry the correct impersonation (no race / no
@@ -267,7 +272,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             impersonated = false
             refusal = await readApiError(resp, 'Could not switch user')
             setUserSwitchError(refusal)
-            localStorage.removeItem(STORAGE_KEY_USER)
+            forgetActAsPick()
             await fetch('/api/auth/act-as', { method: 'DELETE' }).catch(() => {})
           } else {
             setUserSwitchError(null)
@@ -282,7 +287,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         // as for a refused target, instead of a half-switched session.
         if (impersonated) {
           impersonated = false
-          localStorage.removeItem(STORAGE_KEY_USER)
+          forgetActAsPick()
           refusal = toApiError(e, 'Could not switch user')
           setUserSwitchError(refusal)
         }
@@ -292,7 +297,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       void refreshSession?.()
     }
     return refusal
-  }, [canSwitchUser, authUser, refreshSession, serverOwned, switchOnServer])
+  }, [canSwitchUser, authUser, refreshSession, serverOwned, identityOn, switchOnServer])
 
   const closeActAs = useCallback(() => {
     actAsRequest?.settle(null)

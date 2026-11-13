@@ -4,6 +4,7 @@ import { useContext, useState, useEffect, useCallback, useMemo, useRef, ReactNod
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
 import type { PermissionId } from '@/lib/authz/permissions'
 import type { RbacFlags } from '@/lib/authz/flags'
+import { forgetActAsPick } from '@/lib/actAsPick'
 import { AuthContext } from './authContext'
 
 /** The instance's Root as the header's Root banner shows it (identity switch on). */
@@ -115,7 +116,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // switch ended says so; a bare 401 (switch off) leaves the page as before the switch.
         if (res.status === 401 && !onSignedOutPage(window.location.pathname)) {
           const body = await res.json().catch(() => null)
-          if (body?.code === 'session_ended') window.location.replace('/login')
+          if (body?.code === 'session_ended') {
+            // Whom this browser acted as must not resume at the next sign-in, whoever it is.
+            forgetActAsPick()
+            window.location.replace('/login')
+          }
         }
         return null
       })
@@ -155,11 +160,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return {}
   }, [refresh])
 
+  const identityOn = user?.flags?.identity === true || user?.flags?.permissions === true
   const logout = useCallback(async () => {
+    // The logout route ends the act-as cookie so it cannot resume at the next sign-in; with identity
+    // on the browser's remembered pick goes too (review of step 3.16c). Off: kept, as before (DV-30).
+    if (identityOn) forgetActAsPick()
     await fetch('/api/auth/logout', { method: 'POST' })
     setUser(null)
     window.location.href = '/login'
-  }, [])
+  }, [identityOn])
 
   const capabilities = useMemo(() => new Set<PermissionId>(user?.capabilities ?? []), [user])
 

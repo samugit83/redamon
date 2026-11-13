@@ -38,6 +38,7 @@ function onPage(pathname: string) {
   Object.defineProperty(window, 'location', { configurable: true, value: { ...realLocation, pathname, replace: replaceMock } })
 }
 beforeEach(() => {
+  localStorage.clear()
   fetchMock = vi.fn()
   vi.stubGlobal('fetch', fetchMock)
   onPage('/graph')
@@ -116,6 +117,22 @@ describe('AuthProvider session hydrate', () => {
       cleanup()
     }
     expect(replaceMock).not.toHaveBeenCalled()
+  })
+
+  // Review of step 3.16c: the browser's act-as pick must not resume at the next sign-in.
+  test('a session the server ended forgets whom this browser acted as', async () => {
+    localStorage.setItem('redamon-current-user', JSON.stringify({ by: 'u1', target: 'member-1' }))
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(SESSION_ENDED), { status: 401 }))
+    await hydrate()
+    expect(replaceMock).toHaveBeenCalledWith('/login')
+    expect(localStorage.getItem('redamon-current-user')).toBeNull()
+  })
+
+  test('a bare 401 (identity switch off) keeps it, as after Phase 1', async () => {
+    localStorage.setItem('redamon-current-user', 'member-1')
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 }))
+    await hydrate()
+    expect(localStorage.getItem('redamon-current-user')).toBe('member-1')
   })
 
   test('an outage or a session that reads never leaves the page', async () => {

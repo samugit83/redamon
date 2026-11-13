@@ -9,8 +9,12 @@
  * - permissions on: loading the page makes no act-as request and opens no dialog;
  * - an explicit pick still switches, and with permissions on the dialog names the account (name,
  *   email, type), not its id;
- * - switches off (DV-30): the first listed account is selected as before (`8b51c1d9`), a stale
- *   selection falls back to it, and a new account is switched to.
+ * - switches off (DV-30): the first listed account is selected as before (`8b51c1d9`) when the user
+ *   list answers before or with /api/auth/me; when the session answers first the provider already
+ *   holds the admin and nothing is chosen; a stale selection falls back to the first listed account,
+ *   and a new account is switched to;
+ * - the identity switch turned on after the switches-off default saved the newest account: the next
+ *   load posts nothing (review of 3.16c: only an explicit pick by the signed-in admin is restored).
  *
  * The real page under the real ProjectProvider; the session, the lists and the network are doubles.
  *
@@ -76,6 +80,7 @@ vi.mock('./ImportModal', () => ({ ImportModal: () => null }))
 vi.mock('./page.module.css', () => ({ default: new Proxy({}, { get: (_t, k) => String(k) }) }))
 
 import { ProjectProvider } from '@/providers/ProjectProvider'
+import { rememberActAsPick } from '@/lib/actAsPick'
 import ProjectsPage from './page'
 
 type Call = { url: string; method: string; body: string }
@@ -138,7 +143,8 @@ describe('identity on, permissions off: loading the page starts no act-as', () =
   test('a selection no longer listed falls back to the admin, never to another account', async () => {
     h.auth = signedIn(FLAGS_IDENTITY)
     h.users = { data: undefined, isLoading: true }
-    localStorage.setItem('redamon-current-user', 'ghost')
+    // An explicit pick of this admin's, the only kind restored with identity on (review of 3.16c).
+    rememberActAsPick('ghost', ADMIN.id, true)
     const { rerender } = render(page())
     await settle()
     h.users = { data: USERS, isLoading: false }
@@ -247,6 +253,20 @@ describe('switches off: the first listed account is the default, as before (DV-3
     expect(actAsPosts().map((c) => JSON.parse(c.body).targetUserId)).toContain('member-9')
   })
 
+  // The default runs only while no user is held: once the provider holds the admin it never does,
+  // as before 3.16c (the order decides what a live check sees).
+  test('/api/auth/me answers before the user list: the admin stays selected, nothing is posted', async () => {
+    h.auth = signedIn(FLAGS_OFF)
+    h.users = { data: undefined, isLoading: true }
+    const { rerender } = render(page())
+    await waitFor(() => expect(actAsCalls().map((c) => c.method)).toEqual(['DELETE']))
+    h.users = { data: USERS, isLoading: false }
+    rerender(page())
+    await waitFor(() => expect(userSelect().value).toBe('admin-1'))
+    await settle()
+    expect(actAsPosts()).toEqual([])
+  })
+
   test('a selection no longer listed falls back to the first listed account', async () => {
     h.auth = signedIn(FLAGS_OFF)
     h.users = { data: undefined, isLoading: true }
@@ -267,5 +287,22 @@ describe('switches off: the first listed account is the default, as before (DV-3
     fireEvent.change(screen.getByPlaceholderText('Enter email address'), { target: { value: 'new@e2e.local' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create User' }))
     await waitFor(() => expect(actAsPosts().map((c) => JSON.parse(c.body).targetUserId)).toContain('user-new'))
+  })
+})
+
+describe('the identity switch turned on after the switches-off default ran', () => {
+  test('the newest account the default saved is not posted at the next load; the admin is shown', async () => {
+    h.auth = signedIn(FLAGS_OFF)
+    render(page())
+    await waitFor(() => expect(actAsPosts().map((c) => JSON.parse(c.body).targetUserId)).toContain('member-9'))
+    await settle()
+    cleanup()
+    calls = []
+    h.auth = signedIn(FLAGS_IDENTITY)
+    render(page())
+    await waitFor(() => expect(userSelect().value).toBe('admin-1'))
+    await settle()
+    expect(actAsPosts()).toEqual([])
+    expect(localStorage.getItem('redamon-current-user')).toBeNull()
   })
 })
