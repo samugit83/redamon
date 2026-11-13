@@ -41,6 +41,43 @@ NON_CHAT_PROVIDER_TYPES = frozenset({"jev", "jev_openrouter"})
 #: The provider types that can serve a `custom/<id>` model.
 CUSTOM_PROVIDER_TYPES = ("openai_compatible", "bedrock_custom", "ollama_local")
 
+#: The `providerType` of the rows the webapp adds to an account's provider list
+#: for the instance providers an administrator assigned to a permission set the
+#: account holds (GV-15). A marker, not a provider kind, so no reader that picks
+#: "the account's openai key" or "the first custom provider" ever lands on one;
+#: the kind is `instanceProviderType`. An instance row serves only an
+#: `instance/<providerId>/<model>` id. Twin of INSTANCE_ROW_TYPE in
+#: webapp/src/lib/instanceProviders/rows.ts.
+INSTANCE_ROW_TYPE = "instance"
+INSTANCE_MODEL_PREFIX = "instance/"
+
+#: The keyed kinds an instance provider may be, each with the provider
+#: `parse_model_provider` must read from the model it serves: an instance
+#: OpenAI key never reaches a model routed elsewhere, nor another key it.
+_INSTANCE_KEYED_KINDS = {
+    "openai": "openai", "anthropic": "anthropic", "openrouter": "openrouter",
+    "deepseek": "deepseek", "gemini": "gemini", "glm": "glm", "kimi": "kimi",
+    "qwen": "qwen", "xai": "xai", "mistral": "mistral", "bedrock": "bedrock",
+}
+
+
+class InstanceProviderUnavailable(ValueError):
+    """An `instance/` model whose provider this account's list does not hold.
+
+    Switched off, deleted, never assigned to a set the project's owner holds, or
+    an id the provider cannot serve. Refused here, never routed on: an unknown
+    prefix used to fall through to OpenAI with the owner's own key. The text has
+    no transient phrase and no "is required for model", so it is neither retried
+    nor read as a missing key.
+    """
+    code = "instance_provider_unavailable"
+    message = ("This model's instance provider is not available to the "
+               "project's owner; an administrator assigns instance providers "
+               "to permission sets.")
+
+    def __init__(self):
+        super().__init__(self.message)
+
 #: Provider answers that mean "this model, with these keys, cannot be used" -
 #: a bad or revoked key, no access, or a model id the provider does not have.
 #: Anything else (rate limit, a 5xx, a dropped connection) is transient and
@@ -126,15 +163,88 @@ def chat_providers(rows: list) -> list:
             and row.get("providerType") not in NON_CHAT_PROVIDER_TYPES]
 
 
+def _own_chat_providers(rows: list) -> list:
+    """The account's own chat rows: instance rows serve only `instance/` ids."""
+    return [row for row in chat_providers(rows)
+            if row.get("providerType") != INSTANCE_ROW_TYPE]
+
+
 def exact_custom_provider(providers: list, model: str):
     """The provider a `custom/<id>` model names, or None. Never another one."""
     if not model or not model.startswith("custom/"):
         return None
     wanted = model[len("custom/"):]
-    for provider in chat_providers(providers):
+    for provider in _own_chat_providers(providers):
         if provider.get("id") == wanted:
             return provider
     return None
+
+
+def split_instance_model(model) -> tuple[str, str] | None:
+    """(providerId, model) of an `instance/<providerId>/<model>` id, else None."""
+    if not isinstance(model, str) or not model.startswith(INSTANCE_MODEL_PREFIX):
+        return None
+    provider_id, sep, native = model[len(INSTANCE_MODEL_PREFIX):].partition("/")
+    if not sep or not provider_id or not native:
+        return None
+    return provider_id, native
+
+
+def exact_instance_provider(providers: list, model: str):
+    """The instance row an `instance/<id>/<model>` names, or None. Never another one."""
+    split = split_instance_model(model)
+    if split is None:
+        return None
+    for row in providers or []:
+        if (isinstance(row, dict) and row.get("providerType") == INSTANCE_ROW_TYPE
+                and row.get("id") == split[0]):
+            return row
+    return None
+
+
+def exact_model_provider(providers: list, model: str):
+    """The row a `custom/` or `instance/` model names, exactly, or None."""
+    if split_instance_model(model) is not None:
+        return exact_instance_provider(providers, model)
+    return exact_custom_provider(providers, model)
+
+
+def instance_build_args(model: str, row) -> tuple[str, dict]:
+    """The model id and `setup_llm` keywords that build `model` from instance `row`.
+
+    `model` is `instance/<providerId>/<native>`, where `<native>` is the id the
+    provider's own listing gives (`gpt-5`, `openrouter/x`, `custom/<providerId>`
+    for an OpenAI-compatible endpoint). Only the row's own credentials are
+    returned, so a mismatch cannot fall back on another key. Raises
+    `InstanceProviderUnavailable` when `row` is not the provider the id names,
+    is not a chat kind, or cannot serve `<native>` (a loop or nested id included).
+    """
+    from orchestrator_helpers.llm_setup import parse_model_provider
+
+    split = split_instance_model(model)
+    if (split is None or not isinstance(row, dict)
+            or row.get("providerType") != INSTANCE_ROW_TYPE
+            or row.get("id") != split[0]):
+        raise InstanceProviderUnavailable()
+    provider_id, native = split
+    kind = row.get("instanceProviderType")
+    if kind in CUSTOM_PROVIDER_TYPES:
+        if native != f"custom/{provider_id}":
+            raise InstanceProviderUnavailable()
+        config = {k: v for k, v in row.items() if k != "instanceProviderType"}
+        config["providerType"] = kind
+        return native, {"custom_llm_config": config}
+    served = _INSTANCE_KEYED_KINDS.get(kind)
+    if served is None or parse_model_provider(native)[0] != served:
+        raise InstanceProviderUnavailable()
+    if kind == "bedrock":
+        return native, {
+            "aws_access_key_id": row.get("awsAccessKeyId") or None,
+            "aws_secret_access_key": row.get("awsSecretKey") or None,
+            "aws_bearer_token": row.get("awsBearerToken") or None,
+            "aws_region": row.get("awsRegion") or "us-east-1",
+        }
+    return native, {f"{kind}_api_key": row.get("apiKey") or None}
 
 
 def custom_provider_or_fallback(providers: list, model: str):
@@ -144,11 +254,14 @@ def custom_provider_or_fallback(providers: list, model: str):
     provider was deleted and recreated under a new id. The fallback only ever
     lands on a custom-capable type: any other row (a built-in key, a Jev token)
     would be sent to whatever endpoint `setup_llm`'s custom branch builds.
+    An `instance/` model takes its exact instance row or none, never a fallback.
     """
+    if split_instance_model(model) is not None:
+        return exact_instance_provider(providers, model)
     exact = exact_custom_provider(providers, model)
     if exact is not None:
         return exact
-    for provider in chat_providers(providers):
+    for provider in _own_chat_providers(providers):
         if provider.get("providerType") in CUSTOM_PROVIDER_TYPES:
             return provider
     return None
@@ -158,7 +271,8 @@ def build_llm_from_providers(model: str, providers: list):
     """An LLM for exactly `model`, keyed from `providers`. Raises on any failure.
 
     A `custom/<id>` whose provider is gone raises in `setup_llm` rather than
-    falling back to another custom provider.
+    falling back to another custom provider; so does an `instance/` model whose
+    instance row is not in `providers`.
     """
     from orchestrator_helpers.llm_setup import setup_llm, _resolve_provider_key
     from agent_in_the_loop.errors import refuse_loop_model
@@ -185,7 +299,7 @@ def build_llm_from_providers(model: str, providers: list):
         aws_secret_access_key=bedrock.get("awsSecretKey"),
         aws_bearer_token=bedrock.get("awsBearerToken"),
         aws_region=bedrock.get("awsRegion") or "us-east-1",
-        custom_llm_config=exact_custom_provider(providers, model),
+        custom_llm_config=exact_model_provider(providers, model),
     )
 
 

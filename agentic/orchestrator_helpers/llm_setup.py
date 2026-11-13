@@ -12,7 +12,12 @@ from langchain_core.language_models import BaseChatModel
 from project_settings import load_project_settings
 from agent_context import set_llm_context
 from orchestrator_helpers.llm_url_guard import validate_llm_base_url
-from llm_builder import NON_CHAT_PROVIDER_TYPES
+from llm_builder import (
+    INSTANCE_MODEL_PREFIX,
+    NON_CHAT_PROVIDER_TYPES,
+    InstanceProviderUnavailable,
+    instance_build_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +132,9 @@ def parse_model_provider(model_name: str) -> tuple[str, str]:
       - "mistral/<model>"     → ("mistral", "<model>")
       - "loop/<name>"         → ("loop", "<name>")  Agent in the Loop, not a provider:
                                 an external MCP client answers, no key is involved
+      - "instance/<id>/<model>" → ("instance", "<id>/<model>")  an administrator's
+                                provider (GV-15); built only from its own row
+                                (llm_builder.instance_build_args), never sent on
       - "claude-*"            → ("anthropic", "claude-*")
       - anything else         → ("openai", "<model>")
 
@@ -157,6 +165,8 @@ def parse_model_provider(model_name: str) -> tuple[str, str]:
         return ("mistral", model_name[len("mistral/"):])
     elif model_name.startswith("loop/"):
         return ("loop", model_name[len("loop/"):])
+    elif model_name.startswith(INSTANCE_MODEL_PREFIX):
+        return ("instance", model_name[len(INSTANCE_MODEL_PREFIX):])
     elif model_name.startswith("claude-"):
         return ("anthropic", model_name)
     else:
@@ -187,11 +197,18 @@ def setup_llm(
     """Initialize and return the LLM based on model name (detect provider from prefix).
 
     For custom/ models, custom_llm_config must contain the UserLlmProvider fields.
+    For instance/ models, custom_llm_config must be the exact instance row the id
+    names (llm_builder.exact_model_provider); anything else is refused with
+    InstanceProviderUnavailable, and the keys passed here are never used for it.
     For built-in providers, the relevant API key must be supplied.
     """
     logger.info(f"Setting up LLM: {model_name}")
 
     provider, api_model = parse_model_provider(model_name)
+
+    if provider == "instance":
+        native_model, build_kwargs = instance_build_args(model_name, custom_llm_config)
+        return setup_llm(native_model, **build_kwargs)
 
     if provider == "loop":
         from agent_in_the_loop import loop_enabled
@@ -502,7 +519,11 @@ def llm_setup_failure(model: str, exc: BaseException) -> dict:
     one. Anything else (an SDK refusing its arguments, a non-chat provider row,
     a bad option) is `llm_setup_failed` with the exception's class, never its
     text: a client constructor's validation error can echo the key it was given.
+    An `instance/` model the owner's list does not hold is
+    `instance_provider_unavailable`: only an administrator can change that.
     """
+    if isinstance(exc, InstanceProviderUnavailable):
+        return {"code": InstanceProviderUnavailable.code, "model": model}
     if isinstance(exc, ValueError) and _MISSING_CREDENTIALS_MARKER in str(exc):
         return {"code": "llm_not_configured", "model": model}
     return {"code": "llm_setup_failed", "model": model, "error_class": type(exc).__name__}

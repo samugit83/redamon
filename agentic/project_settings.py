@@ -859,6 +859,17 @@ def fetch_agent_settings(project_id: str, webapp_url: str, *,
             else:
                 logger.warning(f"Custom LLM config {config_id} not found and no providers available")
                 settings['CUSTOM_LLM_CONFIG'] = None
+        elif model_id.startswith('instance/'):
+            from llm_builder import exact_instance_provider
+
+            # Exact or nothing: the owner's list holds an instance row only while
+            # an administrator assigns it to a set the owner holds (C1), so no
+            # fallback; setup_llm then refuses the run (instance_provider_unavailable).
+            matched = exact_instance_provider(settings.get('USER_LLM_PROVIDERS', []), model_id)
+            if matched is None:
+                logger.warning(f"[rbac] instance_provider_unavailable: model {model_id} "
+                               f"is not in the owner's provider list (project {project_id})")
+            settings['CUSTOM_LLM_CONFIG'] = matched
     else:
         settings['USER_LLM_PROVIDERS'] = []
         settings['USER_SETTINGS'] = {}

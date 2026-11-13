@@ -5,6 +5,7 @@ import logging
 import os
 
 from feature_models import feature_model
+from llm_builder import exact_model_provider
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +67,12 @@ async def load_cypherfix_settings(project_id: str) -> dict:
 
             settings["llm_model"] = feature_model(settings.get("user_settings"), "triage")
 
-            # A custom/<id> model resolves to that exact provider or to none.
+            # A custom/<id> or instance/<id>/<model> resolves to that exact
+            # provider or to none (setup_llm then refuses it).
             model = settings["llm_model"]
-            if model.startswith("custom/") and settings.get("user_llm_providers"):
-                config_id = model[len("custom/"):]
-                for p in settings["user_llm_providers"]:
-                    if p.get("id") == config_id:
-                        settings["custom_llm_config"] = p
-                        break
+            matched = exact_model_provider(settings.get("user_llm_providers") or [], model)
+            if matched is not None:
+                settings["custom_llm_config"] = matched
 
             return settings
     except Exception as e:
