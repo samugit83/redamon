@@ -151,7 +151,6 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'user.password_change_required': 'Asked for a new password at the next sign-in',
     'user.sessions_revoked': 'Signed an account out everywhere',
     'user.session_revoked': 'Signed one browser of an account out',
-    'user.session_revoked': 'Signed one browser of an account out',
     'user.invite': 'Invited an account',
     'user.invite_resent': 'Sent an invitation again',
     'user.invite_cancelled': 'Cancelled an invitation',
