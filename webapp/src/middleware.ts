@@ -93,6 +93,8 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/internal\/node-filter-runs\/[^/]+\/finish$/ },
   // The agent records who answered an approval it accepted (step 3.9b); the route re-checks the key.
   { method: 'POST', pattern: /^\/api\/internal\/agent\/decisions$/ },
+  // ...and asks, before it accepts an answer, whether that person may still take it (step 5.4).
+  { method: 'POST', pattern: /^\/api\/internal\/agent\/authorize-decision$/ },
 ]
 
 // Fail-open rollout: default log-only (never blocks), so an omitted route shows
