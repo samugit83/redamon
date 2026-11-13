@@ -223,3 +223,86 @@ describe('the permission schema (step 3.3)', () => {
     expect(userPermissionFields).toEqual(['permissionSets', 'permissionOverrides'])
   })
 })
+
+// Step 4.2 (phase_04): where a share and a break-glass access are kept, and a token's opt-in to
+// shared projects. No row exists after the upgrade and every token reads as before (its owner's
+// projects only), so nothing changes until an owner shares and a person opts a token in.
+describe('the sharing schema (step 4.2)', () => {
+  const columnsOf = (model: string) =>
+    Object.entries(now[model]?.fields ?? {}).filter(([, f]) => !isRelation(f.type)).map(([name]) => name)
+
+  test('the new tables map to project_collaborators and project_break_glass', () => {
+    expect(now.ProjectCollaborator?.table).toBe('project_collaborators')
+    expect(now.ProjectBreakGlass?.table).toBe('project_break_glass')
+  })
+
+  test.each([
+    ['ProjectCollaborator', 'projectId', 'String', 'project_id'],
+    ['ProjectCollaborator', 'userId', 'String', 'user_id'],
+    ['ProjectCollaborator', 'access', 'String', 'access'],
+    ['ProjectCollaborator', 'runScans', 'Boolean', 'run_scans'],
+    ['ProjectCollaborator', 'useAgent', 'Boolean', 'use_agent'],
+    ['ProjectCollaborator', 'exploit', 'Boolean', 'exploit'],
+    ['ProjectCollaborator', 'rawData', 'Boolean', 'raw_data'],
+    ['ProjectCollaborator', 'manage', 'Boolean', 'manage'],
+    ['ProjectCollaborator', 'expiresAt', 'DateTime?', 'expires_at'],
+    ['ProjectCollaborator', 'note', 'String?', 'note'],
+    ['ProjectCollaborator', 'grantedById', 'String', 'granted_by_id'],
+    ['ProjectCollaborator', 'createdAt', 'DateTime', 'created_at'],
+    ['ProjectCollaborator', 'updatedAt', 'DateTime', 'updated_at'],
+    ['ProjectBreakGlass', 'id', 'String', 'id'],
+    ['ProjectBreakGlass', 'projectId', 'String', 'project_id'],
+    ['ProjectBreakGlass', 'userId', 'String', 'user_id'],
+    ['ProjectBreakGlass', 'reason', 'String', 'reason'],
+    ['ProjectBreakGlass', 'expiresAt', 'DateTime', 'expires_at'],
+    ['ProjectBreakGlass', 'createdAt', 'DateTime', 'created_at'],
+    ['McpAccessToken', 'includeSharedProjects', 'Boolean', 'include_shared_projects'],
+    ['McpAccessToken', 'projectAllowlist', 'String[]', 'project_allowlist'],
+  ])('%s.%s is %s in column %s', (model, name, type, column) => {
+    expect(field(model, name)).toMatchObject({ type, column })
+  })
+
+  test('each table holds exactly these columns', () => {
+    expect(columnsOf('ProjectCollaborator')).toEqual([
+      'projectId', 'userId', 'access', 'runScans', 'useAgent', 'exploit', 'rawData', 'manage', 'expiresAt', 'note',
+      'grantedById', 'createdAt', 'updatedAt',
+    ])
+    expect(columnsOf('ProjectBreakGlass')).toEqual(['id', 'projectId', 'userId', 'reason', 'expiresAt', 'createdAt'])
+  })
+
+  test('a share grants nothing beyond its level until an owner says so: every toggle defaults to false', () => {
+    for (const toggle of ['runScans', 'useAgent', 'exploit', 'rawData', 'manage']) {
+      expect(field('ProjectCollaborator', toggle).line, toggle).toContain('@default(false)')
+    }
+    expect(field('ProjectCollaborator', 'access').line).not.toContain('@default')
+    expect(field('ProjectCollaborator', 'createdAt').line).toContain('@default(now())')
+    expect(field('ProjectCollaborator', 'updatedAt').line).toContain('@updatedAt')
+    expect(field('ProjectBreakGlass', 'id').line).toMatch(/@id\s+@default\(cuid\(\)\)/)
+    expect(field('ProjectBreakGlass', 'createdAt').line).toContain('@default(now())')
+  })
+
+  test('one share per project and account; shares found by account, break-glass rows by project and account', () => {
+    expect(now.ProjectCollaborator.blockAttributes).toContain('@@id([projectId, userId])')
+    expect(now.ProjectCollaborator.blockAttributes).toContain('@@index([userId])')
+    expect(now.ProjectBreakGlass.blockAttributes).toContain('@@index([projectId, userId])')
+  })
+
+  test('existing tokens keep reaching only their owner\'s projects: not opted in, no allowlist', () => {
+    expect(field('McpAccessToken', 'includeSharedProjects').line).toContain('@default(false)')
+    expect(field('McpAccessToken', 'projectAllowlist').line).toContain('@default([])')
+  })
+
+  test('a project and an account reach their shares and break-glass rows', () => {
+    expect(field('Project', 'collaborators').type).toBe('ProjectCollaborator[]')
+    expect(field('Project', 'breakGlass').type).toBe('ProjectBreakGlass[]')
+    expect(field('User', 'collaborations').type).toBe('ProjectCollaborator[]')
+    expect(field('User', 'breakGlass').type).toBe('ProjectBreakGlass[]')
+  })
+
+  // The policy column exists since step 2.4; 4.2 defines its shape (src/lib/authz/sharingPolicy.ts)
+  // and adds no instance column (DV-16: the back-relations are not Project columns either).
+  test('the instance row gains no column: the sharing policy is the existing JSON column', () => {
+    expect(field('InstanceSettings', 'sharingPolicy')).toMatchObject({ type: 'Json', column: 'sharing_policy' })
+    expect(Object.keys(now.InstanceSettings.fields).filter((f) => /shar|collab|breakGlass/i.test(f))).toEqual(['sharingPolicy'])
+  })
+})

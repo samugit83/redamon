@@ -17,7 +17,8 @@
 #   - the scenario's checks: tests/fixtures/rbac_upgrade/checks.sql, then checks_after.sql
 #     (what the upgrade adds: legacy grants, Nuclei template owners, the instance settings
 #     row, the Root the boot chose, their marker rows, the empty permission tables, the
-#     legacy-grant conversion), through psql, diffed against expected/<scenario>.after.out,
+#     legacy-grant conversion, the empty sharing tables and the MCP token sharing defaults),
+#     through psql, diffed against expected/<scenario>.after.out,
 #     expected/<scenario>.after.identity.out when RBAC_IDENTITY_ENABLED reads on alone, or
 #     expected/<scenario>.after.permissions.out when RBAC_PERMISSIONS_ENABLED reads on too
 #     (it needs RBAC_IDENTITY_ENABLED on, as src/lib/authz/flags.ts reads them). The fixture

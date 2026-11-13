@@ -88,3 +88,21 @@ SELECT (SELECT count(*) FROM permission_sets), (SELECT count(*) FROM user_permis
 \echo == legacy grants conversion marker (converted, lapsed, already overridden, changed since, past their days), one line per marker row [step 3.15]
 SELECT after->>'converted', after->>'lapsed', after->>'overridden', after->>'superseded', after->>'expired'
   FROM audit_log WHERE action = 'system.rbac_legacy_overrides_backfill' ORDER BY created_at;
+
+-- The sharing tables arrive empty and every MCP token keeps reaching only its owner's projects
+-- (step 4.2): no share, no break-glass row, no token opted in or narrowed. The fixtures hold no
+-- token, so the two token columns' defaults are checked too: an existing token reads as before.
+-- The sharing policy stays the column default {}, which reads as sharing off until Root turns it on.
+\echo == sharing tables (collaborators, break-glass rows, tokens opted in, tokens with an allowlist) [step 4.2]
+SELECT (SELECT count(*) FROM project_collaborators), (SELECT count(*) FROM project_break_glass),
+       (SELECT count(*) FROM mcp_access_tokens WHERE include_shared_projects),
+       (SELECT count(*) FROM mcp_access_tokens WHERE cardinality(project_allowlist) > 0);
+
+\echo == token sharing columns (column, default, nullable)
+SELECT column_name, column_default, is_nullable FROM information_schema.columns
+ WHERE table_schema = 'public' AND table_name = 'mcp_access_tokens'
+   AND column_name IN ('include_shared_projects', 'project_allowlist')
+ ORDER BY column_name;
+
+\echo == sharing policy (stored)
+SELECT sharing_policy::text FROM instance_settings;

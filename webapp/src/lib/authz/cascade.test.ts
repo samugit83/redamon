@@ -12,6 +12,11 @@
  *     custom set leaves its assignments dangling, which resolution reads as No access
  *     (fail closed) rather than silently widening to the default.
  *
+ * And what deleting an account or a project does to the sharing tables of step 4.2 (DV-10): a
+ * share (`ProjectCollaborator`) and a break-glass row go with the project and with the account
+ * they let in, so no access outlives either; the person who granted a share is a plain id, so a
+ * share outlives the admin or owner who wrote it until the owner revokes it.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/cascade.test.ts
  * @vitest-environment node
  */
@@ -66,5 +71,44 @@ describe('deleting an account', () => {
       .map(([name, f]) => `${name}.${f}`)
     expect(now.PermissionSet, 'model PermissionSet').toBeDefined()
     expect(pointing).toEqual([])
+  })
+})
+
+const cascadeOn = (key: string) =>
+  new RegExp(`@relation\\(\\s*fields:\\s*\\[${key}\\],\\s*references:\\s*\\[id\\],\\s*onDelete:\\s*Cascade\\s*\\)`)
+
+describe('deleting a project or an account (step 4.2)', () => {
+  test.each([
+    ['ProjectCollaborator', 'collaborators', 'collaborations'],
+    ['ProjectBreakGlass', 'breakGlass', 'breakGlass'],
+  ])('%s rows cascade with the project and with the user', (model, projectBack, userBack) => {
+    const m = now[model]
+    expect(m, `model ${model}`).toBeDefined()
+    expect(m.fields.projectId).toMatchObject({ type: 'String', column: 'project_id' })
+    expect(m.fields.project?.type).toBe('Project')
+    expect(m.fields.project.line).toMatch(cascadeOn('projectId'))
+    expect(m.fields.userId).toMatchObject({ type: 'String', column: 'user_id' })
+    expect(m.fields.user?.type).toBe('User')
+    expect(m.fields.user.line).toMatch(cascadeOn('userId'))
+    expect(now.Project.fields[projectBack]?.type).toBe(`${model}[]`)
+    expect(now.User.fields[userBack]?.type).toBe(`${model}[]`)
+  })
+
+  test.each(['ProjectCollaborator', 'ProjectBreakGlass'])('%s has no foreign key but its project and its account', (model) => {
+    const relations = Object.entries(now[model]?.fields ?? {})
+      .filter(([, f]) => f.line.includes('@relation'))
+      .map(([name]) => name)
+    expect(relations).toEqual(['project', 'user'])
+  })
+
+  test('a share names the person who granted it by plain id: it outlives that account', () => {
+    expect(now.ProjectCollaborator.fields.grantedById).toMatchObject({ type: 'String', column: 'granted_by_id' })
+    expect(now.ProjectCollaborator.fields.grantedById.line).not.toContain('@relation')
+  })
+
+  test('a token\'s project allowlist names projects by plain id: deleting a project leaves the token as it is', () => {
+    const allowlist = now.McpAccessToken?.fields.projectAllowlist
+    expect(allowlist).toMatchObject({ type: 'String[]', column: 'project_allowlist' })
+    expect(Object.values(now.McpAccessToken.fields).filter((f) => f.type.replace(/\[\]$|\?$/, '') === 'Project')).toEqual([])
   })
 })

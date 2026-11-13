@@ -65,3 +65,31 @@ describe('the 7.7.2 schema survives every RBAC change', () => {
     expect(unfillable).toEqual([])
   })
 })
+
+// Step 4.2: what the sharing step adds is new tables, back-relations (no column) and two token
+// columns whose defaults read as the token's behaviour before (its owner's projects only).
+describe('the sharing schema is additive (step 4.2)', () => {
+  test('the sharing tables are new: no 7.7.2 table is reused', () => {
+    expect(old.ProjectCollaborator).toBeUndefined()
+    expect(old.ProjectBreakGlass).toBeUndefined()
+    const tables = Object.values(old).map((m) => m.table)
+    expect(tables).not.toContain('project_collaborators')
+    expect(tables).not.toContain('project_break_glass')
+  })
+
+  test('the token columns are new and filled by their defaults on every existing row', () => {
+    expect(old.McpAccessToken.fields.includeSharedProjects).toBeUndefined()
+    expect(old.McpAccessToken.fields.projectAllowlist).toBeUndefined()
+    expect(now.McpAccessToken.fields.includeSharedProjects.line).toMatch(/@default\(false\)/)
+    expect(now.McpAccessToken.fields.projectAllowlist.line).toMatch(/@default\(\[\]\)/)
+  })
+
+  test('Project and User gain relation fields only, never a column', () => {
+    for (const [model, fields] of [['Project', ['collaborators', 'breakGlass']], ['User', ['collaborations', 'breakGlass']]] as const) {
+      for (const f of fields) {
+        expect(old[model].fields[f], `${model}.${f}`).toBeUndefined()
+        expect(now[baseType(now[model].fields[f].type)], `${model}.${f} is a relation`).toBeDefined()
+      }
+    }
+  })
+})

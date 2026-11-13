@@ -70,6 +70,9 @@ model User {
   invites            UserInvite[]
   permissionSets      UserPermissionSet[]
   permissionOverrides UserPermissionOverride[]
+  // The projects shared with this account, and its break-glass accesses: both go with it.
+  collaborations      ProjectCollaborator[]
+  breakGlass          ProjectBreakGlass[]
 
   @@map("users")
 }
@@ -252,6 +255,11 @@ model McpAccessToken {
   expiresAt   DateTime? @map("expires_at")
   revokedAt   DateTime? @map("revoked_at")
   createdAt   DateTime  @default(now()) @map("created_at")
+  /// Opt-in to the projects shared with the token's user (step 4.10 reads it). Off, a token
+  /// reaches only its user's own projects, as every token minted before sharing did.
+  includeSharedProjects Boolean  @default(false) @map("include_shared_projects")
+  /// Empty = no narrowing. Project ids by plain id: deleting a project leaves the token as is.
+  projectAllowlist      String[] @default([]) @map("project_allowlist")
 
   @@index([userId])
   @@map("mcp_access_tokens")
@@ -1706,9 +1714,56 @@ model Project {
   // Superseded Rules of Engagement documents. A relation rather than columns,
   // because a replace must not destroy the contract earlier scans ran under.
   roeDocumentRevisions              RoeDocumentRevision[]
+  // Sharing (RBAC Phase 4): relations, never Project columns, so the settings registry and the
+  // settings form's whole-row PUT never see them.
+  collaborators                     ProjectCollaborator[]
+  breakGlass                        ProjectBreakGlass[]
 
   @@index([jevProviderId])
   @@map("projects")
+}
+
+/// A project shared with one account (RBAC Phase 4). The owner stays Project.userId, the only
+/// owner; this row only lets another account in, at `access` with the toggles below. Read only
+/// with RBAC_SHARING_ENABLED on and the instance sharing policy enabled; an expired row counts
+/// for nothing (checked at access time, deleted by the sweep). It goes with the project and with
+/// the account; the person who granted it is a plain id, so the share outlives them.
+model ProjectCollaborator {
+  projectId   String    @map("project_id")
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId      String    @map("user_id")
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  access      String                                    // read | write (write is read until Phase 5's switch)
+  runScans    Boolean   @default(false) @map("run_scans")
+  useAgent    Boolean   @default(false) @map("use_agent")
+  exploit     Boolean   @default(false)
+  rawData     Boolean   @default(false) @map("raw_data")
+  manage      Boolean   @default(false)
+  expiresAt   DateTime? @map("expires_at")
+  note        String?
+  grantedById String    @map("granted_by_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_collaborators")
+}
+
+/// Root's time-boxed emergency read of a project it cannot otherwise see (RBAC Phase 4), with
+/// the reason it gave; the owner is told. Goes with the project and with the account.
+model ProjectBreakGlass {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reason    String
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([projectId, userId])
+  @@map("project_break_glass")
 }
 
 /// A Rules of Engagement document that a replace or a remove superseded.
