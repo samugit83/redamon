@@ -29,6 +29,7 @@
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { INSTANCE_SETTINGS_ID } from '@/lib/sharedInstanceSettings'
+import { rbacFlags } from './flags'
 
 /** PLACEHOLDER(OQ-40): the shortest retention Root may set. */
 export const AUDIT_RETENTION_MIN_DAYS = 90
@@ -94,9 +95,11 @@ export interface RetentionSweep {
 
 /**
  * The sweep part: deletes, in batches, the audit_log rows older than the retention in force that no
- * rule keeps. Throws when a read or a delete fails (the sweep records the part as failed and retries).
+ * rule keeps. With RBAC_GOVERNANCE_ENABLED off it reads and deletes nothing, whoever calls it. Throws
+ * when a read or a delete fails (the sweep records the part as failed and retries).
  */
 export async function sweepAuditRetention(at: Date): Promise<RetentionSweep> {
+  if (!rbacFlags().governance) return { days: null, deleted: 0 }
   const row = await prisma.instanceSettings.findUnique({
     where: { id: INSTANCE_SETTINGS_ID },
     select: { auditRetentionDays: true },

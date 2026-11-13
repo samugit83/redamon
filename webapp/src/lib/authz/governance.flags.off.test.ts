@@ -45,7 +45,9 @@
  * Step 6.6 adds the audit viewer and its export. With the switch off GET /api/admin/audit,
  * /api/admin/audit/[id] and /api/admin/audit/export answer 404 before they read the session or the
  * database (the three route files are readers in GOVERNANCE_READERS; the test at the end, and
- * api/admin/audit/route.test.ts), and /admin/audit sits under /admin, which does not exist.
+ * api/admin/audit/route.test.ts), and /admin/audit sits under /admin, which does not exist. Audit
+ * retention deletes nothing: lib/authz/auditRetention.ts (a reader) reads neither the instance row nor
+ * an audit row, whatever retention Root set while the switch was on (auditRetention.test.ts).
  *
  * Step 6.8 adds quotas. With the switch off none is enforced and none is read: lib/authz/quotas.ts
  * (a reader in GOVERNANCE_READERS, and the only one of the step) answers every account unlimited
@@ -182,6 +184,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/components/settings/InstanceTunnelSection.tsx',
       'src/lib/instanceProviders/entitlement.ts',
+      'src/lib/authz/auditRetention.ts',
       'src/lib/authz/deviceSessions.ts',
       'src/lib/authz/expirySweep.ts',
       'src/lib/authz/quotas.ts',

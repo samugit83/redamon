@@ -19,16 +19,20 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { auditRowsDb, emptyAuditRowsState, type AuditRowsState, type Row } from './__testing__/auditRowsDb'
 
-const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown> }))
+const h = vi.hoisted(() => ({ db: null as unknown as Record<string, unknown>, devices: vi.fn(async () => 0) }))
 vi.mock('@/lib/prisma', () => {
   const client = new Proxy({}, { get: (_t, name) => (h.db as Record<string | symbol, unknown>)[name] })
   return { default: client, prisma: client }
 })
+vi.mock('./deviceSessions', () => ({ sweepDeviceSessions: h.devices }))
 
 import {
   AUDIT_RETENTION_MIN_DAYS, KEPT_AUDIT_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES, keptRuleFor, sweepAuditRetention,
 } from './auditRetention'
 import { LEGACY_KEEP_DAYS } from './legacyOverrides'
+import { setFlagsForTests } from './flags'
+import { setNowForTests } from './clock'
+import { sweepExpired } from './expirySweep'
 import { KEEP_DAYS as BACKFILL_KEEP_DAYS } from '../../../scripts/backfill-rbac-legacy-overrides.mjs'
 
 const WEBAPP = path.resolve(__dirname, '../../..')
@@ -228,8 +232,12 @@ beforeEach(() => {
     { id: 'plain-1', legacyGrants: [] },
   ]
   h.db = auditRowsDb(state, () => NOW) as unknown as Record<string, unknown>
+  setFlagsForTests({ identity: true, permissions: true, governance: true })
 })
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  setFlagsForTests(null)
+  vi.restoreAllMocks()
+})
 
 describe('sweep deletes only older rows', () => {
   test('rows older than the retention go; a row at the cut-off and newer ones stay', async () => {
@@ -269,6 +277,16 @@ describe('sweep deletes only older rows', () => {
     state.users = []
     state.audit = [row('user.permissions_changed', daysAgo(800), { targetId: 'legacy-1' })]
     expect((await sweepAuditRetention(NOW)).deleted).toBe(1)
+  })
+
+  test('with RBAC_GOVERNANCE_ENABLED off nothing is read or deleted, whatever retention Root set while it was on', async () => {
+    state.audit = [row('user.update', daysAgo(5000))]
+    for (const flags of [{}, { identity: true, permissions: true }]) {
+      setFlagsForTests(flags)
+      expect(await sweepAuditRetention(NOW)).toEqual({ days: null, deleted: 0 })
+    }
+    expect(state.audit).toHaveLength(1)
+    expect(state.calls).toEqual([])
   })
 
   test('null keeps every row and reads no audit row', async () => {
@@ -317,5 +335,48 @@ describe('sweep deletes only older rows', () => {
     state.audit = [row('user.update', daysAgo(300))]
     ;(h.db.auditLog as Record<string, unknown>).deleteMany = async () => { throw Object.assign(new Error('lost'), { code: 'P1001' }) }
     await expect(sweepAuditRetention(NOW)).rejects.toMatchObject({ code: 'P1001' })
+  })
+})
+
+describe('the expiry sweep runs the part (lib/authz/expirySweep.ts)', () => {
+  beforeEach(() => {
+    setNowForTests(() => NOW)
+    // The parts the identity and permissions switches run, with nothing to remove.
+    Object.assign(h.db, {
+      userInvite: { deleteMany: async () => ({ count: 0 }) },
+      userPermissionOverride: { findMany: async () => [] },
+    })
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+  })
+  afterEach(() => setNowForTests(null))
+
+  test('governance on: the old rows go and the answer says how many, with the days applied', async () => {
+    state.audit = [row('user.update', daysAgo(200), { id: 'old' }), row('system.rbac_root_assigned', daysAgo(900), { id: 'kept' })]
+    const result = await sweepExpired()
+    expect(result.auditRetention).toEqual({ days: 120, deleted: 1 })
+    expect(result.failed).toEqual([])
+    expect(ids()).toEqual(['kept'])
+    expect(vi.mocked(console.info).mock.calls.map((c) => String(c[0]))).toEqual([expect.stringContaining('audit_rows=1 (retention 120 days)')])
+  })
+
+  test('governance off: no auditRetention key, nothing of it read', async () => {
+    setFlagsForTests({ identity: true, permissions: true })
+    state.audit = [row('user.update', daysAgo(2000))]
+    const result = await sweepExpired()
+    expect('auditRetention' in result).toBe(false)
+    expect(state.audit).toHaveLength(1)
+    expect(state.calls.filter((c) => c.startsWith('auditLog') || c.startsWith('instanceSettings'))).toEqual([])
+  })
+
+  test('a failed retention part is reported (the route answers sweep_incomplete) and the other parts stand', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.devices.mockResolvedValueOnce(2)
+    state.audit = [row('user.update', daysAgo(300))]
+    ;(h.db.auditLog as Record<string, unknown>).findMany = async () => { throw Object.assign(new Error('lost'), { code: 'P1001' }) }
+    const result = await sweepExpired()
+    expect(result.failed).toEqual(['auditRetention'])
+    expect(result.auditRetention).toBeNull()
+    expect(result.removed).toMatchObject({ devices: 2, overrides: 0, links: 0 })
+    expect(err.mock.calls.map((c) => String(c[0]))).toEqual(['[rbac] sweep failed part=auditRetention:'])
   })
 })

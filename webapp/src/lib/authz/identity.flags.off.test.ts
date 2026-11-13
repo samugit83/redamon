@@ -197,6 +197,9 @@ const IDENTITY_READERS: string[] = [
   // Step 3.14: the impersonation settings and the admin's session version an act-as token carries,
   // read only with the permissions switch on, which needs this switch.
   'src/lib/authz/actAs.ts',
+  // Step 6.6: audit retention reads the instance's retention and the legacy-grant holders only in the
+  // expiry sweep's governance part, which needs this switch (governance.flags.off.test.ts).
+  'src/lib/authz/auditRetention.ts',
   // Step 3.4: reads an admin's profile and the instance default set only with the permissions
   // switch on, which needs this switch; off, the account type's default (no Root, nothing read).
   'src/lib/authz/capabilities.ts',

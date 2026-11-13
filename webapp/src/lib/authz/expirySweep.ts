@@ -13,6 +13,9 @@
  *   is audited and names the expiry). A used link is kept, the record of how an account was set up.
  * - device sessions (step 6.10): a row revoked or expired more than 30 days ago is removed, with the
  *   address and browser it kept (no audit row: the revocation was audited, an expiry is not news).
+ * - audit retention (step 6.6): the audit_log rows older than Root's retention, except the rows the
+ *   code reads back (lib/authz/auditRetention.ts); with RBAC_GOVERNANCE_ENABLED only, and its answer's
+ *   `auditRetention` exists only then.
  *
  * Each part runs only with its switch on, so with a switch off nothing of it is read
  * (*.flags.off.test.ts): shares and break-glass with sharing in force (RBAC_SHARING_ENABLED and the
@@ -35,14 +38,15 @@ import { now } from './clock'
 import { rbacFlags } from './flags'
 import { sharingInForce } from './sharingPolicy'
 import { sweepDeviceSessions } from './deviceSessions'
+import { sweepAuditRetention, type RetentionSweep } from './auditRetention'
 
 /** Audited rows of one kind handled per sweep; the rest wait for the next sweep. */
 export const SWEEP_BATCH = 500
 // Expired shares whose sockets are closed at once (as endSessionsOf's batches).
 const SOCKET_CLOSE_BATCH = 8
 
-export type SweepPart = 'shares' | 'breakGlass' | 'overrides' | 'links' | 'devices'
-type CorePart = Exclude<SweepPart, 'devices'>
+export type SweepPart = 'shares' | 'breakGlass' | 'overrides' | 'links' | 'devices' | 'auditRetention'
+type CorePart = Exclude<SweepPart, 'devices' | 'auditRetention'>
 
 export interface SweepResult {
   at: string
@@ -55,6 +59,8 @@ export interface SweepResult {
   socketCloseFailed: number
   /** The parts that failed; their rows stay for the next sweep. */
   failed: SweepPart[]
+  /** Audit retention: the days applied and the rows deleted; null when it failed. Governance switch only. */
+  auditRetention?: RetentionSweep | null
 }
 
 interface ShareEnded { userId: string; projectId: string }
@@ -194,16 +200,27 @@ export async function sweepExpired(): Promise<SweepResult> {
   }
 
   if (flags.governance) await run('devices', () => sweepDeviceSessions(at))
+  let auditRetention: RetentionSweep | null | undefined
+  if (flags.governance) {
+    try {
+      auditRetention = await sweepAuditRetention(at)
+    } catch (err) {
+      auditRetention = null
+      failed.push('auditRetention')
+      console.error('[rbac] sweep failed part=auditRetention:', err)
+    }
+  }
 
   const socketCloseFailed = ended.length ? await closeEndedShares(ended) : 0
-  if (Object.values(removed).some((n) => n)) {
+  if (Object.values(removed).some((n) => n) || auditRetention?.deleted) {
     const shown = (n: number | null) => (n === null ? 'off' : String(n))
     console.info(
       `[rbac] sweep removed shares=${shown(removed.shares)} breakglass=${shown(removed.breakGlass)} `
       + `overrides=${shown(removed.overrides)} links=${shown(removed.links)}`
       + (removed.devices !== undefined ? ` devices=${shown(removed.devices)}` : '')
+      + (auditRetention?.deleted ? ` audit_rows=${auditRetention.deleted} (retention ${auditRetention.days} days)` : '')
       + (socketCloseFailed ? ` socket_close_failed=${socketCloseFailed}` : ''),
     )
   }
-  return { at: at.toISOString(), removed, socketCloseFailed, failed }
+  return { at: at.toISOString(), removed, socketCloseFailed, failed, ...(auditRetention !== undefined ? { auditRetention } : {}) }
 }
