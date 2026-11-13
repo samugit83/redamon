@@ -30,6 +30,8 @@ If you discover a security vulnerability in RedAmon, **please do not open a publ
 - **Acknowledgement** within 72 hours of your report
 - **Status update** within 7 days with an initial assessment
 - If accepted, a fix will be prioritized and released as soon as possible
+- Accepted reports are published as GitHub Security Advisories when the fixed release ships, crediting the reporter
+- Whether a CVE is requested for an advisory is at the maintainers' discretion
 - If declined, you will receive an explanation of why
 
 ### Scope
