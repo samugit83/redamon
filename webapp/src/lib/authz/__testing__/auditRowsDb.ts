@@ -6,8 +6,8 @@
  *
  * - `where` is evaluated, not compared as text: `AND` / `OR` / `NOT` (an object or an array), and per
  *   field equality, `null`, `{equals, mode: 'insensitive'}`, `{in}`, `{notIn}`, `{startsWith}`,
- *   `{not}`, `{gt, gte, lt, lte}` on dates and strings. A query that asks a filter wrongly finds the
- *   wrong rows;
+ *   `{not}`, `{isEmpty}` on a list, `{gt, gte, lt, lte}` on dates and strings. A query that asks a
+ *   filter wrongly finds the wrong rows;
  * - `findMany` honours `orderBy` (an array of `{field: 'asc' | 'desc'}`), `take` and `select`;
  *   `count`, `findUnique`, `findFirst`, `deleteMany` (atomic, as a Postgres DELETE), `create`,
  *   `updateMany` (the instance row);
@@ -37,6 +37,7 @@ function fieldMatches(value: unknown, cond: unknown): boolean {
     if (op === 'notIn' && (arg as unknown[]).some((a) => same(norm(value), norm(a)))) return false
     if (op === 'startsWith' && !(typeof value === 'string' && String(norm(value)).startsWith(String(norm(arg))))) return false
     if (op === 'not' && fieldMatches(value, arg)) return false
+    if (op === 'isEmpty' && !(Array.isArray(value) && (value.length === 0) === arg)) return false
     // Dates by instant, strings (a keyset cursor's id) by code unit, as Postgres' C collation does.
     const order = (v: unknown) => (v instanceof Date ? v.getTime() : typeof v === 'string' ? v : null)
     const x = order(value)
