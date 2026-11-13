@@ -60,6 +60,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
   }),
   ...g('project', {
     'project.update': 'Changed the project settings',
+    'project.exported': "Exported the project (a collaborator's copy, without the owner's secrets)",
     'project.delete': 'Deleted the project',
     'project.delete_failed': 'A project deletion failed',
     'project.roe.download': 'Downloaded the Rules of Engagement document',

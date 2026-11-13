@@ -13,6 +13,9 @@ import { exportProjectGraph, type ExportedGraph } from '@/lib/projectExport/grap
 import { REFERENCE_LINKS_BUNDLE_PATH } from '@/lib/graphReferenceLinks'
 import { exportRevision, REVISIONS_BUNDLE_PATH } from '@/lib/roe/revisionBundle'
 import { internalError } from '@/lib/routeErrors'
+import { projectReadView } from '@/lib/authz/projectReadView'
+import { writeAudit } from '@/lib/audit'
+import { actorFields, auditActorOf } from '@/lib/auditActor'
 
 const RECON_OUTPUT_PATH = process.env.RECON_OUTPUT_PATH || '/data/recon-output'
 const GVM_OUTPUT_PATH = process.env.GVM_OUTPUT_PATH || '/data/gvm-output'
@@ -26,25 +29,32 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
 
-    // Ownership: export bundles the ENTIRE project (row + RoE binary, all
-    // conversations/messages, reports, the Neo4j subgraph, presets), so it is the
-    // most sensitive project route. Only the effective owner may export it.
+    // Export bundles the whole project (row + RoE binary, conversations/messages, reports, the
+    // Neo4j subgraph, presets), so it is the most sensitive project route: project:export (M).
     const auth = await requirePermission(request, 'project:export', { projectId: id })
     if (auth instanceof NextResponse) return auth
-    // The bundle carries every conversation's chat messages and the raw scan artifacts as they are,
-    // so it is Raw data & files (R*) too, whatever level project:export is given.
+    // The bundle carries chat messages and the raw scan artifacts as they are, so it is Raw data &
+    // files (R*) too, whatever level project:export is given.
     const raw = requireLevel(auth, 'R*')
     if (raw) return raw
+    // A co-owner's export (step 5.2, SH-31) is the project as they may read it: the row without the
+    // owner's secret columns (projectReadView: credentials, header lists, the RoE document and what
+    // was parsed from it), RoE revisions without their bodies, only the conversations they wrote
+    // (step 5.8 widens it to the shared ones), none of the owner's presets, and a line in the
+    // project's activity feed. The owner's export is unchanged.
+    const ownerExport = auth.access?.level === 'owner'
+    const exporterId = auth.effective.userId
 
     // 1. Fetch project from PostgreSQL
-    const project = await prisma.project.findUnique({ where: { id } })
-    if (!project) {
+    const storedProject = await prisma.project.findUnique({ where: { id } })
+    if (!storedProject) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     }
+    const project = projectReadView(storedProject, auth.access) as typeof storedProject
 
     // 2. Fetch conversations and messages
     const conversations = await prisma.conversation.findMany({
-      where: { projectId: id },
+      where: ownerExport ? { projectId: id } : { projectId: id, userId: exporterId },
       orderBy: { createdAt: 'asc' },
     })
 
@@ -91,10 +101,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       orderBy: { recordedAt: 'asc' },
     })
     // The superseded RoE documents: the terms earlier scans ran under.
-    const roeRevisions = await prisma.roeDocumentRevision.findMany({
+    const storedRevisions = await prisma.roeDocumentRevision.findMany({
       where: { projectId: id },
       orderBy: { supersededAt: 'desc' },
     })
+    // A superseded document and its parse stay the owner's, as the current one does (OQ-53).
+    const roeRevisions = ownerExport
+      ? storedRevisions
+      : storedRevisions.map(r => ({ ...r, data: null, rawText: '', parsedJson: null }))
 
     // 2c'. Node filters: the rules and the operator's exemptions. Run history
     // stays behind; it describes this install's graph, not the project.
@@ -111,13 +125,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // 2d. Fetch user project presets. Their settings leave as the PRESET FIELDS
     // only: a preset stored before storage was filtered can carry a target or a
     // credential, and an export is a file that travels.
-    const userPresets = (await prisma.userProjectPreset.findMany({
-      where: { userId: project.userId },
+    // The presets are the owner's own library, not the project's: a co-owner's export has none.
+    const userPresets = !ownerExport ? [] : (await prisma.userProjectPreset.findMany({
+      where: { userId: storedProject.userId },
       orderBy: { createdAt: 'asc' },
       select: { name: true, description: true, settings: true, createdAt: true },
     })).map(p => ({ ...p, settings: projectPresetForRead(p.settings).settings }))
-    const muteRulesPresets = await prisma.userMuteRulesPreset.findMany({
-      where: { userId: project.userId },
+    const muteRulesPresets = !ownerExport ? [] : await prisma.userMuteRulesPreset.findMany({
+      where: { userId: storedProject.userId },
       orderBy: { createdAt: 'asc' },
       select: { name: true, description: true, mode: true, rules: true },
     })
@@ -316,6 +331,19 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
 
     archive.finalize()
+
+    if (!ownerExport) {
+      // The owner sees in the project's activity feed that a collaborator took a copy away.
+      await writeAudit({
+        ...actorFields(auditActorOf(auth.principal, exporterId)),
+        action: 'project.exported',
+        targetType: 'project',
+        targetId: id,
+        projectId: id,
+        after: { projectId: id, conversations: conversations.length, roeRevisions: roeRevisions.length },
+        source: 'ui',
+      })
+    }
 
     // Convert Node.js readable stream to Web ReadableStream
     const webStream = Readable.toWeb(archive as unknown as Readable) as ReadableStream

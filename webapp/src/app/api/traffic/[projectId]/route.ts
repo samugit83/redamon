@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
-import { ownerScope } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
 import { gcOrphanBodies } from '@/lib/captureBodies'
 import type { Prisma } from '@prisma/client'
-import { trafficTenant } from './trafficTenant'
+import { trafficRows, trafficTenant } from './trafficTenant'
 
 // Summary columns only - bodies are fetched on demand via the [id] detail route,
 // so a large history never materializes in the list response.
@@ -172,9 +171,10 @@ export async function GET(
 
 // DELETE /api/traffic/[projectId] - batch delete (plan §12.2).
 // Body: { ids: [...] } OR { filter: {<same query params as GET>} } (delete-all-matching).
-// Tenant-enforced (projectId + ownerScope; cross-user -> 404 via requireProjectAccess),
-// body-GC-aware (ref-counted blob cleanup), and audited. Client tenant fields are
-// never trusted - projectId/userId come from the route + session.
+// Tenant-enforced (the project's rows under its owner, trafficRows; a project the caller cannot
+// see -> 404 from the guard), so a collaborator at traffic:delete (W) deletes the project's rows,
+// not nothing (step 5.2), body-GC-aware (ref-counted blob cleanup), and audited. Client tenant
+// fields are never trusted - projectId/userId come from the route + the guard's access.
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
@@ -186,7 +186,7 @@ export async function DELETE(
     const eff = auth.effective
 
     const body = await request.json().catch(() => ({}))
-    const where: Prisma.CapturedHttpTransactionWhereInput = { projectId, ...ownerScope(eff) }
+    const where: Prisma.CapturedHttpTransactionWhereInput = { ...trafficRows(projectId, auth) }
 
     let mode: string
     if (Array.isArray(body?.ids) && body.ids.length > 0) {

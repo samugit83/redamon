@@ -46,7 +46,6 @@ const ACCOUNT_TYPE = 'an account type (admin or member; Root is an admin), not a
 const OWN_ACCOUNT = 'the account the path names is the signed-in one: an account check, not ownership'
 const PATH_ROW = "a per-user row of the account requireUserAccess / requireOwnBrowserRequest let in, not a project's owner"
 const SKILL_OWNER_PROJECT = "the project whose toggles name the skill owner's own skills (the agent loads the project owner's user skills, so only the owner's project can switch them on), not any project the person sees"
-const CAPTURE_TENANT = 'the capture rows of a project carry its owner as tenant (ingest writes it), filtered after the project guard'
 
 interface Allowed {
   reason: string
@@ -96,12 +95,6 @@ const ALLOWED: Record<string, Allowed> = {
     reason: "the effective user's own GitHub token: a per-user row",
     lines: [
       'where: { userId: eff.userId },',
-    ],
-  },
-  'src/app/api/traffic/[projectId]/route.ts::row_owner_helper': {
-    reason: CAPTURE_TENANT,
-    lines: [
-      'const where: Prisma.CapturedHttpTransactionWhereInput = { projectId, ...ownerScope(eff) }',
     ],
   },
   'src/app/api/users/[id]/attack-skills/[skillId]/release/route.ts::owner_compare': {
