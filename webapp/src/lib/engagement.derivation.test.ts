@@ -80,6 +80,15 @@ const ALLOWED = new Set([
 ])
 
 /**
+ * Files that may name the column only on lines of one shape, so a read added elsewhere in them
+ * still fails. settingsRisk.ts (step 5.1a) classes the column's change risk by name, in its
+ * OWN_DIRECTIONS map; it never reads the stored value.
+ */
+const NAMED_ONLY_AS: Record<string, RegExp> = {
+  'lib/authz/settingsRisk.ts': /^\s*roeEnabled: '[a-z]+',$/,
+}
+
+/**
  * Tests are out of scope, deliberately.
  *
  * A test that names the column is usually ASSERTING it is refused, absent from
@@ -160,6 +169,7 @@ describe('nothing in the webapp reads the roeEnabled column', () => {
       if (ALLOWED.has(rel) || isTest(rel)) continue
       for (const [i, line] of stripComments(readFileSync(file, 'utf8')).split('\n').entries()) {
         if (!/\broeEnabled\b/.test(line)) continue
+        if (NAMED_ONLY_AS[rel]?.test(line)) continue
         offenders.push(`${rel}:${i + 1}: ${line.trim()}`)
       }
     }
