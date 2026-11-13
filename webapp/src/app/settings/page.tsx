@@ -31,6 +31,7 @@ import { ApiUsageReportModal } from '@/components/settings/api-usage/ApiUsageRep
 import { ApiUsageLlmChip } from '@/components/settings/api-usage/ApiUsageLlmChip'
 import { llmInventoryHint } from '@/lib/apiUsage/inventory'
 import { FeatureModelsSection } from '@/components/settings/FeatureModelsSection'
+import { InstanceLlmProviders } from '@/components/settings/InstanceLlmProviders'
 import { AgentSkillsTab } from '@/components/settings/AgentSkillsTab'
 import { notifyJevProviderChanged } from '@/hooks/useHasJevProvider'
 import { JevProviderSection } from '@/components/settings/JevProviderSection'
@@ -222,6 +223,8 @@ export default function SettingsPage() {
   // LLM Providers
   const [providers, setProviders] = useState<ProviderData[]>([])
   const [providersLoading, setProvidersLoading] = useState(true)
+  // The instance LLM providers the account may use (step 6.11): they open "Models by feature" too.
+  const [instanceProviderCount, setInstanceProviderCount] = useState(0)
   // A failed fetch must not read as "no providers" (or "no Jev providers"); holds the cause to show.
   const [providersError, setProvidersError] = useState<string | null>(null)
   const [showProviderForm, setShowProviderForm] = useState(false)
@@ -1199,10 +1202,12 @@ export default function SettingsPage() {
           />
         )}
 
+        {!providerFormOpen && <InstanceLlmProviders onCount={setInstanceProviderCount} />}
+
         {!providerFormOpen && (
           <FeatureModelsSection
             userId={userId}
-            providersCount={chatProviders.length}
+            providersCount={chatProviders.length + instanceProviderCount}
             providersLoading={providersLoading}
           />
         )}

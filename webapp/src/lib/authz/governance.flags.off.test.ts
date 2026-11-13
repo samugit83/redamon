@@ -65,6 +65,8 @@
  * is read (lib/instanceProviders/entitlement.ts, the one reader in GOVERNANCE_READERS; the test at the
  * end, instanceProviders.test.ts and the routes' tests). A project saved on an `instance/` model then
  * fails closed in the agent (instance_provider_unavailable, agentic/tests/test_instance_providers.py).
+ * Global Settings lists no instance provider and reads none (components/settings/InstanceLlmProviders.tsx,
+ * a reader; its test).
  *
  * Step 6.10 adds device sessions. With the switch off a sign-in writes no `UserSession` row and its token
  * carries no `sid`; getSession ignores a `sid` claim and reads no row (session.deviceSessions.test.ts); a
@@ -206,6 +208,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/settings/users/layout.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
+      'src/components/settings/InstanceLlmProviders.tsx',
       'src/components/settings/InstanceTunnelSection.tsx',
       'src/lib/authz/auditRetention.ts',
       'src/lib/authz/deviceSessions.ts',
