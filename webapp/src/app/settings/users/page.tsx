@@ -14,6 +14,7 @@ import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { InviteRowActions, InviteUserModal } from '@/components/admin/InviteUserModal'
 import { ResetCredentialsModal } from '@/components/admin/ResetCredentialsModal'
+import { DeleteUserWizard, deletionWizardInForce } from '@/components/admin/DeleteUserWizard'
 import { UserPermissionsPanel } from '@/components/admin/UserPermissionsPanel'
 import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
 import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
@@ -30,6 +31,7 @@ type ModalState =
   | { type: 'reset'; userId: string; userName: string; userEmail: string; targetIsAdmin: boolean }
   | { type: 'delete'; userId: string; userName: string }
   | { type: 'deleteAdmin'; userId: string; userName: string }
+  | { type: 'deleteWizard'; userId: string; userName: string; targetIsAdmin: boolean }
   | { type: 'permissions'; userId: string; userName: string; userEmail: string }
   | { type: 'changeOwn' }
 
@@ -46,6 +48,8 @@ export default function UsersPage() {
   const permissionsOn = useRbacFlags()?.permissions === true
   const canAssignMembers = useCan('users:assign_permissions')
   const canManageAdmins = useCan('admins:manage')
+  // Step 5.13: with write sharing switched on a delete goes through the deletion plan.
+  const deletionWizard = deletionWizardInForce(useRbacFlags())
   const { data: users, isLoading, error: usersError, refetch: refetchUsers } = useUsers()
   const createUser = useCreateUser()
   const deleteUser = useDeleteUser()
@@ -475,9 +479,9 @@ export default function UsersPage() {
                     {canDeleteUsers && user.id !== authUser?.id && (user.role !== 'admin' || manageAdmins) && (
                       <button
                         className={`${styles.actionButton} ${styles.deleteButton}`}
-                        onClick={() => openModal({
-                          type: user.role === 'admin' ? 'deleteAdmin' : 'delete', userId: user.id, userName: user.name,
-                        })}
+                        onClick={() => openModal(deletionWizard
+                          ? { type: 'deleteWizard', userId: user.id, userName: user.name, targetIsAdmin: user.role === 'admin' }
+                          : { type: user.role === 'admin' ? 'deleteAdmin' : 'delete', userId: user.id, userName: user.name })}
                       >
                         Delete
                       </button>
@@ -775,6 +779,20 @@ export default function UsersPage() {
         }}
         onClose={closeModal}
       />
+
+      {modal.type === 'deleteWizard' && (
+        <DeleteUserWizard
+          isOpen
+          userId={modal.userId}
+          userName={modal.userName}
+          targetIsAdmin={modal.targetIsAdmin}
+          onClose={closeModal}
+          onDeleted={() => {
+            closeModal()
+            void refetchUsers()
+          }}
+        />
+      )}
     </div>
   )
 }

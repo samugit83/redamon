@@ -194,6 +194,9 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
     const WRITE_SWITCH_READERS = [
       // Step 5.6: the consent route exists only with write sharing in force (404 otherwise, block below).
       'src/app/api/projects/[id]/access-policy/route.ts',
+      // Step 5.13: the Users page opens the deletion wizard only with the switch on; off, its Phase 1 confirmation
+      // (DeleteUserWizard.test.tsx, app/settings/users/page.deleteWizard.test.tsx).
+      'src/components/admin/DeleteUserWizard.tsx',
       // Step 4.12: the share dialog offers the Read + Write presets disabled whatever the switch says;
       // off, their note reads "Coming when write sharing is on" (sharePresets.test.ts, ShareDialog.test.tsx).
       'src/components/sharing/sharePresets.ts',
