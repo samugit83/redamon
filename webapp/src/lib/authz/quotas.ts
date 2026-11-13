@@ -35,7 +35,7 @@ import { rbacFlags } from './flags'
 import { now } from './clock'
 import { loadPrincipal } from './principal'
 import { resolveCapabilities } from './capabilities'
-import { BUILTIN_SETS, isBuiltinSetId } from './builtinSets'
+import { BUILTIN_SETS, builtinSet, isBuiltinSetId } from './builtinSets'
 
 export const QUOTA_FIELDS = [
   'maxProjects',
@@ -276,6 +276,39 @@ export function activeMcpTokenCount(userId: string): Promise<number> {
 export async function actorScanCap(actorUserId: string): Promise<{ actor_max_concurrent?: number }> {
   const limit = await quotaLimit(actorUserId, 'maxConcurrentScans')
   return limit === null ? {} : { actor_max_concurrent: limit }
+}
+
+/** One account's quota as the account and admin screens show it: each value, where it came from, and the use counted here. */
+export interface QuotaReport {
+  enforced: boolean
+  quota: Quota
+  sources: Readonly<Record<QuotaField, QuotaSource & { setName?: string }>>
+  /**
+   * What the webapp counts: owned projects and MCP tokens that still work. Concurrent scans and agent
+   * runs are counted where they run (the orchestrator, the agent), and the day's model calls by
+   * step 6.11, so they are not reported here.
+   */
+  use: Partial<Record<QuotaField, number>>
+}
+
+export async function quotaReport(userId: string): Promise<QuotaReport> {
+  const resolved = await quotaFor(userId)
+  const setIds = [...new Set(Object.values(resolved.sources).flatMap((s) => (s.kind === 'set' ? [s.setId] : [])))]
+  const stored = setIds.filter((id) => !isBuiltinSetId(id))
+  const [rows, projects, tokens] = await Promise.all([
+    stored.length ? prisma.permissionSet.findMany({ where: { id: { in: stored } }, select: { id: true, name: true } }) : [],
+    ownedProjectCount(userId),
+    activeMcpTokenCount(userId),
+  ])
+  const names = new Map<string, string>([
+    ...setIds.flatMap((id) => { const b = builtinSet(id); return b ? [[id, b.name] as [string, string]] : [] }),
+    ...rows.map((r) => [r.id, r.name] as [string, string]),
+  ])
+  const sources = Object.fromEntries(QUOTA_FIELDS.map((f) => {
+    const s = resolved.sources[f]
+    return [f, s.kind === 'set' && names.has(s.setId) ? { ...s, setName: names.get(s.setId)! } : s]
+  })) as Record<QuotaField, QuotaSource & { setName?: string }>
+  return { enforced: resolved.enforced, quota: resolved.quota, sources, use: { maxProjects: projects, maxMcpTokens: tokens } }
 }
 
 // ---------------------------------------------------------------------------------------------
