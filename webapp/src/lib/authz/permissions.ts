@@ -131,7 +131,7 @@ const REGISTRY = {
   'platform:traffic_capture': platform('Configure the instance-wide traffic capture: the capture proxy, egress policy, retention and SCA ignore list.'),
   'platform:tunnels': platform('Configure and enable the ngrok or chisel tunnel every user shares.'),
   'platform:nuclei_templates': platform("Manage every custom Nuclei template: the instance's and other people's."),
-  'platform:agent_mcp': platform("Reload the agent's MCP servers and manage the system MCP servers."),
+  'platform:agent_mcp': platform("Own stdio MCP servers, whose commands run as root inside the shared agent beside every user's data and the platform secrets; reload the agent's MCP servers and manage the system MCP servers."),
   'platform:emergency_stop': platform("Stop every user's running agent runs at once."),
   'platform:shell_sessions': platform('See, use and kill every Metasploit and shell session on the instance.'),
   'platform:kali_terminal': platform("Open the raw Kali terminal: a shared sandbox where every project's files are visible."),

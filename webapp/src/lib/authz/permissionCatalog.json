@@ -327,7 +327,7 @@
       "kind": "admin",
       "scope": "instance",
       "level": null,
-      "description": "Reload the agent's MCP servers and manage the system MCP servers.",
+      "description": "Own stdio MCP servers, whose commands run as root inside the shared agent beside every user's data and the platform secrets; reload the agent's MCP servers and manage the system MCP servers.",
       "crossTenant": true,
       "sandboxShared": false,
       "takeoverEquivalent": false,
