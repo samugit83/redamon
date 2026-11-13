@@ -392,7 +392,10 @@ class EveryRunStartRecordsTheActor(unittest.IsolatedAsyncioTestCase):
         async def _runs_until_cancelled(*_args):
             await asyncio.sleep(3600)
 
+        from decision_check import DecisionCheck
+        # The decision-time check (step 5.4) is test_decision_check.py's; here it allows.
         with mock.patch.object(handler, runner, _runs_until_cancelled), \
+                mock.patch.object(websocket_api, "authorize_decision", mock.AsyncMock(return_value=DecisionCheck(allowed=True))), \
                 mock.patch.object(websocket_api, "update_conversation", new=mock.AsyncMock()), \
                 mock.patch.object(websocket_api, "save_chat_message", new=mock.AsyncMock(return_value=None)):
             await getattr(handler, method)(conn, dict(payload))

@@ -10,6 +10,7 @@ from typing import Optional
 import httpx
 
 from cypherfix_errors import safe_error
+from decision_check import UNAVAILABLE as DECISION_CHECK_UNAVAILABLE, authorize_decision
 from llm_builder import provider_error_details
 from . import sandbox_client
 from .state import CodeFixState, CodeFixSettings
@@ -502,6 +503,8 @@ class CodeFixOrchestrator:
         logger.info(f"Files modified: {list(self.state.files_modified) if self.state.files_modified else 'NONE'}")
         logger.info(f"Diff blocks: {len(self.state.diff_blocks)}")
 
+        if self.state.files_modified and self.repo_manager and not await self._push_allowed(remediation_id):
+            return
         if self.state.files_modified and self.repo_manager:
             step = "commit"
             try:
@@ -566,6 +569,37 @@ class CodeFixOrchestrator:
             })
             self.state.status = "completed"
             await self.callback.on_complete(remediation_id, "no_fix")
+
+    async def _push_allowed(self, remediation_id: str) -> bool:
+        """Whether the person running the fix may push with the project's token now (step 5.4).
+
+        Opening a branch and a PR with the owner's GitHub token is Manage's (phase file 5.2),
+        asked of the webapp when it happens, for the ticket's person (a state from before the
+        actor was recorded asks for the tenant). Refused or unanswered: nothing is committed or
+        pushed, and the approved changes stay on the remediation for the owner.
+        """
+        check = await authorize_decision(
+            kind="codefix_push", user_id=self.state.actor_user_id or self.state.user_id,
+            project_id=self.state.project_id, session_id=self.state.session_id,
+            actor_id=self.state.real_actor_user_id, permissions=("codefix:run",))
+        if check.allowed:
+            return True
+        logger.warning("[rbac] codefix push refused code=%s reason=%s session=%s",
+                       check.code, check.reason, self.state.session_id)
+        await self._update_remediation(remediation_id, {
+            "status": "pending",
+            "agentSessionId": "",
+            "agentNotes": ("The fix was not pushed: RedAmon could not check that the person who ran it may push."
+                           if check.code == DECISION_CHECK_UNAVAILABLE else
+                           "The fix was not pushed: the person who ran it may not push with the project's token."),
+            "fileChanges": [b.model_dump() for b in self.state.diff_blocks],
+        })
+        await self.callback.on_error(
+            safe_error(check.code, codefix=True), recoverable=False, code=check.code,
+            **({"permission": check.permission} if check.permission else {}))
+        self.state.status = "error"
+        await self.callback.on_complete(remediation_id, "error")
+        return False
 
     async def _load_remediation(self, remediation_id: str) -> Optional[dict]:
         """The remediation, or None when the webapp has none with this id.

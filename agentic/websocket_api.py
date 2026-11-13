@@ -19,6 +19,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 from orchestrator_helpers import create_config
 from orchestrator_helpers.chat_persistence import post_agent_decision, save_chat_message, update_conversation
+from decision_check import UNAVAILABLE as DECISION_CHECK_UNAVAILABLE, authorize_decision
 from agent_in_the_loop.broker import get_broker
 
 
@@ -1621,6 +1622,48 @@ class WebSocketHandler:
         })
         return True
 
+    async def _refused_now(self, connection: WebSocketConnection, *permissions: str,
+                           answer: str, **request) -> bool:
+        """Refuse a decision the person may no longer take, asked of the webapp now (step 5.4).
+
+        The ticket's `cap` is from when the socket opened: the account, the share, a toggle or a
+        permission may have gone since the prompt was shown. So after the cap, and before
+        anything runs or is saved, the webapp decides the decision's kind (`answer`) again for the
+        ticket's person (`sub`, with `act` under act-as), never for anyone a frame names. Fail
+        closed: an unreachable webapp is a refusal (`decision_check_unavailable`). A refusal for
+        a permission keeps the `permission_required` frame of `_refused_without`, so the drawer
+        puts the card back. True when refused (the frame is sent).
+        """
+        check = await authorize_decision(
+            kind=answer, user_id=connection.user_id, project_id=connection.project_id,
+            session_id=connection.session_id, actor_id=connection.actor_id, permissions=permissions)
+        if check.allowed:
+            return False
+        if check.code == DECISION_CHECK_UNAVAILABLE:
+            await connection.send_message(MessageType.ERROR, {
+                "message": "Your answer was not applied: RedAmon could not check that you may still "
+                           "take this decision. Try again in a moment.",
+                "code": DECISION_CHECK_UNAVAILABLE,
+                "answer": answer,
+                **request,
+                "recoverable": True,
+            })
+            return True
+        permission = check.permission or permissions[0]
+        logger.warning("[rbac] decision refused at decision time permission=%s reason=%s session=%s",
+                       permission, check.reason, connection.session_id)
+        await connection.send_message(MessageType.ERROR, {
+            "message": f"You no longer hold the permission this answer needs ({permission}) on this project. "
+                       "The agent keeps waiting for someone who does.",
+            "code": "permission_required",
+            "permission": permission,
+            "reason": check.reason,
+            "answer": answer,
+            **request,
+            "recoverable": True,
+        })
+        return True
+
     def _record_decision(self, connection: WebSocketConnection, callback: 'StreamingCallback',
                          kind: str, row: str, data: dict):
         """An admitted answer: saved with who gave it, and posted for the audit row.
@@ -1859,6 +1902,8 @@ class WebSocketHandler:
                 return
             if await self._refused_without(connection, "agent:approve_phase", answer="approval"):
                 return
+            if await self._refused_now(connection, "agent:approve_phase", answer="approval"):
+                return
 
             callback = StreamingCallback(connection, self.ws_manager)
             connection._is_stopped = False
@@ -1927,6 +1972,8 @@ class WebSocketHandler:
                     "code": "not_authenticated",
                     "recoverable": False
                 })
+                return
+            if await self._refused_now(connection, "agent:chat", answer="question"):
                 return
 
             callback = StreamingCallback(connection, self.ws_manager)
@@ -2004,6 +2051,10 @@ class WebSocketHandler:
                                        answer="fireteam_member_confirmation",
                                        wave_id=msg.wave_id, member_id=msg.member_id):
             return
+        if await self._refused_now(connection, "agent:fireteam", "agent:approve_dangerous",
+                                   answer="fireteam_member_confirmation",
+                                   wave_id=msg.wave_id, member_id=msg.member_id):
+            return
 
         from orchestrator_helpers.fireteam_confirmation_registry import applied_decision, resolve as _resolve
         ok = _resolve(
@@ -2055,6 +2106,8 @@ class WebSocketHandler:
                 })
                 return
             if await self._refused_without(connection, "agent:approve_dangerous", answer="tool_confirmation"):
+                return
+            if await self._refused_now(connection, "agent:approve_dangerous", answer="tool_confirmation"):
                 return
 
             callback = StreamingCallback(connection, self.ws_manager)

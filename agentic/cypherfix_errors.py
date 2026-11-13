@@ -82,6 +82,16 @@ CODEFIX_ERROR_MESSAGES = {
         "The fix session stopped because of an internal error. The details are in "
         "the agent log."
     ),
+    "permission_required": (
+        "Nothing was pushed: pushing the fix with the project's GitHub token needs "
+        "Manage on this project. The changes are saved on the remediation for the "
+        "project owner."
+    ),
+    "decision_check_unavailable": (
+        "Nothing was pushed: RedAmon could not check that you may push to this "
+        "project's repository. The changes are saved on the remediation; start the "
+        "fix again in a moment."
+    ),
 }
 
 _GENERIC = "Something went wrong. The details are in the agent log."

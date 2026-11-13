@@ -356,7 +356,10 @@ class _Orchestrator:
 class TheAgentSocketSplitsThem(unittest.TestCase):
     def setUp(self):
         self.saved = mock.AsyncMock(return_value=None)
+        from decision_check import DecisionCheck
+        # The decision-time check (step 5.4) is test_decision_check.py's; here it allows.
         for patcher in (mock.patch.dict(os.environ, {"AGENT_WS_TICKET_SECRET": SECRET}),
+                        mock.patch.object(websocket_api, "authorize_decision", mock.AsyncMock(return_value=DecisionCheck(allowed=True))),
                         mock.patch.object(websocket_api, "save_chat_message", self.saved),
                         mock.patch.object(websocket_api, "post_agent_decision", mock.AsyncMock(return_value=True)),
                         mock.patch.object(websocket_api, "update_conversation", mock.AsyncMock())):

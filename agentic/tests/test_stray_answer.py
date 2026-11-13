@@ -205,7 +205,10 @@ class StrayAnswerThroughTheSocket(_Patched):
         super().setUp()
         self.saved = mock.AsyncMock(return_value=None)
         self.posted = mock.AsyncMock(return_value=True)
-        for name, value in (("save_chat_message", self.saved),
+        from decision_check import DecisionCheck
+        # The decision-time check (step 5.4) is test_decision_check.py's; here it allows.
+        for name, value in (("authorize_decision", mock.AsyncMock(return_value=DecisionCheck(allowed=True))),
+                            ("save_chat_message", self.saved),
                             ("post_agent_decision", self.posted),
                             ("update_conversation", mock.AsyncMock())):
             patcher = mock.patch.object(websocket_api, name, value)

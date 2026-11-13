@@ -121,6 +121,8 @@ async def handle_codefix_websocket(websocket: WebSocket):
                 # project's tenant (`ten`, its owner), whose graph and settings it is.
                 state = CodeFixState()
                 state.user_id = ticket_tenant(_claims)
+                state.actor_user_id = str(_claims["sub"])
+                state.real_actor_user_id = _claims.get("act") or None
                 state.project_id = str(_claims["pid"])
                 state.session_id = str(_claims["sid"])
                 state.streaming_callback = callback

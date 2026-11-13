@@ -165,7 +165,10 @@ class Decisions(unittest.TestCase):
         self.posted = mock.AsyncMock(return_value=True)
         self.running = mock.AsyncMock()
         self.resolve = mock.Mock(return_value=True)
+        from decision_check import DecisionCheck
         patches = (
+            # The decision-time check (step 5.4) is test_decision_check.py's; here it allows.
+            mock.patch.object(websocket_api, "authorize_decision", mock.AsyncMock(return_value=DecisionCheck(allowed=True))),
             mock.patch.object(websocket_api, "save_chat_message", self.saved),
             mock.patch.object(websocket_api, "post_agent_decision", self.posted),
             mock.patch.object(websocket_api, "update_conversation", self.running),

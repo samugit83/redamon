@@ -40,6 +40,10 @@ class CodeFixState:
         self.remediation_id: str = ""
         self.remediation_title: str = ""
         self.user_id: str = ""
+        #: The person who runs the fix (the ticket's `sub`) and the admin acting as them
+        #: (`act`); `user_id` is the project's tenant. A push is asked for them (step 5.4).
+        self.actor_user_id: str = ""
+        self.real_actor_user_id: Optional[str] = None
         self.project_id: str = ""
         self.session_id: str = ""
         # Identifies the per-job CodeFix build sandbox (T6/E10). Set in

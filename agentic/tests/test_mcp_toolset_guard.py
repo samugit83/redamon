@@ -639,7 +639,10 @@ class AnswerSavedOnlyOnceAdmitted(unittest.TestCase):
             await getattr(handler, method)(conn, dict(payload))
             await asyncio.wait_for(conn._active_task, BOUND_S)
 
+        from decision_check import DecisionCheck
+        # The decision-time check (step 5.4) is test_decision_check.py's; here it allows.
         with mock.patch.object(websocket_api, "save_chat_message", saved), \
+                mock.patch.object(websocket_api, "authorize_decision", mock.AsyncMock(return_value=DecisionCheck(allowed=True))), \
                 mock.patch.object(websocket_api, "update_conversation", new=mock.AsyncMock()):
             asyncio.run(main())
         return [c.kwargs.get("msg_type") for c in saved.await_args_list]
