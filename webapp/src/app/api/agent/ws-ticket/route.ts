@@ -12,6 +12,19 @@ import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools
 import { agentTicketCap } from '@/lib/authz/agentCap'
 import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 import { secondWriterResponse } from '@/lib/authz/projectWriters'
+import { recordOwnerCredentialSpend, type SpendFeature } from '@/lib/authz/ownerSpend'
+import { safeErrorCode } from '@/lib/routeErrors'
+
+/**
+ * The sockets whose work spends the project owner's model and keys (step 5.6, C1): the chat's agent
+ * runs, CodeFix, and a shell's `redagraph ask`. A triage run records its own spend when it starts
+ * (/api/internal/triage-runs).
+ */
+const SPENDING_SOCKETS: Partial<Record<string, SpendFeature>> = {
+  agent: 'agent_session',
+  'cypherfix-codefix': 'codefix_session',
+  'kali-terminal': 'shell_session',
+}
 
 /**
  * The signed-in person, read fresh, and the effective user's access, when it reaches Exploitation &
@@ -140,6 +153,25 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   if (socket === 'agent') {
     const otherWriter = await secondWriterResponse({ projectId, personId: eff.userId, ownerId: tenant })
     if (otherWriter) return otherWriter
+  }
+
+  // A collaborator's socket spends the owner's credentials, which its permission or level reached
+  // only with the owner's consent: recorded as theirs before the ticket is minted (no row, no ticket).
+  const feature = SPENDING_SOCKETS[socket]
+  if (feature && tenant !== eff.userId) {
+    try {
+      await recordOwnerCredentialSpend({
+        projectId, ownerId: tenant, userId: eff.userId, feature,
+        actor: auditActorOf({ id: actor ?? eff.userId, email: actorEmail }, eff.userId),
+        permission: 'permission' in checked ? checked.permission : 'platform:kali_terminal',
+      })
+    } catch (err) {
+      console.error(`[rbac] credits.used not recorded project=${projectId} user=${eff.userId} feature=${feature}: ${safeErrorCode(err)}`)
+      return NextResponse.json(
+        { error: "This use of the project owner's credentials could not be recorded, so no connection was opened. Try again.", code: 'spend_not_recorded' },
+        { status: 503 },
+      )
+    }
   }
 
   // Null when AGENT_WS_TICKET_SECRET is unset: the agent then refuses the socket.

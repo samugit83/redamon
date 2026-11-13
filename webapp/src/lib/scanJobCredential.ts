@@ -16,6 +16,7 @@
  */
 import { CredentialRefused, mintJobCredential } from '@/lib/authz/machineCredential'
 import { actorScanCap } from '@/lib/authz/quotas'
+import { recordOwnerCredentialSpend } from '@/lib/authz/ownerSpend'
 
 export interface ScanJobFields {
   job_credential?: string
@@ -48,12 +49,21 @@ export function scanJobCredential(
  * Read before the start's orchestrator call, outside its try: a failed quota read throws
  * and starts nothing; it is never taken for an unreachable orchestrator. With the
  * governance switch off nothing is read and the fields are scanJobCredential's.
+ *
+ * A collaborator's scan spends the owner's scan keys and AI hooks (step 5.6, C1): its
+ * `credits.used` row is written here, before the start, and a row that cannot be written
+ * throws, so nothing starts. The owner's scans write nothing.
  */
 export async function scanStartFields(
   projectId: string,
   ownerId: string,
   actorUserId: string | null | undefined,
 ): Promise<ScanJobFields> {
+  if (actorUserId && actorUserId !== ownerId) {
+    await recordOwnerCredentialSpend({
+      projectId, ownerId, userId: actorUserId, feature: 'scan', source: 'system',
+    })
+  }
   const fields = scanJobCredential(projectId, ownerId, actorUserId)
   return fields.actor_user_id ? { ...fields, ...(await actorScanCap(fields.actor_user_id)) } : fields
 }

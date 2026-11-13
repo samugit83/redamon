@@ -269,14 +269,19 @@ export interface StartRefusal {
 export async function refuseTriageStart(
   projectId: string,
   actorUserId: string,
+  opts: { actingAs?: boolean } = {},
 ): Promise<StartRefusal | null> {
   // A project that does not exist and one the actor cannot see are the same
   // answer, so this cannot be used to enumerate project ids. The actor is the
   // person the run is for, who may be a collaborator (step 5.3: the agent sends
   // the ticket's `sub`, while the run reads the owner's graph): their access must
   // reach `triage:run`'s level, as the ticket route and the MCP start asked of the
-  // permission itself. Below that level a run never starts.
-  const access = await projectAccess({ userId: actorUserId }, projectId)
+  // permission itself. Below that level a run never starts. A run started while an
+  // admin acts as the actor reaches through a share no further than read (D-22),
+  // as can() judged the ticket (step 5.6).
+  const access = opts.actingAs === true
+    ? await projectAccess({ userId: actorUserId }, projectId, { actingAs: true })
+    : await projectAccess({ userId: actorUserId }, projectId)
   const level = PERMISSIONS['triage:run'].level
   if (!access || level === null || !meetsLevel(access, level)) {
     return { reason: 'Not found' }

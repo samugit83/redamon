@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireEffectiveUser } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
+import { ownerCredentialRefusal, recordFeatureSpend } from '@/lib/authz/ownerSpend'
 import { writeAudit } from '@/lib/audit'
 import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels'
 import { callFeatureAgent } from '@/lib/featureAgentCall'
@@ -91,15 +92,12 @@ export async function POST(request: NextRequest) {
   try {
     if (!sameOrigin(request)) return crossOriginResponse()
 
-    // The caller's own "RoE parsing" model on their own keys. Checked before the
-    // upload is read: without a user there is nobody whose keys may be spent.
+    // Without a user there is nobody whose keys may be spent.
     const eff = await requireEffectiveUser()
     if (eff instanceof NextResponse) return eff
     if ((request.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
       return await rediff(request)
     }
-    const model = await readFeatureModel(eff.userId, 'roe_parse')
-    if (!model) return featureModelErrorResponse('model_required', 'roe_parse')
 
     const upload = await readRoeUpload(request)
     if (upload instanceof NextResponse) return upload
@@ -109,14 +107,22 @@ export async function POST(request: NextRequest) {
     // row; without one (a project being created) it is a diff against the form.
     const rawProjectId = formData.get('projectId')
     const projectId = typeof rawProjectId === 'string' && rawProjectId ? rawProjectId : null
-    if (projectId) {
-      const auth = await requirePermission(request, 'roe:manage', { projectId })
-      if (auth instanceof NextResponse) return auth
-    } else {
+    const auth = projectId
+      ? await requirePermission(request, 'roe:manage', { projectId })
       // A document read for a project the person is creating.
-      const auth = await requirePermission(request, 'project:create')
-      if (auth instanceof NextResponse) return auth
+      : await requirePermission(request, 'project:create')
+    if (auth instanceof NextResponse) return auth
+    // An existing project's parse spends its owner's "RoE parsing" model and keys (step 5.6, C1): a
+    // collaborator needs Use AI agent, which counts only with the owner's consent. A project being
+    // created is the caller's own.
+    if (projectId) {
+      const spendRefused = ownerCredentialRefusal(auth)
+      if (spendRefused) return spendRefused
     }
+    // The account whose model and keys the parse spends.
+    const userId = projectId ? auth.access!.project.userId : eff.userId
+    const model = await readFeatureModel(userId, 'roe_parse')
+    if (!model) return featureModelErrorResponse('model_required', 'roe_parse')
 
     let doc
     try {
@@ -152,13 +158,17 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // The model is the one saved in the user's settings, never a form field: a
-    // client cannot pick a model the user never chose.
+    // The model is the one saved in the spender's settings, never a form field: a
+    // client cannot pick a model the owner never chose.
+    if (projectId) {
+      const unrecorded = await recordFeatureSpend(auth, 'roe_parse')
+      if (unrecorded) return unrecorded
+    }
     const agent = await callFeatureAgent({
       featureId: 'roe_parse',
       path: '/roe/parse',
       model,
-      body: { text: doc.text, model, user_id: eff.userId },
+      body: { text: doc.text, model, user_id: userId },
       timeoutMs: AGENT_TIMEOUT_MS,
     })
     if (!agent.ok) {

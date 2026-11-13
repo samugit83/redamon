@@ -192,11 +192,17 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
 
   test('no production code reads the write switch outside the named files', () => {
     const WRITE_SWITCH_READERS = [
+      // Step 5.6: the consent route exists only with write sharing in force (404 otherwise, block below).
+      'src/app/api/projects/[id]/access-policy/route.ts',
       // Step 4.12: the share dialog offers the Read + Write presets disabled whatever the switch says;
       // off, their note reads "Coming when write sharing is on" (sharePresets.test.ts, ShareDialog.test.tsx).
       'src/components/sharing/sharePresets.ts',
       // The switch itself and its chain (sharingWrite requires sharing).
       'src/lib/authz/flags.ts',
+      // Step 5.6: a share route reads the consent only with write in force (maxShareLevel); the usage report's
+      // breakdown is read only with the switch on (block below).
+      'src/lib/authz/ownerConsent.ts',
+      'src/lib/authz/ownerCredentials.ts',
       // Step 5.2a: a share stored at write is `write` only with the switch on (through maxShareLevel), tests above.
       'src/lib/authz/projectAccess.ts',
       // Step 4.4: write grants answer 409 write_sharing_off with the switch off (collaborators route tests).
@@ -214,7 +220,11 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
     // Steps 5.6 (ProjectAccessPolicy), 5.8 (ConversationShare, Conversation.formerAuthor*) and 5.12
     // (ProjectTransfer) add each reader with how it stays silent with the switch off. ScanSchedule's
     // `pausedReason` (5.5) is not here: 5.5 runs whatever the switch says.
-    const PHASE5_TABLE_READERS: string[] = []
+    const PHASE5_TABLE_READERS: string[] = [
+      // Step 5.6: the one reader and writer of ProjectAccessPolicy, asked by projectAccess() only for a write answer
+      // (write in force), by the share routes only with write in force, by the access-policy route only past its 404.
+      'src/lib/authz/ownerConsent.ts',
+    ]
     const NAMES = new RegExp(
       '\\b(projectAccessPolicy|ProjectAccessPolicy|project_access_policies|accessPolicy|conversationShares?|ConversationShare|' +
       'conversation_shares|projectTransfers?|ProjectTransfer|project_transfers|formerAuthorId|former_author_id|formerAuthorLabel|' +
@@ -360,5 +370,78 @@ describe('the second-writer check with write sharing not in force (step 5.11)', 
     expect(await secondWriterRefusal({ projectId: 'P-owner', personId: 'owner' })).toBeNull()
     expect(writersOrchestrator).not.toHaveBeenCalled()
     expect(db.projectFindUnique).not.toHaveBeenCalled()
+  })
+})
+
+// Step 5.6 (C1): the owner's consent (ProjectAccessPolicy, ownerConsent.ts) and the record of a collaborator's spend of
+// the owner's credentials. With write sharing not in force no share is write (above), so no collaborator reaches Run
+// scans, Use AI agent or Exploitation & shells and nothing spends the owner's keys: projectAccess() never asks the
+// consent; the access-policy route does not exist (404 for GET and POST, the consent not read, nothing written); a share
+// route's run toggle meets step 4.4's write refusal, not the consent; with the switch off the usage report carries no
+// breakdown and reads no audit row. The owner's own use writes no credits.used row whatever the switches say.
+describe('owner credentials with write sharing not in force (step 5.6)', () => {
+  const STATES: Array<[string, Partial<RbacFlags>, Record<string, unknown>]> = [
+    ['every switch off', {}, { enabled: true, maxLevel: 'write' }],
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }, { enabled: true, maxLevel: 'write' }],
+    ["the write switch on, Root's policy at read", ALL_ON, { enabled: true, maxLevel: 'read' }],
+  ]
+  const consentRead = vi.fn(async () => ({ ownerCredentialConsentAt: new Date('2026-11-01T00:00:00Z'), ownerCredentialConsentById: 'owner' }))
+  const auditRead = vi.fn(async () => [])
+  const auditWrite = vi.fn(async ({ data }: { data: unknown }) => data)
+
+  beforeEach(async () => {
+    const prisma = (await import('@/lib/prisma')).default as unknown as Record<string, unknown>
+    prisma.projectAccessPolicy = { findUnique: consentRead, upsert: vi.fn() }
+    prisma.auditLog = { findMany: auditRead, create: auditWrite }
+    for (const f of [consentRead, auditRead, auditWrite]) f.mockClear()
+  })
+  afterEach(async () => {
+    const prisma = (await import('@/lib/prisma')).default as unknown as Record<string, unknown>
+    delete prisma.projectAccessPolicy
+    delete prisma.auditLog
+  })
+
+  test.each(STATES)('%s: a consent kept in the table opens nothing and is never read', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    const access = await projectAccess({ userId: 'collab' }, 'P-owner')
+    expect(access === null || access.level === 'read').toBe(true)
+    for (const p of ['recon:scan', 'agent:chat', 'agent:assistants', 'triage:run', 'agent:sessions'] as PermissionId[]) {
+      expect([p, (await can(member('collab'), p, { projectId: 'P-owner' })).allowed]).toEqual([p, false])
+    }
+    const { spendToggleConsentRefusal } = await import('./ownerConsent')
+    expect(await spendToggleConsentRefusal('P-owner', policy as never, { access: 'write', useAgent: true })).toBeNull()
+    // With the switch off the report has no breakdown and reads nothing; with Root's policy at read it still
+    // lists what collaborators spent while it allowed write (history, the audit table only).
+    if (!flags.sharingWrite) {
+      const { collaboratorSpends } = await import('./ownerCredentials')
+      expect(await collaboratorSpends('owner')).toBeNull()
+      expect(auditRead).not.toHaveBeenCalled()
+    }
+    expect(consentRead).not.toHaveBeenCalled()
+  })
+
+  test.each(STATES)('%s: the access-policy route answers 404 for GET and POST, nothing read or written', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    catalogDoubles.identity.mockResolvedValue({ session: { userId: 'owner', role: 'standard' }, principal: member('owner'), actingAs: null })
+    const [{ NextRequest }, { GET, POST }] = await Promise.all([import('next/server'), import('@/app/api/projects/[id]/access-policy/route')])
+    const params = { params: Promise.resolve({ id: 'P-owner' }) }
+    expect((await GET(new NextRequest('http://x/api/projects/P-owner/access-policy'), params)).status).toBe(404)
+    const post = await POST(new NextRequest('http://x/api/projects/P-owner/access-policy', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ownerCredentialConsent: false }),
+    }), params)
+    expect(post.status).toBe(404)
+    expect(consentRead).not.toHaveBeenCalled()
+    expect(auditWrite).not.toHaveBeenCalled()
+  })
+
+  test("the owner's own spend writes no credits.used row, whatever the switches", async () => {
+    const { recordOwnerCredentialSpend } = await import('./ownerSpend')
+    for (const [, flags] of STATES) {
+      setFlagsForTests(flags)
+      expect(await recordOwnerCredentialSpend({ projectId: 'P-owner', ownerId: 'owner', userId: 'owner', feature: 'scan' })).toBe(false)
+    }
+    expect(auditWrite).not.toHaveBeenCalled()
   })
 })

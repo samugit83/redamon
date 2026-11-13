@@ -55,6 +55,8 @@ vi.mock('@/lib/auth', () => ({
 }))
 vi.mock('@/lib/audit', () => ({
   writeAudit: (...a: unknown[]) => mockWriteAudit(...a),
+  // A socket whose effective user is not the owner writes its credits.used row first (step 5.6).
+  writeAuditTx: async () => undefined,
 }))
 vi.mock('@/lib/activationLock', () => ({
   assertGraphNotActivating: async () => null,

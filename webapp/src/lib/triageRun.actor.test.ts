@@ -38,6 +38,12 @@ describe('refuseTriageStart for a run\'s actor', () => {
     expect(h.meetsLevel).toHaveBeenCalledWith(ACCESS, 'W+A')
   })
 
+  test('a run started while an admin acts as the actor reaches through a share no further than read (D-22, step 5.6)', async () => {
+    h.meetsLevel.mockReturnValue(true)
+    expect(await refuseTriageStart('p1', 'collab-1', { actingAs: true })).toBeNull()
+    expect(h.projectAccess).toHaveBeenCalledWith({ userId: 'collab-1' }, 'p1', { actingAs: true })
+  })
+
   test('below that level, or with no access, the one "Not found"', async () => {
     h.meetsLevel.mockReturnValue(false)
     expect(await refuseTriageStart('p1', 'collab-1')).toEqual({ reason: 'Not found' })

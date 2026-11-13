@@ -31,6 +31,8 @@ vi.mock('@/lib/prisma', () => ({
       count: (...a: unknown[]) => h.countAuthorizations(...a),
       findFirst: (...a: unknown[]) => h.findAuthorization(...a),
     },
+    // A collaborator's start writes its credits.used row first (step 5.6, C1).
+    auditLog: { create: async ({ data }: { data: unknown }) => data },
   },
 }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => h.orchestratorFetch(...a) }))

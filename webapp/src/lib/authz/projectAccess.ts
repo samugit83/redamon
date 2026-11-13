@@ -9,8 +9,9 @@
  *   - with sharing in force (RBAC_SHARING_ENABLED and Root's `sharingPolicy.enabled`), anyone else:
  *     a live share (unexpired on the clock, the collaborator's account active) is `read`, with Raw
  *     data & files when the row says so; a row at `write` is `write` (Raw data included, the row's
- *     toggles through `effectiveToggles`) only with write sharing in force (RBAC_SHARING_WRITE_ENABLED
- *     and Root's `maxLevel: 'write'`, `maxShareLevel`) and never for the account an admin acts as,
+ *     toggles through `effectiveToggles`, its run toggles only with the owner's consent, step 5.6) only
+ *     with write sharing in force (RBAC_SHARING_WRITE_ENABLED and Root's `maxLevel: 'write'`,
+ *     `maxShareLevel`) and never for the account an admin acts as,
  *     else it reads as `read`, exactly as in Phase 4; an unexpired break-glass row of someone who
  *     still holds `projects:administer` is `read` with Raw data; holding `projects:oversee` is `read`
  *     without it. The strongest wins, and a share before oversight, which its callers audit (step 4.14);
@@ -26,9 +27,10 @@
  *
  * Nothing is cached here: a revoked or expired share ends with the next request (expiry is judged on
  * every read; step 4.15's sweep only deletes the rows). The owner's request costs one read by primary
- * key; anyone else's, with sharing in force, the policy (cached), the share by primary key, and
- * unless the share gives Raw data the break-glass rows and the person's capabilities (cached). A
- * failed read throws, it never reads as access.
+ * key; anyone else's, with sharing in force, the policy (cached), the share by primary key (and the
+ * owner's consent when a write share holds a run toggle), and unless the share gives Raw data the
+ * break-glass rows and the person's capabilities (cached). A failed read throws, it never reads as
+ * access.
  */
 import prisma from '@/lib/prisma'
 import { rbacFlags } from './flags'
@@ -36,6 +38,7 @@ import { now } from './clock'
 import { loadPrincipal } from './principal'
 import { resolveCapabilities, type Capabilities, type CapabilityPrincipal } from './capabilities'
 import { maxShareLevel, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
+import { readOwnerConsent, SPEND_TOGGLES } from './ownerConsent'
 import type { ProjectLevel } from './permissions'
 
 /** Whose data the request touches: the account acted as, else the signed-in account (EffectiveUser). */
@@ -105,15 +108,22 @@ function answer(project: { id: string; userId: string }, level: ProjectAccessLev
 }
 
 /**
- * The toggles a live `write` share gives now. Run scans, Use AI agent and Exploitation & shells read
- * false for every collaborator until step 5.6: before the agent keeps the owner as the tenant (5.3),
- * scans carry their actor (5.5) and the owner consents to their keys being spent (5.6), a
- * collaborator's run would write under the collaborator's id or spend the owner's keys unasked.
- * Manage is the row's; anything but a stored `true` is off.
+ * The toggles a live `write` share gives now: each is the row's (anything but a stored `true` is
+ * off), and Run scans, Use AI agent and Exploitation & shells count only while the owner consents to
+ * collaborators spending the project's credentials (step 5.6, `ownerConsent.ts`); without it they
+ * read false, so a collaborator never spends the owner's keys unasked. Manage needs no consent.
  */
-export function effectiveToggles(row: Partial<Record<keyof WriteToggles, unknown>>): WriteToggles {
-  return { runScans: false, useAgent: false, exploit: false, manage: row.manage === true }
+export function effectiveToggles(row: Partial<Record<keyof WriteToggles, unknown>>, ownerConsent = false): WriteToggles {
+  const spends = ownerConsent === true
+  return {
+    runScans: spends && row.runScans === true,
+    useAgent: spends && row.useAgent === true,
+    exploit: spends && row.exploit === true,
+    manage: row.manage === true,
+  }
 }
+
+const holdsSpendToggle = (row: Partial<Record<keyof WriteToggles, unknown>>): boolean => SPEND_TOGGLES.some(t => row[t] === true)
 
 /** Phase 4's share read; the toggle columns are read only when a share can be `write`. */
 const SHARE_SELECT = { access: true, rawData: true, expiresAt: true, user: { select: { status: true } } } as const
@@ -173,7 +183,9 @@ async function accessOfOthers(
     && share.user?.status === 'active'
   // Write includes Raw data & files and is above every read answer: nothing more is needed.
   if (shared && writeLevel && share.access === 'write') {
-    return answer(project, 'write', { rawData: true, ...effectiveToggles(share) }, 'share')
+    // The consent is read only for a row that holds a run toggle: without one there is nothing to open.
+    const consent = holdsSpendToggle(share) && (await readOwnerConsent(project.id)) !== null
+    return answer(project, 'write', { rawData: true, ...effectiveToggles(share, consent) }, 'share')
   }
   if (shared && share.rawData === true) return answer(project, 'read', { rawData: true }, 'share')
 

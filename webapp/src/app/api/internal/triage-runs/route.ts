@@ -14,6 +14,9 @@ import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { writeAudit } from '@/lib/audit'
 import { refuseTriageStart } from '@/lib/triageRun'
+import { auditActorOf } from '@/lib/auditActor'
+import { recordOwnerCredentialSpend } from '@/lib/authz/ownerSpend'
+import { safeErrorCode } from '@/lib/routeErrors'
 
 export async function POST(request: NextRequest) {
   // The middleware allowlist is fail-open by design, so this is the real guard.
@@ -55,7 +58,8 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  const refusal = await refuseTriageStart(projectId, actorUserId)
+  const actingAs = realActorUserId !== null && realActorUserId !== actorUserId
+  const refusal = await refuseTriageStart(projectId, actorUserId, { actingAs })
   if (refusal) {
     // 404 for "not yours", 409 for "not now": the first must not distinguish
     // itself from a missing project, the second is a retryable state.
@@ -64,6 +68,25 @@ export async function POST(request: NextRequest) {
       { error: refusal.reason, runId: refusal.runId },
       { status }
     )
+  }
+
+  // A collaborator's run spends the owner's model and keys (step 5.6, C1): recorded as theirs before
+  // it starts, and no record, no run.
+  try {
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } })
+    if (!project) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    await recordOwnerCredentialSpend({
+      projectId,
+      ownerId: project.userId,
+      userId: actorUserId,
+      actor: auditActorOf({ id: realActorUserId ?? actorUserId }, actorUserId),
+      feature: 'triage_run',
+      permission: 'triage:run',
+      source: 'system',
+    })
+  } catch (err) {
+    console.error(`[rbac] credits.used not recorded project=${projectId} user=${actorUserId} feature=triage_run: ${safeErrorCode(err)}`)
+    return NextResponse.json({ error: 'The run could not be recorded; it did not start.', code: 'spend_not_recorded' }, { status: 503 })
   }
 
   const run = await prisma.triageRun.create({

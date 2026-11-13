@@ -30,6 +30,8 @@ function formatDate(iso: string): string {
 
 /** Why a report has no narratives, from the route's `narrativesSkipped` code. */
 function skippedReason(code: string): string {
+  if (code === 'use_agent_required') return "AI narratives need Use AI agent on this project and the owner's consent to spend their credentials"
+  if (code === 'owner_model_required') return "the project's owner has not chosen a Report narratives model"
   if (code.startsWith('agent_')) return 'the agent could not be reached'
   if (code.startsWith('unreadable_answer')) return "the model's answer could not be read"
   return 'the model call failed'

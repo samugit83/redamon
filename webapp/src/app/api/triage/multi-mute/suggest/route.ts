@@ -7,6 +7,7 @@ import { resolveFindingByGraphId } from '@/lib/resolveFindingKey'
 import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels'
 import { callFeatureAgent } from '@/lib/featureAgentCall'
 import { activationBusyCoded, exemptPairs } from '@/lib/multiMute'
+import { ownerCredentialRefusal, recordFeatureSpend } from '@/lib/authz/ownerSpend'
 
 // 30 s past the agent's own model timeout, so the agent's answer always wins.
 const SUGGEST_TIMEOUT_MS = 180_000
@@ -19,7 +20,9 @@ const SUGGEST_TIMEOUT_MS = 180_000
  *
  * Read-only. The agent keeps the suggestion as a batch, and the apply route
  * can mute only keys from it. The model is the project owner's saved "Multi
- * mute" model, never one named by the client. Refused while a version
+ * mute" model, never one named by the client; a collaborator spends it only
+ * with Use AI agent (W+A, which counts only with the owner's consent; the
+ * permission itself is W), recorded as theirs (step 5.6, C1). Refused while a version
  * activation holds the graph, failing closed when the lock cannot be read.
  *
  * A 502 whose status is `model_unreadable` still carries the exact groups
@@ -34,6 +37,8 @@ export async function POST(request: NextRequest) {
 
   const auth = await requirePermission(request, 'triage:mute', { projectId })
   if (auth instanceof NextResponse) return auth
+  const spendRefused = ownerCredentialRefusal(auth)
+  if (spendRefused) return spendRefused
   const caller = triageCaller(auth)
   if (await activationBusy(caller.projectId)) return activationBusyCoded()
 
@@ -62,6 +67,8 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  const unrecorded = await recordFeatureSpend(auth, 'multi_mute')
+  if (unrecorded) return unrecorded
   const agent = await callFeatureAgent({
     featureId: 'multi_mute',
     path: '/graph/multi-mute/suggest',

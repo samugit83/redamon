@@ -155,6 +155,7 @@ const DISPLAY_READERS: Readonly<Record<string, string>> = {
   // file exists.
   'src/lib/authz/oversight.ts': "step 4.14's one row per admin, project and day: it reads only today's rows",
   'src/lib/authz/adminProjects.ts': "step 6.4's projects overview: each project's latest activity, shown",
+  'src/lib/authz/ownerCredentials.ts': "step 5.6's API usage report: the collaborators' spends of the owner's credentials in the last 30 days, shown",
 }
 
 describe('every audit row the code reads back is kept', () => {

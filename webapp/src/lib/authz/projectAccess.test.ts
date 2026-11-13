@@ -15,6 +15,10 @@
  * 5.6 (`effectiveToggles`). Otherwise, and for the account an admin acts as, it reads exactly as in
  * Phase 4. `meetsLevel`: write reaches R, R* and W, each toggle its level, never O.
  *
+ * Step 5.6 (C1, SH-32): the three run toggles are the row's while the owner consents to
+ * collaborators spending the project's credentials (the ProjectAccessPolicy row, read fresh and only
+ * for a row that holds one); without the consent they read false, as before.
+ *
  * Prisma is a double (the project, the share, the break-glass rows, the accounts, the instance row);
  * the clock is injected; the policy reader, the principal and the capabilities are the real ones.
  *
@@ -39,6 +43,8 @@ const db = vi.hoisted(() => ({
   breakGlass: [] as Array<{ projectId: string; userId: string; expiresAt: Date }>,
   users: new Map<string, Record<string, unknown>>(),
   instance: null as Record<string, unknown> | null,
+  /** projectId -> the owner's consent time (the ProjectAccessPolicy row). */
+  consent: new Map<string, Date | null>(),
 }))
 const findUnique = vi.fn(async ({ where }: { where: { id: string } }) => {
   const row = db.projects.get(where.id)
@@ -59,6 +65,10 @@ const userFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => {
   return row ? { ...row } : null
 })
 const instanceFindUnique = vi.fn(async () => (db.instance ? { ...db.instance } : null))
+const policyFindUnique = vi.fn(async ({ where }: { where: { projectId: string } }) =>
+  (db.consent.has(where.projectId)
+    ? { ownerCredentialConsentAt: db.consent.get(where.projectId) ?? null, ownerCredentialConsentById: 'owner-1' }
+    : null))
 vi.mock('@/lib/prisma', () => ({
   default: {
     project: { findUnique: (a: { where: { id: string } }) => findUnique(a) },
@@ -67,6 +77,7 @@ vi.mock('@/lib/prisma', () => ({
     user: { findUnique: (a: { where: { id: string } }) => userFindUnique(a) },
     instanceSettings: { findUnique: () => instanceFindUnique() },
     permissionSet: { findMany: async () => [] },
+    projectAccessPolicy: { findUnique: (a: { where: { projectId: string } }) => policyFindUnique(a) },
   },
 }))
 
@@ -121,11 +132,13 @@ beforeEach(() => {
   for (const id of ['owner-1', 'viewer', 'stranger']) db.users.set(id, account(id))
   db.users.set('admin-1', account('admin-1', { role: 'admin' }))
   db.users.set('root-1', account('root-1', { role: 'admin' }))
+  db.consent.clear()
   db.instance = {
     sharingPolicy: { enabled: true }, rootUserId: 'root-1', rootConfirmedAt: new Date(0), rootAssignedBy: null,
     defaultMemberSetId: null,
   }
   for (const f of [findUnique, collaboratorFindUnique, breakGlassFindFirst, userFindUnique, instanceFindUnique]) f.mockClear()
+  policyFindUnique.mockClear()
   setNowForTests(() => NOW)
   setFlagsForTests({})
   clearSharingPolicyCacheForTests()
@@ -416,11 +429,61 @@ describe('projectAccess with write sharing in force (step 5.2a)', () => {
     })
   })
 
-  test('run toggles read false until 5.6: Manage comes from the row, Run scans, Use AI agent and Exploitation & shells never', async () => {
+  test('run toggles read false without the owner\'s consent: Manage comes from the row, Run scans, Use AI agent and Exploitation & shells never', async () => {
     share('P', 'viewer', { access: 'write', ...ALL_TOGGLES })
     expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(true))
     share('P', 'viewer', { access: 'write', runScans: true, useAgent: true, exploit: true, manage: false })
     expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(false))
+    // A withdrawn consent (the row kept, its time cleared) is no consent.
+    db.consent.set('P', null)
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(false))
+  })
+
+  test('run toggles read true from step 5.6 with the owner\'s consent: each is the row\'s', async () => {
+    db.consent.set('P', new Date(NOW.getTime() - HOUR))
+    share('P', 'viewer', { access: 'write', ...ALL_TOGGLES })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(true, { runScans: true, useAgent: true, exploit: true }))
+    expect(policyFindUnique).toHaveBeenCalledWith({
+      where: { projectId: 'P' }, select: { ownerCredentialConsentAt: true, ownerCredentialConsentById: true },
+    })
+    for (const toggle of ['runScans', 'useAgent', 'exploit'] as const) {
+      share('P', 'viewer', { access: 'write', [toggle]: true })
+      expect([toggle, await projectAccess({ userId: 'viewer' }, 'P')]).toEqual([toggle, write(false, { [toggle]: true })])
+    }
+  })
+
+  test('the consent is read on every request, only for a row holding a run toggle, and only its own project\'s', async () => {
+    db.consent.set('P', new Date(NOW.getTime() - HOUR))
+    share('P', 'viewer', { access: 'write', manage: true })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(true))
+    expect(policyFindUnique).not.toHaveBeenCalled()
+    share('P', 'viewer', { access: 'write', useAgent: true })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(false, { useAgent: true }))
+    // Withdrawn: the next request reads it (nothing cached).
+    db.consent.set('P', null)
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(false))
+    // Another project's consent opens nothing here.
+    db.consent.delete('P')
+    db.consent.set('P-other', new Date(NOW.getTime() - HOUR))
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(false))
+    expect(policyFindUnique.mock.calls.every(([a]) => (a as { where: { projectId: string } }).where.projectId === 'P')).toBe(true)
+  })
+
+  test('a consent that cannot be read throws: it never reads as consent', async () => {
+    share('P', 'viewer', { access: 'write', useAgent: true })
+    policyFindUnique.mockRejectedValueOnce(new Error('db down'))
+    await expect(projectAccess({ userId: 'viewer' }, 'P')).rejects.toThrow('db down')
+  })
+
+  test('the consent opens nothing past the write rule: act-as and Root\'s policy at read stay read; the owner is not asked', async () => {
+    db.consent.set('P', new Date(NOW.getTime() - HOUR))
+    share('P', 'viewer', { access: 'write', ...ALL_TOGGLES })
+    expect(await projectAccess({ userId: 'viewer' }, 'P', { actingAs: true })).toEqual(read('share', false))
+    expect(await projectAccess({ userId: 'owner-1' }, 'P')).toEqual(owner())
+    db.instance = { ...db.instance, sharingPolicy: { enabled: true, maxLevel: 'read' } }
+    clearSharingPolicyCacheForTests()
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(read('share', false))
+    expect(policyFindUnique).not.toHaveBeenCalled()
   })
 
   test('a write share decides alone: no break-glass row and no account is read', async () => {
@@ -477,11 +540,26 @@ describe('projectAccess with write sharing in force (step 5.2a)', () => {
   })
 })
 
-describe('effectiveToggles: the run toggles stay off until step 5.6', () => {
-  test('every combination of the row: Run scans, Use AI agent, Exploitation & shells false; Manage the row\'s', () => {
+describe('effectiveToggles: the run toggles need the owner\'s consent (step 5.6)', () => {
+  test('without the consent, every combination of the row: Run scans, Use AI agent, Exploitation & shells false; Manage the row\'s', () => {
     for (let bits = 0; bits < 16; bits++) {
       const row = { runScans: (bits & 1) > 0, useAgent: (bits & 2) > 0, exploit: (bits & 4) > 0, manage: (bits & 8) > 0 }
       expect([row, effectiveToggles(row)]).toEqual([row, { ...NO_RUNS, manage: row.manage }])
+      expect([row, effectiveToggles(row, false)]).toEqual([row, { ...NO_RUNS, manage: row.manage }])
+    }
+  })
+
+  test('with the consent, every combination of the row: each toggle is the row\'s', () => {
+    for (let bits = 0; bits < 16; bits++) {
+      const row = { runScans: (bits & 1) > 0, useAgent: (bits & 2) > 0, exploit: (bits & 4) > 0, manage: (bits & 8) > 0 }
+      expect([row, effectiveToggles(row, true)]).toEqual([row, row])
+    }
+  })
+
+  test('a run toggle is on only for a stored true with a consent that is exactly true', () => {
+    for (const v of ['true', 1, null, undefined, {}]) {
+      expect(effectiveToggles({ runScans: v, useAgent: v, exploit: v } as never, true)).toEqual({ ...NO_RUNS, manage: false })
+      expect(effectiveToggles({ runScans: true, useAgent: true, exploit: true }, v as never)).toEqual({ ...NO_RUNS, manage: false })
     }
   })
 

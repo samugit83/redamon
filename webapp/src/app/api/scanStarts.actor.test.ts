@@ -18,6 +18,7 @@ const OWNER = 'owner-1'
 const h = vi.hoisted(() => ({
   actor: 'collab-1',
   orchestratorFetch: vi.fn(),
+  audit: [] as Array<Record<string, unknown>>,
 }))
 
 const PROJECT = {
@@ -42,7 +43,12 @@ vi.mock('@/lib/authz/guards', async (orig) => {
     }),
   }
 })
-vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: async () => ({ ...PROJECT }) } } }))
+vi.mock('@/lib/prisma', () => ({
+  default: {
+    project: { findUnique: async () => ({ ...PROJECT }) },
+    auditLog: { create: async ({ data }: { data: Record<string, unknown> }) => { h.audit.push(data); return data } },
+  },
+}))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => h.orchestratorFetch(...a) }))
 vi.mock('@/lib/activationLock', async (orig) => ({
   ...(await orig<typeof import('@/lib/activationLock')>()),
@@ -116,6 +122,7 @@ const savedKey = process.env.INTERNAL_API_KEY
 
 beforeEach(() => {
   h.orchestratorFetch.mockReset()
+  h.audit = []
   h.orchestratorFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ status: 'starting', run_id: 'r1' }) })
   process.env.INTERNAL_API_KEY = 'scan-start-actor-test-master'
 })
@@ -135,6 +142,10 @@ describe('each manual start names its actor beside the owner', () => {
     expect(sent.actor_user_id).toBe('collab-1')
     expect(sent.user_id).toBe(OWNER)
     expect(verifyJobCredential(sent.job_credential as string)).toMatchObject({ ten: OWNER, pid: 'p1' })
+    // Step 5.6 (C1, GV-12): the scan spends the owner's keys, recorded as the collaborator's.
+    expect(h.audit).toEqual([expect.objectContaining({
+      actorId: 'collab-1', action: 'credits.used', projectId: 'p1', after: { feature: 'scan', actor: 'collab-1' },
+    })])
   })
 
   test.each(ROUTES)("%s: the owner's own start is the owner's (unchanged)", async (_name, load, body) => {
@@ -144,6 +155,23 @@ describe('each manual start names its actor beside the owner', () => {
     const sent = sentBody()
     expect(sent.actor_user_id).toBe(OWNER)
     expect(sent.user_id).toBe(OWNER)
+    expect(h.audit).toEqual([])
+  })
+
+  test.each(ROUTES)('%s: no credits.used row, no scan (fail closed, step 5.6)', async (_name, load, body) => {
+    h.actor = 'collab-1'
+    const prisma = (await import('@/lib/prisma')).default as unknown as { auditLog: { create: unknown } }
+    const create = prisma.auditLog.create
+    prisma.auditLog.create = async () => { throw new Error('audit table down') }
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const res = await start(load, body)
+      expect(res.status).toBeGreaterThanOrEqual(500)
+      expect(h.orchestratorFetch).not.toHaveBeenCalled()
+    } finally {
+      prisma.auditLog.create = create
+      spy.mockRestore()
+    }
   })
 })
 

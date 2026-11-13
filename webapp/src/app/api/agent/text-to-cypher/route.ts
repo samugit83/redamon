@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requirePermission } from '@/lib/authz/guards'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
+import { recordFeatureSpend } from '@/lib/authz/ownerSpend'
 
 // Up to three generations, each with its own provider retries: as long as the
 // raw fetch this replaced waited for headers.
@@ -44,9 +45,11 @@ export async function POST(request: NextRequest) {
   if (auth instanceof NextResponse) return auth
   const access = auth.access!
   // The graph tenant is the project's owner, whose id its nodes carry. The key owner is the
-  // owner too: agent:assistants is a write level, which only the owner reaches until Phase 5
-  // decides whose key a collaborator's question spends.
+  // owner too: a collaborator reaches agent:assistants (W+A) only through Use AI agent, which
+  // counts only with the owner's consent, and the spend is recorded as theirs (step 5.6, C1).
   const owner = access.project.userId
+  const unrecorded = await recordFeatureSpend(auth, 'text_to_cypher')
+  if (unrecorded) return unrecorded
 
   try {
     const resp = await agentFetch('/text-to-cypher', {

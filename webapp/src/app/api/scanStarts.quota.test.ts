@@ -60,7 +60,10 @@ vi.mock('@/lib/authz/guards', async (orig) => {
     }),
   }
 })
-vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: async () => ({ ...PROJECT }) } } }))
+// A collaborator's start writes its credits.used row first (step 5.6, C1).
+vi.mock('@/lib/prisma', () => ({
+  default: { project: { findUnique: async () => ({ ...PROJECT }) }, auditLog: { create: async ({ data }: { data: unknown }) => data } },
+}))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => h.orchestratorFetch(...a) }))
 vi.mock('@/lib/activationLock', async (orig) => ({
   ...(await orig<typeof import('@/lib/activationLock')>()),

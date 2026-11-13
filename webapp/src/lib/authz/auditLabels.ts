@@ -45,6 +45,11 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'project.share.leave': 'Left the project (gave up a share)',
     'project.share.expired': 'A share expired',
     'project.share.lookup': 'Looked up an account to share with',
+    // Step 5.6 (C1): the owner's consent to collaborators spending the project's credentials, and each
+    // collaborator spend of them.
+    'project.owner_consent.grant': "Allowed collaborators to spend the owner's credentials",
+    'project.owner_consent.withdraw': "Stopped collaborators spending the owner's credentials",
+    'credits.used': "A collaborator spent the owner's credentials",
   }),
   // Step 4.14: one row per admin, project and day of oversight reads; Root's break-glass, opened and
   // closed early (its expiry is named by the opening row).

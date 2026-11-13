@@ -11,6 +11,7 @@ import { readFeatureModel, featureModelErrorResponse } from '@/lib/featureModels
 import { callFeatureAgent } from '@/lib/featureAgentCall'
 import { providerFailureDetail } from '@/lib/llmFeatures'
 import { internalError } from '@/lib/routeErrors'
+import { ownerCredentialRefusal, recordFeatureSpend } from '@/lib/authz/ownerSpend'
 
 const REPORT_OUTPUT_PATH = process.env.REPORT_OUTPUT_PATH || '/data/reports'
 const NARRATIVES_TIMEOUT_MS = 300_000
@@ -54,12 +55,22 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const auth = await requirePermission(request, 'reports:generate', { projectId: id })
     if (auth instanceof NextResponse) return auth
-    const eff = auth.effective
-
-    // The narratives run on the caller's own "Report narratives" model and keys.
-    // Checked before the (slow) data gathering so the model picker opens at once.
-    const model = await readFeatureModel(eff.userId, 'report_narratives')
-    if (!model) return featureModelErrorResponse('model_required', 'report_narratives')
+    const ownerId = auth.access!.project.userId
+    // The narratives spend the project owner's "Report narratives" model and keys (step 5.6, C1; a
+    // custom/ model resolves only against its owner's providers). A report itself is W: a
+    // collaborator without Use AI agent (which counts only with the owner's consent) gets one
+    // without narratives, and so does one whose owner chose no model (the picker is the owner's).
+    const isOwner = auth.access!.level === 'owner'
+    let narrativesSkipped: string | null = null
+    let model = ''
+    if (!isOwner && ownerCredentialRefusal(auth)) {
+      narrativesSkipped = 'use_agent_required'
+    } else {
+      // Checked before the (slow) data gathering so the owner's model picker opens at once.
+      model = await readFeatureModel(ownerId, 'report_narratives')
+      if (!model && isOwner) return featureModelErrorResponse('model_required', 'report_narratives')
+      if (!model) narrativesSkipped = 'owner_model_required'
+    }
 
     // 1. Gather all data from Neo4j + PostgreSQL
     const reportData = await gatherReportData(id)
@@ -68,28 +79,31 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // reached at all falls back to a report without narratives; a model, key or
     // version problem is the person's to fix, so it is shown instead of hidden.
     let narratives: LLMNarratives | null = null
-    let narrativesSkipped: string | null = null
-    const agent = await callFeatureAgent({
-      featureId: 'report_narratives',
-      path: '/api/report/summarize',
-      model,
-      body: { data: condenseForAgent(reportData), model, user_id: eff.userId },
-      timeoutMs: NARRATIVES_TIMEOUT_MS,
-    })
-    if (agent.ok) {
-      const { model_used: _modelUsed, narratives_failed: failed, ...rest } = agent.body
-      // The agent answers empty narratives with a marker when the model call
-      // failed or its answer was unreadable: a report without them, and the reason.
-      if (typeof failed === 'string' && /^[a-z_]{1,40}$/.test(failed)) {
-        narrativesSkipped = [failed, providerFailureDetail(agent.body)].filter(Boolean).join(' · ')
+    if (model) {
+      const unrecorded = await recordFeatureSpend(auth, 'report_narratives')
+      if (unrecorded) return unrecorded
+      const agent = await callFeatureAgent({
+        featureId: 'report_narratives',
+        path: '/api/report/summarize',
+        model,
+        body: { data: condenseForAgent(reportData), model, user_id: ownerId },
+        timeoutMs: NARRATIVES_TIMEOUT_MS,
+      })
+      if (agent.ok) {
+        const { model_used: _modelUsed, narratives_failed: failed, ...rest } = agent.body
+        // The agent answers empty narratives with a marker when the model call
+        // failed or its answer was unreadable: a report without them, and the reason.
+        if (typeof failed === 'string' && /^[a-z_]{1,40}$/.test(failed)) {
+          narrativesSkipped = [failed, providerFailureDetail(agent.body)].filter(Boolean).join(' · ')
+        } else {
+          narratives = rest as unknown as LLMNarratives
+        }
+      } else if (agent.code === 'agent_unreachable') {
+        console.warn('Agent unavailable for report narratives, generating without them')
+        narrativesSkipped = agent.code
       } else {
-        narratives = rest as unknown as LLMNarratives
+        return agent.response
       }
-    } else if (agent.code === 'agent_unreachable') {
-      console.warn('Agent unavailable for report narratives, generating without them')
-      narrativesSkipped = agent.code
-    } else {
-      return agent.response
     }
 
     // 3. Generate HTML

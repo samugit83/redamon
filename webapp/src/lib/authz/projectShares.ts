@@ -13,7 +13,9 @@
  *   answered: no row, no answer. Two accounts whose emails differ only in case (accounts created
  *   before step 1.2) name nobody: 409, never a pick.
  * - Read only in this phase: a `write` level, or a toggle of Read + Write, is refused with 409
- *   (`write_sharing_off`, or `above_max_level` when Root's policy allows Read only).
+ *   (`write_sharing_off`, or `above_max_level` when Root's policy allows Read only). With write sharing
+ *   in force a toggle that spends the owner's credentials is refused first while the owner has not
+ *   consented (409 `owner_consent_required`, step 5.6).
  * - Every change is written with its audit row in one transaction (`writeAuditTx`): no row, no
  *   change. A revoke or a leave then asks the agent to close the person's sockets on the project,
  *   best effort: the change stands when the agent is down (`[rbac] socket-close failed`).
@@ -36,6 +38,7 @@ import { forbiddenResponse, type PermissionContext } from './guards'
 import { takeShareLookup } from './inviteLimits'
 import { auditOversightRead } from './oversight'
 import { projectAccess, type ProjectAccess } from './projectAccess'
+import { spendToggleConsentRefusal } from './ownerConsent'
 import { accountTypeOf, loadInstanceRoot, type AccountType } from './root'
 import { DEFAULT_EXPIRY_DAYS_BOUNDS, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
 
@@ -328,6 +331,8 @@ export async function grantShare(auth: PermissionContext, policy: Readonly<Shari
   const at = now().getTime()
   const email = parseEmail(body.email)
   if ('response' in email) return email.response
+  const consent = await spendToggleConsentRefusal(auth.access!.project.id, policy, body)
+  if (consent) return consent
   const level = levelRefusal(body, policy, true)
   if (level) return level
   const rawData = 'rawData' in body ? parseRawData(body.rawData) : { value: false }
@@ -409,6 +414,8 @@ export async function updateShare(
   body: Record<string, unknown>,
 ): Promise<NextResponse> {
   const at = now().getTime()
+  const consent = await spendToggleConsentRefusal(auth.access!.project.id, policy, body)
+  if (consent) return consent
   const level = levelRefusal(body, policy, false)
   if (level) return level
   const patch: { rawData?: boolean; expiresAt?: Date | null; note?: string | null } = {}

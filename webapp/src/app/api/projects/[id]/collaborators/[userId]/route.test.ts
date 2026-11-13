@@ -144,6 +144,17 @@ describe('PATCH: change a share (step 4.4, SH-10)', () => {
     expect(db.share('P1', 'bob')?.access).toBe('read')
   })
 
+  test('a run toggle without the owner\'s consent (step 5.6): 409 owner_consent_required with write sharing in force, the share unchanged', async () => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
+    db.setPolicy({ enabled: true, maxLevel: 'write' })
+    signIn('alice')
+    const res = await change('bob', { useAgent: true })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: 'owner_consent_required', toggles: ['useAgent'] })
+    expect(db.share('P1', 'bob')?.access).toBe('read')
+    expect(db.audit()).toEqual([])
+  })
+
   test.each([
     ['an empty body', {}],
     ['rawData not a boolean', { rawData: 1 }],

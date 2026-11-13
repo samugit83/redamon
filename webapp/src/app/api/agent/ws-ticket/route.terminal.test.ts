@@ -34,7 +34,8 @@ vi.mock('@/lib/auditActor', () => ({
   actorFields: (actor: { id: string }) => ({ actorId: actor.id }),
 }))
 vi.mock('@/lib/auth', () => ({ createWsTicket: h.createWsTicket }))
-vi.mock('@/lib/audit', () => ({ writeAudit: h.writeAudit }))
+// A socket whose effective user is not the owner writes its credits.used row first (step 5.6).
+vi.mock('@/lib/audit', () => ({ writeAudit: h.writeAudit, writeAuditTx: async () => undefined }))
 vi.mock('@/lib/activationLock', () => ({ assertGraphNotActivating: async () => null }))
 vi.mock('@/lib/authz/projectWriters', () => ({ secondWriterResponse: async () => null }))
 vi.mock('@/lib/authz/sharedTools', async (orig) => ({

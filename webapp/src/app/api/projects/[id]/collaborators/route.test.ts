@@ -330,6 +330,21 @@ describe('POST: share at Read (step 4.4)', () => {
     expect(db.shareCount()).toBe(0)
   })
 
+  test('toggle refused without consent (step 5.6): with write sharing in force a run toggle needs the owner\'s consent first', async () => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
+    db.setPolicy({ enabled: true, maxLevel: 'write' })
+    signIn('alice')
+    for (const toggle of ['runScans', 'useAgent', 'exploit']) {
+      const res = await grant({ email: 'bob@example.test', access: 'write', [toggle]: true })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ code: 'owner_consent_required', toggles: [toggle] })
+    }
+    // Manage spends nothing: it meets this phase's write refusal, not the consent.
+    expect(await (await grant({ email: 'bob@example.test', access: 'write', manage: true })).json()).toMatchObject({ code: 'write_sharing_off' })
+    expect(db.audit()).toEqual([])
+    expect(db.shareCount()).toBe(0)
+  })
+
   test('default expiry applied from the policy; an explicit expiry or null wins', async () => {
     db.setPolicy({ enabled: true, defaultExpiryDays: 30 })
     signIn('alice')

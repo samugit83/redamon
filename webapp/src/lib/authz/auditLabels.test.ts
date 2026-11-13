@@ -250,7 +250,11 @@ describe('audit action labels (step 4.13, UI-08, AU-09)', () => {
 
   test("a group's terms are its exact actions and its family prefixes", () => {
     expect(auditGroupTerms('sharing')).toEqual({
-      actions: ['project.share.expired', 'project.share.grant', 'project.share.leave', 'project.share.lookup', 'project.share.revoke', 'project.share.update'],
+      actions: [
+        // Step 5.6: the owner's consent to collaborators spending the project's credentials, and each spend.
+        'credits.used', 'project.owner_consent.grant', 'project.owner_consent.withdraw',
+        'project.share.expired', 'project.share.grant', 'project.share.leave', 'project.share.lookup', 'project.share.revoke', 'project.share.update',
+      ],
       prefixes: [],
     })
     expect(auditGroupTerms('mcp').prefixes).toEqual(['mcp.'])

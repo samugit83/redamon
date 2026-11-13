@@ -23,6 +23,8 @@ vi.mock('@/lib/prisma', () => ({
   default: {
     project: { findUnique: (...a: unknown[]) => h.findUnique(...a) },
     scanJob: { create: (...a: unknown[]) => h.scanJobCreate(...a) },
+    // A collaborator's start writes its credits.used row first (step 5.6, C1).
+    auditLog: { create: async ({ data }: { data: unknown }) => data },
   },
 }))
 vi.mock('@/lib/engagement', () => ({

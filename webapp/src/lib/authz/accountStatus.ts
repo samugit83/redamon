@@ -131,9 +131,9 @@ async function changedAware<T>(write: () => Promise<T>): Promise<T | NextRespons
   }
 }
 
-async function stopAgentRuns(userId: string): Promise<{ stopped: number } | { error: string }> {
+async function stopAgentRuns(userId: string, projectIds?: readonly string[]): Promise<{ stopped: number } | { error: string }> {
   const failed = (reason: string) => {
-    console.error(`[rbac] agent-stop failed user=${userId}: ${reason}`)
+    console.error(`[rbac] agent-stop failed user=${userId}${projectIds ? ` projects=${projectIds.join(',')}` : ''}: ${reason}`)
     return { error: reason }
   }
   let res: Response
@@ -141,7 +141,7 @@ async function stopAgentRuns(userId: string): Promise<{ stopped: number } | { er
     res = await agentFetch('/agent-sessions/stop-for', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId }),
+      body: JSON.stringify(projectIds ? { user_id: userId, project_ids: projectIds } : { user_id: userId }),
     }, { timeoutMs: AGENT_TIMEOUT_MS })
   } catch (err) {
     return failed(err instanceof AgentUnreachableError ? 'agent_unreachable' : safeErrorCode(err))
@@ -149,6 +149,17 @@ async function stopAgentRuns(userId: string): Promise<{ stopped: number } | { er
   if (!res.ok) return failed(`agent_http_${res.status}`)
   const body = await res.json().catch(() => null) as { stopped?: unknown } | null
   return { stopped: typeof body?.stopped === 'number' ? body.stopped : 0 }
+}
+
+/**
+ * Stops the account's agent runs on these projects only (the agent's `stop-for` with `project_ids`),
+ * leaving its runs elsewhere alone: for access lost on one project (step 5.6's consent withdrawal;
+ * step 5.9's revocation). Never throws; a failure is logged (`[rbac] agent-stop failed`) and answered.
+ * No project names nothing to stop, so nothing is asked.
+ */
+export async function stopAgentRunsOnProjects(userId: string, projectIds: readonly string[]): Promise<{ stopped: number } | { error: string }> {
+  if (!userId || projectIds.length === 0) return { stopped: 0 }
+  return stopAgentRuns(userId, projectIds)
 }
 
 /**
