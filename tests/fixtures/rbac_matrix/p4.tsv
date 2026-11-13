@@ -2,8 +2,8 @@
 # changes; a row of an earlier file whose answer a step changes is tagged superseded-by:p4 there.
 # Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
 #
-# Every row here needs a share, so each is tagged sharing:on and SKIPs while RBAC_SHARING_ENABLED
-# reads off. Run with the switch on and the instance policy enabled (sharing_policy.enabled by SQL
+# A row that needs a share or sharing in force is tagged sharing:on and SKIPs while
+# RBAC_SHARING_ENABLED reads off. Run with the switch on and the instance policy enabled (sharing_policy.enabled by SQL
 # on the shared instance), after step 4.4, whose seed (webapp/scripts/e2e-rbac-seed.mjs) provides:
 #   viewer      a member account (rbac-viewer@e2e.local) holding a Read share, without Raw data,
 #               on PSHARED
@@ -24,3 +24,25 @@ p4-viewer-roe-download-owner	4.1	member_c	GET	/api/projects/${PSHARED_ID}/roe/do
 p4-viewer-roe-download	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/download	-	403;has=owner_only;has=roe:read	req:SH-28 sharing:on
 p4-viewer-roe-revision-download	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/revisions/rbac-no-such-revision/download	-	403;has=owner_only	req:SH-28 sharing:on
 p4-viewer-roe-revisions	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/revisions	-	200;has="revisions"	req:SH-28 sharing:on
+
+# ---- step 4.3: projectAccess() with shares, oversight; my-access; the terminal stays the owner's ----
+# The first two rows need no share and run in either switch state. With sharing in force admin_a
+# (Full admin, projects:oversee) reads rbac-PA at Read without Raw data: the twelve admin_a rows of
+# baseline.tsv are tagged sharing:off, and these are their answers for the routes whose oversight
+# answer is settled; the graph, conversation, remediation, report, schedule, triage and recon status
+# rows come with the read waves (4.6-4.8) and 4.14.
+p4-myaccess-owner	4.3	member_a	GET	/api/projects/${PA_ID}/my-access	-	200;has="level":"owner";has="via":"owner"	req:PE-21
+p4-myaccess-other	4.3	member_b	GET	/api/projects/${PA_ID}/my-access	-	404;lacks="myAccess"	req:PE-21
+p4-myaccess-viewer	4.3	viewer	GET	/api/projects/${PSHARED_ID}/my-access	-	200;has="level":"read";has="rawData":false;has="via":"share"	req:PE-21 req:SH-02 sharing:on
+p4-viewer-myaccess-on-read	4.3	viewer	GET	/api/projects/${PSHARED_ID}	-	200;has="myAccess";has="via":"share"	req:PE-21 sharing:on
+p4-viewer-settings-write	4.3	viewer	PUT	/api/projects/${PSHARED_ID}	{"updatedAt":"rbac-not-a-date"}	403;has=project:settings	req:SH-02 sharing:on
+p4-viewer-traffic-no-raw	4.3	viewer	GET	/api/traffic/${PSHARED_ID}	-	403;has=traffic:read	req:SH-03 sharing:on
+p4-viewer-ws-ticket-agent	4.3	viewer	POST	/api/agent/ws-ticket	{"projectId":"${PSHARED_ID}","sessionId":"rbac-ws","socket":"agent"}	403;has=agent:chat;lacks="ticket"	req:SH-02 sharing:on
+p4-viewer-ws-ticket-terminal	4.3	viewer	POST	/api/agent/ws-ticket	{"projectId":"${PSHARED_ID}","sessionId":"rbac-ws","socket":"kali-terminal"}	403;has=owner_only;lacks="ticket"	req:SH-02 sharing:on
+p4-oversee-proj-read	4.3	admin_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA;has="via":"oversight"	req:SH-18 sharing:on
+p4-oversee-myaccess	4.3	admin_a	GET	/api/projects/${PA_ID}/my-access	-	200;has="level":"read";has="via":"oversight"	req:SH-18 sharing:on
+p4-oversee-proj-update	4.3	admin_a	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	403;has=project:settings	req:SH-18 sharing:on
+p4-oversee-proj-export	4.3	admin_a	GET	/api/projects/${PA_ID}/export	-	403;has=project:export	req:SH-18 sharing:on
+p4-oversee-traffic	4.3	admin_a	GET	/api/traffic/${PA_ID}	-	403;has=traffic:read	req:SH-18 sharing:on
+p4-oversee-workspace	4.3	admin_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	403;has=workspace:read	req:SH-18 sharing:on
+p4-oversee-ws-ticket-terminal	4.3	admin_a	POST	/api/agent/ws-ticket	{"projectId":"${PA_ID}","sessionId":"rbac-ws","socket":"kali-terminal"}	403;has=owner_only;lacks="ticket"	req:SH-18 sharing:on

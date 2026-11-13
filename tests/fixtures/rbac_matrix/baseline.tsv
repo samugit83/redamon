@@ -7,6 +7,8 @@
 # document section 3, NF-xx in the current-state notes): Phase 1 writes each one's new
 # expectation into p1.tsv and tags it here superseded-by:p1. The answer can stay the same
 # where the probe cannot see the fix (a 405 method probe, a list whose content changes).
+# The admin_a rows on rbac-PA are tagged sharing:off (step 4.3): with sharing in force every admin
+# holding projects:oversee reads any project at Read (OQ-03), so their answer is p4.tsv's then.
 #
 # id	since	actor	method	path	body	expect	tags
 #
@@ -32,7 +34,7 @@ bl-me-anon	0.5	anon	GET	/api/auth/me	-	401	-
 # ---- projects ----
 bl-proj-read-owner	0.5	member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	-
 bl-proj-read-other	0.5	member_b	GET	/api/projects/${PA_ID}	-	404	-
-bl-proj-read-admin	0.5	admin_a	GET	/api/projects/${PA_ID}	-	404	-
+bl-proj-read-admin	0.5	admin_a	GET	/api/projects/${PA_ID}	-	404	sharing:off
 bl-proj-read-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA	-
 bl-proj-read-anon	0.5	anon	GET	/api/projects/${PA_ID}	-	401	-
 bl-proj-list-owner	0.5	member_a	GET	/api/projects	-	200;has=${PA_ID};lacks=${PB_ID};lacks=${PADM_ID}	-
@@ -43,59 +45,59 @@ bl-proj-list-anon	0.5	anon	GET	/api/projects	-	401	-
 # update: a timestamp the route refuses after its owner check, so nothing is written
 bl-proj-update-owner	0.5	member_a	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	400	-
 bl-proj-update-other	0.5	member_b	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	404	-
-bl-proj-update-admin	0.5	admin_a	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	404	-
+bl-proj-update-admin	0.5	admin_a	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	404	sharing:off
 bl-proj-update-actas	0.5	admin_a_as_member_a	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	400	-
 bl-proj-update-anon	0.5	anon	PUT	/api/projects/${PA_ID}	{"updatedAt":"rbac-not-a-date"}	401	-
 bl-proj-export-owner	0.5	member_a	GET	/api/projects/${PA_ID}/export	-	200	-
 bl-proj-export-other	0.5	member_b	GET	/api/projects/${PA_ID}/export	-	404	-
-bl-proj-export-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/export	-	404	-
+bl-proj-export-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/export	-	404	sharing:off
 bl-proj-export-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}/export	-	200	-
 bl-proj-export-anon	0.5	anon	GET	/api/projects/${PA_ID}/export	-	401	-
 #
 # ---- project data ----
 bl-graph-read-owner	0.5	member_a	GET	/api/graph?projectId=${PA_ID}	-	200	-
 bl-graph-read-other	0.5	member_b	GET	/api/graph?projectId=${PA_ID}	-	404	-
-bl-graph-read-admin	0.5	admin_a	GET	/api/graph?projectId=${PA_ID}	-	404	-
+bl-graph-read-admin	0.5	admin_a	GET	/api/graph?projectId=${PA_ID}	-	404	sharing:off
 bl-graph-read-actas	0.5	admin_a_as_member_a	GET	/api/graph?projectId=${PA_ID}	-	200	-
 bl-graph-read-anon	0.5	anon	GET	/api/graph?projectId=${PA_ID}	-	401	-
 bl-conv-list-owner	0.5	member_a	GET	/api/conversations?projectId=${PA_ID}	-	200;has=rbac-sess-PA	-
 bl-conv-list-other	0.5	member_b	GET	/api/conversations?projectId=${PA_ID}	-	404	-
-bl-conv-list-admin	0.5	admin_a	GET	/api/conversations?projectId=${PA_ID}	-	404	-
+bl-conv-list-admin	0.5	admin_a	GET	/api/conversations?projectId=${PA_ID}	-	404	sharing:off
 bl-conv-list-actas	0.5	admin_a_as_member_a	GET	/api/conversations?projectId=${PA_ID}	-	200;has=rbac-sess-PA	-
 bl-conv-list-anon	0.5	anon	GET	/api/conversations?projectId=${PA_ID}	-	401	-
 bl-rem-list-owner	0.5	member_a	GET	/api/remediations?projectId=${PA_ID}	-	200;has=rbac-remediation	-
 bl-rem-list-other	0.5	member_b	GET	/api/remediations?projectId=${PA_ID}	-	404	-
-bl-rem-list-admin	0.5	admin_a	GET	/api/remediations?projectId=${PA_ID}	-	404	-
+bl-rem-list-admin	0.5	admin_a	GET	/api/remediations?projectId=${PA_ID}	-	404	sharing:off
 bl-rem-list-actas	0.5	admin_a_as_member_a	GET	/api/remediations?projectId=${PA_ID}	-	200;has=rbac-remediation	-
 bl-rem-list-anon	0.5	anon	GET	/api/remediations?projectId=${PA_ID}	-	401	-
 bl-reports-list-owner	0.5	member_a	GET	/api/projects/${PA_ID}/reports	-	200;has=rbac-report	-
 bl-reports-list-other	0.5	member_b	GET	/api/projects/${PA_ID}/reports	-	404	-
-bl-reports-list-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/reports	-	404	-
+bl-reports-list-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/reports	-	404	sharing:off
 bl-reports-list-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}/reports	-	200;has=rbac-report	-
 bl-reports-list-anon	0.5	anon	GET	/api/projects/${PA_ID}/reports	-	401	-
 bl-sched-list-owner	0.5	member_a	GET	/api/projects/${PA_ID}/schedules	-	200;has=rbac-schedule	-
 bl-sched-list-other	0.5	member_b	GET	/api/projects/${PA_ID}/schedules	-	404	-
-bl-sched-list-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/schedules	-	404	-
+bl-sched-list-admin	0.5	admin_a	GET	/api/projects/${PA_ID}/schedules	-	404	sharing:off
 bl-sched-list-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}/schedules	-	200;has=rbac-schedule	-
 bl-sched-list-anon	0.5	anon	GET	/api/projects/${PA_ID}/schedules	-	401	-
 bl-triage-list-owner	0.5	member_a	GET	/api/triage/findings?projectId=${PA_ID}	-	200	-
 bl-triage-list-other	0.5	member_b	GET	/api/triage/findings?projectId=${PA_ID}	-	404	-
-bl-triage-list-admin	0.5	admin_a	GET	/api/triage/findings?projectId=${PA_ID}	-	404	-
+bl-triage-list-admin	0.5	admin_a	GET	/api/triage/findings?projectId=${PA_ID}	-	404	sharing:off
 bl-triage-list-actas	0.5	admin_a_as_member_a	GET	/api/triage/findings?projectId=${PA_ID}	-	200	-
 bl-triage-list-anon	0.5	anon	GET	/api/triage/findings?projectId=${PA_ID}	-	401	-
 bl-traffic-list-owner	0.5	member_a	GET	/api/traffic/${PA_ID}	-	200	-
 bl-traffic-list-other	0.5	member_b	GET	/api/traffic/${PA_ID}	-	404	-
-bl-traffic-list-admin	0.5	admin_a	GET	/api/traffic/${PA_ID}	-	404	-
+bl-traffic-list-admin	0.5	admin_a	GET	/api/traffic/${PA_ID}	-	404	sharing:off
 bl-traffic-list-actas	0.5	admin_a_as_member_a	GET	/api/traffic/${PA_ID}	-	200	-
 bl-traffic-list-anon	0.5	anon	GET	/api/traffic/${PA_ID}	-	401	-
 bl-workspace-list-owner	0.5	member_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	200	-
 bl-workspace-list-other	0.5	member_b	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	404	-
-bl-workspace-list-admin	0.5	admin_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	404	-
+bl-workspace-list-admin	0.5	admin_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	404	sharing:off
 bl-workspace-list-actas	0.5	admin_a_as_member_a	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	200	-
 bl-workspace-list-anon	0.5	anon	GET	/api/agent/workspace/list?projectId=${PA_ID}&path=.	-	401	-
 bl-recon-status-owner	0.5	member_a	GET	/api/recon/${PA_ID}/status	-	200	-
 bl-recon-status-other	0.5	member_b	GET	/api/recon/${PA_ID}/status	-	404	-
-bl-recon-status-admin	0.5	admin_a	GET	/api/recon/${PA_ID}/status	-	404	-
+bl-recon-status-admin	0.5	admin_a	GET	/api/recon/${PA_ID}/status	-	404	sharing:off
 bl-recon-status-actas	0.5	admin_a_as_member_a	GET	/api/recon/${PA_ID}/status	-	200	-
 bl-recon-status-anon	0.5	anon	GET	/api/recon/${PA_ID}/status	-	401	-
 #
