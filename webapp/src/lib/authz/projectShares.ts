@@ -1,0 +1,470 @@
+/**
+ * Sharing a project at Read (step 4.4; feature document §6.1, §6.3-§6.5; SH-04, SH-06, SH-09,
+ * SH-10, SH-11, SH-13, SH-19, SH-20, SH-21, DV-05, OQ-34): the writers behind
+ * /api/projects/[id]/collaborators, .../collaborators/[userId] and .../leave.
+ *
+ * - Only with sharing in force (RBAC_SHARING_ENABLED and Root's `sharingPolicy.enabled`): otherwise
+ *   every share route answers 404 having read no share, as before the feature (DV-30).
+ * - A grant names the recipient by exact email, normalised (trimmed, lowercase) and compared ignoring
+ *   case; it binds the account id the email resolves to now, and nothing is held for an email no
+ *   account has (§6.4: members change their own email). The answer says whether an account exists
+ *   (D-24 confirm mode), so each lookup is counted against the person's ceiling
+ *   (`takeShareLookup`) and audited (`project.share.lookup`, the email as a hash only) before it is
+ *   answered: no row, no answer. Two accounts whose emails differ only in case (accounts created
+ *   before step 1.2) name nobody: 409, never a pick.
+ * - Read only in this phase: a `write` level, or a toggle of Read + Write, is refused with 409
+ *   (`write_sharing_off`, or `above_max_level` when Root's policy allows Read only).
+ * - Every change is written with its audit row in one transaction (`writeAuditTx`): no row, no
+ *   change. A revoke or a leave then asks the agent to close the person's sockets on the project,
+ *   best effort: the change stands when the agent is down (`[rbac] socket-close failed`).
+ */
+import { createHash } from 'crypto'
+import { NextResponse } from 'next/server'
+import prisma from '@/lib/prisma'
+import { writeAuditTx, type AuditTx } from '@/lib/audit'
+import { auditActor, auditActorOf, sessionActor, type AuditActor } from '@/lib/auditActor'
+import { closeAgentSockets } from '@/lib/agentSockets'
+import { getAuthzIdentity, type EffectiveUser } from '@/lib/session'
+import { WS_SOCKETS } from '@/lib/wsTicket'
+import { normalizeEmail } from './accountEmail'
+import { can } from './can'
+import { now } from './clock'
+import { rbacFlags } from './flags'
+import { forbiddenResponse, type PermissionContext } from './guards'
+import { takeShareLookup } from './inviteLimits'
+import { projectAccess, type ProjectAccess } from './projectAccess'
+import { DEFAULT_EXPIRY_DAYS_BOUNDS, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
+
+export const SHARE_PERMISSION = 'project:share'
+export const NOTE_MAX_LENGTH = 500
+const EMAIL_MAX_LENGTH = 320
+const DAY_MS = 86_400_000
+const MAX_EXPIRY_MS = DEFAULT_EXPIRY_DAYS_BOUNDS[1] * DAY_MS
+/** The toggles of Read + Write (§6.1): Phase 5's, refused here. */
+const WRITE_TOGGLES = ['runScans', 'useAgent', 'exploit', 'manage'] as const
+
+/** One share as its screens show it (the owner's list, the grant's answer). */
+export interface ShareView {
+  user: { id: string; name: string | null; email: string | null; status: string | null }
+  access: string
+  rawData: boolean
+  expiresAt: string | null
+  /** Past its expiry: it gives nothing (expiry is lazy) until the sweep removes it (step 4.15). */
+  expired: boolean
+  note: string | null
+  grantedById: string
+  createdAt: string
+  updatedAt: string
+}
+
+interface ShareRecord {
+  projectId: string
+  userId: string
+  access: string
+  runScans: boolean
+  useAgent: boolean
+  exploit: boolean
+  rawData: boolean
+  manage: boolean
+  expiresAt: Date | null
+  note: string | null
+  grantedById: string
+  createdAt: Date
+  updatedAt: Date
+  user?: { id: string; name: string | null; email: string | null; status: string | null } | null
+}
+
+interface Recipient { id: string; name: string | null; email: string | null; status: string }
+
+const iso = (d: Date | null) => (d ? d.toISOString() : null)
+
+function refusal(status: number, code: string, error: string, extra: Record<string, unknown> = {}): NextResponse {
+  return NextResponse.json({ error, code, ...extra }, { status })
+}
+
+function invalidField(field: string, error: string): NextResponse {
+  return refusal(400, 'invalid_field', error, { field })
+}
+
+function noSuchShare(): NextResponse {
+  return refusal(404, 'no_such_share', 'This person holds no share of the project.')
+}
+
+/** The share as the audit rows record it (the note stays out: free text, not a grant). */
+function auditView(row: ShareRecord): Record<string, unknown> {
+  return {
+    access: row.access, rawData: row.rawData, runScans: row.runScans, useAgent: row.useAgent,
+    exploit: row.exploit, manage: row.manage, expiresAt: iso(row.expiresAt), grantedById: row.grantedById,
+  }
+}
+
+function shareView(row: ShareRecord, at: number): ShareView {
+  return {
+    user: {
+      id: row.userId, name: row.user?.name ?? null, email: row.user?.email ?? null, status: row.user?.status ?? null,
+    },
+    access: row.access,
+    rawData: row.rawData,
+    expiresAt: iso(row.expiresAt),
+    expired: row.expiresAt !== null && row.expiresAt.getTime() <= at,
+    note: row.note,
+    grantedById: row.grantedById,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }
+}
+
+const SHARE_SELECT = {
+  projectId: true, userId: true, access: true, runScans: true, useAgent: true, exploit: true, rawData: true,
+  manage: true, expiresAt: true, note: true, grantedById: true, createdAt: true, updatedAt: true,
+  user: { select: { id: true, name: true, email: true, status: true } },
+} as const
+
+/** The policy the share routes act under, or null when sharing is not in force (they answer 404). */
+export async function sharingPolicyForRoutes({ fresh = false }: { fresh?: boolean } = {}): Promise<Readonly<SharingPolicy> | null> {
+  if (!rbacFlags().sharing) return null
+  const policy = await sharingPolicyInForce({ fresh })
+  return policy?.enabled === true ? policy : null
+}
+
+/** The hash an audit row keeps instead of the email a lookup named. */
+export function emailSha256(email: string): string {
+  return createHash('sha256').update(normalizeEmail(email.trim()), 'utf8').digest('hex')
+}
+
+/**
+ * OQ-34: only the owner removes, narrows or otherwise changes a co-owner's share (Manage). A
+ * co-owner reaches the share routes only from Phase 5; the check stands now so it cannot be missed.
+ */
+export function coOwnerRefusal(access: Pick<ProjectAccess, 'level'>, row: { manage: boolean }): NextResponse | null {
+  if (!row.manage || access.level === 'owner') return null
+  return refusal(403, 'owner_only', "Only the project's owner can change or remove a co-owner's share.", { permission: SHARE_PERMISSION })
+}
+
+/** Nobody shares a project with themselves, nor with its owner (a co-owner's grant, Phase 5). */
+export function recipientRefusal(recipientId: string, { actorId, ownerId }: { actorId: string; ownerId: string }): NextResponse | null {
+  if (recipientId === actorId) return refusal(400, 'share_with_self', 'You cannot share a project with yourself.')
+  if (recipientId === ownerId) return refusal(400, 'share_with_owner', "The project's owner already has every access.")
+  return null
+}
+
+/**
+ * The level a body asks for: Read only in this phase. A `write` level or a Read + Write toggle is
+ * refused (409) whatever the switches say; with the write switch on and Root's policy at Read the
+ * refusal names the policy.
+ */
+function levelRefusal(body: Record<string, unknown>, policy: Readonly<SharingPolicy>, required: boolean): NextResponse | null {
+  if (required || 'access' in body) {
+    if (body.access !== 'read' && body.access !== 'write') return invalidField('access', 'access must be "read" (or "write" once write sharing is on)')
+  }
+  for (const toggle of WRITE_TOGGLES) {
+    if (toggle in body && typeof body[toggle] !== 'boolean') return invalidField(toggle, `${toggle} must be true or false`)
+  }
+  const asksWrite = body.access === 'write' || WRITE_TOGGLES.some(t => body[t] === true)
+  if (!asksWrite) return null
+  if (rbacFlags().sharingWrite && policy.maxLevel === 'read') {
+    return refusal(409, 'above_max_level', 'The instance sharing policy allows Read shares only.', { maxLevel: 'read' })
+  }
+  return refusal(409, 'write_sharing_off', 'Read + Write sharing is not available yet: share at Read.')
+}
+
+type Parsed<T> = { value: T } | { response: NextResponse }
+
+function parseRawData(value: unknown): Parsed<boolean> {
+  return typeof value === 'boolean' ? { value } : { response: invalidField('rawData', 'rawData must be true or false') }
+}
+
+function parseExpiry(value: unknown, at: number): Parsed<Date | null> {
+  if (value === null) return { value: null }
+  const when = typeof value === 'string' ? new Date(value) : null
+  if (!when || Number.isNaN(when.getTime())) return { response: invalidField('expiresAt', 'expiresAt must be a date and time (ISO 8601) or null') }
+  if (when.getTime() <= at) return { response: invalidField('expiresAt', 'expiresAt must be in the future') }
+  if (when.getTime() > at + MAX_EXPIRY_MS) {
+    return { response: invalidField('expiresAt', `expiresAt must be within ${DEFAULT_EXPIRY_DAYS_BOUNDS[1]} days`) }
+  }
+  return { value: when }
+}
+
+function parseNote(value: unknown): Parsed<string | null> {
+  if (value === null) return { value: null }
+  if (typeof value !== 'string') return { response: invalidField('note', 'note must be text or null') }
+  const note = value.trim()
+  if (note.length > NOTE_MAX_LENGTH) return { response: invalidField('note', `note must be at most ${NOTE_MAX_LENGTH} characters`) }
+  return { value: note || null }
+}
+
+function parseEmail(value: unknown): Parsed<string> {
+  const email = typeof value === 'string' ? normalizeEmail(value.trim()) : ''
+  if (!email || email.length > EMAIL_MAX_LENGTH || !/^[^\s@]+@[^\s@]+$/.test(email)) {
+    return { response: invalidField('email', "email must be the recipient's exact sign-in email") }
+  }
+  return { value: email }
+}
+
+/**
+ * The accounts an email names, compared ignoring case (lower() on both sides, the email bound as a
+ * parameter: never ILIKE, where `_` and `%` match anything; accountEmail.ts).
+ */
+async function accountsByEmail(email: string): Promise<Recipient[]> {
+  return prisma.$queryRaw<Recipient[]>`SELECT id, name, email, status FROM users WHERE lower(email) = lower(${email})`
+}
+
+/** The audit actor of a share change: the person signed in (act-as is refused before any change). */
+function actorOf(auth: PermissionContext): AuditActor {
+  return auditActorOf(sessionActor(auth.session), auth.effective.userId)
+}
+
+function ownerOf(auth: PermissionContext): string {
+  if (!auth.access) throw new Error('[rbac] a share route checked no project')
+  return auth.access.project.userId
+}
+
+/**
+ * GET's guard: the owner (and a co-owner from Phase 5) through `project:share` at Manage; an admin
+ * reading the project by oversight when Root's policy lets admins see every share
+ * (`adminsSeeAllShares`); Root's break-glass. A read collaborator gets 403, a stranger 404. Under
+ * act-as the account acted as decides, so the acting admin's oversight never applies (D-22).
+ */
+export async function requireShareListAccess(projectId: string, policy: Readonly<SharingPolicy>): Promise<true | NextResponse> {
+  const identity = await getAuthzIdentity()
+  if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const decision = await can(identity.principal, SHARE_PERMISSION, { projectId, actingAs: identity.actingAs })
+  if (decision.allowed) return true
+  if (decision.status === 404) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (decision.status === 400) return NextResponse.json({ error: 'projectId is required' }, { status: 400 })
+  if (!identity.actingAs) {
+    const access = await projectAccess({ userId: identity.principal.id }, projectId, { principal: identity.principal })
+    if (access?.via === 'break_glass' || (access?.via === 'oversight' && policy.adminsSeeAllShares)) return true
+  }
+  return forbiddenResponse(SHARE_PERMISSION)
+}
+
+/** Every share of the project, expired ones included (marked), oldest first. */
+export async function listShares(projectId: string): Promise<ShareView[]> {
+  const rows = await prisma.projectCollaborator.findMany({
+    where: { projectId },
+    select: SHARE_SELECT,
+    orderBy: { createdAt: 'asc' },
+  }) as ShareRecord[]
+  const at = now().getTime()
+  return rows.map(r => shareView(r, at))
+}
+
+class AlreadyShared extends Error {}
+
+const isUniqueViolation = (err: unknown) =>
+  Boolean(err && typeof err === 'object' && (err as { code?: unknown }).code === 'P2002')
+
+async function writeLookupRow(auth: PermissionContext, email: string, result: 'hit' | 'miss' | 'ambiguous', targetId: string | null): Promise<void> {
+  await writeAuditTx(prisma as unknown as AuditTx, {
+    ...actorOf(auth),
+    projectId: auth.access?.project.id ?? null,
+    permission: SHARE_PERMISSION,
+    action: 'project.share.lookup',
+    targetType: 'user',
+    targetId,
+    after: { result, emailSha256: emailSha256(email) },
+    source: 'api',
+  })
+}
+
+/** POST .../collaborators: share the project at Read with the account an email names. */
+export async function grantShare(auth: PermissionContext, policy: Readonly<SharingPolicy>, body: Record<string, unknown>): Promise<NextResponse> {
+  const at = now().getTime()
+  const email = parseEmail(body.email)
+  if ('response' in email) return email.response
+  const level = levelRefusal(body, policy, true)
+  if (level) return level
+  const rawData = 'rawData' in body ? parseRawData(body.rawData) : { value: false }
+  if ('response' in rawData) return rawData.response
+  const defaultExpiry = policy.defaultExpiryDays ? new Date(at + policy.defaultExpiryDays * DAY_MS) : null
+  const expiresAt = 'expiresAt' in body ? parseExpiry(body.expiresAt, at) : { value: defaultExpiry }
+  if ('response' in expiresAt) return expiresAt.response
+  const note = 'note' in body ? parseNote(body.note) : { value: null }
+  if ('response' in note) return note.response
+
+  const limit = takeShareLookup(auth.session.userId)
+  if (!limit.ok) {
+    const res = refusal(429, 'rate_limited', 'Too many people looked up. Try again in a minute.', { retryAfterSeconds: limit.retryAfterSeconds })
+    res.headers.set('Retry-After', String(limit.retryAfterSeconds))
+    return res
+  }
+  const accounts = await accountsByEmail(email.value)
+  if (accounts.length !== 1) {
+    await writeLookupRow(auth, email.value, accounts.length ? 'ambiguous' : 'miss', null)
+    return accounts.length
+      ? refusal(409, 'ambiguous_account', 'More than one account has this email in different letter case. Ask an administrator to fix the accounts first.')
+      : refusal(404, 'no_such_account', 'No account has this email.')
+  }
+  const recipient = accounts[0]
+  await writeLookupRow(auth, email.value, 'hit', recipient.id)
+  if (recipient.status !== 'active') {
+    return refusal(409, 'account_not_active', 'This account is not active (invited or disabled): it cannot receive a share.')
+  }
+  const ownerId = ownerOf(auth)
+  const self = recipientRefusal(recipient.id, { actorId: auth.effective.userId, ownerId })
+  if (self) return self
+
+  const projectId = auth.access!.project.id
+  let created: ShareRecord
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      const existing = await tx.projectCollaborator.findUnique({
+        where: { projectId_userId: { projectId, userId: recipient.id } },
+        select: SHARE_SELECT,
+      }) as ShareRecord | null
+      if (existing && (existing.expiresAt === null || existing.expiresAt.getTime() > at)) throw new AlreadyShared()
+      // An expired share the sweep has not removed yet gives nothing: a new grant replaces it.
+      if (existing) await tx.projectCollaborator.deleteMany({ where: { projectId, userId: recipient.id } })
+      const row = await tx.projectCollaborator.create({
+        data: {
+          projectId, userId: recipient.id, access: 'read', rawData: rawData.value, expiresAt: expiresAt.value,
+          note: note.value, grantedById: auth.effective.userId,
+        },
+        select: SHARE_SELECT,
+      }) as ShareRecord
+      await writeAuditTx(tx, {
+        ...actorOf(auth),
+        projectId,
+        permission: SHARE_PERMISSION,
+        action: 'project.share.grant',
+        targetType: 'user',
+        targetId: recipient.id,
+        ...(existing ? { before: auditView(existing) } : {}),
+        after: auditView(row),
+        source: 'api',
+      })
+      return row
+    })
+  } catch (err) {
+    if (err instanceof AlreadyShared || isUniqueViolation(err)) {
+      return refusal(409, 'already_shared', 'This person already holds a share of the project: change it instead.')
+    }
+    throw err
+  }
+  const view = shareView({ ...created, user: { id: recipient.id, name: recipient.name, email: recipient.email, status: recipient.status } }, at)
+  return NextResponse.json({ collaborator: view }, { status: 201 })
+}
+
+/** PATCH .../collaborators/[userId]: change a share's level, Raw data, expiry or note. */
+export async function updateShare(
+  auth: PermissionContext,
+  policy: Readonly<SharingPolicy>,
+  userId: string,
+  body: Record<string, unknown>,
+): Promise<NextResponse> {
+  const at = now().getTime()
+  const level = levelRefusal(body, policy, false)
+  if (level) return level
+  const patch: { rawData?: boolean; expiresAt?: Date | null; note?: string | null } = {}
+  if ('rawData' in body) {
+    const v = parseRawData(body.rawData)
+    if ('response' in v) return v.response
+    patch.rawData = v.value
+  }
+  if ('expiresAt' in body) {
+    const v = parseExpiry(body.expiresAt, at)
+    if ('response' in v) return v.response
+    patch.expiresAt = v.value
+  }
+  if ('note' in body) {
+    const v = parseNote(body.note)
+    if ('response' in v) return v.response
+    patch.note = v.value
+  }
+  if (!('access' in body) && Object.keys(patch).length === 0) {
+    return refusal(400, 'invalid_field', 'Name at least one of access, rawData, expiresAt and note.')
+  }
+  const access = auth.access
+  if (!access) throw new Error('[rbac] a share route checked no project')
+  const projectId = access.project.id
+  const outcome = await prisma.$transaction(async (tx) => {
+    const where = { projectId_userId: { projectId, userId } }
+    const before = await tx.projectCollaborator.findUnique({ where, select: SHARE_SELECT }) as ShareRecord | null
+    if (!before) return { kind: 'missing' as const }
+    const protectedRow = coOwnerRefusal(access, before)
+    if (protectedRow) return { kind: 'refused' as const, response: protectedRow }
+    const changed = (Object.keys(patch) as Array<keyof typeof patch>).filter((k) => {
+      const next = patch[k]
+      const prev = before[k]
+      return next instanceof Date || prev instanceof Date ? iso(next as Date | null) !== iso(prev as Date | null) : next !== prev
+    })
+    if (changed.length === 0) return { kind: 'done' as const, row: before }
+    const { count } = await tx.projectCollaborator.updateMany({ where: { projectId, userId }, data: patch })
+    if (count !== 1) return { kind: 'missing' as const }
+    const after = await tx.projectCollaborator.findUnique({ where, select: SHARE_SELECT }) as ShareRecord
+    await writeAuditTx(tx, {
+      ...actorOf(auth),
+      projectId,
+      permission: SHARE_PERMISSION,
+      action: 'project.share.update',
+      targetType: 'user',
+      targetId: userId,
+      before: auditView(before),
+      after: { ...auditView(after), ...(changed.includes('note') ? { noteChanged: true } : {}) },
+      source: 'api',
+    })
+    return { kind: 'done' as const, row: after }
+  })
+  if (outcome.kind === 'missing') return noSuchShare()
+  if (outcome.kind === 'refused') return outcome.response
+  return NextResponse.json({ collaborator: shareView(outcome.row, at) })
+}
+
+/** Asks the agent to close the person's sockets on the project; false when it did not confirm (logged). */
+async function closeSocketsOf(userId: string, projectId: string): Promise<boolean> {
+  const result = await closeAgentSockets({ userId, projectId, kinds: [...WS_SOCKETS], scope: 'access' })
+  return result.ok
+}
+
+/** Removes the share in one transaction with its audit row; false when there was none to remove. */
+async function removeShare(
+  projectId: string,
+  userId: string,
+  audit: { action: 'project.share.revoke' | 'project.share.leave'; actor: AuditActor; permission?: string },
+  guard?: (row: ShareRecord) => NextResponse | null,
+): Promise<'missing' | 'removed' | NextResponse> {
+  return prisma.$transaction(async (tx) => {
+    const row = await tx.projectCollaborator.findUnique({
+      where: { projectId_userId: { projectId, userId } },
+      select: SHARE_SELECT,
+    }) as ShareRecord | null
+    if (!row) return 'missing' as const
+    const refused = guard?.(row)
+    if (refused) return refused
+    // Conditional on the row being there: of two removals at once only one deletes it and audits.
+    const { count } = await tx.projectCollaborator.deleteMany({ where: { projectId, userId } })
+    if (count !== 1) return 'missing' as const
+    await writeAuditTx(tx, {
+      ...audit.actor,
+      projectId,
+      ...(audit.permission ? { permission: audit.permission } : {}),
+      action: audit.action,
+      targetType: 'user',
+      targetId: userId,
+      before: auditView(row),
+      source: 'api',
+    })
+    return 'removed' as const
+  })
+}
+
+/** DELETE .../collaborators/[userId]: the share ends now; the next request of that person gets 404. */
+export async function revokeShare(auth: PermissionContext, userId: string): Promise<NextResponse> {
+  const access = auth.access
+  if (!access) throw new Error('[rbac] a share route checked no project')
+  const projectId = access.project.id
+  const outcome = await removeShare(projectId, userId, { action: 'project.share.revoke', actor: actorOf(auth), permission: SHARE_PERMISSION },
+    (row) => coOwnerRefusal(access, row))
+  if (outcome === 'missing') return noSuchShare()
+  if (outcome instanceof NextResponse) return outcome
+  return NextResponse.json({ revoked: { projectId, userId }, socketsClosed: await closeSocketsOf(userId, projectId) })
+}
+
+/** POST .../leave: the person signed in gives up their own share of the project. */
+export async function leaveShare(eff: EffectiveUser, projectId: string): Promise<NextResponse> {
+  const outcome = await removeShare(projectId, eff.userId, { action: 'project.share.leave', actor: await auditActor(eff) })
+  if (outcome === 'missing') return noSuchShare()
+  if (outcome instanceof NextResponse) return outcome
+  return NextResponse.json({ left: { projectId }, socketsClosed: await closeSocketsOf(eff.userId, projectId) })
+}

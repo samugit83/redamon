@@ -19,6 +19,11 @@
  * share or break-glass row is read (nor, with the switch off, the policy), and the lists' filter is
  * Phase 3's `{userId}`.
  *
+ * Step 4.4 adds the share routes (collaborators, change, revoke, leave), whose writers live in
+ * projectShares.ts: with sharing not in force their policy gate answers null, reading no policy with
+ * the switch off, so every share route answers 404 having read no share (each route test pins the
+ * 404 in the three states, and that no share is read or written).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/sharing.flags.off.test.ts
  * @vitest-environment node
  */
@@ -58,6 +63,7 @@ vi.mock('@/lib/prisma', () => ({
 
 import { rbacFlags, setFlagsForTests } from './flags'
 import { clearSharingPolicyCacheForTests, sharingInForce, sharingPolicyInForce } from './sharingPolicy'
+import { sharingPolicyForRoutes } from './projectShares'
 import { projectAccess } from './projectAccess'
 import { ownedProjectsWhere, visibleProjectIds, visibleProjectsWhere } from './visibleProjects'
 import { clearPrincipalCacheForTests } from './principal'
@@ -137,6 +143,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/lib/authz/expirySweep.ts',
       // Step 4.3: reads a share and the break-glass rows only with sharing in force (tests below).
       'src/lib/authz/projectAccess.ts',
+      // Step 4.4: the share writers, behind the share routes' gate (sharingPolicyForRoutes, below).
+      'src/lib/authz/projectShares.ts',
       // Step 4.2: the policy's shape and reader; the reader reads only with the switch on.
       'src/lib/authz/sharingPolicy.ts',
     ]
@@ -157,6 +165,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/lib/authz/expirySweep.ts',
       // Step 4.3: projectAccess() and the lists' share filter, both only with sharing in force (tests below).
       'src/lib/authz/projectAccess.ts',
+      // Step 4.4: the share writers, reached only past the share routes' gate (below).
+      'src/lib/authz/projectShares.ts',
       'src/lib/authz/visibleProjects.ts',
     ]
     const ACCESSORS = /\.(projectCollaborator|projectBreakGlass)\.|\b(collaborators|collaborations|breakGlass)\s*:\s*\{/
@@ -209,5 +219,39 @@ describe('projectAccess() and the project lists with sharing not in force (step 
       expect(ownedProjectsWhere({ userId: 'u1' })).toEqual({ userId: 'u1' })
     }
     expect(instanceFindUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('the share routes with sharing not in force (step 4.4)', () => {
+  const NOT_IN_FORCE: Array<[string, Parameters<typeof setFlagsForTests>[0], unknown]> = [
+    ['every switch off', {}, { enabled: true }],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }, { enabled: true }],
+    ['the switch on, the policy disabled (the stored {} after the upgrade)', { identity: true, permissions: true, sharing: true }, {}],
+  ]
+
+  test.each(NOT_IN_FORCE)('%s: the routes\' gate answers null (404), no share read, no policy read with the switch off', async (_what, flags, stored) => {
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    instanceFindUnique.mockResolvedValue({ id: 'instance', sharingPolicy: stored } as never)
+    expect(await sharingPolicyForRoutes()).toBeNull()
+    expect(await sharingPolicyForRoutes({ fresh: true })).toBeNull()
+    expect(db.collaboratorFindUnique).not.toHaveBeenCalled()
+    if (!rbacFlags().sharing) expect(instanceFindUnique).not.toHaveBeenCalled()
+    instanceFindUnique.mockReset().mockResolvedValue({ id: 'instance', sharingPolicy: { enabled: true } } as never)
+  })
+
+  test('each share route answers 404 before anything else while the switch is off', () => {
+    const ROUTES = [
+      'src/app/api/projects/[id]/collaborators/route.ts',
+      'src/app/api/projects/[id]/collaborators/[userId]/route.ts',
+      'src/app/api/projects/[id]/leave/route.ts',
+    ]
+    for (const file of ROUTES) {
+      const handlers = readFileSync(path.join(WEBAPP, file), 'utf8').split(/^export const /m).slice(1)
+      expect(handlers.length, file).toBeGreaterThan(0)
+      for (const handler of handlers) {
+        expect(handler, `${file} ${handler.slice(0, 6)}`).toMatch(/^[A-Z]+ = withRouteErrors\([^\n]*\n\s*(?:[^\n]*\n\s*){0,3}if \(!rbacFlags\(\)\.sharing\) return routeNotFound\(\)/)
+      }
+    }
   })
 })
