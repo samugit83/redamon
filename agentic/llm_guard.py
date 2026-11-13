@@ -327,7 +327,8 @@ def require_master_or_run_credential(aud: str, *, billed: bool = False):
     be verified without it. A credential of a LIVE_RUN_AUDIENCES audience must
     also name a run that is still open (`set_run_liveness`), else `closed`; this
     runs before `billed` adds the LLM token bucket and daily cap, counted against
-    the credential's tenant (the master key's: the body user).
+    the credential's tenant and, when it names another person (`sub`), that person
+    too (the master key's: the body user).
 
     One callable per (aud, billed), so a route can declare it in `dependencies`
     and also take its value as a parameter: FastAPI solves it once per request.
@@ -365,7 +366,13 @@ def require_master_or_run_credential(aud: str, *, billed: bool = False):
             if live is None or not live(claims):
                 raise run_credential_refusal("closed", aud)
         if billed:
+            # The owner's key pays; the person is who spends it (C1). Both budgets count
+            # the call and the stricter refuses, so a collaborator neither drains the
+            # owner unseen nor escapes their own cap on someone else's project.
             _enforce_llm_limits(request, claims["ten"])
+            actor = run_credential_actor(claims)
+            if actor != claims["ten"]:
+                _enforce_llm_limits(request, actor)
         return claims
 
     gate.__name__ = gate.__qualname__ = f"require_master_or_run_credential_{aud}{'_billed' if billed else ''}"
@@ -373,6 +380,12 @@ def require_master_or_run_credential(aud: str, *, billed: bool = False):
     gate.run_credential_billed = billed
     _RUN_GATES[(aud, billed)] = gate
     return gate
+
+
+def run_credential_actor(claims: dict) -> str:
+    """The person a run credential acts for: its `sub`, else its tenant (a credential
+    minted for the project's owner, or before credentials named a person)."""
+    return claims.get("sub") or claims["ten"]
 
 
 def run_credential_claims(value) -> Optional[dict]:

@@ -3571,10 +3571,14 @@ async def text_to_cypher(body: TextToCypherRequest, run_cred: Optional[dict] = D
     credential (redagraph `ask`) both are the credential's tenant, and the body's
     ids are ignored. The scanner key alone is refused.
     """
+    from llm_guard import run_credential_actor
+
     cred = run_credential_claims(run_cred)
     if cred:
         user_id = tenant_user_id = cred["ten"]
         project_id = cred["pid"]
+        logger.info("text-to-cypher: run-credential tenant=%s actor=%s project=%s",
+                    tenant_user_id, run_credential_actor(cred), project_id)
     else:
         user_id, tenant_user_id, project_id = body.user_id, _graph_tenant(body), body.project_id
     try:
@@ -5771,9 +5775,12 @@ def _terminal_run_credential(claims: dict) -> tuple:
     run_id = uuid.uuid4().hex
     try:
         # The project's owner (`ten`): redagraph reads the project's graph, which carries
-        # the owner's id whoever opened the terminal (RBAC T15).
+        # the owner's id whoever opened the terminal (RBAC T15). The person who opened it
+        # (`sub`, and `act` for an admin acting as them) is who a `redagraph ask` spends
+        # the owner's key for (C1).
         return mint_run_credential("graph", ticket_tenant(claims), str(claims["pid"]),
-                                   run_id, TERMINAL_TTL_SECONDS), run_id
+                                   run_id, TERMINAL_TTL_SECONDS,
+                                   actor=str(claims["sub"]), real_actor=claims.get("act") or None), run_id
     except (CredentialRefused, ValueError) as e:
         logger.warning("[rbac] terminal run credential not minted: %s", getattr(e, "code", type(e).__name__))
         return "", None

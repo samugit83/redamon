@@ -13,7 +13,9 @@ run or a job (RBAC T15).
   the scanner key. The agent's /llm/* and /jev/* take the user from it.
 
 Format: b64url(canonical JSON).b64url(HMAC-SHA256), the REDAMON_CTX tag's shape
-and its base64url helpers. Claims: aud, ten, pid, run or job, exp (seconds). The
+and its base64url helpers. Claims: aud, ten, pid, run or job, exp (seconds); a run
+credential may also name the person it acts for (sub) and an admin acting as them
+(act), while `ten` stays the project's owner, whose graph and keys it uses. The
 key is hmac(INTERNAL_API_KEY, label), one label per kind, so a run credential
 never verifies as a job credential or a ctx tag, nor the other way round. A weak
 master key (unset or "changeme") mints and verifies nothing.
@@ -43,7 +45,10 @@ TRAFFIC_TTL_SECONDS = 15 * 60
 # working session; the owner may shorten it.
 TERMINAL_TTL_SECONDS = 12 * 60 * 60
 
-_CLAIMS = ("aud", "ten", "pid", "run", "job", "exp")
+_CLAIMS = ("aud", "ten", "sub", "act", "pid", "run", "job", "exp")
+# Only a run credential names a person; the job credential's twins (webapp,
+# orchestrator) sign the other claims alone.
+_PERSON_CLAIMS = ("sub", "act")
 _MAX_TOKEN_LENGTH = 4096
 
 
@@ -121,27 +126,36 @@ def _run_key() -> bytes:
 
 
 def mint_run_credential(aud: str, tenant: str, project_id: str, run_id: str, ttl_seconds: int,
-                        now: Optional[float] = None) -> str:
+                        now: Optional[float] = None, actor: Optional[str] = None,
+                        real_actor: Optional[str] = None) -> str:
+    """`actor` is the person the run acts for (attribution, consent), `real_actor` an
+    admin acting as them; `tenant` is the project's owner either way."""
     if aud not in RUN_AUDIENCES:
         raise ValueError(f"not a run credential audience: {aud!r}")
     if not tenant or not project_id or not run_id:
         raise ValueError("a run credential needs its tenant, project and run")
     key = _run_key()
     issued = int(time.time() if now is None else now)
-    return mint({"aud": aud, "ten": tenant, "pid": project_id, "run": run_id,
-                 "exp": issued + int(ttl_seconds)}, key)
+    return mint({"aud": aud, "ten": tenant, "sub": actor or None, "act": real_actor or None,
+                 "pid": project_id, "run": run_id, "exp": issued + int(ttl_seconds)}, key)
 
 
 def verify_run_credential(token: Any, aud: str, now: Optional[float] = None) -> Dict[str, Any]:
     claims = verify(token, _run_key(), aud, now)
     if not isinstance(claims.get("run"), str) or not claims["run"] or "job" in claims:
         raise CredentialRefused("missing_claims")
+    for name in _PERSON_CLAIMS:
+        if name in claims and (not isinstance(claims[name], str) or not claims[name]):
+            raise CredentialRefused("missing_claims")
     return claims
 
 
 def verify_job_credential(token: Any, now: Optional[float] = None) -> Dict[str, Any]:
     """The claims of a valid job credential (the webapp mints them; nothing here does)."""
     claims = verify(token, _master_derived_key(JOB_CREDENTIAL_LABEL), JOB_AUDIENCE, now)
+    if any(name in claims for name in _PERSON_CLAIMS):
+        # What the twins' canonical form answers for a claim they do not sign.
+        raise CredentialRefused("malformed")
     if not isinstance(claims.get("job"), str) or not claims["job"] or "run" in claims:
         raise CredentialRefused("missing_claims")
     return claims
