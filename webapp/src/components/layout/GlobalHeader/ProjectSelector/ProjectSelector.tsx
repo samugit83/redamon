@@ -2,9 +2,14 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { usePathname } from 'next/navigation'
-import { ChevronDown, FolderOpen, Plus, Settings } from 'lucide-react'
+import { ChevronDown, FolderOpen, Plus, Settings, Share2 } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
+import { useOptionalAuth } from '@/providers/AuthProvider'
 import { useProjects, type ProjectListItem } from '@/hooks/useProjects'
+import { useRefusal } from '@/hooks/useRefusal'
+import { ShareDialog } from '@/components/sharing/ShareDialog'
+import { LeaveShareButton } from '@/components/sharing/LeaveShareButton'
+import { shareActions } from '@/components/sharing/sharePresets'
 import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
 import { useGuardedRouter, useNavigationGuard } from '@/context/NavigationGuardContext'
 import styles from './ProjectSelector.module.css'
@@ -15,8 +20,13 @@ export function ProjectSelector() {
   const pathname = usePathname()
   const [isOpen, setIsOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
-  const { currentProject, setCurrentProject, userId } = useProject()
-  const { data: projects } = useProjects(userId || undefined)
+  const { currentProject, setCurrentProject, userId, checkAccessNow } = useProject()
+  const { data: projects, refetch } = useProjects(userId || undefined)
+  // Step 4.12: the open project's share control, only while sharing is in force (DV-30).
+  const sharingInForce = useOptionalAuth()?.user?.sharing?.enabled === true
+  const actions = shareActions(currentProject, sharingInForce)
+  const shareRefusal = useRefusal('project:share', currentProject?.id)
+  const [shareOpen, setShareOpen] = useState(false)
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -84,7 +94,34 @@ export function ProjectSelector() {
             <Settings size={13} />
           </button>
         )}
+        {currentProject && actions.share && (
+          <button
+            type="button"
+            className={styles.settingsIconButton}
+            onClick={() => { if (!shareRefusal) setShareOpen(true) }}
+            title={shareRefusal ? shareRefusal.text : 'Share this project'}
+            aria-label={`Share ${currentProject.name}`}
+            aria-disabled={shareRefusal ? true : undefined}
+          >
+            <Share2 size={13} />
+          </button>
+        )}
+        {currentProject && actions.leave && (
+          // The open project: the access check that follows leads out and says the access ended.
+          <LeaveShareButton
+            project={{ id: currentProject.id, name: currentProject.name }}
+            className={styles.settingsIconButton}
+            announce={false}
+            onLeft={() => {
+              void checkAccessNow()
+              void refetch()
+            }}
+          />
+        )}
       </div>
+      {shareOpen && currentProject && actions.share && (
+        <ShareDialog project={{ id: currentProject.id, name: currentProject.name }} onClose={() => setShareOpen(false)} />
+      )}
 
       {isOpen && (
         <div className={styles.dropdown}>

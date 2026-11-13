@@ -669,3 +669,41 @@ describe('the admin projects and shares overviews with sharing not in force (ste
     expect(src).toMatch(/openReadOnly: inForce && !actingAs,\n\s*breakGlass: root && inForce && !actingAs,/)
   })
 })
+
+// Step 4.12: the share dialog and Leave. With sharing not in force no share control is offered: the
+// projects page and the header ask shareActions() with /api/auth/me's `sharing.enabled` (absent with the
+// switch off, false with the policy disabled), which then answers neither, and the dialog is mounted only
+// from a Share click; the routes it would call answer 404 (the 4.4 block above). The passwordless offer
+// of the two create forms changes only with sharing in force (ID-12; page.sharing.test.tsx and
+// page.share.test.tsx render both states).
+describe('the share dialog and Leave with sharing not in force (step 4.12)', () => {
+  test('shareActions offers neither Share nor Leave, whatever the row says', async () => {
+    const { shareActions } = await import('@/components/sharing/sharePresets')
+    const owner = { level: 'owner', toggles: { rawData: true }, via: 'owner', owner: { name: 'o', email: 'o@example.test' } } as const
+    const share = { level: 'read', toggles: { rawData: true }, via: 'share', owner: { name: 'o', email: 'o@example.test' } } as const
+    for (const row of [{ myAccess: owner }, { myAccess: share }, {}, null]) {
+      expect(shareActions(row, false)).toEqual({ share: false, leave: false })
+    }
+  })
+
+  test('the projects page and the header ask it with sharing in force, and mount the dialog only from Share', () => {
+    const page = readFileSync(path.join(WEBAPP, 'src/app/projects/page.tsx'), 'utf8')
+    expect(page).toMatch(/const sharingInForce = auth\?\.user\?\.sharing\?\.enabled === true/)
+    expect(page).toMatch(/const actions = shareActions\(project, sharingInForce\)/)
+    expect(page).toMatch(/\{shareTarget && <ShareDialog /)
+    expect(page.match(/setShareTarget\(\{/g)).toHaveLength(1)
+    const header = readFileSync(path.join(WEBAPP, 'src/components/layout/GlobalHeader/ProjectSelector/ProjectSelector.tsx'), 'utf8')
+    expect(header).toMatch(/const sharingInForce = useOptionalAuth\(\)\?\.user\?\.sharing\?\.enabled === true/)
+    expect(header).toMatch(/const actions = shareActions\(currentProject, sharingInForce\)/)
+    expect(header).toMatch(/\{shareOpen && currentProject && actions\.share && \(/)
+  })
+
+  test('the create forms keep offering passwordless accounts unless sharing is in force', () => {
+    const users = readFileSync(path.join(WEBAPP, 'src/app/settings/users/page.tsx'), 'utf8')
+    expect(users).toMatch(/const sharingInForce = authUser\?\.sharing\?\.enabled === true/)
+    expect(users).toMatch(/if \(sharingInForce && !password\) \{/)
+    const page = readFileSync(path.join(WEBAPP, 'src/app/projects/page.tsx'), 'utf8')
+    expect(page).toMatch(/\{canCreateUsers && \(sharingInForce \? \(/)
+    expect(page).toMatch(/\{canCreateUsers && showUserModal && !sharingInForce && \(/)
+  })
+})

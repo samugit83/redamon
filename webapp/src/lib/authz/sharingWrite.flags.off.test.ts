@@ -192,6 +192,9 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
 
   test('no production code reads the write switch outside the named files', () => {
     const WRITE_SWITCH_READERS = [
+      // Step 4.12: the share dialog offers the Read + Write presets disabled whatever the switch says;
+      // off, their note reads "Coming when write sharing is on" (sharePresets.test.ts, ShareDialog.test.tsx).
+      'src/components/sharing/sharePresets.ts',
       // The switch itself and its chain (sharingWrite requires sharing).
       'src/lib/authz/flags.ts',
       // Step 5.2a: a share stored at write is `write` only with the switch on (through maxShareLevel), tests above.

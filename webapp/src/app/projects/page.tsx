@@ -2,17 +2,21 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, FolderOpen, Users, RefreshCw, Trash2, Upload, AlertTriangle, ShieldAlert, ShieldOff } from 'lucide-react'
+import { Plus, FolderOpen, Users, RefreshCw, Trash2, Upload, AlertTriangle, ShieldAlert, ShieldOff, Share2 } from 'lucide-react'
 import Link from 'next/link'
 import { useProjects, useDeleteProject, type ProjectListItem } from '@/hooks/useProjects'
 import { useUsers, useCreateUser, useDeleteUser } from '@/hooks/useUsers'
 import { useProject } from '@/providers/ProjectProvider'
 import { useOptionalAuth } from '@/providers/AuthProvider'
 import { useCan, useRbacFlags } from '@/hooks/useCan'
+import { useRefusalCheck } from '@/hooks/useRefusal'
 import { accountTypeFor } from '@/components/auth/IdentityLabel'
 import type { ActAsDialogTarget } from '@/components/auth/ActAsDialog'
 import { BreakGlassDialog, type BreakGlassInput, type BreakGlassTarget } from '@/components/auth/BreakGlassDialog'
 import { useOversightProjects } from '@/hooks/useOversightProjects'
+import { ShareDialog, type ShareDialogProject } from '@/components/sharing/ShareDialog'
+import { LeaveShareButton } from '@/components/sharing/LeaveShareButton'
+import { shareActions } from '@/components/sharing/sharePresets'
 import { ProjectCard } from '@/components/projects/ProjectCard'
 import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
 import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
@@ -33,7 +37,7 @@ const OVERSIGHT_FILTER: { value: ListFilter; label: string } = { value: 'oversig
 
 export default function ProjectsPage() {
   const router = useRouter()
-  const { userId, setUserId, setCurrentProject } = useProject()
+  const { userId, setUserId, setCurrentProject, currentProject, checkAccessNow } = useProject()
   const { alertError, dangerConfirm, confirm } = useAlertModal()
   const toast = useToast()
   // The user bar is the directory's (UI-03): members never see it.
@@ -81,6 +85,10 @@ export default function ProjectsPage() {
   ]
   const oversight = useOversightProjects(showOversight && listFilter === 'oversight')
   const [glassTarget, setGlassTarget] = useState<BreakGlassTarget | null>(null)
+  // Step 4.12: the share dialog of one of the person's own projects, and the refusal of a Share button
+  // up front (an owner whose set lacks project:share).
+  const [shareTarget, setShareTarget] = useState<ShareDialogProject | null>(null)
+  const refusalOf = useRefusalCheck()
 
   const actAsTarget = (id: string): ActAsDialogTarget | undefined => {
     const picked = users?.find(u => u.id === id)
@@ -232,6 +240,45 @@ export default function ProjectsPage() {
     )
   }
 
+  // Leaving the open project asks its access at once: the provider then leads out and says the
+  // access ended, so no toast of our own.
+  const handleLeft = (project: ProjectListItem) => {
+    if (currentProject?.id === project.id) void checkAccessNow?.()
+    void refetch()
+  }
+
+  // Step 4.12: Share on the person's own card, Leave on a card shared with them, only while sharing
+  // is in force (shareActions); each stops its click before the card opens the project.
+  const shareControl = (project: ProjectListItem) => {
+    const actions = shareActions(project, sharingInForce)
+    if (actions.leave) {
+      return (
+        <LeaveShareButton
+          project={{ id: project.id, name: project.name }}
+          announce={currentProject?.id !== project.id}
+          onLeft={() => handleLeft(project)}
+        />
+      )
+    }
+    if (!actions.share) return undefined
+    const refusal = refusalOf('project:share', project.myAccess)
+    return (
+      <button
+        type="button"
+        className="iconButton"
+        title={refusal ? refusal.text : 'Share this project'}
+        aria-label={`Share ${project.name}`}
+        aria-disabled={refusal ? true : undefined}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (!refusal) setShareTarget({ id: project.id, name: project.name })
+        }}
+      >
+        <Share2 size={14} />
+      </button>
+    )
+  }
+
   // A shared project's card names its owner and the person's level, and offers no delete (the
   // owner's alone), wherever it is listed.
   const renderCard = (project: ProjectListItem) => {
@@ -246,6 +293,7 @@ export default function ProjectsPage() {
         createdAt={project.createdAt}
         sharedBy={sharedRow ? sharedByLabel(project) : undefined}
         accessLabel={sharedRow && project.myAccess ? accessBadge(project.myAccess) : undefined}
+        extraActions={shareControl(project)}
         onSelect={() => handleSelectProject(project)}
         onDelete={sharedRow ? undefined : () => handleDeleteProject(project.id)}
       />
@@ -318,7 +366,18 @@ export default function ProjectsPage() {
               </option>
             ))}
           </select>
-          {canCreateUsers && (
+          {canCreateUsers && (sharingInForce ? (
+            // ID-12: with sharing in force no passwordless account is offered, and this quick form
+            // makes nothing else; the Users page creates one with a password or an invite.
+            <Link
+              href="/settings/users"
+              className="secondaryButton"
+              title="With sharing on, accounts are created with a password or an invite on the Users page"
+            >
+              <Plus size={12} />
+              New User
+            </Link>
+          ) : (
             <button
               className="secondaryButton"
               onClick={() => setShowUserModal(true)}
@@ -326,7 +385,7 @@ export default function ProjectsPage() {
               <Plus size={12} />
               New User
             </button>
-          )}
+          ))}
           {canDeleteUsers && userId && (
             <button
               className="iconButton"
@@ -437,6 +496,8 @@ export default function ProjectsPage() {
         </div>
       )}
 
+      {shareTarget && <ShareDialog project={shareTarget} onClose={() => setShareTarget(null)} />}
+
       {glassTarget && (
         <BreakGlassDialog
           isOpen
@@ -455,7 +516,7 @@ export default function ProjectsPage() {
         />
       )}
 
-      {canCreateUsers && showUserModal && (
+      {canCreateUsers && showUserModal && !sharingInForce && (
         <div className={styles.modalOverlay} onClick={() => setShowUserModal(false)}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <h2 className={styles.modalTitle}>Create New User</h2>

@@ -75,6 +75,9 @@ export default function UsersPage() {
   const [setChoice, setSetChoice] = useState<InitialSetChoice>(NO_INITIAL_SET)
 
   const wantsPasswordChange = searchParams.get('changePassword') === 'true'
+  // Step 4.12 (ID-12, D-12): with sharing in force the create form stops offering passwordless
+  // (managed) accounts; the route still takes one (OQ-12).
+  const sharingInForce = authUser?.sharing?.enabled === true
 
   // Handle ?changePassword=true from UserSelector for standard users
   useEffect(() => {
@@ -120,6 +123,10 @@ export default function UsersPage() {
     setFormError('')
     if (!name || !email) {
       setFormError('Name and email are required')
+      return
+    }
+    if (sharingInForce && !password) {
+      setFormError('Enter a password: with sharing on, every new account signs in with its own password')
       return
     }
     if (password) {
@@ -559,18 +566,23 @@ export default function UsersPage() {
             />
           </div>
           <div className={styles.field}>
-            <label className={styles.label} htmlFor="create-user-password">Password</label>
+            <label className={styles.label} htmlFor="create-user-password">{sharingInForce ? 'Password *' : 'Password'}</label>
             <input
               id="create-user-password"
               type="password"
               className={styles.input}
               value={password}
               onChange={e => setPassword(e.target.value)}
-              placeholder="Leave empty for passwordless user"
+              placeholder={sharingInForce ? undefined : 'Leave empty for passwordless user'}
+              required={sharingInForce}
               autoComplete="new-password"
               aria-describedby={passwordPolicy ? 'create-user-password-hint create-user-password-policy' : 'create-user-password-hint'}
             />
-            <span id="create-user-password-hint" className={styles.hint}>Passwordless users can only be accessed via admin switching</span>
+            <span id="create-user-password-hint" className={styles.hint}>
+              {sharingInForce
+                ? 'Sharing is on: every new account signs in with its own password, so projects are shared with a person, not reached by switching into an account.'
+                : 'Passwordless users can only be accessed via admin switching'}
+            </span>
             {passwordPolicy && <span id="create-user-password-policy" className={styles.hint}>{passwordPolicy.description}</span>}
           </div>
           {password && (
