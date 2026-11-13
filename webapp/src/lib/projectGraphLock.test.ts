@@ -93,3 +93,22 @@ describe('a version save or an activation', () => {
     expect(await withGraphStartLock('p1', async () => 'start')).toEqual({ acquired: true, value: 'start' })
   })
 })
+
+// Step 5.12: an ownership transfer holds the lock alone, like a save or an activation.
+describe('the ownership transfer (step 5.12)', () => {
+  test('a start waiting or running refuses the transfer, and a transfer refuses every start and activation', async () => {
+    const gate = deferred()
+    const start = withGraphStartLock('p-transfer', () => gate.promise)
+    expect(await tryWithGraphLock('p-transfer', 'transfer', async () => 'moved')).toEqual({ acquired: false, heldBy: 'scan-start' })
+    gate.resolve()
+    await start
+    const moving = deferred()
+    const transfer = tryWithGraphLock('p-transfer', 'transfer', () => moving.promise)
+    expect(graphLockHolder('p-transfer')).toBe('transfer')
+    expect(await withGraphStartLock('p-transfer', async () => 'started')).toEqual({ acquired: false, heldBy: 'transfer' })
+    expect(await tryWithGraphLock('p-transfer', 'activation', async () => 'swapped')).toEqual({ acquired: false, heldBy: 'transfer' })
+    moving.resolve()
+    await transfer
+    expect(graphLockHolder('p-transfer')).toBeNull()
+  })
+})

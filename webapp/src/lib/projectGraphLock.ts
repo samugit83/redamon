@@ -30,9 +30,13 @@
  *
  * The activation's row lock (activationLock.ts) stays: it is what the agent, the
  * mute routes and the other scanners read to learn that a swap is in flight.
+ *
+ * An ownership transfer (step 5.12) holds this lock alone too, from its live-work
+ * check through the Postgres move: a start that already passed its checks would
+ * otherwise spawn a scan with the old owner baked in after the graph moved.
  */
 
-export type GraphLockHolder = 'scan-start' | 'version-save' | 'activation'
+export type GraphLockHolder = 'scan-start' | 'version-save' | 'activation' | 'transfer'
 export type ExclusiveGraphOp = Exclude<GraphLockHolder, 'scan-start'>
 
 export type GraphLockResult<T> =
@@ -44,6 +48,7 @@ export const GRAPH_LOCK_HOLDER_PHRASE: Record<GraphLockHolder, string> = {
   'scan-start': 'a scan is being started',
   'version-save': 'the current graph is being saved as a version',
   activation: 'a version activation is in progress',
+  transfer: "the project's ownership is being transferred",
 }
 
 interface ProjectGraphLock {

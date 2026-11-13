@@ -89,7 +89,8 @@ describe('activation re-runs the hostname policy marker', () => {
     expect((await res.json()).hostnamePolicyMarked).toBe(true)
     expect(h.order).toEqual(['clear', 'restore', 'pointer', 'mark', 'invalidate'])
     expect(h.mark).toHaveBeenCalledWith('p1', 'owner', ROW)
-    const query = h.findProject.mock.calls[0][0]
+    // The first read is the owner under the lock (step 5.12); the marker's read names the policy columns.
+    const query = h.findProject.mock.calls.map(([q]) => q).find((q) => q.select?.ipMode)
     expect(query.where).toEqual({ id: 'p1' })
     expect(query.select).toMatchObject({ userId: true, ipMode: true, ipHostnameMode: true,
       ipHostnameInclude: true, ipHostnameExclude: true })

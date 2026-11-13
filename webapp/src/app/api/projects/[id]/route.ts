@@ -12,6 +12,7 @@ import { canonicalJson } from '@/lib/fingerprint'
 import { field, fieldsWhere, rescopableFields } from '@/lib/reconSettings/registry'
 import { numericBoundsRefusal } from '@/lib/reconSettings/numericBounds'
 import { STALE_SAVE_MESSAGE } from '@/lib/projectVersion'
+import { ACTIVATION_STATE_TRANSFERRING, holdOf, transferInProgressResponse } from '@/lib/graphHold'
 import { JEV_ENGINE_SELECT, guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
 import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
 import { refreshActiveRecordingScope } from '@/lib/recordingSession'
@@ -332,8 +333,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         ipHostnamePassiveExpand: true, ipHostnameScanAllConfirmed: true, ipHostnameMaxScanned: true,
         ipHostnamePassiveMaxNames: true,
         ...JEV_ENGINE_SELECT,
+        activationState: true, activationStartedAt: true,
       },
     })
+    // An ownership transfer moves the project and clears the settings that name the old owner's own
+    // providers and templates (step 5.12): a save landing meanwhile could write one back.
+    if (holdOf(existing) === ACTIVATION_STATE_TRANSFERRING) return transferInProgressResponse()
     // The form sends the toggles with every whole-row save. Unchanged, they are neither
     // validated nor written: a stored value the rules now refuse (a config saved without
     // builtIn, a quarantined skill left on by a race) must not block an unrelated edit.

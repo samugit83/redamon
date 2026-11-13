@@ -36,6 +36,7 @@ const h = vi.hoisted(() => ({
   closeSession: vi.fn(),
   nodeFilterWriter: vi.fn(),
   sweep: vi.fn(),
+  projectFind: vi.fn(),
 }))
 
 vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
@@ -61,6 +62,7 @@ vi.mock('@/lib/prisma', () => ({
   default: {
     $transaction: (...a: unknown[]) => h.transaction(...a),
     scanVersion: { update: h.txUpdate, updateMany: h.txUpdateMany },
+    project: { findUnique: (...a: unknown[]) => h.projectFind(...a) },
   },
 }))
 vi.mock('@/lib/scanSnapshot', async orig => ({
@@ -112,6 +114,7 @@ beforeEach(() => {
   h.clearGraph.mockResolvedValue(undefined)
   h.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
     fn({ scanVersion: { update: h.txUpdate, updateMany: h.txUpdateMany } }))
+  h.projectFind.mockResolvedValue({ userId: 'owner' })
 })
 
 describe('authorization', () => {
@@ -264,14 +267,40 @@ describe('the swap', () => {
     const res = await POST(req(), params('p1', 'v1'))
     expect(res.status).toBe(200)
     expect(order).toEqual(['clear', 'restore', 'sweep'])
-    expect(h.restore.mock.calls[0][3]).toEqual({ projectId: 'p1', referenceLinks: links })
+    expect(h.restore.mock.calls[0][3]).toEqual({ projectId: 'p1', userId: 'owner', referenceLinks: links })
   })
 
-  test('the restore keeps the project id (no re-owning) and the cache is invalidated', async () => {
+  // Step 5.12 (SH-15, by design): the restore re-owns every node to the project's owner as read under the
+  // lock. For a project that never changed owner the snapshot's stored user_id is that owner already.
+  test("the restore stamps the project id and the project's owner, and the cache is invalidated", async () => {
     await POST(req(), params('p1', 'v1'))
     const opts = h.restore.mock.calls[0][3]
-    expect(opts).toEqual({ projectId: 'p1' })
+    expect(opts).toEqual({ projectId: 'p1', userId: 'owner' })
+    expect(h.projectFind).toHaveBeenCalledWith({ where: { id: 'p1' }, select: { userId: true } })
     expect(h.invalidate).toHaveBeenCalledWith('p1')
+  })
+
+  test('activating a pre-transfer version restores under the new owner (step 5.12)', async () => {
+    // The guard read the person activating; the row, read under the lock a transfer also takes, names
+    // the owner the project was given to. The snapshot's nodes carry the old owner's user_id.
+    h.projectFind.mockResolvedValue({ userId: 'new-owner' })
+    h.load.mockResolvedValue({
+      nodes: [{ labels: ['IP'], properties: { user_id: 'old-owner' }, _exportId: 'n1' }], relationships: [],
+    })
+    const res = await POST(req(), params('p1', 'v1'))
+    expect(res.status).toBe(200)
+    expect(h.restore.mock.calls[0][3]).toEqual({ projectId: 'p1', userId: 'new-owner' })
+  })
+
+  test('an owner row that cannot be read under the lock falls back to the owner the guard read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    h.projectFind.mockRejectedValue(Object.assign(new Error('pg down'), { code: 'P1001' }))
+    expect((await POST(req(), params('p1', 'v1'))).status).toBe(200)
+    expect(h.restore.mock.calls[0][3]).toEqual({ projectId: 'p1', userId: 'owner' })
+    expect(String(warn.mock.calls[0][0])).toContain('P1001')
+    h.projectFind.mockResolvedValue(null)
+    expect((await POST(req(), params('p1', 'v1'))).status).toBe(200)
+    expect(h.restore.mock.calls[1][3]).toEqual({ projectId: 'p1', userId: 'owner' })
   })
 
   test('the pointer move demotes every other current and promotes the target', async () => {

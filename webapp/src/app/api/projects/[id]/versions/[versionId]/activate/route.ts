@@ -38,7 +38,7 @@ import { acquireActivationLock, releaseActivationLock } from '@/lib/activationLo
 import { GRAPH_LOCK_HOLDER_PHRASE, tryWithGraphLock } from '@/lib/projectGraphLock'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { describeNodeFilterWriter } from '@/lib/nodeFilterRun'
-import { internalError, withRouteErrors } from '@/lib/routeErrors'
+import { internalError, safeErrorCode, withRouteErrors } from '@/lib/routeErrors'
 
 interface RouteParams {
   params: Promise<{ id: string; versionId: string }>
@@ -75,7 +75,8 @@ export const POST = withRouteErrors('Activation failed', async (request: NextReq
   // S-4: held from the writer check through the pointer move. A scan start that
   // passed its own activation check, or a version save, would otherwise freeze
   // the half-restored graph, and the start would spawn a scan into the swap.
-  const held = await tryWithGraphLock(id, 'activation', () => activateUnderLock(id, versionId, target, eff.userId))
+  const guardOwnerId = auth.access?.project.userId ?? eff.userId
+  const held = await tryWithGraphLock(id, 'activation', () => activateUnderLock(id, versionId, target, eff.userId, guardOwnerId))
   if (held.acquired) return held.value
   const holder = GRAPH_LOCK_HOLDER_PHRASE[held.heldBy]
   return NextResponse.json(
@@ -102,11 +103,28 @@ async function markRestoredHostnames(projectId: string): Promise<boolean> {
   }
 }
 
+/**
+ * The project's owner as read under the lock, which an ownership transfer takes too (step 5.12): a
+ * snapshot's nodes carry the user_id they were captured under, and a version saved before a transfer
+ * must come back under the new owner. Falls back to the owner the guard read (the same person unless a
+ * transfer ended between the two reads) when the row cannot be read.
+ */
+async function ownerUnderLock(projectId: string, guardOwnerId: string): Promise<string> {
+  try {
+    const row = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } })
+    return row?.userId ?? guardOwnerId
+  } catch (err) {
+    console.warn(`[scanTimeline] owner re-read under the lock failed (${safeErrorCode(err)}); restoring under the owner the guard read`)
+    return guardOwnerId
+  }
+}
+
 async function activateUnderLock(
   id: string,
   versionId: string,
   target: OwnedVersion,
   actorId: string,
+  guardOwnerId: string,
 ): Promise<NextResponse> {
   // 4A.3: mutually exclusive with anything else that touches the live graph.
   const busy = await describeLiveGraphWriters(id)
@@ -171,6 +189,7 @@ async function activateUnderLock(
     }
 
     // --- 2. swap the live graph ----------------------------------------------
+    const ownerId = await ownerUnderLock(id, guardOwnerId)
     const snapshot = await loadSnapshot(versionId)
     if (!snapshot) {
       // Defensive: hasSnapshot said there were bytes. Nothing has been deleted.
@@ -190,6 +209,7 @@ async function activateUnderLock(
           await clearProjectGraph(session, id, SESSION_LABELS, { sweep: false })
           await restoreGraph(session, snapshot.nodes, snapshot.relationships, {
             projectId: id,
+            userId: ownerId,
             ...(snapshot.referenceLinks ? { referenceLinks: snapshot.referenceLinks } : {}),
           })
           await sweepOrphanReferenceNodes(session)
