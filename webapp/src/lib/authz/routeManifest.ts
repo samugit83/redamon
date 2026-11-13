@@ -233,7 +233,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/health', guard: 'public', methods: ['GET'], permission: null },
   { path: '/api/internal/agent/authorize-decision', guard: 'internal', methods: ['POST'], permission: null },
   { path: '/api/internal/agent/decisions', guard: 'internal', methods: ['POST'], permission: null },
-  { path: '/api/internal/agent/writer-check', guard: 'internal', methods: ['POST'] },
+  { path: '/api/internal/agent/writer-check', guard: 'internal', methods: ['POST'], permission: null },
   { path: '/api/internal/auth-profile/[projectId]/observe', guard: 'internal', methods: ['POST'], permission: null },
   { path: '/api/internal/capture-config', guard: 'internal', methods: ['GET'], permission: null },
   { path: '/api/internal/codefix-sandbox/[jobId]/[action]', guard: 'internal', methods: ['POST'], permission: null },
