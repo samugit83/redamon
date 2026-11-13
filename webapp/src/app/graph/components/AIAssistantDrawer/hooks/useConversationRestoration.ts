@@ -11,6 +11,13 @@ import { settleRunningTools } from './toolCardState'
 import { saveProjectSession, getProjectSession } from '../sessionMemory'
 import { agentErrorText } from './agentErrorText'
 
+/** The read-only session on screen (step 5.8): who wrote it, for the notice in place of the composer. */
+export interface ReadOnlyConversationView {
+  conversationId: string
+  by: string | null
+  authorDeleted: boolean
+}
+
 interface ConversationRestorationDeps {
   // From useConversations
   loadConversation: (id: string) => Promise<any>
@@ -74,6 +81,10 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
 
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [showHistory, setShowHistory] = useState(false)
+  // Another person's session, or one reassigned from a deleted account (step 5.8), on screen without the
+  // composer: nothing is saved into it, and the socket stays on a fresh session of the viewer's own.
+  const [readOnlyView, setReadOnlyView] = useState<ReadOnlyConversationView | null>(null)
+  const clearReadOnlyView = useCallback(() => setReadOnlyView(null), [])
 
   // The running conversation to re-sync once the socket (re)connects. Streamed
   // events are persisted by a lagging queue on the backend, so the initial
@@ -954,6 +965,28 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
       return
     }
 
+    // Read-only (step 5.8): leave the live session first (a fresh one of the viewer's own, so no event of
+    // a run streams into this view), then show the timeline. Not remembered as the project's session, no
+    // conversation id to save into, no prompt re-armed and no skill restored.
+    const readOnly = (full.access ?? conv.access)?.readOnly === true
+    if (readOnly) {
+      pendingResyncConvRef.current = null
+      handleNewChat()
+      setChatItems(settleRunningTools(restored))
+      setCurrentPhase((conv.currentPhase || 'informational') as Phase)
+      setAttackPathType(lastAttackPathType)
+      setIterationCount(conv.iterationCount || 0)
+      setTodoList(lastTodoList)
+      setIsLoading(false)
+      setIsStopped(false)
+      const access = full.access ?? conv.access
+      setReadOnlyView({ conversationId: conv.id, by: access?.by ?? null, authorDeleted: access?.authorDeleted === true })
+      shouldAutoScroll.current = true
+      setShowHistory(false)
+      return
+    }
+    setReadOnlyView(null)
+
     // A conversation that is not running has no tool left to finish: a start
     // with no complete was cut off (stop, crash) and must not tick forever.
     setChatItems(conv.agentRunning ? restored : settleRunningTools(restored))
@@ -1030,7 +1063,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
 
     isRestoringConversation.current = true
     onSwitchSession?.(conv.sessionId)
-  }, [loadConversation, onSwitchSession, userId, setActiveSkill, updateConvMeta])
+  }, [loadConversation, onSwitchSession, userId, setActiveSkill, updateConvMeta, handleNewChat])
 
   // Called when the agent socket (re)connects. If we just restored a running
   // session, re-read it now that the backend has flushed its persist queue and
@@ -1088,11 +1121,11 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     // only hide it until the next poll brings it back.
     if ((await deleteConversation(id)) === false) return
     onRefetchGraph?.()
-    if (id === conversationId) {
+    if (id === conversationId || id === readOnlyView?.conversationId) {
       pendingResyncConvRef.current = null
       handleNewChat()
     }
-  }, [deleteConversation, onRefetchGraph, conversationId, handleNewChat])
+  }, [deleteConversation, onRefetchGraph, conversationId, readOnlyView, handleNewChat])
 
   // Restore the active session for the CURRENT project (called on project
   // switch). If the project had a session open, re-open it (which also re-points
@@ -1124,5 +1157,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     handleHistoryNewChat,
     handleDeleteConversation,
     restoreForProject,
+    readOnlyView,
+    clearReadOnlyView,
   }
 }

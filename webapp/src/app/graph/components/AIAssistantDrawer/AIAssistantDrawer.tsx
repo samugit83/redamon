@@ -35,7 +35,10 @@ import { useOptionalAuth } from '@/providers/AuthProvider'
 import { useOptionalProject } from '@/providers/ProjectProvider'
 import { loopDisplay, stampLoopStatus, type LoopStatusView } from './hooks/loopStatus'
 import { useRateLimitWait } from './hooks/rateLimitWait'
-import { useConversations } from '@/hooks/useConversations'
+import { useConversationPolicy, useConversations } from '@/hooks/useConversations'
+import { useProjectAccess, useRefusal } from '@/hooks/useRefusal'
+import type { ConversationSharingControls } from './ConversationHistory'
+import { ReadOnlyConversationNotice } from './ReadOnlyConversationNotice'
 import { useChatPersistence } from '@/hooks/useChatPersistence'
 import { useToast } from '@/components/ui'
 import { CONVERSATION_FAILURE_TITLE, DECISION_NOT_SENT, deleteWarningsText } from './drawerNotices'
@@ -197,6 +200,7 @@ export function AIAssistantDrawer({
     createConversation,
     deleteConversation,
     loadConversation,
+    shareConversation,
   } = useConversations(projectId, userId, {
     // The list is polled while the history is open: its failure is shown there, not toasted every 5s.
     onError: (action, err) => {
@@ -219,6 +223,8 @@ export function AIAssistantDrawer({
     handleHistoryNewChat,
     handleDeleteConversation,
     restoreForProject,
+    readOnlyView,
+    clearReadOnlyView,
   } = useConversationRestoration({
     loadConversation,
     deleteConversation,
@@ -264,6 +270,7 @@ export function AIAssistantDrawer({
     resetChatState()
     resetInteractionState()
     resetScrollState()
+    clearReadOnlyView()
     setConversationId(null)
     setShowHistory(false)
     setActiveSkill(null)
@@ -271,7 +278,27 @@ export function AIAssistantDrawer({
     // switch back starts fresh rather than reopening the abandoned chat.
     clearProjectSession(projectId)
     onResetSession?.()
-  }, [resetChatState, resetInteractionState, resetScrollState, setConversationId, setShowHistory, setActiveSkill, onResetSession, projectId])
+  }, [resetChatState, resetInteractionState, resetScrollState, clearReadOnlyView, setConversationId, setShowHistory, setActiveSkill, onResetSession, projectId])
+
+  // ─── Conversation sharing (step 5.8): write sharing in force only ─────────
+  const sharingState = useOptionalAuth()?.user?.sharing
+  const conversationSharing = sharingState?.enabled === true && sharingState.maxLevel === 'write'
+  const shareRefusal = useRefusal('agent:conversations_share', projectId || null)
+  const myAccess = useProjectAccess(projectId || null)
+  const { managersSeeAll, setManagersSeeAll } = useConversationPolicy(projectId, conversationSharing && showHistory, (err) =>
+    toast.error(err.message, 'Could not change who reads the sessions'))
+  const historySharing = useMemo<ConversationSharingControls | null>(() => {
+    if (!conversationSharing) return null
+    return {
+      canShare: shareRefusal === null,
+      onShare: (id, shared) => { void shareConversation(id, shared) },
+      policy: managersSeeAll === null ? null : {
+        managersSeeAll,
+        editable: myAccess?.level === 'owner',
+        onChange: (value) => { void setManagersSeeAll(value) },
+      },
+    }
+  }, [conversationSharing, managersSeeAll, setManagersSeeAll, shareRefusal, shareConversation, myAccess?.level])
 
   // Keep ref up-to-date
   useEffect(() => { handleNewChatRef.current = handleNewChat }, [handleNewChat])
@@ -527,6 +554,7 @@ export function AIAssistantDrawer({
         socketUrl={socketUrl}
         agentHealthError={agentHealth.status === 'offline' ? agentHealth.error : null}
         conversationsError={conversationsError}
+        historySharing={historySharing}
       />
 
       <PhaseIndicatorBar
@@ -641,28 +669,32 @@ export function AIAssistantDrawer({
         isConnected={isConnected}
       />
 
-      <InputArea
-        inputRef={inputRef}
-        inputValue={inputValue}
-        handleInputChange={handleInputChange}
-        handleKeyDown={handleKeyDown}
-        handleSend={handleSend}
-        handleStop={handleStop}
-        handleResume={handleResume}
-        isConnected={isConnected}
-        isLoading={isLoading}
-        isStopped={isStopped}
-        isStopping={isStopping}
-        awaitingApproval={awaitingApproval}
-        awaitingQuestion={awaitingQuestion}
-        awaitingToolConfirmation={awaitingToolConfirmation}
-        userId={userId}
-        setInputValue={setInputValue}
-        activeSkill={activeSkill}
-        setActiveSkill={setActiveSkill}
-        onSkillActivate={activateSkill}
-        userResizedRef={userResizedRef}
-      />
+      {readOnlyView ? (
+        <ReadOnlyConversationNotice view={readOnlyView} onNewChat={handleNewChat} />
+      ) : (
+        <InputArea
+          inputRef={inputRef}
+          inputValue={inputValue}
+          handleInputChange={handleInputChange}
+          handleKeyDown={handleKeyDown}
+          handleSend={handleSend}
+          handleStop={handleStop}
+          handleResume={handleResume}
+          isConnected={isConnected}
+          isLoading={isLoading}
+          isStopped={isStopped}
+          isStopping={isStopping}
+          awaitingApproval={awaitingApproval}
+          awaitingQuestion={awaitingQuestion}
+          awaitingToolConfirmation={awaitingToolConfirmation}
+          userId={userId}
+          setInputValue={setInputValue}
+          activeSkill={activeSkill}
+          setActiveSkill={setActiveSkill}
+          onSkillActivate={activateSkill}
+          userResizedRef={userResizedRef}
+        />
+      )}
 
       <ApiKeyModal
         apiKeyModal={apiKeyModal}

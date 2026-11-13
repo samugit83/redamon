@@ -5,7 +5,7 @@ import { Bot, Wifi, WifiOff, Loader2, AlertTriangle, Eye, EyeOff, History, Plus,
 import { ConnectionStatus } from '@/lib/websocket-types'
 import { useTheme } from '@/hooks/useTheme'
 import { Tooltip } from '@/components/ui/Tooltip/Tooltip'
-import { ConversationHistory } from './ConversationHistory'
+import { ConversationHistory, type ConversationSharingControls } from './ConversationHistory'
 import { formatTokenCount } from '@/lib/formatTokens'
 import { describeWsClose } from '@/hooks/agentWsClose'
 import type { Conversation } from '@/hooks/useConversations'
@@ -42,6 +42,8 @@ interface DrawerHeaderProps {
   agentHealthError?: string | null
   /** The session list could not be loaded. */
   conversationsError?: string | null
+  /** Conversation sharing in the history (step 5.8); absent without write sharing in force. */
+  historySharing?: ConversationSharingControls | null
 }
 
 /** The lines under the status that say why the drawer is not connected. */
@@ -85,6 +87,7 @@ export function DrawerHeader({
   socketUrl,
   agentHealthError,
   conversationsError,
+  historySharing,
 }: DrawerHeaderProps) {
   const { isLight } = useTheme()
   const detailLines = connectionDetailLines({ status, connectionError, lastClose, socketUrl, agentHealthError })
@@ -253,6 +256,7 @@ export function DrawerHeader({
           onDelete={handleDeleteConversation}
           onNewChat={handleHistoryNewChat}
           error={conversationsError}
+          sharing={historySharing}
         />
       )}
     </>

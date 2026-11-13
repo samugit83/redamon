@@ -11,6 +11,7 @@ export const CONVERSATION_FAILURE_TITLE: Record<Exclude<ConversationAction, 'lis
   delete: 'Could not delete the session',
   load: 'Could not open the session',
   update: 'Could not update the session',
+  share: 'Could not change the session sharing',
 }
 
 function warningText(w: ConversationDeleteWarning): string {

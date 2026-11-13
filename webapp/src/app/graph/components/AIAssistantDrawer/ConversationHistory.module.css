@@ -285,3 +285,80 @@
   text-align: center;
   overflow-wrap: anywhere;
 }
+
+/* Step 5.8: conversation sharing (read-only sessions of other people, Share on one's own). */
+.policyRow {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.policyLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: default;
+}
+
+.policyLabel input {
+  cursor: pointer;
+}
+
+.itemAuthor {
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readOnlyBadge,
+.sharedBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  font-size: 0.625rem;
+  font-weight: 600;
+  border-radius: 3px;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.sharedBadge {
+  color: var(--accent-primary, #3b82f6);
+  border-color: currentColor;
+}
+
+.shareButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: all 150ms ease;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.item:hover .shareButton,
+.shareButton:focus-visible,
+.shareButton[aria-pressed='true'] {
+  opacity: 1;
+}
+
+.shareButton[aria-pressed='true'] {
+  color: var(--accent-primary, #3b82f6);
+}
+
+.shareButton:hover {
+  background: var(--bg-hover, rgba(59, 130, 246, 0.1));
+}

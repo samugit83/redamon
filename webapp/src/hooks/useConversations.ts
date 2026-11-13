@@ -2,6 +2,13 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { ApiError, readApiError, toApiError } from '@/lib/apiError'
+import type { ConversationView } from '@/lib/authz/conversationAccess'
+
+/**
+ * Who wrote a listed or opened conversation and how it opens (step 5.8), sent only with write sharing on:
+ * without it every conversation is the viewer's own, as before.
+ */
+export type ConversationAccess = ConversationView
 
 export interface Conversation {
   id: string
@@ -15,6 +22,7 @@ export interface Conversation {
   createdAt: string
   updatedAt: string
   _count?: { messages: number }
+  access?: ConversationAccess
 }
 
 export interface ConversationWithMessages extends Conversation {
@@ -27,7 +35,7 @@ export interface ConversationWithMessages extends Conversation {
   }>
 }
 
-export type ConversationAction = 'list' | 'create' | 'delete' | 'load' | 'update'
+export type ConversationAction = 'list' | 'create' | 'delete' | 'load' | 'update' | 'share'
 
 /** A cleanup step the delete route could not do (the agent may still run, chain nodes may remain). */
 export interface ConversationDeleteWarning {
@@ -49,6 +57,7 @@ const FAILED: Record<ConversationAction, string> = {
   delete: 'Failed to delete conversation',
   load: 'Failed to load conversation',
   update: 'Failed to update conversation',
+  share: 'Failed to change the session sharing',
 }
 
 export function useConversations(projectId: string, userId: string, options: UseConversationsOptions = {}) {
@@ -172,6 +181,23 @@ export function useConversations(projectId: string, userId: string, options: Use
     }
   }, [fail])
 
+  /** Shares one of the viewer's own sessions with the project, read-only, or stops sharing it; true when done. */
+  const shareConversation = useCallback(async (id: string, shared: boolean): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/conversations/${id}/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shared }),
+      })
+      if (!res.ok) throw await readApiError(res, FAILED.share)
+      setConversations(prev => prev.map(c => (c.id === id && c.access ? { ...c, access: { ...c.access, shared } } : c)))
+      return true
+    } catch (err: any) {
+      fail('share', err)
+      return false
+    }
+  }, [fail])
+
   return {
     conversations,
     loading,
@@ -181,5 +207,58 @@ export function useConversations(projectId: string, userId: string, options: Use
     deleteConversation,
     loadConversation,
     updateConversation,
+    shareConversation,
   }
+}
+
+export interface ConversationPolicyState {
+  /** The owner lets the co-owners read every session of the project; null until read, or not readable. */
+  managersSeeAll: boolean | null
+  /** Turns it on or off (the owner only: the route refuses anyone else); answers whether it changed. */
+  setManagersSeeAll: (value: boolean) => Promise<boolean>
+}
+
+/**
+ * The project's "co-owners see every session" (step 5.8), read while `enabled` (write sharing in force and
+ * the history open). A refused or missing read leaves it null, and the screen says nothing about it.
+ */
+export function useConversationPolicy(
+  projectId: string,
+  enabled: boolean,
+  onError?: (error: ApiError) => void,
+): ConversationPolicyState {
+  const [managersSeeAll, setValue] = useState<boolean | null>(null)
+  const onErrorRef = useRef(onError)
+  onErrorRef.current = onError
+
+  useEffect(() => {
+    setValue(null)
+    if (!enabled || !projectId) return
+    let live = true
+    fetch(`/api/conversations/policy?projectId=${encodeURIComponent(projectId)}`)
+      .then(async (res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (live && typeof body?.managersSeeAllConversations === 'boolean') setValue(body.managersSeeAllConversations)
+      })
+      .catch(() => {})
+    return () => { live = false }
+  }, [projectId, enabled])
+
+  const setManagersSeeAll = useCallback(async (value: boolean): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/conversations/policy?projectId=${encodeURIComponent(projectId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ managersSeeAllConversations: value }),
+      })
+      if (!res.ok) throw await readApiError(res, 'Failed to change who sees the sessions')
+      setValue(value)
+      return true
+    } catch (err) {
+      onErrorRef.current?.(toApiError(err, 'Failed to change who sees the sessions'))
+      return false
+    }
+  }, [projectId])
+
+  return { managersSeeAll, setManagersSeeAll }
 }
