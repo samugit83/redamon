@@ -6,8 +6,10 @@
  * route does not exist (404 for everyone, nothing read: DV-30); with the switch on but the instance
  * policy disabled only the owner gets an answer, as every project route answers.
  *
- * The session (requireEffectiveUser) and Prisma are doubles; projectAccess(), the sharing policy
- * reader and the capabilities are the real ones.
+ * The session (requireEffectiveUser; getAuthzIdentity for the admin behind an act-as) and Prisma are
+ * doubles; projectAccess(), the sharing policy reader and the capabilities are the real ones.
+ * Step 5.2: with write sharing in force a Read + Write share answers `write` with its toggles, and
+ * under act-as reads as read (D-22), as the project GET's can() answers it.
  *
  * @vitest-environment node
  */
@@ -16,6 +18,8 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const h = vi.hoisted(() => ({
   eff: null as null | { userId: string },
+  /** The admin signed in while acting as `eff`; null when `eff` signed in as themself. */
+  realId: null as null | string,
   shares: new Map<string, { access: string; rawData: boolean; expiresAt: Date | null; user: { status: string } }>(),
   failProjects: false,
   policy: { enabled: true } as unknown,
@@ -31,6 +35,13 @@ const projectFindUnique = vi.hoisted(() => vi.fn(async ({ where }: { where: { id
 }))
 vi.mock('@/lib/access', () => ({
   requireEffectiveUser: async () => h.eff ?? NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+}))
+vi.mock('@/lib/session', () => ({
+  getAuthzIdentity: async () => {
+    if (!h.eff) return null
+    const real = { id: h.realId ?? h.eff.userId }
+    return { session: { userId: real.id }, principal: real, actingAs: h.realId ? { id: h.eff.userId } : null }
+  },
 }))
 vi.mock('@/lib/prisma', () => ({
   default: {
@@ -62,6 +73,7 @@ const get = (id = 'P-alice') =>
 
 beforeEach(() => {
   h.eff = null
+  h.realId = null
   h.shares.clear()
   h.failProjects = false
   h.policy = { enabled: true }
@@ -180,5 +192,47 @@ describe('GET /api/projects/[id]/my-access, sharing in force', () => {
     expect((await (await get()).json()).myAccess.level).toBe('read')
     h.eff = { userId: 'carol' }
     expect((await get()).status).toBe(404)
+  })
+})
+
+describe('GET /api/projects/[id]/my-access, write sharing in force (step 5.2)', () => {
+  beforeEach(() => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
+    h.policy = { enabled: true, maxLevel: 'write' }
+  })
+  const WRITE_ROW = {
+    access: 'write', rawData: false, expiresAt: null, user: { status: 'active' },
+    runScans: true, useAgent: true, exploit: true, manage: true,
+  }
+
+  test('a Read + Write share answers write with Raw data and its toggles as the level table opens them', async () => {
+    h.shares.set('P-alice|bob', WRITE_ROW)
+    h.eff = { userId: 'bob' }
+    // The run toggles stay off until step 5.6 (effectiveToggles); Manage is the row's.
+    expect(await (await get()).json()).toEqual({
+      myAccess: {
+        level: 'write', via: 'share', owner: ALICE,
+        toggles: { rawData: true, runScans: false, useAgent: false, exploit: false, manage: true },
+      },
+    })
+  })
+
+  test("under act-as the account's Read + Write share answers read, as the project GET does (D-22)", async () => {
+    h.shares.set('P-alice|bob', WRITE_ROW)
+    h.eff = { userId: 'bob' }
+    h.realId = 'admin-1'
+    expect(await (await get()).json()).toEqual({ myAccess: { level: 'read', toggles: { rawData: false }, via: 'share', owner: ALICE } })
+  })
+
+  test("Root's policy at read: a write row answers read, exactly as in Phase 4", async () => {
+    h.policy = { enabled: true, maxLevel: 'read' }
+    h.shares.set('P-alice|bob', WRITE_ROW)
+    h.eff = { userId: 'bob' }
+    expect(await (await get()).json()).toEqual({ myAccess: { level: 'read', toggles: { rawData: false }, via: 'share', owner: ALICE } })
+  })
+
+  test('the owner is unchanged', async () => {
+    h.eff = { userId: 'alice' }
+    expect(await (await get()).json()).toEqual({ myAccess: { level: 'owner', toggles: { rawData: true }, via: 'owner', owner: ALICE } })
   })
 })

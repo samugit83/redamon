@@ -11,7 +11,7 @@ import { useProjectAccess, useRefusal } from './useRefusal'
  * Whether the signed-in person may do `permission` (UI-01): what /api/auth/me answered, the set
  * can() decides with (under act-as, what the admin may use while acting). Given the open project's
  * id, also whether the person's access to it reaches the permission's level (step 4.11: a read share
- * reaches `R`, and `R*` with Raw data & files). Without one it answers for the set alone, as a list
+ * reaches `R`, and `R*` with Raw data & files; step 5.2: Read + Write reaches `W` and its toggles' levels). Without one it answers for the set alone, as a list
  * that spans projects asks (the shell sessions). A screen hides what this refuses; the route still
  * decides, so a stale answer costs a refusal, never access. False while the session loads, when the
  * server could not resolve the set, and outside an AuthProvider.

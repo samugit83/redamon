@@ -74,7 +74,8 @@ describe('the level table and the words (lib/readOnlyProject)', () => {
   })
 
   test('an unknown access kind fails closed', () => {
-    expect(myAccessMeets({ ...READ, level: 'write' as never }, 'R')).toBe(false)
+    // Step 5.2 made `write` a level of its own (lib/readOnlyProject.write.test.ts): a later release's kind stands in.
+    expect(myAccessMeets({ ...READ, level: 'editor' as never }, 'R')).toBe(false)
   })
 
   test('"Read access, shared by <owner>", naming raw data when the control needs it', () => {

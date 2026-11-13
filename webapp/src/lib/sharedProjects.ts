@@ -3,7 +3,7 @@
  * which rows are shared with the person, the level badge of a shared card, and who shared it.
  * A row without `myAccess` (RBAC_SHARING_ENABLED off) is the person's own, as before sharing.
  */
-import type { MyAccess } from '@/lib/authz/projectAccess'
+import type { MyAccess, WriteToggles } from '@/lib/authz/projectAccess'
 
 export interface WithMyAccess {
   myAccess?: MyAccess | null
@@ -27,8 +27,17 @@ export function accessBadge(myAccess: MyAccess): string {
   // Step 4.14: the "All projects (oversight)" list names how an admin reaches each project.
   if (myAccess.via === 'oversight') return 'Oversight (Read)'
   if (myAccess.via === 'break_glass') return 'Break-glass (Read + Raw data)'
+  if (myAccess.level === 'write') {
+    const on = WRITE_TOGGLE_WORDS.filter(([toggle]) => myAccess.toggles[toggle] === true).map(([, words]) => words)
+    return ['Read + Write', ...on].join(' + ')
+  }
   return myAccess.toggles.rawData ? 'Read + Raw data' : 'Read'
 }
+
+/** A Read + Write share's toggles as its badge names them (step 5.2), in the share dialog's order. */
+const WRITE_TOGGLE_WORDS: ReadonlyArray<readonly [keyof WriteToggles, string]> = [
+  ['runScans', 'Run scans'], ['useAgent', 'Use AI agent'], ['exploit', 'Exploitation'], ['manage', 'Manage'],
+]
 
 /** The owner of a shared row as "Name (email)", from myAccess, else the row's owner. */
 export function sharedByLabel(row: WithMyAccess): string {

@@ -2,25 +2,26 @@
  * Which projects a person sees, for the lists that show "my projects": the project list, the
  * reports, the running scans and their counts. The list form of projectAccess.ts: the projects the
  * person owns and, with sharing in force (step 4.3), those shared with them by a live share (not
- * expired on the clock, their account active), the same shares projectAccess() answers `read` for,
- * so a list never names a project its detail route answers 404 for. Oversight and break-glass open
- * a project by its id and fill no list (step 4.14 gives overseers their own filter).
+ * expired on the clock, their account active), the same shares projectAccess() answers for, so a
+ * list never names a project its detail route answers 404 for. Oversight and break-glass open a
+ * project by its id and fill no list (step 4.14 gives overseers their own filter).
  *
  * The person is the effective user (under act-as, the account acted as, whose shares then list).
- *
- * The MCP tools list projects at the owner level on purpose (`assertMcpProjectAccess` requires the
- * owner): their list stays on the owner, not on this filter.
+ * MCP's list_projects uses it too, narrowed to a token's opt-in and allowlist (step 4.10).
  *
  * Step 4.5 adds what the lists show with shares: each project row's own access (`myShareSelect` +
  * `withMyAccess`, the project GET's `myAccess` read from the same query) and the scan activity
- * view's split of the job queue (`jobQueueScope`).
+ * view's split of the job queue (`jobQueueScope`). Step 5.2 lists a Read + Write share as `write`
+ * with its toggles when projectAccess() would answer `write` (write sharing in force, not acting).
  */
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { rbacFlags } from './flags'
 import { now } from './clock'
-import { sharingPolicyInForce } from './sharingPolicy'
-import { SHARE_ACCESS, myAccessView, type MyAccess, type ProjectAccess, type ProjectAccessSubject } from './projectAccess'
+import { maxShareLevel, sharingPolicyInForce } from './sharingPolicy'
+import {
+  SHARE_ACCESS, effectiveToggles, myAccessView, type MyAccess, type ProjectAccess, type ProjectAccessSubject, type WriteToggles,
+} from './projectAccess'
 
 // A subject without an id matches no project: Prisma drops an undefined filter, so
 // `{userId: undefined}` would list every account's projects.
@@ -43,6 +44,12 @@ export interface VisibleProjects {
   where: Prisma.ProjectWhereInput
   /** Sharing in force: `where` also admits the projects shared with the person by a live share. */
   withShares: boolean
+  /**
+   * Write sharing in force too (RBAC_SHARING_WRITE_ENABLED and Root's `maxLevel: 'write'`,
+   * `maxShareLevel`): a share stored at `write` lists as `write`, unless the caller acts as the
+   * person (`withMyAccess`'s `actingAs`, D-22). Absent otherwise, so Phase 4's answer is unchanged.
+   */
+  writeShares?: true
 }
 
 /**
@@ -68,6 +75,7 @@ export async function visibleProjects(subject: ProjectAccessSubject): Promise<Vi
       ],
     },
     withShares: true,
+    ...(maxShareLevel(policy) === 'write' ? { writeShares: true as const } : {}),
   }
 }
 
@@ -80,38 +88,52 @@ export async function visibleProjectsWhere(subject: ProjectAccessSubject): Promi
   return (await visibleProjects(subject)).where
 }
 
+/** Phase 4's share columns; the level and the write toggles only when a share can list as `write`. */
+const READ_SHARE_SELECT = { rawData: true } as const
+const WRITE_SHARE_SELECT = { rawData: true, access: true, runScans: true, useAgent: true, exploit: true, manage: true } as const
+
 /**
  * The `select` keys a project list adds so each row carries the person's own share of it (its Raw
- * data toggle), only when shares are listed. A project has at most one share per person, and the
- * list's filter already admitted only a live one.
+ * data toggle, and with write sharing in force its level and toggles), only when shares are listed.
+ * A project has at most one share per person, and the list's filter already admitted only a live one.
  */
 export function myShareSelect(subject: ProjectAccessSubject, visible: VisibleProjects): {
-  collaborators?: { where: { userId: string }; select: { rawData: true } }
+  collaborators?: { where: { userId: string }; select: typeof READ_SHARE_SELECT | typeof WRITE_SHARE_SELECT }
 } {
   const userId = subjectId(subject)
   if (!visible.withShares || userId === null) return {}
-  return { collaborators: { where: { userId }, select: { rawData: true } } }
+  return { collaborators: { where: { userId }, select: visible.writeShares === true ? WRITE_SHARE_SELECT : READ_SHARE_SELECT } }
 }
+
+/** The person's share as a list reads it: the level and toggles only with write sharing in force. */
+export type ListedShare = { rawData: boolean; access?: string } & Partial<Record<keyof WriteToggles, boolean>>
 
 /** A project row as a list reads it, with its owner and (myShareSelect) the person's share. */
 export interface ListedProjectRow {
   id: string
   userId: string
   user?: { name?: string | null; email?: string | null } | null
-  collaborators?: ReadonlyArray<{ rawData: boolean }>
+  collaborators?: ReadonlyArray<ListedShare>
+}
+
+export interface WithMyAccessOptions {
+  /** The person is the account an admin acts as: a share lists as read, never more (D-22). */
+  actingAs?: boolean
 }
 
 /**
  * Each listed row with the person's own access (`myAccess`, the project GET's view: the owner, or a
- * share at `read` with its Raw data; a share at `write` reads as `read` until Phase 5), the share
- * itself removed. With RBAC_SHARING_ENABLED off the rows come back as they are, without the key,
- * as the project GET does (DV-30). A row neither owned nor shared with the person is left out.
- * The list shows the share: a break-glass row that would raise it (projectAccess) opens the
- * project by its id, as oversight does, and the detail's `myAccess` says so.
+ * share at `read` with its Raw data; a share at `write` lists as `write` with its toggles, through
+ * `effectiveToggles`, only when myShareSelect read its level, i.e. with write sharing in force, and
+ * not under act-as), the share itself removed. With RBAC_SHARING_ENABLED off the rows come back as
+ * they are, without the key, as the project GET does (DV-30). A row neither owned nor shared with
+ * the person is left out. The list shows the share: a break-glass row that would raise it
+ * (projectAccess) opens the project by its id, as oversight does, and the detail's `myAccess` says so.
  */
 export function withMyAccess<T extends ListedProjectRow>(
   subject: ProjectAccessSubject,
   rows: T[],
+  opts: WithMyAccessOptions = {},
 ): Array<Omit<T, 'collaborators'> & { myAccess?: MyAccess }> {
   if (!rbacFlags().sharing) return rows
   const userId = subjectId(subject)
@@ -122,7 +144,10 @@ export function withMyAccess<T extends ListedProjectRow>(
     if (userId !== null && row.userId === userId) {
       access = { project, level: 'owner', toggles: { rawData: true }, via: 'owner' }
     } else if (userId !== null && collaborators && collaborators.length > 0) {
-      access = { project, level: 'read', toggles: { rawData: collaborators[0].rawData === true }, via: 'share' }
+      const share = collaborators[0]
+      access = share.access === 'write' && opts.actingAs !== true
+        ? { project, level: 'write', toggles: { rawData: true, ...effectiveToggles(share) }, via: 'share' }
+        : { project, level: 'read', toggles: { rawData: share.rawData === true }, via: 'share' }
     }
     if (access) out.push({ ...row, myAccess: myAccessView(access, row.user) })
   }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser } from '@/lib/access'
+import { getAuthzIdentity } from '@/lib/session'
 import { myAccessView, projectAccess } from '@/lib/authz/projectAccess'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { rbacFlags } from '@/lib/authz/flags'
@@ -20,8 +21,16 @@ export const GET = withRouteErrors('Could not read your access to the project', 
   const eff = await requireEffectiveUser()
   if (eff instanceof NextResponse) return eff
   const { id } = await params
-  const access = await projectAccess(eff, id)
+  let access = await projectAccess(eff, id)
+  // Only a Read + Write answer differs under act-as: the account's share then reaches read and never
+  // more, as can() answers the project GET (D-22, step 5.2). So only then is the identity read again.
+  if (access?.level === 'write' && (await actingAsSomeoneElse())) access = await projectAccess(eff, id, { actingAs: true })
   if (!access) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const owner = await prisma.user.findUnique({ where: { id: access.project.userId }, select: { name: true, email: true } })
   return NextResponse.json({ myAccess: myAccessView(access, owner) })
 })
+
+async function actingAsSomeoneElse(): Promise<boolean> {
+  const identity = await getAuthzIdentity()
+  return !!identity?.actingAs && identity.actingAs.id !== identity.principal.id
+}

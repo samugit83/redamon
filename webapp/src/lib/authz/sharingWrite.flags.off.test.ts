@@ -200,6 +200,9 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
       'src/lib/authz/projectShares.ts',
       // maxShareLevel and sharingInForce: `read` with the switch off (tests above).
       'src/lib/authz/sharingPolicy.ts',
+      // Step 5.2b: the lists select a share's level and toggles only with write in force (maxShareLevel), so
+      // with the switch off they read Phase 4's columns and list a write row as read (readOnlyProject.write.test.ts).
+      'src/lib/authz/visibleProjects.ts',
     ]
     expect(readersOf(/\bsharingWrite\b|\bRBAC_SHARING_WRITE_ENABLED\b|\bmaxShareLevel\b/)).toEqual(WRITE_SWITCH_READERS)
   })

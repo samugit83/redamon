@@ -6,6 +6,7 @@ import prisma from '@/lib/prisma'
 import { isBlankModelField } from '@/components/projects/ProjectForm/projectLlmGate.logic'
 import { requireEffectiveUser } from '@/lib/access'
 import { myShareSelect, visibleProjects, withMyAccess } from '@/lib/authz/visibleProjects'
+import { getAuthzIdentity } from '@/lib/session'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { numericBoundsRefusal } from '@/lib/reconSettings/numericBounds'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
@@ -35,7 +36,8 @@ const SOFT_GUARDRAIL_TIMEOUT_MS = 10_000
 // With sharing in force it also holds the projects shared with that user
 // (step 4.5); with RBAC_SHARING_ENABLED on every row carries `myAccess`, the
 // person's own access as the project GET answers it (owner, or read with its
-// Raw data toggle), beside `user`, the owner.
+// Raw data toggle, or with write sharing in force Read + Write with its toggles),
+// beside `user`, the owner.
 export async function GET() {
   try {
     const eff = await requireEffectiveUser()
@@ -72,7 +74,10 @@ export async function GET() {
       }
     })
 
-    return NextResponse.json(withMyAccess(eff, projects))
+    // Only a list that can show a write share asks whether an admin acts as the person: then
+    // every share lists as read, as the project GET answers it (D-22).
+    const actingAs = visible.writeShares === true && !!(await getAuthzIdentity())?.actingAs
+    return NextResponse.json(withMyAccess(eff, projects, { actingAs }))
   } catch (error) {
     return internalError(error, 'Failed to fetch projects')
   }
