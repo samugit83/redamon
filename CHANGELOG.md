@@ -75,6 +75,7 @@ Project sharing at Read and at Read + Write, the admin console and the audit too
 ### Fixed
 
 - **The projects page acted as accounts the admin had not picked** (identity switch on). With nothing selected it chose the newest listed account, so an admin who only opened `/projects` started acting as that account, audited in the admin's name, or saw the act-as dialog unasked; and a pick the browser remembered was restored for whoever signed in next on it. Now the page chooses nobody, and a remembered pick is restored only for the admin who made it and forgotten at sign-out.
+- **Importing a project could move the exported project's attack chains.** On the instance that still held the exported project, the import matched its attack-chain nodes (chains, steps, findings, decisions, failures, each unique on its own id) and moved them into the import, so the exported project lost them and deleting the import deleted them. An import now gives those nodes new ids (an imported chain belongs to its imported conversation), and every restore, version activation included, matches nodes only inside the target project. Chains an earlier import moved are not given back: nothing records where they came from, so they stay in the imported project.
 
 ### Security
 

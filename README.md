@@ -223,6 +223,8 @@ Use `create-admin` when no admin exists yet; `reset-password` only updates a use
 
 See [User Management](https://github.com/samugit83/redamon/wiki/User-Management) for Root, invites, account status and sessions.
 
+The lists above are the behaviour with the RBAC switches off, the default. Permission sets (`RBAC_PERMISSIONS_ENABLED`), project sharing (`RBAC_SHARING_ENABLED`, `RBAC_SHARING_WRITE_ENABLED`) and the admin console (`RBAC_GOVERNANCE_ENABLED`) are further switches in `.env`, each off by default: see [Sharing Projects](https://github.com/samugit83/redamon/wiki/Sharing-Projects) and [Admin Console](https://github.com/samugit83/redamon/wiki/Admin-Console), and the [Changelog](CHANGELOG.md) for the order to turn them on.
+
 ### 3. Configure
 
 Open **http://localhost:3000/settings** (gear icon in the header) to configure everything. No `.env` file is needed.

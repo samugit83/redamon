@@ -63,7 +63,7 @@ webapp/
 
 ## Authorization & Multi-User Access Control
 
-RedAmon is single-admin / multi-user: one admin manages many standard users, and **each standard user may only access their own data** (projects, graph, conversations, scans, reports, settings). With project sharing in force (below) an owner also lets named people read a project, and administrators holding oversight read any project, audited. Authentication (a JWT in the httpOnly `redamon-auth` cookie, verified in `middleware.ts` and `lib/session.ts`) proves *who* is calling; **authorization** proves they *own* what they touch.
+RedAmon is multi-user. An account is an administrator (`role: admin`) or a member (`role: standard`); with `RBAC_IDENTITY_ENABLED` on, one administrator is Root (`lib/authz/root.ts`). **Each person's data is their own** (projects, graph, conversations, scans, reports, settings), and what an account may do at all is its permissions (`lib/authz/capabilities.ts`): with `RBAC_PERMISSIONS_ENABLED` off, its account type's default, which is what it could do before the switches; with it on, its permission sets, admin profile and overrides. With project sharing in force (below) an owner also lets named people read a project or, with write sharing, work in it at the level the owner picks; an administrator holding `projects:oversee` reads any project, audited; Root may open a time-limited break-glass. Authentication (a JWT in the httpOnly `redamon-auth` cookie, verified in `middleware.ts` and `lib/session.ts`) proves *who* is calling; **authorization** (`lib/authz/`: `can()`, `projectAccess()`) decides what they may reach, and at which level.
 
 **Effective user.** `getEffectiveUser()` (`lib/session.ts`) returns the identity a request is scoped to:
 
@@ -71,7 +71,7 @@ RedAmon is single-admin / multi-user: one admin manages many standard users, and
 - admin, not simulating -> their own id;
 - admin simulating user X -> X, and only X (via a signed httpOnly `redamon-act-as` cookie set by the admin-only `POST /api/auth/act-as`).
 
-So an admin has no "see everything" mode; to view a user's data they explicitly *switch to* that user (see the User-Management wiki page). The one exception is oversight with sharing in force (below): `projects:oversee` reads any project at Read, and each read is recorded for its owner.
+To work as a user an admin explicitly *switches to* that user (see the User-Management wiki page) and reaches only what that user reaches, a project shared with them at Read and never more (`projectAccess(..., { actingAs: true })`). Outside act-as an admin reads another person's project only through oversight (`projects:oversee`: Read, without Raw data & files or private conversations, each read recorded for its owner) or Root's break-glass, both only with sharing in force (below).
 
 **Guards (`lib/access.ts`).** Every API route that reads or mutates a per-user resource must scope to the effective user. Use:
 
@@ -539,10 +539,10 @@ same-origin request, checked against `PLUGINS_ALLOWED_ORIGIN` when it is set):
 | `GET /api/plugins` | The Plugins page model: the catalog's state, one entry per catalog plugin merged with the installed rows, each with its card state, the newest release this platform can run (with consent text) and any update; admins also see errors |
 | `GET /api/plugins/[pluginId]` | One plugin; admins also get the last error, versions on disk, data usage, approved versions and whether a rollback is possible |
 | `GET /api/plugins/contributions` | The UI every enabled plugin contributes (`nav`, `chatSessionActions`, `projectSkillsRow`), read from the stored manifests; an `updating` plugin is flagged |
-| `GET /api/plugins/overrides/change-sets/[id]` | The review model of a proposed skill version (before/after per part, warnings, risk flags), built against the agent's live registry; scope owner only |
+| `GET /api/plugins/overrides/change-sets/[id]` | The review model of a proposed skill version (before/after per part, warnings, risk flags), built against the agent's live registry; only whoever decides the scope: its owner (or an admin acting as them), or a co-owner with Manage on a project scope (`scopeRefusal`, `lib/plugins/changeSetAccess.ts`); anyone else reads a 404 |
 | `POST /api/plugins/overrides/change-sets/[id]/approve`, `.../reject` | Decide a proposal. A user-scope decision carries `{scopeOwnerId}`, which must be the effective user (`403 wrong_owner`). Approve re-checks the factory text and size with the agent: `409 stale_proposal` / `already_decided`, `422 over_limit`, `503 agent_outdated` |
 | `DELETE /api/plugins/overrides/change-sets/[id]` | Deletes a version that is not active (`409 active_not_deletable`) |
-| `GET /api/plugins/overrides/versions?point=skill.text&group=<skill>&projectId=<id>` | The versions of a built-in skill for the user's own scope, plus a project they own |
+| `GET /api/plugins/overrides/versions?point=skill.text&group=<skill>&projectId=<id>` | The versions of a built-in skill for the user's own scope, plus a project whose scope they decide (the owner, or a co-owner with Manage) |
 | `POST /api/plugins/overrides/reset` | `{point, group, scopeType, scopeOwnerId?, projectId?}`: the scope's active version is cleared; works whatever the plugin's state |
 | `GET /api/plugins/overrides/summary?projectId=<id>` | Per built-in skill of a project the user owns: the version that governs it, whether it applies (and why not), pending proposals |
 
