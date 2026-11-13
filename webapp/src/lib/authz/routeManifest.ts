@@ -266,6 +266,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/plugin-runner/v1/run-list', guard: 'plugin-token', methods: ['GET'], permission: null },
   { path: '/api/plugins', guard: 'effective-user', methods: ['GET'], permission: 'plugins:use' },
   { path: '/api/plugins/[pluginId]', guard: 'effective-user', methods: ['GET'], permission: 'plugins:use' },
+  { path: '/api/plugins/[pluginId]/access-rules', guard: 'admin-db', methods: ['GET', 'PUT'], permission: 'platform:plugins', note: '404 with RBAC_GOVERNANCE_ENABLED off; platform:plugins, the account read again (requirePluginAdmin); GET the member sets a plugin is limited to and the sets a rule may name; PUT {setIds} same-origin JSON, only member sets that exist, under the permissions lock, audited plugin.access_rules_changed (GV-16, step 6.9)' },
   { path: '/api/plugins/[pluginId]/actions/[actionId]', guard: 'other', methods: ['POST'], permission: 'plugins:use' },
   { path: '/api/plugins/[pluginId]/disable', guard: 'admin-db', methods: ['POST'], permission: 'platform:plugins' },
   { path: '/api/plugins/[pluginId]/enable', guard: 'admin-db', methods: ['POST'], permission: 'platform:plugins' },
