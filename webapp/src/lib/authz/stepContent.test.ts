@@ -7,17 +7,21 @@
  * ChainDecision (reason) go with it; the export's and the MCP tools' `labels` shape is read like the
  * render shape's `type`; a node with nothing to strip keeps its identity, and the array too when no
  * node changed (graphReadView keeps the ETag then). The 4.9 review added an exploit_success
- * ChainFinding's console commands and cracked password, and an AttackChain's final outcome. RAW_DATA_GRAPH_PROPS pins today's answer to
- * OQ-R7 (option b: the display-only secret properties stay visible at Read), and option (a)'s list
- * run through withoutRawProps proves that switching is one line.
+ * ChainFinding's console commands and cracked password, and an AttackChain's final outcome.
+ *
+ * RAW_DATA_GRAPH_PROPS and RAW_DATA_GRAPH_PROPS_BY_LABEL pin today's answer to OQ-R7 (option b: the
+ * recon-found secret values stay visible at Read). OQ_R7_OPTION_A, run through withoutRawProps,
+ * proves option (a) is setting them: the display-only keys on any node and, label-aware, a Secret
+ * node's matched_text.
  *
  * @vitest-environment node
  */
 import { describe, test, expect } from 'vitest'
 import {
-  RAW_DATA_GRAPH_PROPS, STEP_CONTENT_BY_LABEL, STEP_CONTENT_PROPS, readsStepContent, stripStepContent, withoutRawProps,
+  OQ_R7_OPTION_A, RAW_DATA_GRAPH_PROPS, RAW_DATA_GRAPH_PROPS_BY_LABEL, STEP_CONTENT_BY_LABEL, STEP_CONTENT_PROPS,
+  readsStepContent, stripStepContent, withoutRawProps,
 } from './stepContent'
-import { DISPLAY_ONLY_PROPS } from '@/lib/secrets/secretProps'
+import { DISPLAY_ONLY_PROPS, SECRET_VALUE_PROPS, isSecretValueProp } from '@/lib/secrets/secretProps'
 import type { ProjectAccess } from './projectAccess'
 
 const access = (level: string, rawData: boolean, via = 'share') =>
@@ -94,7 +98,10 @@ const decision = () => ({
 })
 const secret = () => ({
   id: '11', name: 'key', type: 'Secret',
-  properties: { secret_value: 'rbac-fake-secret-value', paired_secret: 'rbac-fake-pair', raw_context: 'k=rbac-fake', sample: 'rbac…', value_length: 22 },
+  properties: {
+    secret_value: 'rbac-fake-secret-value', paired_secret: 'rbac-fake-pair', raw_context: 'k=rbac-fake', sample: 'rbac…', value_length: 22,
+    matched_text: 'api_key = "rbac-fake-secret-value"',
+  },
 })
 
 describe('stripStepContent: the copies of step content on the other chain nodes (step 4.9)', () => {
@@ -186,23 +193,45 @@ describe('stripStepContent: the copies of step content on the other chain nodes 
 })
 
 describe('OQ-R7: the recon-found secret values (open with the owner; built as written, option b)', () => {
-  test('today no node property beyond step content is raw data: RAW_DATA_GRAPH_PROPS is empty', () => {
+  test('today no node property beyond step content is raw data: RAW_DATA_GRAPH_PROPS and its per-label map name none', () => {
     expect(RAW_DATA_GRAPH_PROPS).toEqual([])
+    expect(RAW_DATA_GRAPH_PROPS_BY_LABEL).toEqual({})
     expect(Object.isFrozen(RAW_DATA_GRAPH_PROPS)).toBe(true)
+    expect(Object.isFrozen(RAW_DATA_GRAPH_PROPS_BY_LABEL)).toBe(true)
   })
 
-  test('so a reader without Raw data still reads a Secret node\'s display-only values (option b)', () => {
+  test('so a reader without Raw data still reads a Secret node\'s display-only values and its full match (option b)', () => {
     const nodes = [secret()]
     expect(stripStepContent(nodes, access('read', false))).toBe(nodes)
-    expect(stripStepContent(nodes, access('read', false, 'oversight'))[0].properties.secret_value).toBe('rbac-fake-secret-value')
+    const [out] = stripStepContent(nodes, access('read', false, 'oversight'))
+    expect(out.properties.secret_value).toBe('rbac-fake-secret-value')
+    expect(out.properties.matched_text).toBe('api_key = "rbac-fake-secret-value"')
   })
 
-  test('option (a) is the display-only list in RAW_DATA_GRAPH_PROPS: every display-only key goes, the masked fields stay', () => {
-    const optionA = [...DISPLAY_ONLY_PROPS]
-    const [out, chain] = withoutRawProps([secret(), step()], optionA)
+  test('option (a) is OQ_R7_OPTION_A in the two constants: every display-only key on any node and a Secret\'s matched_text go, the masked fields stay', () => {
+    expect(OQ_R7_OPTION_A).toEqual({ anyNode: [...DISPLAY_ONLY_PROPS], byLabel: { Secret: ['matched_text'] } })
+    const [out, chain] = withoutRawProps([secret(), step()], OQ_R7_OPTION_A)
     expect(out.properties).toEqual({ sample: 'rbac…', value_length: 22 })
     for (const key of STEP_CONTENT_PROPS) expect(chain.properties).not.toHaveProperty(key)
     const unmasked = { type: 'Endpoint', properties: { masked_url: 'https://app.rbac.test/?k=***', unmasked_url: 'https://app.rbac.test/?k=rbac-fake' } }
-    expect(withoutRawProps([unmasked], optionA)[0].properties).toEqual({ masked_url: 'https://app.rbac.test/?k=***' })
+    expect(withoutRawProps([unmasked], OQ_R7_OPTION_A)[0].properties).toEqual({ masked_url: 'https://app.rbac.test/?k=***' })
+  })
+
+  test('option (a) takes matched_text off a Secret only: on another label it is evidence text and stays (label shape too)', () => {
+    const vuln = { type: 'Vulnerability', properties: { name: 'xss', matched_text: '<script>alert(1)</script>' } }
+    const exported = { labels: ['Secret'], properties: { secret_type: 'aws', matched_text: 'AKIA-rbac-fake' }, _exportId: 'e-9' }
+    const nodes = [vuln, exported]
+    const [v, e] = withoutRawProps(nodes, OQ_R7_OPTION_A)
+    expect(v).toBe(vuln)
+    expect(e.properties).toEqual({ secret_type: 'aws' })
+  })
+
+  test('option (a) names every property isSecretValueProp calls a secret value, for the label it calls one on', () => {
+    for (const key of SECRET_VALUE_PROPS) expect(OQ_R7_OPTION_A.anyNode).toContain(key)
+    for (const [label, keys] of Object.entries(OQ_R7_OPTION_A.byLabel)) {
+      for (const key of keys) expect(isSecretValueProp(key, label)).toBe(true)
+    }
+    expect(isSecretValueProp('matched_text', 'Secret')).toBe(true)
+    expect(OQ_R7_OPTION_A.byLabel.Secret).toContain('matched_text')
   })
 })

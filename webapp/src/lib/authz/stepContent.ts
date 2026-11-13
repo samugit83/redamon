@@ -16,13 +16,14 @@
  * of a `ChainFinding` (title, evidence, module, target, username) is a finding, readable at Read.
  *
  * One helper for every output that serialises chain-node properties: `/api/graph` and
- * graph-views/execute (through graphReadView.ts), `versions/[versionId]/graph`, the export's
- * `neo4j/nodes.json`, and the MCP query tools (step 4.10). `stripStepContent(nodes, access)`
+ * graph-views/execute (through graphReadView.ts), `versions/[versionId]/graph`, the delta of two
+ * versions, the export's `neo4j/nodes.json`, and the MCP query tools (step 4.10). `stripStepContent(nodes, access)`
  * answers the same array when the access reaches `R*` (the owner, a share with Raw data & files,
  * break-glass) or when no node holds a raw property; otherwise a copy in which only the nodes that
  * held one are new objects. The input is never changed, so a cached graph stays whole for the next
  * reader.
  */
+import { DISPLAY_ONLY_PROPS } from '@/lib/secrets/secretProps'
 import { meetsLevel, type ProjectAccess } from './projectAccess'
 
 export const STEP_CONTENT_LABEL = 'ChainStep'
@@ -46,16 +47,40 @@ export const STEP_CONTENT_BY_LABEL: Readonly<Record<string, readonly string[]>> 
 })
 
 /**
- * Properties of any node that are raw data as well, taken from the same readers on the same outputs.
- *
- * Empty: the recon-found secret values and the links with a secret left in them (`DISPLAY_ONLY_PROPS`,
- * lib/secrets/secretProps.ts) stay visible at Read, as the read areas are written (§6.2). OQ-R7 is
- * open with the owner: whether they are Raw data. Its option (a) is this one line,
- * `Object.freeze([...DISPLAY_ONLY_PROPS])`, for the outputs above; the Insights redzone routes that
- * project them into columns of their own (`secrets`, `routeExposure`, `paramMatrix`) and the reports
- * are not graph nodes and would need their own change.
+ * Node properties beyond step content that are raw data too: `anyNode` on every node, `byLabel`
+ * only on a node with that label (a key that is a secret on one label and ordinary text on another).
+ */
+export interface RawGraphProps {
+  readonly anyNode: readonly string[]
+  readonly byLabel: Readonly<Record<string, readonly string[]>>
+}
+
+/**
+ * OQ-R7 option (a): the recon-found secret values and the links with a secret left in them
+ * (`DISPLAY_ONLY_PROPS`, lib/secrets/secretProps.ts) on any node, and a `Secret` node's
+ * `matched_text`, JS Recon's full match (graph_db js_recon_mixin.py). `isSecretValueProp` calls
+ * `matched_text` a secret value on a Secret only; on a Vulnerability it is the evidence a template
+ * matched, readable at Read.
+ */
+export const OQ_R7_OPTION_A: RawGraphProps = Object.freeze({
+  anyNode: Object.freeze([...DISPLAY_ONLY_PROPS]),
+  byLabel: Object.freeze({ Secret: Object.freeze(['matched_text']) }),
+})
+
+/**
+ * What a reader below `R*` loses beyond step content: `RAW_DATA_GRAPH_PROPS` on any node,
+ * `RAW_DATA_GRAPH_PROPS_BY_LABEL` on a node with that label. Option (b) of OQ-R7, the pinned
+ * current choice: nothing, the recon-found secret values stay visible at Read as the read areas are
+ * written (§6.2). Option (a) sets them to `OQ_R7_OPTION_A.anyNode` and `OQ_R7_OPTION_A.byLabel`.
+ * Every output that goes through `stripStepContent` follows them: `/api/graph`,
+ * graph-views/execute, `versions/[versionId]/graph`, the delta of two versions
+ * (`projects/[id]/delta`: its nodes, previous properties and overlay), the export's
+ * `neo4j/nodes.json` and the MCP query tools. They do not reach the Insights redzone routes, which
+ * project the values into columns of their own (`secrets`, `routeExposure`, `paramMatrix`), nor
+ * the reports: option (a) needs its own change there.
  */
 export const RAW_DATA_GRAPH_PROPS: readonly string[] = Object.freeze([])
+export const RAW_DATA_GRAPH_PROPS_BY_LABEL: Readonly<Record<string, readonly string[]>> = Object.freeze({})
 
 /**
  * A graph node as an output serialises it: `type` is the label in the render shape (`/api/graph`,
@@ -74,7 +99,7 @@ export function readsStepContent(access: Pick<ProjectAccess, 'level' | 'toggles'
 
 export function stripStepContent<N extends StepContentNode>(nodes: N[], access: Pick<ProjectAccess, 'level' | 'toggles'> | null | undefined): N[] {
   if (readsStepContent(access)) return nodes
-  return withoutRawProps(nodes, RAW_DATA_GRAPH_PROPS)
+  return withoutRawProps(nodes, { anyNode: RAW_DATA_GRAPH_PROPS, byLabel: RAW_DATA_GRAPH_PROPS_BY_LABEL })
 }
 
 function labelsOf(node: StepContentNode): readonly string[] {
@@ -82,20 +107,21 @@ function labelsOf(node: StepContentNode): readonly string[] {
   return typeof node.type === 'string' ? [node.type] : []
 }
 
-function stepContentOf(node: StepContentNode): readonly string[] {
-  return labelsOf(node).flatMap(label => (Object.hasOwn(STEP_CONTENT_BY_LABEL, label) ? STEP_CONTENT_BY_LABEL[label] : []))
+function byLabelOf(node: StepContentNode, map: Readonly<Record<string, readonly string[]>>): readonly string[] {
+  return labelsOf(node).flatMap(label => (Object.hasOwn(map, label) ? map[label] : []))
 }
 
 /**
- * The nodes without their step content and without `rawProps` on any node: the same array when no
- * node held one. Exported for the OQ-R7 test, which runs option (a)'s list through it.
+ * The nodes without their step content and without `rawProps`: the same array when no node held
+ * one. Exported for the OQ-R7 test, which runs option (a) through it.
  */
-export function withoutRawProps<N extends StepContentNode>(nodes: N[], rawProps: readonly string[]): N[] {
+export function withoutRawProps<N extends StepContentNode>(nodes: N[], rawProps: RawGraphProps): N[] {
   let changed = false
   const out = nodes.map(node => {
     const properties = node?.properties
     if (!properties || typeof properties !== 'object') return node
-    const held = [...stepContentOf(node), ...rawProps].filter(key => Object.hasOwn(properties, key))
+    const held = [...byLabelOf(node, STEP_CONTENT_BY_LABEL), ...rawProps.anyNode, ...byLabelOf(node, rawProps.byLabel)]
+      .filter(key => Object.hasOwn(properties, key))
     if (held.length === 0) return node
     changed = true
     const kept = { ...properties }

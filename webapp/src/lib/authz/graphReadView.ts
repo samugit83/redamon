@@ -8,7 +8,7 @@
  * break-glass) gets it whole. Below `R*` (a Read share without Raw data, oversight) the view
  * (step 4.9; SH-30):
  *   - takes the chain-step content off the chain nodes, and the raw-data properties of any node
- *     (`stripStepContent`; RAW_DATA_GRAPH_PROPS is empty while OQ-R7 is open);
+ *     (`stripStepContent`; RAW_DATA_GRAPH_PROPS and its per-label map are empty while OQ-R7 is open);
  *   - withholds a saved view's tabular rows (format.ts shape 2, `type: 'QueryResult'`). A column is
  *     any expression the query wrote: `s.thought`, the same under an alias, a function of it, a map
  *     projection, a list or path of whole nodes. No rule over the answer tells them apart, so a
@@ -28,7 +28,8 @@
 import { createHash } from 'crypto'
 import type { ProjectAccess } from './projectAccess'
 import {
-  RAW_DATA_GRAPH_PROPS, STEP_CONTENT_BY_LABEL, readsStepContent, stripStepContent, type StepContentNode,
+  RAW_DATA_GRAPH_PROPS, RAW_DATA_GRAPH_PROPS_BY_LABEL, STEP_CONTENT_BY_LABEL, readsStepContent, stripStepContent,
+  type StepContentNode,
 } from './stepContent'
 
 export interface GraphPayload {
@@ -44,7 +45,7 @@ export const TABULAR_ROW_TYPE = 'QueryResult'
 const LINK_RULE = 'links between view nodes, string type'
 
 export const READ_VIEW_ETAG_SUFFIX = '-r' + createHash('sha256')
-  .update(JSON.stringify([STEP_CONTENT_BY_LABEL, RAW_DATA_GRAPH_PROPS, TABULAR_ROW_TYPE, LINK_RULE]))
+  .update(JSON.stringify([STEP_CONTENT_BY_LABEL, RAW_DATA_GRAPH_PROPS, RAW_DATA_GRAPH_PROPS_BY_LABEL, TABULAR_ROW_TYPE, LINK_RULE]))
   .digest('hex')
   .slice(0, 8)
 
