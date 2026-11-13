@@ -4,7 +4,8 @@
  * with every console method captured: inviting, resending, cancelling, opening a valid and an
  * unknown link, reading the page state, failed accepts up to the lock, a successful accept, and a
  * database failure while a link is looked up (the error path is where a value most easily leaks
- * into a log).
+ * into a log). It runs twice: with audit forwarding off, and with `AUDIT_FORWARD=stdout`, whose
+ * `[audit-forward]` copy of every row is a log line too (step 6.12, AU-06).
  *
  * @vitest-environment node
  */
@@ -95,7 +96,8 @@ afterEach(() => {
 })
 
 describe('tokens never logged, never audited', () => {
-  test('the token string never reaches a log call or an audit row, nor does its hash', async () => {
+  test.each(['off', 'stdout'])('the token string never reaches a log call or an audit row, nor does its hash (AUDIT_FORWARD=%s)', async (forward) => {
+    vi.stubEnv('AUDIT_FORWARD', forward)
     const tokens: string[] = []
     const make = async (name: string) => {
       const res = await invite(post({ name, email: `${name}@e2e.local` }))
@@ -143,6 +145,8 @@ describe('tokens never logged, never audited', () => {
     const lines = logged()
     expect(lines).toContain('[audit] user.invite ')
     expect(lines).toContain('[rbac] invite link lookup failed')
+    if (forward === 'stdout') expect(lines).toContain('[audit-forward] {"table":"audit_log"')
+    else expect(lines).not.toContain('[audit-forward]')
     const audit = JSON.stringify(db().audit())
     expect(tokens).toHaveLength(6)
     for (const token of tokens) {

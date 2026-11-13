@@ -23,6 +23,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { userAuditEntry } from '@/lib/userAudit'
 import { isSecureRequest } from '@/lib/cookieSecurity'
 import { safeErrorCode } from '@/lib/routeErrors'
@@ -284,7 +285,7 @@ export async function inviteMember(request: NextRequest, session: Session, body:
   const email = normalizeEmail(typed)
   if (await emailTakenByAnother(email)) return NextResponse.json(EMAIL_TAKEN, { status: 409 })
   try {
-    const { user, made } = await prisma.$transaction(async (tx) => {
+    const { user, made } = await auditedTransaction(prisma, async (tx) => {
       const user = await tx.user.create({
         data: { name, email, role: 'standard', status: 'invited', password: '' },
         select: { id: true, name: true, email: true, role: true, status: true },
@@ -313,7 +314,7 @@ export async function inviteMember(request: NextRequest, session: Session, body:
 
 /** POST /api/users/[id]/invite/resend: a new link for an invited account; the open one is cancelled. */
 export async function resendInvite(request: NextRequest, session: Session, userId: string): Promise<NextResponse> {
-  return prisma.$transaction(async (tx) => {
+  return auditedTransaction(prisma, async (tx) => {
     const user = await tx.user.findUnique({ where: { id: userId }, select: { status: true } })
     if (!user) return USER_NOT_FOUND()
     if (user.status !== 'invited') return NOT_INVITED()
@@ -332,7 +333,7 @@ export async function resendInvite(request: NextRequest, session: Session, userI
  * removes it with its projects' teardown.
  */
 export async function cancelInvite(request: NextRequest, session: Session, userId: string): Promise<NextResponse> {
-  const refused = await prisma.$transaction(async (tx) => {
+  const refused = await auditedTransaction(prisma, async (tx) => {
     const user = await tx.user.findUnique({ where: { id: userId }, select: { email: true, status: true, lastLoginAt: true } })
     if (!user) return USER_NOT_FOUND()
     if (user.status !== 'invited' || user.lastLoginAt) return NOT_INVITED()
@@ -436,7 +437,7 @@ export async function acceptLink(link: OpenLink, passwordHash: string): Promise<
   const at = now()
   const reset = link.kind === 'reset'
   try {
-    return await prisma.$transaction(async (tx) => {
+    return await auditedTransaction(prisma, async (tx) => {
       const used = await tx.userInvite.updateMany({
         where: { id: link.id, usedAt: null, cancelledAt: null, expiresAt: { gt: at } },
         data: { usedAt: at },
@@ -493,7 +494,7 @@ export async function acceptLink(link: OpenLink, passwordHash: string): Promise<
  * transaction; the operator learns it from that row and the `[rbac]` line.
  */
 export async function lockLink(link: OpenLink, failedAccepts: number): Promise<void> {
-  const locked = await prisma.$transaction(async (tx) => {
+  const locked = await auditedTransaction(prisma, async (tx) => {
     const { count } = await tx.userInvite.updateMany({
       where: { id: link.id, usedAt: null, cancelledAt: null },
       data: { cancelledAt: now() },

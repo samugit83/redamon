@@ -20,6 +20,7 @@
  */
 import prisma from '@/lib/prisma'
 import { actorFields, auditActorOf } from '@/lib/auditActor'
+import { auditedTransaction, createAuditLogRow } from '@/lib/auditForward'
 import { isStdioServer } from '@/lib/mcp/schema'
 import { legacyCutoff } from './sharedTools'
 import { invalidatePrincipal } from './principal'
@@ -150,7 +151,8 @@ interface AuditLine {
 }
 
 // The rows go through the transaction, not writeAudit (best effort): a removal whose row were
-// lost could be given back by the backfill. This prints the line writeAudit would.
+// lost could be given back by the backfill. This prints the line writeAudit would, after the
+// commit, as auditedTransaction prints the forwarded copy.
 function logAudit(rows: AuditLine[]): void {
   for (const r of rows) console.info(`[audit] ${r.action} actor=${r.actorId} target=user:${r.targetId} source=api`)
 }
@@ -158,19 +160,17 @@ function logAudit(rows: AuditLine[]): void {
 async function writeDecision(
   tx: Tx, actor: DecisionActor, action: string, targetId: string, grant: LegacyGrant, bulk: boolean,
 ): Promise<AuditLine> {
-  await tx.auditLog.create({
-    data: {
-      ...decisionActorColumns(actor),
-      action,
-      targetType: 'user',
-      targetId,
-      after: {
-        grant,
-        ...(bulk ? { bulk: true } : {}),
-        ...(actor.actingAsUserId ? { actingAsUserId: actor.actingAsUserId } : {}),
-      },
-      source: 'api',
+  await createAuditLogRow(tx, {
+    ...decisionActorColumns(actor),
+    action,
+    targetType: 'user',
+    targetId,
+    after: {
+      grant,
+      ...(bulk ? { bulk: true } : {}),
+      ...(actor.actingAsUserId ? { actingAsUserId: actor.actingAsUserId } : {}),
     },
+    source: 'api',
   })
   return { action, actorId: actor.actorId, targetId }
 }
@@ -187,7 +187,7 @@ export type DecisionResult =
 export async function decideLegacyGrant(
   actor: DecisionActor, userId: string, grant: LegacyGrant, action: 'keep' | 'remove',
 ): Promise<DecisionResult> {
-  const { result, rows } = await prisma.$transaction(async (tx) => {
+  const { result, rows } = await auditedTransaction(prisma, async (tx) => {
     await lock(tx)
     const user = await tx.user.findUnique({
       where: { id: userId },
@@ -241,7 +241,7 @@ export interface BulkDecisionResult {
 export async function decideAllLegacyGrants(
   actor: DecisionActor, action: 'keep_all' | 'remove_all',
 ): Promise<BulkDecisionResult> {
-  const { result, rows, updated } = await prisma.$transaction(async (tx) => {
+  const { result, rows, updated } = await auditedTransaction(prisma, async (tx) => {
     await lock(tx)
     const rows: AuditLine[] = []
     if (action === 'keep_all') {
@@ -331,15 +331,13 @@ export async function dismissWhatsNew(actor: DecisionActor): Promise<{ changed: 
     select: { id: true },
   })
   if (existing) return { changed: false }
-  await prisma.auditLog.create({
-    data: {
-      ...decisionActorColumns(actor),
-      action: WHATS_NEW_DISMISSED_ACTION,
-      targetType: 'notice',
-      targetId: WHATS_NEW_EDITION,
-      after: actor.actingAsUserId ? { actingAsUserId: actor.actingAsUserId } : undefined,
-      source: 'api',
-    },
+  await createAuditLogRow(prisma, {
+    ...decisionActorColumns(actor),
+    action: WHATS_NEW_DISMISSED_ACTION,
+    targetType: 'notice',
+    targetId: WHATS_NEW_EDITION,
+    after: actor.actingAsUserId ? { actingAsUserId: actor.actingAsUserId } : undefined,
+    source: 'api',
   })
   console.info(`[audit] ${WHATS_NEW_DISMISSED_ACTION} actor=${actor.actorId} target=notice:${WHATS_NEW_EDITION} source=api`)
   return { changed: true }

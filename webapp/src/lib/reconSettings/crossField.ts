@@ -22,6 +22,7 @@
  * A caller that writes an object other than `nextRow` copies them back.
  */
 import prisma from '@/lib/prisma'
+import { createFireteamAuditRows } from '@/lib/auditForward'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
 import { allowedGithubHosts } from '@/lib/github/ownerTarget'
 import { validateFireteamSettings } from '@/lib/validation/fireteamSettings'
@@ -127,7 +128,7 @@ export async function writeFireteamAudit(
         newValue: (after[field] ?? null) as never,
         source: actor.source,
       }))
-    if (rows.length > 0) await prisma.fireteamSettingsAudit.createMany({ data: rows })
+    if (rows.length > 0) await createFireteamAuditRows(prisma, rows)
   } catch (e) {
     console.warn('Fireteam settings audit write failed:', e)
   }

@@ -33,6 +33,7 @@ import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { createActAsToken, readActAsToken, type ActAsClaims } from '@/lib/auth'
 import { writeAudit } from '@/lib/audit'
+import { auditedTransaction, createActAsAuditRow } from '@/lib/auditForward'
 import { closeAgentSockets } from '@/lib/agentSockets'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { WS_SOCKETS } from '@/lib/wsTicket'
@@ -271,7 +272,7 @@ async function closeActAsSockets({ adminId, targetUserId, closeSockets = true }:
 async function endInTx(tx: Prisma.TransactionClient, { adminId, targetUserId, endedBy, binding = { open: true } }: ActAsEndInput): Promise<boolean> {
   const latest = await latestOfPair(tx, adminId, targetUserId)
   if (!bindingInForce(latest, binding)) return false
-  await tx.actAsAudit.create({ data: { adminId, targetUserId, event: 'end', source: 'api', endedBy, createdAt: after(latest) } })
+  await createActAsAuditRow(tx, { adminId, targetUserId, event: 'end', source: 'api', endedBy, createdAt: after(latest) })
   return true
 }
 
@@ -287,7 +288,7 @@ function loggedEnd({ adminId, targetUserId, endedBy }: ActAsEndInput): void {
  */
 export async function recordActAsEnd(input: ActAsEndInput): Promise<boolean> {
   const { adminId, targetUserId, endedBy, adminEmail } = input
-  const wrote = await prisma.$transaction(async (tx) => {
+  const wrote = await auditedTransaction(prisma, async (tx) => {
     await lockAdmin(tx, adminId)
     return endInTx(tx, input)
   })
@@ -458,16 +459,14 @@ export async function startImpersonation(start: ImpersonationStart): Promise<str
     })
   }
   ends.push({ adminId: admin.id, targetUserId, endedBy: 'stopped' })
-  const ended = await prisma.$transaction(async (tx) => {
+  const ended = await auditedTransaction(prisma, async (tx) => {
     await lockAdmin(tx, admin.id)
     const written: ActAsEndInput[] = []
     for (const end of ends) if (await endInTx(tx, end)) written.push(end)
     const latest = await latestOfPair(tx, admin.id, targetUserId)
-    await tx.actAsAudit.create({
-      data: {
-        id: startId, adminId: admin.id, targetUserId, event: 'start', source: 'api',
-        ...(reason ? { reason } : {}), durationMinutes, createdAt: after(latest),
-      },
+    await createActAsAuditRow(tx, {
+      id: startId, adminId: admin.id, targetUserId, event: 'start', source: 'api',
+      ...(reason ? { reason } : {}), durationMinutes, createdAt: after(latest),
     })
     return written
   })

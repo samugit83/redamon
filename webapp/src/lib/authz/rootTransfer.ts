@@ -17,6 +17,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { userAuditEntry, type UserAuditFields } from '@/lib/userAudit'
 import type { Session } from '@/lib/session'
 import { now } from './clock'
@@ -121,7 +122,7 @@ export async function offerRootTransfer(
   if (refusal) return refusal
 
   const expiresAt = new Date(now().getTime() + ROOT_TRANSFER_OFFER_HOURS * 60 * 60 * 1000)
-  const offered = await refusable(() => prisma.$transaction(async (tx) => {
+  const offered = await refusable(() => auditedTransaction(prisma, async (tx) => {
     const root = await lockedInstanceRoot(tx)
     if (!root || root.userId !== session.userId || !root.confirmed) throw new Refused(rootOnlyRefusal('none', ROOT_ONLY))
     if (!eligible(await tx.user.findUnique({ where: { id: targetUserId }, select }))) throw new Refused(CANNOT_SIGN_IN())
@@ -154,7 +155,7 @@ export async function acceptRootTransfer(
   const refusal = await requireStepUp(request, stepUpPassword)
   if (refusal) return refusal
 
-  const moved = await refusable(() => prisma.$transaction(async (tx): Promise<string> => {
+  const moved = await refusable(() => auditedTransaction(prisma, async (tx): Promise<string> => {
     const root = await lockedInstanceRoot(tx)
     const row = await readOffer(tx)
     if (!row?.pending || row.pending.toUserId !== session.userId) throw new Refused(NO_OFFER())
@@ -199,7 +200,7 @@ export async function acceptRootTransfer(
  * pending for Root is `withdrawn: false`; an account that is neither has nothing to withdraw.
  */
 export async function withdrawRootTransfer(request: NextRequest, session: Session): Promise<NextResponse> {
-  const by = await refusable(() => prisma.$transaction(async (tx) => {
+  const by = await refusable(() => auditedTransaction(prisma, async (tx) => {
     await lockedInstanceRoot(tx)
     const row = await readOffer(tx)
     const isRoot = !!row && row.rootUserId === session.userId

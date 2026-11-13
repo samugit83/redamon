@@ -24,6 +24,7 @@
  */
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { closeAgentSockets } from '@/lib/agentSockets'
 import { WS_SOCKETS } from '@/lib/wsTicket'
 import { now } from './clock'
@@ -63,7 +64,7 @@ async function sweepShares(at: Date, ended: ShareEnded[]): Promise<number> {
   })
   let removed = 0
   for (const row of rows) {
-    const gone = await prisma.$transaction(async (tx) => {
+    const gone = await auditedTransaction(prisma, async (tx) => {
       const { count } = await tx.projectCollaborator.deleteMany({
         where: { projectId: row.projectId, userId: row.userId, expiresAt: { lte: at } },
       })
@@ -99,7 +100,7 @@ async function sweepOverrides(at: Date): Promise<number> {
   })
   let removed = 0
   for (const row of rows) {
-    const gone = await prisma.$transaction(async (tx) => {
+    const gone = await auditedTransaction(prisma, async (tx) => {
       const { count } = await tx.userPermissionOverride.deleteMany({
         where: { userId: row.userId, permission: row.permission, expiresAt: { lte: at } },
       })

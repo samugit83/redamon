@@ -19,6 +19,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { userAuditEntry, type UserAuditFields } from '@/lib/userAudit'
 import { closeAgentSockets } from '@/lib/agentSockets'
 import { AgentUnreachableError, agentFetch } from '@/lib/agentFetch'
@@ -235,7 +236,7 @@ export async function enableAccount(
   request: NextRequest, session: Session, targetId: string, opts: StatusOptions = {},
 ): Promise<NextResponse> {
   type Outcome = { kind: 'missing' | 'root_only' | 'unchanged' } | { kind: 'not_disabled'; status: string } | { kind: 'enabled' }
-  const outcome = await changedAware(() => prisma.$transaction(async (tx): Promise<Outcome> => {
+  const outcome = await changedAware(() => auditedTransaction(prisma, async (tx): Promise<Outcome> => {
     const row = await tx.user.findUnique({
       where: { id: targetId },
       select: { role: true, status: true, password: true, passwordOnHold: true },
@@ -282,7 +283,7 @@ export async function revokeSessions(
   request: NextRequest, session: Session, targetId: string, opts: StatusOptions = {},
 ): Promise<NextResponse> {
   type Outcome = { kind: 'missing' | 'root_only' } | { kind: 'revoked'; sessionVersion: number; tokensRevoked: number }
-  const outcome = await prisma.$transaction(async (tx): Promise<Outcome> => {
+  const outcome = await auditedTransaction(prisma, async (tx): Promise<Outcome> => {
     const row = await tx.user.findUnique({ where: { id: targetId }, select: { role: true } })
     if (!row) return { kind: 'missing' }
     if (row.role === 'admin' && !opts.adminTarget && targetId !== session.userId) return { kind: 'root_only' }

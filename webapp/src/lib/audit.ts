@@ -3,9 +3,12 @@
 // forward only. `writeAudit` is best-effort: an audit failure must NEVER break the
 // underlying request, so its insert is wrapped and swallowed with a log line.
 // `writeAuditTx` is the opposite, for privileged changes (AU-05): the row is written
-// in the change's own transaction and a failure throws, so no row means no change.
+// in the change's own transaction and a failure throws, so no row means no change; that
+// transaction runs in `auditedTransaction` (lib/auditForward.ts), which prints the row's
+// `[audit-forward]` line only once it commits (AU-06, AUDIT_FORWARD).
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { createActAsAuditRow, createAuditLogRow, type AuditLogDb } from '@/lib/auditForward'
 
 export interface AuditEntry {
   /** The person signed in, never the account an admin acts as (lib/auditActor.ts). */
@@ -26,9 +29,7 @@ export interface AuditEntry {
 }
 
 /** Only the audit table of a transaction client is used; the plugin tests' fake has it too. */
-export interface AuditTx {
-  auditLog: { create(args: { data: Prisma.AuditLogUncheckedCreateInput }): Promise<unknown> }
-}
+export type AuditTx = AuditLogDb
 
 const OPTIONAL_COLUMNS = ['onBehalfOfUserId', 'actorEmail', 'projectId', 'permission'] as const
 
@@ -60,7 +61,7 @@ function logLine(entry: AuditEntry): string {
 export async function writeAudit(entry: AuditEntry): Promise<void> {
   console.info(logLine(entry))
   try {
-    await prisma.auditLog.create({ data: auditRow(entry) })
+    await createAuditLogRow(prisma, auditRow(entry))
   } catch (e) {
     // Never let audit persistence failures break the request path.
     console.error(`[audit] failed to persist ${entry.action}:`, e)
@@ -74,7 +75,7 @@ export async function writeAudit(entry: AuditEntry): Promise<void> {
 export async function writeAuditTx(tx: AuditTx, entry: AuditEntry): Promise<void> {
   console.info(logLine(entry))
   try {
-    await tx.auditLog.create({ data: auditRow(entry) })
+    await createAuditLogRow(tx, auditRow(entry))
   } catch (e) {
     console.error(`[audit] failed to persist ${entry.action} (the change is rolled back):`, e)
     throw e
@@ -112,7 +113,7 @@ export async function writeActAsAudit(entry: ActAsAuditEntry, { strict = false }
     if (value !== undefined && value !== null && value !== '') (data as Record<string, unknown>)[column] = value
   }
   try {
-    await prisma.actAsAudit.create({ data })
+    await createActAsAuditRow(prisma, data)
   } catch (e) {
     console.error(`[audit] failed to persist act-as.${entry.event}:`, e)
     if (strict) throw e

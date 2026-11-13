@@ -27,6 +27,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import type { Session } from '@/lib/session'
 import { pluginsLimitedToSet } from '@/lib/plugins/accessRuleStore'
 import { BUILTIN_SETS, builtinSet } from './builtinSets'
@@ -231,7 +232,7 @@ export async function createSet(
 
   const words = WORDS[kind]
   try {
-    const created = await prisma.$transaction(async (tx) => {
+    const created = await auditedTransaction(prisma, async (tx) => {
       await lockPermissions(tx)
       if (!(await nameFree(tx, name))) return null
       const row = await tx.permissionSet.create({
@@ -299,7 +300,7 @@ export async function updateSet(
     | { kind: 'written'; row: StoredRow | null; signedOut: string[]; instanceDefault: boolean; changed: boolean }
   let outcome: Outcome
   try {
-    outcome = await prisma.$transaction(async (tx): Promise<Outcome> => {
+    outcome = await auditedTransaction(prisma, async (tx): Promise<Outcome> => {
       await lockPermissions(tx)
       let row: StoredRow | null = null
       if (existing) {
@@ -389,7 +390,7 @@ export async function deleteSet(request: NextRequest, session: Session, kind: Se
   type Outcome =
     | { kind: 'missing' | 'default' } | { kind: 'in_use'; holders: number } | { kind: 'plugin_rules'; plugins: string[] }
     | { kind: 'deleted' }
-  const outcome = await prisma.$transaction(async (tx): Promise<Outcome> => {
+  const outcome = await auditedTransaction(prisma, async (tx): Promise<Outcome> => {
     await lockPermissions(tx)
     const row = await tx.permissionSet.findUnique({ where: { id }, select: ROW_SELECT }) as StoredRow | null
     if (!row || row.kind !== kind) return { kind: 'missing' }

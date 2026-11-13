@@ -20,6 +20,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import type { Session } from '@/lib/session'
 import { resolveCapabilities, type CapabilityPrincipal } from './capabilities'
 import { now } from './clock'
@@ -283,7 +284,7 @@ export async function changeUserPermissions(
   }
 
   const permission: PermissionId = target.managed.accountType === 'admin' ? 'admins:manage' : 'users:assign_permissions'
-  const outcome = await prisma.$transaction(async (tx) => {
+  const outcome = await auditedTransaction(prisma, async (tx) => {
     await lockPermissions(tx)
     const row = await tx.user.findUnique({
       where: { id: targetId },

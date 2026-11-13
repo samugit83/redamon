@@ -16,6 +16,7 @@
  * have moved the Root since.
  */
 import prisma from '@/lib/prisma'
+import { auditedTransaction } from '@/lib/auditForward'
 import type { Prisma } from '@prisma/client'
 import { lockedInstanceRoot } from './root'
 
@@ -54,7 +55,7 @@ export async function withLastAdminGuard<T>(
   write: (tx: Prisma.TransactionClient, target: GuardedAccount | null) => Promise<T>,
   { root }: { root?: RootRecheck } = {},
 ): Promise<{ ok: true; value: T } | { ok: false; refused?: RootGuardRefusal }> {
-  return prisma.$transaction(async (tx) => {
+  return auditedTransaction(prisma, async (tx) => {
     if (root) {
       const current = await lockedInstanceRoot(tx)
       if (current && current.userId === targetId) return { ok: false as const, refused: 'root_protected' as const }

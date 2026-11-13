@@ -1158,6 +1158,11 @@ services:
       # version) while RBAC_IDENTITY_ENABLED is on: a revoke made by another copy or
       # a host command lands within it. Blank -> the code default (5000 ms).
       RBAC_AUTHZ_CACHE_MS: ${RBAC_AUTHZ_CACHE_MS:-}
+      # Audit forwarding, read only by webapp/src/lib/auditForward.ts: "stdout"
+      # prints every audit row once as an "[audit-forward] {json}" line in this
+      # container's log, for shipping to an external store; "off" prints none.
+      # Independent of the RBAC switches.
+      AUDIT_FORWARD: ${AUDIT_FORWARD:-off}
       # Scan Timeline (versioned recon graphs). All pass through EMPTY so unset
       # keeps the safe code defaults in webapp/src/lib/scan*.ts. Wired here for the
       # same reason as the knob above: the webapp has NO env_file, so a value set

@@ -10,6 +10,7 @@ import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
 import { normalizeEmail, emailTakenByAnother } from '@/lib/authz/accountEmail'
 import { userAuditEntry, writeUserAudit, type UserAuditFields } from '@/lib/userAudit'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { rbacFlags } from '@/lib/authz/flags'
 import { requireRootPower } from '@/lib/authz/rootPowers'
 import { requireSessionPermission, sessionHolds } from '@/lib/authz/adminPermission'
@@ -162,7 +163,7 @@ export async function POST(request: NextRequest) {
     if (makesAdmin || initial) {
       // A Root action, or one that gives permissions: the account, its sets and its row commit
       // together, or none does (AU-05).
-      user = await prisma.$transaction(async (tx) => {
+      user = await auditedTransaction(prisma, async (tx) => {
         const row = await tx.user.create({ data })
         if (initial) await writeInitialSets(tx, row.id, initial)
         await writeAuditTx(tx, await userAuditEntry(request, session, created(row)))

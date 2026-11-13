@@ -209,6 +209,27 @@ describe('both modes', () => {
     expect(db().invites()[0].reason).toBe('Locked out after a holiday')
   })
 
+  test('AUDIT_FORWARD=stdout: the forwarded copy names no password, step-up password, link, token or hash (AU-06)', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    vi.stubEnv('AUDIT_FORWARD', 'stdout')
+    let link: string
+    try {
+      await signIn('root-1')
+      const temp = await POST(req({ mode: 'temporary', temporaryPassword: TEMP, stepUpPassword: PW.root }), params('admin-2'))
+      expect(temp.status).toBe(200)
+      link = (await (await POST(req({ mode: 'link', stepUpPassword: PW.root }), params('admin-2'))).json()).link
+    } finally {
+      vi.stubEnv('AUDIT_FORWARD', '')
+    }
+    const lines = info.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('[audit-forward] '))
+    expect(lines.map((l) => JSON.parse(l.slice('[audit-forward] '.length)))).toEqual(db().audit().map((row) =>
+      ({ table: 'audit_log', ...JSON.parse(JSON.stringify(row)) })))
+    expect(lines.map((l) => JSON.parse(l.slice('[audit-forward] '.length)).action)).toEqual(['user.credentials_reset', 'user.credentials_reset'])
+    for (const secret of [TEMP, PW.root, link, tokenOf(link), sha256(tokenOf(link)), '$2a$', '$2b$']) {
+      for (const line of lines) expect(line).not.toContain(secret)
+    }
+  })
+
   test('a notice joins the account\'s pending notices: who, when, why, how', async () => {
     db().seedUsers([{ id: 'member-3', lastLoginAt: new Date('2026-11-10T08:00:00Z') }])
     await signIn('admin-1')

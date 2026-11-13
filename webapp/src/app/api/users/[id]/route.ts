@@ -13,6 +13,7 @@ import { requireStepUp } from '@/lib/authz/stepUp'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from '@/lib/authz/adminSet'
 import { userAuditEntry, writeUserAudit, type UserAuditFields } from '@/lib/userAudit'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rootProtectedAnswer, rootProtectedRefusal } from '@/lib/authz/rootProtection'
 import { rbacFlags } from '@/lib/authz/flags'
@@ -239,7 +240,7 @@ async function updateWithIdentity(
     }
 
     type Outcome = { refused: RootGuardRefusal } | { missing: true } | { user: Awaited<ReturnType<typeof writeEdit>> }
-    const result = await prisma.$transaction(async (tx): Promise<Outcome> => {
+    const result = await auditedTransaction(prisma, async (tx): Promise<Outcome> => {
       const root = await lockedInstanceRoot(tx)
       if (root && root.userId === id && id !== session.userId) return { refused: 'root_protected' }
       if (needsRoot && !(root && root.userId === session.userId && root.confirmed)) return { refused: 'root_only' }

@@ -10,6 +10,7 @@ import type { InstanceSettings, Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { rbacFlags } from '@/lib/authz/flags'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { actorFields, type AuditActor } from '@/lib/auditActor'
 
 /** The user rows that configure a tunnel: an ngrok token or a chisel URL (chisel runs without auth). */
@@ -209,7 +210,7 @@ export interface InstanceSettingsWrite {
  */
 export async function writeInstanceSettings({ data, actor, tunnelVia, changedKeys }: InstanceSettingsWrite): Promise<InstanceSettings> {
   const fields = Object.keys(data)
-  return prisma.$transaction(async (tx) => {
+  return auditedTransaction(prisma, async (tx) => {
     let row = await tx.instanceSettings.update({
       where: { id: INSTANCE_SETTINGS_ID },
       data: { ...(data as Prisma.InstanceSettingsUpdateInput), updatedById: actor.actorId },

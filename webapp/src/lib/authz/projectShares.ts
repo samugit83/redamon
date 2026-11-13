@@ -22,6 +22,7 @@ import { createHash } from 'crypto'
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { writeAuditTx, type AuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { auditActor, auditActorOf, sessionActor, type AuditActor } from '@/lib/auditActor'
 import { closeAgentSockets } from '@/lib/agentSockets'
 import { getAuthzIdentity, type EffectiveUser } from '@/lib/session'
@@ -308,7 +309,7 @@ export async function grantShare(auth: PermissionContext, policy: Readonly<Shari
   const projectId = auth.access!.project.id
   let created: ShareRecord
   try {
-    created = await prisma.$transaction(async (tx) => {
+    created = await auditedTransaction(prisma, async (tx) => {
       const existing = await tx.projectCollaborator.findUnique({
         where: { projectId_userId: { projectId, userId: recipient.id } },
         select: SHARE_SELECT,
@@ -378,7 +379,7 @@ export async function updateShare(
   const access = auth.access
   if (!access) throw new Error('[rbac] a share route checked no project')
   const projectId = access.project.id
-  const outcome = await prisma.$transaction(async (tx) => {
+  const outcome = await auditedTransaction(prisma, async (tx) => {
     const where = { projectId_userId: { projectId, userId } }
     const before = await tx.projectCollaborator.findUnique({ where, select: SHARE_SELECT }) as ShareRecord | null
     if (!before) return { kind: 'missing' as const }
@@ -424,7 +425,7 @@ async function removeShare(
   audit: { action: 'project.share.revoke' | 'project.share.leave'; actor: AuditActor; permission?: string },
   guard?: (row: ShareRecord) => NextResponse | null,
 ): Promise<'missing' | 'removed' | NextResponse> {
-  return prisma.$transaction(async (tx) => {
+  return auditedTransaction(prisma, async (tx) => {
     const row = await tx.projectCollaborator.findUnique({
       where: { projectId_userId: { projectId, userId } },
       select: SHARE_SELECT,

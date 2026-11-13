@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import type { Session } from '@/lib/session'
 import { BUILTIN_MEMBER_SETS, builtinSet } from '@/lib/authz/builtinSets'
 import { lockPermissions, personAuditEntry } from '@/lib/authz/permissionAdmin'
@@ -73,7 +74,7 @@ export async function saveAccessRules(
 ): Promise<NextResponse> {
   const ids = parseSetIds(body.setIds)
   if (ids instanceof NextResponse) return ids
-  const outcome = await prisma.$transaction(async (tx): Promise<Outcome> => {
+  const outcome = await auditedTransaction(prisma, async (tx): Promise<Outcome> => {
     await lockPermissions(tx)
     const stored = ids.filter((id) => !id.startsWith('builtin:'))
     const found = stored.length === 0
