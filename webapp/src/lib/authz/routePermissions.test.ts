@@ -91,6 +91,8 @@ const ASKED_IN_LIB: Readonly<Record<string, string>> = {
   'POST /api/admin/admin-profiles': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
   'PUT /api/admin/admin-profiles/[id]': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
   'DELETE /api/admin/admin-profiles/[id]': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
+  'DELETE /api/admin/projects/[id]': "projects:administer is Root-only: requireRootPower (the confirmed Root with step-up) before Root's forced delete (step 6.4)",
+  'DELETE /api/admin/shares/[projectId]/[userId]': "projects:administer is Root-only: requireRootPower (the confirmed Root with step-up) before Root's force-revoke (step 6.4)",
   'GET /api/admin/llm-providers': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
   'POST /api/admin/llm-providers': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
   'PUT /api/admin/llm-providers/[providerId]': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',

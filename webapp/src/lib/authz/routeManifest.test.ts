@@ -216,6 +216,9 @@ const SAME_ORIGIN_ROUTES = [
   '/api/admin/llm-providers/policy',
   '/api/admin/permission-sets',
   '/api/admin/permission-sets/[id]',
+  // Root's forced delete and force-revoke (step 6.4): a project's or a share's end, same-origin like the share routes.
+  '/api/admin/projects/[id]',
+  '/api/admin/shares/[projectId]/[userId]',
   '/api/auth/act-as',
   '/api/account/sessions/[sid]',
   '/api/auth/sessions/revoke-all',
@@ -252,7 +255,7 @@ const SAME_ORIGIN_FAMILIES = [
   /^\/api\/users\/\[id\](\/(password|permissions|disable|enable|revoke-sessions|reset-credentials|settings|invite\/[^/]+|mcp-tokens(\/\[tokenId\])?|sessions(\/\[sid\])?))?$/,
   /^\/api\/auth\/(act-as|sessions\/.+)$/,
   /^\/api\/root\//,
-  /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?|llm-providers(\/\[providerId\]|\/policy)?)$/,
+  /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?|llm-providers(\/\[providerId\]|\/policy)?|projects\/\[id\]|shares\/\[projectId\]\/\[userId\])$/,
   /^\/api\/invite\//,
   /^\/api\/account\//,
   /^\/api\/projects\/\[id\]\/(collaborators(\/\[userId\])?|leave|breakglass)$/,
