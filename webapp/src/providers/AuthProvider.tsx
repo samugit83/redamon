@@ -4,6 +4,7 @@ import { useContext, useState, useEffect, useCallback, useMemo, useRef, ReactNod
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
 import type { PermissionId } from '@/lib/authz/permissions'
 import type { RbacFlags } from '@/lib/authz/flags'
+import type { SharingInForce } from '@/lib/authz/sharingPolicy'
 import { forgetActAsPick } from '@/lib/actAsPick'
 import { AuthContext } from './authContext'
 
@@ -58,6 +59,11 @@ export interface AuthUser {
   capabilities?: PermissionId[] | null
   /** The RBAC switch states (every account). */
   flags?: RbacFlags
+  /**
+   * RBAC_SHARING_ENABLED on: whether sharing is in force (the switch and the instance policy) and
+   * the highest level a share may be granted at now; null when it could not be read. Absent off.
+   */
+  sharing?: SharingInForce | null
   /**
    * Administrator accounts with RBAC_PERMISSIONS_ENABLED on: the account the admin acts as, null when
    * none. Absent otherwise (the act-as cookie then follows the browser's remembered choice).

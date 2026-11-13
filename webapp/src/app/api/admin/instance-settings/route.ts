@@ -12,6 +12,10 @@ import { accountTypeOf } from '@/lib/authz/root'
 import {
   changedSecurityPolicyFields, parseSecurityPolicyPatch, securityPolicyView,
 } from '@/lib/instanceSecurityPolicy'
+import {
+  changedSharingPolicyFields, invalidateSharingPolicy, parseSharingPolicy, parseSharingPolicyPatch, sharingPolicyToStore,
+  type SharingPolicyPatch,
+} from '@/lib/authz/sharingPolicy'
 import { auditActorOf, sessionActor } from '@/lib/auditActor'
 import { sanitizeBodyRules } from '@/lib/captureBodyRules'
 import { readJsonBody } from '@/lib/jsonBody'
@@ -51,6 +55,12 @@ import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
  * public base URL; step 2.6) is the confirmed Root's: every administrator account reads it
  * (it is not a platform tool), a change by anyone else is 403 `root_only`, and Root changes it
  * with its password. A value sent unchanged needs neither.
+ *
+ * The sharing policy (step 4.2, SH-21) follows the same rule, with RBAC_SHARING_ENABLED on only:
+ * admins read it as it is in force (lib/authz/sharingPolicy.ts), only the confirmed Root changes
+ * it, with its password, and the whole policy is stored (no user-row mirror: 7.7.x has no home for
+ * it). With the switch off the route is the one before: the policy is neither shown nor read from
+ * a body.
  */
 
 const TUNNEL_STRINGS = ['ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
@@ -98,6 +108,7 @@ async function access(fresh: boolean): Promise<Access | NextResponse> {
 }
 
 const ROOT_ONLY_POLICY = 'Only Root can change the instance security policy.'
+const ROOT_ONLY_SHARING = 'Only Root can change the instance sharing policy.'
 
 /** What a browser sees: the secrets masked, each group only for whoever holds it, the security policy for an admin. */
 function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings: SaveWarning[] = []) {
@@ -115,6 +126,9 @@ function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings
     canManageCapture: a.capture,
     ...(a.admin
       ? { securityPolicy: securityPolicyView(row as unknown as Record<string, unknown>), canManageSecurityPolicy: standing === 'confirmed' }
+      : {}),
+    ...(a.admin && rbacFlags().sharing
+      ? { sharingPolicy: parseSharingPolicy(row.sharingPolicy), canManageSharingPolicy: standing === 'confirmed' }
       : {}),
     ...(warnings.length ? { warnings } : {}),
   }
@@ -147,6 +161,11 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   if ('error' in policy) {
     return NextResponse.json({ error: policy.error.message, code: 'invalid_field', field: policy.error.field }, { status: 400 })
   }
+  const sharing: { patch: SharingPolicyPatch } | { error: { field: string; message: string } } =
+    rbacFlags().sharing && 'sharingPolicy' in body ? parseSharingPolicyPatch(body.sharingPolicy) : { patch: {} }
+  if ('error' in sharing) {
+    return NextResponse.json({ error: sharing.error.message, code: 'invalid_field', field: sharing.error.field }, { status: 400 })
+  }
 
   const row = await instanceSettingsInForce()
   if (!row) return notReady()
@@ -164,19 +183,23 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     })
   }
   const policyChanges = changedSecurityPolicyFields(stored, policy.patch)
-  const standing = a.admin || policyChanges.length ? await rootStanding(a.session.userId) : 'none'
+  const sharingChanges = changedSharingPolicyFields(parseSharingPolicy(row.sharingPolicy), sharing.patch)
+  const standing = a.admin || policyChanges.length || sharingChanges.length ? await rootStanding(a.session.userId) : 'none'
   if (policyChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_POLICY)
+  if (sharingChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_SHARING)
 
   // A new chisel URL must come with its auth typed again (HD-24), and re-pointing a
   // configured tunnel takes the person's password (ID-25); before anything is written.
   const reentry = settingsSecretReentry(stored, body)
   if (reentry) return secretReentryResponse(reentry)
-  if (settingsEndpointChange(stored, body) || policyChanges.length) {
+  if (settingsEndpointChange(stored, body) || policyChanges.length || sharingChanges.length) {
     const refused = await requireStepUp(request, body.stepUpPassword)
     if (refused) return refused
   }
 
-  if (!tunnelChanges.length && !captureChanges.length && !policyChanges.length) return NextResponse.json(view(row, a, standing))
+  if (!tunnelChanges.length && !captureChanges.length && !policyChanges.length && !sharingChanges.length) {
+    return NextResponse.json(view(row, a, standing))
+  }
 
   const data: Record<string, unknown> = {}
   for (const f of tunnelChanges) {
@@ -186,6 +209,7 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     data[f] = f === 'captureProxyEnabled' ? Boolean(body.captureProxyEnabled) : capturePatch[f]
   }
   for (const f of policyChanges) data[f] = policy.patch[f]
+  if (sharingChanges.length) data.sharingPolicy = sharingPolicyToStore(row.sharingPolicy, sharing.patch)
   // A use of the escape hatch is recorded only when it changes something.
   if (tunnelChanges.length && a.tunnels.via === 'compat') {
     await sharedToolAccess(a.principal, 'tunnels')
@@ -195,7 +219,9 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     data,
     actor: auditActorOf(sessionActor(a.session)),
     tunnelVia: tunnelChanges.length ? a.tunnels.via : null,
+    ...(sharingChanges.length ? { changedKeys: { sharingPolicy: sharingChanges } } : {}),
   })
+  if (sharingChanges.length) invalidateSharingPolicy()
 
   const warnings: SaveWarning[] = []
   const captureWarning = await reconcileCaptureProxy(saved, {

@@ -8,6 +8,7 @@ import type { PermissionId } from '@/lib/authz/permissions'
 import { pendingLegacyGrantCount } from '@/lib/authz/updateReview'
 import { accountTypeOf, loadInstanceRoot, type AccountType, type InstanceRoot } from '@/lib/authz/root'
 import { currentActAsStart, impersonationPolicy } from '@/lib/authz/actAs'
+import { sharingInForce, type SharingInForce } from '@/lib/authz/sharingPolicy'
 import type { ActingAsView, AdminNotices, ImpersonationLimits, RootNotice } from '@/providers/AuthProvider'
 
 // The boot backfill's row (scripts/backfill-rbac-root.mjs): when an automatic Root was chosen.
@@ -95,6 +96,21 @@ async function impersonationView(): Promise<ImpersonationLimits | null> {
   }
 }
 
+/**
+ * RBAC_SHARING_ENABLED on (step 4.2): whether sharing is in force (the switch and the instance
+ * policy) and the highest level a share may be granted at now, for every account's share screens.
+ * The policy is cached (sharingPolicy.ts), so the WebSocket `auth_request` path stays at most one
+ * indexed read per bound. Null when unread (logged): the session never fails.
+ */
+async function sharingView(): Promise<SharingInForce | null> {
+  try {
+    return await sharingInForce()
+  } catch (err) {
+    console.error(`[rbac] could not read the sharing policy: ${safeErrorCode(err)}`)
+    return null
+  }
+}
+
 // Every admin page load asks while Root is unconfirmed. loadInstanceRoot hands back one frozen
 // object for as long as it caches the row (RBAC_AUTHZ_CACHE_MS, invalidateInstanceRoot), so
 // keyed on it the date lives and goes exactly as the Root does.
@@ -158,6 +174,8 @@ export async function GET() {
       ...(root ? { ...user, accountType: root.accountType } : user),
       capabilities: await capabilitiesView(session, root),
       flags: rbacFlags(),
+      // Switch off: no key and no read, the answer before step 4.2 (`flags.sharing` says off).
+      ...(rbacFlags().sharing ? { sharing: await sharingView() } : {}),
     }
     // The real signed-in account's type, read from the database: only admins see the switch.
     if (!isAdministrator({ id: session.userId, role: session.role })) return NextResponse.json(account)

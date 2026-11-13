@@ -222,6 +222,9 @@ const IDENTITY_READERS: string[] = [
   'src/lib/authz/rootTransfer.ts',
   // Step 2.11: the session lifetimes, read only with the switch on (off: Phase 1's 7 days and 12 h).
   'src/lib/authz/sessionLifetime.ts',
+  // Step 4.2: the instance sharing policy, read only with the sharing switch on, which needs this
+  // switch (sharing.flags.off.test.ts).
+  'src/lib/authz/sharingPolicy.ts',
   // Step 3.11: an admin's profile and the session version a removal raises, reached only through
   // a route that answers 404 with the permissions switch off.
   'src/lib/authz/userPermissionAdmin.ts',

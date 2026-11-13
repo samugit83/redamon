@@ -191,11 +191,13 @@ const GROUPS = [
 ] as const
 
 export interface InstanceSettingsWrite {
-  /** The changed columns with their new values (tunnel and capture columns only). */
+  /** The changed columns with their new values. Only the tunnel and capture groups are mirrored. */
   data: Record<string, unknown>
   actor: AuditActor
   /** How the actor may change the tunnel, when the write changes it: admin, legacy, compat. */
   tunnelVia?: string | null
+  /** For a JSON column, the settings inside it that changed (names only), for the audit row. */
+  changedKeys?: Record<string, string[]>
 }
 
 /**
@@ -205,7 +207,7 @@ export interface InstanceSettingsWrite {
  * is gone), and the `instance.settings_changed` audit row naming the fields, never their
  * values: all in one transaction, which a failed audit write rolls back (AU-05).
  */
-export async function writeInstanceSettings({ data, actor, tunnelVia }: InstanceSettingsWrite): Promise<InstanceSettings> {
+export async function writeInstanceSettings({ data, actor, tunnelVia, changedKeys }: InstanceSettingsWrite): Promise<InstanceSettings> {
   const fields = Object.keys(data)
   return prisma.$transaction(async (tx) => {
     let row = await tx.instanceSettings.update({
@@ -237,7 +239,7 @@ export async function writeInstanceSettings({ data, actor, tunnelVia }: Instance
       action: 'instance.settings_changed',
       targetType: 'instance',
       targetId: INSTANCE_SETTINGS_ID,
-      after: { fields, ...(tunnelVia ? { tunnelVia } : {}), mirroredTo: mirror },
+      after: { fields, ...(tunnelVia ? { tunnelVia } : {}), ...(changedKeys ? { changedKeys } : {}), mirroredTo: mirror },
     })
     return row
   })
