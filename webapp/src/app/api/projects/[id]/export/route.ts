@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requirePermission } from '@/lib/authz/guards'
+import { requireLevel, requirePermission } from '@/lib/authz/guards'
 import { stripStepContent } from '@/lib/authz/stepContent'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
@@ -31,6 +31,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // most sensitive project route. Only the effective owner may export it.
     const auth = await requirePermission(request, 'project:export', { projectId: id })
     if (auth instanceof NextResponse) return auth
+    // The bundle carries every conversation's chat messages and the raw scan artifacts as they are,
+    // so it is Raw data & files (R*) too, whatever level project:export is given.
+    const raw = requireLevel(auth, 'R*')
+    if (raw) return raw
 
     // 1. Fetch project from PostgreSQL
     const project = await prisma.project.findUnique({ where: { id } })
@@ -129,8 +133,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       await session.close()
     }
     const { relationships: neo4jRelationships, referenceLinks } = graph
-    // Chain-step content is raw data (SH-30): an exporter below R* (none in Phase 4: export is
-    // Manage, the owner's) gets each chain node without it.
+    // Every graph output passes through the step-content helper (SH-30); an exporter is at R*
+    // (checked above), so it changes nothing unless that check is ever relaxed.
     const neo4jNodes = stripStepContent(graph.nodes, auth.access)
 
     // 4. Build manifest. 1.1.0 added neo4j/reference_links.json; an older

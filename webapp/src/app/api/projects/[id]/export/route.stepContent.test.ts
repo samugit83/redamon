@@ -1,9 +1,10 @@
 /**
- * The export's `neo4j/nodes.json` passes through the step-content helper (step 4.9, SH-30), as every
- * output that serialises chain nodes does. `project:export` is Manage, so in Phase 4 only the owner
- * (whole: it reaches `R*`) gets an export; a reader below `R*` stands for Phase 5's Manage
- * collaborator without Raw data & files, who would get each chain node without its content. The
- * other node labels, and the relationships, are untouched.
+ * The export bundles the whole project: nodes.json, but also every conversation's chat messages
+ * and the raw scan artifacts (recon_*.json, gvm_*.json, github_hunt_*.json). So it needs Raw data
+ * & files (R*) on top of `project:export` (4.9 review): a reader below R* (Phase 5's Manage
+ * collaborator without Raw data, should one exist) gets 403 before anything is read. The owner and
+ * a reader with Raw data & files get the bundle with every chain node whole; `neo4j/nodes.json`
+ * still passes through the step-content helper, as every graph output does.
  *
  * Runs the real export route; the guard answers a context with the access under test, Prisma
  * answers every query with nothing, the graph export is a double.
@@ -13,7 +14,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import JSZip from 'jszip'
 
-const h = vi.hoisted(() => ({ access: null as unknown }))
+const h = vi.hoisted(() => ({ access: null as unknown, reads: [] as string[] }))
 
 const PROJECT = {
   id: 'p1', userId: 'alice', name: 'Example project', targetDomain: 'rbac.test', engagementKind: 'internal',
@@ -37,6 +38,7 @@ vi.mock('@/lib/authz/guards', async (orig) => ({
 vi.mock('@/lib/prisma', () => {
   const model = (name: string) => new Proxy({}, {
     get: (_t, method: string) => async () => {
+      h.reads.push(`${name}.${method}`)
       if (name === 'project' && (method === 'findUnique' || method === 'findFirst')) return PROJECT
       if (method === 'findMany') return []
       if (method === 'count') return 0
@@ -47,7 +49,7 @@ vi.mock('@/lib/prisma', () => {
 })
 vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: async () => ({ records: [] }), close: async () => {} }) }))
 vi.mock('@/lib/projectExport/graph', () => ({
-  exportProjectGraph: async () => ({
+  exportProjectGraph: async () => (h.reads.push('graph'), {
     nodes: NODES.map(n => ({ ...n, properties: { ...n.properties } })),
     relationships: [{ type: 'FAILED_WITH', startExportId: 'e1', endExportId: 'e2', properties: {} }],
     referenceLinks: [],
@@ -71,10 +73,11 @@ async function exportedNodes(): Promise<Array<{ labels: string[]; properties: Re
 }
 
 beforeEach(() => {
+  h.reads.length = 0
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
-describe('the export\'s neo4j/nodes.json', () => {
+describe('the export: Raw data & files first, then neo4j/nodes.json whole', () => {
   test.each([
     ['the owner', access('owner', true, 'owner')],
     ['a reader with Raw data & files', access('read', true, 'share')],
@@ -83,15 +86,14 @@ describe('the export\'s neo4j/nodes.json', () => {
     expect(await exportedNodes()).toEqual(NODES)
   })
 
-  test('a reader below R* (Phase 5\'s Manage without Raw data): the chain nodes without their content, the rest whole', async () => {
-    h.access = access('read', false, 'share')
-    const nodes = await exportedNodes()
-    expect(nodes.map(n => n._exportId)).toEqual(['e1', 'e2', 'e3', 'e4'])
-    for (const key of STEP_CONTENT_PROPS) expect(nodes[0].properties).not.toHaveProperty(key)
-    expect(nodes[0].properties).toEqual({ step_id: 's-1', chain_id: 'c-1', tool_name: 'curl', iteration: 1 })
-    expect(nodes[1].properties).toEqual({ failure_id: 'f-1', failure_type: 'tool_error' })
-    expect(nodes[2].properties).toEqual({ decision_id: 'd-1', decision_type: 'phase_transition' })
-    expect(nodes[3]).toEqual(NODES[3])
-    expect(JSON.stringify(nodes)).not.toMatch(/rbac-fake/)
+  test.each([
+    ['a read share without Raw data', access('read', false, 'share')],
+    ['an overseer', access('read', false, 'oversight')],
+  ])('%s: 403 naming project:export and R*, before any read (the zip carries chat messages and raw artifacts)', async (_who, a) => {
+    h.access = a
+    const res = await GET(new Request('http://localhost:3000/api/projects/p1/export') as never, { params: Promise.resolve({ id: 'p1' }) })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ code: 'forbidden', permission: 'project:export', level: 'R*' })
+    expect(h.reads).toEqual([])
   })
 })
