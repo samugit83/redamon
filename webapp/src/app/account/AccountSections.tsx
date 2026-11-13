@@ -199,7 +199,7 @@ function RootTransferRow({ selfId }: { selfId: string }) {
 
 interface NoticeItem {
   id: string
-  type: 'credentials_reset' | 'email_changed'
+  type: 'credentials_reset' | 'email_changed' | 'break_glass'
   at: string
   by: { name: string; email: string }
   reason?: string | null
@@ -207,6 +207,8 @@ interface NoticeItem {
   from?: string
   to?: string
   self?: boolean
+  durationMinutes?: number
+  project?: { id: string; name: string }
   shownAt: string | null
 }
 
@@ -232,6 +234,9 @@ const ACT_AS_ENDED: Readonly<Record<string, string>> = {
 
 function noticeText(n: NoticeItem): string {
   if (n.type === 'email_changed') return `Your sign-in email was changed from ${n.from} to ${n.to}`
+  if (n.type === 'break_glass') {
+    return `Break-glass access to your project "${n.project?.name ?? ''}" was opened for up to ${n.durationMinutes ?? 0} min${n.reason ? ` (reason: ${n.reason})` : ''}`
+  }
   return `Your password was reset with ${n.mode === 'link' ? 'a reset link' : 'a temporary password'}${n.reason ? ` (reason: ${n.reason})` : ''}`
 }
 

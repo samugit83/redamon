@@ -1,5 +1,6 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import { Globe, Calendar, Settings, Trash2, UserRound } from 'lucide-react'
 import Link from 'next/link'
 import styles from './ProjectCard.module.css'
@@ -15,6 +16,10 @@ interface ProjectCardProps {
   /** A project shared with the person: who shared it ("Name (email)") and their level badge. */
   sharedBy?: string
   accessLabel?: string
+  /** "Owner: Name (email)" on a project reached by oversight or break-glass, instead of sharedBy. */
+  ownedBy?: string
+  /** More controls beside settings (Root's break-glass on the oversight list); each stops its click's propagation. */
+  extraActions?: ReactNode
   onSelect?: () => void
   onDelete?: () => void
 }
@@ -28,6 +33,8 @@ export function ProjectCard({
   isSelected,
   sharedBy,
   accessLabel,
+  ownedBy,
+  extraActions,
   onSelect,
   onDelete
 }: ProjectCardProps) {
@@ -49,6 +56,7 @@ export function ProjectCard({
         </div>
         <div className={styles.actions}>
           {accessLabel && <span className="tag" title="Your access to this project">{accessLabel}</span>}
+          {extraActions}
           <Link
             href={`/projects/${id}/settings`}
             className="iconButton"
@@ -85,6 +93,12 @@ export function ProjectCard({
             <div className={styles.metaItem}>
               <UserRound size={12} />
               <span>Shared by {sharedBy}</span>
+            </div>
+          )}
+          {ownedBy && (
+            <div className={styles.metaItem}>
+              <UserRound size={12} />
+              <span>Owner: {ownedBy}</span>
             </div>
           )}
         </div>

@@ -566,6 +566,13 @@ describe('oversight and break-glass with sharing not in force (step 4.14)', () =
       }
     }
   })
+
+  test('the projects page offers the oversight filter only when /api/auth/me reports sharing in force', () => {
+    const src = readFileSync(path.join(WEBAPP, 'src/app/projects/page.tsx'), 'utf8')
+    expect(src).toMatch(/const showOversight = sharingInForce && canOversee && !auth\?\.user\?\.actingAs/)
+    expect(src).toMatch(/useOversightProjects\(showOversight && listFilter === 'oversight'\)/)
+    expect(src.match(/\/breakglass`/g)).toHaveLength(2)
+  })
 })
 
 describe('MCP tokens with sharing not in force (step 4.10)', () => {

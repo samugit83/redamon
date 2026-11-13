@@ -154,3 +154,33 @@ describe('the act-as notice (step 3.14, IM-10)', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
   })
 })
+
+describe('the break-glass notice (step 4.14, SH-18)', () => {
+  const opened = (over: Record<string, unknown> = {}) => ({
+    id: 'b1', type: 'break_glass', at: '2026-11-12T10:00:00.000Z', by: { name: 'Rita Root', email: 'root@e2e.local' },
+    reason: 'incident 7', durationMinutes: 60, project: { id: 'P1', name: 'Client X' }, ...over,
+  })
+
+  test('owner notified: Root, the project, how long, raw data included, why, and where to look', () => {
+    const text = noticeMessage(readNoticeViews([opened()])[0])
+    expect(text).toContain('Rita Root (root@e2e.local)')
+    expect(text).toContain('"Client X"')
+    expect(text).toContain('60 min')
+    expect(text).toMatch(/raw data/i)
+    expect(text).toContain('Reason: incident 7.')
+    expect(text).toContain('Activity')
+  })
+
+  test('only well-formed ones are read', () => {
+    expect(readNoticeViews([opened({ project: null }), opened({ reason: null }), opened({ durationMinutes: 0 }), opened()])).toHaveLength(1)
+  })
+
+  test('shown in the app dialog under its own title', async () => {
+    const onDone = vi.fn()
+    render(<AlertProvider><Harness notices={[opened()]} onDone={onDone} /></AlertProvider>)
+    const dialog = await screen.findByRole('dialog', { name: 'Root opened break-glass access to your project' })
+    expect(dialog).toHaveTextContent('incident 7')
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
+  })
+})

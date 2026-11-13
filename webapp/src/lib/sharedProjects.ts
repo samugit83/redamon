@@ -24,6 +24,9 @@ export function splitProjectList<T extends WithMyAccess>(rows: readonly T[]): { 
 
 export function accessBadge(myAccess: MyAccess): string {
   if (myAccess.level === 'owner') return 'Owner'
+  // Step 4.14: the "All projects (oversight)" list names how an admin reaches each project.
+  if (myAccess.via === 'oversight') return 'Oversight (Read)'
+  if (myAccess.via === 'break_glass') return 'Break-glass (Read + Raw data)'
   return myAccess.toggles.rawData ? 'Read + Raw data' : 'Read'
 }
 

@@ -88,6 +88,12 @@
   margin: 0;
 }
 
+.sectionNote {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
 .sectionEmpty {
   display: flex;
   align-items: center;

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, FolderOpen, Users, RefreshCw, Trash2, Upload, AlertTriangle } from 'lucide-react'
+import { Plus, FolderOpen, Users, RefreshCw, Trash2, Upload, AlertTriangle, ShieldAlert, ShieldOff } from 'lucide-react'
 import Link from 'next/link'
 import { useProjects, useDeleteProject, type ProjectListItem } from '@/hooks/useProjects'
 import { useUsers, useCreateUser, useDeleteUser } from '@/hooks/useUsers'
@@ -11,33 +11,38 @@ import { useOptionalAuth } from '@/providers/AuthProvider'
 import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { accountTypeFor } from '@/components/auth/IdentityLabel'
 import type { ActAsDialogTarget } from '@/components/auth/ActAsDialog'
+import { BreakGlassDialog, type BreakGlassInput, type BreakGlassTarget } from '@/components/auth/BreakGlassDialog'
+import { useOversightProjects } from '@/hooks/useOversightProjects'
 import { ProjectCard } from '@/components/projects/ProjectCard'
 import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
 import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
 import { accessBadge, isSharedWithMe, sharedByLabel, splitProjectList } from '@/lib/sharedProjects'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
-import { errorMessage } from '@/lib/apiError'
+import { errorMessage, fetchJson, fetchOk } from '@/lib/apiError'
 import { ImportModal } from './ImportModal'
 import styles from './page.module.css'
 
-type ListFilter = 'all' | 'owned' | 'shared'
+type ListFilter = 'all' | 'owned' | 'shared' | 'oversight'
 
 const LIST_FILTERS: ReadonlyArray<{ value: ListFilter; label: string }> = [
   { value: 'all', label: 'All' },
   { value: 'owned', label: 'My projects' },
   { value: 'shared', label: 'Shared with me' },
 ]
+const OVERSIGHT_FILTER: { value: ListFilter; label: string } = { value: 'oversight', label: 'All projects (oversight)' }
 
 export default function ProjectsPage() {
   const router = useRouter()
   const { userId, setUserId, setCurrentProject } = useProject()
-  const { alertError, dangerConfirm } = useAlertModal()
+  const { alertError, dangerConfirm, confirm } = useAlertModal()
   const toast = useToast()
   // The user bar is the directory's (UI-03): members never see it.
   const canReadUsers = useCan('users:read')
   const canSwitchUser = useCan('users:impersonate')
   const canCreateUsers = useCan('users:create')
   const canDeleteUsers = useCan('users:delete')
+  const canOversee = useCan('projects:oversee')
+  const canBreakGlass = useCan('projects:administer')
   const [showUserModal, setShowUserModal] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [newUserName, setNewUserName] = useState('')
@@ -65,6 +70,17 @@ export default function ProjectsPage() {
   const sharingInForce = auth?.user?.sharing?.enabled === true
   const { owned, shared } = splitProjectList(projects ?? [])
   const showShared = sharingInForce && shared.length > 0
+  // Step 4.14: a holder of projects:oversee (never while acting as someone: auth/me's set is then what
+  // both may use, which leaves the admin's own powers out) lists every project, read only, from the
+  // same filter; opening one is the audited read. Root may open break-glass on a card.
+  const showOversight = sharingInForce && canOversee && !auth?.user?.actingAs
+  const showFilter = showShared || showOversight
+  const filters = [
+    ...LIST_FILTERS.filter(f => f.value !== 'shared' || showShared),
+    ...(showOversight ? [OVERSIGHT_FILTER] : []),
+  ]
+  const oversight = useOversightProjects(showOversight && listFilter === 'oversight')
+  const [glassTarget, setGlassTarget] = useState<BreakGlassTarget | null>(null)
 
   const actAsTarget = (id: string): ActAsDialogTarget | undefined => {
     const picked = users?.find(u => u.id === id)
@@ -155,6 +171,66 @@ export default function ProjectsPage() {
   }
 
   const isLoading = usersLoading || projectsLoading
+
+  const openBreakGlass = async (input: BreakGlassInput) => {
+    if (!glassTarget) return
+    const { breakGlass } = await fetchJson<Record<'breakGlass', { expiresAt: string }>>(`/api/projects/${glassTarget.id}/breakglass`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: input.reason, durationMinutes: input.durationMinutes, stepUpPassword: input.password }),
+    }, 'Break-glass was refused')
+    toast.success(`Break-glass open until ${new Date(breakGlass.expiresAt).toLocaleTimeString()}`)
+    oversight.refetch()
+  }
+
+  const closeBreakGlass = async (project: ProjectListItem) => {
+    if (!(await confirm(`Close your break-glass access to "${project.name}" now? You keep reading it by oversight.`, 'Close break-glass', { confirmLabel: 'Close it' }))) return
+    try {
+      await fetchOk(`/api/projects/${project.id}/breakglass`, { method: 'DELETE' }, 'Could not close break-glass')
+      toast.success('Break-glass closed')
+    } catch (error) {
+      alertError(errorMessage(error, 'Could not close break-glass'))
+    }
+    oversight.refetch()
+  }
+
+  // A card of the oversight list: its owner and how the admin reaches it, opened read only; Root's
+  // break-glass controls on someone else's project.
+  const renderOversightCard = (project: ProjectListItem) => {
+    const access = project.myAccess
+    if (!access || access.level === 'owner') return renderCard(project)
+    const owner = sharedByLabel(project)
+    const glassOpen = access.via === 'break_glass'
+    const action = canBreakGlass ? (
+      <button
+        type="button"
+        className="iconButton"
+        title={glassOpen ? 'Close break-glass' : 'Break-glass: read everything, raw data included'}
+        aria-label={glassOpen ? `Close break-glass on ${project.name}` : `Open break-glass on ${project.name}`}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (glassOpen) void closeBreakGlass(project)
+          else setGlassTarget({ id: project.id, name: project.name, owner })
+        }}
+      >
+        {glassOpen ? <ShieldOff size={14} /> : <ShieldAlert size={14} />}
+      </button>
+    ) : undefined
+    return (
+      <ProjectCard
+        key={project.id}
+        id={project.id}
+        name={project.name}
+        target={projectTargetLabel(project)}
+        description={project.description}
+        createdAt={project.createdAt}
+        ownedBy={owner}
+        accessLabel={accessBadge(access)}
+        extraActions={action}
+        onSelect={() => handleSelectProject(project)}
+      />
+    )
+  }
 
   // A shared project's card names its owner and the person's level, and offers no delete (the
   // owner's alone), wherever it is listed.
@@ -277,10 +353,10 @@ export default function ProjectsPage() {
             Retry
           </button>
         </div>
-      ) : showShared ? (
+      ) : showFilter ? (
         <>
           <div className={styles.listFilter} role="group" aria-label="Show projects">
-            {LIST_FILTERS.map(f => (
+            {filters.map(f => (
               <button
                 key={f.value}
                 type="button"
@@ -292,7 +368,30 @@ export default function ProjectsPage() {
               </button>
             ))}
           </div>
-          {listFilter !== 'shared' && (
+          {listFilter === 'oversight' && (
+            <section className={styles.listSection} aria-labelledby="projects-oversight-heading">
+              <h2 id="projects-oversight-heading" className={styles.sectionTitle}>All projects (oversight)</h2>
+              <p className={styles.sectionNote}>
+                Read only, without raw data and files. Opening a project is recorded in its activity, which its owner sees.
+              </p>
+              {oversight.isLoading && !oversight.data ? (
+                <div className={styles.loading} role="status">Loading every project...</div>
+              ) : oversight.error && !oversight.data ? (
+                <div className={styles.sectionEmpty} role="alert">
+                  <p>{errorMessage(oversight.error, 'Could not list every project')}</p>
+                  <button className="secondaryButton" onClick={() => oversight.refetch()}>
+                    <RefreshCw size={14} />
+                    Retry
+                  </button>
+                </div>
+              ) : oversight.data && oversight.data.length > 0 ? (
+                <div className={styles.grid}>{oversight.data.map(renderOversightCard)}</div>
+              ) : (
+                <div className={styles.sectionEmpty}><p>There are no projects on this instance yet.</p></div>
+              )}
+            </section>
+          )}
+          {listFilter !== 'shared' && listFilter !== 'oversight' && (
             <section className={styles.listSection} aria-labelledby="projects-owned-heading">
               <h2 id="projects-owned-heading" className={styles.sectionTitle}>My projects</h2>
               {owned.length > 0 ? (
@@ -310,7 +409,7 @@ export default function ProjectsPage() {
               )}
             </section>
           )}
-          {listFilter !== 'owned' && (
+          {listFilter !== 'owned' && listFilter !== 'oversight' && showShared && (
             <section className={styles.listSection} aria-labelledby="projects-shared-heading">
               <h2 id="projects-shared-heading" className={styles.sectionTitle}>Shared with me</h2>
               <div className={styles.grid}>{shared.map(renderCard)}</div>
@@ -336,6 +435,15 @@ export default function ProjectsPage() {
             </button>
           )}
         </div>
+      )}
+
+      {glassTarget && (
+        <BreakGlassDialog
+          isOpen
+          target={glassTarget}
+          onConfirm={openBreakGlass}
+          onClose={() => setGlassTarget(null)}
+        />
       )}
 
       {userId && (

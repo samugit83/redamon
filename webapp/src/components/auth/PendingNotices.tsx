@@ -32,6 +32,16 @@ export type AccountNoticeView =
     /** The time limit the admin chose (step 3.14). */
     durationMinutes: number
   }
+  | {
+    id: string
+    type: 'break_glass'
+    at: string
+    by: { name: string; email: string }
+    reason: string
+    durationMinutes: number
+    /** The person's project Root opened (step 4.14). */
+    project: { id: string; name: string }
+  }
 
 type Alerts = ReturnType<typeof useOptionalAlertModal>
 
@@ -39,6 +49,7 @@ const TITLES: Record<AccountNoticeView['type'], string> = {
   credentials_reset: 'Your password was reset',
   email_changed: 'Your sign-in email was changed',
   acted_as: 'An administrator acted as you',
+  break_glass: 'Root opened break-glass access to your project',
 }
 
 function isView(v: unknown): v is AccountNoticeView {
@@ -53,6 +64,11 @@ function isView(v: unknown): v is AccountNoticeView {
   }
   if (n.type === 'acted_as') {
     return (n.reason === null || typeof n.reason === 'string') && Number.isSafeInteger(n.durationMinutes) && (n.durationMinutes as number) >= 1
+  }
+  if (n.type === 'break_glass') {
+    const project = n.project as Record<string, unknown> | null | undefined
+    return typeof n.reason === 'string' && Number.isSafeInteger(n.durationMinutes) && (n.durationMinutes as number) >= 1
+      && !!project && typeof project === 'object' && typeof project.id === 'string' && typeof project.name === 'string'
   }
   return n.type === 'email_changed' && typeof n.from === 'string' && typeof n.to === 'string' && typeof n.self === 'boolean'
 }
@@ -79,6 +95,12 @@ export function noticeMessage(n: AccountNoticeView): string {
     const why = n.reason ? `Reason: ${n.reason}.` : 'No reason was given.'
     return `${n.by.name} (${n.by.email}) acted as you on ${when}, for up to ${n.durationMinutes} min, using your account and API keys. ${why} `
       + 'If you did not expect this, tell your administrator. My account lists when it started and ended.'
+  }
+  if (n.type === 'break_glass') {
+    // Break-glass reads everything a project holds, raw data included (feature document §4.5): say who, when, why.
+    return `${n.by.name} (${n.by.email}), the instance's Root, opened break-glass access to your project "${n.project.name}" on ${when}, `
+      + `for up to ${n.durationMinutes} min: read access to everything in it, raw data and files included. Reason: ${n.reason}. `
+      + "The project's Activity page lists it."
   }
   const how = n.mode === 'link' ? 'with a reset link' : 'with a temporary password'
   const why = n.reason ? `Reason: ${n.reason}.` : 'No reason was given.'
