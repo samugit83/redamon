@@ -37,6 +37,11 @@
  * tunnel, with no link to the console (components/settings/InstanceTunnelSection.tsx, a reader in
  * GOVERNANCE_READERS; the test at the end, and InstanceTunnelSection.test.tsx).
  *
+ * Step 6.3 adds the permission sets and admin profiles pages (/admin/permission-sets,
+ * /admin/admin-profiles). They sit under /admin, so with the switch off they do not exist and read
+ * nothing (the test at the end); the Phase 3 APIs they call keep answering behind the permissions
+ * switch alone, as before (permissions.flags.off.test.ts), and neither page reads this switch.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -247,5 +252,21 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.7): the Tunneling tab keeps its co
       expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
       cleanup()
     }
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.3): the permission sets and admin profiles pages do not exist', () => {
+  test.each([
+    ['every switch off', {}],
+    ['identity and permissions on', { identity: true, permissions: true }],
+  ])('/admin/permission-sets and /admin/admin-profiles: 404 before the page renders or reads a set (%s)', async (_name, flags) => {
+    const { default: PermissionSetsPage } = await import('@/app/admin/permission-sets/page')
+    const { default: AdminProfilesPage } = await import('@/app/admin/admin-profiles/page')
+    setFlagsForTests(flags)
+    for (const page of [PermissionSetsPage, AdminProfilesPage]) {
+      expect(() => AdminLayout({ children: createElement(page) })).toThrow('NEXT_NOT_FOUND')
+    }
+    expect(nav.notFound).toHaveBeenCalledTimes(2)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
