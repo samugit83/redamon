@@ -98,6 +98,16 @@ export async function writeConversationShare(tx: Pick<Db, 'conversationShare'>, 
 }
 
 /**
+ * Whether the conversation's author shared it with the project, as the plugin platform asks before it hands
+ * another person's session to a plugin (step 5.10: "author, or an explicit conversation share"; never the
+ * managers' view or break-glass). With write sharing not in force nothing is read and the answer is false.
+ */
+export async function conversationSharedWithProject(conversationId: string, db: Pick<Db, 'conversationShare'> = prisma): Promise<boolean> {
+  if (!conversationId || !(await conversationSharingInForce())) return false
+  return (await db.conversationShare.findUnique({ where: { conversationId }, select: { id: true } })) !== null
+}
+
+/**
  * How `access` reads a conversation it did not write, or null: below Raw data & files nothing; Root's
  * break-glass every one; a shared one anyone else on the project; with the owner's policy on, the owner and
  * co-owners every one. A pure decision over facts the caller read.

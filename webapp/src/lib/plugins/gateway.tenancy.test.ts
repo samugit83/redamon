@@ -15,6 +15,11 @@ vi.mock('@/lib/authz/projectAccess', async (orig) => {
   const actual = await orig<typeof import('@/lib/authz/projectAccess')>()
   return { ...actual, projectAccess: vi.fn(actual.projectAccess) }
 })
+// The real answer (false: write sharing is off here) unless a test says the author shared it (step 5.8's share).
+vi.mock('@/lib/authz/conversationAccess', async (orig) => {
+  const actual = await orig<typeof import('@/lib/authz/conversationAccess')>()
+  return { ...actual, conversationSharedWithProject: vi.fn(actual.conversationSharedWithProject) }
+})
 
 import { createFakePrisma, type FakePrisma } from './__testing__/fakePrisma'
 import {
@@ -35,11 +40,12 @@ import {
   token,
   type TokenInput,
 } from './__testing__/gatewayHarness'
-import { withGateway, type GatewayContext } from './gateway'
+import { conversationReachable, withGateway, type GatewayContext } from './gateway'
 import * as store from './dataStore'
 import { POST as dataGet } from '@/app/api/plugin-gateway/v1/data/get/route'
 import { projectAccess, type ProjectAccess, type ProjectAccessToggles } from '@/lib/authz/projectAccess'
 import { ownsScope, scopeRefusal } from './changeSetAccess'
+import { conversationSharedWithProject } from '@/lib/authz/conversationAccess'
 
 let db: FakePrisma
 
@@ -258,6 +264,44 @@ describe('a project shared with the token user (step 5.10)', () => {
     policy.mockResolvedValue(editor({ useAgent: true, runScans: true, exploit: true, manage: true }))
     expect(await call({ sub: BOB, prj: ALICE_PROJECT, ses: ALICE_SESSION, conv: ALICE_CONV })).toMatchObject({ status: 404, ran: false })
     expect(await call({ sub: BOB, prj: ALICE_PROJECT, ses: ALICE_SESSION, conv: undefined })).toMatchObject({ status: 404, ran: false })
+  })
+
+  test("transcript only for author or share: the owner's session once shared with the project is served, the share asked of 5.8's rule", async () => {
+    const shared = vi.mocked(conversationSharedWithProject)
+    shared.mockResolvedValueOnce(true)
+    policy.mockResolvedValue(editor({ useAgent: true }))
+    const r = await call({ sub: BOB, prj: ALICE_PROJECT, ses: ALICE_SESSION, conv: ALICE_CONV })
+    expect(r).toMatchObject({ status: 200, ran: true })
+    expect(seen!.conversation).toMatchObject({ id: ALICE_CONV, userId: ALICE })
+    expect(shared).toHaveBeenLastCalledWith(ALICE_CONV)
+  })
+
+  test('transcript only for author or share: an unshared session is a 404 and the own session never asks the share', async () => {
+    const shared = vi.mocked(conversationSharedWithProject)
+    shared.mockClear()
+    policy.mockResolvedValue(editor({ useAgent: true }))
+    expect(await call({ sub: BOB, prj: ALICE_PROJECT, ses: ALICE_SESSION, conv: ALICE_CONV })).toMatchObject({ status: 404, ran: false })
+    expect(shared).toHaveBeenCalledTimes(1)
+    expect(await call(BOB_TOKEN)).toMatchObject({ status: 200 })
+    expect(shared).toHaveBeenCalledTimes(1)
+  })
+
+  test('transcript only for author or share: the share opens it only with Raw data & files, never by break-glass', async () => {
+    const asked = vi.mocked(conversationSharedWithProject)
+    asked.mockClear()
+    asked.mockResolvedValue(true)
+    const conv = { id: ALICE_CONV, userId: ALICE }
+    expect(await conversationReachable({ userId: ALICE }, conv, null)).toBe(true)
+    expect(asked).not.toHaveBeenCalled()
+    expect(await conversationReachable({ userId: BOB }, conv, null)).toBe(false)
+    expect(await conversationReachable({ userId: BOB }, conv, shared('read'))).toBe(false)
+    expect(await conversationReachable({ userId: BOB }, conv, shared('read', { rawData: true }, 'break_glass'))).toBe(false)
+    expect(asked).not.toHaveBeenCalled()
+    expect(await conversationReachable({ userId: BOB }, conv, shared('read', { rawData: true }))).toBe(true)
+    asked.mockResolvedValue(false)
+    expect(await conversationReachable({ userId: BOB }, conv, editor({ manage: true }))).toBe(false)
+    const actual = await vi.importActual<typeof import('@/lib/authz/conversationAccess')>('@/lib/authz/conversationAccess')
+    asked.mockImplementation(actual.conversationSharedWithProject)
   })
 
   test('transcript only for author or share: the collaborator reaches their own session on the shared project', async () => {

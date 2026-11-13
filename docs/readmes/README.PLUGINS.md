@@ -874,8 +874,10 @@ no more. A Read share, oversight and break-glass never run a plugin; an admin ac
 collaborator reaches the share at Read and runs none. A refusal at the Gateway is the same `404
 not_found` as a deleted project (a share revoked or narrowed mid-action ends the plugin's reach at
 its next call; a job then ends `context_gone`); at the action start a collaborator below a level is
-told which one (`403 forbidden`, `level`). A session is still its author's only: project access
-alone never hands a plugin another person's conversation.
+told which one (`403 forbidden`, `level`). A session is its author's, or another person's that its
+author shared with the project (RBAC step 5.8, with write sharing in force): project access alone
+(a co-owner, the owner's "managers see all", break-glass) never hands a plugin another person's
+conversation.
 
 | SDK call | Permission | What the Gateway does |
 |---|---|---|

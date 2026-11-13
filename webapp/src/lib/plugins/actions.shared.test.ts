@@ -37,6 +37,10 @@ vi.mock('@/lib/authz/projectAccess', async (orig) => {
   const actual = await orig<typeof import('@/lib/authz/projectAccess')>()
   return { ...actual, projectAccess: vi.fn(actual.projectAccess) }
 })
+vi.mock('@/lib/authz/conversationAccess', async (orig) => {
+  const actual = await orig<typeof import('@/lib/authz/conversationAccess')>()
+  return { ...actual, conversationSharedWithProject: vi.fn(actual.conversationSharedWithProject) }
+})
 
 import { createFakePrisma, type FakePrisma } from './__testing__/fakePrisma'
 import { ALICE, ALICE_PROJECT, ALICE_SESSION, BOB, CALL_SECRET, answer, echoInstall, echoManifest, seedWorld } from './__testing__/gatewayHarness'
@@ -45,6 +49,7 @@ import type { FakeRunner } from './__testing__/fakeRunner'
 import { verifyCallToken } from './callToken'
 import * as ov from './overrides'
 import { projectAccess, type ProjectAccess, type ProjectAccessToggles } from '@/lib/authz/projectAccess'
+import { conversationSharedWithProject } from '@/lib/authz/conversationAccess'
 import { POST as runAction } from '@/app/api/plugins/[pluginId]/actions/[actionId]/route'
 import { GET as sessionSkills } from '@/app/api/plugins/[pluginId]/session-skills/route'
 import { NextRequest } from 'next/server'
@@ -185,6 +190,13 @@ describe('the session', () => {
     policy.mockResolvedValue(editor({ useAgent: true, runScans: true, exploit: true, manage: true }))
     expect(await run('echo', { projectId: ALICE_PROJECT, sessionId: ALICE_SESSION })).toMatchObject({ status: 404 })
     expect(runner.actionCalls).toEqual([])
+  })
+
+  test("the owner's session its author shared with the project runs the action for the collaborator", async () => {
+    vi.mocked(conversationSharedWithProject).mockResolvedValueOnce(true)
+    expect((await run('echo', { projectId: ALICE_PROJECT, sessionId: ALICE_SESSION })).status).toBe(200)
+    const claims = await verifyCallToken(runner.actionCalls[0].body.token as string, { kinds: ['action'] })
+    expect(claims).toMatchObject({ sub: BOB, ten: ALICE, ses: ALICE_SESSION })
   })
 
   test('the skill picker follows the same levels and the same session rule', async () => {

@@ -4,6 +4,7 @@ import prisma from '@/lib/prisma'
 import { meetsLevel, projectAccess, type ProjectAccess, type ProjectAccessSubject } from '@/lib/authz/projectAccess'
 import type { ProjectLevel } from '@/lib/authz/permissions'
 import { ownsRow } from '@/lib/authz/rowOwner'
+import { conversationSharedWithProject } from '@/lib/authz/conversationAccess'
 import { isJsonContentType } from '@/lib/jsonBody'
 import { pluginAllowedFor } from './accessRules'
 import { CallTokenConfigError, verifyCallToken, type CallTokenClaims, type CallTokenKind } from './callToken'
@@ -330,21 +331,28 @@ export function pluginLevels(plugin: PluginInstall): ProjectLevel[] {
 }
 
 /**
- * Whether `subject` may hand this conversation to a plugin: its author only. Project access alone
- * never opens another person's conversation; an explicit conversation share (step 5.8) is the one
- * other way in, and joins here when it exists.
+ * Whether `subject` may hand this conversation to a plugin: its author, or anyone reaching its project
+ * with Raw data & files once the author shared it with the project (step 5.8, answered by
+ * conversationAccess.ts, only while write sharing is in force). Project access alone never opens another person's conversation:
+ * not a co-owner, not the owner's "managers see all", not break-glass.
  */
-export function conversationReachable(subject: ProjectAccessSubject, conversation: { userId: string }): boolean {
-  return ownsRow(subject, conversation.userId)
+export async function conversationReachable(
+  subject: ProjectAccessSubject,
+  conversation: { id: string; userId: string },
+  access: ProjectAccess | null,
+): Promise<boolean> {
+  if (ownsRow(subject, conversation.userId)) return true
+  if (!access || access.via === 'break_glass' || !meetsLevel(access, 'R*')) return false
+  return conversationSharedWithProject(conversation.id)
 }
 
 /**
  * Whose data the call may reach: the token's project, where `projectAccess()` for the token's user
  * must meet every level the plugin needs (an admin acting as the user reaches a share no further
  * than read, D-22) and whose owner must still be the token's tenant; outside a project the tenant
- * is the user. Then the session's conversation, the user's to reach (`conversationReachable`) and in
- * that project. Every refusal is the same 404: a share revoked, narrowed or moved mid-action ends
- * the plugin's reach as a deleted project does.
+ * is the user. Then the session's conversation, in that project and the user's to reach
+ * (`conversationReachable`: its author, or shared with the project). Every refusal is the same 404:
+ * a share revoked, narrowed or moved mid-action ends the plugin's reach as a deleted project does.
  */
 async function checkTenancy(
   claims: CallTokenClaims,
@@ -386,9 +394,9 @@ async function checkTenancy(
   })
   if (
     !conversation ||
-    !conversationReachable(subject, conversation) ||
     conversation.projectId !== claims.prj ||
-    (claims.conv !== undefined && conversation.id !== claims.conv)
+    (claims.conv !== undefined && conversation.id !== claims.conv) ||
+    !(await conversationReachable(subject, conversation, access))
   ) {
     throw NOT_FOUND()
   }

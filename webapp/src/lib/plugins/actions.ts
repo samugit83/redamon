@@ -203,7 +203,7 @@ async function resolveContext(raw: unknown, userId: string, opts: ContextOptions
       where: { sessionId: sessionId as string },
       select: { id: true, userId: true, projectId: true },
     })
-    if (!conv || !conversationReachable({ userId }, conv) || conv.projectId !== projectId) return notFound
+    if (!conv || conv.projectId !== projectId || !(await conversationReachable({ userId }, conv, access))) return notFound
     conversationId = conv.id
   }
   return { context: { projectId: (projectId as string) ?? null, sessionId: (sessionId as string) ?? null, conversationId }, access, tenantId }
@@ -212,7 +212,7 @@ async function resolveContext(raw: unknown, userId: string, opts: ContextOptions
 /**
  * The context of an action or a picker, for `userId`: the project through `projectAccess()` at the
  * levels `opts` names (the owner's alone unless it names others), the session's conversation one
- * the person may reach (`conversationReachable`: its author) and in that project.
+ * the person may reach (`conversationReachable`: its author, or shared with the project) and in that project.
  */
 export async function strictContext(raw: unknown, userId: string, opts: ContextOptions = {}): Promise<JobContext | NextResponse> {
   const resolved = await resolveContext(raw, userId, opts)

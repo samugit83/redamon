@@ -144,8 +144,9 @@ for one call:
 | `sdk` | The Gateway client (§5), bound to this call's token. |
 
 The webapp decided all of these before the runner saw the call: the project is the user's own or
-shared with them at the levels your permissions need (below), the session is the user's own, the
-permissions are both granted by the admin and declared in the manifest.
+shared with them at the levels your permissions need (below), the session is the user's own or one
+its author shared with the project, the permissions are both granted by the admin and declared in
+the manifest.
 
 **Projects shared with the user.** With RBAC sharing on, `project_id` may name another person's
 project the user collaborates on. Your plugin then runs for that user at the levels its
