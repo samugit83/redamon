@@ -219,6 +219,7 @@
   {"path":"/api/projects/[id]/node-filters/preview","guard":"project","methods":["POST"],"permission":"node_filters:manage"},
   {"path":"/api/projects/[id]/node-filters/runs/[runId]","guard":"project","methods":["GET"],"permission":"triage:read"},
   {"path":"/api/projects/[id]/node-filters/status","guard":"project","methods":["GET"],"permission":"triage:read"},
+  {"path":"/api/projects/[id]/owner-catalog","guard":"project","methods":["GET"],"permission":"recon:read","note":"404 with RBAC_SHARING_ENABLED off, nothing read; the project owner's catalogs for a collaborator's project form, by name and presence, never a value (lib/ownerCatalog.ts): providers, Jev configurations, attack skills, tradecraft resources, MCP servers, which API keys are set; the owner from the access the guard answered, never the caller; ?models=1 adds the owner's model options through the agent at level M (requireLevel), else the 403 naming the level (step 5.7)"},
   {"path":"/api/projects/[id]/purge-orphan-chains","guard":"project","methods":["POST"],"permission":"graph:edit"},
   {"path":"/api/projects/[id]/queue","guard":"project","methods":["POST"],"permission":"recon:schedule","note":"requirePermission recon:schedule on the project; the queued kind also needs the permission that starts it, and a full recon in overwrite mode recon:overwrite (requireAlso, authz/queuedJobPermissions.ts) (step 3.8)"},
   {"path":"/api/projects/[id]/recording/commit","guard":"project","methods":["POST"],"permission":"auth_profile:manage"},
