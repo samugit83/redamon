@@ -10,6 +10,13 @@ The build refuses a column withheld from MCP reads as a credential, third-party 
 or the RoE document that is not also `share: secret`, so a credential column added later cannot
 reach a collaborator because nobody thought of sharing. The owner's id is the one withheld column
 that stays: it names the owner, which the project read returns anyway.
+
+SH-08, SH-28: the same key classes the WRITES (`webapp/src/lib/authz/settingsRisk.ts`). `gate` is a
+safety gate an editor may tighten and only a co-owner loosens; `scope` is what the engagement
+targets and permits, which a co-owner narrows and only the owner widens. The build makes every
+`roe_parse: tighten_only` switch a gate and every field of the `scope` and `engagement_limits`
+groups scope (or secret), so a safety switch or a target column added later is never an ordinary
+setting by default.
 """
 from __future__ import annotations
 
@@ -42,6 +49,38 @@ CUSTOM_HEADER_LISTS = {
 }
 SHARE_SECRET = WITHHELD_FROM_MCP_READS | CUSTOM_HEADER_LISTS
 
+TIGHTEN_ONLY_SWITCHES = {
+    "agentActivatePostExplPhase", "agentChiselTunnelEnabled", "agentGuardrailEnabled",
+    "agentKaliInstallEnabled", "agentNgrokTunnelEnabled", "agentRequireApprovalForExploitation",
+    "agentRequireApprovalForPostExploitation", "agentRequireToolConfirmation", "jsReconValidateKeys",
+}
+SHARE_GATE = TIGHTEN_ONLY_SWITCHES | {
+    "agentKaliInstallAllowedPackages", "agentKaliInstallForbiddenPackages", "mcpKaliExecEnabled",
+}
+SCOPE_GROUP = {
+    "domainBatchGroups", "domainBatchHosts", "domainBatchMode", "ipHostnameExclude",
+    "ipHostnameInclude", "ipHostnameMaxScanned", "ipHostnameMode", "ipHostnamePassiveExpand",
+    "ipHostnamePassiveMaxNames", "ipHostnameScanAllConfirmed", "ipMode", "ownershipTxtPrefix",
+    "subdomainList", "targetDomain", "targetGuardrailEnabled", "targetIps", "verifyDomainOwnership",
+}
+OTHER_TARGETS = {
+    "githubTargetOrg", "githubTargetRepos", "gvmScanTargets", "supplyChainOrgName",
+    "supplyChainRepoRef", "supplyChainRepoScope", "supplyChainRepoUrl",
+}
+ENGAGEMENT_LIMITS = {
+    "roeAllowAccountLockout", "roeAllowDos", "roeAllowSocialEngineering", "roeEnabled",
+    "roeExcludedHostReasons", "roeExcludedHosts", "roeForbiddenCategories", "roeForbiddenTools",
+    "roeGlobalMaxRps", "roeMaxSeverityPhase", "roeTimeWindowDays", "roeTimeWindowEnabled",
+    "roeTimeWindowEndTime", "roeTimeWindowStartTime", "roeTimeWindowTimezone",
+}
+# Engagement-record terms the agent and the schedules enforce, which the RoE review judges as
+# widening: a wider value is a wider RoE, which OQ-23 keeps for the owner.
+ENFORCED_RECORD_TERMS = {
+    "roeAllowDataExfiltration", "roeAllowPhysicalAccess", "roeAllowProductionTesting",
+    "roeEngagementEndDate", "roeEngagementStartDate",
+}
+SHARE_SCOPE = SCOPE_GROUP | OTHER_TARGETS | ENGAGEMENT_LIMITS | ENFORCED_RECORD_TERMS
+
 
 def _minimal_document(**field_overrides) -> dict:
     """A registry the schema accepts, with one field to vary."""
@@ -60,16 +99,16 @@ def _minimal_document(**field_overrides) -> dict:
 
 
 class TestTheShareKeyIsDeclared(unittest.TestCase):
-    def test_the_schema_declares_share_with_ordinary_and_secret(self):
+    def test_the_schema_declares_share_with_its_four_classes(self):
         spec = SCHEMA["definitions"]["field"]["properties"]["share"]
-        self.assertEqual(spec["enum"], ["ordinary", "secret"])
+        self.assertEqual(spec["enum"], ["ordinary", "gate", "scope", "secret"])
         self.assertEqual(spec.get("default"), "ordinary")
 
     def test_a_field_without_share_validates(self):
         build.validate(_minimal_document())
 
     def test_each_declared_value_validates(self):
-        for value in ("ordinary", "secret"):
+        for value in ("ordinary", "gate", "scope", "secret"):
             build.validate(_minimal_document(share=value))
 
     def test_an_unknown_value_fails_the_build(self):
@@ -117,7 +156,7 @@ class TestTheBuiltRegistry(unittest.TestCase):
     def test_every_other_field_is_ordinary(self):
         # Absent means ordinary; nothing writes the default out, so a stray value shows here.
         stray = {k: f["share"] for k, f in FIELDS.items()
-                 if "share" in f and f["share"] not in ("ordinary", "secret")}
+                 if "share" in f and f["share"] not in ("gate", "scope", "secret")}
         self.assertEqual(stray, {})
 
     def test_every_readable_false_field_except_userId_is_secret(self):
@@ -148,6 +187,72 @@ class TestTheBuiltRegistry(unittest.TestCase):
         header_lists = {k for k, f in FIELDS.items()
                         if f.get("validator") == "http_header" and f["type"] == "string-list"}
         self.assertEqual(sorted(header_lists), sorted(CUSTOM_HEADER_LISTS))
+
+
+class TestTheBuildClassesTheRiskyWrites(unittest.TestCase):
+    def test_a_tighten_only_switch_not_marked_gate_fails(self):
+        for share in (None, "ordinary", "scope"):
+            entry = {"roe_parse": "tighten_only", "roe_safe_value": True}
+            if share:
+                entry["share"] = share
+            with self.subTest(share=share), self.assertRaises(build.RegistryError) as raised:
+                build.check_share_classes({"someSwitch": entry})
+            self.assertIn("someSwitch", str(raised.exception))
+        build.check_share_classes(
+            {"someSwitch": {"roe_parse": "tighten_only", "roe_safe_value": True, "share": "gate"}})
+
+    def test_a_target_field_not_marked_scope_fails(self):
+        for group in ("scope", "engagement_limits"):
+            for share in (None, "ordinary", "gate"):
+                entry = {"group": group}
+                if share:
+                    entry["share"] = share
+                with self.subTest(group=group, share=share), \
+                        self.assertRaises(build.RegistryError) as raised:
+                    build.check_share_classes({"someTarget": entry})
+                self.assertIn("someTarget", str(raised.exception))
+            build.check_share_classes({"someTarget": {"group": group, "share": "scope"}})
+            # The ownership token sits in the scope group and stays the owner's secret.
+            build.check_share_classes({"someToken": {"group": group, "share": "secret"}})
+
+    def test_build_runs_the_gate_and_scope_rules(self):
+        for key in ("agentRequireToolConfirmation", "targetDomain", "roeExcludedHosts"):
+            doc = copy.deepcopy(build.load_yaml())
+            del doc["fields"][key]["share"]
+            with self.subTest(field=key), self.assertRaises(build.RegistryError) as raised:
+                build.build(doc)
+            self.assertIn(key, str(raised.exception))
+
+
+class TestTheBuiltRiskClasses(unittest.TestCase):
+    def test_exactly_the_named_columns_are_gates(self):
+        actual = {k for k, f in FIELDS.items() if f.get("share") == "gate"}
+        self.assertEqual(sorted(actual), sorted(SHARE_GATE))
+
+    def test_every_tighten_only_switch_is_a_gate(self):
+        tighten = {k for k, f in FIELDS.items() if f.get("roe_parse") == "tighten_only"}
+        self.assertEqual(sorted(tighten), sorted(TIGHTEN_ONLY_SWITCHES))
+
+    def test_exactly_the_named_columns_are_scope(self):
+        actual = {k for k, f in FIELDS.items() if f.get("share") == "scope"}
+        self.assertEqual(sorted(actual), sorted(SHARE_SCOPE))
+
+    def test_the_target_groups_are_scope_but_the_ownership_token_and_sca_correlation(self):
+        for group, expected in (("scope", SCOPE_GROUP | {"ownershipToken"}),
+                                ("othertarget", OTHER_TARGETS | {"scaIntelCorrelationEnabled"}),
+                                ("engagement_limits", ENGAGEMENT_LIMITS)):
+            with self.subTest(group=group):
+                self.assertEqual(sorted(k for k, f in FIELDS.items() if f.get("group") == group),
+                                 sorted(expected))
+        self.assertEqual(FIELDS["ownershipToken"]["share"], "secret")
+        # It correlates findings with threat intelligence; it points no scanner at anything.
+        self.assertNotIn("share", FIELDS["scaIntelCorrelationEnabled"])
+
+    def test_operational_choices_stay_ordinary(self):
+        # The RoE review judges both, yet choosing phases and stealth is an editor's job.
+        for key in ("scanModules", "stealthMode"):
+            with self.subTest(field=key):
+                self.assertNotIn("share", FIELDS[key])
 
 
 if __name__ == "__main__":

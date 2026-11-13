@@ -42,8 +42,12 @@ export type DenyReason =
   | 'identity' | 'internal' | 'escalation' | 'secret' | 'upload-managed'
   | 'engagement-record' | 'not-tuning' | 'derived'
 export type ReadDenyReason = 'credential' | 'third_party_pii' | 'document_blob' | 'other_user'
-/** Who reads the column when the project is shared: `secret` stays the owner's. */
-export type ShareClass = 'ordinary' | 'secret'
+/**
+ * What a collaborator may do with the column when the project is shared (lib/authz/settingsRisk.ts):
+ * `ordinary` is Write's; a `gate` an editor tightens and a co-owner loosens; `scope` a co-owner
+ * narrows and the owner widens; `secret` stays the owner's, unread by anyone else.
+ */
+export type ShareClass = 'ordinary' | 'gate' | 'scope' | 'secret'
 
 /** The coarse shape a value is validated against, joined from Prisma. */
 export type FieldType =
@@ -87,7 +91,10 @@ export interface RegistryField {
    */
   stealth?: { set?: unknown; ceiling?: number }
   read_deny_reason?: ReadDenyReason
-  /** Absent means ordinary. `secret` is removed from every read by a non-owner (projectReadView). */
+  /**
+   * Absent means ordinary. `secret` is removed from every read by a non-owner (projectReadView);
+   * `gate` and `scope` class the writes (settingsRisk).
+   */
   share?: ShareClass
   group?: string
   /**

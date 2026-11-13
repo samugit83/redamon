@@ -137,7 +137,7 @@ is pinned to it by a shared fixture table.
   beside its tool automatically. An explicit `null` means "no input anywhere",
   which the parity test reads to tell a deliberate omission from a forgotten one.
 
-## Who may read a field: `readable:` and `share:`
+## Who may read or change a field: `readable:` and `share:`
 
 - **`readable: false`** withholds the column from every MCP read
   (`mcpReadableFields`), with `read_deny_reason` saying why. Absent means readable.
@@ -150,6 +150,18 @@ is pinned to it by a shared fixture table.
   refuses a `readable: false` column that is not `share: secret` unless its
   reason is `other_user`, so a credential column added later is never shared by
   default. `share` is not `deny_reason: secret`, which refuses an MCP write.
+- **`share: gate`** and **`share: scope`** class the writes on a shared project
+  (`webapp/src/lib/authz/settingsRisk.ts`, asked by every writer of the project
+  row). Ordinary columns are Write's. A `gate` is a safety gate: Write may
+  tighten it, loosening it needs Manage, plus Exploitation & shells for the
+  agent's approval, tunnel and Kali switches. A `scope` column decides what the
+  engagement targets or permits: Manage narrows it, only the owner widens it.
+  "Looser" and "wider" are the RoE review's `wideningReason`
+  (`webapp/src/lib/roe/roeWidening.ts`), which reads `roe_safe_value`; the
+  fields it does not judge have a row in `settingsRisk.ts`. The build makes every
+  `roe_parse: tighten_only` switch a `gate` and every field of the `scope` and
+  `engagement_limits` groups `scope` (the ownership token stays `secret`), so a
+  safety switch or target column added later is not an editor's by default.
 
 ## Bounds are not decoration
 

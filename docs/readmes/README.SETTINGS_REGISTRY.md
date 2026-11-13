@@ -22,7 +22,7 @@ rather than adds.
 | Lives in | Holds |
 | --- | --- |
 | `webapp/prisma/schema.prisma` | existence, type, `@default()`, `@map` |
-| `recon_settings/registry.yaml` | `runtime_key`, `bounds`, `validator`, `zero_means`, `fallback`, `coerce`, `unit`, `tool`, `phase`, `traffic`, `roe_capped`, `governor`, `stealth`, `mcp`, `readable`, `meaning`, and the `tools:` blocks |
+| `recon_settings/registry.yaml` | `runtime_key`, `bounds`, `validator`, `zero_means`, `fallback`, `coerce`, `unit`, `tool`, `phase`, `traffic`, `roe_capped`, `governor`, `stealth`, `mcp`, `readable`, `share`, `meaning`, and the `tools:` blocks |
 | a Postgres row | one project's actual values |
 
 Descriptions never enter the database. A description is identical for every

@@ -99,6 +99,12 @@ function meaningCell(f: NamedField): string {
   if (f.share === 'secret') {
     notes.push("The owner's only: never shown to a collaborator.")
   }
+  if (f.share === 'gate') {
+    notes.push('A safety gate: a collaborator with Write may tighten it; loosening it needs Manage.')
+  }
+  if (f.share === 'scope') {
+    notes.push('Scope: a collaborator needs Manage to narrow it, and only the owner widens it.')
+  }
   // What stealth mode does to this field. An operator choosing a value wants to
   // know it will be overwritten before they spend time on it, and a `ceiling`
   // behaves differently from a `set`: it leaves an already-quieter value alone.
@@ -190,6 +196,13 @@ export function renderSettingsReference(): string {
     '- **One capability surface.** Every settable field has an input in the project form and ' +
     'is writable through `update_recon_settings`; neither door reaches something the other ' +
     'cannot. The exception is the engagement RECORD, which is deliberately UI-only.'
+  )
+  out.push(
+    '- **Shared projects.** A collaborator with Write changes the ordinary settings. A safety ' +
+    'gate they may only tighten: loosening one needs Manage, and also Exploitation & shells for ' +
+    "the agent's approval, tunnel and Kali switches. Scope needs Manage to narrow and the owner " +
+    "to widen, and the owner's secrets stay the owner's. The notes below name each gate, scope " +
+    'field and secret.'
   )
   out.push('')
 

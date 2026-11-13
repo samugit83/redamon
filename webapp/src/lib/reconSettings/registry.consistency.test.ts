@@ -469,9 +469,9 @@ describe("HD-27 the columns that stay the owner's when a project is shared", () 
     'zapAjaxSpiderCustomHeaders',
   ]
 
-  test('share is ordinary or secret, and absent means ordinary', () => {
+  test('share is ordinary, gate, scope or secret, and absent means ordinary', () => {
     const problems = offenders(f =>
-      f.share !== undefined && f.share !== 'ordinary' && f.share !== 'secret' ? `share '${f.share}'` : null
+      f.share !== undefined && !['ordinary', 'gate', 'scope', 'secret'].includes(f.share) ? `share '${f.share}'` : null
     )
     expect(problems).toEqual([])
   })
@@ -488,6 +488,32 @@ describe("HD-27 the columns that stay the owner's when a project is shared", () 
     const withheld = fieldsWhere(f => f.readable === false).map(f => f.key).filter(k => k !== 'userId')
     const secret = fieldsWhere(f => f.share === 'secret').map(f => f.key)
     expect(secret).toEqual([...withheld, ...CUSTOM_HEADER_LISTS].sort())
+  })
+})
+
+// --- SH-08, SH-28: the writes a collaborator needs more than Write for ---------------------
+
+describe('SH-08 safety gates and scope are classed, not ordinary', () => {
+  test('every tighten_only switch is a gate, beside the Kali package lists and MCP Kali exec', () => {
+    const tighten = fieldsWhere(f => f.roe_parse === 'tighten_only').map(f => f.key)
+    const gates = fieldsWhere(f => f.share === 'gate').map(f => f.key)
+    expect(gates).toEqual(
+      [...tighten, 'agentKaliInstallAllowedPackages', 'agentKaliInstallForbiddenPackages', 'mcpKaliExecEnabled'].sort()
+    )
+  })
+
+  test('every field of the scope and engagement_limits groups is scope, the ownership token secret', () => {
+    const problems = fieldsWhere(f => f.group === 'scope' || f.group === 'engagement_limits')
+      .filter(f => f.share !== 'scope' && !(f.key === 'ownershipToken' && f.share === 'secret'))
+      .map(f => `${f.key}: decides targets or engagement terms but share '${f.share ?? 'ordinary'}'`)
+    expect(problems).toEqual([])
+  })
+
+  test('the other targets are scope, but the threat-intel correlation switch', () => {
+    const problems = fieldsWhere(f => f.group === 'othertarget')
+      .filter(f => (f.share === 'scope') === (f.key === 'scaIntelCorrelationEnabled'))
+      .map(f => f.key)
+    expect(problems).toEqual([])
   })
 })
 

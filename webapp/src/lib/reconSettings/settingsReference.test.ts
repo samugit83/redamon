@@ -107,6 +107,16 @@ describe('the page says the things a reader would otherwise get wrong', () => {
     }
   })
 
+  test('a gate says who loosens it, a scope field who widens it, and only those', () => {
+    const page = renderSettingsReference()
+    const rows = new Map(page.split('\n').filter(l => l.startsWith('| `')).map(l => [l.split('`')[1], l]))
+    for (const f of fieldsWhere(() => true)) {
+      expect(rows.get(f.key)?.includes('A safety gate:'), f.key).toBe(f.share === 'gate')
+      expect(rows.get(f.key)?.includes('only the owner widens it'), f.key).toBe(f.share === 'scope')
+    }
+    expect(page).toContain('**Shared projects.**')
+  })
+
   test('a create-only field says it is fixed at creation', () => {
     const page = renderSettingsReference()
     const row = page.split('\n').find(l => l.startsWith('| `targetDomain` |'))

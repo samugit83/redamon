@@ -765,6 +765,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: false
     group: agent
@@ -819,6 +820,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: false
     group: agent
@@ -885,6 +887,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: true
     group: agent
@@ -912,6 +915,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: deny
     validator: free_text
     group: agent
@@ -926,6 +930,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: false
     group: agent
@@ -939,6 +944,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: allow
     validator: free_text
     group: agent
@@ -1182,6 +1188,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: false
     group: agent
@@ -1263,6 +1270,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: true
     group: agent
@@ -1277,6 +1285,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: true
     group: agent
@@ -1291,6 +1300,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: true
     group: agent
@@ -2385,6 +2395,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: scope
     validator: json_object
     group: scope
     meaning: >-
@@ -2406,6 +2417,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: free_text
     group: scope
@@ -2425,6 +2437,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     group: scope
     meaning: >-
       Domain batch: the third targeting mode. Mutually exclusive with ipMode. One
@@ -3295,6 +3308,7 @@ fields:
     traffic: passive
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: github_name
     group: othertarget
@@ -3311,6 +3325,7 @@ fields:
     traffic: passive
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: github_repo_list
     group: othertarget
@@ -3748,6 +3763,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     values: [both, ips_only, hostnames_only]
     group: othertarget
@@ -4593,6 +4609,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: hostname
     group: scope
@@ -4612,6 +4629,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: hostname
     group: scope
@@ -4632,6 +4650,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     bounds: { min: 1, max: 2000 }
     group: scope
@@ -4649,6 +4668,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     values: [ip_only, record_only, record_filter, scan_all]
     group: scope
@@ -4672,6 +4692,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     group: scope
     meaning: >-
@@ -4688,6 +4709,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     bounds: { min: 1, max: 10000 }
     group: scope
@@ -4703,6 +4725,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     group: scope
     meaning: >-
@@ -4718,6 +4741,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     group: scope
     meaning: >-
       Switches targeting from a domain to the explicit IP list. Mutually exclusive
@@ -5146,6 +5170,7 @@ fields:
     traffic: active
     roe_capped: false
     mcp: settable
+    share: gate
     roe_parse: tighten_only
     roe_safe_value: false
     stealth: { set: false }
@@ -5932,6 +5957,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: gate
     deny_reason: escalation
     group: escalation
     meaning: >-
@@ -6963,6 +6989,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     validator: free_text
     group: scope
     meaning: >-
@@ -7398,6 +7425,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     group: engagement_limits
     meaning: >-
       Whether a technique that can lock a real account out is permitted. Off keeps
@@ -7412,6 +7440,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: scope
     group: engagement_record
     meaning: >-
       Whether a finding may be proven by moving data off the target. Part of the
@@ -7427,6 +7456,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     group: engagement_limits
     meaning: >-
       Whether denial-of-service techniques are permitted. Off means the DoS path is
@@ -7441,6 +7471,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: scope
     group: engagement_record
     meaning: >-
       Whether the engagement covers physical access. Recorded for the report;
@@ -7455,6 +7486,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: scope
     group: engagement_record
     meaning: >-
       Whether production systems are in scope. Off is a statement the operator
@@ -7470,6 +7502,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     group: engagement_limits
     meaning: >-
       Whether techniques aimed at people rather than systems are permitted. Off
@@ -7677,6 +7710,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: scope
     group: engagement_limits
     meaning: >-
       DERIVED, never written. Engagement limits apply when there is a limit to
@@ -7698,6 +7732,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: scope
     roe_parse: allow
     validator: free_text
     group: engagement_record
@@ -7713,6 +7748,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: never
+    share: scope
     roe_parse: allow
     validator: free_text
     group: engagement_record
@@ -7745,6 +7781,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     roe_parse: allow
     validator: free_text
     group: engagement_limits
@@ -7760,6 +7797,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     roe_parse: allow
     validator: roe_exclusion
     group: engagement_limits
@@ -7780,6 +7818,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     roe_parse: allow
     values: ["brute_force", "dos", "social_engineering", "physical", "exploitation"]
     validator: free_text
@@ -7810,6 +7849,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     roe_parse: allow
     values: ["cve_intel", "execute_amass", "execute_arjun", "execute_code", "execute_curl", "execute_ffuf", "execute_gau", "execute_guarddog", "execute_httpx", "execute_hydra", "execute_jsluice", "execute_katana", "execute_naabu", "execute_nmap", "execute_nuclei", "execute_osv_scanner", "execute_playwright", "execute_subfinder", "execute_wpscan", "google_dork", "kali_shell", "metasploit_console", "msf_restart", "proxy_brain", "query_graph", "shodan", "tradecraft_lookup", "web_search"]
     validator: free_text
@@ -7830,6 +7870,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     bounds: { min: 0, max: 10000 }
     zero_means: literal
     group: engagement_limits
@@ -7863,6 +7904,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     group: engagement_limits
     meaning: >-
       The most severe phase the engagement permits, which bounds how far an attack
@@ -7992,6 +8034,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     roe_parse: allow
     validator: free_text
     group: engagement_limits
@@ -8007,6 +8050,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     group: engagement_limits
     meaning: >-
       Whether scanning is restricted to an agreed time window. The recon pipeline
@@ -8022,6 +8066,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     roe_parse: allow
     validator: free_text
     group: engagement_limits
@@ -8038,6 +8083,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     roe_parse: allow
     validator: free_text
     group: engagement_limits
@@ -8052,6 +8098,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: settable
+    share: scope
     roe_parse: allow
     validator: free_text
     group: engagement_limits
@@ -9414,6 +9461,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     validator: free_text
     coerce: strip_list
     group: scope
@@ -9669,6 +9717,7 @@ fields:
     traffic: passive
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: free_text
     group: othertarget
@@ -9739,6 +9788,7 @@ fields:
     traffic: passive
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: free_text
     group: othertarget
@@ -9753,6 +9803,7 @@ fields:
     traffic: passive
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: free_text
     group: othertarget
@@ -9767,6 +9818,7 @@ fields:
     traffic: passive
     roe_capped: false
     mcp: create_only
+    share: scope
     rescope: true
     validator: free_text
     group: othertarget
@@ -9905,6 +9957,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     validator: free_text
     coerce: strip
     group: scope
@@ -9922,6 +9975,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     group: scope
     meaning: >-
       The hard guardrail that refuses to scan a host outside the declared scope.
@@ -9936,6 +9990,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     validator: free_text
     coerce: strip_list
     group: scope
@@ -10677,6 +10732,7 @@ fields:
     traffic: none
     roe_capped: false
     mcp: create_only
+    share: scope
     group: scope
     meaning: >-
       Requires a DNS TXT record proving control of the target before any active

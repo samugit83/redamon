@@ -161,11 +161,21 @@ def load_yaml() -> dict:
 SHAREABLE_READ_DENY_REASONS = frozenset({"other_user"})
 
 
-def check_share_classes(fields: dict) -> None:
-    """A column withheld from MCP reads is withheld from collaborators too (`share: secret`).
+#: Groups whose every field decides what the engagement targets or permits: `share: scope`,
+#: which a collaborator narrows only as a co-owner and widens never (or `secret`, the
+#: ownership token).
+SCOPE_GROUPS = frozenset({"scope", "engagement_limits"})
 
-    Absent `share` means ordinary, which a collaborator reads, so a credential column added
-    with `readable: false` and no `share` would reach every person the project is shared with.
+
+def check_share_classes(fields: dict) -> None:
+    """Absent `share` means ordinary, which a collaborator reads and an editor writes, so a
+    column added without a class must not be one that needs more:
+
+    - a column withheld from MCP reads is withheld from collaborators too (`share: secret`),
+      or a credential column added with `readable: false` would reach every collaborator;
+    - a `roe_parse: tighten_only` switch is a safety gate (`share: gate`), or an editor could
+      loosen it;
+    - a field of a scope group is `share: scope`, or an editor could widen the engagement.
     """
     leaks = sorted(
         name for name, f in fields.items()
@@ -177,6 +187,24 @@ def check_share_classes(fields: dict) -> None:
         raise RegistryError(
             "a column withheld from MCP reads must also be share: secret, or a collaborator "
             "reads it: " + ", ".join(leaks)
+        )
+    open_gates = sorted(
+        name for name, f in fields.items()
+        if f.get("roe_parse") == "tighten_only" and f.get("share") != "gate"
+    )
+    if open_gates:
+        raise RegistryError(
+            "a roe_parse: tighten_only switch must also be share: gate, or an editor loosens "
+            "it: " + ", ".join(open_gates)
+        )
+    open_scope = sorted(
+        name for name, f in fields.items()
+        if f.get("group") in SCOPE_GROUPS and f.get("share") not in ("scope", "secret")
+    )
+    if open_scope:
+        raise RegistryError(
+            "a field of the scope or engagement_limits group must be share: scope, or an "
+            "editor widens the engagement: " + ", ".join(open_scope)
         )
 
 
