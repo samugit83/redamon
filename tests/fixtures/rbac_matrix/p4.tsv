@@ -2,11 +2,17 @@
 # changes; a row of an earlier file whose answer a step changes is tagged superseded-by:p4 there.
 # Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
 #
-# A row that needs a share or sharing in force is tagged sharing:on and SKIPs while
-# RBAC_SHARING_ENABLED reads off. Run with the switch on and the instance policy enabled (sharing_policy.enabled by SQL
-# on the shared instance), after step 4.4, whose seed (webapp/scripts/e2e-rbac-seed.mjs) provides:
+# A row that needs a share or sharing in force is tagged sharing:on and SKIPs unless sharing is in force:
+# RBAC_SHARING_ENABLED reads on (it reads off while the permissions switch is off) AND Root's
+# instance_settings.sharing_policy is enabled (the runner reads it once through psql, as parseSharingPolicy reads it).
+# On the shared instance, whose Root is unconfirmed, a switch-on pass sets the policy by SQL and puts {} back after.
+# A sharing:off row runs only while sharing is not in force. The seed (webapp/scripts/e2e-rbac-seed.mjs, step 4.4)
+# provides:
 #   viewer      a member account (rbac-viewer@e2e.local) holding a Read share, without Raw data,
 #               on PSHARED
+#   viewer_raw  a member account (rbac-viewer-raw@e2e.local) holding a Read share with Raw data & files on PSHARED
+#   viewer_tmp  a member account (rbac-viewer-tmp@e2e.local) holding the Read share the 4.4 rows revoke, grant
+#               again and leave (the next seed puts it back)
 #   PSHARED_ID  a project owned by member_c, never PA (baseline rows expect member_b to get 404 on
 #               PA), whose cypherfixGithubToken, graphqlAuthValue and one httpxCustomHeaders entry
 #               hold the literal rbac-fake-share-secret-0001
