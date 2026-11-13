@@ -60,6 +60,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
   }),
   ...g('project', {
     'project.update': 'Changed the project settings',
+    'project.delete': 'Deleted the project',
+    'project.delete_failed': 'A project deletion failed',
     'project.roe.download': 'Downloaded the Rules of Engagement document',
     'project.roe.replace': 'Replaced the Rules of Engagement',
     'project.roe.remove': 'Removed the Rules of Engagement',

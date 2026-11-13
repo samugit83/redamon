@@ -71,6 +71,13 @@
  * before they read the session or the database (the four route files are readers in GOVERNANCE_READERS;
  * the test at the end); My account shows no device list (AccountSections.tsx, a reader).
  *
+ * Step 6.4 adds the projects and shares overviews, Root's forced delete and Root's force-revoke. With
+ * the switch off GET /api/admin/projects, DELETE /api/admin/projects/[id], GET /api/admin/shares and
+ * DELETE /api/admin/shares/[projectId]/[userId] answer 404 before they read the session, the sharing
+ * policy or the database (the four route files are readers in GOVERNANCE_READERS; the test at the end,
+ * and both route.test.ts files), and /admin/projects and /admin/shares sit under /admin, which does
+ * not exist.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -175,6 +182,10 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/api/admin/audit/[id]/route.ts',
       'src/app/api/admin/audit/export/route.ts',
       'src/app/api/admin/audit/route.ts',
+      'src/app/api/admin/projects/[id]/route.ts',
+      'src/app/api/admin/projects/route.ts',
+      'src/app/api/admin/shares/[projectId]/[userId]/route.ts',
+      'src/app/api/admin/shares/route.ts',
       'src/app/api/admin/users/[id]/route.ts',
       'src/app/api/admin/users/route.ts',
       'src/app/api/users/[id]/sessions/[sid]/route.ts',
@@ -483,5 +494,54 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.10): device sessions are neither w
     expect(touched).not.toHaveBeenCalled()
     vi.doUnmock('@/lib/prisma')
     vi.doUnmock('@/lib/auth')
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.4): the projects and shares overviews do not exist', () => {
+  test("the four routes answer 404 and read neither the session, the sharing policy nor the database", async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    vi.doMock('@/lib/session', () => ({
+      requireSession: vi.fn(async () => { touched('session'); return { userId: 'root-1', role: 'admin' } }),
+      getSession: vi.fn(async () => { touched('session'); return { userId: 'root-1', role: 'admin' } }),
+    }))
+    const { GET: projects } = await import('@/app/api/admin/projects/route')
+    const { DELETE: deleteProject } = await import('@/app/api/admin/projects/[id]/route')
+    const { GET: shares } = await import('@/app/api/admin/shares/route')
+    const { DELETE: revoke } = await import('@/app/api/admin/shares/[projectId]/[userId]/route')
+    const write = (url: string) => new Request(url, {
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ stepUpPassword: 'x' }),
+    }) as never
+    for (const on of ['', 'true']) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', on)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', on)
+      vi.stubEnv('RBAC_SHARING_ENABLED', on)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect((await projects(new Request('http://redamon.test/api/admin/projects') as never)).status).toBe(404)
+      expect((await deleteProject(write('http://redamon.test/api/admin/projects/p-1'), { params: Promise.resolve({ id: 'p-1' }) })).status).toBe(404)
+      expect((await shares(new Request('http://redamon.test/api/admin/shares') as never)).status).toBe(404)
+      expect((await revoke(write('http://redamon.test/api/admin/shares/p-1/m-1'), { params: Promise.resolve({ projectId: 'p-1', userId: 'm-1' }) })).status).toBe(404)
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/session')
+  })
+
+  test.each([
+    ['every switch off', {}],
+    ['identity, permissions and sharing on', { identity: true, permissions: true, sharing: true }],
+  ])('/admin/projects and /admin/shares: 404 before the page renders or reads anything (%s)', async (_name, flags) => {
+    const { default: ProjectsPage } = await import('@/app/admin/projects/page')
+    const { default: SharesPage } = await import('@/app/admin/shares/page')
+    setFlagsForTests(flags)
+    for (const page of [ProjectsPage, SharesPage]) {
+      expect(() => AdminLayout({ children: createElement(page) })).toThrow('NEXT_NOT_FOUND')
+    }
+    expect(nav.notFound).toHaveBeenCalledTimes(2)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

@@ -45,6 +45,12 @@
  * a user's shares are listed only while Root's policy lets admins see every share
  * (api/admin/users/route.test.ts, with the real policy reader for the switch off).
  *
+ * Step 6.4 adds the admin projects and shares overviews (lib/authz/adminProjects.ts, adminShares.ts):
+ * with sharing not in force the projects list counts no share (counts read null) and offers neither
+ * the oversight read nor break-glass, and GET /api/admin/shares and Root's force-revoke answer 404
+ * through the share routes' gate before any share is read (below; both route.test.ts files pin the
+ * states).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/sharing.flags.off.test.ts
  * @vitest-environment node
  */
@@ -178,6 +184,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/app/api/users/[id]/mcp-tokens/route.ts',
       // Step 4.10: the token screen offers and sends the opt-in only while /api/auth/me reports sharing in force.
       'src/components/settings/mcp-tokens/McpTokensTab.tsx',
+      // Step 6.4: the shares overview and Root's force-revoke, reached only past sharingPolicyForRoutes (below).
+      'src/lib/authz/adminShares.ts',
       // Step 4.14: Root's break-glass writers, behind the break-glass routes' gate (below).
       'src/lib/authz/breakGlass.ts',
       // Step 4.15: the expiry sweep, which reads the sharing tables only with sharing in force.
@@ -210,6 +218,10 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
     const ROW_READERS: string[] = [
       // Step 4.4: the live matrix's fixtures write the Read shares the p4 rows sign in with (run by hand).
       'scripts/e2e-rbac-seed.mjs',
+      // Step 6.4: the projects overview counts live shares only with sharing in force (api/admin/projects/route.test.ts).
+      'src/lib/authz/adminProjects.ts',
+      // Step 6.4: the shares overview and Root's force-revoke, reached only past sharingPolicyForRoutes (below).
+      'src/lib/authz/adminShares.ts',
       // Step 4.14: opens and closes break-glass rows, reached only past the break-glass routes' gate (below).
       'src/lib/authz/breakGlass.ts',
       // Step 4.15: removes expired rows only with sharing in force (switch and policy); the switch
@@ -628,5 +640,32 @@ describe('the read-only project screens with sharing off (step 4.11)', () => {
     expect(src).toMatch(/const pollProjectId = currentProject\?\.myAccess \? currentProject\.id : null/)
     expect(src).toMatch(/if \(!pollProjectId\) return\n/)
     expect(src).toMatch(/if \(res\.status !== 404\) return \{ kind: 'retry' \}\n\s*const project = await fetch\(`\/api\/projects\/\$\{id\}`/)
+  })
+})
+
+// Step 6.4: the admin shares overview and Root's force-revoke read a share only past the share routes'
+// gate (sharingPolicyForRoutes, null with sharing not in force: the 4.4 block above), and the projects
+// overview selects a share count only with sharing in force.
+describe('the admin projects and shares overviews with sharing not in force (step 6.4)', () => {
+  test('both shares routes ask the share routes\' gate before they read or remove a share', () => {
+    for (const [file, reader] of [
+      ['src/app/api/admin/shares/route.ts', 'readSharesPage('],
+      ['src/app/api/admin/shares/[projectId]/[userId]/route.ts', 'forceRevokeShare('],
+    ]) {
+      const src = readFileSync(path.join(WEBAPP, file), 'utf8')
+      const gate = src.indexOf('if (!policy) return routeNotFound()') >= 0
+        ? src.indexOf('if (!policy) return routeNotFound()')
+        : src.indexOf('if (!(await sharingPolicyForRoutes({ fresh: true }))) return routeNotFound()')
+      expect(gate, file).toBeGreaterThan(0)
+      expect(src.indexOf(reader), file).toBeGreaterThan(gate)
+    }
+  })
+
+  test('the projects overview selects a share count only with sharing in force', () => {
+    const src = readFileSync(path.join(WEBAPP, 'src/lib/authz/adminProjects.ts'), 'utf8')
+    expect(src).toMatch(/\.\.\.\(sharing \? \{ _count: \{ select: \{ collaborators: \{ where: liveShare\(\) \} \} \} \} : \{\}\)/)
+    expect(src).toMatch(/const inForce = policy\?\.enabled === true\n/)
+    expect(src).toMatch(/select: rowSelect\(inForce\)/)
+    expect(src).toMatch(/openReadOnly: inForce && !actingAs,\n\s*breakGlass: root && inForce && !actingAs,/)
   })
 })
