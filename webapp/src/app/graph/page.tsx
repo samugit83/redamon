@@ -46,6 +46,7 @@ import { RoeViewer } from './components/RoeViewer'
 import { KaliTerminal } from './components/KaliTerminal'
 import { GraphViews } from './components/GraphViews'
 import { GitHubStarBanner } from './components/GitHubStarBanner'
+import { ProjectWriters } from '@/components/projects/ProjectWriters'
 import { useGraphData, useDimensions, useNodeSelection, useTableData, useGraphViews } from './hooks'
 import { useScanVersions } from './hooks/useScanVersions'
 import { useUnseenCounts } from './hooks/useUnseenCounts'
@@ -1830,6 +1831,8 @@ export default function GraphPage() {
         projectId={projectId || undefined}
         isSupplyChainLogsOpen={activeLogsDrawer === 'supplyChain'}
       />
+
+      <ProjectWriters projectId={projectId} />
 
       <ViewTabs
         activeView={activeView}

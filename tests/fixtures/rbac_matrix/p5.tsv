@@ -28,3 +28,13 @@ p5-owner-catalog-viewer-models	5.7	viewer	GET	/api/projects/${PSHARED_ID}/owner-
 p5-owner-catalog-stranger	5.7	member_a	GET	/api/projects/${PSHARED_ID}/owner-catalog	-	404	req:SH-26
 p5-owner-catalog-anon	5.7	anon	GET	/api/projects/${PA_ID}/owner-catalog	-	401	req:SH-26 sharing:on
 p5-owner-catalog-owner-off	5.7	member_a	GET	/api/projects/${PA_ID}/owner-catalog	-	404;has=Not found;lacks="keys"	req:SH-26 req:DV-30 sharing:off
+
+# Step 5.11: GET /api/projects/[id]/writers, who else is writing the project (the ProjectWriters banner). graph:read
+# at the Write level (the owner, a write share); a Read share 403 naming the level, a stranger 404. The fixture project
+# runs nothing, so the owner gets an empty list. With sharing not in force the route does not exist (404, DV-30). The
+# refusal of a second writer itself (409 project_writer_busy on the ticket and the starts) is tests/rbac_writers_live.sh.
+p5-writers-owner	5.11	member_c	GET	/api/projects/${PSHARED_ID}/writers	-	200;has="writers":[];has="startsRefused":true	req:SH-40 sharing:on
+p5-writers-viewer	5.11	viewer	GET	/api/projects/${PSHARED_ID}/writers	-	403;has="level":"W";has=graph:read	req:SH-40 sharing:on
+p5-writers-stranger	5.11	member_a	GET	/api/projects/${PSHARED_ID}/writers	-	404	req:SH-40
+p5-writers-anon	5.11	anon	GET	/api/projects/${PSHARED_ID}/writers	-	401	req:SH-40 sharing:on
+p5-writers-owner-off	5.11	member_c	GET	/api/projects/${PSHARED_ID}/writers	-	404;has=Not found;lacks="writers"	req:SH-40 req:DV-30 sharing:off
