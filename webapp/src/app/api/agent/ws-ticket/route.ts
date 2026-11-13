@@ -14,6 +14,7 @@ import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 import { secondWriterResponse } from '@/lib/authz/projectWriters'
 import { recordOwnerCredentialSpend, type SpendFeature } from '@/lib/authz/ownerSpend'
 import { safeErrorCode } from '@/lib/routeErrors'
+import { agentRunQuotaRefusal } from '@/lib/authz/quotas'
 
 /**
  * The sockets whose work spends the project owner's model and keys (step 5.6, C1): the chat's agent
@@ -153,6 +154,10 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   if (socket === 'agent') {
     const otherWriter = await secondWriterResponse({ projectId, personId: eff.userId, ownerId: tenant })
     if (otherWriter) return otherWriter
+    // The session's person's maxConcurrentAgentRuns (step 6.8), counted by the agent as it keys runs
+    // (`sub`); before any spend is recorded, so a refused ticket costs the owner nothing.
+    const overQuota = await agentRunQuotaRefusal(eff.userId, projectId, sessionId)
+    if (overQuota) return overQuota
   }
 
   // A collaborator's socket spends the owner's credentials, which its permission or level reached

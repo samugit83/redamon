@@ -30,6 +30,8 @@
 import { NextResponse } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
+import { agentFetch } from '@/lib/agentFetch'
+import { safeErrorCode } from '@/lib/routeErrors'
 import { instanceSettingsInForce } from '@/lib/sharedInstanceSettings'
 import { rbacFlags } from './flags'
 import { now } from './clock'
@@ -321,6 +323,62 @@ export async function mcpTokenQuotaView(userId: string): Promise<{ maxMcpTokens:
   const { quota } = await quotaFor(userId)
   if (quota.maxMcpTokens === null && quota.maxMcpTokenExpiryDays === null) return null
   return { maxMcpTokens: quota.maxMcpTokens, maxMcpTokenExpiryDays: quota.maxMcpTokenExpiryDays, active: await activeMcpTokenCount(userId) }
+}
+
+// A ticket waits on these reads before the socket opens: short, and a timeout refuses (fail closed).
+const AGENT_COUNT_TIMEOUT_MS = 5_000
+
+const AGENT_COUNT_UNAVAILABLE =
+  'The agent could not say how many of your runs are in progress, so no connection was opened. Try again in a moment.'
+
+/**
+ * The agent's count of one person's runs in progress (`GET /agent-sessions/count?user_id`, master
+ * key, step 6.5). Throws when it cannot say (unreachable, 503 while it starts, any other status or a
+ * malformed answer): never read as zero.
+ */
+export async function agentRunCount(userId: string): Promise<number> {
+  const res = await agentFetch(`/agent-sessions/count?user_id=${encodeURIComponent(userId)}`,
+    { method: 'GET', cache: 'no-store' }, { timeoutMs: AGENT_COUNT_TIMEOUT_MS })
+  if (!res.ok) throw new Error(`agent_count_http_${res.status}`)
+  const body = await res.json().catch(() => null) as { count?: unknown } | null
+  const count = body?.count
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) throw new Error('agent_count_malformed')
+  return count
+}
+
+/**
+ * Whether this exact session (person, project, chat session) already has a run in progress, from the
+ * agent's `GET /agent-sessions/all` (master key): reconnecting to it starts no new run. Throws when the
+ * agent cannot say.
+ */
+async function sessionRunInProgress(userId: string, projectId: string, sessionId: string): Promise<boolean> {
+  const res = await agentFetch('/agent-sessions/all', { method: 'GET', cache: 'no-store' }, { timeoutMs: AGENT_COUNT_TIMEOUT_MS })
+  if (!res.ok) throw new Error(`agent_sessions_http_${res.status}`)
+  const body = await res.json().catch(() => null) as { sessions?: unknown } | null
+  if (!body || !Array.isArray(body.sessions)) throw new Error('agent_sessions_malformed')
+  return body.sessions.some((r) => isRecord(r) && r.user_id === userId && r.project_id === projectId
+    && r.session_id === sessionId && r.running === true)
+}
+
+/**
+ * Before an `agent` socket ticket is minted (step 6.8, GV-11): the 409 when `userId` already has
+ * maxConcurrentAgentRuns runs in progress, unless this very session is one of them (a reconnect, a
+ * page reload during a run, starts nothing new); a 503 when the agent cannot say (fail closed, logged
+ * `[rbac] agent run quota unreadable`); else null. `userId` is the ticket's person (`sub`: the account
+ * acted as under act-as), the one the agent counts runs by.
+ */
+export async function agentRunQuotaRefusal(userId: string, projectId: string, sessionId: string): Promise<NextResponse | null> {
+  const limit = await quotaLimit(userId, 'maxConcurrentAgentRuns')
+  if (limit === null) return null
+  try {
+    const used = await agentRunCount(userId)
+    if (used < limit) return null
+    if (await sessionRunInProgress(userId, projectId, sessionId)) return null
+    return quotaExceededResponse('maxConcurrentAgentRuns', limit, userId, used)
+  } catch (err) {
+    console.warn(`[rbac] agent run quota unreadable user=${userId}: ${err instanceof Error && /^agent_/.test(err.message) ? err.message : safeErrorCode(err)}`)
+    return NextResponse.json({ error: AGENT_COUNT_UNAVAILABLE, code: 'agent_run_count_unavailable' }, { status: 503 })
+  }
 }
 
 /**
