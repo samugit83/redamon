@@ -93,3 +93,11 @@ describe('the sharing schema is additive (step 4.2)', () => {
     }
   })
 })
+
+// Step 6.9: the allowlist is one new table and nothing else: no 7.7.2 table or column changes.
+describe('the plugin allowlist schema is additive (step 6.9)', () => {
+  test('plugin_access_rules is new: no 7.7.2 table is reused', () => {
+    expect(old.PluginAccessRule).toBeUndefined()
+    expect(Object.values(old).map((m) => m.table)).not.toContain('plugin_access_rules')
+  })
+})

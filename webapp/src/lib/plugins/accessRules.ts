@@ -53,15 +53,20 @@ async function decide(userId: string, rules: readonly PluginAccessRule[]): Promi
   })
 }
 
+/** Whether the rules apply at all (RBAC_GOVERNANCE_ENABLED); with it off they are not even managed. */
+export function allowlistsInForce(): boolean {
+  return rbacFlags().governance
+}
+
 /** Which plugins the account may use: for a list (the Plugins page, the contributions). */
 export async function pluginAccessFor(userId: string): Promise<PluginAccess> {
-  if (!rbacFlags().governance) return EVERY_PLUGIN
+  if (!allowlistsInForce()) return EVERY_PLUGIN
   return decide(userId, await readAccessRules())
 }
 
 /** Whether the account may use this one plugin: reads only that plugin's rules. */
 export async function pluginAllowedFor(userId: string, pluginId: string): Promise<boolean> {
-  if (!rbacFlags().governance) return true
+  if (!allowlistsInForce()) return true
   return (await decide(userId, await readAccessRules(pluginId))).allows(pluginId)
 }
 

@@ -13,7 +13,8 @@
  *     takes the editor's password (ID-25). A new set holds nobody, so its creation asks for none:
  *     assigning it does (userPermissionAdmin.ts).
  *   - Deleting a set anyone holds, or the instance default, is refused (PE-17): holders of a deleted
- *     set would fall to *No access*, or the default to nothing.
+ *     set would fall to *No access*, or the default to nothing. So is one a plugin's access rule
+ *     names (GV-16): that plugin would silently become available to its admins only.
  *   - An edit or a default change that removes a permission raises the session version of every
  *     holder in its transaction and closes their sockets after it (ID-21); the instance default's
  *     holders are the members never assigned a set.
@@ -27,6 +28,7 @@ import { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
 import type { Session } from '@/lib/session'
+import { pluginsLimitedToSet } from '@/lib/plugins/accessRuleStore'
 import { BUILTIN_SETS, builtinSet } from './builtinSets'
 import { invalidatePermissionSets } from './capabilities'
 import { stepUpPermissionsIn, unheld, type Manager } from './hierarchy'
@@ -384,7 +386,9 @@ export async function deleteSet(request: NextRequest, session: Session, kind: Se
   if (builtin && builtin.kind === kind) return builtinReadOnly(kind)
   if (id.startsWith('builtin:')) return notFound(kind)
   const words = WORDS[kind]
-  type Outcome = { kind: 'missing' | 'default' } | { kind: 'in_use'; holders: number } | { kind: 'deleted' }
+  type Outcome =
+    | { kind: 'missing' | 'default' } | { kind: 'in_use'; holders: number } | { kind: 'plugin_rules'; plugins: string[] }
+    | { kind: 'deleted' }
   const outcome = await prisma.$transaction(async (tx): Promise<Outcome> => {
     await lockPermissions(tx)
     const row = await tx.permissionSet.findUnique({ where: { id }, select: ROW_SELECT }) as StoredRow | null
@@ -393,6 +397,8 @@ export async function deleteSet(request: NextRequest, session: Session, kind: Se
       ? await tx.userPermissionSet.count({ where: { setId: id } })
       : await tx.user.count({ where: { adminProfileId: id } })
     if (holders > 0) return { kind: 'in_use', holders }
+    const plugins = await pluginsLimitedToSet(tx, id)
+    if (plugins.length > 0) return { kind: 'plugin_rules', plugins }
     if (kind === 'member' && (await instanceDefaultId(tx)) === id) return { kind: 'default' }
     await tx.permissionSet.delete({ where: { id } })
     await writeAuditTx(tx, await personAuditEntry(request, session, {
@@ -406,6 +412,10 @@ export async function deleteSet(request: NextRequest, session: Session, kind: Se
     case 'in_use':
       return conflict(kind === 'member' ? 'set_in_use' : 'profile_in_use',
         `${outcome.holders} account(s) hold this ${words.one}: give them another first.`, { holders: outcome.holders })
+    case 'plugin_rules':
+      return conflict('set_in_plugin_rules',
+        `Plugins are limited to this ${words.one} (${outcome.plugins.join(', ')}): remove it from their access rules first.`,
+        { plugins: outcome.plugins })
     case 'default':
       return conflict('set_is_default', 'This set is the default for new members: choose another default first.')
   }

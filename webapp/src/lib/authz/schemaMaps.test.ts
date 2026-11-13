@@ -306,3 +306,40 @@ describe('the sharing schema (step 4.2)', () => {
     expect(Object.keys(now.InstanceSettings.fields).filter((f) => /shar|collab|breakGlass/i.test(f))).toEqual(['sharingPolicy'])
   })
 })
+
+// Step 6.9 (phase_06): the per-plugin allowlist. The table arrives empty, and a plugin with no rule
+// is available as before, so nothing changes until an admin limits a plugin.
+describe('the plugin allowlist schema (step 6.9)', () => {
+  const columnsOf = (model: string) =>
+    Object.entries(now[model]?.fields ?? {}).filter(([, f]) => !isRelation(f.type)).map(([name]) => name)
+
+  test('the new table maps to plugin_access_rules', () => {
+    expect(now.PluginAccessRule?.table).toBe('plugin_access_rules')
+  })
+
+  test.each([
+    ['PluginAccessRule', 'pluginId', 'String', 'plugin_id'],
+    ['PluginAccessRule', 'setId', 'String', 'set_id'],
+    ['PluginAccessRule', 'createdById', 'String', 'created_by_id'],
+    ['PluginAccessRule', 'createdAt', 'DateTime', 'created_at'],
+  ])('%s.%s is %s in column %s', (model, name, type, column) => {
+    expect(field(model, name)).toMatchObject({ type, column })
+  })
+
+  test('the table holds exactly these columns, one rule per plugin and set, found by set', () => {
+    expect(columnsOf('PluginAccessRule')).toEqual(['pluginId', 'setId', 'createdById', 'createdAt'])
+    expect(now.PluginAccessRule.blockAttributes).toContain('@@id([pluginId, setId])')
+    expect(now.PluginAccessRule.blockAttributes).toContain('@@index([setId])')
+    expect(field('PluginAccessRule', 'createdAt').line).toContain('@default(now())')
+  })
+
+  // T7: a set id may be a built-in (code, no row); a plugin id is the catalog's, kept across an
+  // uninstall. No relation means no cascade can drop a rule, and no model gains a back-relation.
+  test('no foreign key: no relation field on the rule, none pointing at it', () => {
+    expect(Object.values(now.PluginAccessRule.fields).filter((f) => isRelation(f.type))).toEqual([])
+    const pointing = Object.entries(now)
+      .filter(([, m]) => Object.values(m.fields).some((f) => baseType(f.type) === 'PluginAccessRule'))
+      .map(([name]) => name)
+    expect(pointing).toEqual([])
+  })
+})

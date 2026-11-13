@@ -2941,3 +2941,21 @@ model PluginPlatformState {
 
   @@map("plugin_platform_state")
 }
+
+/// Per-plugin allowlist (GV-16): a plugin with any row is available only to the holders of one of
+/// its listed member permission sets, and to whoever holds platform:plugins; a plugin with none, to
+/// everyone holding plugins:use. Neither column is a foreign key: pluginId is the catalog id, so a
+/// plugin uninstalled keeps its rules for a reinstall, and setId is a PermissionSet id or a built-in
+/// 'builtin:<slug>' (code, no row), so deleting a set is refused while a rule names it
+/// (permissionSetAdmin.ts deleteSet), else the plugin would silently become admin-only.
+model PluginAccessRule {
+  pluginId    String   @map("plugin_id")
+  setId       String   @map("set_id")
+  // No foreign key, as for PluginInstall.installedBy: deleting the admin keeps the rule.
+  createdById String   @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@id([pluginId, setId])
+  @@index([setId])
+  @@map("plugin_access_rules")
+}

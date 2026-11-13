@@ -19,12 +19,18 @@
  * Step 6.9 adds per-plugin allowlists. With the switch off the rules are ignored and not even read:
  * every plugin is available to everyone holding plugins:use (lib/plugins/accessRules.ts, its two
  * readers in GOVERNANCE_READERS; pluginAllowlist.test.ts and pluginAllowlist.routes.test.ts pin the
- * Gateway, the action start and the plugin screens in both states).
+ * Gateway, the action start and the plugin screens in both states). The rules cannot be managed
+ * either: /api/plugins/[pluginId]/access-rules answers 404 (its route.test.ts, "switch off") and the
+ * plugin drawer shows no "Who may use it" section (PluginAccessRules.test.tsx, the third reader).
  *
  * Step 6.2 adds the users directory and one account's detail. With the switch off GET /api/admin/users
  * and GET /api/admin/users/[id] answer 404 before they read the session or the database (both route
  * files are readers in GOVERNANCE_READERS; the test at the end, and api/admin/users/route.test.ts), and
  * their pages sit under /admin, which does not exist.
+ *
+ * Step 6.12 adds audit forwarding, which is its own setting (AUDIT_FORWARD, default off) and reads no
+ * switch: unset, no `[audit-forward]` line is printed and `auditedTransaction` hands each transaction
+ * to Prisma untouched, with this switch off or on (the test at the end; lib/auditForward.test.ts).
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
@@ -129,6 +135,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/plugins/[pluginId]/[[...screen]]/page.tsx',
       'src/app/settings/users/layout.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
+      'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/lib/plugins/accessRules.ts',
     ]
     // A property read (`flags.governance`, `rbacFlags().governance`, `useRbacFlags()?.governance`)
@@ -187,5 +194,35 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.2): the users directory routes do 
     expect(touched).not.toHaveBeenCalled()
     vi.doUnmock('@/lib/prisma')
     vi.doUnmock('@/lib/session')
+  })
+})
+
+describe('audit forwarding is its own setting (step 6.12): AUDIT_FORWARD, default off, whatever this switch', () => {
+  test('unset, no [audit-forward] line and the transaction goes to Prisma untouched, switch off or on', async () => {
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => ({ default: {}, prisma: {} }))
+    const { auditedTransaction } = await import('@/lib/auditForward')
+    const { writeAuditTx } = await import('@/lib/audit')
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const tx = { auditLog: { create: vi.fn(async ({ data }: { data: object }) => ({ id: 'al-1', ...data })) } }
+    const client = { $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(tx)) }
+    const write = async (t: unknown) => writeAuditTx(t as never, { actorId: 'adm-a', action: 'user.update', targetType: 'user', targetId: 'm-1' })
+    const forwarded = () => info.mock.calls.filter((c: unknown[]) => String(c[0]).startsWith('[audit-forward] ')).length
+    vi.stubEnv('RBAC_IDENTITY_ENABLED', 'true')
+    vi.stubEnv('RBAC_PERMISSIONS_ENABLED', 'true')
+    for (const governance of ['', 'true']) {
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', governance)
+      await auditedTransaction(client as never, write as never)
+      expect(forwarded()).toBe(0)
+    }
+    expect(client.$transaction.mock.calls).toEqual([[write], [write]])
+    expect(tx.auditLog.create).toHaveBeenCalledTimes(2)
+    // Control: the same write forwards once AUDIT_FORWARD asks it, with the switch still off.
+    vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+    vi.stubEnv('AUDIT_FORWARD', 'stdout')
+    await auditedTransaction(client as never, write as never)
+    expect(forwarded()).toBe(1)
+    info.mockRestore()
+    vi.doUnmock('@/lib/prisma')
   })
 })

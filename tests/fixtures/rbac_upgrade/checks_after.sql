@@ -106,3 +106,8 @@ SELECT column_name, column_default, is_nullable FROM information_schema.columns
 
 \echo == sharing policy (stored)
 SELECT sharing_policy::text FROM instance_settings;
+
+-- The plugin allowlist table arrives empty (step 6.9): no plugin has a rule, so every plugin stays
+-- available to everyone holding plugins:use, whatever RBAC_GOVERNANCE_ENABLED says.
+\echo == plugin access rules [step 6.9]
+SELECT count(*) FROM plugin_access_rules;

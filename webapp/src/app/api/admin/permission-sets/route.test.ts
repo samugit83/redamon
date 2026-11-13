@@ -312,6 +312,15 @@ describe('DELETE (PE-17)', () => {
     expect(state()).toBe(before)
   })
 
+  test('a set a plugin access rule names is refused, naming the plugins (GV-16, step 6.9)', async () => {
+    db().seedPluginRule('echo', 'set-unused')
+    db().seedPluginRule('beta', 'builtin:recon-operator', 'set-unused')
+    const before = state()
+    expect(await remove('admin-1', 'set-unused')).toMatchObject({ status: 409, body: { code: 'set_in_plugin_rules', plugins: ['beta', 'echo'] } })
+    expect(state()).toBe(before)
+    expect(db().pluginRules()).toHaveLength(3)
+  })
+
   test('an unused set is deleted with its audit row; a second delete is 404', async () => {
     expect(await remove('admin-1', 'set-unused')).toMatchObject({ status: 200, body: { id: 'set-unused', deleted: true } })
     expect(db().sets().map((s) => s.id)).not.toContain('set-unused')

@@ -55,3 +55,5 @@ include_shared_projects|false|NO
 project_allowlist|ARRAY[]::text[]|YES
 == sharing policy (stored)
 {}
+== plugin access rules [step 6.9]
+0

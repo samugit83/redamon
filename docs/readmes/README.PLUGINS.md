@@ -740,6 +740,22 @@ and a page under `webapp/src/app/plugins/`.
   actions, jobs, the skill picker, the override views) `plugins:use`, approving, rejecting,
   resetting or deleting a proposed skill version `plugins:approve_overrides`; both are in
   *Default member*, so nothing changes until an account is given a narrower set.
+- **Who may use one plugin (per-plugin allowlists).** With `RBAC_GOVERNANCE_ENABLED` on, whoever
+  holds `platform:plugins` can limit a plugin to chosen member permission sets, on the plugin's
+  details drawer ("Who may use it";
+  [`/api/plugins/[pluginId]/access-rules`](../../webapp/src/app/api/plugins/[pluginId]/access-rules/route.ts),
+  audited `plugin.access_rules_changed`). A plugin with no rule stays available to everyone holding
+  `plugins:use`; with rules, only to the holders of a listed set, and always to whoever holds
+  `platform:plugins`. [accessRules.ts](../../webapp/src/lib/plugins/accessRules.ts) decides for the
+  account the plugin works for (the effective user; the call token's user at the Gateway) at every
+  enforcement point: the Plugins page and a plugin's entry hide it (the plugin admins still see
+  every plugin), its icon, nav page and jobs answer 404, the contributions and the Models-by-feature
+  tiles leave it out, an action start and the skill picker answer 403 `plugin_not_allowed`, and so
+  does every Gateway call, so an action already running stops at its next call. A rule names a set
+  by id, with no foreign key; deleting a set a rule names is refused (409 `set_in_plugin_rules`).
+  Rules survive an uninstall, purge included, for a reinstall. With the switch off the rules are
+  neither read nor managed, and every plugin is available as before; this is not an off switch for
+  the platform.
 - **Audit.** Every lifecycle operation, every override proposal, approval and reset, and
   every permission grant is recorded with the existing
   [`writeAudit`](../../webapp/src/lib/audit.ts#L17) into the `AuditLog` table.
@@ -843,7 +859,9 @@ was started from a session, so `sdk.session.read` can read that one session and 
 A token lives no longer than its action (`403 action_ended`) or job (`403 job_ended`) and makes
 at most `PLUGIN_GATEWAY_CALLS_PER_TOKEN` calls. The Gateway authorizes every call again: the
 token, the plugin still serving (enabled, `ready`, not revoked, at the token's version), the
-permission granted and declared, and the tenancy of the project and session.
+permission granted and declared, the tenancy of the project and session, and, with
+`RBAC_GOVERNANCE_ENABLED` on, the plugin still available to the token's user (§7.1, per-plugin
+allowlists; `403 plugin_not_allowed`).
 
 | SDK call | Permission | What the Gateway does |
 |---|---|---|
@@ -2201,7 +2219,8 @@ plugin's feature code.
 The schema changes only with a RedAmon release. At every start, the webapp's entrypoint applies
 the `prisma/schema.prisma` baked into its image with `prisma db push`, then the platform's
 constraint script ([Dockerfile:123](../../webapp/Dockerfile#L123)). The four plugin tables were
-added this way, once. A plugin archive has no route to the schema: its files land on the
+added this way, once, and the allowlist's `plugin_access_rules` later the same way (empty until an
+admin limits a plugin). A plugin archive has no route to the schema: its files land on the
 plugins volume, the webapp only reads JSON from them, and its migrations transform the rows
 the platform hands them, with no Gateway access (§9.5).
 

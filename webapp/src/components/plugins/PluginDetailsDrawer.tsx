@@ -4,9 +4,11 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { Drawer } from '@/components/ui'
+import { useRbacFlags } from '@/hooks/useCan'
 import { errorMessage, fetchJson, readApiError, toApiError, type ApiError } from '@/lib/apiError'
 import type { PluginDetail } from '@/lib/plugins/pageModel'
 import { downloadPluginExport } from './exportDownload'
+import { PluginAccessRulesSection } from './PluginAccessRulesSection'
 import styles from './plugins.module.css'
 
 const LOG_LINES = 200
@@ -41,8 +43,9 @@ const mb = (bytes: number) => `${(bytes / 1_048_576).toFixed(1)} MB`
 
 /**
  * The admin's view of one plugin (README.PLUGIN_SDK.md §12): what failed last, what is on disk,
- * what it was granted, how much it stores, whether a rollback is possible, an export, and the
- * last lines of its log from the runner's ring buffer.
+ * what it was granted, who may use it (with RBAC_GOVERNANCE_ENABLED on), how much it stores,
+ * whether a rollback is possible, an export, and the last lines of its log from the runner's ring
+ * buffer.
  */
 export function PluginDetailsDrawer({ pluginId, isOpen, onClose, onRollback, busy = false }: PluginDetailsDrawerProps) {
   const detail = useQuery<PluginDetail>({
@@ -55,6 +58,7 @@ export function PluginDetailsDrawer({ pluginId, isOpen, onClose, onRollback, bus
     queryFn: () => readLogs(pluginId),
     enabled: isOpen,
   })
+  const allowlists = useRbacFlags()?.governance === true
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
   const exportData = async () => {
@@ -118,6 +122,7 @@ export function PluginDetailsDrawer({ pluginId, isOpen, onClose, onRollback, bus
               </div>
             )}
           </section>
+          {allowlists && <PluginAccessRulesSection pluginId={pluginId} displayName={d?.plugin.displayName ?? pluginId} />}
           <section data-testid="plugin-data">
             <h4>Data</h4>
             <p>

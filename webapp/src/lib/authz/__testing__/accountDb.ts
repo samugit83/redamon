@@ -22,7 +22,9 @@
  *   unique set name (P2002), and `orderBy` ignored (callers sort);
  * - (step 3.14) the act-as log read newest first (`findFirst` / `findMany` with `take`, rows
  *   ordered by `createdAt`, then by insertion), and the conditional raw write of an account's
- *   notices (`appendNotice`), which writes only when the stored list is still the one it read.
+ *   notices (`appendNotice`), which writes only when the stored list is still the one it read;
+ * - (step 6.9) the plugin access rules (`pluginAccessRule`: find, count, delete and create many,
+ *   unique per plugin and set), rolled back with the rest.
  */
 import { Prisma } from '@prisma/client'
 
@@ -92,6 +94,7 @@ export function createAccountDb() {
     sets: [] as Row[],
     assignments: [] as Row[],
     overrides: [] as Row[],
+    pluginRules: [] as Row[],
   }
   const failing = new Set<string>()
   const rawCalls: string[] = []
@@ -310,7 +313,12 @@ export function createAccountDb() {
       return state.sets.splice(i, 1)[0]
     },
   }
-  const rowsOf = (key: 'assignments' | 'overrides') => ({
+  const ROW_KEY: Record<'assignments' | 'overrides' | 'pluginRules', (x: Row) => string> = {
+    assignments: (x) => `${x.userId}|${x.setId}`,
+    overrides: (x) => `${x.userId}|${x.permission}`,
+    pluginRules: (x) => `${x.pluginId}|${x.setId}`,
+  }
+  const rowsOf = (key: 'assignments' | 'overrides' | 'pluginRules') => ({
     findMany: async (a: { where?: Row; select?: Row } = {}) =>
       state[key].filter((x) => matches(x, a.where)).map((x) => pick(x, a.select)),
     count: async (a: { where?: Row } = {}) => state[key].filter((x) => matches(x, a.where)).length,
@@ -320,21 +328,22 @@ export function createAccountDb() {
       return { count: gone.length }
     },
     createMany: async (a: { data: Row[] }) => {
-      const id = (x: Row) => key === 'assignments' ? `${x.userId}|${x.setId}` : `${x.userId}|${x.permission}`
+      const id = ROW_KEY[key]
       for (const d of a.data) {
         if (state[key].some((x) => id(x) === id(d))) throw unique()
-        state[key].push(key === 'assignments'
-          ? { createdAt: new Date(), ...d }
-          : { expiresAt: null, reason: null, createdAt: new Date(), ...d })
+        state[key].push(key === 'overrides'
+          ? { expiresAt: null, reason: null, createdAt: new Date(), ...d }
+          : { createdAt: new Date(), ...d })
       }
       return { count: a.data.length }
     },
   })
   const userPermissionSet = rowsOf('assignments')
   const userPermissionOverride = rowsOf('overrides')
+  const pluginAccessRule = rowsOf('pluginRules')
   const client = {
     user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, userInvite,
-    permissionSet, userPermissionSet, userPermissionOverride, $executeRaw, $queryRaw,
+    permissionSet, userPermissionSet, userPermissionOverride, pluginAccessRule, $executeRaw, $queryRaw,
   }
 
   async function $transaction<T>(fn: ((tx: typeof client) => Promise<T>) | Promise<unknown>[]): Promise<T> {
@@ -355,6 +364,7 @@ export function createAccountDb() {
         state.sets = snapshot.sets
         state.assignments = snapshot.assignments
         state.overrides = snapshot.overrides
+        state.pluginRules = snapshot.pluginRules
         throw e
       }
     })
@@ -419,6 +429,11 @@ export function createAccountDb() {
     seedOverride(row: { userId: string; permission: string; effect: string } & Row) {
       state.overrides.push({ expiresAt: null, reason: null, grantedById: 'root-1', createdAt: new Date(0), ...row })
     },
+    /** A plugin's access rule rows (step 6.9), one per set. */
+    seedPluginRule(pluginId: string, ...setIds: string[]) {
+      for (const setId of setIds) state.pluginRules.push({ pluginId, setId, createdById: 'admin-1', createdAt: new Date(0) })
+    },
+    pluginRules: () => state.pluginRules.map((x) => ({ ...x })),
     sets: () => state.sets.map((x): Row => ({ ...x, permissions: [...(x.permissions as string[])] })),
     assignments: () => state.assignments.map((x) => ({ ...x })),
     overrides: () => state.overrides.map((x) => ({ ...x })),
@@ -437,6 +452,7 @@ export function createAccountDb() {
       state.sets = []
       state.assignments = []
       state.overrides = []
+      state.pluginRules = []
       inviteSeq = 0
       setSeq = 0
       actAsSeq = 0

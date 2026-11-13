@@ -264,6 +264,9 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
       // Step 3.11: an account's sets and overrides, read and written only through a route that
       // answers 404 with the switch off.
       'src/lib/authz/userPermissionAdmin.ts',
+      // Step 6.9: the member sets a plugin's access rule may name, read only through the access-rules
+      // route, which answers 404 with the governance switch off (and that switch needs this one).
+      'src/lib/plugins/accessRuleAdmin.ts',
     ]
     const NAMES = /\b(permissionSets?|permissionOverrides?|userPermissionSet|userPermissionOverride|permission_sets|user_permission_sets|user_permission_overrides|defaultMemberSetId|default_member_set_id)\b/
     const files: string[] = []

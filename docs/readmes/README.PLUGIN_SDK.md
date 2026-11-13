@@ -175,8 +175,9 @@ may cancel it.
   `timeout` past its deadline, `runner_restarted` when the runner restarted under it,
   `invalid_result` when the result cannot be stored (U+0000, an unpaired surrogate),
   `result_too_large` above 2 MB, `plugin_unavailable` when the plugin stopped serving
-  (disabled, uninstalled, revoked, updated to another version) before it ended, and
-  `context_gone` when its project or session was deleted. A `cancelled` report nobody asked for
+  (disabled, uninstalled, revoked, updated to another version) before it ended,
+  `context_gone` when its project or session was deleted, and `plugin_not_allowed` when an admin
+  limited the plugin to permission sets its user holds none of while it ran. A `cancelled` report nobody asked for
   is recorded as `failed`.
 - Jobs are kept 30 days.
 
@@ -219,6 +220,7 @@ order:
 | `plugin_unavailable` | 403 | The plugin is not enabled, not ready, revoked, or the token is for another version. |
 | `permission_denied` | 403 | The call needs a permission the admin did not grant or the manifest does not declare. |
 | `not_found` | 404 | The token's project or session no longer exists, or is not the user's. |
+| `plugin_not_allowed` | 403 | An admin limited the plugin to permission sets the token's user holds none of (only with `RBAC_GOVERNANCE_ENABLED` on). It applies from the next call, so an action already running can meet it. |
 
 ### 5.2 `sdk.session` (needs `session:read`)
 

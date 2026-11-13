@@ -122,7 +122,7 @@ The projects table holds the configuration parameters, each described in `recon_
 
 ### Plugin Platform Tables
 
-Four tables hold the plugin platform's state ([README.PLUGINS.md](README.PLUGINS.md) §11.5). Plugin code never touches them directly: the webapp's Plugin Manager and Gateway are their only writers.
+Five tables hold the plugin platform's state ([README.PLUGINS.md](README.PLUGINS.md) §11.5). Plugin code never touches them directly: the webapp's Plugin Manager and Gateway are their only writers.
 
 | Table (model) | One row per | What it holds |
 |---|---|---|
@@ -130,6 +130,7 @@ Four tables hold the plugin platform's state ([README.PLUGINS.md](README.PLUGINS
 | `plugin_data` (`PluginData`) | value a plugin stored | JSON keyed by plugin, namespace (`live`, or a migration copy), owner, collection and key, with its size and an optional expiry. Action jobs live here too, under the reserved `__jobs` collection. Rows cascade with their user or project; quotas are enforced by the Gateway |
 | `plugin_overrides` (`PluginOverride`) | part of a proposed skill version | The proposed text for one part of a built-in skill, its scope (user or project) and the SHA-256 of the factory text it was built on. Rows that share a `change_set_id` are decided together; an approved change set gets the next `revision` for its scope. `status` is `proposed`, `active`, `rejected`, `withdrawn`, `superseded`, `stale` or `cleared`, with who decided and when |
 | `plugin_platform_state` (`PluginPlatformState`) | instance fact | The highest catalog `serial` accepted (a lower one is a replayed catalog and is refused), the never-lowered version counters, the reconcile lease |
+| `plugin_access_rules` (`PluginAccessRule`) | plugin and permission set | The per-plugin allowlist: with any row, the plugin is available only to the holders of a listed member set (and to `platform:plugins`); with none, to everyone holding `plugins:use`. Read only with `RBAC_GOVERNANCE_ENABLED` on. `plugin_id` and `set_id` have no foreign key: rules survive an uninstall, and a set a rule names cannot be deleted |
 
 `installed_by`, `created_by` and `decided_by` deliberately have no foreign key: deleting the admin who installed a plugin or decided a version must not uninstall it for everyone or remove a version from its owner's scope. Uninstalling asks whether to keep the plugin's data: **keep** sets the install back to `available` and leaves its rows dormant for a reinstall; **purge** deletes its `plugin_data`, `plugin_overrides` and `plugin_installs` rows for every user and project (an admin can export them first).
 
