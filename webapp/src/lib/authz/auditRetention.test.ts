@@ -156,6 +156,7 @@ const DISPLAY_READERS: Readonly<Record<string, string>> = {
   // Readers of steps still in flight when this list was written (step 6.6); each entry applies once its
   // file exists.
   'src/lib/authz/oversight.ts': "step 4.14's one row per admin, project and day: it reads only today's rows",
+  'src/lib/authz/actAsReads.ts': "IM-07's one act-as read row per admin, account acted as, project and day: it reads only today's rows",
   'src/lib/authz/adminProjects.ts': "step 6.4's projects overview: each project's latest activity, shown",
   'src/lib/authz/ownerCredentials.ts': "step 5.6's API usage report: the collaborators' spends of the owner's credentials in the last 30 days, shown",
 }
