@@ -173,6 +173,9 @@ triage write, `redamon-testing` for the tests.
 - **A live matrix row whose answer depends on a switch carries its tag** (`identity:`,
   `permissions:`, `sharing:`, `sharingwrite:`, `governance:` with `on` or `off`, read by
   [rbac_matrix_live.sh](../../tests/rbac_matrix_live.sh)), or it fails in the other state.
+  `sharing:` is sharing in force (the switch and Root's policy); a route or field gated on
+  `RBAC_SHARING_ENABLED` itself, which exists with the switch on and the policy `{}`, takes
+  `sharingswitch:` (the S3a red: four `sharing:off` rows failed there).
 - **A project the caller cannot see and one that does not exist are the same 404.** A 403 names
   the permission (`forbiddenResponse`, `requireLevel`) and goes only to someone who reaches the
   project below the level.

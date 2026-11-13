@@ -14,6 +14,11 @@
 #     (sharingPolicy.ts), so with the switch on and the policy still `{}` the
 #     owner-only rows run; the policy is read once, by psql, only when a selected
 #     row needs it, and an unreadable policy fails the rows that need it;
+#   - sharingswitch:on|off follows RBAC_SHARING_ENABLED alone (its chain, never the
+#     policy, which it never reads): the S3a red, rows of a route gated on the switch
+#     itself that ran as sharing:off with the switch on and the policy `{}`; the
+#     committed p4/p5 rows of that kind, and their switch-on/policy-off answers,
+#     run against the hand-checked answers of each state;
 #   - sharingwrite:on|off the same for RBAC_SHARING_WRITE_ENABLED (step 5.2), which
 #     reads off while sharing is not in force, and also while Root's policy does
 #     not allow write (`maxLevel` "write", maxShareLevel); both policy reads happen
@@ -83,6 +88,13 @@ printf '%s\n' \
   $'g-gov-off\t6.13\tanon\tGET\t/api/g/gov-off\t-\t200\tgovernance:off' \
   $'g-gov-share-on\t6.13\tanon\tGET\t/api/g/gov-share-on\t-\t200\tgovernance:on sharing:on' \
   > "$T/tests/fixtures/rbac_matrix/g.tsv"
+printf '%s\n' \
+  $'x-plain\t4.3\tanon\tGET\t/api/x/plain\t-\t200\treq:DV-30' \
+  $'x-switch-off\t4.3\tanon\tGET\t/api/x/switch-off\t-\t200\treq:DV-30 sharingswitch:off' \
+  $'x-switch-on\t4.3\tanon\tGET\t/api/x/switch-on\t-\t200\tsharingswitch:on' \
+  $'x-switch-on-policy-off\t4.3\tanon\tGET\t/api/x/switch-on-policy-off\t-\t200\tsharingswitch:on sharing:off' \
+  $'x-share-off\t4.3\tanon\tGET\t/api/x/share-off\t-\t200\tsharing:off' \
+  > "$T/tests/fixtures/rbac_matrix/x.tsv"
 
 # docker: the webapp's switches come from FAKE_* through the runner's own in-container
 # command (run here by sh), the seed prints the keys the runner requires, every call is logged.
@@ -118,7 +130,7 @@ case "$*" in
       RBAC_GOVERNANCE_ENABLED="${FAKE_GOVERNANCE-}" RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
   *" node "*)
     if grep -q SEED; then
-      printf 'PA_ID=pa\nPB_ID=pb\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
+      printf 'PA_ID=pa\nPB_ID=pb\nPSHARED_ID=ps\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
     fi ;;
   *) echo "unexpected docker call" >&2; exit 1 ;;
 esac
@@ -395,6 +407,122 @@ has "on the body" "body lacks AdminConsole" "$(line p6-page-admin-on)"
 page_rows soft404 200 "$ON_ROWS" ''
 eq "governance off: the on rows skip" "$(verdict p6-page-admin-on)" "SKIP"
 
+section "the switch-only sharing tag (S3a red): sharingswitch:on|off follows RBAC_SHARING_ENABLED alone"
+run true true '' x 5000 true off
+eq "switch on, policy off: exit 0" "$RC" "0"
+eq "switch on, policy off: sharingswitch:off skips (the route exists with the switch on)" "$(verdict x-switch-off)" "SKIP"
+has "the skip names the switch" "(sharing switch on)" "$(line x-switch-off)"
+eq "and not the policy" "$(grep -c "Root's policy" <<<"$(line x-switch-off)")" "0"
+eq "switch on, policy off: sharingswitch:on runs" "$(verdict x-switch-on)" "PASS"
+eq "switch on, policy off: sharingswitch:on sharing:off runs" "$(verdict x-switch-on-policy-off)" "PASS"
+eq "switch on, policy off: sharing:off keeps its meaning and runs" "$(verdict x-share-off)" "PASS"
+eq "the policy is read once, for the sharing-tagged rows" "$(policy_reads)" "1"
+has "result line" "== RESULT: 4 passed, 0 failed, 1 skipped ==" "$OUT"
+run true true '' x 5000 true on
+eq "sharing in force: sharingswitch:off skips" "$(verdict x-switch-off)" "SKIP"
+eq "sharing in force: sharingswitch:on runs" "$(verdict x-switch-on)" "PASS"
+eq "sharing in force: sharingswitch:on sharing:off skips on the policy" "$(verdict x-switch-on-policy-off)" "SKIP"
+has "named as sharing" "(sharing switch on)" "$(line x-switch-on-policy-off)"
+eq "sharing in force: sharing:off skips" "$(verdict x-share-off)" "SKIP"
+run true true '' x 5000 '' on
+eq "switch off: sharingswitch:off runs" "$(verdict x-switch-off)" "PASS"
+eq "switch off: sharingswitch:on skips" "$(verdict x-switch-on)" "SKIP"
+has "named off" "(sharing switch off)" "$(line x-switch-on)"
+eq "switch off: sharingswitch:on sharing:off skips" "$(verdict x-switch-on-policy-off)" "SKIP"
+eq "switch off: sharing:off runs" "$(verdict x-share-off)" "PASS"
+eq "switch off: the policy is not read" "$(policy_reads)" "0"
+run true '' '' x 5000 true on
+eq "permissions off: the sharing switch reads off for the switch-only tag too" \
+  "$(verdict x-switch-off) $(verdict x-switch-on)" "PASS SKIP"
+run true true '^x-switch-(on|off)$' x 5000 true FAIL
+eq "only switch-only rows selected: the policy is never read" "$(policy_reads)" "0"
+eq "so an unreadable policy fails none of them" "$(verdict x-switch-off) $(verdict x-switch-on)" "SKIP PASS"
+eq "the switches are read once" "$(reads)" "1"
+run true true '' x 5000 ' Yes ' off
+eq "' Yes ' is on" "$(verdict x-switch-on)" "PASS"
+# Two mutants of the runner: the tag read as sharing in force (the policy-aware branch), and the
+# tag not read at all. Each brings back the S3a red: the switch-off row runs with the switch on.
+sed '/^      sharingswitch) /d' "$RUNNER" > "$T/tests/rbac_matrix_live.sh"
+eq "mutant 1 differs from the runner" "$(cmp -s "$RUNNER" "$T/tests/rbac_matrix_live.sh"; echo $?)" "1"
+run true true '' x 5000 true off
+eq "mutation: the tag read as sharing in force runs the switch-off row with the switch on (S3a)" "$(verdict x-switch-off)" "PASS"
+sed 's/ sharing sharingswitch sharingwrite / sharing sharingwrite /' "$RUNNER" > "$T/tests/rbac_matrix_live.sh"
+eq "mutant 2 differs from the runner" "$(cmp -s "$RUNNER" "$T/tests/rbac_matrix_live.sh"; echo $?)" "1"
+run true true '' x 5000 true on
+eq "mutation: the tag not read runs the switch-off row even with sharing in force" "$(verdict x-switch-off)" "PASS"
+cp "$RUNNER" "$T/tests/rbac_matrix_live.sh"
+
+section "p4.tsv and p5.tsv as committed: the switch-only rows and their switch-on/policy-off answers (S3a hand check)"
+# Each row runs alone against the answer the webapp gave in that state (S3a/p4_off_rows_handcheck.txt for the
+# switch on with the policy {}; the route code's 404 for the switch off), then against the other state's answer.
+cp "$REPO_ROOT/tests/fixtures/rbac_matrix/p4.tsv" "$REPO_ROOT/tests/fixtures/rbac_matrix/p5.tsv" "$T/tests/fixtures/rbac_matrix/"
+printf '%s' '{"myAccess":{"level":"owner","toggles":{"rawData":true},"via":"owner","owner":{"name":"RBAC Member A","email":"rbac-member-a@e2e.local"}}}' > "$W/body.myaccess_owner"
+printf '%s' '{"id":"pa","name":"rbac-PA","myAccess":{"level":"owner","toggles":{"rawData":true},"via":"owner"}}' > "$W/body.project_owner"
+printf '%s' '{"id":"pa","name":"rbac-PA"}' > "$W/body.project_plain"
+printf '%s' '[{"id":"ps","name":"rbac-PSHARED","myAccess":{"level":"owner","toggles":{"rawData":true},"via":"owner"}}]' > "$W/body.list_owner"
+printf '%s' '[{"id":"ps","name":"rbac-PSHARED"}]' > "$W/body.list_plain"
+printf '%s' '{"id":"ps","name":"rbac-PSHARED","myAccess":{"level":"read","via":"share"}}' > "$W/body.project_shared"
+printf '%s' '{"error":"Not found"}' > "$W/body.notfound"
+printf '%s' '{"error":"You do not hold the permission this action needs (projects:administer).","code":"forbidden","permission":"projects:administer"}' > "$W/body.forbidden"
+printf '%s' '{"providers":[],"keys":{"tavilyApiKey":true},"mcpServers":[{"id":"s1","name":"rbac fake server"}]}' > "$W/body.catalog"
+one_row() { # row-id file status body sharing policy -> OUT
+  FAKE_BODY="$W/body.$4" FAKE_STATUS="$3"; export FAKE_BODY FAKE_STATUS
+  run true true "^$1\$" "$2" 5000 "$5" "$6"
+  unset FAKE_BODY FAKE_STATUS
+}
+SWITCH_ROWS='^p4-(myaccess-owner-off|proj-read-no-myaccess-off|list-off-owner|breakglass-off)$'
+POLICY_OFF_ROWS='^p4-(myaccess-owner-policy-off|proj-read-myaccess-policy-off|list-policy-off-owner|breakglass-policy-off)$'
+run true true "$SWITCH_ROWS" p4 5000 true off
+eq "switch on, policy {}: the four switch-only rows skip" \
+  "$(verdict p4-myaccess-owner-off) $(verdict p4-proj-read-no-myaccess-off) $(verdict p4-list-off-owner) $(verdict p4-breakglass-off)" "SKIP SKIP SKIP SKIP"
+has "on the switch" "(sharing switch on)" "$(line p4-breakglass-off)"
+run true true '^p5-owner-catalog-owner-off$' p5 5000 true off
+eq "switch on, policy {}: p5-owner-catalog-owner-off skips too" "$(verdict p5-owner-catalog-owner-off)" "SKIP"
+one_row p4-myaccess-owner-policy-off p4 200 myaccess_owner true off
+eq "switch on, policy {}: my-access answers the owner's own access" "$(verdict p4-myaccess-owner-policy-off)" "PASS"
+one_row p4-proj-read-myaccess-policy-off p4 200 project_owner true off
+eq "switch on, policy {}: the project GET carries the owner's myAccess" "$(verdict p4-proj-read-myaccess-policy-off)" "PASS"
+one_row p4-list-policy-off-owner p4 200 list_owner true off
+eq "switch on, policy {}: the list carries the owner's myAccess" "$(verdict p4-list-policy-off-owner)" "PASS"
+one_row p4-breakglass-policy-off p4 403 forbidden true off
+eq "switch on, policy {}: break-glass refuses a non-Root admin 403" "$(verdict p4-breakglass-policy-off)" "PASS"
+one_row p4-viewer-read-off p4 404 notfound true off
+eq "switch on, policy {}: a Read collaborator gets 404 (no share in force)" "$(verdict p4-viewer-read-off)" "PASS"
+one_row p5-owner-catalog-owner-policy-off p5 200 catalog true off
+eq "switch on, policy {}: the owner reads its own catalog" "$(verdict p5-owner-catalog-owner-policy-off)" "PASS"
+one_row p4-myaccess-owner-policy-off p4 404 notfound true off
+eq "mutation: my-access absent with the switch on: fail" "$(verdict p4-myaccess-owner-policy-off)" "FAIL"
+one_row p4-proj-read-myaccess-policy-off p4 200 project_plain true off
+eq "mutation: no myAccess on the project GET: fail" "$(verdict p4-proj-read-myaccess-policy-off)" "FAIL"
+one_row p4-list-policy-off-owner p4 200 list_plain true off
+eq "mutation: no myAccess on the list: fail" "$(verdict p4-list-policy-off-owner)" "FAIL"
+one_row p4-breakglass-policy-off p4 404 notfound true off
+eq "mutation: break-glass 404 with the switch on: fail" "$(verdict p4-breakglass-policy-off)" "FAIL"
+one_row p4-viewer-read-off p4 200 project_shared true off
+eq "mutation: the Read share in force with the policy off: fail" "$(verdict p4-viewer-read-off)" "FAIL"
+one_row 'p4-(share-off-leave|activity-off|oversee-list-off)' p4 404 notfound true off
+eq "the policy-aware sharing:off rows still run with the switch on and the policy {}" \
+  "$(verdict p4-share-off-leave) $(verdict p4-activity-off) $(verdict p4-oversee-list-off)" "PASS PASS PASS"
+one_row p4-myaccess-owner-off p4 404 notfound '' off
+eq "switch off: my-access 404" "$(verdict p4-myaccess-owner-off)" "PASS"
+one_row p4-proj-read-no-myaccess-off p4 200 project_plain '' off
+eq "switch off: the project GET without myAccess" "$(verdict p4-proj-read-no-myaccess-off)" "PASS"
+one_row p4-list-off-owner p4 200 list_plain '' off
+eq "switch off: the list without myAccess" "$(verdict p4-list-off-owner)" "PASS"
+one_row p4-breakglass-off p4 404 notfound '' off
+eq "switch off: break-glass 404" "$(verdict p4-breakglass-off)" "PASS"
+one_row p5-owner-catalog-owner-off p5 404 notfound '' off
+eq "switch off: the owner catalog 404" "$(verdict p5-owner-catalog-owner-off)" "PASS"
+one_row p4-viewer-read-off p4 404 notfound '' off
+eq "switch off: a Read collaborator gets 404" "$(verdict p4-viewer-read-off)" "PASS"
+one_row p4-myaccess-owner-off p4 200 myaccess_owner '' off
+eq "mutation: my-access present with the switch off: fail" "$(verdict p4-myaccess-owner-off)" "FAIL"
+run true true "$POLICY_OFF_ROWS" p4 5000 '' off
+has "switch off: the four policy-off rows skip" "== RESULT: 0 passed, 0 failed, 4 skipped ==" "$OUT"
+has "on the switch" "(sharing switch off)" "$(line p4-breakglass-policy-off)"
+run true true "^p4-(myaccess-owner-off|proj-read-no-myaccess-off|list-off-owner|breakglass-off|myaccess-owner-policy-off|proj-read-myaccess-policy-off|list-policy-off-owner|breakglass-policy-off|viewer-read-off)\$" p4 5000 true on
+has "sharing in force: all nine skip" "== RESULT: 0 passed, 0 failed, 9 skipped ==" "$OUT"
+
 section "Root's stored policy through the runner's own SQL (Phase 7 kickoff: no maxLevel means write)"
 # The stubbed answers above cannot catch a wrong query. Here each policy is stored in a
 # throwaway container of the stack's own postgres image (never pulled, no network) and the
@@ -469,6 +597,7 @@ has "and the chain" "RBAC_PERMISSIONS_ENABLED" "$HEADER"
 has "sharing:on | sharing:off in the row format" "sharing:on | sharing:off" "$HEADER"
 has "and its chain" "RBAC_SHARING_ENABLED" "$HEADER"
 has "and Root's policy" "instance_settings.sharing_policy" "$HEADER"
+has "sharingswitch:on | sharingswitch:off in the row format" "sharingswitch:on | sharingswitch:off" "$HEADER"
 has "sharingwrite:on | sharingwrite:off in the row format" "sharingwrite:on | sharingwrite:off" "$HEADER"
 has "and its switch" "RBAC_SHARING_WRITE_ENABLED" "$HEADER"
 has "and the maxLevel default" "a policy without \`maxLevel\` allows write" "$HEADER"

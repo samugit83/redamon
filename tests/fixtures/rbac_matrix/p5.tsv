@@ -18,7 +18,8 @@ p5-sched-confirm-cross-origin	5.5	member_c	POST	/api/projects/${PSHARED_ID}/sche
 # name and presence. recon:read (the owner, a Read share, an overseer); ?models=1 at level M (no Read share reaches it).
 # member_a's settings hold the seed's fake Tavily key and a server whose bearer is a fake: the catalog says the key is
 # set and names the server (its id and name), never either value. With RBAC_SHARING_ENABLED off the route does not
-# exist (404, the owner too: DV-30). The models row asks the agent: its unavailable answers are allowed.
+# exist (404, the owner too: DV-30); it follows the switch, not Root's policy (sharingswitch:off), and with the switch
+# on and the policy {} the owner reads its own catalog. The models row asks the agent: its unavailable answers are allowed.
 p5-owner-catalog-owner	5.7	member_a	GET	/api/projects/${PA_ID}/owner-catalog	-	200;has="tavilyApiKey":true;has="name":"rbac fake server";lacks=rbac-fake-tavily-key;lacks=rbac-fake-mcp-bearer	req:SH-26 sharing:on
 p5-owner-catalog-owner-models	5.7	member_a	GET	/api/projects/${PA_ID}/owner-catalog?models=1	-	200|503|504;lacks=rbac-fake-tavily-key;lacks=rbac-fake-mcp-bearer	req:SH-26 sharing:on
 p5-owner-catalog-oversee	5.7	admin_a	GET	/api/projects/${PA_ID}/owner-catalog	-	200;has="tavilyApiKey":true;lacks=rbac-fake-tavily-key;lacks=rbac-fake-mcp-bearer	req:SH-26 req:SH-18 sharing:on
@@ -27,7 +28,8 @@ p5-owner-catalog-viewer	5.7	viewer	GET	/api/projects/${PSHARED_ID}/owner-catalog
 p5-owner-catalog-viewer-models	5.7	viewer	GET	/api/projects/${PSHARED_ID}/owner-catalog?models=1	-	403;has="level":"M";has=recon:read	req:SH-26 sharing:on
 p5-owner-catalog-stranger	5.7	member_a	GET	/api/projects/${PSHARED_ID}/owner-catalog	-	404	req:SH-26
 p5-owner-catalog-anon	5.7	anon	GET	/api/projects/${PA_ID}/owner-catalog	-	401	req:SH-26 sharing:on
-p5-owner-catalog-owner-off	5.7	member_a	GET	/api/projects/${PA_ID}/owner-catalog	-	404;has=Not found;lacks="keys"	req:SH-26 req:DV-30 sharing:off
+p5-owner-catalog-owner-off	5.7	member_a	GET	/api/projects/${PA_ID}/owner-catalog	-	404;has=Not found;lacks="keys"	req:SH-26 req:DV-30 sharingswitch:off
+p5-owner-catalog-owner-policy-off	5.7	member_a	GET	/api/projects/${PA_ID}/owner-catalog	-	200;has="tavilyApiKey":true;has="name":"rbac fake server";lacks=rbac-fake-tavily-key;lacks=rbac-fake-mcp-bearer	req:SH-26 req:DV-30 sharingswitch:on sharing:off
 
 # Step 5.11: GET /api/projects/[id]/writers, who else is writing the project (the ProjectWriters banner). graph:read
 # at the Write level (the owner, a write share); a Read share 403 naming the level, a stranger 404. The fixture project

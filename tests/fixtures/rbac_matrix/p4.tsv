@@ -6,7 +6,9 @@
 # RBAC_SHARING_ENABLED reads on (it reads off while the permissions switch is off) AND Root's
 # instance_settings.sharing_policy is enabled (the runner reads it once through psql, as parseSharingPolicy reads it).
 # On the shared instance, whose Root is unconfirmed, a switch-on pass sets the policy by SQL and puts {} back after.
-# A sharing:off row runs only while sharing is not in force. The seed (webapp/scripts/e2e-rbac-seed.mjs, step 4.4)
+# A sharing:off row runs only while sharing is not in force. A sharingswitch:off row runs only while RBAC_SHARING_ENABLED
+# reads off, whatever Root's policy says: its route or field is gated on the switch itself and exists with the switch on
+# and the policy {}, where `sharingswitch:on sharing:off` rows hold its answer. The seed (webapp/scripts/e2e-rbac-seed.mjs, step 4.4)
 # provides:
 #   viewer      a member account (rbac-viewer@e2e.local) holding a Read share, without Raw data,
 #               on PSHARED
@@ -34,15 +36,20 @@ p4-viewer-roe-revisions	4.1	viewer	GET	/api/projects/${PSHARED_ID}/roe/revisions
 # ---- step 4.3: projectAccess() with shares, oversight; my-access; the terminal stays the owner's ----
 # p4-myaccess-other needs no share and runs in either switch state. With RBAC_SHARING_ENABLED off
 # /my-access does not exist (404, the owner too) and the project GET carries no myAccess (DV-30):
-# the two *-off rows; the owner's my-access answer is a sharing:on row. With sharing in force admin_a
+# the two *-off rows (sharingswitch:off). Both follow the switch, not Root's policy: with the switch on and
+# the policy {} the owner reads its own access (the *-policy-off rows) and a Read share is not in force, so
+# the viewer gets 404. The owner's my-access answer with sharing in force is a sharing:on row. With sharing in force admin_a
 # (Full admin, projects:oversee) reads rbac-PA at Read without Raw data: the twelve admin_a rows of
 # baseline.tsv are tagged sharing:off, and these are their answers for the routes whose oversight
 # answer is settled; the graph, conversation, remediation, report, schedule, triage and recon status
 # rows come with the read waves (4.6-4.8) and 4.14.
 p4-myaccess-owner	4.3	member_a	GET	/api/projects/${PA_ID}/my-access	-	200;has="level":"owner";has="via":"owner"	req:PE-21 sharing:on
 p4-myaccess-other	4.3	member_b	GET	/api/projects/${PA_ID}/my-access	-	404;lacks="myAccess"	req:PE-21
-p4-myaccess-owner-off	4.3	member_a	GET	/api/projects/${PA_ID}/my-access	-	404;lacks="myAccess"	req:PE-21 req:DV-30 sharing:off
-p4-proj-read-no-myaccess-off	4.3	member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA;lacks="myAccess"	req:PE-21 req:DV-30 sharing:off
+p4-myaccess-owner-off	4.3	member_a	GET	/api/projects/${PA_ID}/my-access	-	404;lacks="myAccess"	req:PE-21 req:DV-30 sharingswitch:off
+p4-proj-read-no-myaccess-off	4.3	member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA;lacks="myAccess"	req:PE-21 req:DV-30 sharingswitch:off
+p4-myaccess-owner-policy-off	4.3	member_a	GET	/api/projects/${PA_ID}/my-access	-	200;has="level":"owner";has="via":"owner"	req:PE-21 req:DV-30 sharingswitch:on sharing:off
+p4-proj-read-myaccess-policy-off	4.3	member_a	GET	/api/projects/${PA_ID}	-	200;has=rbac-PA;has="myAccess";has="via":"owner"	req:PE-21 req:DV-30 sharingswitch:on sharing:off
+p4-viewer-read-off	4.3	viewer	GET	/api/projects/${PSHARED_ID}	-	404;lacks="myAccess"	req:SH-02 req:DV-30 sharing:off
 p4-myaccess-viewer	4.3	viewer	GET	/api/projects/${PSHARED_ID}/my-access	-	200;has="level":"read";has="rawData":false;has="via":"share"	req:PE-21 req:SH-02 sharing:on
 p4-viewer-myaccess-on-read	4.3	viewer	GET	/api/projects/${PSHARED_ID}	-	200;has="myAccess";has="via":"share"	req:PE-21 sharing:on
 p4-viewer-settings-write	4.3	viewer	PUT	/api/projects/${PSHARED_ID}	{"updatedAt":"rbac-not-a-date"}	403;has=project:settings	req:SH-02 sharing:on
@@ -183,11 +190,14 @@ p4-oversee-text-to-cypher	4.6	admin_a	POST	/api/agent/text-to-cypher	{"project_i
 # the list carries no myAccess (DV-30) and the viewer lists nothing of member_c's. The scan activity view answers the
 # viewer; the seed queues nothing on PSHARED, so a shared project's jobs with their initiator, and the count as their
 # complement, are unit-tested (system/jobs/route.shared.test.ts). The reports list is p4-viewer-reports-all (4.7).
+# The list's myAccess follows the switch, not Root's policy: with the switch on and the policy {} each row carries the
+# caller's own access (owner, p4-list-policy-off-owner), so p4-list-off-owner is sharingswitch:off.
 p4-list-viewer	4.5	viewer	GET	/api/projects	-	200;has=${PSHARED_ID};has="level":"read";has="via":"share";has="rawData":false	req:SH-39 req:SH-09 sharing:on
 p4-list-viewer-raw	4.5	viewer_raw	GET	/api/projects	-	200;has=${PSHARED_ID};has="via":"share";has="rawData":true	req:SH-39 sharing:on
 p4-list-owner	4.5	member_c	GET	/api/projects	-	200;has=${PSHARED_ID};has="level":"owner";lacks="via":"share"	req:SH-39 sharing:on
 p4-list-not-shared	4.5	member_b	GET	/api/projects	-	200;lacks=${PSHARED_ID}	req:SH-39 sharing:on
-p4-list-off-owner	4.5	member_c	GET	/api/projects	-	200;has=${PSHARED_ID};lacks="myAccess"	req:SH-39 req:DV-30 sharing:off
+p4-list-off-owner	4.5	member_c	GET	/api/projects	-	200;has=${PSHARED_ID};lacks="myAccess"	req:SH-39 req:DV-30 sharingswitch:off
+p4-list-policy-off-owner	4.5	member_c	GET	/api/projects	-	200;has=${PSHARED_ID};has="level":"owner";lacks="via":"share"	req:SH-39 req:DV-30 sharingswitch:on sharing:off
 p4-list-off-viewer	4.5	viewer	GET	/api/projects	-	200;lacks=${PSHARED_ID}	req:SH-39 req:DV-30 sharing:off
 p4-jobs-viewer	4.5	viewer	GET	/api/system/jobs	-	200;has="mine";has="others"	req:SH-39 sharing:on
 
@@ -233,7 +243,9 @@ p4-viewer-raw-graph-read	4.9	viewer_raw	GET	/api/graph?projectId=${PSHARED_ID}	-
 # Private conversations are never reached by oversight (agent:chat is a write level). The read of rbac-PA writes the
 # day's project.oversee row, which member_a (the owner) then reads in the feed. Break-glass itself needs the confirmed
 # Root with its password: an admin and a member are refused here, Root's rows run on the disposable instance
-# (tests/rbac_breakglass_live.sh: the shared instance's Root is unconfirmed).
+# (tests/rbac_breakglass_live.sh: the shared instance's Root is unconfirmed). The break-glass route exists with the
+# switch on whatever Root's policy says and asks projects:administer before reading the policy: with the switch off
+# 404 (p4-breakglass-off, sharingswitch:off), with the switch on and the policy {} an admin is refused 403.
 p4-oversee-list	4.14	admin_a	GET	/api/projects/oversight	-	200;has=${PA_ID};has="via":"oversight"	req:SH-47 sharing:on
 p4-oversee-list-member	4.14	member_b	GET	/api/projects/oversight	-	403;has=projects:oversee	req:SH-47 sharing:on
 p4-oversee-list-usermgr	4.14	usermgr	GET	/api/projects/oversight	-	403;has=projects:oversee	req:SH-47 permissions:on sharing:on
@@ -245,4 +257,5 @@ p4-oversee-owner-feed	4.14	member_a	GET	/api/projects/${PA_ID}/activity?group=ov
 p4-breakglass-admin	4.14	admin_a	POST	/api/projects/${PA_ID}/breakglass	{"reason":"rbac matrix","durationMinutes":5,"stepUpPassword":"rbac-not-the-password"}	403;has=projects:administer	req:SH-18 sharing:on
 p4-breakglass-member	4.14	member_b	POST	/api/projects/${PA_ID}/breakglass	{"reason":"rbac matrix","durationMinutes":5}	403;has=projects:administer	req:SH-18 sharing:on
 p4-breakglass-close-admin	4.14	admin_a	DELETE	/api/projects/${PA_ID}/breakglass	-	403;has=projects:administer	req:SH-18 sharing:on
-p4-breakglass-off	4.14	admin_a	POST	/api/projects/${PA_ID}/breakglass	{"reason":"rbac matrix","durationMinutes":5}	404	req:SH-18 req:DV-30 sharing:off
+p4-breakglass-off	4.14	admin_a	POST	/api/projects/${PA_ID}/breakglass	{"reason":"rbac matrix","durationMinutes":5}	404	req:SH-18 req:DV-30 sharingswitch:off
+p4-breakglass-policy-off	4.14	admin_a	POST	/api/projects/${PA_ID}/breakglass	{"reason":"rbac matrix","durationMinutes":5}	403;has=projects:administer	req:SH-18 req:DV-30 sharingswitch:on sharing:off

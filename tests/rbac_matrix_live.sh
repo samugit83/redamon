@@ -42,7 +42,11 @@
 #           switch is off, AND Root's policy instance_settings.sharing_policy enabled, as
 #           sharingPolicy.ts reads it; the policy is read by psql once, only when the
 #           switch is on and a selected row is so tagged, and a policy that cannot be read
-#           fails those rows), sharingwrite:on | sharingwrite:off (whether write sharing is
+#           fails those rows), sharingswitch:on | sharingswitch:off (RBAC_SHARING_ENABLED
+#           alone, with the same chain and no policy read: for a route or field gated on
+#           the switch itself, which exists with the switch on whatever the policy says;
+#           `sharingswitch:on sharing:off` is the switch on with the policy off),
+#           sharingwrite:on | sharingwrite:off (whether write sharing is
 #           in force, step 5.2: sharing in force AND RBAC_SHARING_WRITE_ENABLED on, which
 #           reads off while the sharing switch is off, AND Root's policy `maxLevel` "write",
 #           as maxShareLevel reads it: a policy without `maxLevel` allows write, its default
@@ -360,7 +364,7 @@ for line in "${ROWS[@]}"; do
     echo "SKIP  $label  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
   fi
   off_switch=""; policy_unread=""
-  for sw in identity permissions sharing sharingwrite governance; do
+  for sw in identity permissions sharing sharingswitch sharingwrite governance; do
     [[ " $tags " =~ \ $sw:(on|off)\  ]] || continue
     want="${BASH_REMATCH[1]}"
     read_switches
@@ -369,6 +373,7 @@ for line in "${ROWS[@]}"; do
       identity) state="$IDENTITY" ;;
       permissions) state="$PERMISSIONS" ;;
       governance) state="$GOVERNANCE" ;;
+      sharingswitch) state="$SHARING"; why="sharing switch" ;;
       sharingwrite) state="$SHARINGWRITE"
          # In force only with sharing in force and Root's policy at write (maxShareLevel).
          if [ "$state" = on ]; then
