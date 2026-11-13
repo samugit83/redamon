@@ -171,3 +171,26 @@ describe('the audit retention pending change is additive (step 6.6)', () => {
     expect(now.InstanceSettings.fields.auditRetentionPending.line).not.toContain('@default')
   })
 })
+
+// Step 5.8: a new table, and two nullable columns on a 7.7.2 table (conversations): every existing
+// conversation reads no former author and no share, so it stays private to its author (T24, DV-23).
+describe('conversation sharing and the former author are additive (step 5.8)', () => {
+  test('ConversationShare is new: no 7.7.2 table is reused (conversation_shares)', () => {
+    expect(old.ConversationShare).toBeUndefined()
+    expect(Object.values(old).map((m) => m.table)).not.toContain('conversation_shares')
+  })
+
+  test('Conversation gains two nullable columns with no default and the share relation field; its 7.7.2 columns are untouched', () => {
+    for (const name of ['formerAuthorId', 'formerAuthorLabel']) {
+      expect(old.Conversation.fields[name]).toBeUndefined()
+      expect(now.Conversation.fields[name].type).toBe('String?')
+      expect(now.Conversation.fields[name].line).not.toContain('@default')
+    }
+    expect(old.Conversation.fields.share).toBeUndefined()
+    expect(now[baseType(now.Conversation.fields.share.type)]).toBeDefined()
+    for (const [name, was] of Object.entries(old.Conversation.fields)) {
+      expect({ name, type: now.Conversation.fields[name]?.type, column: now.Conversation.fields[name]?.column })
+        .toEqual({ name, type: was.type, column: was.column })
+    }
+  })
+})

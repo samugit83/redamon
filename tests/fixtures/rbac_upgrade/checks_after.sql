@@ -143,3 +143,13 @@ SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'proje
 SELECT (SELECT count(*) FROM information_schema.columns
         WHERE table_name = 'instance_settings' AND column_name = 'audit_retention_pending')
   || '|' || (SELECT count(*) FROM instance_settings WHERE audit_retention_pending IS NOT NULL);
+
+-- Conversations gain an author's share table and two nullable former-author columns (step 5.8): the
+-- table arrives empty and every existing conversation reads no former author, so each stays private
+-- to its author and none reads as reassigned from a deleted account.
+\echo == conversation shares, former author columns, conversations shared or reassigned [step 5.8]
+SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'conversation_shares')
+  || '|' || (SELECT count(*) FROM information_schema.columns
+             WHERE table_name = 'conversations' AND column_name IN ('former_author_id', 'former_author_label'))
+  || '|' || (SELECT count(*) FROM conversation_shares)
+  || '|' || (SELECT count(*) FROM conversations WHERE former_author_id IS NOT NULL);

@@ -157,3 +157,25 @@ describe('deleting a project or an account: the project access policy (step 5.6)
     expect(Object.entries(policy.fields).filter(([, f]) => f.line.includes('@relation')).map(([name]) => name)).toEqual(['project'])
   })
 })
+
+// Step 5.8 (T24, DV-23): a conversation's share goes with the conversation (and so with its project);
+// the person who shared it is a plain id. The conversation itself still cascades with its author
+// (Conversation.user), which is why the user delete reassigns a collaborator's conversations to the
+// project's owner before the account row goes, and the former author is a plain id, never a key.
+describe('deleting a conversation or an account: conversation shares (step 5.8)', () => {
+  test('ConversationShare rows cascade with the conversation; the sharer is no foreign key', () => {
+    const share = now.ConversationShare
+    expect(share, 'model ConversationShare').toBeDefined()
+    expect(share.fields.conversation.line).toMatch(/@relation\(\s*fields:\s*\[conversationId\],\s*references:\s*\[id\],\s*onDelete:\s*Cascade\s*\)/)
+    expect(Object.entries(share.fields).filter(([, f]) => f.line.includes('@relation')).map(([name]) => name)).toEqual(['conversation'])
+  })
+
+  test('Conversation still cascades with its author and its project; formerAuthorId is no foreign key', () => {
+    const conversation = now.Conversation
+    expect(conversation.fields.user.line).toMatch(/@relation\(\s*fields:\s*\[userId\],\s*references:\s*\[id\],\s*onDelete:\s*Cascade\s*\)/)
+    expect(conversation.fields.project.line).toMatch(/onDelete:\s*Cascade/)
+    expect(conversation.fields.formerAuthorId.line).not.toContain('@relation')
+    expect(Object.entries(conversation.fields).filter(([, f]) => f.line.includes('@relation')).map(([name]) => name).sort())
+      .toEqual(['project', 'user'])
+  })
+})

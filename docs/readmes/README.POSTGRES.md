@@ -152,6 +152,10 @@ Three tables back the LLM providers Root adds for the whole instance (Instance p
 
 `project_access_policies` (`ProjectAccessPolicy`), one row per project at most, read only while Read + Write sharing is in force (`RBAC_SHARING_WRITE_ENABLED` and the instance sharing policy). `owner_credential_consent_at` records that the project's owner lets collaborators spend the project's credentials (its LLM providers and keys: agent runs, scans, the LLM features); while it is null, or the project has no row, a collaborator's Run scans, Use AI agent and Exploitation & shells count for nothing. `owner_credential_consent_by_id` names the owner who consented, without a foreign key. `managers_see_all_conversations` (default false) is the co-owners' view of conversations. The row goes with its project. Every collaborator spend of the owner's credentials writes a `credits.used` row to `audit_log`.
 
+### Conversation Sharing
+
+A conversation (`conversations`) is private to its author (`user_id`). `conversation_shares` (`ConversationShare`) holds at most one row per conversation: its author shared it, read-only, with every collaborator of the project (`shared_by_id` is a plain id). The row goes with the conversation and is read only while Read + Write sharing is in force. When a collaborator's account is deleted, their conversations in other people's projects are reassigned to the project's owner instead of being deleted with the account: `user_id` becomes the owner, `former_author_id` keeps the deleted account's id (no foreign key) and `former_author_label` its name or email as it was then. Such a conversation opens read-only, since its agent checkpoints belong to the former author. Existing conversations have no share row and no former author.
+
 ## Docker Configuration
 
 ### docker-compose.yml

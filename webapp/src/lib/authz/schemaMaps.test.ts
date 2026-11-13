@@ -535,3 +535,46 @@ describe('the audit retention pending change (step 6.6)', () => {
       .toEqual(['auditRetentionDays', 'auditRetentionPending'])
   })
 })
+
+// Step 5.8 (phase_05, SH-22, DV-23, T24): an author's explicit share of one conversation with every
+// collaborator of the project (one row at most per conversation), and the former author a conversation
+// keeps once its author's account is deleted and it is reassigned to the project's owner.
+describe('conversation sharing and the former author (step 5.8)', () => {
+  test('ConversationShare maps to conversation_shares, one row per conversation at most', () => {
+    expect(now.ConversationShare?.table).toBe('conversation_shares')
+    expect(field('ConversationShare', 'id').line).toMatch(/@id\b/)
+    expect(now.ConversationShare.blockAttributes).toContain('@@unique([conversationId])')
+  })
+
+  test.each([
+    ['id', 'String', 'id'],
+    ['conversationId', 'String', 'conversation_id'],
+    ['sharedById', 'String', 'shared_by_id'],
+    ['createdAt', 'DateTime', 'created_at'],
+  ])('ConversationShare.%s is %s in column %s', (name, type, column) => {
+    expect(field('ConversationShare', name)).toMatchObject({ type, column })
+  })
+
+  test.each([
+    ['formerAuthorId', 'String?', 'former_author_id'],
+    ['formerAuthorLabel', 'String?', 'former_author_label'],
+  ])('Conversation.%s is %s in column %s, with no default (an existing conversation has no former author)', (name, type, column) => {
+    expect(field('Conversation', name)).toMatchObject({ type, column })
+    expect(field('Conversation', name).line).not.toContain('@default')
+  })
+
+  test('Conversation.userId stays non-null (DV-23: a nullable author breaks the previous release\'s push)', () => {
+    expect(field('Conversation', 'userId')).toMatchObject({ type: 'String', column: 'user_id' })
+  })
+
+  test('the relations: the share with its conversation only; Conversation.share is a relation field; the sharer and the former author are plain ids', () => {
+    expect(Object.values(now.ConversationShare.fields).filter((f) => isRelation(f.type)).map((f) => f.type)).toEqual(['Conversation'])
+    expect(field('Conversation', 'share').type).toBe('ConversationShare?')
+    expect(field('ConversationShare', 'sharedById').line).not.toContain('@relation')
+    expect(field('Conversation', 'formerAuthorId').line).not.toContain('@relation')
+    const pointing = Object.entries(now)
+      .filter(([, m]) => Object.values(m.fields).some((f) => baseType(f.type) === 'ConversationShare'))
+      .map(([name]) => name)
+    expect(pointing).toEqual(['Conversation'])
+  })
+})

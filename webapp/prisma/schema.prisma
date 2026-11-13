@@ -2321,11 +2321,33 @@ model Conversation {
   // R1: nullable actor columns (populated going forward only; MUST stay nullable).
   createdById    String?       @map("created_by_id")
   updatedById    String?       @map("updated_by_id")
+  // T24: once the author's account is deleted, a conversation in someone else's project is the
+  // project owner's (userId) and keeps who wrote it: their id (a plain id, the account is gone)
+  // and their name or email as it was then. Its checkpoint thread is the former author's, so it
+  // opens read-only. userId stays non-null (DV-23).
+  formerAuthorId    String?    @map("former_author_id")
+  formerAuthorLabel String?    @map("former_author_label")
   messages       ChatMessage[]
   fireteams      Fireteam[]
+  share          ConversationShare?
 
   @@index([projectId, userId])
   @@map("conversations")
+}
+
+/// The author's read-only share of one conversation with every collaborator of its project (RBAC
+/// Phase 5, SH-22). No row is private: every conversation from before the table stays its author's
+/// alone. Read only with write sharing in force (lib/authz/conversationAccess.ts); it goes with the
+/// conversation; the person who shared it is a plain id.
+model ConversationShare {
+  id             String       @id @default(cuid())
+  conversationId String       @map("conversation_id")
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sharedById     String       @map("shared_by_id")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@unique([conversationId])
+  @@map("conversation_shares")
 }
 
 // ========== Captured HTTP Traffic (mitmproxy integration, Phase 0+) ==========
