@@ -30,9 +30,19 @@ For a non-LLM external API *tool*, use `agentic-tool-integration`.
 ## Critical Rules
 
 - **NEVER let a provider API key reach a scan container.** Keys live in exactly
-  two places: Postgres `user_llm_providers` rows and, in transit, on the wire
-  between webapp and agent. The recon / scan / MCP containers must **never** see
-  them. Do not thread a provider key through recon settings or container env.
+  two places: Postgres `user_llm_providers` and `instance_llm_providers` rows and,
+  in transit, on the wire between webapp and agent. The recon / scan / MCP
+  containers must **never** see them. Do not thread a provider key through recon
+  settings or container env.
+- **An instance provider reaches the agent only as a marked row of the owner's
+  list.** `GET /api/users/{id}/llm-providers?internal=true` (master key) appends
+  the providers Root assigned to a set the account holds, with `providerType:
+  "instance"` and the kind in `instanceProviderType`, so no "the account's openai
+  key" or "first custom provider" reader lands on one. Such a row serves only
+  `instance/<providerId>/<model>`, resolved exactly (`exact_model_provider`,
+  `instance_build_args` in [agentic/llm_builder.py](../../agentic/llm_builder.py));
+  an `instance/` id the list lacks is refused in `setup_llm`
+  (`instance_provider_unavailable`), never routed on to OpenAI.
 - **NEVER add a model id that is not prefix-routed.** Anything other than
   `claude-*` and bare OpenAI ids MUST carry a `provider/<model>` prefix, resolved by
   `parse_model_provider()` in

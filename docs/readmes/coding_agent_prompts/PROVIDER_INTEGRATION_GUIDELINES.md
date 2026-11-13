@@ -90,7 +90,7 @@
 
 Three invariants you must respect:
 
-1. **API keys live only in two places**: Postgres `user_llm_providers` rows (plaintext) and, in transit, on the wire between webapp and agent. Recon / scan / MCP containers must never see them.
+1. **API keys live only in two places**: Postgres `user_llm_providers` and `instance_llm_providers` rows (plaintext) and, in transit, on the wire between webapp and agent. Recon / scan / MCP containers must never see them. An instance provider (one Root adds for the whole instance and assigns to permission sets) reaches the agent only as a marked row (`providerType: "instance"`) of the owner's `?internal=true` list and serves only `instance/<providerId>/<model>` ids; `setup_llm` refuses an `instance/` id the list does not hold.
 2. **Model identifiers are prefix-routed strings**. Anything other than `claude-*` and bare OpenAI ids must carry a `provider/` prefix (see [§9](#9-appendix---model-id-conventions-and-prefix-table)).
 3. **There is exactly one LangChain factory**: [agentic/orchestrator_helpers/llm_setup.py](../../../agentic/orchestrator_helpers/llm_setup.py) - `setup_llm()`. No other place in the agent should call `ChatOpenAI(...)` / `ChatAnthropic(...)` directly.
 
@@ -602,6 +602,7 @@ A model identifier as stored in `Project.agentOpenaiModel`, `Project.aiPipelineM
 | `custom/{configId}` | `openai_compatible` (per-user config) | `custom/clx7abc123` |
 | `openai_compat/` (legacy) | env-var-driven OpenAI-compat | `openai_compat/llama3` |
 | `loop/` | none: Agent in the Loop, an external MCP client answers (chat runs only) | `loop/mcp` |
+| `instance/{providerId}/` | the instance provider's own kind, built from its row only; the rest is that provider's own model id | `instance/clx9def456/gpt-5` |
 | **your new prefix** | **your provider** | **`myprovider/myprovider-large`** |
 
 When in doubt, the **single source of truth** is `parse_model_provider()` at [agentic/orchestrator_helpers/llm_setup.py:90](../../../agentic/orchestrator_helpers/llm_setup.py#L90). Any disagreement between this table and that function is a bug, fix the table, not the function.
