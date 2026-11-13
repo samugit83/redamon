@@ -107,6 +107,17 @@ describe('readLiveGraph', () => {
     expect(LIVE_GRAPH_QUERY.split('$projectId').length - 1).toBeGreaterThanOrEqual(matches.length - 6)
   })
 
+  test("an attack-chain branch returns no target of another project (a chain's edges may point out of it)", async () => {
+    // A chain or step written by a run of another project used to reach this project's chain by its
+    // id (the browser's session id); the edge then pointed at that project's nodes. A target carrying
+    // a project_id must be this project's; a global reference node (CVE) carries none.
+    for (const [label, rel] of [['AttackChain', 'r16'], ['ChainStep', 'r17'], ['ChainFinding', 'r18'], ['ChainDecision', 'r19']]) {
+      const branch = LIVE_GRAPH_QUERY.slice(LIVE_GRAPH_QUERY.indexOf(`:${label} {project_id: $projectId})-[${rel}]->(target)`))
+      const where = branch.slice(0, branch.indexOf('RETURN'))
+      expect(where, label).toMatch(/WHERE target\.project_id IS NULL OR target\.project_id = \$projectId\s*$/)
+    }
+  })
+
   test('excludes muted findings from both ends of every relationship', async () => {
     // A muted finding must be invisible in the graph view. The filter is
     // applied once to the whole union, so assert it is there and covers BOTH

@@ -158,26 +158,34 @@ export const LIVE_GRAPH_QUERY = `
 
         UNION
 
-        // Get AttackChain nodes and their relationships (HAS_STEP, CHAIN_TARGETS)
+        // Get AttackChain nodes and their relationships (HAS_STEP, CHAIN_TARGETS).
+        // In this and the three chain branches below, a target carrying a
+        // project_id must be this project's (a global CVE carries none): a run of
+        // another project that named this project's chain id (the browser's
+        // session id) once linked its own nodes here.
         MATCH (ac:AttackChain {project_id: $projectId})-[r16]->(target)
+        WHERE target.project_id IS NULL OR target.project_id = $projectId
         RETURN ac as n, r16 as r, target as m
 
         UNION
 
         // Get ChainStep relationships (NEXT_STEP, PRODUCED, FAILED_WITH, LED_TO, STEP_TARGETED, STEP_EXPLOITED)
         MATCH (s:ChainStep {project_id: $projectId})-[r17]->(target)
+        WHERE target.project_id IS NULL OR target.project_id = $projectId
         RETURN s as n, r17 as r, target as m
 
         UNION
 
         // Get ChainFinding bridge relationships (FOUND_ON, FINDING_RELATES_CVE, CREDENTIAL_FOR)
         MATCH (f:ChainFinding {project_id: $projectId})-[r18]->(target)
+        WHERE target.project_id IS NULL OR target.project_id = $projectId
         RETURN f as n, r18 as r, target as m
 
         UNION
 
         // Get ChainDecision outgoing relationships (DECISION_PRECEDED -> ChainStep)
         MATCH (d:ChainDecision {project_id: $projectId})-[r19]->(target)
+        WHERE target.project_id IS NULL OR target.project_id = $projectId
         RETURN d as n, r19 as r, target as m
       }
       // Mute enforcement, applied ONCE to the union rather than inside each
