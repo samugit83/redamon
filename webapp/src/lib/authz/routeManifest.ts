@@ -24,9 +24,12 @@ export const GUARD_CLASSES = [
   /** Accepts the scanner key (`isScannerRequest`), with or without the internal key. */
   'scanner',
   /**
-   * The caller must own the project (`guardProject`, `requireProjectAccess`, `requireProjectOwner`, ...,
-   * `requirePermission` / `withPermission` naming a `projectId` with a permission that acts on a
-   * project, can.ts `actsOnProject`: the entry's permission too).
+   * The caller must see the project (`projectAccess()`: its owner and, with sharing in force, a read
+   * share, oversight or break-glass) through `guardProject`, `requireProjectAccess`,
+   * `requireProjectOwner`, ..., or `requirePermission` / `withPermission` naming a `projectId` with a
+   * permission that acts on a project (can.ts `actsOnProject`: the entry's permission too). Only that
+   * permission's level stops a read collaborator, so a write handler asks one at a write level
+   * (levelLessHelpers.test.ts).
    */
   'project',
   /** The caller must own the conversation (`requireConversationAccess`, `...BySession`). */
@@ -297,7 +300,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/projects/[id]/export', guard: 'project', methods: ['GET'], permission: 'project:export' },
   { path: '/api/projects/[id]/ip-hostnames', guard: 'project', methods: ['GET'], permission: 'recon:read' },
   { path: '/api/projects/[id]/leave', guard: 'effective-user', methods: ['POST'], permission: null, sameOrigin: true },
-  { path: '/api/projects/[id]/my-access', guard: 'project', methods: ['GET'], permission: null, note: 'the effective user\'s own access to the project (projectAccess: level, toggles, via, the owner\'s name and email), for the stale-access poll; a project the account cannot see answers 404 like a missing one; no permission: any signed-in account asks about itself (step 4.3)' },
+  { path: '/api/projects/[id]/my-access', guard: 'project', methods: ['GET'], permission: null, note: '404 with RBAC_SHARING_ENABLED off, nothing read; the effective user\'s own access to the project (projectAccess: level, toggles, via, the owner\'s name and email), for the stale-access poll; a project the account cannot see answers 404 like a missing one; no permission: any signed-in account asks about itself (step 4.3)' },
   { path: '/api/projects/[id]/node-filters', guard: 'project', methods: ['GET', 'PUT'], permission: { GET: 'triage:read', PUT: 'node_filters:manage' } },
   { path: '/api/projects/[id]/node-filters/apply', guard: 'project', methods: ['GET', 'POST'], permission: { GET: 'triage:read', POST: 'node_filters:manage' } },
   { path: '/api/projects/[id]/node-filters/disarm', guard: 'project', methods: ['POST'], permission: 'node_filters:manage' },
