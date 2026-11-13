@@ -254,7 +254,7 @@ describe('the download card parses the route error (G-46)', () => {
       JSON.stringify({ error: 'Failed to download file', code: 'agent_unreachable', cause: 'ECONNREFUSED' }),
       { status: 503, headers: { 'Content-Type': 'application/json' } },
     )))
-    render(<FileDownloadCard filepath="/tmp/out.txt" filename="out.txt" description="d" source="s" />)
+    render(<FileDownloadCard filepath="/workspace/p1/notes/out.txt" filename="out.txt" description="d" source="s" projectId="p1" />)
     fireEvent.click(screen.getByTitle('Download file'))
     expect(await screen.findByText('Failed to download file (agent_unreachable · HTTP 503)')).toBeInTheDocument()
     expect(screen.queryByText(/\{"error"/)).toBeNull()
