@@ -604,6 +604,8 @@ services:
       MCP_TOKEN_PRUNE_INTERVAL: ${MCP_TOKEN_PRUNE_INTERVAL:-86400}
       # Plugin reconciliation tick (TD-20).
       PLUGIN_RECONCILE_INTERVAL: ${PLUGIN_RECONCILE_INTERVAL:-300}
+      # Seconds between RBAC expiry sweeps (expired shares, overrides, links).
+      RBAC_SWEEP_INTERVAL: ${RBAC_SWEEP_INTERVAL:-300}
       # D3: global + per-user concurrent-scan ceilings enforced at admission.
       # SAFE, GENEROUS DEFAULTS so unset resolves to a real limit (never "no cap").
       RECON_MAX_CONCURRENT_GLOBAL: ${RECON_MAX_CONCURRENT_GLOBAL:-30}

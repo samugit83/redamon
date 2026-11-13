@@ -473,6 +473,18 @@ def _reset_plugin_reconcile_state() -> None:
     _plugin_reconcile_gone = False
 
 
+# RBAC expiry sweep (step 4.15, T19): the webapp writes the .expired audit rows and removes
+# expired shares, overrides, break-glass rows and links. Expiry is already judged lazily at
+# every access check, so the interval only bounds how late those rows land.
+RBAC_SWEEP_INTERVAL_S = _interval_from_env("RBAC_SWEEP_INTERVAL", 300)
+_last_rbac_sweep = 0.0
+
+
+def _reset_rbac_sweep_state() -> None:
+    global _last_rbac_sweep
+    _last_rbac_sweep = 0.0
+
+
 async def _post_job_queue_reconcile(cm) -> None:
     """Post the set of projects with a live scan so the webapp can close finished
     'running' JobQueue rows (Scan Queue C-6). Best-effort; never raises."""
@@ -552,6 +564,23 @@ async def _post_plugin_reconcile(key: str) -> None:
         logger.debug("[plugins] reconcile: the webapp answered %s; retried at the next interval", status)
 
 
+async def _maybe_rbac_sweep() -> None:
+    """POST /api/internal/rbac/sweep at most once per interval. Best-effort; never raises on I/O.
+    Posted through _post_status because request_json returns no status, and a refused sweep
+    must log the code it got. The webapp answers 200 with every RBAC switch off."""
+    global _last_rbac_sweep
+    now = time.monotonic()
+    if _last_rbac_sweep and now - _last_rbac_sweep < RBAC_SWEEP_INTERVAL_S:
+        return
+    _last_rbac_sweep = now
+    key = _webapp_internal_key()
+    if not key:
+        return
+    status = await asyncio.to_thread(_post_status, f"{_webapp_base()}/api/internal/rbac/sweep", key, 30.0)
+    if status is None or not 200 <= status < 300:
+        logger.warning("[rbac] sweep failed status=%s", "unreachable" if status is None else status)
+
+
 async def _maybe_reconcile_plugins() -> None:
     """Starts POST /api/internal/plugins/reconcile at most once per interval, as a background
     task never awaited here: the reaper awaits each step, and the same loop releases governor
@@ -614,6 +643,12 @@ async def _ai_attack_reaper():
                     await _maybe_prune_mcp_tokens()
                 except Exception as e:
                     logger.warning(f"mcp token prune failed: {e}")
+                # Here and not in the scan scheduler, which exits at start when
+                # SCAN_SCHEDULER_ENABLED=false.
+                try:
+                    await _maybe_rbac_sweep()
+                except Exception as e:
+                    logger.warning(f"[rbac] sweep tick failed: {e}")
                 try:
                     await _maybe_reconcile_plugins()
                 except Exception as e:
