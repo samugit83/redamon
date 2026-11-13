@@ -155,6 +155,11 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       // only while /api/auth/me reports sharing in force; with the switch off auth/me has no `sharing` key, the
       // policy is never asked and the Shares item stays hidden (test at the end; AdminConsole.test.tsx).
       'src/app/admin/AdminConsole.tsx',
+      // Step 6.7: the Instance page's sharing panel shows and saves Root's policy only when GET
+      // /api/admin/instance-settings carries `sharingPolicy`, which the route sends only with the switch on;
+      // without it the page shows no sharing panel and sends no `sharingPolicy` (test at the end;
+      // admin/instance/page.test.tsx "no sharing policy in the answer").
+      'src/app/admin/instance/SharingPolicyPanel.tsx',
       // Step 4.2: shows the policy to admins and takes Root's change only with the switch on.
       'src/app/api/admin/instance-settings/route.ts',
       // Step 4.15: the expiry sweep, which reads the sharing tables only with sharing in force.
@@ -473,5 +478,23 @@ describe('the project activity feed with sharing not in force (step 4.13)', () =
     expect(src).toMatch(/const sharingInForce = useOptionalAuth\(\)\?\.user\?\.sharing\?\.enabled === true/)
     expect(src).toMatch(/const showActivity = sharingInForce && /)
     expect(src.match(/\/activity`/g)).toHaveLength(1)
+  })
+})
+
+// Step 6.7: the Instance page's sharing panel (app/admin/instance/SharingPolicyPanel.tsx). It reads the policy
+// only from GET /api/admin/instance-settings, which carries `sharingPolicy` only with the switch on
+// (route.sharingPolicy.test.ts, "RBAC_SHARING_ENABLED off"); without it the page shows no panel and so
+// sends no `sharingPolicy`.
+describe('the Instance page with sharing off (step 6.7)', () => {
+  test('no policy in the instance settings answer: no sharing panel, and the panel reads nothing on its own', async () => {
+    const { sharingPolicyOf } = await import('@/app/admin/instance/SharingPolicyPanel')
+    expect(sharingPolicyOf(null)).toBeNull()
+    expect(sharingPolicyOf({ securityPolicy: {}, canManageSecurityPolicy: true, canManageTunnels: true })).toBeNull()
+    // Control: the switch on, the route's answer carries it and the panel shows it.
+    expect(sharingPolicyOf({ sharingPolicy: { enabled: true }, canManageSharingPolicy: true })).toMatchObject({ enabled: true })
+    const panel = readFileSync(path.join(WEBAPP, 'src/app/admin/instance/SharingPolicyPanel.tsx'), 'utf8')
+    expect(panel).not.toMatch(/\bfetch\(/)
+    const page = readFileSync(path.join(WEBAPP, 'src/app/admin/instance/page.tsx'), 'utf8')
+    expect(page).toMatch(/sharingPolicyShown: sharingPolicyOf\(settings\) !== null/)
   })
 })

@@ -32,6 +32,11 @@
  * switch: unset, no `[audit-forward]` line is printed and `auditedTransaction` hands each transaction
  * to Prisma untouched, with this switch off or on (the test at the end; lib/auditForward.test.ts).
  *
+ * Step 6.7 adds the Instance page (/admin/instance), which sits under /admin and so does not exist with
+ * the switch off. Global Settings' Tunneling tab then keeps its controls for whoever may change the
+ * tunnel, with no link to the console (components/settings/InstanceTunnelSection.tsx, a reader in
+ * GOVERNANCE_READERS; the test at the end, and InstanceTunnelSection.test.tsx).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -136,6 +141,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/settings/users/layout.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
+      'src/components/settings/InstanceTunnelSection.tsx',
       'src/lib/plugins/accessRules.ts',
     ]
     // A property read (`flags.governance`, `rbacFlags().governance`, `useRbacFlags()?.governance`)
@@ -224,5 +230,22 @@ describe('audit forwarding is its own setting (step 6.12): AUDIT_FORWARD, defaul
     expect(forwarded()).toBe(1)
     info.mockRestore()
     vi.doUnmock('@/lib/prisma')
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.7): the Tunneling tab keeps its controls', () => {
+  test('whoever may change the tunnel gets the controls in Global Settings, and no link to the Instance page', async () => {
+    const { ToastProvider } = await import('@/components/ui/Toast/Toast')
+    const { InstanceTunnelSection } = await import('@/components/settings/InstanceTunnelSection')
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({
+      tunnelsEnabled: false, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', canManageTunnels: true,
+    })))
+    for (const flags of [FLAGS_ON, { ...FLAGS_ON, governance: false, sharing: true }]) {
+      render(createElement(AuthContext.Provider, { value: fakeAuth(flags, ['platform:tunnels']) },
+        createElement(ToastProvider, null, createElement(InstanceTunnelSection))))
+      expect(await screen.findByRole('button', { name: 'Save tunnel settings' })).toBeInTheDocument()
+      expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
+      cleanup()
+    }
   })
 })

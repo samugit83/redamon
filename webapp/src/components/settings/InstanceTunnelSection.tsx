@@ -8,10 +8,16 @@
  * the controls and a Save of their own, apart from the page's keys; anyone else sees the
  * tunnel's status. A new chisel URL asks for its auth again and for the password, as the
  * route requires.
+ *
+ * With RBAC_GOVERNANCE_ENABLED on the tunnel moves to the admin console's Instance page (step 6.7,
+ * UI-04): there it renders with `placement="instance"`, and in Global Settings whoever may change
+ * it gets a link to that page instead of the controls; anyone else still sees the status.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { useToast } from '@/components/ui'
+import { GuardedLink } from '@/components/GuardedLink'
+import { useRbacFlags } from '@/hooks/useCan'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { readApiError } from '@/lib/apiError'
 import { failureText, saveWarningLines } from '@/components/settings/failureText'
@@ -40,7 +46,10 @@ const pickTunnel = (body: Record<string, unknown>): Tunnel => ({
 
 const fieldId = (name: string) => `instance-tunnel-${name}`
 
-export function InstanceTunnelSection() {
+export const INSTANCE_PAGE_TUNNELS = '/admin/instance#tunnels'
+
+export function InstanceTunnelSection({ placement = 'settings' }: { placement?: 'settings' | 'instance' }) {
+  const movedToInstancePage = useRbacFlags()?.governance === true && placement === 'settings'
   const toast = useToast()
   const [view, setView] = useState<View>({ kind: 'loading' })
   const [tunnel, setTunnel] = useState<Tunnel>({ tunnelsEnabled: false, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' })
@@ -136,8 +145,21 @@ export function InstanceTunnelSection() {
     )
   }
   if (view.kind === 'readonly') return <TunnelStatusReadOnly />
+  if (movedToInstancePage) {
+    return (
+      <div className={styles.settingsGrid}>
+        <div className="formGroup">
+          <span className="formLabel">Tunnel settings</span>
+          <span>
+            The tunnel is shared by the whole instance and is managed on the Instance page of the admin console.{' '}
+            <GuardedLink href={INSTANCE_PAGE_TUNNELS}>Open the tunnel settings</GuardedLink>
+          </span>
+        </div>
+      </div>
+    )
+  }
 
-  const secret = (name: 'ngrokAuthtoken' | 'chiselAuth', label: string, hint: string) => (
+  const secret =(name: 'ngrokAuthtoken' | 'chiselAuth', label: string, hint: string) => (
     <div className="formGroup">
       <label className="formLabel" htmlFor={fieldId(name)}>{label}</label>
       <div className={styles.secretInputWrapper}>
@@ -201,7 +223,9 @@ export function InstanceTunnelSection() {
           {saving ? <><Loader2 size={14} className={styles.spin} /> Saving...</> : 'Save tunnel settings'}
         </button>
         <span className="formHint" style={{ marginLeft: 8 }}>
-          The tunnel is shared by the whole instance; it is saved on its own, apart from your keys.
+          {placement === 'instance'
+            ? 'The tunnel is shared by the whole instance: every user\'s reverse shells go through it.'
+            : 'The tunnel is shared by the whole instance; it is saved on its own, apart from your keys.'}
         </span>
       </div>
       {stepUp && (
