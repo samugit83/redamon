@@ -127,6 +127,125 @@ class TestTheExemptionIsNotAHole(unittest.TestCase):
             self.assertIn("$tenant_project_id", out, label)
 
 
+class TestTheAnchorIsTheSamePath(unittest.TestCase):
+    """A reference node is reachable only through a scoped node of its own path.
+
+    The anchor used to be a shape test: one scoped pattern ANYWHERE in the query
+    exempted every reference pattern, so `MATCH (a:Domain) WITH count(a) AS c
+    MATCH (x:CVE) RETURN x` listed every CVE in the database (the union of what
+    every tenant has scanned) even for a project with no Domain at all. Now the
+    reference node must be joined to a tenant-scoped node by relationship
+    patterns, as the webapp's saved-view filter reads it.
+    """
+
+    UNANCHORED = (
+        "MATCH (a:Domain) WITH count(a) AS c MATCH (x:CVE) RETURN x",
+        "MATCH (a:Domain) WITH a MATCH (c:CVE) RETURN c",
+        "MATCH (a:Domain), (c:CVE) RETURN c",
+        "MATCH (a:Domain) MATCH (c:CVE)-[:HAS_CWE]->(m:MitreData) RETURN m",
+        "MATCH (t:Technology) OPTIONAL MATCH (c:CVE) RETURN c.id",
+        "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) MATCH (k:Capec) RETURN k",
+        "MATCH (t:Technology)-[:USES]->(x), (c:CVE) RETURN c",
+        "MATCH (t:Technology) RETURN COUNT { (c:CVE) } AS every_cve",
+        "MATCH (t:Technology) WHERE EXISTS { (c:CVE) } RETURN t",
+        "MATCH (v:Vulnerability) RETURN v.id AS id UNION ALL MATCH (c:CVE) RETURN c.id AS id",
+        "MATCH (t:Technology) RETURN [(c:CVE)-[:HAS_CWE]->(m:MitreData) | m.name] AS cwes",
+    )
+
+    ANCHORED = (
+        "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) RETURN t, c",
+        "MATCH (c:CVE)<-[:HAS_KNOWN_CVE]-(t:Technology) RETURN c",
+        "MATCH (t:Technology)-->(c:CVE)-[:HAS_CWE]->(m:MitreData) RETURN m",
+        "MATCH (t:Technology) WHERE EXISTS { (t)-[:HAS_KNOWN_CVE]->(c:CVE) } RETURN t",
+        "MATCH (t:Technology) RETURN [(t)- - >(c:CVE) | c.id] AS cves",
+        "MATCH (t:Technology) OPTIONAL MATCH (t)-[:HAS_KNOWN_CVE]->(c:CVE) RETURN c.id",
+        "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) WHERE id(c) = 1234 RETURN DISTINCT c",
+        "MATCH (t:Technology)-/* via */[:HAS_KNOWN_CVE]->(c:CVE) RETURN c.id",
+        "MATCH (t:Technology)-[r:HAS_KNOWN_CVE {note: ']-, ('}]->(c:CVE) RETURN c.id",
+        "MATCH (t:Technology)-[r:HAS_KNOWN_CVE {tags: [1, [2]]}]->(c:CVE) RETURN c.id",
+        "MATCH (t:Technology)<-->(c:CVE) RETURN c.id",
+        "MATCH (ip:IP) OPTIONAL MATCH (ip)-[:HAS_VULNERABILITY]->(v:Vulnerability)"
+        "-[:HAS_CVE]->(cve:CVE) RETURN cve.id",
+    )
+
+    def test_a_scoped_node_elsewhere_in_the_query_is_no_anchor(self):
+        for query in self.UNANCHORED:
+            with self.subTest(query=query):
+                self.assertTrue(refused(query), query)
+
+    def test_a_traversal_from_the_projects_own_node_is_still_read(self):
+        for query in self.ANCHORED:
+            with self.subTest(query=query):
+                out = scoped(query)
+                self.assertRegex(out, r"\((c|cve):CVE[ )]")
+                self.assertIsNone(find_unscoped_node_pattern(out))
+
+    def test_the_refusal_says_how_to_reach_a_reference_node(self):
+        with self.assertRaises(TenantScopeError) as ctx:
+            scoped("MATCH (a:Domain), (c:CVE) RETURN c")
+        message = str(ctx.exception)
+        self.assertIn("(c:CVE)", message)
+        self.assertIn("relationship", message)
+        self.assertIn("(t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE)", message)
+
+    def test_the_backstop_alone_wants_the_same_path(self):
+        # Run on already-injected Cypher, as scope_query does.
+        self.assertIsNotNone(find_unscoped_node_pattern(inject_tenant_filter(
+            "MATCH (a:Domain) WITH count(a) AS c MATCH (x:CVE) RETURN x", UID, PID)))
+        self.assertIsNone(find_unscoped_node_pattern(inject_tenant_filter(
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) RETURN c", UID, PID)))
+
+    def test_a_variable_length_hop_is_no_anchor_even_to_the_backstop_alone(self):
+        # scope_query refuses `[*]` before this; the backstop must not rely on it.
+        injected = inject_tenant_filter("MATCH (t:Technology)-[*]-(c:CVE) RETURN c", UID, PID)
+        self.assertIsNotNone(find_unscoped_node_pattern(injected))
+
+    def test_a_reference_node_anchored_only_by_another_reference_node_is_refused(self):
+        self.assertTrue(refused("MATCH (c:CVE)-[:HAS_CWE]->(m:MitreData) RETURN m"))
+        self.assertTrue(refused(
+            "MATCH (t:Technology) WITH t MATCH (c:CVE)-[:HAS_CWE]->(m:MitreData)"
+            "-[:HAS_CAPEC]->(k:Capec) RETURN k"))
+
+    def test_a_variable_bound_by_an_anchored_path_stays_anchored_in_a_later_match(self):
+        # The MCP exploit_paths query and the agent prompt's "labelled OPTIONAL
+        # MATCH for a CVE neighbour" both re-match the CVE the first path bound.
+        for query in (
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) "
+            "OPTIONAL MATCH (c:CVE)-[:HAS_CWE]->(m:MitreData) RETURN c.id, m.cwe_id",
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) WHERE c.id STARTS WITH 'CVE-' "
+            "OPTIONAL MATCH (c:CVE)-[:HAS_CWE]->(m:MitreData) "
+            "OPTIONAL MATCH (m:MitreData)-[:HAS_CAPEC]->(k:Capec) RETURN k.name",
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(`c`:CVE) "
+            "OPTIONAL MATCH (m:MitreData)<-[:HAS_CWE]-(c:CVE) RETURN m",
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) "
+            "WHERE size([(c:CVE)-[:HAS_CWE]->(m:MitreData) | m]) > 0 RETURN t",
+        ):
+            with self.subTest(query=query):
+                self.assertIsNone(find_unscoped_node_pattern(scoped(query)))
+
+    def test_a_rebinding_across_a_scope_boundary_is_a_fresh_node(self):
+        for query in (
+            # WITH drops c, so the second (c:CVE) is every CVE in the database.
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) WITH count(c) AS n "
+            "MATCH (c:CVE) RETURN c.id",
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) WITH t, c MATCH (c:CVE) RETURN c.id",
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) RETURN c.id AS id "
+            "UNION MATCH (c:CVE) RETURN c.id AS id",
+            "MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) "
+            "CALL { MATCH (c:CVE) RETURN c AS x } RETURN x.id",
+            # bound only inside a comprehension or a subquery, so local to it
+            "MATCH (t:Technology) WITH t, [(t)-->(c:CVE) | c] AS l MATCH (c:CVE) RETURN c.id",
+            "MATCH (t:Technology) WHERE EXISTS { (t)-->(c:CVE) } MATCH (c:CVE) RETURN c.id",
+            "MATCH (t:Technology) WHERE size([(t)-->(c:CVE) | c]) > 0 MATCH (c:CVE) RETURN c.id",
+        ):
+            with self.subTest(query=query):
+                self.assertTrue(refused(query), query)
+
+    def test_a_reference_label_with_tenant_keys_of_its_own_is_never_exempt(self):
+        self.assertTrue(refused(
+            "MATCH (t:Technology)-->(c:CVE {user_id: 'victim', project_id: 'victim'}) RETURN c"))
+
+
 class TestBackstopAgreesWithInjection(unittest.TestCase):
     """`find_unscoped_node_pattern` runs on the INJECTED query and must accept
     exactly what injection chose to leave alone, or every CVE query 500s."""

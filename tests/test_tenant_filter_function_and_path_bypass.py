@@ -42,6 +42,15 @@ being written as a node pattern is invisible to it.
    `project_id` itself could outvote the injected filter; and one label regex
    backtracked exponentially, so a 30-character label hung the agent.
 
+6. A CLAUSE WORD AS A PATH VARIABLE.  Neo4j 5.26 accepts every clause word as
+   a path variable (`MATCH where = (m) RETURN where`, `MATCH (a:Domain), as =
+   (m)`), and reads `$` as a name character (`AS$p` is one variable). The
+   scanner took the word for the clause, ended the pattern region, and `(m)`
+   ran with no filter at all. Same review: a tenant map nested inside a value
+   (`{name: left('', size(keys({user_id: $tenant_user_id, ...})))}`) counted as
+   the node's own filter, and `-[r*1..2 {tags: [1]}]-` hid its `*` behind the
+   nested list.
+
 Run: python -m unittest tests.test_tenant_filter_function_and_path_bypass
 """
 import os
@@ -416,6 +425,128 @@ class TenantKeysInAPropertyMapTests(unittest.TestCase):
         out = approved("MATCH (a:Domain) MATCH (b:IP {name: a.project_id}) RETURN b.address")
         self.assertTrue(scoped(out, "b"), out)
 
+    def test_a_tenant_map_nested_in_a_value_is_not_the_nodes_filter(self):
+        # The value evaluates to 'x', so before the fix this matched every
+        # tenant's nodes named 'x': only a TOP-LEVEL entry filters the node.
+        nested = "{user_id: $tenant_user_id, project_id: $tenant_project_id}"
+        query = f"MATCH (n {{name: 'x' + left('', size(keys({nested})) - 1)}}) RETURN n"
+        self.assertEqual(
+            approved(query),
+            f"MATCH (n:!Muted {{name: 'x' + left('', size(keys({nested})) - 1), "
+            f"user_id: $tenant_user_id, project_id: $tenant_project_id}}) RETURN n",
+        )
+        for value in (f"[{nested}][0].user_id", f"CASE WHEN true THEN 'x' ELSE {nested} END"):
+            with self.subTest(value=value):
+                out = approved(f"MATCH (n:Secret {{name: {value}}}) RETURN n")
+                self.assertTrue(out.endswith(
+                    ", user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN n"), out)
+
+    def test_a_tenant_parameter_with_a_name_character_after_it_is_another_parameter(self):
+        # Neo4j reads `$tenant_user_id$` as the parameter `tenant_user_id$`.
+        self.assertTrue(refused(
+            "MATCH (n:Secret {user_id: $tenant_user_id$, project_id: $tenant_project_id$}) RETURN n"))
+
+    def test_a_quoted_tenant_parameter_is_the_same_parameter(self):
+        out = approved("MATCH (n:Secret {user_id: $`tenant_user_id`, "
+                       "project_id: $`tenant_project_id`}) RETURN n.name")
+        self.assertIn("(n:Secret&!Muted {user_id: $`tenant_user_id`", out)
+
+    def test_a_key_with_an_escaped_backtick_is_not_a_tenant_key(self):
+        # `user``_id` is the key user`_id to Neo4j, not user_id.
+        out = approved("MATCH (n:Secret {`user``_id`: $tenant_user_id, "
+                       "`project``_id`: $tenant_project_id}) RETURN n.name")
+        self.assertTrue(out.endswith(
+            ", user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN n.name"), out)
+
+    def test_a_property_map_that_is_not_key_value_pairs_is_refused(self):
+        for props in ("{.name}", "{a: 1} {b: 2}", "{a: 1,}", "{, a: 1}", "{a}"):
+            with self.subTest(props=props):
+                self.assertTrue(refused(f"MATCH (n:Secret {props}) RETURN n"), props)
+
+
+class ClauseWordAsPathVariableTests(unittest.TestCase):
+    """Every clause word is a legal path variable in Neo4j 5.26 (checked with
+    EXPLAIN): the pattern after it is still a pattern and must be scoped."""
+
+    WORDS = ("WHERE", "RETURN", "WITH", "UNWIND", "CALL", "ORDER", "SKIP", "LIMIT",
+             "DELETE", "DETACH", "SET", "REMOVE", "FOREACH", "UNION", "YIELD", "ON",
+             "USING", "AS", "where", "As")
+
+    def test_after_a_comma(self):
+        for word in self.WORDS:
+            with self.subTest(word=word):
+                out = approved(f"MATCH (a:Domain), {word} = (m:Secret) RETURN m.name")
+                self.assertTrue(scoped(out, "m"), out)
+                self.assertIsNone(find_unscoped_node_pattern(out))
+
+    def test_right_after_match(self):
+        for word in self.WORDS:
+            with self.subTest(word=word):
+                out = approved(f"MATCH {word} = (m) RETURN m.name")
+                self.assertTrue(scoped(out, "m"), out)
+
+    def test_other_spellings_and_places(self):
+        for query in (
+            "MATCH (a:Domain) OPTIONAL MATCH where = (m) RETURN m.name",
+            "MATCH (a:Domain), where/* c */=(m) RETURN m.name",
+            "MATCH (a:Domain), where // c\n = (m) RETURN m.name",
+            "MATCH (a:Domain), where /* it's */ = (m) RETURN m.name",
+            "MATCH (a:Domain) RETURN COUNT { where = (m) } AS n, a.name, 1 AS m",
+            "MATCH (a:Domain) WHERE EXISTS { as = (m) } RETURN a.name, 1 AS m",
+        ):
+            with self.subTest(query=query):
+                self.assertTrue(scoped(approved(query), "m"), query)
+
+    def test_a_dollar_sign_is_part_of_the_name(self):
+        for query in (
+            "MATCH (a:Domain), AS$p = (m) RETURN m.name",
+            "MATCH (a:Domain), where$ = (m) RETURN m.name",
+            "MATCH return$x = (m) RETURN m.name",
+        ):
+            with self.subTest(query=query):
+                self.assertTrue(scoped(approved(query), "m"), query)
+
+    def test_the_clauses_themselves_still_end_the_pattern(self):
+        approved("MATCH (n) WHERE (n:Domain OR n:Subdomain) RETURN n.name")
+        approved("MATCH (n:Domain) WHERE n.x = 1 WITH n WHERE (n.y IS NULL) RETURN n")
+        approved("MATCH (n:Domain) WHERE 'x' = n.name AND (n:Domain OR n:IP) RETURN n")
+        approved("MATCH (n:Domain) WHERE $tenant_user_id = n.user_id RETURN n")
+
+
+class OddNodeShapeTests(unittest.TestCase):
+    """Node patterns Neo4j 5.26 reads that the scanner cannot rewrite: each is
+    refused with TenantScopeError wherever it stands, never run and never a
+    crash (the webapp's saved-view filter found them, checked with EXPLAIN)."""
+
+    SHAPES = ("(n$)", "(n$:Secret)", "(IS Secret)", "(n IS Secret)", "(WHERE true)",
+              "(n:Secret WHERE true)", "(n {.name})")
+
+    def test_refused_wherever_the_pattern_stands(self):
+        for shape in self.SHAPES:
+            for query in (
+                f"MATCH {shape} RETURN 1",
+                f"MATCH (a:Domain), {shape} RETURN 1",
+                f"MATCH (a:Domain), where = {shape} RETURN 1",
+                f"MATCH (a:Domain)-->{shape} RETURN 1",
+                f"MATCH (a:Domain) WHERE EXISTS {{ {shape} }} RETURN a",
+                f"MATCH (a:Domain) RETURN [(a)-->{shape} | 1] AS x",
+            ):
+                with self.subTest(query=query):
+                    with self.assertRaises(TenantScopeError):
+                        scope_query(query, UID, PID)
+
+    def test_a_number_before_a_paren_is_not_a_function_name(self):
+        # `2e1(` used to read as a call, so the group after it was skipped.
+        try:
+            out = approved("MATCH SHORTEST 2e1(n:Domain) RETURN n")
+        except TenantScopeError:
+            return
+        self.assertTrue(scoped(out, "n"), out)
+
+    def test_a_dollar_name_elsewhere_is_harmless(self):
+        out = approved("MATCH (a:Domain) WITH a AS x$ MATCH (m) RETURN m.name")
+        self.assertTrue(scoped(out, "m"), out)
+
 
 class QuantifiedRelationshipTests(unittest.TestCase):
     def test_every_quantified_relationship_is_refused(self):
@@ -438,6 +569,19 @@ class QuantifiedRelationshipTests(unittest.TestCase):
     def test_arithmetic_and_strings_are_not_quantifiers(self):
         approved("MATCH (n:Domain) RETURN count(*) * 2, (n.a + 1) * 3, n.b + 1")
         approved("MATCH (n:Domain) WHERE n.note = '-[:R]->+' RETURN n")
+
+    def test_a_star_beside_a_nested_list_in_the_brackets_is_still_variable_length(self):
+        for rel in ("-[r*1..2 {tags: [1]}]-", "-[r:R*1..2 {tags: [1]}]->",
+                    "<-[r * {tags: ['x', [2]]}]-", "-[r*{a: [[1]]}]-", "-[r {a: [1]} *2]-"):
+            with self.subTest(rel=rel):
+                query = f"MATCH (a:Domain){rel}(b) RETURN a"
+                self.assertTrue(has_variable_length_path(query), rel)
+                self.assertTrue(refused(query), rel)
+
+    def test_a_nested_list_without_a_star_is_one_hop(self):
+        self.assertFalse(has_variable_length_path("MATCH (a)-[r {tags: [1, [2]]}]->(b) RETURN b"))
+        self.assertFalse(has_variable_length_path("MATCH (a)-[r {note: '*'}]->(b) RETURN b"))
+        approved("MATCH (a:Domain)-[r:R {tags: [1, [2]]}]->(b:IP) RETURN b.address")
 
     def test_has_variable_length_path_unit(self):
         self.assertTrue(has_variable_length_path("MATCH (a)-[:R]->+(b) RETURN b"))

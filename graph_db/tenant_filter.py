@@ -23,6 +23,7 @@ proven scoped must not be executed. Callers should use `scope_query`, which
 does both.
 """
 
+import bisect
 import re
 from typing import Iterator, List, Optional, Tuple
 
@@ -195,6 +196,28 @@ def _code_only(cypher: str) -> str:
     return ''.join(c if is_code[i] else ' ' for i, c in enumerate(cypher))
 
 
+def _relationship_holds_star(squeezed: str) -> bool:
+    """True when the brackets of a relationship (`-[ ... ]`) hold a `*`.
+
+    `_VAR_LENGTH_REL_RE` stops at a nested bracket, so a list in the property
+    map hid the star: `-[r*1..2 {tags: [1]}]-` is variable-length in Neo4j 5.26.
+    One pass with a stack and a running count of stars, so nesting stays linear.
+    An unclosed relationship bracket counts as one (fail closed).
+    """
+    stars_before = [0]
+    for char in squeezed:
+        stars_before.append(stars_before[-1] + (char == '*'))
+    opens: List[int] = []
+    for i, char in enumerate(squeezed):
+        if char == '[':
+            opens.append(i)
+        elif char == ']' and opens:
+            start = opens.pop()
+            if start > 0 and squeezed[start - 1] == '-' and stars_before[i] > stars_before[start]:
+                return True
+    return any(start > 0 and squeezed[start - 1] == '-' for start in opens)
+
+
 def has_variable_length_path(cypher: str) -> bool:
     """True when the query uses a variable-length relationship or a quantified
     path pattern.
@@ -209,6 +232,7 @@ def has_variable_length_path(cypher: str) -> bool:
     squeezed = re.sub(r'\s+', '', _code_only(cypher))
     return bool(
         _VAR_LENGTH_REL_RE.search(squeezed)
+        or _relationship_holds_star(squeezed)
         or _PATH_QUANTIFIER_RE.search(squeezed)
         or _QUANTIFIED_REL_RE.search(squeezed)
     )
@@ -254,11 +278,13 @@ MUTED_LABEL = "Muted"
 #:   - a pattern qualifies only when EVERY label it names is on this list, and
 #:     only for a plain `:A` / `:A:B` conjunction. A label EXPRESSION never
 #:     qualifies, because `(n:!CVE)` means every node that is NOT a CVE.
-#:   - the QUERY must still carry at least one tenant-scoped pattern
-#:     (`find_unscoped_node_pattern`), so reference nodes are reachable only by
-#:     traversing from the caller's own data. `MATCH (c:CVE) RETURN c` on its
-#:     own is still refused: which CVEs exist in the database is itself a weak
-#:     signal about what other tenants have scanned.
+#:   - the reference pattern must be joined by relationship patterns to a
+#:     tenant-scoped node of the SAME path (`find_unscoped_node_pattern`), so
+#:     reference nodes are reachable only by traversing from the caller's own
+#:     data. A scoped node elsewhere in the query is no anchor: `MATCH
+#:     (a:Domain) WITH count(a) AS c MATCH (x:CVE) RETURN x` would list every
+#:     CVE in the database, and which CVEs exist is itself a signal about what
+#:     other tenants have scanned.
 GLOBAL_REFERENCE_LABELS = frozenset({"CVE", "MitreData", "Capec"})
 
 #: A plain label conjunction and nothing else. Backticks are refused rather than
@@ -302,8 +328,9 @@ _NODE_INNER_RE = re.compile(
 
 # A word as the scanner reads it, Unicode letters included: `MATCH (é)` used to
 # hit an ASCII-only regex here and crash with AttributeError, a 500 rather than
-# a refusal.
-_WORD_RE = re.compile(r'[^\W\d]\w*')
+# a refusal. Neo4j reads `$` inside a name as a name character, so `AS$p` is
+# one variable, not the clause word AS (which ended the pattern region).
+_WORD_RE = re.compile(r'[^\W\d][\w$]*')
 
 _MUTED_WORD_RE = re.compile(r'\b' + MUTED_LABEL + r'\b')
 
@@ -481,7 +508,7 @@ def _is_function_call(cypher: str, open_idx: int, is_code: List[bool]) -> bool:
     keyword. The keyword case matters: `MATCH(n)` puts MATCH right against the
     paren, and reading it as a function name left the pattern unscoped (a read
     of every tenant's graph). A dotted name (`date.truncate(`) is always a call;
-    a number never is.
+    a number never is, whatever its form (`2e1(n:Domain)` skipped the group).
     """
     if open_idx == 0:
         return False
@@ -494,7 +521,7 @@ def _is_function_call(cypher: str, open_idx: int, is_code: List[bool]) -> bool:
     while start > 0 and is_code[start - 1] and _is_name_char(cypher[start - 1]):
         start -= 1
     word = cypher[start:open_idx]
-    if word.isdigit():
+    if word[0].isdigit():
         return False
     if start > 0 and is_code[start - 1] and cypher[start - 1] == '.':
         return True
@@ -680,6 +707,24 @@ def _prev_code_word(cypher: str, before: int, is_code: List[bool]) -> str:
     return cypher[i + 1:end].upper()
 
 
+def _next_token_char(cypher: str, i: int) -> Optional[str]:
+    """The next character from `i` (a code position) past whitespace and
+    comments only: a string or a quoted name counts as a token here."""
+    n = len(cypher)
+    while i < n:
+        if cypher[i].isspace():
+            i += 1
+        elif cypher.startswith('/*', i):
+            close = cypher.find('*/', i + 2)
+            i = n if close == -1 else close + 2
+        elif cypher.startswith('//', i):
+            newline = cypher.find('\n', i)
+            i = n if newline == -1 else newline + 1
+        else:
+            return cypher[i]
+    return None
+
+
 def _iter_node_patterns(cypher: str) -> Iterator[Tuple[int, int, str, bool]]:
     """Yield (start, end, inner, is_parseable) for every node-pattern candidate.
 
@@ -697,7 +742,9 @@ def _iter_node_patterns(cypher: str) -> Iterator[Tuple[int, int, str, bool]]:
     variable called `on`), and reading it as a clause used to end the region
     early, so the next comma-separated `(c)` ran unscoped. Every brace restores
     the region at its close, so nothing inside one can change how the rest of
-    the query is read.
+    the query is read. A clause word followed by `=` is a path variable (Neo4j
+    5.26 accepts `MATCH where = (m)`), so it does not end the region either:
+    no clause is ever followed by `=`.
     """
     is_code, _ = code_positions(cypher)
     pairs = _paren_pairs(cypher, is_code)
@@ -718,7 +765,10 @@ def _iter_node_patterns(cypher: str) -> Iterator[Tuple[int, int, str, bool]]:
             names_a_value = i > 0 and cypher[i - 1] in '.$'
             if word in _REGION_START:
                 in_pattern_region = True
-            elif word in _REGION_END and at_clause_level and not names_a_value:
+            elif (
+                word in _REGION_END and at_clause_level and not names_a_value
+                and _next_token_char(cypher, word_match.end()) != '='
+            ):
                 in_pattern_region = False
             i = word_match.end()
             continue
@@ -773,40 +823,118 @@ def _iter_node_patterns(cypher: str) -> Iterator[Tuple[int, int, str, bool]]:
         i += 1
 
 
-#: A map key naming a tenant property. Not after `.` or `$`: `a.project_id` reads
-#: a property and `$user_id` is a parameter.
-_TENANT_KEY_RE = re.compile(r'(?<![.\w$])(user_id|project_id)\s*:')
-_SCOPED_KEY_RES = (
-    re.compile(r'(?<![.\w$])user_id\s*:\s*\$tenant_user_id(?!\w)'),
-    re.compile(r'(?<![.\w$])project_id\s*:\s*\$tenant_project_id(?!\w)'),
-)
+_PLAIN_NAME_RE = re.compile(r'[A-Za-z_]\w*\Z')
+_MAP_ENTRY_RE = re.compile(r'\s*([^\W\d][\w$]*)\s*:(?!:)(.*)\Z', re.DOTALL)
+_EXACT_TENANT_ENTRIES = [('project_id', '$tenant_project_id'), ('user_id', '$tenant_user_id')]
 
 
-def _props_view(inner: str) -> str:
-    """The pattern's property map as Neo4j reads it: strings blanked, comments
-    removed, backticked keys unwrapped (`` `project_id` `` is `project_id`)."""
+def _neutral_map_view(props: str) -> str:
+    """The property map as Neo4j reads its keys and parameters: comments
+    removed, each string literal shown as `0`, a quoted name unwrapped only when
+    it is a plain name (`` `project_id` `` is `project_id`). Any other quoted
+    name is `quoted_name`: `` `user``_id` `` is the key user`_id to Neo4j, and
+    unwrapping it piecewise read it as user_id."""
+    out: List[str] = []
+    n = len(props)
+    i = 0
+    while i < n:
+        char = props[i]
+        if props.startswith('//', i):
+            newline = props.find('\n', i)
+            i = n if newline == -1 else newline + 1
+            out.append(' ')
+        elif props.startswith('/*', i):
+            close = props.find('*/', i + 2)
+            i = n if close == -1 else close + 2
+            out.append(' ')
+        elif char in ("'", '"'):
+            i += 1
+            while i < n and props[i] != char:
+                i += 2 if props[i] == '\\' else 1
+            i += 1
+            out.append('0')
+        elif char == '`':
+            name: List[str] = []
+            i += 1
+            while i < n:
+                if props[i] == '`':
+                    if props.startswith('``', i):
+                        name.append('`')
+                        i += 2
+                        continue
+                    break
+                name.append(props[i])
+                i += 1
+            i += 1
+            text = ''.join(name)
+            out.append(text if _PLAIN_NAME_RE.match(text) else 'quoted_name')
+        else:
+            out.append(char)
+            i += 1
+    return ''.join(out)
+
+
+def _map_entries(props: str) -> Optional[List[Tuple[str, str]]]:
+    """The top-level `(key, value)` entries of a property map, or None when it
+    is not a map of `key: value` pairs (a map projection `{.name}`, two maps)."""
+    view = _neutral_map_view(props).strip()
+    if not (view.startswith('{') and view.endswith('}')):
+        return None
+    body = view[1:-1]
+    if not body.strip():
+        return []
+    parts: List[str] = []
+    depth, start = 0, 0
+    for i, char in enumerate(body):
+        if char in '([{':
+            depth += 1
+        elif char in ')]}':
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == ',' and depth == 0:
+            parts.append(body[start:i])
+            start = i + 1
+    if depth != 0:
+        return None
+    parts.append(body[start:])
+    entries = []
+    for part in parts:
+        entry = _MAP_ENTRY_RE.match(part)
+        if not entry:
+            return None
+        entries.append((entry.group(1), entry.group(2).strip()))
+    return entries
+
+
+def _tenant_state(inner: str) -> Optional[str]:
+    """How the pattern's property map names the tenant: 'none', 'exact' (each
+    tenant key once, bound to its tenant parameter) or 'other'; None when the
+    map cannot be read.
+
+    Only TOP-LEVEL entries count. A substring test was fooled every way: the
+    tokens inside a string literal counted as a filter, a second `project_id:
+    'other'` key could outvote the real one, and a tenant map nested inside a
+    value (`{name: left('', size(keys({user_id: $tenant_user_id, ...})))}`)
+    stood in for the node's own filter while the node matched every tenant.
+    """
     match = _NODE_INNER_RE.match(inner)
-    props = match.group('props') if match else inner
-    return _normalise_calls(props or '')
-
-
-def _tenant_keys(inner: str) -> List[str]:
-    return _TENANT_KEY_RE.findall(_props_view(inner))
+    if not match:
+        return None
+    props = match.group('props')
+    if props is None:
+        return 'none'
+    entries = _map_entries(props)
+    if entries is None:
+        return None
+    tenant = sorted(entry for entry in entries if entry[0] in ('user_id', 'project_id'))
+    if not tenant:
+        return 'none'
+    return 'exact' if tenant == _EXACT_TENANT_ENTRIES else 'other'
 
 
 def _pattern_has_tenant_props(inner: str) -> bool:
-    """True when the property map holds exactly the tenant filter, once.
-
-    A substring test was fooled both ways: the tokens inside a string literal
-    counted as a filter, and a second `project_id: 'other'` key next to the real
-    one could outvote it. So each tenant key must appear once, as a key, bound to
-    its tenant parameter.
-    """
-    view = _props_view(inner)
-    keys = _TENANT_KEY_RE.findall(view)
-    return sorted(keys) == ['project_id', 'user_id'] and all(
-        key_re.search(view) for key_re in _SCOPED_KEY_RES
-    )
+    return _tenant_state(inner) == 'exact'
 
 
 def _is_global_reference_pattern(inner: str) -> bool:
@@ -874,13 +1002,37 @@ def _labels_excluding_muted(labels: str) -> str:
     return f":{expr}&!{MUTED_LABEL}"
 
 
-def _with_tenant_props(inner: str) -> str:
+def _labels_exclude_muted(labels: str) -> bool:
+    """True for a label expression `_labels_excluding_muted` produced: `:!Muted`,
+    or `:X&!Muted` with no top-level `|` in X (a union is parenthesised first)."""
+    raw = re.sub(r'\s+', '', labels or '')
+    term = f"&!{MUTED_LABEL}"
+    if raw == f":!{MUTED_LABEL}":
+        return True
+    if not raw.startswith(':') or not raw.endswith(term):
+        return False
+    depth, quoted = 0, False
+    for char in raw[1:-len(term)]:
+        if char == '`':
+            quoted = not quoted
+        elif not quoted:
+            depth += (char == '(') - (char == ')')
+            if char == '|' and depth == 0:
+                return False
+    return True
+
+
+def _with_tenant_props(inner: str, add_tenant: bool = True) -> str:
+    """The pattern with the `!Muted` exclusion and, unless it already carries
+    the exact tenant filter (`add_tenant=False`), the tenant properties."""
     match = _NODE_INNER_RE.match(inner)
     var = (match.group('var') or '').strip()
     labels = (match.group('labels') or '').strip()
     props = match.group('props')
 
-    if props is not None:
+    if not add_tenant:
+        new_props = props.strip()
+    elif props is not None:
         body = props.strip()[1:-1].strip()
         new_props = f"{{{body}, {TENANT_PROPS}}}" if body else f"{{{TENANT_PROPS}}}"
     else:
@@ -918,31 +1070,159 @@ def inject_tenant_filter(cypher: str, user_id: str, project_id: str) -> str:
     for start, end, inner, parseable in _iter_node_patterns(cypher):
         if not parseable or start < last_end:
             continue
+        last_end = end
         # A global reference pattern is left alone: these nodes carry no tenant
         # property, so a filter here matches nothing at all.
-        if _pattern_has_tenant_props(inner) or _is_global_reference_pattern(inner):
-            last_end = end
+        if _is_global_reference_pattern(inner):
             continue
-        # A map that names `user_id` / `project_id` itself is left as written for
-        # find_unscoped_node_pattern to refuse: appending the filter would leave
-        # two values for one key.
-        if _tenant_keys(inner):
-            last_end = end
-            continue
-        spans.append((start, end, inner))
-        last_end = end
+        tenant = _tenant_state(inner)
+        if tenant == 'none':
+            spans.append((start, end, _with_tenant_props(inner)))
+        elif tenant == 'exact':
+            # The caller's own exact filter still needs the mute exclusion.
+            labels = _NODE_INNER_RE.match(inner).group('labels') or ''
+            if not _labels_exclude_muted(labels):
+                spans.append((start, end, _with_tenant_props(inner, add_tenant=False)))
+        # Otherwise ('other', or a map that is not `key: value` pairs) it is left
+        # as written for find_unscoped_node_pattern to refuse: appending the
+        # filter would leave two values for one key.
 
     if not spans:
         return cypher
 
     out = []
     cursor = 0
-    for start, end, inner in spans:
+    for start, end, rewritten in spans:
         out.append(cypher[cursor:start])
-        out.append(_with_tenant_props(inner))
+        out.append(rewritten)
         cursor = end
     out.append(cypher[cursor:])
     return ''.join(out)
+
+
+def _is_relationship_gap(gap: str) -> bool:
+    """True when `gap` (code between two node patterns, comments and literals
+    blanked) is one fixed-length relationship: `--`, `-->`, `<--`, `<-->`,
+    `-[...]-`, `-[...]->`, `<-[...]-`, with the spaces Neo4j allows inside an
+    arrow. A `*` in the brackets or a quantifier after them is not one."""
+    squeezed = re.sub(r'\s+', '', gap)
+    if squeezed.startswith('<'):
+        squeezed = squeezed[1:]
+    if not squeezed.startswith('-'):
+        return False
+    rest = squeezed[1:]
+    if rest.startswith('['):
+        depth = 0
+        for close, char in enumerate(rest):
+            depth += (char == '[') - (char == ']')
+            if depth == 0:
+                break
+        else:
+            return False
+        if '*' in rest[:close]:
+            return False
+        rest = rest[close + 1:]
+    return rest in ('-', '->')
+
+
+def _path_roots(cypher: str, patterns: List[Tuple[int, int, str, bool]]) -> List[int]:
+    """For each pattern, a representative of its path: the patterns joined to it
+    by relationship patterns (`(a)-[:R]->(b)<--(c)` is one path; a comma, a new
+    clause or a UNION starts another). A pattern is joined to the first one that
+    starts after it ends, as the webapp's saved-view filter reads it."""
+    view = _code_only(cypher)
+    starts = [start for start, _, _, _ in patterns]
+    parent = list(range(len(patterns)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, (_, end, _, _) in enumerate(patterns):
+        nxt = bisect.bisect_left(starts, end, i + 1)
+        if nxt < len(patterns) and _is_relationship_gap(view[end:starts[nxt]]):
+            parent[root(nxt)] = root(i)
+    return [root(i) for i in range(len(patterns))]
+
+
+_SCOPE_BOUNDARY_WORDS = frozenset({'WITH', 'RETURN', 'UNION', 'CALL'})
+
+
+def _scope_boundaries(view: str) -> List[int]:
+    """Sorted positions after which a variable bound earlier may name another
+    node: WITH (not the `STARTS WITH` / `ENDS WITH` operators), RETURN, UNION,
+    CALL, and every brace (a subquery's variables are its own). Over-marking
+    only refuses more."""
+    marks = [i for i, char in enumerate(view) if char in '{}']
+    previous = ''
+    for match in _WORD_RE.finditer(view):
+        word = match.group(0).upper()
+        before = view[match.start() - 1] if match.start() else ' '
+        if (
+            word in _SCOPE_BOUNDARY_WORDS and before not in ('.', ':', '$')
+            and not (word == 'WITH' and previous in ('STARTS', 'ENDS'))
+        ):
+            marks.append(match.start())
+        previous = word
+    return sorted(marks)
+
+
+def _pattern_variable(inner: str) -> str:
+    match = _NODE_INNER_RE.match(inner)
+    var = ((match.group('var') if match else '') or '').strip()
+    if var.startswith('`') and _PLAIN_NAME_RE.match(var[1:-1]):
+        return var[1:-1]
+    return var
+
+
+def _anchor_rebound_variables(
+    cypher: str,
+    patterns: List[Tuple[int, int, str, bool]],
+    roots: List[int],
+    anchored: set,
+) -> None:
+    """Add to `anchored` the paths that re-match a variable an anchored path
+    bound earlier in the same query part.
+
+    `MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) OPTIONAL MATCH
+    (c:CVE)-[:HAS_CWE]->(m:MitreData)` is the MCP exploit_paths query and the
+    shape the agent prompt teaches: the second `(c:CVE)` is the CVE the first
+    path bound, not a fresh one. It counts only when nothing between the two can
+    rebind the name (`_scope_boundaries`), and only from a binding at clause
+    level: a variable bound inside a comprehension or a subquery is local to it.
+    """
+    view = _code_only(cypher)
+    boundaries = _scope_boundaries(view)
+    nesting, depth = [], 0
+    for char in view:
+        nesting.append(depth)
+        if char in '([':
+            depth += 1
+        elif char in ')]':
+            depth = max(0, depth - 1)
+    variables = [_pattern_variable(inner) if parseable else '' for _, _, inner, parseable in patterns]
+    # Forward propagation is one pass; another catches a path anchored by a
+    # member that comes after the pattern re-matching it.
+    for _ in range(3):
+        changed = False
+        latest = {}
+        for i, (start, _, _, _) in enumerate(patterns):
+            var = variables[i]
+            if not var:
+                continue
+            q = latest.get(var)
+            if q is not None and roots[q] in anchored and roots[i] not in anchored:
+                q_end = patterns[q][1]
+                k = bisect.bisect_left(boundaries, q_end)
+                if start >= q_end and (k == len(boundaries) or boundaries[k] >= start):
+                    anchored.add(roots[i])
+                    changed = True
+            if nesting[start] == 0:
+                latest[var] = i
+        if not changed:
+            break
 
 
 def find_unscoped_node_pattern(cypher: str) -> Optional[str]:
@@ -950,22 +1230,33 @@ def find_unscoped_node_pattern(cypher: str) -> Optional[str]:
 
     Run this on the query AFTER injection. A non-None result means the query
     would read across projects and must not be executed.
+
+    A reference pattern (CVE, MitreData, Capec) with no tenant keys of its own is
+    exempt only when a tenant-scoped node of the SAME path anchors it: a
+    traversal from the caller's own data (or a re-match of a variable such a
+    path bound, `_anchor_rebound_variables`). A scoped node elsewhere in the
+    query is no anchor: `MATCH (a:Domain) WITH count(a) AS c MATCH (x:CVE)
+    RETURN x` hands back every CVE in the database, the union of what every
+    tenant has found, whether or not the project has a Domain.
     """
     patterns = list(_iter_node_patterns(cypher))
-    # Reference nodes are readable only from a query that is ITSELF anchored to
-    # the caller's data. Without this, `MATCH (c:CVE) RETURN c.id` would hand
-    # back every CVE in the database - no asset, no project, but still the union
-    # of what every tenant has found.
-    has_tenant_anchor = any(
-        parseable and _pattern_has_tenant_props(inner)
+    tenant = [_tenant_state(inner) if parseable else None for _, _, inner, parseable in patterns]
+    reference = [
+        parseable and _is_global_reference_pattern(inner)
         for _, _, inner, parseable in patterns
-    )
-    for start, end, inner, parseable in patterns:
+    ]
+    roots = _path_roots(cypher, patterns)
+    anchored = {
+        roots[i] for i in range(len(patterns)) if tenant[i] == 'exact' and not reference[i]
+    }
+    if anchored and any(reference):
+        _anchor_rebound_variables(cypher, patterns, roots, anchored)
+    for i, (start, end, _, parseable) in enumerate(patterns):
         if not parseable:
             return cypher[start:end]
-        if _pattern_has_tenant_props(inner):
+        if tenant[i] == 'exact':
             continue
-        if has_tenant_anchor and _is_global_reference_pattern(inner):
+        if tenant[i] == 'none' and reference[i] and roots[i] in anchored:
             continue
         return cypher[start:end]
     return None
@@ -1103,6 +1394,13 @@ def _scope_query(cypher: str, user_id: str, project_id: str) -> str:
 
     filtered = inject_tenant_filter(cypher, user_id, project_id)
     unscoped = find_unscoped_node_pattern(filtered)
+    if unscoped and _is_global_reference_pattern(unscoped.strip()[1:-1]):
+        raise TenantScopeError(
+            f"Query rejected: the shared reference node {unscoped.strip()} is "
+            f"reachable only through a relationship from this project's own node "
+            f"in the same pattern, e.g. MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE). "
+            f"A separate MATCH, a comma or a UNION does not tie it to this project."
+        )
     if unscoped:
         raise TenantScopeError(
             f"Query rejected: node pattern {unscoped.strip()} could not be scoped "

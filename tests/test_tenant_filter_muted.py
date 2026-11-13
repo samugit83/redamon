@@ -220,6 +220,35 @@ class TestInjectionIsIdempotent(unittest.TestCase):
         self.assertEqual(twice.count(f"!{MUTED_LABEL}"), 1)
 
 
+class TestTheCallersOwnTenantFilterStillHidesMuted(unittest.TestCase):
+    """A pattern that already carries the exact tenant filter was left as
+    written, so it had no `!Muted` term and returned muted findings. The
+    webapp's saved-view filter adds the term in that case too."""
+
+    CASES = {
+        "MATCH (n:Domain {user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN n":
+            "MATCH (n:Domain&!Muted {user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN n",
+        "MATCH (n {user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN n":
+            "MATCH (n:!Muted {user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN n",
+        "MATCH (n:Secret|Vulnerability {project_id: $tenant_project_id, user_id: $tenant_user_id}) RETURN n":
+            "MATCH (n:(Secret|Vulnerability)&!Muted {project_id: $tenant_project_id, user_id: $tenant_user_id}) RETURN n",
+        "MATCH (v:Vulnerability {name: 'x', user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN v":
+            "MATCH (v:Vulnerability&!Muted {name: 'x', user_id: $tenant_user_id, project_id: $tenant_project_id}) RETURN v",
+    }
+
+    def test_the_exclusion_is_added(self):
+        for query, expected in self.CASES.items():
+            with self.subTest(query=query):
+                self.assertEqual(scoped(query), expected)
+
+    def test_and_added_once(self):
+        for query in self.CASES:
+            with self.subTest(query=query):
+                once = inject_tenant_filter(query, UID, PID)
+                self.assertEqual(inject_tenant_filter(once, UID, PID), once)
+                self.assertEqual(once.count(f"!{MUTED_LABEL}"), 1)
+
+
 class TestMuteDoesNotWeakenTenantIsolation(unittest.TestCase):
     """The mute term rides on the tenant rewrite; it must not displace it."""
 
