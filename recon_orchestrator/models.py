@@ -32,6 +32,12 @@ class ReconStartRequest(BaseModel):
     # its tenant, handed to the scan container. Optional in every start request
     # model so a missing one gets the endpoint's coded 403, not a bare 422.
     job_credential: Optional[str] = None
+    # Step 5.5 (D-14): who started the scan, which may be a collaborator on the
+    # owner's project. Admission's per-user ceiling counts this person; the
+    # container still runs under user_id (the credential's tenant). Absent or empty
+    # (an owner's start, an older webapp) means the tenant. Every start request
+    # model carries it.
+    actor_user_id: Optional[str] = None
 
 
 class CaptureProxyConfig(BaseModel):
@@ -83,6 +89,9 @@ class ReconState(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     container_id: Optional[str] = None
+    # Who started this run (step 5.5); None for a run adopted after an orchestrator
+    # restart, which keeps no record of it. Every run state carries it.
+    actor_user_id: Optional[str] = None
 
 
 class ReconLogEvent(BaseModel):
@@ -137,6 +146,7 @@ class GvmStartRequest(BaseModel):
     user_id: str
     webapp_api_url: str
     job_credential: Optional[str] = None
+    actor_user_id: Optional[str] = None
 
 
 class GvmState(BaseModel):
@@ -150,6 +160,7 @@ class GvmState(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     container_id: Optional[str] = None
+    actor_user_id: Optional[str] = None
 
 
 class GvmLogEvent(BaseModel):
@@ -185,6 +196,7 @@ class GithubHuntStartRequest(BaseModel):
     user_id: str
     webapp_api_url: str
     job_credential: Optional[str] = None
+    actor_user_id: Optional[str] = None
 
 
 class GithubHuntState(BaseModel):
@@ -198,6 +210,7 @@ class GithubHuntState(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     container_id: Optional[str] = None
+    actor_user_id: Optional[str] = None
     #: Needed by the orchestrator-side ingest backstop, which writes the graph
     #: when the container died before it could (SIGKILL, OOM, crash).
     user_id: Optional[str] = None
@@ -252,6 +265,7 @@ class TrufflehogStartRequest(BaseModel):
     #: this source needs, and they are never persisted or logged.
     secrets: dict = Field(default_factory=dict)
     job_credential: Optional[str] = None
+    actor_user_id: Optional[str] = None
 
 
 class TrufflehogState(BaseModel):
@@ -272,6 +286,7 @@ class TrufflehogState(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     container_id: Optional[str] = None
+    actor_user_id: Optional[str] = None
     #: Set once the clean ingest step has written this run's findings to Neo4j.
     ingested: bool = False
     #: Bounded so a permanently-failing ingest is not retried on every 30 s sweep.
@@ -331,6 +346,7 @@ class SupplyChainStartRequest(BaseModel):
     repo_override_scope: Optional[str] = None
     repo_override_deep: Optional[bool] = None
     job_credential: Optional[str] = None
+    actor_user_id: Optional[str] = None
 
 
 class GuarddogRequest(BaseModel):
@@ -359,6 +375,7 @@ class SupplyChainState(BaseModel):
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     container_id: Optional[str] = None
+    actor_user_id: Optional[str] = None
 
 
 class SupplyChainLogEvent(BaseModel):
@@ -395,6 +412,7 @@ class PartialReconStartRequest(BaseModel):
     include_graph_targets: bool = True        # whether to include existing graph data in scan
     settings_overrides: dict = {}             # optional per-tool settings
     job_credential: Optional[str] = None
+    actor_user_id: Optional[str] = None
 
 
 class PartialReconState(BaseModel):
@@ -404,6 +422,7 @@ class PartialReconState(BaseModel):
     tool_id: str = ""
     status: PartialReconStatus = PartialReconStatus.IDLE
     container_id: Optional[str] = None
+    actor_user_id: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
@@ -460,6 +479,7 @@ class AiAttackSurfaceStartRequest(BaseModel):
     auth_header: str = ""
     auth_scheme: str = ""
     job_credential: Optional[str] = None
+    actor_user_id: Optional[str] = None
     # The project's IP-mode scope, from its row (design §11): the scanner admits
     # each target by it. None = not stated, which the scanner refuses for a
     # project whose graph is IP mode.
@@ -479,6 +499,7 @@ class AiAttackSurfaceState(BaseModel):
     phase_number: Optional[Union[int, float]] = None
     total_phases: int = 4
     container_id: Optional[str] = None
+    actor_user_id: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error: Optional[str] = None

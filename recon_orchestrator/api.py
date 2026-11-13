@@ -306,6 +306,17 @@ def _job_tenant(project_id: str, request, *, calls_back: bool) -> str:
     return claims["ten"]
 
 
+def _job_actor(kind: str, project_id: str, request, tenant: str) -> str:
+    """The person a start counts against (step 5.5, D-14): the body's actor_user_id,
+    else the tenant. It reaches admission's per-user ceiling and the run's state only;
+    the container, its graph writes and its credential stay the tenant's. The body
+    comes from the webapp alone (ORCHESTRATOR_API_KEY), which took the actor from the
+    start's own permission check."""
+    actor = request.actor_user_id or tenant
+    logger.info(f"[scan] start {kind} project={project_id} tenant={tenant} actor={actor}")
+    return actor
+
+
 def _check_roe_time_window(project: dict, _now=None) -> None:
     """Enforce the RoE time-window. Raises 403 outside the window.
 
@@ -955,6 +966,7 @@ async def system_active_scans():
             "group_number": getattr(state, "group_number", None),
             "total_groups": getattr(state, "total_groups", None),
             "started_at": started.isoformat() if started else None,
+            "actor_user_id": getattr(state, "actor_user_id", None),
         })
 
     # One state per project.
@@ -1312,11 +1324,13 @@ async def start_recon(project_id: str, request: ReconStartRequest):
 
     _check_roe_time_window(project)
     tenant = _job_tenant(project_id, request, calls_back=True)
+    actor = _job_actor("full_recon", project_id, request, tenant)
 
     try:
         state = await container_manager.start_recon(
             project_id=project_id,
             user_id=tenant,
+            actor_user_id=actor,
             webapp_api_url=_spawned_webapp_url(),
             recon_path=RECON_PATH,
             custom_templates_path=CUSTOM_TEMPLATES_PATH,
@@ -1523,6 +1537,7 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
     if typed and not kept and not request.include_graph_targets:
         raise HTTPException(status_code=400, detail=f"No typed target is in this project's scope: {refused[:10]}")
     tenant = _job_tenant(project_id, request, calls_back=True)
+    actor = _job_actor("partial_recon", project_id, request, tenant)
 
     # Settings, and with them each root's group scope, are fetched by the recon
     # container itself via get_settings() (PROJECT_ID + WEBAPP_API_URL env vars,
@@ -1549,6 +1564,7 @@ async def start_partial_recon(project_id: str, request: PartialReconStartRequest
             recon_path=RECON_PATH,
             custom_templates_path=CUSTOM_TEMPLATES_PATH,
             job_credential=request.job_credential,
+            actor_user_id=actor,
         )
         logger.info(
             f"Partial recon run {state.run_id}: project {project_id}, "
@@ -1798,6 +1814,7 @@ async def start_ai_attack_surface(project_id: str, request: AiAttackSurfaceStart
     # Its container calls nothing back, so it gets neither the credential nor a
     # need for the scanner key; the credential still decides its admission.
     tenant = _job_tenant(project_id, request, calls_back=False)
+    actor = _job_actor("ai_attack", project_id, request, tenant)
 
     run_config = {
         "tool": request.tool,
@@ -1825,6 +1842,7 @@ async def start_ai_attack_surface(project_id: str, request: AiAttackSurfaceStart
         state = await container_manager.start_ai_attack_surface(
             project_id=project_id,
             user_id=tenant,
+            actor_user_id=actor,
             webapp_api_url=_spawned_webapp_url(),
             run_config=run_config,
             ai_attack_path=AI_ATTACK_SURFACE_PATH,
@@ -1915,11 +1933,13 @@ async def start_gvm_scan(project_id: str, request: GvmStartRequest):
         )
 
     tenant = _job_tenant(project_id, request, calls_back=True)
+    actor = _job_actor("gvm", project_id, request, tenant)
 
     try:
         state = await container_manager.start_gvm_scan(
             project_id=project_id,
             user_id=tenant,
+            actor_user_id=actor,
             webapp_api_url=_spawned_webapp_url(),
             recon_path=RECON_PATH,
             gvm_scan_path=GVM_SCAN_PATH,
@@ -2047,11 +2067,13 @@ async def start_github_hunt(project_id: str, request: GithubHuntStartRequest):
         )
 
     tenant = _job_tenant(project_id, request, calls_back=True)
+    actor = _job_actor("github_hunt", project_id, request, tenant)
 
     try:
         state = await container_manager.start_github_hunt(
             project_id=project_id,
             user_id=tenant,
+            actor_user_id=actor,
             webapp_api_url=_spawned_webapp_url(),
             github_hunt_path=GITHUB_HUNT_PATH,
             job_credential=request.job_credential,
@@ -2174,11 +2196,13 @@ async def start_trufflehog(project_id: str, request: TrufflehogStartRequest):
     # The TruffleHog container is the dirty half of a dirty/clean split and calls
     # nothing back: no key, no credential; the credential decides its admission.
     tenant = _job_tenant(project_id, request, calls_back=False)
+    actor = _job_actor("trufflehog", project_id, request, tenant)
 
     try:
         state = await container_manager.start_trufflehog(
             project_id=project_id,
             user_id=tenant,
+            actor_user_id=actor,
             trufflehog_path=TRUFFLEHOG_PATH,
             source=request.source,
             config=request.config,
@@ -2291,10 +2315,12 @@ async def start_supply_chain(project_id: str, request: SupplyChainStartRequest):
     if not container_manager:
         raise HTTPException(status_code=503, detail="Service not initialized")
     tenant = _job_tenant(project_id, request, calls_back=True)
+    actor = _job_actor("supply_chain", project_id, request, tenant)
     try:
         return await container_manager.start_supply_chain(
             project_id=project_id,
             user_id=tenant,
+            actor_user_id=actor,
             webapp_api_url=_spawned_webapp_url(),
             supply_chain_path=SUPPLY_CHAIN_PATH,
             repo_override_url=request.repo_override_url,
