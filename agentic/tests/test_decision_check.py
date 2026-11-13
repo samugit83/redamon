@@ -380,12 +380,56 @@ class OnlyAPersonDecides(unittest.TestCase):
             ("websocket_api.py", "fireteam resolve"),
         })
 
-    def test_each_answer_handler_asks_the_check_before_it_starts_or_saves_anything(self):
-        tree = _module("websocket_api.py")
+    #: Resolving a decision: resuming a paused run, waking a Fireteam member (the registry's
+    #: `resolve`, imported as `_resolve`), or saving / posting an admitted answer.
+    DECIDES = RESOLVERS | {"_resolve", "_record_decision", "post_agent_decision"}
+
+    def _handler_methods(self, tree):
         handler = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "WebSocketHandler")
-        methods = {n.name: n for n in handler.body if isinstance(n, ast.AsyncFunctionDef)}
-        effects = {"create_task", "_resolve", "_persist", "register_task", "update_conversation"}
-        for name in ("handle_approval", "handle_tool_confirmation", "handle_fireteam_member_confirmation", "handle_answer"):
+        return {n.name: n for n in handler.body if isinstance(n, ast.AsyncFunctionDef)}
+
+    def _deciding_handlers(self, methods):
+        """Every handler the socket's router dispatches that resolves a decision, itself or
+        through the handler's own methods it calls (a `_run_orchestrator_*` task, a helper)."""
+        entries = {name for _, name in self._calls(methods["handle_message"]) if name in methods}
+
+        def decides(name, seen):
+            seen.add(name)
+            for _, call in self._calls(methods[name]):
+                if call in self.DECIDES:
+                    return True
+                if call in methods and call not in entries and call not in seen and decides(call, seen):
+                    return True
+            return False
+
+        return {name for name in entries if decides(name, set())}
+
+    def test_a_new_deciding_handler_is_found_without_being_listed(self):
+        methods = self._handler_methods(_module("websocket_api.py"))
+        extra = ast.parse(
+            "class X:\n"
+            "    async def handle_message(self, connection, raw):\n"
+            "        await self.handle_new_answer(connection, {})\n"
+            "    async def handle_new_answer(self, connection, payload):\n"
+            "        asyncio.create_task(self._run_orchestrator_approval(connection, payload, None))\n"
+        ).body[0].body
+        router = extra[0]
+        router.body = methods["handle_message"].body + router.body
+        found = self._deciding_handlers({**methods, "handle_message": router, "handle_new_answer": extra[1]})
+        self.assertIn("handle_new_answer", found)
+        self.assertNotIn("_refused_now", {c for _, c in self._calls(extra[1])})
+        self.assertNotIn("handle_query", found)
+        self.assertNotIn("handle_resume", found)
+
+    def test_each_answer_handler_asks_the_check_before_it_starts_or_saves_anything(self):
+        """The handlers are found, not listed (step 5.4 review, finding 5): a new one that
+        resolves a decision without `_refused_now` fails here."""
+        methods = self._handler_methods(_module("websocket_api.py"))
+        found = self._deciding_handlers(methods)
+        self.assertLessEqual({"handle_approval", "handle_tool_confirmation",
+                              "handle_fireteam_member_confirmation", "handle_answer"}, found)
+        effects = {"create_task", "_resolve", "_persist", "register_task", "update_conversation"} | self.DECIDES
+        for name in sorted(found):
             with self.subTest(handler=name):
                 lines = {}
                 for node, call in self._calls(methods[name]):
@@ -396,6 +440,35 @@ class OnlyAPersonDecides(unittest.TestCase):
                 self.assertLess(check, first_effect)
                 if "_refused_without" in lines:
                     self.assertLess(min(lines["_refused_without"]), check)
+
+
+class CodeFixPushesOnlyAfterTheCheck(unittest.TestCase):
+    """Every CodeFix function that commits, pushes or opens a PR with the project's token, found
+    by scanning the package (the socket handler included), asks `_push_allowed` first. A diff-block
+    answer only resolves the review's future: nothing leaves the clone before the push check."""
+
+    def _sites(self):
+        sites = {}
+        for path in sorted((_AGENTIC_DIR / "cypherfix_codefix").rglob("*.py")):
+            for fn in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+                pushes = [n.lineno for n in calls if n.func.attr in ("push", "create_pr")
+                          or (n.func.attr == "commit" and isinstance(n.func.value, ast.Attribute)
+                              and n.func.value.attr == "repo_manager")]
+                if pushes:
+                    checks = [n.lineno for n in calls if n.func.attr == "_push_allowed"]
+                    sites[f"{path.name}:{fn.name}"] = (min(pushes), min(checks) if checks else None)
+        return sites
+
+    def test_every_push_site_asks_first(self):
+        sites = self._sites()
+        self.assertTrue(sites, "the scan found no CodeFix push site")
+        for where, (push, check) in sites.items():
+            with self.subTest(site=where):
+                self.assertIsNotNone(check, f"{where} pushes without asking _push_allowed")
+                self.assertLess(check, push)
 
 
 class _CodeFixCallback:
