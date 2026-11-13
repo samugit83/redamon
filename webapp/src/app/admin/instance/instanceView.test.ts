@@ -67,6 +67,13 @@ describe('the panels each profile sees', () => {
     expect(panels).toEqual(['security', 'public-url', 'sharing', 'default-set', 'quotas', 'tunnels', 'traffic', 'nuclei', 'plugins', 'other-tools'])
   })
 
+  // Step 6.11: the instance LLM providers are Root's alone (instance:settings is rootOnly).
+  test('the confirmed Root (every permission): the instance LLM providers after the default set; Full admin: never', () => {
+    const panels = visiblePanels({ holds: () => true, settings: ADMIN_SETTINGS, sharingPolicyShown: false })
+    expect(panels.slice(0, 4)).toEqual(['security', 'public-url', 'default-set', 'llm-providers'])
+    expect(visiblePanels({ holds: holding(profile('full-admin')), settings: ADMIN_SETTINGS, sharingPolicyShown: false })).not.toContain('llm-providers')
+  })
+
   test('the sharing policy only when the route carries it (RBAC_SHARING_ENABLED on)', () => {
     const panels = visiblePanels({ holds: holding(profile('full-admin')), settings: ADMIN_SETTINGS, sharingPolicyShown: false })
     expect(panels).not.toContain('sharing')

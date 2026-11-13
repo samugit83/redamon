@@ -107,6 +107,7 @@ beforeEach(() => {
     },
     'GET /api/nuclei-templates': { status: 200, body: { templates: TEMPLATES, canManageAll: true } },
     'GET /api/agent/tunnel-status': { status: 200, body: {} },
+    'GET /api/admin/llm-providers': { status: 200, body: { providers: [], sets: [], byoLlmForbidden: false, kinds: ['openai'] } },
   }
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const path = String(url).split('?')[0]
@@ -417,5 +418,21 @@ describe('quotas, plugins and the other platform tools', () => {
     const other = region('Platform tools used elsewhere')
     expect(within(other).queryByRole('note')).toBeNull()
     expect(within(other).getByRole('link', { name: 'Open MCP Tool Plugins' })).toHaveAttribute('href', '/settings?tab=mcp')
+  })
+})
+
+describe('instance LLM providers (step 6.11)', () => {
+  test("the confirmed Root (instance:settings) gets the panel, read from Root's route; a Full admin does not", async () => {
+    routes['GET /api/admin/instance-settings'] = { status: 200, body: settingsFor(true) }
+    renderPage(auth(EVERYTHING, 'root'))
+    const panel = await screen.findByRole('region', { name: 'Instance LLM providers' })
+    expect(await within(panel).findByText(/No instance LLM provider yet/)).toBeInTheDocument()
+    expect(calls('GET', '/api/admin/llm-providers')).toHaveLength(1)
+    cleanup()
+    fetchMock.mockClear()
+    renderPage(auth(FULL_ADMIN, 'admin'))
+    await screen.findByRole('region', { name: 'Security policy' })
+    expect(screen.queryByRole('region', { name: 'Instance LLM providers' })).toBeNull()
+    expect(calls('GET', '/api/admin/llm-providers')).toHaveLength(0)
   })
 })

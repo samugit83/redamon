@@ -128,7 +128,8 @@ export function baseUrlOf(policy: Record<string, unknown> | undefined): string {
 }
 
 export type PanelId =
-  | 'security' | 'public-url' | 'sharing' | 'default-set' | 'quotas' | 'tunnels' | 'traffic' | 'nuclei' | 'plugins' | 'other-tools'
+  | 'security' | 'public-url' | 'sharing' | 'default-set' | 'llm-providers' | 'quotas' | 'tunnels' | 'traffic' | 'nuclei' | 'plugins'
+  | 'other-tools'
 
 export interface PanelInput {
   holds: Holds
@@ -145,6 +146,8 @@ export function visiblePanels({ holds, settings, sharingPolicyShown }: PanelInpu
   if (admin) panels.push('security', 'public-url')
   if (admin && sharingPolicyShown) panels.push('sharing')
   if (admin && (holds('roles:manage') || holds('users:assign_permissions'))) panels.push('default-set')
+  // Root's alone: instance:settings is held only by the confirmed Root (rootOnly).
+  if (holds('instance:settings')) panels.push('llm-providers')
   if (holds('instance:quotas')) panels.push('quotas')
   if (settings?.canManageTunnels === true) panels.push('tunnels')
   if (settings?.canManageCapture === true) panels.push('traffic')

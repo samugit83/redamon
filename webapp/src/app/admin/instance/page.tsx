@@ -18,6 +18,7 @@ import { SharingPolicyPanel, sharingPolicyOf } from './SharingPolicyPanel'
 import { DefaultSetPanel } from './DefaultSetPanel'
 import { NucleiTemplatesPanel } from './NucleiTemplatesPanel'
 import { TrafficMindPanel } from './TrafficMindPanel'
+import { LlmProvidersPanel } from './LlmProvidersPanel'
 import { QuotasPanel } from './QuotasPanel'
 import styles from './instance.module.css'
 
@@ -34,6 +35,7 @@ const TITLES: Record<PanelId, string> = {
   'public-url': 'Public address',
   sharing: 'Sharing policy',
   'default-set': 'Defaults for new members',
+  'llm-providers': 'Instance LLM providers',
   quotas: 'Quotas',
   tunnels: 'Tunnel',
   traffic: 'TrafficMind and egress policy',
@@ -109,6 +111,8 @@ export default function InstancePage() {
         return <SharingPolicyPanel key={id} settings={settings!} unconfirmedRoot={unconfirmedRoot} onSaved={onSaved} />
       case 'default-set':
         return <DefaultSetPanel key={id} canEdit={isConfirmedRoot && holds('roles:manage')} unconfirmedRoot={unconfirmedRoot} />
+      case 'llm-providers':
+        return <LlmProvidersPanel key={id} />
       case 'quotas':
         return <QuotasPanel key={id} settings={settings!} onSaved={onSaved} />
       case 'tunnels':
