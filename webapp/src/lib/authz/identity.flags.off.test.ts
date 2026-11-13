@@ -157,6 +157,11 @@ const IDENTITY_READERS: string[] = [
   'scripts/rbac-upgrade-preview.mjs',
   'scripts/reset-password.mjs',
   'scripts/set-root.mjs',
+  // Step 6.2: the admin console's users directory and detail show the last sign-in and a password
+  // that must change; they sit under /admin, which does not exist with the governance switch off
+  // (it needs this switch), and their API answers 404 then (governance.flags.off.test.ts).
+  'src/app/admin/users/[id]/page.tsx',
+  'src/app/admin/users/page.tsx',
   // Login: the session version it signs (compared whatever the switch) and the last-login
   // time it writes whatever the switch; status and must-change (pwc) only with the switch on.
   'src/app/api/auth/login/route.ts',
