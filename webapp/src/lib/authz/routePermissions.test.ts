@@ -117,7 +117,7 @@ const NO_ROWS: Readonly<Record<string, string>> = {
   'root:transfer': 'Root\'s own (rootOnly): no seeded account other than Root holds it; p2.tsv covers the transfer',
   'roles:manage': 'no seeded admin lacks it and a member is refused by the switch-off 404 as well; the route tests cover it',
   'admin_profiles:manage': 'Root\'s own (rootOnly); the route tests cover it',
-  'project:share': 'every holder request that passes the route\'s own checks looks up an account (counted against a per-person ceiling and audited) or changes a share; p4.tsv covers the share routes by hand (step 4.4)',
+  'project:share': 'every holder request that passes the route\'s own checks looks up an account (counted against a per-person ceiling and audited) or changes a share, and the activity feed (a read) answers 404 unless sharing is in force, which the generated rows do not set up; p4.tsv covers the share routes and the feed by hand (steps 4.4, 4.13)',
 }
 
 /**
