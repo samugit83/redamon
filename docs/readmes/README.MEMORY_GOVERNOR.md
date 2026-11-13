@@ -307,7 +307,9 @@ a secondary hard count cap across *all* projects, now with an **enforced default
 (STRIDE D3; `0` blocks all new scans, unset resolves to the default rather than "no cap").
 A companion per-user cap `RECON_MAX_CONCURRENT_PER_USER` (default `10`) prevents one operator's
 per-project limits from multiplying across many projects; both are checked at admission before
-the bytes-ledger.
+the bytes-ledger. The per-user cap counts the person who started each scan (the start's
+`actor_user_id`, a collaborator on someone else's project included), not the project's owner,
+whose account the scan container still runs under.
 
 ---
 
