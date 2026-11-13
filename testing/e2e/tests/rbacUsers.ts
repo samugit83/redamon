@@ -14,7 +14,7 @@ import { expect, type BrowserContext, type Page } from '@playwright/test'
  * webapp container on stdin, so they work against an image built before them.
  */
 
-export type RbacLoginKey = 'ADMIN_A' | 'ADMIN_B' | 'MEMBER_A' | 'MEMBER_B' | 'MEMBER_C'
+export type RbacLoginKey = 'ADMIN_A' | 'ADMIN_B' | 'MEMBER_A' | 'MEMBER_B' | 'MEMBER_C' | 'VIEWER' | 'VIEWER_RAW' | 'VIEWER_TMP'
 export type RbacSeed = Record<string, string>
 
 function repoRoot(): string {
