@@ -146,3 +146,12 @@ describe('re-checked when made', () => {
     expect(h.audit).toEqual([])
   })
 })
+
+describe('decisions the project settings take without asking anyone (step 5.4 review)', () => {
+  test('a Fireteam wave start needs Use AI agent, nothing else', async () => {
+    h.access = writeShare({ exploit: true, manage: true })
+    expect((await ask('fireteam_deploy')).body).toMatchObject({ permission: 'agent:fireteam', reason: 'project_level' })
+    h.access = writeShare({ useAgent: true })
+    expect((await ask('fireteam_deploy')).status).toBe(200)
+  })
+})

@@ -117,7 +117,8 @@ async def execute_tool_node(
         set_graph_view_context(graph_view_cyphers.get(session_id))
 
     from project_settings import get_setting
-    refusal = roe_gate.check_tool_call(tool_name, tool_args, phase, iteration)
+    refusal = (roe_gate.check_tool_call(tool_name, tool_args, phase, iteration)
+               or await roe_gate.check_unasked_call(tool_name, tool_args))
     if refusal:
         logger.warning(f"[{user_id}/{project_id}/{session_id}] refused '{tool_name}' at iter {iteration}: {refusal.error}")
         step_data["tool_output"] = refusal.message

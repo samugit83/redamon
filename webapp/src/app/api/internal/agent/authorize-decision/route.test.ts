@@ -317,3 +317,21 @@ describe('the switches', () => {
     }
   })
 })
+
+describe('a decision nobody is asked about: the Fireteam wave start (step 5.4 review, OQ-R6)', () => {
+  test('fireteam_deploy asks agent:fireteam alone, fresh', async () => {
+    expect(await ask({ kind: 'fireteam_deploy' })).toEqual({ status: 200, body: { allowed: true } })
+    db.users.set('alice', account('alice', { permissionOverrides: [deny('agent:fireteam')] }))
+    clearPrincipalCacheForTests()
+    const { status, body } = await ask({ kind: 'fireteam_deploy' })
+    expect([status, body.permission, body.reason]).toEqual([403, 'agent:fireteam', 'capability'])
+    expect(db.audit).toEqual([expect.objectContaining({
+      action: 'agent.decision_refused', permission: 'agent:fireteam', after: { kind: 'fireteam_deploy', reason: 'capability' },
+    })])
+  })
+
+  test('a member\'s dangerous calls are decided one by one, not at the wave start', async () => {
+    db.users.set('alice', account('alice', { permissionOverrides: [deny('agent:approve_dangerous')] }))
+    expect((await ask({ kind: 'fireteam_deploy' })).status).toBe(200)
+  })
+})

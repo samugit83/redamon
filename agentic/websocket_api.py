@@ -19,7 +19,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError
 from orchestrator_helpers import create_config
 from orchestrator_helpers.chat_persistence import post_agent_decision, save_chat_message, update_conversation
-from decision_check import UNAVAILABLE as DECISION_CHECK_UNAVAILABLE, authorize_decision
+from decision_check import UNAVAILABLE as DECISION_CHECK_UNAVAILABLE, RunActor, authorize_decision, bind_run_actor
 from agent_in_the_loop.broker import get_broker
 
 
@@ -302,6 +302,13 @@ class WebSocketConnection:
     def decision_actor(self) -> dict:
         """Who answered on this connection, as a saved decision records it."""
         return {"sub": self.user_id, **({"act": self.actor_id} if self.actor_id else {})}
+
+    def run_actor(self) -> RunActor:
+        """Who a run this connection starts or resumes acts for: the decisions the project's
+        settings take without asking need this person's permissions (decision_check)."""
+        return RunActor(user_id=self.user_id, tenant_id=self.tenant_id or self.user_id,
+                        project_id=self.project_id, session_id=self.session_id,
+                        actor_id=self.actor_id, cap=self.cap)
 
 
 #: What an emergency stop tells the open socket of each run it stops.
@@ -1860,6 +1867,7 @@ class WebSocketHandler:
 
     async def _run_orchestrator_query(self, connection: WebSocketConnection, question: str, callback):
         """Background coroutine that runs the orchestrator invocation."""
+        bind_run_actor(connection.run_actor())
         try:
             result = await self.orchestrator.invoke_with_streaming(
                 question=question,
@@ -1926,6 +1934,7 @@ class WebSocketHandler:
 
     async def _run_orchestrator_approval(self, connection: WebSocketConnection, approval_msg: ApprovalMessage, callback):
         """Background coroutine that runs approval resumption."""
+        bind_run_actor(connection.run_actor())
         try:
             result = await self.orchestrator.resume_after_approval_with_streaming(
                 session_id=connection.session_id,
@@ -1997,6 +2006,7 @@ class WebSocketHandler:
 
     async def _run_orchestrator_answer(self, connection: WebSocketConnection, answer: str, callback):
         """Background coroutine that runs answer resumption."""
+        bind_run_actor(connection.run_actor())
         try:
             result = await self.orchestrator.resume_after_answer_with_streaming(
                 session_id=connection.session_id,
@@ -2131,6 +2141,7 @@ class WebSocketHandler:
 
     async def _run_orchestrator_tool_confirmation(self, connection: WebSocketConnection, confirmation_msg: ToolConfirmationMessage, callback):
         """Background coroutine that runs tool confirmation resumption."""
+        bind_run_actor(connection.run_actor())
         try:
             result = await self.orchestrator.resume_after_tool_confirmation_with_streaming(
                 session_id=connection.session_id,
@@ -2363,6 +2374,7 @@ class WebSocketHandler:
 
     async def _run_orchestrator_resume(self, connection: WebSocketConnection, callback):
         """Background coroutine that resumes orchestrator from checkpoint."""
+        bind_run_actor(connection.run_actor())
         try:
             result = await self.orchestrator.resume_execution_with_streaming(
                 user_id=connection.user_id,

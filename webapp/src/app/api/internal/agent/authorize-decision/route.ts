@@ -7,7 +7,10 @@
  * permission taken away. So before it accepts an approval, a dangerous-tool confirmation, a Fireteam
  * member confirmation or an answer to its question, and before CodeFix pushes with the owner's token,
  * the agent asks here (agentic/decision_check.py), and anything but a 200
- * `{allowed: true}` is a refusal: an unreachable webapp too (`decision_check_unavailable`).
+ * `{allowed: true}` is a refusal: an unreachable webapp too (`decision_check_unavailable`). It asks
+ * the same for a decision the project's settings take without asking anyone (a phase transition with
+ * approvals off, a dangerous call with confirmations off, a Fireteam wave start), for anyone but the
+ * owner signed in as themself (`authorize_unasked`).
  *
  * The body names the decision's kind, and the permissions (and level) come from KINDS here, as the
  * audit route next door does: the agent cannot ask for less. The person is the ticket's `sub` and,
@@ -43,6 +46,8 @@ const KINDS: Readonly<Record<string, DecisionKind>> = Object.freeze({
   question: { permissions: ['agent:chat'] },
   // Pushing a branch and opening a PR with the owner's GitHub token.
   codefix_push: { permissions: ['codefix:run'], level: 'M' },
+  // Nobody is asked before a wave starts; each member's dangerous call is decided on its own.
+  fireteam_deploy: { permissions: ['agent:fireteam'] },
 })
 
 export type DecisionRefusalReason =

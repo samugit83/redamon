@@ -57,6 +57,7 @@ from orchestrator_helpers.productivity import (
     is_unproductive,
 )
 from project_settings import get_setting, get_allowed_tools_for_phase, get_enabled_builtin_skills, get_enabled_user_skills, is_dangerous_call
+from decision_check import authorize_unasked, run_actor_holds, unasked_refusal_text
 
 from prompts import (
     REACT_SYSTEM_PROMPT,
@@ -169,6 +170,47 @@ def _phase_breadcrumb_trace(state, updates, iteration, phase, *, redundant, coun
         )
     base = updates["execution_trace"] if "execution_trace" in updates else state.get("execution_trace", [])
     return base + [step.model_dump()]
+
+
+def _refused_transition_trace(state, updates, iteration, phase, to_phase, text):
+    """A transition the project would take unasked, refused for the run's person: in the
+    trace, the channel the think LLM re-reads (see _phase_breadcrumb_trace)."""
+    step = ExecutionStep(
+        iteration=iteration,
+        phase=phase,
+        thought=f"Transition to {to_phase} refused (permission).",
+        reasoning="The project does not ask for this phase approval, and the person running the "
+                  "agent may not give it.",
+        tool_name="phase_transition",
+        tool_args={"to_phase": to_phase, "refused": True},
+        tool_output=f"REFUSED: {text}",
+        success=False,
+        output_analysis=(
+            f"Do NOT request transition_phase to {to_phase} again in this run. Keep working in "
+            f"the {phase} phase with its tools, or complete and report what you found."
+        ),
+    )
+    base = updates["execution_trace"] if "execution_trace" in updates else state.get("execution_trace", [])
+    return base + [step.model_dump()]
+
+
+def _refused_transitions(trace, to_phase) -> int:
+    return sum(1 for s in (trace or []) if isinstance(s, dict)
+               and (s.get("tool_args") or {}).get("refused")
+               and (s.get("tool_args") or {}).get("to_phase") == to_phase)
+
+
+async def _tell_chat_unasked(streaming_callbacks, session_id, check, text) -> None:
+    """Show a refused unasked decision in the chat. The frame names no `answer`: nobody was
+    asked, so the drawer has no card to put back."""
+    cb = (streaming_callbacks or {}).get(session_id)
+    if cb is None:
+        return
+    try:
+        await cb.on_error(text, recoverable=True, code=check.code,
+                          **({"permission": check.permission} if check.permission else {}))
+    except Exception as e:
+        logger.warning(f"[{session_id}] refused decision not shown in the chat: {type(e).__name__}")
 
 
 def build_system_message_content(system_prompt: str, llm, anthropic_caching: bool):
@@ -617,7 +659,8 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     # saves ~500 tokens per call and avoids the LLM emitting a gated action.
     ft_action_enum, ft_plan_field, ft_example = build_fireteam_prompt_fragments(
         enabled=get_setting("FIRETEAM_ENABLED", False)
-                and get_setting("PERSISTENT_CHECKPOINTER", False),
+                and get_setting("PERSISTENT_CHECKPOINTER", False)
+                and run_actor_holds("agent:fireteam"),
         phase=phase,
         allowed_phases=get_setting("FIRETEAM_ALLOWED_PHASES", ["informational"]),
         max_members=int(get_setting("FIRETEAM_MAX_MEMBERS", 5)),
@@ -1141,6 +1184,12 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             _fireteam_gate_note = "persistent checkpointer required (PERSISTENT_CHECKPOINTER=false); fireteam cannot run safely without it"
         elif phase not in allowed_phases:
             _fireteam_gate_note = f"phase '{phase}' not in allowed phases {allowed_phases}"
+        else:
+            # Nobody is asked before a wave starts, so the run's person must hold it (OQ-R6).
+            _ft_check = await authorize_unasked("fireteam_deploy", "agent:fireteam")
+            if not _ft_check.allowed:
+                _fireteam_gate_note = unasked_refusal_text(_ft_check, "start a Fireteam")
+                await _tell_chat_unasked(streaming_callbacks, session_id, _ft_check, _fireteam_gate_note)
         if _fireteam_gate_note:
             logger.warning(f"[{user_id}/{project_id}/{session_id}] deploy_fireteam rejected: {_fireteam_gate_note}")
             decision = decision.model_copy(update={
@@ -2037,6 +2086,19 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             ).model_dump()
             updates["awaiting_user_approval"] = True
             updates.update(NO_APPROVAL_ANSWER)
+        elif not (_phase_check := await authorize_unasked("approval", "agent:approve_phase")).allowed:
+            # The approval the project skips is still the run's person's to give.
+            _text = unasked_refusal_text(_phase_check, f"move to the {to_phase} phase")
+            logger.warning(f"[{user_id}/{project_id}/{session_id}] [rbac] unasked transition refused: "
+                           f"{phase} -> {to_phase} code={_phase_check.code}")
+            updates["_decision"]["tool_name"] = None
+            updates["execution_trace"] = _refused_transition_trace(
+                state, updates, iteration, phase, to_phase, _text)
+            updates["messages"] = [HumanMessage(content=f"[system] {_text}")]
+            if _refused_transitions(state.get("execution_trace"), to_phase) >= 2:
+                updates["task_complete"] = True
+                updates["completion_reason"] = _text
+            await _tell_chat_unasked(streaming_callbacks, session_id, _phase_check, _text)
         else:
             logger.info(f"[{user_id}/{project_id}/{session_id}] Auto-approving phase transition (approval not required): {phase} → {to_phase}")
             updates["current_phase"] = to_phase
@@ -2138,9 +2200,17 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             # required we leave the phase as-is so the agent's own transition_phase
             # drives the proper approval routing (switch_skill routes straight back to
             # think and would otherwise bypass the approval gate).
+            _auto_check = None
             if (get_setting('AUTO_TRANSITION_ON_ATTACK_SKILL', True)
                     and should_auto_transition_on_skill(resolved, phase)
                     and not get_setting('REQUIRE_APPROVAL_FOR_EXPLOITATION', True)):
+                # The approval the project skips is still the run's person's to give.
+                _auto_check = await authorize_unasked("approval", "agent:approve_phase")
+            if _auto_check is not None and not _auto_check.allowed:
+                _auto_text = unasked_refusal_text(_auto_check, "move to the exploitation phase")
+                _switch_msg += f" {_auto_text}"
+                await _tell_chat_unasked(streaming_callbacks, session_id, _auto_check, _auto_text)
+            elif _auto_check is not None:
                 logger.info(
                     f"[{user_id}/{project_id}/{session_id}] Auto-transition to "
                     f"exploitation on attack skill '{resolved}' (was informational)"

@@ -11,6 +11,10 @@ agentic/tests/test_roe_gate.py drives every path and fails if one stops asking.
 The gate also looks through `job_spawn` at the tool it would start, for the
 same reason the executor checks a spawned tool's phase: otherwise a forbidden
 tool runs as a background job.
+
+Right after it, every executor asks `check_unasked_call` (async: it may ask the
+webapp): a dangerous call the project runs without confirmation still needs the
+run's person to hold what the confirmation would have checked.
 """
 
 from __future__ import annotations
@@ -134,3 +138,32 @@ def check_tool_call(tool_name: str, tool_args, phase: str, iteration: int) -> Re
         if reason:
             return Refusal(message=reason, error='recon budget exceeded')
     return None
+
+
+async def check_unasked_call(tool_name: str, tool_args) -> Refusal | None:
+    """A dangerous call with REQUIRE_TOOL_CONFIRMATION off: nobody confirms it, so the run's
+    person must hold `agent:approve_dangerous`, as the confirmation would have asked
+    (decision_check.authorize_unasked). With confirmations on, whoever confirmed the call was
+    checked when they answered."""
+    from project_settings import get_setting, is_dangerous_call
+
+    if get_setting('REQUIRE_TOOL_CONFIRMATION', True) or not is_dangerous_call(tool_name, tool_args):
+        return None
+    from decision_check import UNAVAILABLE, authorize_unasked
+
+    check = await authorize_unasked("tool_confirmation", "agent:approve_dangerous")
+    if check.allowed:
+        return None
+    if check.code == UNAVAILABLE:
+        return Refusal(
+            message=(f"REFUSED: '{tool_name}' was not run. This project runs dangerous tools without "
+                     "asking, so RedAmon checks that the person running the agent may run them, and it "
+                     "could not check now. Do not retry it at once; continue with tools that are not "
+                     "dangerous."),
+            error="decision check unavailable")
+    return Refusal(
+        message=(f"REFUSED: '{tool_name}' was not run. It is a dangerous tool, and the person running "
+                 f"the agent does not hold {check.permission or 'agent:approve_dangerous'} on this "
+                 "project. Do not call dangerous tools again in this run: continue with tools that are "
+                 "not dangerous, or report that someone who holds the permission must run this step."),
+        error="permission required")

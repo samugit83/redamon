@@ -66,7 +66,8 @@ async def _execute_single_step(
         step["error_message"] = "No tool name provided"
         return False
 
-    refusal = roe_gate.check_tool_call(tool_name, tool_args, phase, iteration)
+    refusal = (roe_gate.check_tool_call(tool_name, tool_args, phase, iteration)
+               or await roe_gate.check_unasked_call(tool_name, tool_args))
     if refusal:
         logger.warning(f"[{user_id}/{project_id}/{session_id}] refused '{tool_name}' at iter {iteration}: {refusal.error}")
         step["tool_output"] = refusal.message
