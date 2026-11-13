@@ -225,6 +225,8 @@ const SAME_ORIGIN_ROUTES = [
   '/api/account/sessions/[sid]',
   '/api/auth/sessions/revoke-all',
   '/api/invite/accept',
+  // The owner's consent to collaborators spending the project's credentials (step 5.6): an access change.
+  '/api/projects/[id]/access-policy',
   '/api/projects/[id]/breakglass',
   '/api/projects/[id]/collaborators',
   '/api/projects/[id]/collaborators/[userId]',
@@ -260,7 +262,7 @@ const SAME_ORIGIN_FAMILIES = [
   /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?|llm-providers(\/\[providerId\]|\/policy)?|projects\/\[id\]|shares\/\[projectId\]\/\[userId\]|operations\/agent-runs\/stop)$/,
   /^\/api\/invite\//,
   /^\/api\/account\//,
-  /^\/api\/projects\/\[id\]\/(collaborators(\/\[userId\])?|leave|breakglass)$/,
+  /^\/api\/projects\/\[id\]\/(collaborators(\/\[userId\])?|leave|breakglass|access-policy)$/,
 ]
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
