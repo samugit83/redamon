@@ -184,6 +184,13 @@ steps_in_body() { # the body's ChainStep nodes
 }
 etag_of() { tr -d '\r' < "$TMP/headers" | sed -n 's/^[Ee][Tt][Aa][Gg]: *//p' | tail -n 1; }
 whole() { grep -qF "$THOUGHT" "$TMP/body" && grep -qF "${MARK}reason-0001" "$TMP/body" && grep -qF "${MARK}pass-0001" "$TMP/body"; }
+# A view returns only the records its query returns (no neighbour expansion), so `RETURN s` carries the
+# ChainStep's own content and never the ChainDecision's reason: this is all of it, and one step.
+step_whole() {
+  local k
+  for k in reasoning-0001 summary-0001 analysis-0001 pass-0001 error-0001; do grep -qF "${MARK}$k" "$TMP/body" || return 1; done
+  grep -qF "$THOUGHT" "$TMP/body" && [ "$(steps_in_body)" = 1 ]
+}
 stripped() { ! grep -qF "$MARK" "$TMP/body"; }
 
 declare -A EMAILS=([owner]="${SEED[MEMBER_C_EMAIL]}" [reader]="${SEED[VIEWER_EMAIL]}" [raw]="${SEED[VIEWER_RAW_EMAIL]}" [overseer]="${SEED[ADMIN_A_EMAIL]}")
@@ -207,8 +214,8 @@ reads_whole() { # who label
   code="$(call "$jar" GET "$GRAPH")"; ok=0
   [ "$code" = 200 ] && whole && grep -qF "${MARK}outcome-0001" "$TMP/body" && grep -qF "${MARK}cracked-0001" "$TMP/body" && ok=1
   check "$2: /api/graph holds the step content, the chain's outcome and the cracked password" "$ok" "got $code"
-  code="$(call "$jar" POST /api/graph-views/execute "$VIEW")"; ok=0; [ "$code" = 200 ] && whole && ok=1
-  check "$2: a graph-shaped view holds the step content" "$ok" "got $code"
+  code="$(call "$jar" POST /api/graph-views/execute "$VIEW")"; ok=0; [ "$code" = 200 ] && step_whole && ok=1
+  check "$2: a graph-shaped view holds the step's whole content" "$ok" "got $code, steps $(steps_in_body)"
   code="$(call "$jar" POST /api/graph-views/execute "$TABLE")"; ok=0; [ "$code" = 200 ] && grep -qF "$THOUGHT" "$TMP/body" && ok=1
   check "$2: a tabular view answers the thought" "$ok" "got $code"
   code="$(call "$jar" GET "$VERSION")"; ok=0; [ "$code" = 200 ] && whole && ok=1
