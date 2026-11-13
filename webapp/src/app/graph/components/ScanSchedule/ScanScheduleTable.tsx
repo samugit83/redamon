@@ -25,7 +25,8 @@ interface Schedule {
   createdBy?: Person | null
   /**
    * Why the schedule stopped itself (step 5.5): `actor_no_access` when the person it runs as lost
-   * access to the project. Only a confirmation turns it back on. Absent from an older server.
+   * access to the project, `ownership_transferred` when it was the old owner's and the project changed
+   * owner (step 5.12). Only a confirmation turns it back on. Absent from an older server.
    */
   pausedReason?: string | null
 }
@@ -78,7 +79,9 @@ function duration(job: Job): string {
   return mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`
 }
 
-const pausedForAccess = (s: Schedule) => s.pausedReason === 'actor_no_access'
+// Both pauses wait for a confirmation, which makes the confirmer the schedule's actor (step 5.5): the
+// person it ran as lost access, or the project changed owner and it was the old owner's (step 5.12).
+const pausedForAccess = (s: Schedule) => s.pausedReason === 'actor_no_access' || s.pausedReason === 'ownership_transferred'
 
 function describeSchedule(s: Schedule): string {
   if (s.mode === 'once') return `once at ${fmt(s.runAt)}`
@@ -198,9 +201,12 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
   // (D-13): the confirmation makes the person confirming its actor.
   const confirmSchedule = async (s: Schedule) => {
     if (!projectId) return
+    const why = s.pausedReason === 'ownership_transferred'
+      ? `The project changed owner and it ran as ${personLabel(s.createdBy)}, so it paused.`
+      : `${personLabel(s.createdBy)} no longer has access to this project, so it paused.`
     const yes = await confirm(
-      `Run this schedule (${describeSchedule(s)}) as you from now on? ${personLabel(s.createdBy)} no longer has ` +
-      'access to this project, so it paused. Its next run is counted from now; missed runs are not caught up.',
+      `Run this schedule (${describeSchedule(s)}) as you from now on? ${why} Its next run is counted from now; ` +
+      'missed runs are not caught up.',
       'Confirm schedule',
     )
     if (!yes) return
@@ -380,7 +386,9 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                   </span>
                   {pausedForAccess(s) && (
                     <span className={styles.accessBadge}>
-                      paused: {personLabel(s.createdBy)} no longer has access to this project; confirm to run it as you
+                      {s.pausedReason === 'ownership_transferred'
+                        ? <>paused: the project changed owner and it ran as {personLabel(s.createdBy)}; confirm to run it as you</>
+                        : <>paused: {personLabel(s.createdBy)} no longer has access to this project; confirm to run it as you</>}
                     </span>
                   )}
                   {scopeProblem && (

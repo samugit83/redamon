@@ -12,6 +12,7 @@ import { ProjectSelector } from './ProjectSelector'
 import { UserSelector } from './UserSelector'
 import { AdminBanners } from '@/components/admin/CompatBanner'
 import { ActAsBannerSlot } from '@/components/auth/ActAsBanner'
+import { ProjectTransferBanners } from '@/components/projects/ProjectTransfer/ProjectTransferBanners'
 import { useAuth } from '@/providers/AuthProvider'
 import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { holdsConsolePermission } from '@/app/admin/consoleSections'
@@ -139,6 +140,8 @@ export function GlobalHeader() {
     <ActAsBannerSlot />
     {/* /api/auth/me sends `rbac` to administrator accounts only. */}
     <AdminBanners adminAccount={user?.rbac !== undefined} rbac={user?.rbac} pathname={pathname} />
+    {/* Ownership transfer offers and the new owner's settings to re-pick (step 5.12): write sharing in force only. */}
+    <ProjectTransferBanners />
     </>
   )
 }

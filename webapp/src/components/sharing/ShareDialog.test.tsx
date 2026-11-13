@@ -299,3 +299,28 @@ describe('changing and revoking from the list', () => {
     expect(lastBody('PATCH')).toEqual({ rawData: true })
   })
 })
+
+// Step 5.12: the owner's "Transfer ownership" section, only with write sharing in force; it lists the dialog's
+// shares as the people the project can go to, and nothing about a transfer is asked otherwise (DV-30).
+describe('the ownership transfer section (step 5.12)', () => {
+  const transferGets = () => h.fetch.mock.calls.filter(([url, init]) => url === '/api/projects/P1/transfer' && !(init as RequestInit | undefined)?.method)
+
+  test('write sharing in force: the owner gets the section, with the dialog\'s collaborators to pick from', async () => {
+    h.user = { ...h.user!, sharing: { enabled: true, maxLevel: 'write' } }
+    listAnswers.push(() => json({ collaborators: [share()] }))
+    const base = h.fetch.getMockImplementation()!
+    h.fetch.mockImplementation(async (url: string, init?: RequestInit) =>
+      url === '/api/projects/P1/transfer' && !init?.method ? json({ role: 'owner', offer: null, cleared: null }) : base(url, init))
+    renderDialog()
+    const section = await dialog().findByRole('region', { name: 'Transfer ownership' })
+    await waitFor(() => expect(within(section).getByRole('option', { name: 'Bob Reader (bob@example.test)' })).toBeInTheDocument())
+  })
+
+  test("Root's policy at Read: no section, and the transfer state is never asked", async () => {
+    listAnswers.push(() => json({ collaborators: [share()] }))
+    renderDialog()
+    await dialog().findByRole('button', { name: 'Revoke access for Bob Reader' })
+    expect(dialog().queryByRole('region', { name: 'Transfer ownership' })).toBeNull()
+    expect(transferGets()).toEqual([])
+  })
+})

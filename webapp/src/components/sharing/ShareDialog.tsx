@@ -9,6 +9,7 @@ import { ApiError, errorMessage, fetchJson, toApiError } from '@/lib/apiError'
 import type { ShareView } from '@/lib/authz/projectShares'
 import { AccessPicker, termsOf, type AccessChoice } from './AccessPicker'
 import { CollaboratorList, displayName, type SharePatch } from './CollaboratorList'
+import { TransferSection } from '@/components/projects/ProjectTransfer/TransferSection'
 import {
   NOTE_MAX_CHARS,
   RAW_DATA_WARNING,
@@ -268,6 +269,10 @@ export function ShareDialog({ project, onClose }: ShareDialogProps) {
                 />
               )}
             </section>
+            {/* Ownership transfer (step 5.12): with write sharing in force; the section shows itself to the owner only. */}
+            {user?.sharing?.enabled === true && user.sharing.maxLevel === 'write' && (
+              <TransferSection project={project} shares={list.kind === 'ready' ? list.shares : null} readOnly={readOnly} />
+            )}
           </>
         )}
       </div>

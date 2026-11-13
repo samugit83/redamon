@@ -319,6 +319,20 @@ describe('ScanScheduleTable', () => {
       expect(alertError.mock.calls[0][0]).toMatch(/level M/)
     })
 
+    // Step 5.12: the old owner's schedules pause when the project changes owner, and wait for the same confirmation.
+    test('a schedule paused by an ownership transfer says so and offers Confirm', async () => {
+      const MOVED = { ...PAUSED, pausedReason: 'ownership_transferred', createdBy: { name: 'Olga Owner', email: 'olga@e2e.local' } }
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) =>
+        init?.method === 'POST' ? ok({ schedule: { ...MOVED, enabled: true, pausedReason: null } }) : ok({ schedules: [MOVED], jobs: [] }))
+      confirmModal.mockResolvedValue(true)
+      render(<ScanScheduleTable projectId="p1" />)
+      await waitFor(() => expect(screen.getByText(/the project changed owner and it ran as Olga Owner/)).toBeTruthy())
+      expect(screen.queryByTitle('Enable')).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm schedule' }))
+      await waitFor(() => expect(toastInfo).toHaveBeenCalledWith('Schedule confirmed: it now runs as you'))
+      expect(confirmModal.mock.calls[0][0]).toMatch(/as you from now on\? The project changed owner and it ran as Olga Owner/)
+    })
+
     test('a schedule a person turned off keeps its plain Enable button', async () => {
       fetchMock.mockResolvedValue(ok({ schedules: [{ ...SCHEDULE, enabled: false, pausedReason: null }], jobs: [] }))
       render(<ScanScheduleTable projectId="p1" />)
