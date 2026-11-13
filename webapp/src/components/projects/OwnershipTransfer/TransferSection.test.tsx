@@ -28,7 +28,7 @@ const SHARES = [
 ]
 const OFFER = {
   id: 't1', project: { id: 'p1', name: 'Client X' }, from: { id: 'u-old', name: 'Olga', email: 'olga@e2e.local' },
-  to: { id: 'u-bob', name: 'Bob Collab', email: 'u-bob@e2e.local' }, oldOwnerRole: 'leave', status: 'pending', error: null,
+  to: { id: 'u-bob', name: 'Bob Collab', email: 'u-bob@e2e.local' }, oldOwnerRole: 'leave', status: 'pending', error: null, graphMayBeSplit: false,
   createdAt: '2026-11-10T10:00:00.000Z', expiresAt: '2026-11-17T10:00:00.000Z', decidedAt: null,
 }
 
@@ -60,7 +60,7 @@ describe('the owner offers the project', () => {
     const picker = within(section).getByLabelText('New owner') as HTMLSelectElement
     expect([...picker.options].map((o) => o.textContent)).toEqual(['Pick a collaborator', 'Bob Collab (u-bob@e2e.local)'])
     expect(section.textContent).toMatch(/settings that use your own LLM providers, Nuclei templates or GitHub token are cleared/)
-    expect(section.textContent).toMatch(/records some findings it finds again/)
+    expect(section.textContent).toMatch(/records such a finding again as a new entry, and the earlier entry is removed/)
     const offer = within(section).getByRole('button', { name: 'Offer ownership...' })
     expect(offer).toBeDisabled()
     fireEvent.change(picker, { target: { value: 'u-bob' } })

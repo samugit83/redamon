@@ -7,7 +7,7 @@ import { StepUpModal } from '@/components/auth/StepUpModal'
 import { useAuth } from '@/providers/AuthProvider'
 import { fetchJson, toApiError } from '@/lib/apiError'
 import type { ClearedView, TransferView } from '@/lib/authz/ownershipTransfer'
-import { FINDING_IDS_NOTE, PROJECT_TRANSFER_CHANGED_EVENT, ROLE_TEXT, clearedLine, personName, untilDate } from './transferText'
+import { FINDING_IDS_NOTE, PROJECT_TRANSFER_CHANGED_EVENT, ROLE_TEXT, SPLIT_NOTE, clearedLine, personName, untilDate } from './transferText'
 import styles from './OwnershipTransfer.module.css'
 
 interface Feed {
@@ -84,6 +84,7 @@ export function ProjectTransferBanners() {
             they {ROLE_TEXT[o.oldOwnerRole]}.
             {o.status === 'failed' && ` The last attempt did not complete (${o.error ?? 'failed'}): you can accept again.`}
             {o.status === 'in_progress' && ' The transfer is in progress.'}
+            {o.graphMayBeSplit && ` ${SPLIT_NOTE('decline')}`}
           </span>
           {!readOnly && o.status !== 'in_progress' && (
             <>
@@ -110,6 +111,7 @@ export function ProjectTransferBanners() {
             You offered <strong>{o.project.name}</strong> to <strong>{personName(o.to)}</strong> until {untilDate(o.expiresAt)}; it
             moves when they accept, and you {o.oldOwnerRole === 'co-owner' ? 'then stay on as a co-owner' : 'then leave the project'}.
             {o.status === 'failed' && ` The last attempt did not complete (${o.error ?? 'failed'}).`}
+            {o.graphMayBeSplit && ` ${SPLIT_NOTE('cancel')}`}
           </span>
           {!readOnly && o.status !== 'in_progress' && (
             <button

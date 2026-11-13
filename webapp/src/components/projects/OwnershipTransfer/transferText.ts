@@ -25,14 +25,21 @@ export const OWN_ROLE_TEXT = {
 } as const
 
 /**
- * OQ-R8: a finding node's id embeds the user id of the owner whose scan minted it, and the transfer
- * keeps every id (Postgres references them), so a scan the new owner runs mints a new id for a finding
- * the old owner's scans had found.
+ * OQ-R8 (default until answered): a finding node's id embeds the user id of the owner whose scan minted it,
+ * and the transfer keeps every id (Postgres references them). A scan the new owner runs mints a new id for
+ * a finding the old owner's scans had found, and the source's prune then removes the old-id node (unless a
+ * person muted or judged it), taking the remediation and captured-traffic links to it along.
  */
 export const FINDING_IDS_NOTE =
-  "Findings found before the transfer keep their history. A scan you run now records some findings it finds again " +
-  "(GitHub, secret and JS findings among them) as new entries, since their ids name the owner whose scan found them: " +
-  'a mute or verdict on the earlier entry does not carry over to the new one.'
+  'Some findings found before the transfer (GitHub, secret and JS findings among them) have ids that name the owner ' +
+  'whose scan found them. A scan run after the transfer records such a finding again as a new entry, and the earlier entry is ' +
+  'removed at that source\'s next run unless a person muted or judged it; fix items and captured requests linked to it ' +
+  'lose that link. Mutes and verdicts do not carry over to the new entry.'
+
+/** A transfer whose graph may be partly moved holds the project until it completes or is put back. */
+export const SPLIT_NOTE = (undo: 'decline' | 'cancel') =>
+  "The project's graph may be partly moved, so the project is held: nothing can scan or run on it until the transfer " +
+  `is completed (accept again) or the graph is put back (${undo}).`
 
 export function clearedLine(c: ClearedSetting): string {
   return c.values && c.values.length ? `${c.label}: ${c.values.join(', ')}` : c.label

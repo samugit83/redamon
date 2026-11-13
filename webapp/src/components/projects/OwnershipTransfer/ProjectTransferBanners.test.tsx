@@ -21,7 +21,7 @@ const dialog = () => within(screen.getByRole('dialog'))
 const OLGA = { id: 'u-old', name: 'Olga Owner', email: 'olga@e2e.local' }
 const BOB = { id: 'u-new', name: 'Bob Collab', email: 'bob@e2e.local' }
 const OFFER = {
-  id: 't1', project: { id: 'p1', name: 'Client X' }, from: OLGA, to: BOB, oldOwnerRole: 'co-owner', status: 'pending', error: null,
+  id: 't1', project: { id: 'p1', name: 'Client X' }, from: OLGA, to: BOB, oldOwnerRole: 'co-owner', status: 'pending', error: null, graphMayBeSplit: false,
   createdAt: '2026-11-10T10:00:00.000Z', expiresAt: '2026-11-17T10:00:00.000Z', decidedAt: null,
 }
 const CLEARED = {
@@ -87,6 +87,15 @@ describe('the recipient', () => {
     expect(await dialog().findByText(/a full recon scan is running/)).toBeInTheDocument()
   })
 
+  test('an offer whose graph may be partly moved says the project is held and how to end it', async () => {
+    feed = { ...feed, incoming: [{ ...OFFER, status: 'failed', error: 'agent_unreachable', graphMayBeSplit: true }], outgoing: [{ ...OFFER, id: 't2', graphMayBeSplit: true }] }
+    show()
+    const incoming = await screen.findByRole('status', { name: /offered to you/ })
+    expect(incoming.textContent).toMatch(/graph may be partly moved, so the project is held.*\(decline\)/)
+    expect(within(incoming).getByRole('button', { name: 'Accept' })).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Ownership of Client X offered' }).textContent).toMatch(/\(cancel\)/)
+  })
+
   test('declines after confirming', async () => {
     feed = { ...feed, incoming: [OFFER] }
     show()
@@ -114,8 +123,10 @@ describe('the owner and the new owner', () => {
     const banner = await screen.findByRole('status', { name: 'Settings to re-pick on Client Y' })
     const items = within(banner).getAllByRole('listitem').map((li) => li.textContent)
     expect(items).toEqual(["Agent model: Olga's OpenAI-compatible", 'Nuclei custom templates selected: old/own.yaml', 'CypherFix GitHub token'])
-    expect(banner.textContent).toMatch(/records some findings it finds again .* as new entries/)
-    expect(banner.textContent).toMatch(/does not carry over/)
+    expect(banner.textContent).toMatch(/records such a finding again as a new entry/)
+    expect(banner.textContent).toMatch(/earlier entry is removed at that source's next run unless a person muted or judged it/)
+    expect(banner.textContent).toMatch(/fix items and captured requests linked to it lose that link/)
+    expect(banner.textContent).toMatch(/do not carry over/)
     fireEvent.click(within(banner).getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(posts()[0]?.[0]).toBe('/api/projects/p2/transfer/acknowledge'))
   })

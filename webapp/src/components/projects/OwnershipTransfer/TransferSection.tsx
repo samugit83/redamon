@@ -6,7 +6,7 @@ import { StepUpModal } from '@/components/auth/StepUpModal'
 import { fetchJson, toApiError } from '@/lib/apiError'
 import type { OldOwnerRole, TransferView } from '@/lib/authz/ownershipTransfer'
 import type { ShareView } from '@/lib/authz/projectShares'
-import { FINDING_IDS_NOTE, OWN_ROLE_TEXT, PROJECT_TRANSFER_CHANGED_EVENT, personName, untilDate } from './transferText'
+import { FINDING_IDS_NOTE, OWN_ROLE_TEXT, PROJECT_TRANSFER_CHANGED_EVENT, SPLIT_NOTE, personName, untilDate } from './transferText'
 import styles from '@/components/sharing/ShareDialog.module.css'
 
 interface TransferSectionProps {
@@ -97,6 +97,7 @@ export function TransferSection({ project, shares, readOnly }: TransferSectionPr
             {`Offered to ${personName(state.offer.to)} until ${untilDate(state.offer.expiresAt)}: the project moves when they accept; you then ${state.offer.oldOwnerRole === 'co-owner' ? 'stay on as a co-owner' : 'leave the project'}.`}
             {state.offer.status === 'failed' && ` The last attempt did not complete (${state.offer.error ?? 'failed'}); they can accept again.`}
             {state.offer.status === 'in_progress' && ' The transfer is in progress.'}
+            {state.offer.graphMayBeSplit && ` ${SPLIT_NOTE('cancel')}`}
           </p>
           {!readOnly && state.offer.status !== 'in_progress' && (
             <button type="button" className={styles.linkButton} disabled={busy} onClick={() => void cancel(state.offer!)}>Cancel the offer</button>
