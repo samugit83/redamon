@@ -16,6 +16,7 @@ import {
   findDisallowedCall, findStepContentReference, findUnscopedNodePattern, findWriteClause, hasVariableLengthPath,
   injectProjectFilter, namesMutedLabel, unreadableQuery,
 } from './injectProjectFilter'
+import { OQ_R7_OPTION_A } from '@/lib/authz/stepContent'
 
 /** The route's sequence (route.ts): the query that would run, or why it is refused. */
 function verdict(q: string): { run: string } | { refused: string } {
@@ -278,6 +279,9 @@ describe('finding 7: below Raw data & files a view may not name step content', (
     ["MATCH (s:ChainStep) WHERE properties(s).tool_args_summary CONTAINS 'pass' RETURN s", 'tool_args_summary'],
     ['MATCH (f:ChainFailure) WHERE f.error_message = 1 OR f.lesson_learned = 1 RETURN f', 'error_message'],
     ["MATCH (d:ChainDecision) WHERE d.reason = 'x' RETURN d", 'reason'],
+    ["MATCH (f:ChainFinding) WHERE f.password STARTS WITH 'a' RETURN f", 'password'],
+    ["MATCH (f:ChainFinding) WHERE f.commands_used CONTAINS 'curl' RETURN f", 'commands_used'],
+    ["MATCH (c:AttackChain) WHERE c.final_outcome = 'x' RETURN c", 'final_outcome'],
   ])('%s', (q, name) => {
     expect(findStepContentReference(q)).toBe(name)
   })
@@ -289,6 +293,15 @@ describe('finding 7: below Raw data & files a view may not name step content', (
     "MATCH (s:ChainStep) WHERE properties(s) ['x'] = 1 RETURN s",
   ])('a computed property access: %s', q => {
     expect(findStepContentReference(q)).toMatch(/computed/)
+  })
+
+  test('OQ-R7 option (a): the secret values on any node and a per-label key on every node (a variable has no known label)', () => {
+    expect(findStepContentReference("MATCH (s:Secret) WHERE s.secret_value STARTS WITH 'a' RETURN s", OQ_R7_OPTION_A)).toBe('secret_value')
+    expect(findStepContentReference("MATCH (s) WHERE s.matched_text STARTS WITH 'a' RETURN s", OQ_R7_OPTION_A)).toBe('matched_text')
+    expect(findStepContentReference("MATCH (s:Secret) WHERE s.unmasked_url CONTAINS 'x' RETURN s", OQ_R7_OPTION_A)).toBe('unmasked_url')
+    // option (b), the pinned choice: the same views name no raw property
+    expect(findStepContentReference("MATCH (s:Secret) WHERE s.secret_value STARTS WITH 'a' RETURN s")).toBeNull()
+    expect(findStepContentReference("MATCH (s) WHERE s.matched_text STARTS WITH 'a' RETURN s")).toBeNull()
   })
 
   test('structure, numeric indexes, list literals and data in strings are fine', () => {

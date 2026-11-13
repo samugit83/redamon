@@ -18,7 +18,9 @@
  * The query that runs is the filter's own view of it (comments removed, quoted plain names
  * unwrapped, literals restored as typed), so Neo4j never parses a character the checks did not read.
  */
-import { RAW_DATA_GRAPH_PROPS, STEP_CONTENT_BY_LABEL } from '@/lib/authz/stepContent'
+import {
+  RAW_DATA_GRAPH_PROPS, RAW_DATA_GRAPH_PROPS_BY_LABEL, STEP_CONTENT_BY_LABEL, type RawGraphProps,
+} from '@/lib/authz/stepContent'
 
 // ---- reading the query ------------------------------------------------------
 //
@@ -708,29 +710,39 @@ export function findDisallowedCall(cypher: string): string | null {
 
 // ---- step content (SH-30) ---------------------------------------------------
 
-const RAW_PROPS = new Set(
-  [...Object.values(STEP_CONTENT_BY_LABEL).flat(), ...RAW_DATA_GRAPH_PROPS].map(p => p.toLowerCase()),
-)
+const IN_FORCE_RAW_PROPS: RawGraphProps = { anyNode: RAW_DATA_GRAPH_PROPS, byLabel: RAW_DATA_GRAPH_PROPS_BY_LABEL }
+
+/**
+ * Every key that is raw data on some label, flattened: a view's variable has no label the filter
+ * could know, so a key that is raw on one label (`Secret.matched_text`) is refused on every node.
+ */
+function rawPropNames(raw: RawGraphProps): Set<string> {
+  return new Set(
+    [...Object.values(STEP_CONTENT_BY_LABEL).flat(), ...raw.anyNode, ...Object.values(raw.byLabel).flat()]
+      .map(p => p.toLowerCase()),
+  )
+}
 // Before `[`, these open a list literal (`IN [...]`, `RETURN [...]`), not a subscript.
 const LIST_OPENERS = NOT_A_CALL
 const NUMERIC_INDEX = /^\s*-?\s*\d+\s*$|^\s*(?:-?\s*\d+)?\s*\.\.\s*(?:-?\s*\d+)?\s*$/
 
 /**
- * For a reader below Raw data & files (R*): the step-content property the query names, or why it
- * computes a property name, or null. graphReadView strips the content from what a view returns,
+ * For a reader below Raw data & files (R*): the step-content or raw-data property the query names
+ * (`raw`: the OQ-R7 lists in force, stepContent.ts), or why it computes a property name, or null. graphReadView strips the content from what a view returns,
  * but a filter on it (`WHERE s.thought STARTS WITH 'a'`) would still read it bit by bit from which
  * rows come back. So any word naming a raw property is refused, wherever it stands (a property, a
  * map key, a projection), and so is a subscript that is not a number or a slice (`s['thought']`,
  * `s[k]`): a computed key reaches the same property.
  */
-export function findStepContentReference(cypher: string): string | null {
+export function findStepContentReference(cypher: string, raw: RawGraphProps = IN_FORCE_RAW_PROPS): string | null {
   const read = readQuery(cypher)
   if ('problem' in read) return null // refused as unreadable
+  const rawProps = rawPropNames(raw)
   // Literal placeholders hold no word and are no number, so `s['thought']` is a computed key.
   const code = read.code
   for (const m of code.matchAll(/[A-Za-z_]\w*/g)) {
     if (/\w/.test(code[m.index - 1] ?? '')) continue
-    if (RAW_PROPS.has(m[0].toLowerCase())) return m[0].toLowerCase()
+    if (rawProps.has(m[0].toLowerCase())) return m[0].toLowerCase()
   }
   for (let i = code.indexOf('['); i !== -1; i = code.indexOf('[', i + 1)) {
     let j = i
