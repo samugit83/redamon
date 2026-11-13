@@ -26,6 +26,16 @@ interface RouteParams {
 // finished queue jobs) is capped, then merged and re-capped newest-first.
 const JOB_HISTORY_LIMIT = 1000
 
+/** A person a schedule or run names, as the timeline shows them. */
+interface Person { name: string | null; email: string }
+
+async function peopleByIds(ids: Array<string | null>): Promise<Map<string, Person>> {
+  const wanted = [...new Set(ids.filter((id): id is string => typeof id === 'string' && id !== ''))]
+  if (wanted.length === 0) return new Map()
+  const rows = await prisma.user.findMany({ where: { id: { in: wanted } }, select: { id: true, name: true, email: true } })
+  return new Map(rows.map(r => [r.id, { name: r.name, email: r.email }]))
+}
+
 export const GET = withRouteErrors('Failed to list schedules', async (request: NextRequest, { params }: RouteParams) => {
   const { id } = await params
   const auth = await requirePermission(request, 'recon:read', { projectId: id })
@@ -59,9 +69,17 @@ export const GET = withRouteErrors('Failed to list schedules', async (request: N
         take: JOB_HISTORY_LIMIT,
         select: {
           id: true, kind: true, status: true, error: true, blockedReason: true,
-          enqueuedAt: true, startedAt: true, finishedAt: true, scheduleId: true,
+          enqueuedAt: true, startedAt: true, finishedAt: true, scheduleId: true, userId: true,
         },
       }),
+    ])
+
+    // Who created each schedule and who started each run, where the row records it: on a shared
+    // project that is not always the reader (SH-24). Names only, read once for every row.
+    const people = await peopleByIds([
+      ...schedules.map(s => s.userId),
+      ...jobs.map(j => j.initiatedByUserId),
+      ...queueHistory.map(q => q.userId),
     ])
 
     // ScanJob status vocabulary, so one column reads consistently.
@@ -82,6 +100,7 @@ export const GET = withRouteErrors('Failed to list schedules', async (request: N
       degradedSources: null,
       scheduleId: q.scheduleId,
       version: null,
+      startedBy: people.get(q.userId) ?? null,
     }))
 
     return NextResponse.json(
@@ -92,6 +111,7 @@ export const GET = withRouteErrors('Failed to list schedules', async (request: N
           estimatedEnvelopeBytes: s.estimatedEnvelopeBytes === null
             ? null
             : Number(s.estimatedEnvelopeBytes),
+          createdBy: people.get(s.userId) ?? null,
         })),
         jobs: [
           ...jobs.map(j => ({
@@ -108,6 +128,7 @@ export const GET = withRouteErrors('Failed to list schedules', async (request: N
             degradedSources: j.degradedSources,
             scheduleId: j.scheduleId,
             version: j.version ? { seq: j.version.seq, label: j.version.label } : null,
+            startedBy: j.initiatedByUserId ? people.get(j.initiatedByUserId) ?? null : null,
           })),
           ...queueRuns,
         ]

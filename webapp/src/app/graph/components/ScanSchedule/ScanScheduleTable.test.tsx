@@ -69,6 +69,23 @@ describe('ScanScheduleTable', () => {
     expect(screen.getByText(/graph busy/)).toBeTruthy()
   })
 
+  // On a shared project the reader is not always who set a schedule up or started a run (SH-24).
+  test('names who created each schedule and who started each run, where the row records it', async () => {
+    fetchMock.mockResolvedValue(ok({
+      schedules: [{ ...SCHEDULE, createdBy: { name: 'Alice Owner', email: 'alice@e2e.local' } }],
+      jobs: [
+        { ...JOB, startedBy: { name: '', email: 'carol@e2e.local' } },
+        { ...JOB, id: 'j2', startedBy: null },
+      ],
+    }))
+    render(<ScanScheduleTable projectId="p1" />)
+    await waitFor(() => expect(screen.getByText('Alice Owner')).toBeTruthy())
+    expect(screen.getByRole('columnheader', { name: 'Created by' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Started by' })).toBeTruthy()
+    expect(screen.getByText('Alice Owner').getAttribute('title')).toBe('alice@e2e.local')
+    expect(screen.getByText('carol@e2e.local')).toBeTruthy()
+  })
+
   // Run history now mixes ScanJobs (every kind) with finished queue jobs, so the
   // row has to say which kind it was.
   test('run history names the scan type of each row', async () => {

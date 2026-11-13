@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
   jevTokens: 0,
   recording: null as { id: string } | null,
   txError: null as Error | null,
+  documentBytes: null as number | null,
+  revisionCount: 0,
   calls: {
     revisionCreate: [] as unknown[], revisionDelete: [] as unknown[], updateMany: [] as unknown[],
     schedulePause: [] as unknown[], fireteam: [] as unknown[], recordingUpdate: [] as unknown[],
@@ -59,6 +61,8 @@ vi.mock('@/lib/prisma', () => ({
           : h.row,
     },
     scanSchedule: { findMany: async () => h.schedules },
+    roeDocumentRevision: { count: async () => h.revisionCount },
+    $queryRaw: async () => [{ bytes: h.documentBytes }],
     userLlmProvider: { count: async () => h.jevTokens },
     userSettings: { findUnique: async () => null },
     fireteamSettingsAudit: { createMany: async (a: unknown) => { h.calls.fireteam.push(a); return { count: 1 } } },
@@ -93,7 +97,9 @@ vi.mock('@/lib/roe/extractText', async () => {
   return { ...actual, extractRoeText: (...a: unknown[]) => h.extract(...a) }
 })
 
-import { POST, DELETE } from './route'
+import { GET, POST, DELETE } from './route'
+import { SHARE_SECRET_FIELDS } from '@/lib/authz/projectReadView'
+import { ROE_LIMIT_KEYS } from '@/lib/roe/readView'
 import { fieldsWhere } from '@/lib/reconSettings/registry'
 import { digestScopeDocument } from '@/lib/engagement'
 
@@ -166,9 +172,76 @@ beforeEach(() => {
   h.jevTokens = 0
   h.recording = null
   h.txError = null
+  h.documentBytes = null
+  h.revisionCount = 0
   for (const k of Object.keys(h.calls) as (keyof typeof h.calls)[]) h.calls[k] = []
   h.extract.mockResolvedValue({
     text: DOC_TEXT, pages: 1, truncated: false, bytesSha256: DOC_SHA, textSha256: digestScopeDocument(DOC_TEXT),
+  })
+})
+
+describe('GET: the read view (OQ-53, step 4.7)', () => {
+  const read = () => GET(
+    new NextRequest('http://localhost:3000/api/projects/proj-1/roe', { headers: { host: 'localhost:3000' } }),
+    { params: Promise.resolve({ id: 'proj-1' }) },
+  )
+  const CONTACTS = {
+    roeClientName: 'rbac-client-co', roeClientContactName: 'rbac-contact-person', roeClientContactEmail: 'rbac-contact@client.test',
+    roeClientContactPhone: '+00 0000 rbac', roeEmergencyContact: 'rbac-emergency-line',
+  }
+
+  test('read view holds the scope and no contact, raw text or document', async () => {
+    h.row = freshRow({
+      ...CONTACTS,
+      roeDocumentName: 'rbac-roe.pdf', roeDocumentMimeType: 'application/pdf', roeDocumentData: Buffer.from('rbac-document-bytes'),
+      roeRawText: 'rbac-raw-text of the contract', roeParsedJson: { appliedAt: '2026-10-01T09:30:00.000Z', applied: { roeClientName: 'rbac-client-co' } },
+      roeExcludedHosts: ['db.rbac.test'], roeExcludedHostReasons: ['production database'], roeGlobalMaxRps: 5,
+      roeTimeWindowEnabled: true, roeTimeWindowTimezone: 'Europe/Rome', roeTimeWindowDays: ['monday'], roeTimeWindowStartTime: '08:00', roeTimeWindowEndTime: '17:00',
+      roeEngagementType: 'external', roeEngagementStartDate: '2026-10-01', roeEngagementEndDate: '2026-12-31',
+    })
+    h.documentBytes = 19
+    h.revisionCount = 2
+    const res = await read()
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('private, no-cache')
+    const { roe } = await res.json()
+    expect(roe.document).toEqual({ name: 'rbac-roe.pdf', mimeType: 'application/pdf', size: 19, uploadedAt: '2026-10-01T09:30:00.000Z' })
+    expect(roe.revisions).toBe(2)
+    expect(roe.engagement).toEqual({ type: 'external', startDate: '2026-10-01', endDate: '2026-12-31' })
+    expect(roe.enforced).toBe(true)
+    expect(roe.limits).toMatchObject({
+      roeExcludedHosts: ['db.rbac.test'], roeExcludedHostReasons: ['production database'], roeGlobalMaxRps: 5,
+      roeTimeWindowEnabled: true, roeTimeWindowTimezone: 'Europe/Rome', roeTimeWindowDays: ['monday'],
+      roeTimeWindowStartTime: '08:00', roeTimeWindowEndTime: '17:00',
+    })
+    const text = JSON.stringify(roe)
+    for (const v of [...Object.values(CONTACTS), 'rbac-raw-text', 'rbac-document-bytes', Buffer.from('rbac-document-bytes').toString('base64')]) {
+      expect(text, v).not.toContain(v)
+    }
+    for (const key of SHARE_SECRET_FIELDS) expect(text, key).not.toContain(`"${key}"`)
+  })
+
+  test('the limits are the enforced ones of the registry, never an owner-only or a derived column', () => {
+    expect(ROE_LIMIT_KEYS).toContain('roeGlobalMaxRps')
+    expect(ROE_LIMIT_KEYS).toContain('roeTimeWindowDays')
+    expect(ROE_LIMIT_KEYS).not.toContain('roeEnabled')
+    for (const key of SHARE_SECRET_FIELDS) expect(ROE_LIMIT_KEYS).not.toContain(key)
+  })
+
+  test('no document: document null, the limits still answered; a parse without a date reads as unknown', async () => {
+    expect((await (await read()).json()).roe).toMatchObject({ document: null, revisions: 0, enforced: false })
+    h.row = freshRow({ roeDocumentName: 'legacy.txt', roeParsedJson: { appliedAt: 'not a date' } })
+    expect((await (await read()).json()).roe.document).toEqual({ name: 'legacy.txt', mimeType: '', size: 0, uploadedAt: null })
+  })
+
+  test('another user gets a 404 and reads nothing of it (BOLA); a deleted project is 404', async () => {
+    h.ownerId = 'victim'
+    h.eff = { userId: 'attacker' }
+    expect((await read()).status).toBe(404)
+    h.ownerId = 'owner'
+    h.eff = { userId: 'owner' }
+    h.row = null
+    expect((await read()).status).toBe(404)
   })
 })
 

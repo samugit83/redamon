@@ -20,6 +20,14 @@ interface Schedule {
   enabled: boolean
   nextRunAt: string | null
   lastRunAt: string | null
+  /** Who created it (absent from an older server). */
+  createdBy?: Person | null
+}
+
+/** A person the timeline names: who created a schedule or started a run. */
+interface Person {
+  name: string | null
+  email: string
 }
 
 interface Job {
@@ -38,6 +46,8 @@ interface Job {
    *  null = unknown/complete, N>0 = partial. */
   degradedSources: number | null
   version: { seq: number; label: string } | null
+  /** Who started it, where the run records it (absent from an older server). */
+  startedBy?: Person | null
 }
 
 interface ScanScheduleTableProps {
@@ -48,6 +58,10 @@ function fmt(iso: string | null): string {
   if (!iso) return '-'
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? '-' : d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+}
+
+function personLabel(p: Person | null | undefined): string {
+  return p ? p.name || p.email : '-'
 }
 
 function duration(job: Job): string {
@@ -307,12 +321,12 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
           <thead>
             <tr>
               <th>Label</th><th>Schedule</th><th>Previous graph</th>
-              <th>Next run</th><th>Last run</th><th>State</th><th>Actions</th>
+              <th>Next run</th><th>Last run</th><th>Created by</th><th>State</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {schedules.length === 0 && (
-              <tr><td colSpan={7} className={styles.empty}>No scheduled scans.</td></tr>
+              <tr><td colSpan={8} className={styles.empty}>No scheduled scans.</td></tr>
             )}
             {schedPage.slice.map(s => (
               <tr key={s.id}>
@@ -321,6 +335,7 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                 <td>{s.scanMode === 'new' ? 'keep as version' : 'overwrite'}</td>
                 <td className={styles.muted}>{s.enabled ? fmt(s.nextRunAt) : '-'}</td>
                 <td className={styles.muted}>{fmt(s.lastRunAt)}</td>
+                <td className={styles.muted} title={s.createdBy?.email}>{personLabel(s.createdBy)}</td>
                 <td>
                   <span className={s.enabled ? styles.badgeOn : styles.badgeOff}>
                     {s.enabled ? 'Enabled' : 'Disabled'}
@@ -386,12 +401,12 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                 />
               </th>
               <th>Type</th><th>Trigger</th><th>Mode</th><th>Status</th><th>Version</th>
-              <th>Started</th><th>Duration</th><th className={styles.num}>Nodes</th><th>Reason</th>
+              <th>Started</th><th>Started by</th><th>Duration</th><th className={styles.num}>Nodes</th><th>Reason</th>
             </tr>
           </thead>
           <tbody>
             {jobs.length === 0 && (
-              <tr><td colSpan={10} className={styles.empty}>No scans recorded yet.</td></tr>
+              <tr><td colSpan={11} className={styles.empty}>No scans recorded yet.</td></tr>
             )}
             {historyPage.slice.map(j => (
               <tr key={j.id} className={selected.has(j.id) ? styles.rowSelected : undefined}>
@@ -424,6 +439,7 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
                 </td>
                 <td className={styles.muted}>{j.version ? `v${j.version.seq}` : '-'}</td>
                 <td className={styles.muted}>{fmt(j.startedAt ?? j.createdAt)}</td>
+                <td className={styles.muted} title={j.startedBy?.email}>{personLabel(j.startedBy)}</td>
                 <td className={styles.muted}>{duration(j)}</td>
                 <td className={styles.num}>{j.nodeCount ?? '-'}</td>
                 <td className={styles.muted}>{j.ramReason ?? '-'}</td>

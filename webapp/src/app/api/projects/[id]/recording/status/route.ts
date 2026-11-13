@@ -9,7 +9,8 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-// GET /api/projects/[id]/recording/status — owner-only. The RecordingModal polls
+// GET /api/projects/[id]/recording/status — auth_profile:read, a read collaborator
+// included: the state, counts and a masked summary, never a value. The RecordingModal polls
 // this for the live observed counter (G4) and, once stopped, the masked summary.
 // Also reports whether ANOTHER project holds the single global slot (G10).
 export async function GET(request: NextRequest, { params }: RouteParams) {

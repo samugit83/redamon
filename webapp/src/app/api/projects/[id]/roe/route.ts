@@ -5,6 +5,7 @@ import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { applyRoe } from '@/lib/roe/applyRoe'
 import { extractRoeText, ExtractError } from '@/lib/roe/extractText'
 import { readRoeUpload } from '@/lib/roe/upload'
+import { roeReadView } from '@/lib/roe/readView'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -20,6 +21,23 @@ function jsonField(form: FormData, name: string): unknown {
     return JSON.parse(raw)
   } catch {
     return undefined
+  }
+}
+
+// GET /api/projects/[id]/roe - The Rules of Engagement as any reader may see them
+// (OQ-53): the document's metadata and the scope and time window it enforces,
+// never the contacts, the text, the parse or the document (lib/roe/readView.ts).
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { id } = await params
+    const auth = await requirePermission(request, 'roe:read', { projectId: id })
+    if (auth instanceof NextResponse) return auth
+
+    const roe = await roeReadView(id)
+    if (!roe) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+    return NextResponse.json({ roe }, { headers: { 'Cache-Control': 'private, no-cache' } })
+  } catch (error) {
+    return internalError(error, 'Failed to read the Rules of Engagement.', { log: 'RoE read error' })
   }
 }
 
