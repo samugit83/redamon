@@ -9,6 +9,11 @@
 # deleting admin (DV-33), and the upgrade backfill made the shipped templates instance
 # templates, so an existing selection of them still reaches the scan.
 #
+# It runs in whichever state the webapp's RBAC_IDENTITY_ENABLED is (read from its container,
+# as the other live suites do). With it on, the password the admin gives the throwaway account
+# is temporary (ID-17): the account sets its own first (step 2.8), or every other API answers
+# 403 must_change_password.
+#
 # Fixtures are synthetic: webapp/scripts/e2e-rbac-seed.mjs (rbac-*@e2e.local, rbac-PA /
 # rbac-PB), the throwaway rbac-tpl-owner@e2e.local, and templates under the rbac-e2e/
 # folder of the shared templates directory. The trap removes the templates (files and
@@ -28,6 +33,7 @@ FOLDER='rbac-e2e'
 X="$FOLDER/x.yaml"
 OWNER_EMAIL='rbac-tpl-owner@e2e.local'
 OWNER_PASSWORD='rbac-tpl-owner-passphrase'
+OWNER_OWN_PASSWORD='rbac-tpl-owner-own-passphrase'
 SHIPPED='aem-json-exposure.yaml'
 
 health="$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$BASE/api/health" 2>/dev/null || true)"
@@ -41,6 +47,13 @@ for svc in webapp postgres; do
     exit 0
   fi
 done
+
+env_line="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s" "${RBAC_IDENTITY_ENABLED:-}"' 2>/dev/null)"
+case "$(printf '%s' "$env_line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes) IDENTITY=on ;;
+  *) IDENTITY=off ;;
+esac
+echo "== Identity switch: $IDENTITY =="
 
 TMP="$(mktemp -d)"
 CLEANED_UP=0
@@ -99,8 +112,9 @@ sign_in() { # email password jar -> http code
     -H 'Content-Type: application/json' --data-binary @"$TMP/login.json"
 }
 call() { # jar method path [json-body] -> http code; the body lands in $TMP/body, never printed
+  # The jar is also written back, so a cookie the answer re-issues is the one used next.
   local jar="$1" method="$2" path="$3"
-  local args=(-s -m 60 -o "$TMP/body" -w '%{http_code}' -X "$method" -b "$jar" -H "Origin: $BASE")
+  local args=(-s -m 60 -o "$TMP/body" -w '%{http_code}' -X "$method" -b "$jar" -c "$jar" -H "Origin: $BASE")
   if [ $# -ge 4 ]; then
     printf '%s' "$4" > "$TMP/req"
     args+=(-H 'Content-Type: application/json' --data-binary @"$TMP/req")
@@ -223,6 +237,13 @@ check "create the throwaway account -> $code" "$ok"
 if [ "$ok" = 1 ]; then
   O_JAR="$TMP/jar.owner"
   code="$(sign_in "$OWNER_EMAIL" "$OWNER_PASSWORD" "$O_JAR")"
+  if [ "$code" = 200 ] && [ "$IDENTITY" = on ]; then
+    # The change re-issues the cookie without the must-change claim; the old one stops working.
+    code="$(call "$O_JAR" PUT "/api/users/$OWNER_ID/password" \
+      "{\"currentPassword\":\"$OWNER_PASSWORD\",\"newPassword\":\"$OWNER_OWN_PASSWORD\"}")"
+    ok=0; [ "$code" = 200 ] && ok=1
+    check "identity switch on: it sets its own password first (the admin's is temporary)" "$ok" "got $code"
+  fi
   [ "$code" = 200 ] && code="$(upload "$O_JAR" owned.yaml rbac-owned)"
   ok=0; [ "$code" = 200 ] && [ "$(owner_of "$FOLDER/owned.yaml")" = "$OWNER_ID" ] && ok=1
   check "it uploads $FOLDER/owned.yaml" "$ok" "got $code"
