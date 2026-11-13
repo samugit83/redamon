@@ -144,7 +144,7 @@ call() { # jar method path -> http code; the body lands in $TMP/body, never prin
 }
 has() { grep -qF -- "$1" "$TMP/body"; }
 job_state() { one "select status || '|' || blocked_code from job_queue where id = '$JOB_ID';"; }
-schedule_state() { one "select enabled || '|' || coalesce(paused_reason, '') from scan_schedules where id = '$SCHEDULE_ID';"; }
+schedule_state() { one "select case when enabled then 't' else 'f' end || '|' || coalesce(paused_reason, '') from scan_schedules where id = '$SCHEDULE_ID';"; }
 audits() { one "select count(*) from audit_log where project_id = '$PROJECT_ID' and action in ('job_queue.cancelled', 'scan_schedule.paused');"; }
 
 JAR="$TMP/jar.owner"
