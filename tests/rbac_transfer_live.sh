@@ -207,9 +207,10 @@ if [ "$IN_FORCE" = 1 ]; then
 
   owner_now="$(printf "select user_id from projects where id = '%s';\n" "$PROJECT_ID" | db_sql | tail -n 1)"
   check "Postgres: B owns the project" "$([ "$owner_now" = "$TAKER_ID" ] && echo 1 || echo 0)" "got ${owner_now:-?}"
-  shares="$(printf "select user_id || ':' || access || ':' || manage from project_collaborators where project_id = '%s' order by user_id;\n" "$PROJECT_ID" | db_sql | tr '\n' ' ')"
+  # A boolean joined to text casts as 'true'/'false', not psql's t/f display: spell the flags out.
+  shares="$(printf "select user_id || ':' || access || ':' || case when manage then 't' else 'f' end from project_collaborators where project_id = '%s' order by user_id;\n" "$PROJECT_ID" | db_sql | tr '\n' ' ')"
   check "A is a co-owner with Manage; B's share is gone" "$([ "$shares" = "$OWNER_ID:write:t " ] && echo 1 || echo 0)" "got $shares"
-  sched="$(printf "select enabled || ':' || coalesce(paused_reason, '') from scan_schedules where id = '%s';\n" "$SCHEDULE_ID" | db_sql | tail -n 1)"
+  sched="$(printf "select case when enabled then 't' else 'f' end || ':' || coalesce(paused_reason, '') from scan_schedules where id = '%s';\n" "$SCHEDULE_ID" | db_sql | tail -n 1)"
   check "A's schedule paused (ownership_transferred)" "$([ "$sched" = 'f:ownership_transferred' ] && echo 1 || echo 0)" "got ${sched:-?}"
   consent="$(printf "select owner_credential_consent_at is null from project_access_policies where project_id = '%s';\n" "$PROJECT_ID" | db_sql | tail -n 1)"
   check "the consent (A's keys) is cleared" "$([ "$consent" = t ] && echo 1 || echo 0)" "got ${consent:-?}"
