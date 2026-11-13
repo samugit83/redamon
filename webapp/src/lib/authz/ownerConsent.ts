@@ -5,12 +5,15 @@
  * reach them (Run scans, Use AI agent, Exploitation & shells) count only while this consent exists
  * (projectAccess's `effectiveToggles`).
  *
- * The one reader and writer of the table. Its Prisma delegate exists only once the model is in the
- * generated client: until then no consent can exist (every read answers none, a write throws
- * `ConsentStoreMissing`), so nothing a collaborator does spends the owner's keys. A failed read
- * throws: it never reads as consent.
+ * The one reader and writer of the table (`project_access_policies`, one row per project). No row,
+ * or a row whose consent is null, is no consent: every project from before the table keeps its
+ * collaborators off the owner's keys. A client without the model (one generated before this schema,
+ * or a test double that leaves it out) has no delegate: no consent can exist then either. A failed
+ * read throws, it never reads as consent; a missing table (a build ahead of its `db push`) throws
+ * `ConsentStoreMissing`.
  */
 import { NextResponse } from 'next/server'
+import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { maxShareLevel, type SharingPolicy } from './sharingPolicy'
 
@@ -27,43 +30,39 @@ export interface OwnerConsent {
   byId: string | null
 }
 
-interface PolicyRow {
-  ownerCredentialConsentAt: Date | null
-  ownerCredentialConsentById: string | null
-}
+type PolicyDelegate = Prisma.TransactionClient['projectAccessPolicy']
+
+/** The client or a transaction: the consent is read and written through either. */
+export type ConsentDb = { projectAccessPolicy: PolicyDelegate }
 
 const CONSENT_SELECT = { ownerCredentialConsentAt: true, ownerCredentialConsentById: true } as const
 
-interface PolicyTable {
-  findUnique(args: { where: { projectId: string }; select: typeof CONSENT_SELECT }): Promise<PolicyRow | null>
-  upsert(args: {
-    where: { projectId: string }
-    create: { projectId: string } & PolicyRow
-    update: PolicyRow
-    select: typeof CONSENT_SELECT
-  }): Promise<PolicyRow>
-}
-
-/** The consent table's writes cannot run: its model is not in this build's database client yet. */
+/** The consent table cannot be read or written: it is not in this database (yet), or not in this client. */
 export class ConsentStoreMissing extends Error {
   constructor() {
-    super('the project access policy table is not available in this build')
+    super('the project access policy table is not available')
     this.name = 'ConsentStoreMissing'
   }
 }
 
-function policyTable(db: unknown): PolicyTable | null {
-  return (db as { projectAccessPolicy?: PolicyTable } | null)?.projectAccessPolicy ?? null
+function policyTable(db: ConsentDb | null | undefined): PolicyDelegate | null {
+  return (db as Partial<ConsentDb> | null | undefined)?.projectAccessPolicy ?? null
 }
 
-const consentOf = (row: PolicyRow | null): OwnerConsent | null =>
+/** Prisma's "table does not exist" (P2021) is the store missing, not a failure of this request. */
+function missingTable(err: unknown): never {
+  if ((err as { code?: unknown } | null)?.code === 'P2021') throw new ConsentStoreMissing()
+  throw err
+}
+
+const consentOf = (row: { ownerCredentialConsentAt: Date | null; ownerCredentialConsentById: string | null } | null): OwnerConsent | null =>
   row?.ownerCredentialConsentAt ? { at: row.ownerCredentialConsentAt, byId: row.ownerCredentialConsentById } : null
 
 /** The project's consent now, or null. Read on every call (never cached): a withdrawal counts at once. */
-export async function readOwnerConsent(projectId: string, db: unknown = prisma): Promise<OwnerConsent | null> {
+export async function readOwnerConsent(projectId: string, db: ConsentDb = prisma): Promise<OwnerConsent | null> {
   const table = policyTable(db)
   if (!table || !projectId) return null
-  return consentOf(await table.findUnique({ where: { projectId }, select: CONSENT_SELECT }))
+  return consentOf(await table.findUnique({ where: { projectId }, select: CONSENT_SELECT }).catch(missingTable))
 }
 
 /**
@@ -71,14 +70,14 @@ export async function readOwnerConsent(projectId: string, db: unknown = prisma):
  * its audit row. Answers the consent as stored.
  */
 export async function writeOwnerConsent(
-  tx: unknown,
+  tx: ConsentDb,
   projectId: string,
   consent: { at: Date; byId: string } | null,
 ): Promise<OwnerConsent | null> {
   const table = policyTable(tx)
   if (!table) throw new ConsentStoreMissing()
-  const row: PolicyRow = { ownerCredentialConsentAt: consent?.at ?? null, ownerCredentialConsentById: consent?.byId ?? null }
-  return consentOf(await table.upsert({ where: { projectId }, create: { projectId, ...row }, update: row, select: CONSENT_SELECT }))
+  const row = { ownerCredentialConsentAt: consent?.at ?? null, ownerCredentialConsentById: consent?.byId ?? null }
+  return consentOf(await table.upsert({ where: { projectId }, create: { projectId, ...row }, update: row, select: CONSENT_SELECT }).catch(missingTable))
 }
 
 /**

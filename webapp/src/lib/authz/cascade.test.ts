@@ -144,3 +144,16 @@ describe('deleting a provider or an account: instance LLM providers (step 6.11)'
     expect(Object.values(provider.fields).filter((f) => f.line.includes('@relation'))).toEqual([])
   })
 })
+
+// Step 5.6: a project's access policy goes with the project; the owner who consented is a plain id, so
+// deleting that account neither blocks on nor cascades into the row (a transfer keeps the project).
+describe('deleting a project or an account: the project access policy (step 5.6)', () => {
+  test('ProjectAccessPolicy rows cascade with the project; the consenting person is no foreign key', () => {
+    const policy = now.ProjectAccessPolicy
+    expect(policy, 'model ProjectAccessPolicy').toBeDefined()
+    expect(policy.fields.project.line).toMatch(/@relation\(\s*fields:\s*\[projectId\],\s*references:\s*\[id\],\s*onDelete:\s*Cascade\s*\)/)
+    expect(now.Project.fields.accessPolicy?.type).toBe('ProjectAccessPolicy?')
+    expect(policy.fields.ownerCredentialConsentById.line).not.toContain('@relation')
+    expect(Object.entries(policy.fields).filter(([, f]) => f.line.includes('@relation')).map(([name]) => name)).toEqual(['project'])
+  })
+})

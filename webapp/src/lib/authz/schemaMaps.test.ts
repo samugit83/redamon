@@ -486,3 +486,37 @@ describe('the schedule pause reason (step 5.5)', () => {
       .toEqual(['Project', 'ScanJob'])
   })
 })
+
+// Step 5.6 (phase_05, C1): the owner's consent that collaborators may spend the project's credentials,
+// one row per project; 5.8's co-owner conversation flag shares the row. No row is no consent.
+describe('the project access policy (step 5.6)', () => {
+  test('ProjectAccessPolicy maps to project_access_policies, keyed by its project', () => {
+    expect(now.ProjectAccessPolicy?.table).toBe('project_access_policies')
+    expect(field('ProjectAccessPolicy', 'projectId').line).toMatch(/@id\b/)
+  })
+
+  test.each([
+    ['projectId', 'String', 'project_id'],
+    ['ownerCredentialConsentAt', 'DateTime?', 'owner_credential_consent_at'],
+    ['ownerCredentialConsentById', 'String?', 'owner_credential_consent_by_id'],
+    ['managersSeeAllConversations', 'Boolean', 'managers_see_all_conversations'],
+    ['updatedAt', 'DateTime', 'updated_at'],
+  ])('ProjectAccessPolicy.%s is %s in column %s', (name, type, column) => {
+    expect(field('ProjectAccessPolicy', name)).toMatchObject({ type, column })
+  })
+
+  test('a new row consents to nothing: the consent is nullable with no default, the conversation flag defaults to false', () => {
+    expect(field('ProjectAccessPolicy', 'ownerCredentialConsentAt').line).not.toContain('@default')
+    expect(field('ProjectAccessPolicy', 'managersSeeAllConversations').line).toContain('@default(false)')
+    expect(field('ProjectAccessPolicy', 'updatedAt').line).toContain('@updatedAt')
+  })
+
+  test('the relations: the policy with its project only; Project.accessPolicy is a relation field; nothing else points at it', () => {
+    expect(Object.values(now.ProjectAccessPolicy.fields).filter((f) => isRelation(f.type)).map((f) => f.type)).toEqual(['Project'])
+    expect(field('Project', 'accessPolicy').type).toBe('ProjectAccessPolicy?')
+    const pointing = Object.entries(now)
+      .filter(([, m]) => Object.values(m.fields).some((f) => baseType(f.type) === 'ProjectAccessPolicy'))
+      .map(([name]) => name)
+    expect(pointing).toEqual(['Project'])
+  })
+})

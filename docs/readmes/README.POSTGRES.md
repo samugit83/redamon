@@ -148,6 +148,10 @@ Three tables back the LLM providers Root adds for the whole instance (Instance p
 
 `instance_settings.byo_llm_forbidden` (default false): when true, the agent no longer uses the providers an account added itself if that account lacks the permission to add them.
 
+### Project Access Policy Table
+
+`project_access_policies` (`ProjectAccessPolicy`), one row per project at most, read only while Read + Write sharing is in force (`RBAC_SHARING_WRITE_ENABLED` and the instance sharing policy). `owner_credential_consent_at` records that the project's owner lets collaborators spend the project's credentials (its LLM providers and keys: agent runs, scans, the LLM features); while it is null, or the project has no row, a collaborator's Run scans, Use AI agent and Exploitation & shells count for nothing. `owner_credential_consent_by_id` names the owner who consented, without a foreign key. `managers_see_all_conversations` (default false) is the co-owners' view of conversations. The row goes with its project. Every collaborator spend of the owner's credentials writes a `credits.used` row to `audit_log`.
+
 ## Docker Configuration
 
 ### docker-compose.yml

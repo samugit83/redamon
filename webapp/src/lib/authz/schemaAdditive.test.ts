@@ -145,3 +145,20 @@ describe('the schedule pause reason is additive (step 5.5)', () => {
     }
   })
 })
+
+// Step 5.6: a new table; Project gains a relation field only, never a column (DV-16).
+describe('the project access policy is additive (step 5.6)', () => {
+  test('ProjectAccessPolicy is new: no 7.7.2 table is reused (project_access_policies)', () => {
+    expect(old.ProjectAccessPolicy).toBeUndefined()
+    expect(Object.values(old).map((m) => m.table)).not.toContain('project_access_policies')
+  })
+
+  test('Project gains the accessPolicy relation field only; its 7.7.2 columns are untouched', () => {
+    expect(old.Project.fields.accessPolicy).toBeUndefined()
+    expect(now[baseType(now.Project.fields.accessPolicy.type)]).toBeDefined()
+    for (const [name, was] of Object.entries(old.Project.fields)) {
+      expect({ name, type: now.Project.fields[name]?.type, column: now.Project.fields[name]?.column })
+        .toEqual({ name, type: was.type, column: was.column })
+    }
+  })
+})

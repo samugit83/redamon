@@ -209,11 +209,23 @@ describe('the consent decides the run toggles (projectAccess, can, the agent tic
     db.consent = new Date(NOW.getTime() - 60_000)
     expect(await readOwnerConsent('P-owner')).toBeNull()
     expect(await projectAccess({ userId: 'collab' }, 'P-owner')).toMatchObject({ toggles: { runScans: false, useAgent: false, exploit: false } })
-    await expect(writeOwnerConsent({}, 'P-owner', { at: NOW, byId: 'owner' })).rejects.toBeInstanceOf(ConsentStoreMissing)
+    await expect(writeOwnerConsent({} as never, 'P-owner', { at: NOW, byId: 'owner' })).rejects.toBeInstanceOf(ConsentStoreMissing)
+  })
+
+  test('a table this database does not have yet (P2021) is the store missing: reads and writes throw ConsentStoreMissing', async () => {
+    const missing = Object.assign(new Error('The table `public.project_access_policies` does not exist'), { code: 'P2021' })
+    table.findUnique.mockRejectedValueOnce(missing)
+    await expect(readOwnerConsent('P-owner')).rejects.toBeInstanceOf(ConsentStoreMissing)
+    table.upsert.mockRejectedValueOnce(missing)
+    const tx = { projectAccessPolicy: { findUnique: table.findUnique, upsert: table.upsert } } as never
+    await expect(writeOwnerConsent(tx, 'P-owner', null)).rejects.toBeInstanceOf(ConsentStoreMissing)
+    // Any other failure is thrown as it is: it never reads as consent.
+    table.findUnique.mockRejectedValueOnce(new Error('connection reset'))
+    await expect(readOwnerConsent('P-owner')).rejects.toThrow('connection reset')
   })
 
   test('the store writes the consent and its withdrawal on the transaction it is given', async () => {
-    const tx = { projectAccessPolicy: { findUnique: table.findUnique, upsert: table.upsert } }
+    const tx = { projectAccessPolicy: { findUnique: table.findUnique, upsert: table.upsert } } as never
     expect(await writeOwnerConsent(tx, 'P-owner', { at: NOW, byId: 'owner' })).toEqual({ at: NOW, byId: 'owner' })
     expect(table.upsert).toHaveBeenCalledWith({
       where: { projectId: 'P-owner' },

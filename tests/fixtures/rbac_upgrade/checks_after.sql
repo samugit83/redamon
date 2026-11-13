@@ -130,3 +130,9 @@ SELECT (SELECT count(*) FROM instance_llm_providers) || '|' || (SELECT count(*) 
 SELECT (SELECT count(*) FROM information_schema.columns
         WHERE table_name = 'scan_schedules' AND column_name = 'paused_reason')
   || '|' || (SELECT count(*) FROM scan_schedules WHERE paused_reason IS NOT NULL);
+
+-- Projects gain an access policy table (step 5.6): it arrives empty, so no project's owner has
+-- consented to collaborators spending its credentials and every collaborator's run toggle stays off.
+\echo == project access policies, consents to spend owner credentials [step 5.6]
+SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'project_access_policies')
+  || '|' || (SELECT count(*) FROM project_access_policies WHERE owner_credential_consent_at IS NOT NULL);

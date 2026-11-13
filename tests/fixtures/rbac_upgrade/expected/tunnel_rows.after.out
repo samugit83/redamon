@@ -72,3 +72,5 @@ project_allowlist|ARRAY[]::text[]|YES
 0|0|0|false
 == scan schedule pause reason column, schedules paused for access [step 5.5]
 1|0
+== project access policies, consents to spend owner credentials [step 5.6]
+1|0
