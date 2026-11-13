@@ -26,7 +26,7 @@ import { templateSelectionRefusal, withoutUnselectableTemplates } from '@/lib/nu
 import { isStdioServer } from '@/lib/mcp/schema'
 import { ownerRunsStdio, serversForAgent } from '@/lib/mcp/userServerAccess'
 import { scannerJobRefusal } from '@/lib/authz/jobCredential'
-import { projectReadView } from '@/lib/authz/projectReadView'
+import { projectReadView, scanReadView } from '@/lib/authz/projectReadView'
 import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { myAccessView, type ProjectAccess } from '@/lib/authz/projectAccess'
 import { rbacFlags } from '@/lib/authz/flags'
@@ -213,7 +213,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // A browser caller who is not the owner never receives the owner's secrets (HD-27). With
     // RBAC_SHARING_ENABLED on every browser caller also learns its own access, which the project
     // screens follow; off, the body stays the owner-only one, without the key (DV-30).
-    const body = isServiceCaller ? projectForCaller : projectReadView(projectForCaller, access)
+    const body = isInternalRequest(request)
+      ? projectForCaller
+      : isServiceCaller ? scanReadView(projectForCaller) : projectReadView(projectForCaller, access)
     const mine = access && rbacFlags().sharing ? { myAccess: myAccessView(access, project.user) } : {}
     return NextResponse.json({ ...body, ...mine, ...skillOverridesField })
   } catch (error) {

@@ -6,7 +6,8 @@
  * document and what was parsed from it, and the custom request-header lists. Every read a
  * non-owner can reach removes them here, so a column marked later is withheld everywhere at once.
  * The owner, and an admin acting as the owner (the access is the owner's), keep the full row.
- * Service callers (agent, recon, scanners) read for the owner and never pass through this view.
+ * Service callers read for the owner and never pass through this view: the agent (master key)
+ * reads the whole row, a scan container the row less what scanReadView leaves out.
  */
 import { NextResponse } from 'next/server'
 import { shareSecretFields } from '@/lib/reconSettings/registry'
@@ -26,6 +27,22 @@ export function projectReadView<T extends object>(row: T, access: ReadViewAccess
   if (isOwner(access)) return row
   const view = { ...row } as Record<string, unknown>
   for (const key of SHARE_SECRET_FIELDS) delete view[key]
+  return view as Partial<T>
+}
+
+/**
+ * The owner's secret columns no scan reads: those that are not a recon setting (no runtime key),
+ * such as the CypherFix GitHub token, the phishing SMTP settings and the RoE contacts and
+ * document. A scan container faces the target, so its project read leaves them out
+ * (GHSA-8whg-rvcr-r88r); the header lists and every other recon setting it scans with stay.
+ */
+export const SCAN_UNREAD_SECRET_FIELDS: readonly string[] = Object.freeze(
+  shareSecretFields().filter(f => f.runtime_key === null).map(f => f.key))
+
+/** The row as a scan container reads it: without SCAN_UNREAD_SECRET_FIELDS. */
+export function scanReadView<T extends object>(row: T): Partial<T> {
+  const view = { ...row } as Record<string, unknown>
+  for (const key of SCAN_UNREAD_SECRET_FIELDS) delete view[key]
   return view as Partial<T>
 }
 
