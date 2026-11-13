@@ -136,3 +136,10 @@ SELECT (SELECT count(*) FROM information_schema.columns
 \echo == project access policies, consents to spend owner credentials [step 5.6]
 SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'project_access_policies')
   || '|' || (SELECT count(*) FROM project_access_policies WHERE owner_credential_consent_at IS NOT NULL);
+
+-- The instance settings gain a nullable pending audit retention change (step 6.6): the existing row
+-- reads null, so no change waits and the retention in force (every row kept) is unchanged.
+\echo == audit retention pending change column, changes waiting [step 6.6]
+SELECT (SELECT count(*) FROM information_schema.columns
+        WHERE table_name = 'instance_settings' AND column_name = 'audit_retention_pending')
+  || '|' || (SELECT count(*) FROM instance_settings WHERE audit_retention_pending IS NOT NULL);

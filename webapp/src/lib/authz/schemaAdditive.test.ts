@@ -162,3 +162,12 @@ describe('the project access policy is additive (step 5.6)', () => {
     }
   })
 })
+
+// Step 6.6: one nullable column on the instance settings row (a table the RBAC plan added in 2.1).
+describe('the audit retention pending change is additive (step 6.6)', () => {
+  test('InstanceSettings.auditRetentionPending is nullable with no default: the existing row reads null', () => {
+    expect(old.InstanceSettings).toBeUndefined()
+    expect(now.InstanceSettings.fields.auditRetentionPending.type).toBe('Json?')
+    expect(now.InstanceSettings.fields.auditRetentionPending.line).not.toContain('@default')
+  })
+})

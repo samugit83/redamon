@@ -65,3 +65,5 @@ project_allowlist|ARRAY[]::text[]|YES
 1|0
 == project access policies, consents to spend owner credentials [step 5.6]
 1|0
+== audit retention pending change column, changes waiting [step 6.6]
+1|0

@@ -520,3 +520,18 @@ describe('the project access policy (step 5.6)', () => {
     expect(pointing).toEqual(['Project'])
   })
 })
+
+// Step 6.6 (phase_06, AU-04): Root's next audit retention waits out its delay in a nullable JSON
+// column; existing rows read null, so no change is pending and the retention in force is unchanged.
+describe('the audit retention pending change (step 6.6)', () => {
+  test('InstanceSettings.auditRetentionPending is a nullable Json in column audit_retention_pending, with no default', () => {
+    expect(field('InstanceSettings', 'auditRetentionPending')).toMatchObject({ type: 'Json?', column: 'audit_retention_pending' })
+    expect(field('InstanceSettings', 'auditRetentionPending').line).not.toContain('@default')
+  })
+
+  test('the retention in force stays InstanceSettings.auditRetentionDays, a nullable Int (null keeps every row)', () => {
+    expect(field('InstanceSettings', 'auditRetentionDays')).toMatchObject({ type: 'Int?', column: 'audit_retention_days' })
+    expect(Object.keys(now.InstanceSettings.fields).filter((name) => /retention/i.test(name) && !/^captureProxy/.test(name)).sort())
+      .toEqual(['auditRetentionDays', 'auditRetentionPending'])
+  })
+})

@@ -111,6 +111,10 @@ model InstanceSettings {
   quotas                      Json      @default("{}")
   // Null keeps every audit row; placeholder until the owner answers OQ-40.
   auditRetentionDays          Int?      @map("audit_retention_days")
+  // Root's next retention, waiting out its delay (step 6.6, AU-04): {days, requestedAt, effectiveAt,
+  // requestedById}, or null. Once effectiveAt has passed it is the retention in force, read lazily;
+  // the expiry sweep then moves it into auditRetentionDays (lib/authz/auditRetention.ts).
+  auditRetentionPending       Json?     @map("audit_retention_pending")
   // On: the agent stops using the LLM providers an account added itself when the account lacks
   // self:llm_providers (step 6.11). Off keeps every account's own providers, as before.
   byoLlmForbidden             Boolean   @default(false) @map("byo_llm_forbidden")
