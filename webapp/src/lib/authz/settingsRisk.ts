@@ -29,6 +29,7 @@
 import { field, type RegistryField, type ShareClass } from '@/lib/reconSettings/registry'
 import { sameValue } from '@/lib/reconSettings/roeParse'
 import { wideningReason } from '@/lib/roe/roeWidening'
+import { resolveScopeGroups } from '@/lib/scopeGroups'
 import { meetsLevel, type ProjectAccess } from './projectAccess'
 import type { ProjectLevel } from './permissions'
 
@@ -80,6 +81,11 @@ export type OwnDirection =
   | 'any'
   /** A list of allowances: an entry added widens. */
   | 'addition'
+  /**
+   * The single-domain prefixes, judged by the hosts they scan (`resolveScopeGroups`): no prefix
+   * enumerates every subdomain, so emptying the list widens it; '.' adds the domain itself.
+   */
+  | 'subdomains'
   /** A list of exclusions: an entry removed widens. */
   | 'removal'
   /** An allowlist whose empty value allows everything: an entry added, or emptying it, widens. */
@@ -97,7 +103,7 @@ export const OWN_DIRECTIONS: Readonly<Record<string, OwnDirection>> = {
   domainBatchMode: 'any',
   ipHostnameMode: 'any',
   ownershipTxtPrefix: 'any',
-  subdomainList: 'addition',
+  subdomainList: 'subdomains',
   targetIps: 'addition',
   domainBatchHosts: 'addition',
   domainBatchGroups: 'derived',
@@ -150,12 +156,16 @@ function ownerColumn(key: string, spec: RegistryField): boolean {
   return spec.deny_reason === 'identity' || key === 'engagementKind'
 }
 
+/** The single-domain target the subdomain prefixes hang under. */
+const SCOPE_TARGET = 'targetDomain'
+
 /**
  * The stored columns classifyChange reads beside the changed ones: the RoE window's switch, since
- * a window part widens only while the window is on (`wideningReason`). A writer that reads only the
- * changed columns would judge a window edit as narrowing.
+ * a window part widens only while the window is on (`wideningReason`), and the target the
+ * subdomain prefixes are read under. A writer that reads only the changed columns would judge a
+ * window edit as narrowing.
  */
-export const RISK_CONTEXT_KEYS: readonly string[] = Object.freeze(['roeTimeWindowEnabled'])
+export const RISK_CONTEXT_KEYS: readonly string[] = Object.freeze(['roeTimeWindowEnabled', SCOPE_TARGET])
 
 /** The select of the stored values classifyChange needs to judge a change to `keys`. */
 export function riskSelect(keys: Iterable<string>): Record<string, true> {
@@ -170,7 +180,40 @@ function entries(v: unknown): string[] {
   return raw.map(x => (typeof x === 'string' ? x : JSON.stringify(x)).trim()).filter(Boolean)
 }
 
-function ownReason(direction: OwnDirection, before: unknown, after: unknown): string | null {
+/** Stands in for a target not set yet (or one the rule refuses): prefixes read alike under any domain. */
+const PLACEHOLDER_TARGET = 'example.com'
+
+interface SubdomainScope {
+  everySubdomain: boolean
+  domainItself: boolean
+  prefixes: string[]
+}
+
+/** What a subdomain list scans in single-domain mode, by the rule every reader is handed. */
+function subdomainScope(list: unknown, targetDomain: unknown): SubdomainScope | null {
+  const subdomainList = Array.isArray(list) ? list.map(v => String(v ?? '')) : []
+  const resolve = (target: string) => resolveScopeGroups({ targetDomain: target, subdomainList }).groups[0]
+  const group = resolve(typeof targetDomain === 'string' ? targetDomain : '') ?? resolve(PLACEHOLDER_TARGET)
+  if (!group) return null
+  return {
+    everySubdomain: group.mode === 'enumerate',
+    domainItself: group.includeRoot,
+    prefixes: group.exactHosts.map(host => host.slice(0, -(group.scanRoot.length + 1))),
+  }
+}
+
+function subdomainWidening(before: unknown, after: unknown, targetDomain: unknown): string | null {
+  const was = subdomainScope(before, targetDomain)
+  const now = subdomainScope(after, targetDomain)
+  if (!was || !now) return 'cannot be read as a scope'
+  if (now.everySubdomain && !was.everySubdomain) return 'scans every subdomain: a list with no prefix enumerates them all'
+  if (now.domainItself && !was.domainItself) return 'adds the domain itself'
+  if (was.everySubdomain) return null
+  const added = now.prefixes.filter(p => !was.prefixes.includes(p))
+  return added.length ? `adds ${added.join(', ')}` : null
+}
+
+function ownReason(direction: OwnDirection, before: unknown, after: unknown, afterRow: Record<string, unknown>): string | null {
   switch (direction) {
     case 'any':
       return 'changes a target'
@@ -178,6 +221,8 @@ function ownReason(direction: OwnDirection, before: unknown, after: unknown): st
       const added = entries(after).filter(v => !entries(before).includes(v))
       return added.length ? `adds ${added.join(', ')}` : null
     }
+    case 'subdomains':
+      return subdomainWidening(before, after, afterRow[SCOPE_TARGET])
     case 'removal': {
       const gone = entries(before).filter(v => !entries(after).includes(v))
       return gone.length ? `removes ${gone.join(', ')}` : null
@@ -205,7 +250,7 @@ function ownReason(direction: OwnDirection, before: unknown, after: unknown): st
 
 /** Why `before -> after` loosens a gate or widens scope, or null. */
 function widens(key: string, before: unknown, after: unknown, beforeRow: Record<string, unknown>, afterRow: Record<string, unknown>): string | null {
-  if (Object.prototype.hasOwnProperty.call(OWN_DIRECTIONS, key)) return ownReason(OWN_DIRECTIONS[key], before, after)
+  if (Object.prototype.hasOwnProperty.call(OWN_DIRECTIONS, key)) return ownReason(OWN_DIRECTIONS[key], before, after, afterRow)
   return wideningReason(key, before, after, beforeRow, afterRow)
 }
 

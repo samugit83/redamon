@@ -206,16 +206,31 @@ describe('a co-owner (Manage)', () => {
 
   test('narrowing the subdomain list is a co-owner\'s call', async () => {
     as('co-owner')
-    const res = await put({ subdomainList: [] })
+    h.stored = { ...STORED, subdomainList: ['www', 'api'] }
+    const res = await put({ subdomainList: ['www'] })
     expect(res.status).toBe(200)
-    expect(h.update.mock.calls[0][0].data).toMatchObject({ subdomainList: [] })
+    expect(h.update.mock.calls[0][0].data).toMatchObject({ subdomainList: ['www'] })
   })
 
   test('the same narrowing is refused to an editor, naming Manage', async () => {
     as('editor')
-    const res = await put({ subdomainList: [] })
+    h.stored = { ...STORED, subdomainList: ['www', 'api'] }
+    const res = await put({ subdomainList: ['www'] })
     expect(res.status).toBe(403)
     expect((await res.json())).toMatchObject({ level: 'M', refused: [expect.objectContaining({ key: 'subdomainList', needs: 'manage' })] })
+  })
+
+  test('emptying the subdomain list scans every subdomain: the owner\'s, nothing written', async () => {
+    // Single-domain mode reads an empty list as `*.example.test` (scopeGroups.ts), wider than `www`.
+    for (const subdomainList of [[], ['.']]) {
+      as('co-owner')
+      vi.clearAllMocks()
+      const res = await put({ subdomainList })
+      expect(res.status, JSON.stringify(subdomainList)).toBe(403)
+      expect(await res.json()).toMatchObject({ level: 'O', refused: [expect.objectContaining({ key: 'subdomainList', needs: 'owner' })] })
+      expect(wrote()).toBe(false)
+    }
+    expect(selects().some(s => s.subdomainList === true && s.targetDomain === true)).toBe(true)
   })
 
   test('a co-owner loosening an approval gate needs Exploitation (off for every share until step 5.6)', async () => {

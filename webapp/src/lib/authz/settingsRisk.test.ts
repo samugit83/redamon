@@ -236,6 +236,25 @@ describe('the directions the generic rules get wrong or do not cover', () => {
     expect(classifyField('roeTimeWindowStartTime', '09:00', '01:00', on, { ...on, roeTimeWindowStartTime: '01:00' }).needs).toBe('owner')
   })
 
+  test('the subdomain list is judged by what it scans: emptying it reaches every subdomain', () => {
+    // Single-domain mode (scopeGroups.ts): no prefix enumerates `*.target`, '.' adds the domain itself.
+    const judge = (before: string[], after: string[], targetDomain = 'example.test') =>
+      classifyField('subdomainList', before, after, { targetDomain, subdomainList: before }, { targetDomain, subdomainList: after })
+    expect(judge(['www'], [])).toMatchObject({ needs: 'owner', reason: expect.stringMatching(/every subdomain/) })
+    expect(judge(['www'], ['.']).needs).toBe('owner')
+    expect(judge(['www', 'api'], ['www'])).toMatchObject({ needs: 'manage', reason: null })
+    expect(judge([], ['www']).needs).toBe('manage')
+    expect(judge(['.'], []).needs).toBe('manage')
+    expect(judge([], ['.'])).toMatchObject({ needs: 'owner', reason: expect.stringMatching(/domain itself/) })
+    expect(judge(['www'], ['www', '.']).needs).toBe('owner')
+    expect(judge(['www'], ['www', 'api'])).toMatchObject({ needs: 'owner', reason: expect.stringMatching(/adds api/) })
+    // An entry the rule drops leaves no prefix, which enumerates every subdomain.
+    expect(judge(['www'], ['www.example.test']).needs).toBe('owner')
+    // No target yet: the prefixes mean the same under any domain.
+    expect(judge(['www'], [], '').needs).toBe('owner')
+    expect(judge(['www', 'api'], ['api'], '').needs).toBe('manage')
+  })
+
   test('the derived batch groups never decide on their own', () => {
     expect(classifyField('domainBatchGroups', [], [{ rootDomain: 'x.test', prefixes: ['*'], hosts: [], wildcard: true }]).needs).toBe('manage')
   })
@@ -351,7 +370,7 @@ describe('the refusal every writer answers (step 5.1b)', () => {
 
   test('a long reason (a whole added target list) is cut, never the key', () => {
     const hosts = Array.from({ length: 200 }, (_, i) => `h${i}.example.test`)
-    const r = settingsRefusal(verdictOf({ subdomainList: [] }, { subdomainList: hosts }, CO_OWNER), 'project:settings')!
+    const r = settingsRefusal(verdictOf({ subdomainList: ['seed.example.test'] }, { subdomainList: hosts }, CO_OWNER), 'project:settings')!
     expect(r.refused[0].key).toBe('subdomainList')
     expect(r.refused[0].reason!.length).toBeLessThanOrEqual(160)
     expect(r.error.length).toBeLessThan(400)
@@ -374,9 +393,11 @@ describe('ordinary columns that stay the owner\'s (step 5.1b)', () => {
 })
 
 describe('the stored columns a writer reads (step 5.1b)', () => {
-  test('riskSelect: the changed keys and the window switch', () => {
-    expect(riskSelect(['naabuRateLimit', 'roeTimeWindowDays'])).toEqual({ naabuRateLimit: true, roeTimeWindowDays: true, roeTimeWindowEnabled: true })
-    expect(riskSelect([])).toEqual({ roeTimeWindowEnabled: true })
+  test('riskSelect: the changed keys and the context keys', () => {
+    const context = Object.fromEntries(RISK_CONTEXT_KEYS.map(k => [k, true]))
+    expect(riskSelect(['naabuRateLimit', 'roeTimeWindowDays'])).toEqual({ naabuRateLimit: true, roeTimeWindowDays: true, ...context })
+    expect(riskSelect([])).toEqual(context)
+    expect(RISK_CONTEXT_KEYS).toContain('roeTimeWindowEnabled')
   })
 
   test('a window edit judged without the switch reads as narrowing: the switch must be read', () => {
@@ -389,13 +410,17 @@ describe('the stored columns a writer reads (step 5.1b)', () => {
 
   test('the context keys are every row field a rule reads', () => {
     // The rules read other columns only through beforeRow / afterRow; each such column is a context key.
+    // Each is read by a named constant (`beforeRow[WINDOW_SWITCH]`), whose value is the column.
     const read = new Set<string>()
     for (const file of ['../roe/roeWidening.ts', './settingsRisk.ts']) {
       const src = readFileSync(path.join(__dirname, file), 'utf8')
-      for (const m of src.matchAll(/(?:beforeRow|afterRow)\[([A-Za-z_]+)\]/g)) read.add(m[1])
+      for (const m of src.matchAll(/(?:beforeRow|afterRow)\[([A-Za-z_]+)\]/g)) {
+        const value = src.match(new RegExp(`const ${m[1]} = '([A-Za-z]+)'`))
+        expect(value, `${file}: ${m[1]} is not a constant naming a column`).not.toBeNull()
+        read.add(value![1])
+      }
     }
-    expect([...read]).toEqual(['WINDOW_SWITCH'])
-    expect(RISK_CONTEXT_KEYS).toEqual(['roeTimeWindowEnabled'])
-    expect(readFileSync(path.join(__dirname, '../roe/roeWidening.ts'), 'utf8')).toMatch(/const WINDOW_SWITCH = 'roeTimeWindowEnabled'/)
+    expect([...read].sort()).toEqual([...RISK_CONTEXT_KEYS].sort())
+    expect(read.has('roeTimeWindowEnabled') && read.has('targetDomain')).toBe(true)
   })
 })
