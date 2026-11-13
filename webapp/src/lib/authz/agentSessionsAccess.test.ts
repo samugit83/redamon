@@ -9,7 +9,8 @@
  * background jobs only with `shell_sessions_all` (admins, the legacy grant, the escape
  * hatch for pre-upgrade accounts), judged on the signed-in account.
  *
- * The session, the account read and Prisma are mocked; sharedToolAccess is the real one.
+ * The session, the account read and Prisma are mocked; sharedToolAccess, visibleProjects and
+ * projectAccess() are the real ones (sharing off) unless a step 5.10 test answers for the policy.
  *
  * @vitest-environment node
  */
@@ -39,6 +40,14 @@ vi.mock('@/lib/prisma', () => ({
     auditLog: { findFirst: (...a: unknown[]) => mockCutoff(...a) },
   },
 }))
+vi.mock('./projectAccess', async (orig) => {
+  const actual = await orig<typeof import('./projectAccess')>()
+  return { ...actual, projectAccess: vi.fn(actual.projectAccess) }
+})
+vi.mock('./visibleProjects', async (orig) => {
+  const actual = await orig<typeof import('./visibleProjects')>()
+  return { ...actual, visibleProjects: vi.fn(actual.visibleProjects) }
+})
 
 import {
   authorizeSessionTarget,
@@ -48,6 +57,8 @@ import {
 } from './agentSessionsAccess'
 import { setFlagsForTests } from './flags'
 import { resetSharedToolsForTests } from './sharedTools'
+import { projectAccess, type ProjectAccess, type ProjectAccessToggles } from './projectAccess'
+import { visibleProjects } from './visibleProjects'
 
 const CUTOFF = new Date('2026-06-01T00:00:00Z')
 const BEFORE_CUTOFF = new Date('2026-01-01T00:00:00Z')
@@ -267,5 +278,93 @@ describe('a target to drive', () => {
     expect(await authorizeSessionTarget(agentList(), v, 'session', '2')).toEqual({ projectId: 'project-b', via: 'compat' })
     expect(compatRows()).toHaveLength(1)
     expect(compatRows()[0]).toMatchObject({ actorId: 'member-a', targetId: 'shell_sessions_all' })
+  })
+})
+
+// Step 5.10 (SH-48): agent:sessions on a shared project needs W+X. member-a's project-b access is the
+// policy's answer (doubled here): a Read + Write share with Exploitation & shells shows project-b's
+// sessions and listeners and lets them be driven (`via: 'share'`, audited as such); without the toggle,
+// with a read share or under oversight nothing of project-b shows. Jobs and untagged sessions stay
+// the escape hatch's.
+describe('a project shared with the viewer (step 5.10)', () => {
+  const policy = vi.mocked(projectAccess)
+  const toProjectB = (level: 'read' | 'write', toggles: Partial<ProjectAccessToggles> = {}, via: ProjectAccess['via'] = 'share') =>
+    Object.freeze({ project: { id: 'project-b', userId: 'member-b' }, level, toggles: { rawData: level === 'write', ...toggles }, via }) as ProjectAccess
+  const answering = (access: ProjectAccess | null) =>
+    policy.mockImplementation(async (_s, projectId: string) => (projectId === 'project-b' ? access : null))
+  const lists = vi.mocked(visibleProjects)
+
+  // Sharing in force: the list admits shares (each project is then judged by projectAccess()).
+  beforeEach(() => {
+    policy.mockClear()
+    lists.mockResolvedValue({ where: {}, withShares: true })
+  })
+  afterEach(async () => {
+    const actual = await vi.importActual<typeof import('./projectAccess')>('./projectAccess')
+    policy.mockImplementation(actual.projectAccess)
+    const actualLists = await vi.importActual<typeof import('./visibleProjects')>('./visibleProjects')
+    lists.mockImplementation(actualLists.visibleProjects)
+  })
+
+  test('sharing not in force: no project of anyone else is asked of the policy', async () => {
+    const actualLists = await vi.importActual<typeof import('./visibleProjects')>('./visibleProjects')
+    lists.mockImplementation(actualLists.visibleProjects)
+    answering(toProjectB('write', { exploit: true }))
+    const out = await visibleSessions(agentList(), await viewerFor(principal('member-a')))
+    expect(ids(out.sessions)).toEqual([1])
+    expect(policy).not.toHaveBeenCalled()
+  })
+
+  test('collaborator with exploit: sees the shared project\'s sessions and listeners and drives them as a share', async () => {
+    answering(toProjectB('write', { exploit: true }))
+    const v = await viewerFor(principal('member-a'))
+    const out = await visibleSessions(agentList(), v)
+    expect(ids(out.sessions)).toEqual([1, 2])
+    expect(out.sessions.find(s => s.id === 2)).toMatchObject({ project_id: 'project-b' })
+    expect(ids(out.non_msf_sessions)).toEqual(['raw-1', 'raw-2'])
+    expect(out.jobs).toEqual([])
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2')).toEqual({ projectId: 'project-b', via: 'share' })
+    expect(await authorizeSessionTarget(agentList(), v, 'job', '0')).toBeNull()
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '3')).toBeNull()
+    expect(policy).toHaveBeenCalledWith({ userId: 'member-a' }, 'project-b')
+  })
+
+  test('collaborator with exploit: the own project is never asked of the policy', async () => {
+    answering(toProjectB('write', { exploit: true }))
+    await visibleSessions(agentList(), await viewerFor(principal('member-a')))
+    expect(policy.mock.calls.map(c => c[1])).toEqual(['project-b'])
+  })
+
+  test.each([
+    ['Read + Write without Exploitation & shells', toProjectB('write', { useAgent: true, runScans: true, manage: true })],
+    ['a read share with Raw data & files', toProjectB('read', { rawData: true })],
+    ['oversight', toProjectB('read', {}, 'oversight')],
+    ['break-glass', toProjectB('read', { rawData: true }, 'break_glass')],
+    ['no access', null],
+  ])('without exploit refused: %s shows none of the project\'s sessions and drives none', async (_what, access) => {
+    answering(access)
+    const v = await viewerFor(principal('member-a'))
+    const out = await visibleSessions(agentList(), v)
+    expect(ids(out.sessions)).toEqual([1])
+    expect(ids(out.non_msf_sessions)).toEqual(['raw-1'])
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2')).toBeNull()
+  })
+
+  test('an admin acting as the collaborator: the share is asked as acted (read at most), and the admin\'s own view stays', async () => {
+    answering(toProjectB('read'))
+    const v = await viewerFor(principal('admin-a', 'admin'), 'member-a')
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2')).toEqual({ projectId: 'project-b', via: 'admin' })
+    expect(policy).toHaveBeenCalledWith({ userId: 'member-a' }, 'project-b', { actingAs: true })
+  })
+
+  test('a shared session driven is audited with via share', async () => {
+    answering(toProjectB('write', { exploit: true }))
+    const v = await viewerFor(principal('member-a'))
+    const target = await authorizeSessionTarget(agentList(), v, 'session', '2')
+    const { auditDrive } = await import('@/app/api/agent/sessions/sessionDrive')
+    await auditDrive('agent.session_kill', 'session', '2', v, target!)
+    expect(mockWriteAudit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'agent.session_kill', actorId: 'member-a', after: { projectId: 'project-b', via: 'share' },
+    }))
   })
 })

@@ -7,7 +7,11 @@
  * opened it (the session manager's session-to-chat map), the chat to its conversation
  * (`Conversation.sessionId`, unique) and the conversation to its project.
  *
- * - A session or listener of a project the effective user owns is visible.
+ * - A session or listener of a project the effective user owns is visible, and of a
+ *   project shared with them at `agent:sessions`' level (W+X: Read + Write with
+ *   Exploitation & shells, which counts only with the owner's consent; step 5.10),
+ *   as `projectAccess()` answers it now. An admin acting as a collaborator reaches the
+ *   share at read (D-22) and sees none of its sessions that way.
  * - Every other one, the untagged ones and all jobs need `shell_sessions_all`
  *   (admins, the `shell_sessions` legacy grant, the escape hatch for pre-upgrade
  *   accounts), judged on the signed-in account: acting as someone never borrows
@@ -20,8 +24,11 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getEffectiveUser, requireSession } from '@/lib/session'
+import { PERMISSIONS } from './permissions'
 import { loadPrincipal, type Principal } from './principal'
+import { meetsLevel, projectAccess } from './projectAccess'
 import { sharedToolAccess, type SharedToolAccess } from './sharedTools'
+import { visibleProjects } from './visibleProjects'
 
 type Row = Record<string, unknown> & { id?: unknown; chat_session_id?: unknown }
 type ProjectRow = Row & { project_id: string | null }
@@ -43,7 +50,8 @@ export interface SessionsViewer {
   all: SharedToolAccess
 }
 
-export type SessionAccessVia = 'owner' | NonNullable<SharedToolAccess['via']>
+/** `share`: a project shared with the person at W+X. */
+export type SessionAccessVia = 'owner' | 'share' | NonNullable<SharedToolAccess['via']>
 
 export interface SessionTarget {
   projectId: string | null
@@ -88,6 +96,30 @@ async function chatProjects(chatIds: (string | null)[]): Promise<Map<string, Cha
   return out
 }
 
+const SESSIONS_LEVEL = PERMISSIONS['agent:sessions'].level ?? 'O'
+
+/**
+ * Of `projects`, those another person owns whose shell sessions the viewer may use: shared with them
+ * at `agent:sessions`' level, asked of `projectAccess()` once per project (under act-as as acted).
+ * The list is polled every few seconds and the sandbox holds every user's sessions, so with sharing
+ * not in force (visibleProjects admits no share) nothing is read.
+ */
+async function sharedShellProjects(viewer: SessionsViewer, projects: Iterable<ChatProject>): Promise<Set<string>> {
+  const subject = { userId: viewer.effectiveUserId }
+  const actingAs = viewer.principal.id !== viewer.effectiveUserId
+  const others = new Set<string>()
+  for (const p of projects) if (p.ownerId !== viewer.effectiveUserId) others.add(p.projectId)
+  const reached = new Set<string>()
+  if (others.size === 0 || !(await visibleProjects(subject)).withShares) return reached
+  for (const projectId of others) {
+    const access = actingAs
+      ? await projectAccess(subject, projectId, { actingAs: true })
+      : await projectAccess(subject, projectId)
+    if (access && meetsLevel(access, SESSIONS_LEVEL)) reached.add(projectId)
+  }
+  return reached
+}
+
 function payloadParts(payload: unknown) {
   const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
   return { p, sessions: rows(p.sessions), jobs: rows(p.jobs), listeners: rows(p.non_msf_sessions) }
@@ -97,6 +129,7 @@ function payloadParts(payload: unknown) {
 export async function visibleSessions(payload: unknown, viewer: SessionsViewer): Promise<VisibleSessions> {
   const { p, sessions, jobs, listeners } = payloadParts(payload)
   const projects = await chatProjects([...sessions, ...listeners].map(chatId))
+  const shared = viewer.all.allowed ? new Set<string>() : await sharedShellProjects(viewer, projects.values())
   const tag = (row: Row): ProjectRow => {
     const chat = chatId(row)
     return { ...row, project_id: (chat && projects.get(chat)?.projectId) || null }
@@ -104,7 +137,8 @@ export async function visibleSessions(payload: unknown, viewer: SessionsViewer):
   const seen = (row: Row): boolean => {
     if (viewer.all.allowed) return true
     const chat = chatId(row)
-    return !!chat && projects.get(chat)?.ownerId === viewer.effectiveUserId
+    const project = chat ? projects.get(chat) : undefined
+    return !!project && (project.ownerId === viewer.effectiveUserId || shared.has(project.projectId))
   }
   const out: VisibleSessions = {
     sessions: sessions.filter(seen).map(tag),
@@ -136,6 +170,7 @@ export async function authorizeSessionTarget(
     const project = chat ? (await chatProjects([chat])).get(chat) : undefined
     projectId = project?.projectId ?? null
     if (project && project.ownerId === viewer.effectiveUserId) return { projectId, via: 'owner' }
+    if (project && (await sharedShellProjects(viewer, [project])).has(project.projectId)) return { projectId, via: 'share' }
   }
   if (!viewer.all.allowed || !viewer.all.via) return null
   if (viewer.all.via === 'compat') await sharedToolAccess(viewer.principal, 'shell_sessions_all')
