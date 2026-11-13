@@ -198,3 +198,25 @@ p4-activity-other	4.13	member_b	GET	/api/projects/${PSHARED_ID}/activity	-	404;l
 p4-activity-oversee	4.13	admin_a	GET	/api/projects/${PSHARED_ID}/activity	-	200;has="action":"project.share.grant"	req:AU-09 req:SH-18 sharing:on
 p4-activity-acting	4.13	admin_a_as_member_c	GET	/api/projects/${PSHARED_ID}/activity	-	200;has="events";lacks="code":"forbidden"	req:IM-07 sharing:on
 p4-activity-off	4.13	member_c	GET	/api/projects/${PSHARED_ID}/activity	-	404;lacks="events"	req:UI-08 req:DV-30 sharing:off
+
+# ---- step 4.9: collaborator reads, wave D: traffic, workspace, raw outputs, step content ----
+# Traffic and the workspace are raw data (traffic:read, traffic:export, workspace:read at R*): viewer_raw (Raw data &
+# files on PSHARED) reads the owner's captured traffic (every query on the project and its owner, never the reader)
+# and workspace; the viewer gets 403 naming the permission (its list and export denials are p4-viewer-traffic-no-raw
+# and the generated p4g rows); traffic delete and every workspace write stay refused at read. The seed captures no
+# traffic on PSHARED, so the owner and viewer_raw both answer an empty page and a detail id that is not there gets
+# 404 past the guard; the agent answers the workspace listing 200, or 404 for a project whose workspace was never
+# created. Step content (the chain's thought, command line, outputs, error, decision reason) needs seeded chain
+# nodes: tests/rbac_step_content_live.sh (RM:p4-step-content).
+p4-traffic-owner	4.9	member_c	GET	/api/traffic/${PSHARED_ID}	-	200;has="rows"	req:SH-23 sharing:on
+p4-viewer-raw-traffic	4.9	viewer_raw	GET	/api/traffic/${PSHARED_ID}	-	200;has="rows";has="total"	req:SH-23 req:SH-03 sharing:on
+p4-viewer-raw-traffic-facets	4.9	viewer_raw	GET	/api/traffic/${PSHARED_ID}/facets	-	200;has="tools";has="hosts"	req:SH-23 sharing:on
+p4-viewer-raw-traffic-export	4.9	viewer_raw	GET	/api/traffic/${PSHARED_ID}/export?format=json	-	200;has="rows";has="truncated"	req:SH-23 sharing:on
+p4-viewer-raw-traffic-detail	4.9	viewer_raw	GET	/api/traffic/${PSHARED_ID}/rbac-no-such-txn	-	404;has=Not found;lacks="code":"forbidden"	req:SH-23 sharing:on
+p4-viewer-traffic-facets	4.9	viewer	GET	/api/traffic/${PSHARED_ID}/facets	-	403;has=traffic:read	req:SH-23 req:SH-03 sharing:on
+p4-viewer-traffic-detail	4.9	viewer	GET	/api/traffic/${PSHARED_ID}/rbac-no-such-txn	-	403;has=traffic:read	req:SH-23 req:SH-03 sharing:on
+p4-viewer-raw-traffic-delete	4.9	viewer_raw	DELETE	/api/traffic/${PSHARED_ID}	{"ids":["rbac-no-such-txn"]}	403;has=traffic:delete	req:SH-23 sharing:on
+p4-viewer-raw-workspace-list	4.9	viewer_raw	GET	/api/agent/workspace/list?projectId=${PSHARED_ID}&path=.	-	200|404;lacks="code":"forbidden"	req:SH-27 req:SH-03 sharing:on
+p4-viewer-workspace-tree	4.9	viewer	GET	/api/agent/workspace/tree?projectId=${PSHARED_ID}	-	403;has=workspace:read	req:SH-27 req:SH-03 sharing:on
+p4-viewer-raw-workspace-mkdir	4.9	viewer_raw	POST	/api/agent/workspace/mkdir	{"projectId":"${PSHARED_ID}","path":"rbac-viewer-dir"}	403;has=workspace:write	req:SH-27 sharing:on
+p4-viewer-raw-graph-read	4.9	viewer_raw	GET	/api/graph?projectId=${PSHARED_ID}	-	200;has="nodes"	req:SH-30 sharing:on
