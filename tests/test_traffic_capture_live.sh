@@ -4,8 +4,9 @@
 # capture feature, against the running stack (webapp on :3000).
 #
 # Reuses the BOLA two-user harness (scripts/e2e-bola-seed.mjs) to prove:
-#   INGEST (scanner-key writer):
-#     - bad key -> 401; capture-disabled project -> 202 no-op
+#   INGEST (scanner-key writer, with its scan's job credential since step 1.16):
+#     - bad key -> 401; the bare key, or a credential of another project -> 403
+#       job_credential_required; capture-disabled project -> 202 no-op
 #     - tenant fields stamped from the project OWNER, never the request body
 #     - Content-Length overflow is clamped to int4 (batch not lost)
 #     - passive-signal fields persist as sent
@@ -39,9 +40,18 @@ gcode() { curl -s -o /dev/null -w '%{http_code}' -b "$1" "$BASE$2"; }
 gbody() { curl -s -b "$1" "$BASE$2"; }
 psql_() { $DC exec -T postgres psql -U redamon -d redamon -tAc "$1"; }
 
-# scanner ingest POST (X-Internal-Key: SCANNER_API_KEY)
-ingest_code() { curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/traffic/$1/ingest" -H "X-Internal-Key: $KEY" -H 'Content-Type: application/json' -d "$2"; }
-ingest_body() { curl -s -X POST "$BASE/api/traffic/$1/ingest" -H "X-Internal-Key: $KEY" -H 'Content-Type: application/json' -d "$2"; }
+# scanner ingest POST (X-Internal-Key: SCANNER_API_KEY, X-Redamon-Job: the job credential of a scan of
+# that project: the headers recon/helpers/traffic_capture.py sends through scan_auth_headers())
+cred_for() { case "$1" in "$PA_ID") printf '%s' "$JOB_PA" ;; "$PB_ID") printf '%s' "$JOB_PB" ;; esac; }
+ingest_code() { curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/traffic/$1/ingest" -H "X-Internal-Key: $KEY" -H "X-Redamon-Job: $(cred_for "$1")" -H 'Content-Type: application/json' -d "$2"; }
+ingest_body() { curl -s -X POST "$BASE/api/traffic/$1/ingest" -H "X-Internal-Key: $KEY" -H "X-Redamon-Job: $(cred_for "$1")" -H 'Content-Type: application/json' -d "$2"; }
+# A job credential (aud scan, the project's owner as tenant), minted in the agent container with the
+# webapp's key derivation, as tests/rbac_job_credential_live_checks.py does.
+mint_job() { # owner-id project-id -> credential
+  $DC exec -T -e JOB_TEN="$1" -e JOB_PID="$2" agent python3 -c 'import os, time, machine_credential as mc
+key = mc.derive_key(os.environ["INTERNAL_API_KEY"], mc.JOB_CREDENTIAL_LABEL)
+print(mc.mint({"aud": "scan", "ten": os.environ["JOB_TEN"], "pid": os.environ["JOB_PID"], "job": "ttest-live", "exp": int(time.time()) + 3600}, key))' | tr -d '\r\n'
+}
 
 echo "== Preconditions =="
 KEY="$($DC exec -T recon-orchestrator sh -c 'echo $SCANNER_API_KEY' | tr -d '\r\n')"
@@ -52,6 +62,9 @@ SEED="$($DC exec -T webapp node scripts/e2e-bola-seed.mjs)" || { echo "seed fail
 eval "$SEED"
 [ -n "${PA_ID:-}" ] && [ -n "${PB_ID:-}" ] && [ -n "${A_ID:-}" ] && [ -n "${B_ID:-}" ] || { echo "seed vars missing"; exit 1; }
 
+JOB_PA="$(mint_job "$A_ID" "$PA_ID")"; JOB_PB="$(mint_job "$B_ID" "$PB_ID")"
+[ -n "$JOB_PA" ] && [ -n "$JOB_PB" ] || { echo "could not mint a job credential in the agent container"; exit 1; }
+
 login bola-a@e2e.local "$TMP/a.jar"
 login bola-b@e2e.local "$TMP/b.jar"
 
@@ -59,6 +72,12 @@ TXN='{"tool":"httpx","host":"HOSTVAL","scheme":"https","port":443,"path":"/login
 
 echo "== INGEST auth + gate =="
 check "bad scanner key -> 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/traffic/$PA_ID/ingest" -H "X-Internal-Key: WRONG" -H 'Content-Type: application/json' -d '{"transactions":[]}')"
+R="$(curl -s -w ' %{http_code}' -X POST "$BASE/api/traffic/$PA_ID/ingest" -H "X-Internal-Key: $KEY" -H 'Content-Type: application/json' -d '{"transactions":[]}')"
+check "bare scanner key (no job credential) -> 403" 403 "${R##* }"
+contains "bare scanner key refusal names the job credential" "$R" '"code":"job_credential_required"'
+R="$(curl -s -w ' %{http_code}' -X POST "$BASE/api/traffic/$PB_ID/ingest" -H "X-Internal-Key: $KEY" -H "X-Redamon-Job: $JOB_PA" -H 'Content-Type: application/json' -d '{"transactions":[]}')"
+check "PA's job credential on PB's ingest -> 403" 403 "${R##* }"
+contains "PA's credential on PB refused as another project" "$R" '"reason":"project_mismatch"'
 # capture is disabled by default on the seeded project
 DISABLED_RESP="$(ingest_body "$PA_ID" '{"source":"recon","transactions":[{"host":"x.test","scheme":"https","path":"/"}]}')"
 contains "capture-disabled project no-ops" "$DISABLED_RESP" '"stored":0'
