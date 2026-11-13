@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { graphError } from '../../graph/graphErrors'
 import { getGraphSession } from '../../graph/neo4j'
 import { formatGraphRecords } from '../../graph/format'
-import { injectProjectFilter, findUnscopedNodePattern, namesMutedLabel, hasVariableLengthPath, findDisallowedCall } from './injectProjectFilter'
+import {
+  injectProjectFilter, findUnscopedNodePattern, namesMutedLabel, hasVariableLengthPath, findDisallowedCall,
+  findWriteClause, unreadableQuery,
+} from './injectProjectFilter'
 import { requirePermission } from '@/lib/authz/guards'
 import { graphReadView } from '@/lib/authz/graphReadView'
 
@@ -27,10 +30,20 @@ export async function POST(request: NextRequest) {
     const auth = await requirePermission(request, 'graph:cypher', { projectId })
     if (auth instanceof NextResponse) return auth
 
-    // Block write operations -- data filters are read-only
-    const upper = cypherQuery.toUpperCase().replace(/\/\/[^\n]*/g, '')
-    const WRITE_KEYWORDS = ['CREATE', 'MERGE', 'DELETE', 'DETACH', 'SET', 'REMOVE', 'DROP', 'CALL']
-    const found = WRITE_KEYWORDS.find(kw => new RegExp(`\\b${kw}\\b`).test(upper))
+    // Every check below reads the query with its comments and literals set aside;
+    // one it cannot read that way (an unterminated string, unbalanced parentheses)
+    // is refused rather than guessed at.
+    if (typeof cypherQuery !== 'string') {
+      return NextResponse.json({ error: 'cypherQuery must be a string' }, { status: 400 })
+    }
+    const unreadable = unreadableQuery(cypherQuery)
+    if (unreadable) {
+      return NextResponse.json({ error: unreadable }, { status: 400 })
+    }
+
+    // Data filters are read-only. The session below is read-only too, so Neo4j
+    // refuses any write this check misses; this answers a clear 400 first.
+    const found = findWriteClause(cypherQuery)
     if (found) {
       return NextResponse.json(
         { error: `Write operations are not allowed in data filters (found: ${found})` },
@@ -81,7 +94,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const session = getGraphSession()
+    const session = getGraphSession({ readOnly: true })
     try {
       const result = await session.run(filtered, { projectId })
       const { nodes, links } = graphReadView(formatGraphRecords(result.records), auth.access)

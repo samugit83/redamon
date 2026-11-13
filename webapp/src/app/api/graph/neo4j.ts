@@ -62,6 +62,15 @@ export function getDriver(): Driver {
   return global.neo4jDriver
 }
 
+export interface GraphSessionOptions {
+  /**
+   * A read-only session: Neo4j itself refuses any write in it
+   * (Neo.ClientError.Statement.AccessMode). For a query the caller typed, where
+   * a text check alone cannot be the only thing between it and a write.
+   */
+  readOnly?: boolean
+}
+
 /**
  * A session whose `run()` carries a default query timeout.
  *
@@ -70,8 +79,10 @@ export function getDriver(): Driver {
  * through untouched, and a caller that supplies its own TransactionConfig still
  * wins.
  */
-export function getGraphSession(): Session {
-  const session = getDriver().session()
+export function getGraphSession({ readOnly = false }: GraphSessionOptions = {}): Session {
+  const driver = getDriver()
+  // 'READ' is neo4j.session.READ, spelled out so a driver double needs no constants.
+  const session = readOnly ? driver.session({ defaultAccessMode: 'READ' }) : driver.session()
   const timeout = queryTimeoutMs()
 
   return new Proxy(session, {

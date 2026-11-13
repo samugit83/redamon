@@ -17,11 +17,15 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const mockRun = vi.fn()
 const mockClose = vi.fn()
+const mockOpen = vi.fn()
 const mockRequireEff = vi.fn()
 const mockRequireProjectAccess = vi.fn()
 
 vi.mock('../../graph/neo4j', () => ({
-  getGraphSession: () => ({ run: (...a: unknown[]) => mockRun(...a), close: mockClose }),
+  getGraphSession: (...a: unknown[]) => {
+    mockOpen(...a)
+    return { run: (...r: unknown[]) => mockRun(...r), close: mockClose }
+  },
 }))
 vi.mock('../../graph/format', () => ({
   formatGraphRecords: () => ({ nodes: [], links: [] }),
@@ -127,6 +131,42 @@ describe('the surrounding guards still hold', () => {
     await run('MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE) RETURN c')
 
     expect(executed()).toContain('(c:CVE)')
+  })
+})
+
+describe('a view cannot write, whatever its text (fix of the 4.3 review finding 1)', () => {
+  test('the view runs in a read-only session, so Neo4j itself refuses a write the checks miss', async () => {
+    const res = await run('MATCH (v:Vulnerability) RETURN v')
+    expect(res.status).toBe(200)
+    expect(mockOpen).toHaveBeenCalledWith({ readOnly: true })
+  })
+
+  test.each([
+    ["MATCH (n) WHERE n.url <> 'http://x' DETACH DELETE n", 'DETACH'],
+    ["MATCH (n) WHERE n.url <> 'http://x' SET n.name = 'x'", 'SET'],
+    ["MATCH (n) WHERE n.url <> 'http://x' CREATE (m:Host)", 'CREATE'],
+    ["LOAD CSV FROM 'http://169.254.169.254/' AS row RETURN row", 'LOAD'],
+  ])('a write behind a string holding // is refused before Neo4j is opened: %s', async (query, word) => {
+    const res = await run(query)
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain(`found: ${word}`)
+    expect(mockOpen).not.toHaveBeenCalled()
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['MATCH (n:`Domain`) RETURN n', 200],
+    ['MATCH (n /* ( */) RETURN n', 200],
+    ["MATCH (n {name: '('}) RETURN n", 200],
+    ['MATCH(n) RETURN n', 200],
+    ['MATCH (n {name: toString(1)}) RETURN n', 400],
+    ["MATCH (n:Domain {project_id: 'P-someone-else'}) RETURN n", 400],
+    ["MATCH (n) WHERE n.name = 'open RETURN n", 400],
+  ])('a node pattern the filter used to miss is scoped or refused, never run open: %s', async (query, status) => {
+    const res = await run(query)
+    expect(res.status).toBe(status)
+    if (status === 200) expect(executed()).toContain('project_id: $projectId')
+    else expect(mockRun).not.toHaveBeenCalled()
   })
 })
 

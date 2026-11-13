@@ -10,6 +10,155 @@
  * Extracted as a standalone function for testability.
  */
 
+// ---- reading the query ------------------------------------------------------
+//
+// Every check below and the injection itself read the same view of the query:
+// comments removed, string literals set aside behind placeholders, quoted names
+// that are plain identifiers unwrapped. Set aside FIRST, in one left-to-right
+// pass: stripping `//` before strings turned `'http://x'` into the start of a
+// "comment" and hid the rest of its line (a DETACH DELETE, an apoc call) from
+// every check; and a `(` inside a string or a comment hid a whole node pattern
+// from the scanner, so it ran with no tenant filter. A literal comes back as
+// typed in the query that runs; its placeholder holds no word, quote or paren.
+
+const LITERAL_MARK = '\u0001'
+const QUOTED_MARK = '\u0002'
+const MARK_RE = /'\u0001(\d+)\u0001'|\u0002(\d+)\u0002/g
+const MARK_CHARS = /[\u0001\u0002]/
+// A quoted name that reads the same unquoted. Anything else (a space, a colon,
+// a dot) stays quoted behind a placeholder, which no node pattern accepts.
+const PLAIN_NAME = /^[A-Za-z_]\w*$/
+
+interface ReadQuery {
+  code: string
+  literals: string[]
+}
+
+function readQuery(cypher: string): ReadQuery | { problem: string } {
+  if (MARK_CHARS.test(cypher)) return { problem: 'a control character' }
+  let code = ''
+  const literals: string[] = []
+  const setAside = (text: string, mark: (n: number) => string) => {
+    literals.push(text)
+    code += mark(literals.length - 1)
+  }
+  let i = 0
+  while (i < cypher.length) {
+    const c = cypher[i]
+    const next = cypher[i + 1]
+    if (c === '/' && next === '/') {
+      const end = cypher.indexOf('\n', i)
+      i = end === -1 ? cypher.length : end
+      code += ' '
+    } else if (c === '/' && next === '*') {
+      const end = cypher.indexOf('*/', i + 2)
+      if (end === -1) return { problem: 'an unterminated comment' }
+      i = end + 2
+      code += ' '
+    } else if (c === "'" || c === '"') {
+      let j = i + 1
+      while (j < cypher.length && cypher[j] !== c) j += cypher[j] === '\\' ? 2 : 1
+      if (j >= cypher.length) return { problem: 'an unterminated string' }
+      setAside(cypher.slice(i, j + 1), n => `'${LITERAL_MARK}${n}${LITERAL_MARK}'`)
+      i = j + 1
+    } else if (c === '`') {
+      let j = i + 1
+      let name = ''
+      for (; j < cypher.length; j++) {
+        if (cypher[j] !== '`') { name += cypher[j]; continue }
+        if (cypher[j + 1] !== '`') break
+        name += '`' // a doubled backtick is one backtick of the name
+        j++
+      }
+      if (j >= cypher.length) return { problem: 'an unterminated quoted name' }
+      if (PLAIN_NAME.test(name)) code += name
+      else setAside(cypher.slice(i, j + 1), n => `${QUOTED_MARK}${n}${QUOTED_MARK}`)
+      i = j + 1
+    } else {
+      code += c
+      i += 1
+    }
+  }
+  return { code, literals }
+}
+
+function restore(code: string, literals: string[]): string {
+  return code.replace(MARK_RE, (_m, literal?: string, quoted?: string) => literals[Number(literal ?? quoted)])
+}
+
+/** The read view with quoted names shown by their name, for the call check: `` `apoc.cypher.run`( `` is a call. */
+function callView(read: ReadQuery): string {
+  return read.code.replace(MARK_RE, (m, literal?: string, quoted?: string) =>
+    quoted === undefined ? m : read.literals[Number(quoted)].slice(1, -1).replace(/``/g, '`'))
+}
+
+// Words after which `(` opens a pattern or an expression, never a call's
+// arguments: `MATCH(n)` is a node pattern although no space separates them, and
+// so is `ANY(n)` / `SHORTEST(...)` of a path selector. `any(x IN l WHERE ...)`
+// stays harmless here: its interior does not start like a node pattern.
+const NOT_A_CALL = new Set([
+  'MATCH', 'OPTIONAL', 'MERGE', 'CREATE', 'WHERE', 'AND', 'OR', 'XOR', 'NOT', 'RETURN', 'WITH',
+  'UNWIND', 'IN', 'AS', 'DISTINCT', 'BY', 'SKIP', 'LIMIT', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
+  'IS', 'UNION', 'CALL', 'YIELD', 'EXISTS', 'DELETE', 'DETACH', 'SET', 'REMOVE', 'FOREACH', 'ON',
+  'ANY', 'ALL', 'SHORTEST', 'PATH', 'PATHS', 'GROUP', 'GROUPS', 'ELEMENTS', 'RELATIONSHIPS',
+  'NEXT', 'FILTER', 'LET', 'USE',
+])
+
+/**
+ * True when the `(` at `open` opens a call's arguments: a name written right
+ * against the paren (`count(n)`) that is not a keyword. A paren after
+ * whitespace or an arrow opens a pattern or a group, as in the Python filter's
+ * _is_function_call, so `count (n)` is scoped and then fails at Neo4j rather
+ * than run unscoped.
+ */
+function opensCall(code: string, open: number): boolean {
+  let start = open
+  while (start > 0 && /\w/.test(code[start - 1])) start--
+  if (start === open) return false
+  const word = code.slice(start, open)
+  return !/^\d+$/.test(word) && !NOT_A_CALL.has(word.toUpperCase())
+}
+
+interface Group {
+  open: number
+  close: number
+  interior: string
+}
+
+/** Every `(...)` that is not a call's argument list, or null when the parentheses do not balance. */
+function patternGroups(code: string): Group[] | null {
+  const opens: number[] = []
+  const groups: Group[] = []
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] === '(') opens.push(i)
+    else if (code[i] === ')') {
+      const open = opens.pop()
+      if (open === undefined) return null
+      if (!opensCall(code, open)) groups.push({ open, close: i, interior: code.slice(open + 1, i) })
+    }
+  }
+  return opens.length ? null : groups
+}
+
+// A group whose interior starts the way a node pattern does: an optional
+// variable, then a label, a property map, an inline WHERE, or nothing.
+// `(a.x > 1)` and `(x IN list)` are expressions; `(n {x: f(1)})`,
+// `(n:(A|B))` and `(n:A WHERE ...)` are node patterns this filter cannot
+// rewrite, so they are refused, never run unscoped.
+const NODE_HEAD = /^\s*(?:[A-Za-z_]\w*)?\s*(?::|\{|WHERE\b|$)/i
+
+function looksLikeNode(interior: string): boolean {
+  return NODE_HEAD.test(interior)
+}
+
+/** Why the query cannot be read safely (an unterminated literal, unbalanced parentheses), or null. */
+export function unreadableQuery(cypher: string): string | null {
+  const read = readQuery(cypher)
+  if ('problem' in read) return `The query has ${read.problem}.`
+  if (patternGroups(read.code) === null) return 'The query has unbalanced parentheses.'
+  return null
+}
+
 // Global node types that exist across all projects (no project_id property).
 // These are enrichment/reference data from public databases (NVD, MITRE, CAPEC).
 //
@@ -71,18 +220,9 @@ function excludeMuted(labelStr: string): string {
  * stripped first, so an ordinary text comparison is not mistaken for one.
  */
 export function namesMutedLabel(cypher: string): boolean {
-  const code = cypher
-    .replace(/\/\/[^\n]*/g, ' ')
-    .replace(/'(?:\\.|[^'\\])*'/g, ' ')
-    .replace(/"(?:\\.|[^"\\])*"/g, ' ')
+  const read = readQuery(cypher)
+  const code = 'problem' in read ? cypher : read.code
   return new RegExp(`\\b${MUTED_LABEL}\\b`).test(code)
-}
-
-// A node pattern is a `(...)` group with no nested parens that is NOT preceded
-// by a word char or `$` -> that excludes function calls like `count(n)` /
-// `id(x)` and parameter refs, matching only true node positions and groupings.
-function nodePatternRegex(): RegExp {
-  return /(?<![\w$])\(([^()]*)\)/g
 }
 
 // Interior grammar of a node pattern: optional variable, optional :Label(s)
@@ -114,27 +254,57 @@ function parseInterior(interior: string): ParsedNode | null {
   }
 }
 
-export function injectProjectFilter(cypher: string): string {
-  return cypher.replace(nodePatternRegex(), (match, interior) => {
-    const node = parseInterior(interior)
-    if (!node) return match // parenthesized expression / function arg, leave as-is
-    if (isSimpleGlobalReference(node.labelStr)) return match // global reference data
-    if (node.props && /\bproject_id\b/.test(node.props)) return match // already scoped
+// The tenant filter, and nothing that could widen it: a property map naming
+// project_id in any other way (`{project_id: 'another-project'}`) is not
+// "already scoped", it is refused.
+const TENANT_PROP_RE = /\bproject_id\s*:\s*\$projectId\b/
 
-    const head = `${node.varName}${excludeMuted(node.labelStr)}`
-    if (node.props != null) {
-      const inner = node.props.slice(1, -1).trim()
-      const body = inner ? `${FILTER_PROP}, ${inner}` : FILTER_PROP
-      return `(${head} {${body}})`
-    }
-    return `(${head} {${FILTER_PROP}})`
-  })
+function hasTenantProps(props: string | undefined): boolean {
+  if (!props) return false
+  return TENANT_PROP_RE.test(props) && (props.match(/\bproject_id\b/g) ?? []).length === 1
+}
+
+function namesProjectId(props: string | undefined): boolean {
+  return !!props && /\bproject_id\b/.test(props)
+}
+
+/** The rewritten `(...)` of a node pattern, or null to leave the group as written. */
+function scopedNode(interior: string): string | null {
+  if (/[()]/.test(interior)) return null // refused by findUnscopedNodePattern when it is a node
+  const node = parseInterior(interior)
+  if (!node) return null
+  if (isSimpleGlobalReference(node.labelStr)) return null
+  if (namesProjectId(node.props)) return null
+
+  const head = `${node.varName}${excludeMuted(node.labelStr)}`
+  if (node.props != null) {
+    const inner = node.props.slice(1, -1).trim()
+    const body = inner ? `${FILTER_PROP}, ${inner}` : FILTER_PROP
+    return `(${head} {${body}})`
+  }
+  return `(${head} {${FILTER_PROP}})`
+}
+
+export function injectProjectFilter(cypher: string): string {
+  const read = readQuery(cypher)
+  if ('problem' in read) return cypher // findUnscopedNodePattern refuses it
+  const groups = patternGroups(read.code)
+  if (!groups) return cypher
+  // A group scopedNode rewrites holds no paren, so no two edits overlap; applied
+  // from the end, each leaves the earlier offsets valid.
+  let code = read.code
+  for (const g of [...groups].sort((a, b) => b.open - a.open)) {
+    const scoped = scopedNode(g.interior)
+    if (scoped !== null) code = code.slice(0, g.open) + scoped + code.slice(g.close + 1)
+  }
+  return restore(code, read.literals)
 }
 
 /**
  * Safety net. After injection, scan for any node pattern that still carries a
- * variable or a non-global label but lacks a project_id predicate. Returns the
- * first offending interior, or null when the query is fully tenant-scoped.
+ * variable or a non-global label but lacks the project_id predicate, or that
+ * the filter cannot read. Returns the first offending interior (or why the
+ * query cannot be read), or null when the query is fully tenant-scoped.
  *
  * A global reference pattern is exempt only when the query is ITSELF anchored to
  * the caller's data (at least one scoped pattern). Without that, `MATCH (c:CVE)
@@ -143,17 +313,23 @@ export function injectProjectFilter(cypher: string): string {
  * the Python filter.
  */
 export function findUnscopedNodePattern(cypher: string): string | null {
-  const re = nodePatternRegex()
-  const nodes: ParsedNode[] = []
-  let m: RegExpExecArray | null
-  while ((m = re.exec(cypher)) !== null) {
-    const node = parseInterior(m[1])
-    if (node) nodes.push({ ...node, interior: m[1].trim() } as ParsedNode & { interior: string })
+  const read = readQuery(cypher)
+  if ('problem' in read) return `(${read.problem})`
+  const groups = patternGroups(read.code)
+  if (!groups) return '(unbalanced parentheses)'
+  const nodes: Array<ParsedNode & { interior: string }> = []
+  for (const g of groups) {
+    if (!looksLikeNode(g.interior)) continue
+    const interior = restore(g.interior, read.literals).trim()
+    const node = /[()]/.test(g.interior) ? null : parseInterior(g.interior)
+    if (!node) return interior || '(anonymous)'
+    nodes.push({ ...node, interior })
   }
-  const scopedOf = (n: ParsedNode) => !!n.props && /\bproject_id\b/.test(n.props)
+  const scopedOf = (n: ParsedNode) => hasTenantProps(n.props)
   const hasAnchor = nodes.some(scopedOf)
-  for (const node of nodes as (ParsedNode & { interior: string })[]) {
+  for (const node of nodes) {
     if (scopedOf(node)) continue
+    if (namesProjectId(node.props)) return node.interior
     if (hasAnchor && isSimpleGlobalReference(node.labelStr)) continue // reference data, anchored
     if (node.varName || node.labels.length > 0) {
       return node.interior || '(anonymous)'
@@ -163,23 +339,40 @@ export function findUnscopedNodePattern(cypher: string): string | null {
 }
 
 // A relationship carrying `*` (variable length), or a quantifier on a path /
-// relationship group (`{n,m}`). The nodes such a pattern traverses have NO
-// node pattern of their own, so injectProjectFilter never reaches them and
-// findUnscopedNodePattern never sees them: a `[*]` hop from an exempt reference
-// node (or between two of the caller's nodes) reaches other tenants' nodes.
-// Comments, string literals and backticked identifiers are blanked first.
-function codeOnly(cypher: string): string {
-  return cypher
-    .replace(/\/\/[^\n]*/g, ' ')
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/'(?:\\.|[^'\\])*'/g, ' ')
-    .replace(/"(?:\\.|[^"\\])*"/g, ' ')
-    .replace(/`[^`]*`/g, 'x')
-}
+// relationship group (`{n,m}`), or a quantified relationship (`-[:R]->+`,
+// `-->*`). The nodes such a pattern traverses have NO node pattern of their
+// own, so injectProjectFilter never reaches them and findUnscopedNodePattern
+// never sees them: a `[*]` hop from an exempt reference node (or between two of
+// the caller's nodes) reaches other tenants' nodes. Read on the read view, with
+// literals blanked.
+const QUANTIFIED_REL_RE = /(?:\]-+>?|-->?|<--)\s*[+*]/
 
 export function hasVariableLengthPath(cypher: string): boolean {
-  const code = codeOnly(cypher)
-  return /\[[^[\]]*\*[^[\]]*\]/.test(code) || /[)\]]\s*(?:<?-+>?)?\s*\{\s*\d/.test(code)
+  const read = readQuery(cypher)
+  if ('problem' in read) return true
+  const code = read.code.replace(MARK_RE, ' ')
+  return /\[[^[\]]*\*[^[\]]*\]/.test(code)
+    || /[)\]]\s*(?:<?-+>?)?\s*\{\s*\d/.test(code)
+    || QUANTIFIED_REL_RE.test(code)
+}
+
+// Clauses a saved view may not run: the writes, the procedure call (a
+// subquery `CALL {}` included: no view needs one), and the reads that leave
+// the graph (LOAD CSV fetches a URL from inside the database, USE and SHOW
+// reach the system database). The session is read-only as well (route.ts), so
+// Neo4j refuses a write this list misses; the list answers a clear 400 first.
+// Not after a `.`: `n.set` is a property.
+const REFUSED_CLAUSE_RE = new RegExp(
+  '(?<![.\\w])(CREATE|MERGE|DELETE|DETACH|SET|REMOVE|DROP|CALL|FOREACH|LOAD|USE|SHOW|ALTER|GRANT|DENY|REVOKE|TERMINATE)(?!\\w)',
+  'i',
+)
+
+/** The first clause a view may not run (upper case), or null; an unreadable query answers its first word. */
+export function findWriteClause(cypher: string): string | null {
+  const read = readQuery(cypher)
+  const code = 'problem' in read ? cypher : read.code.replace(MARK_RE, ' ')
+  const m = REFUSED_CLAUSE_RE.exec(code)
+  return m ? m[1].toUpperCase() : null
 }
 
 // Built-in FUNCTION namespaces a read may legitimately call. Everything else
@@ -193,18 +386,16 @@ const NAMESPACED_CALL_RE = /([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)\s*\(/g
 
 /**
  * The first namespaced procedure OR function call that is not allowlisted, or
- * null. Runs on a normalised view (comments/strings blanked, backticks
- * unwrapped, whitespace around `.` removed) so `` `apoc`.`cypher`.`run` `` and
- * `apoc . cypher . run` cannot hide the name. Mirrors find_disallowed_call in
- * the Python filter.
+ * null. Runs on the read view (comments removed, literals blanked, quoted
+ * names shown by their name, whitespace around `.` removed) so
+ * `` `apoc`.`cypher`.`run` `` and `apoc . cypher . run` cannot hide the name.
+ * Mirrors find_disallowed_call in the Python filter.
  */
 export function findDisallowedCall(cypher: string): string | null {
-  const normalised = cypher
-    .replace(/\/\/[^\n]*/g, ' ')
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/'(?:\\.|[^'\\])*'/g, ' ')
-    .replace(/"(?:\\.|[^"\\])*"/g, ' ')
-    .replace(/`([^`]*)`/g, '$1')
+  const read = readQuery(cypher)
+  if ('problem' in read) return read.problem
+  const normalised = callView(read)
+    .replace(MARK_RE, ' ')
     .replace(/\s*\.\s*/g, '.')
   let m: RegExpExecArray | null
   NAMESPACED_CALL_RE.lastIndex = 0

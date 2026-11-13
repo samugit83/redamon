@@ -17,6 +17,7 @@ import { NextRequest } from 'next/server'
 const h = vi.hoisted(() => ({
   identity: vi.fn(), shares: new Map(), policy: { enabled: true } as unknown, models: {} as Record<string, unknown>, refused: vi.fn(),
   queries: [] as Array<{ query: string; params: unknown }>,
+  sessions: [] as unknown[],
   agent: vi.fn(),
 }))
 // A whole-module double: session.ts imports guards.ts, so a partial one (importOriginal) would
@@ -44,13 +45,16 @@ const SUBGRAPH = [
 ]
 vi.mock('@/app/api/graph/neo4j', () => ({
   neo4j: { int: (n: number) => n },
-  getGraphSession: () => ({
-    run: async (query: string, params?: unknown) => {
-      h.queries.push({ query, params })
-      return { records: /DETACH DELETE/.test(query) ? [] : SUBGRAPH }
-    },
-    close: async () => undefined,
-  }),
+  getGraphSession: (opts?: unknown) => {
+    h.sessions.push(opts ?? {})
+    return {
+      run: async (query: string, params?: unknown) => {
+        h.queries.push({ query, params })
+        return { records: /DETACH DELETE/.test(query) ? [] : SUBGRAPH }
+      },
+      close: async () => undefined,
+    }
+  },
 }))
 vi.mock('@/lib/agentFetch', async (orig) => ({
   ...(await orig<typeof import('@/lib/agentFetch')>()),
@@ -89,6 +93,7 @@ const writes = vi.fn()
 beforeEach(async () => {
   await resetSharedReads(h as never)
   invalidateCache(SHARED_PROJECT)
+  h.sessions.length = 0
   viewReads.length = 0
   writes.mockReset()
   h.agent.mockReset()
@@ -200,6 +205,21 @@ describe('the saved views and their Cypher on a shared project', () => {
       jsonInit('POST', { projectId: SHARED_PROJECT, cypherQuery: 'MATCH (d:Domain) DETACH DELETE d' }))))
     expect(res.status).toBe(400)
     expect(h.queries).toEqual([])
+  })
+
+  test("the 4.3 review's bypass (a write behind a string holding //) is refused for every reader and the owner; views run read-only", async () => {
+    const bypass = "MATCH (n) WHERE n.url <> 'http://x' DETACH DELETE n"
+    for (const who of [COLLABORATOR, RAW_COLLABORATOR, OVERSEER, OWNER]) {
+      h.sessions.length = 0
+      const res = await callAs(who, () => executePOST(new NextRequest(`${BASE}/api/graph-views/execute`,
+        jsonInit('POST', { projectId: SHARED_PROJECT, cypherQuery: bypass }))))
+      expect([who, res.status]).toEqual([who, 400])
+      expect(h.queries).toEqual([])
+      expect(h.sessions).toEqual([])
+    }
+    await callAs(COLLABORATOR, () => executePOST(new NextRequest(`${BASE}/api/graph-views/execute`,
+      jsonInit('POST', { projectId: SHARED_PROJECT, cypherQuery: 'MATCH (d:Domain) RETURN d' }))))
+    expect(h.sessions).toEqual([{ readOnly: true }])
   })
 })
 

@@ -104,6 +104,26 @@ describe('driver lifetime', () => {
   })
 })
 
+describe('read-only sessions (fix of the 4.3 review finding 1)', () => {
+  test('a read-only session asks the driver for READ access, so Neo4j refuses a write in it', () => {
+    getGraphSession({ readOnly: true })
+    expect(getDriver().session).toHaveBeenCalledWith({ defaultAccessMode: 'READ' })
+  })
+
+  test('every other session is opened as before, with no options', () => {
+    getGraphSession()
+    getGraphSession({})
+    expect((getDriver().session as ReturnType<typeof vi.fn>).mock.calls).toEqual([[], []])
+  })
+
+  test('a read-only session still carries the query timeout', async () => {
+    const session = getGraphSession({ readOnly: true })
+    await session.run('MATCH (n) RETURN n')
+    const tx = (getDriver().session as ReturnType<typeof vi.fn>).mock.results[0].value.run.mock.calls[0][2]
+    expect(tx).toEqual({ timeout: 120_000 })
+  })
+})
+
 describe('query timeout', () => {
   const txConfigOf = (session: ReturnType<typeof getGraphSession>) =>
     (getDriver().session as ReturnType<typeof vi.fn>).mock.results[0].value.run.mock.calls[0][2]
