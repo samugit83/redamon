@@ -136,6 +136,12 @@ Five tables hold the plugin platform's state ([README.PLUGINS.md](README.PLUGINS
 
 For the complete schema, see [webapp/prisma/schema.prisma](../../webapp/prisma/schema.prisma).
 
+### Device Session Table
+
+`user_sessions` (`UserSession`), one row per browser sign-in, written and read only with `RBAC_GOVERNANCE_ENABLED` on (login and invite accept write it; its id is the token's `sid` claim): `session_version` (the account's at sign-in; a row below the account's current version reads as ended), `created_at`, `last_seen_at` (updated at most every 5 minutes), `expires_at`, `ip` with `ip_trusted`, `user_agent`, `revoked_at`, `revoked_by_id` (no foreign key) and `ended_by` (`sign_out`, `self` or `admin`). The rows go with their account; the expiry sweep deletes a row 30 days after it was revoked or expired.
+
+The governance settings live on the one `instance_settings` row: `quotas` (JSON, `{}` = every quota unlimited), `audit_retention_days` (null = keep forever) and `audit_retention_pending` (Root's retention change while it waits its 7 days, null when none).
+
 ### Instance LLM Provider Tables
 
 Three tables back the LLM providers Root adds for the whole instance (Instance page, Root only), read only with `RBAC_GOVERNANCE_ENABLED` on.
