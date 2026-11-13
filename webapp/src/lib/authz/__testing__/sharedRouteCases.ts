@@ -8,7 +8,10 @@
  *          the share's (level `read`, `via: 'share'`, the owner as `project.userId`, the tenant);
  *   raw    without Raw data & files refused 403 naming the route's permission and `level: 'R*'`
  *          (requireLevel), before anything past the check runs; with it, it passes;
- *   write  refused at read, Raw data or not: 403 naming the permission, nothing past the guard runs.
+ *   write  refused at read, Raw data or not: 403 naming the permission, nothing past the guard runs;
+ *   rawPermission  the route's own permission is at `R*` (traffic, workspace; step 4.9): without Raw data
+ *          & files the guard refuses (403 naming the permission), nothing past it runs; with it, it
+ *          passes on the owner's project, as `read` does.
  *
  * Once per family, with sharing not in force the same collaborator gets 404, as before sharing
  * (sharing.flags.off.test.ts proves that no share is then read).
@@ -45,7 +48,7 @@ export interface SharedRouteState extends RouteCaseState {
   shares: Map<string, ShareRow>
 }
 
-export type SharedReach = 'read' | 'raw' | 'write'
+export type SharedReach = 'read' | 'raw' | 'write' | 'rawPermission'
 
 export interface SharedRouteCase extends RouteCase {
   reach: SharedReach
@@ -163,6 +166,28 @@ export function describeSharedAccess(family: string, cases: SharedRouteCase[], h
           h.shares.set(`${projectOf(c)}|${COLLABORATOR}`, share(true))
           const { res, guard } = await run(h, c, collaborator)
           expect((guard as PermissionContext).access).toMatchObject({ level: 'read', toggles: { rawData: true } })
+          expect(res?.status).not.toBe(403)
+        })
+      }
+
+      if (c.reach === 'rawPermission') {
+        test(`${c.route} without Raw data & files: the guard refuses, 403 naming ${c.permission}, nothing past it runs`, async () => {
+          h.shares.set(`${projectOf(c)}|${COLLABORATOR}`, share(false))
+          const { res, guard } = await run(h, c, collaborator)
+          expect(guard).toBeInstanceOf(Response)
+          expect(res?.status).toBe(403)
+          expect(await res!.json()).toMatchObject({ code: 'forbidden', permission: c.permission })
+          expect(h.downstream).not.toHaveBeenCalled()
+          expect(h.upstream).not.toHaveBeenCalled()
+        })
+
+        test(`${c.route} with Raw data & files passes, on the owner's project`, async () => {
+          h.shares.set(`${projectOf(c)}|${COLLABORATOR}`, share(true))
+          const { res, guard } = await run(h, c, collaborator)
+          expect(guard).not.toBeInstanceOf(Response)
+          expect((guard as PermissionContext).access).toMatchObject({
+            project: { id: projectOf(c), userId: OWNER }, level: 'read', via: 'share', toggles: { rawData: true },
+          })
           expect(res?.status).not.toBe(403)
         })
       }

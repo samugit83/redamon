@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { internalError } from '@/lib/routeErrors'
-import { ownerScope } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
 import { readCapturedBody } from '@/lib/captureBodies'
+import { trafficRows } from '../trafficTenant'
 
 // GET /api/traffic/[projectId]/[id] - full transaction including headers + bodies.
-// Tenant-enforced: guardProject + the row must belong to this project AND the
-// effective user (ownerScope). A cross-tenant id returns 404 (anti-enumeration),
+// Tenant-enforced: the guard admits the caller to the project (traffic:read is R*:
+// the owner, a share with Raw data & files), and the row must belong to the project
+// under its owner (trafficRows). A cross-tenant id returns 404 (anti-enumeration),
 // identical to a non-existent id.
 //
 // Phase 0 stores bodies inline (size-capped at ingest). Disk-offloaded bodies
@@ -22,10 +23,9 @@ export async function GET(
 
     const auth = await requirePermission(request, 'traffic:read', { projectId })
     if (auth instanceof NextResponse) return auth
-    const eff = auth.effective
 
     const row = await prisma.capturedHttpTransaction.findFirst({
-      where: { id, projectId, ...ownerScope(eff) },
+      where: { id, ...trafficRows(projectId, auth) },
     })
     if (!row) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })

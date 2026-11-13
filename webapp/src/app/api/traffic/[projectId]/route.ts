@@ -5,6 +5,7 @@ import { ownerScope } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
 import { gcOrphanBodies } from '@/lib/captureBodies'
 import type { Prisma } from '@prisma/client'
+import { trafficTenant } from './trafficTenant'
 
 // Summary columns only - bodies are fetched on demand via the [id] detail route,
 // so a large history never materializes in the list response.
@@ -56,14 +57,15 @@ function statusClassRange(cls: string | null): Prisma.IntFilter | undefined {
   }
 }
 
-// Build the tenant-scoped where clause shared by list + (future) export/delete.
-// eff/projectId are derived from the session + route, never from client fields.
+// The where clause shared by the list, the export and delete-all-matching: the project's rows
+// under its owner (`tenantUserId`, trafficTenant.ts), then the filters. Both ids come from the
+// route and the guard's access, never from client fields.
 export function buildTrafficWhere(
   projectId: string,
-  userId: string,
+  tenantUserId: string,
   sp: URLSearchParams,
 ): Prisma.CapturedHttpTransactionWhereInput {
-  const where: Prisma.CapturedHttpTransactionWhereInput = { projectId, userId }
+  const where: Prisma.CapturedHttpTransactionWhereInput = { projectId, userId: tenantUserId }
 
   const source = sp.get('source')
   if (source && source !== 'both') where.source = source
@@ -139,10 +141,9 @@ export async function GET(
 
     const auth = await requirePermission(request, 'traffic:read', { projectId })
     if (auth instanceof NextResponse) return auth
-    const eff = auth.effective
 
     const sp = request.nextUrl.searchParams
-    const where = buildTrafficWhere(projectId, eff.userId, sp)
+    const where = buildTrafficWhere(projectId, trafficTenant(auth), sp)
 
     const page = Math.max(0, parseInt(sp.get('page') || '0', 10) || 0)
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, parseInt(sp.get('pageSize') || '50', 10) || 50))
@@ -198,7 +199,7 @@ export async function DELETE(
       for (const [k, v] of Object.entries(body.filter)) {
         if (v !== undefined && v !== null && v !== '') sp.set(k, String(v))
       }
-      Object.assign(where, buildTrafficWhere(projectId, eff.userId, sp))
+      Object.assign(where, buildTrafficWhere(projectId, trafficTenant(auth), sp))
       mode = 'filter'
     } else {
       return NextResponse.json({ error: 'Provide { ids: [...] } or { filter: {...} }' }, { status: 400 })

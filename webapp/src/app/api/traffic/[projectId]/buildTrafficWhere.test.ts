@@ -3,7 +3,8 @@
  * backs GET /api/traffic/[projectId]. Pure function; no DB. Covers filter
  * translation, the status-class ranges, the invalid-date guard (regression: an
  * unparseable ?from must NOT reach Prisma and 500), and the invariant that the
- * caller's userId always scopes the query.
+ * tenant's id (the project's owner, which the routes take from the guard's
+ * access: trafficTenant.ts, step 4.9) always scopes the query.
  *
  * Run: npx vitest run --no-file-parallelism src/app/api/traffic/[projectId]/buildTrafficWhere.test.ts
  *
@@ -22,17 +23,17 @@ vi.mock('@/lib/access', () => ({
 import { buildTrafficWhere } from './route'
 
 const PID = 'proj-123'
-const UID = 'user-abc'
+const OWNER = 'owner-abc'
 
 function where(qs: string) {
-  return buildTrafficWhere(PID, UID, new URLSearchParams(qs))
+  return buildTrafficWhere(PID, OWNER, new URLSearchParams(qs))
 }
 
 describe('buildTrafficWhere', () => {
-  test('always scopes to project + caller userId', () => {
+  test('always scopes to project + the tenant (owner) id', () => {
     const w = where('')
     expect(w.projectId).toBe(PID)
-    expect(w.userId).toBe(UID)
+    expect(w.userId).toBe(OWNER)
   })
 
   test('source=both is not added as a filter', () => {
@@ -102,8 +103,8 @@ describe('buildTrafficWhere', () => {
   })
 
   test('client cannot smuggle a different userId via query', () => {
-    // No query param can override the userId argument.
+    // No query param can override the tenant argument.
     const w = where('userId=ATTACKER&user_id=ATTACKER')
-    expect(w.userId).toBe(UID)
+    expect(w.userId).toBe(OWNER)
   })
 })

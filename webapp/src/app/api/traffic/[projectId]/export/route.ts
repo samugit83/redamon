@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requirePermission } from '@/lib/authz/guards'
 import { buildTrafficWhere } from '../route'
+import { trafficTenant } from '../trafficTenant'
 
 export const runtime = 'nodejs'
 
@@ -35,11 +36,10 @@ export async function GET(
   const { projectId } = await params
   const auth = await requirePermission(request, 'traffic:export', { projectId })
   if (auth instanceof NextResponse) return auth
-  const eff = auth.effective
 
   const sp = request.nextUrl.searchParams
   const format = sp.get('format') === 'json' ? 'json' : 'csv'
-  const where = buildTrafficWhere(projectId, eff.userId, sp)
+  const where = buildTrafficWhere(projectId, trafficTenant(auth), sp)
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
 
   const encoder = new TextEncoder()
