@@ -35,6 +35,7 @@ function Consumer() {
       <span data-testid="userId">{userId ?? 'null'}</span>
       <button onClick={async () => { outcome = await setUserId('member-1', { target: { id: 'member-1', name: 'Marco', email: 'marco@e2e.local', accountType: 'member' } }) }}>switch</button>
       <button onClick={() => { void setUserId('admin-1') }}>self</button>
+      <button onClick={() => { void setUserId('member-1') }}>unnamed</button>
     </div>
   )
 }
@@ -117,6 +118,16 @@ describe('switching opens the act-as dialog', () => {
     await waitFor(() => expect(outcome).toBeNull())
     expect(actAsCalls()).toEqual([])
     expect(screen.getByTestId('userId')).toHaveTextContent('admin-1')
+  })
+
+  test('a caller that does not name the account: the dialog says "this account", never its id (3.16c)', async () => {
+    render(<ProjectProvider><Consumer /></ProjectProvider>)
+    fireEvent.click(screen.getByText('unnamed'))
+    const dialog = await screen.findByRole('dialog', { name: 'Act as another account' })
+    expect(dialog).toHaveTextContent('You will see and do what this account sees and does')
+    expect(dialog).not.toHaveTextContent('member-1')
+    expect(screen.queryByTestId('identity-label')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Act as this account' })).toBeInTheDocument()
   })
 
   test('back to oneself stops it on the server and reads the session again', async () => {

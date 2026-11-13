@@ -43,6 +43,15 @@ describe('ActAsDialog', () => {
     expect(screen.getByRole('button', { name: 'Act as Marco' })).toBeInTheDocument()
   })
 
+  test('an account known only by its id is "this account", never the raw id (3.16c)', () => {
+    open({ target: { id: 'cmh0rawid0001', name: '', email: '' } })
+    const dialog = screen.getByRole('dialog', { name: 'Act as another account' })
+    expect(dialog).toHaveTextContent('You will see and do what this account sees and does')
+    expect(dialog).not.toHaveTextContent('cmh0rawid0001')
+    expect(screen.queryByTestId('identity-label')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Act as this account' })).toBeInTheDocument()
+  })
+
   test('duration: 60 minutes by default, the choices up to the instance limit', () => {
     const d = open()
     expect(d.duration().value).toBe('60')

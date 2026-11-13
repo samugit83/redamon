@@ -187,7 +187,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     const other = id && id !== authUser.id ? id : null
     if (other && opts?.stepUpPassword === undefined) {
       return new Promise<ApiError | null>((settle) => {
-        setActAsRequest({ target: opts?.target ?? { id: other, name: '', email: other }, settle })
+        // A caller that does not name the account gets "this account", never its raw id.
+        setActAsRequest({ target: opts?.target ?? { id: other, name: '', email: '' }, settle })
       })
     }
     try {

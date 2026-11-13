@@ -7,7 +7,10 @@ import Link from 'next/link'
 import { useProjects, useDeleteProject, type ProjectListItem } from '@/hooks/useProjects'
 import { useUsers, useCreateUser, useDeleteUser } from '@/hooks/useUsers'
 import { useProject } from '@/providers/ProjectProvider'
-import { useCan } from '@/hooks/useCan'
+import { useOptionalAuth } from '@/providers/AuthProvider'
+import { useCan, useRbacFlags } from '@/hooks/useCan'
+import { accountTypeFor } from '@/components/auth/IdentityLabel'
+import type { ActAsDialogTarget } from '@/components/auth/ActAsDialog'
 import { ProjectCard } from '@/components/projects/ProjectCard'
 import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
 import { projectTargetLabel, toProjectSummary } from '@/lib/projectSummary'
@@ -39,10 +42,31 @@ export default function ProjectsPage() {
   const createUserMutation = useCreateUser()
   const deleteUserMutation = useDeleteUser()
   const hasAutoSelected = useRef(false)
+  const auth = useOptionalAuth()
+  const ownId = auth?.user?.id ?? null
+  // With RBAC on, choosing another account here starts acting as it (ProjectProvider), so only the
+  // admin's own pick in the select may choose one (step 3.16c). Null until /api/auth/me answered:
+  // nothing is chosen before the page knows which rule applies.
+  const flags = useRbacFlags()
+  const rbacOn = flags ? flags.identity || flags.permissions : null
 
-  // Clear stale userId if deleted, or auto-select first user on initial load
+  const actAsTarget = (id: string): ActAsDialogTarget | undefined => {
+    const picked = users?.find(u => u.id === id)
+    if (!picked || picked.id === ownId) return undefined
+    return { id: picked.id, name: picked.name, email: picked.email, accountType: accountTypeFor(picked, auth?.user?.rbac?.root) }
+  }
+
   useEffect(() => {
-    if (!users) return
+    if (!users || rbacOn === null) return
+    if (rbacOn) {
+      // The provider already holds the admin's own account or the one they chose to act as.
+      if (userId && userId !== ownId && !users.some(u => u.id === userId)) {
+        void setUserId(null)
+        setCurrentProject(null)
+      }
+      return
+    }
+    // Switches off: clear a stale userId if deleted, or auto-select the first user on initial load.
     if (userId && !users.find(u => u.id === userId)) {
       setUserId(users.length > 0 ? users[0].id : null)
       setCurrentProject(null)
@@ -50,7 +74,7 @@ export default function ProjectsPage() {
       setUserId(users[0].id)
       hasAutoSelected.current = true
     }
-  }, [userId, users, setUserId, setCurrentProject])
+  }, [userId, users, setUserId, setCurrentProject, rbacOn, ownId])
 
   const handleSelectProject = (project: ProjectListItem) => {
     setCurrentProject(toProjectSummary(project))
@@ -83,7 +107,8 @@ export default function ProjectsPage() {
         email: newUserEmail,
         ...setFields,
       })
-      setUserId(user.id)
+      // With RBAC on that would start acting as the new account: creating one is not asking to.
+      if (rbacOn === false) setUserId(user.id)
       setShowUserModal(false)
       setNewUserName('')
       setNewUserEmail('')
@@ -165,7 +190,12 @@ export default function ProjectsPage() {
             className="select"
             aria-label="User"
             value={userId || ''}
-            onChange={(e) => setUserId(e.target.value || null)}
+            onChange={(e) => {
+              const id = e.target.value || null
+              // The act-as dialog names the account by name, email and type, not by its id.
+              const target = rbacOn && id ? actAsTarget(id) : undefined
+              void setUserId(id, target ? { target } : undefined)
+            }}
             disabled={!canSwitchUser}
             title={canSwitchUser ? undefined : 'Acting as another user needs the users:impersonate permission'}
           >

@@ -105,7 +105,9 @@ export function ActAsDialog({ isOpen, target, maxMinutes, reasonRequired, onConf
         {target && (
           <p className={styles.message}>
             You will see and do what{' '}
-            <IdentityLabel name={target.name} email={target.email} accountType={target.accountType} />{' '}
+            {target.name || target.email
+              ? <IdentityLabel name={target.name} email={target.email} accountType={target.accountType} />
+              : 'this account'}{' '}
             sees and does, with their API keys, until you stop or the time runs out. They will be told.
           </p>
         )}
