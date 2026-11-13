@@ -18,6 +18,8 @@ residual is stated in docs/readmes/README.SECURITY_POSTURE.md.
 import os
 from typing import Dict, Mapping, Optional
 
+from _run_registry import run_tag
+
 # REDAMON_RUN_CREDENTIAL is the one a process is handed explicitly (the terminal
 # shell, the proxy_brain child): one left over in a server's own environment must
 # not reach a child it was not meant for.
@@ -31,8 +33,11 @@ def is_secret_name(name: str) -> bool:
 
 
 def safe_env(extra: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """A copy of os.environ without secrets, then `extra` (the caller's own additions)."""
+    """A copy of os.environ without secrets, then the agent run's tag when the
+    spawn happens inside a tagged tool call (_run_registry), then `extra` (the
+    caller's own additions)."""
     env = {name: value for name, value in os.environ.items() if not is_secret_name(name)}
+    env.update(run_tag())
     if extra:
         env.update({name: value for name, value in extra.items() if value is not None})
     return env

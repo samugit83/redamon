@@ -180,6 +180,17 @@ RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/
         | sh -s -- -b /usr/local/bin "${TRIVY_VERSION}" \
     && trivy plugin install mcp
 
+# The account stdio MCP servers run as (mcp_registry.STDIO_UID/STDIO_HOME,
+# GHSA-8whg-rvcr-r88r): a root child reads the agent's secrets from
+# /proc/1/environ, another uid cannot. Its home gets its own copy of the Trivy
+# MCP plugin, which `trivy` looks for under $HOME/.trivy.
+RUN groupadd --gid 10001 redamon-mcp \
+    && useradd --uid 10001 --gid 10001 --home-dir /var/lib/redamon-mcp --create-home \
+        --shell /usr/sbin/nologin redamon-mcp \
+    && cp -a /root/.trivy /var/lib/redamon-mcp/.trivy \
+    && chown -R 10001:10001 /var/lib/redamon-mcp \
+    && chmod 700 /var/lib/redamon-mcp
+
 # Copy application code
 # - graph_db/ : shared Neo4j schema (used by both agent and KB)
 # - services/knowledge_base/ : KB package (COPY-baked, imported as `knowledge_base`)

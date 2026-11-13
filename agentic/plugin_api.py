@@ -22,16 +22,16 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictStr
 
-from llm_guard import master_key_is_weak, require_master_internal_auth
+from llm_guard import master_key_is_weak, require_master_auth_route_refuses_weak
 from prompts import skill_parts
 
 router = APIRouter(prefix="/plugins", tags=["Plugins"],
-                   dependencies=[Depends(require_master_internal_auth)])
+                   dependencies=[Depends(require_master_auth_route_refuses_weak)])
 
 
 def _weak_key_refusal() -> JSONResponse:
-    # require_master_internal_auth fails open on a dev install with no key; these
-    # endpoints decide what reaches every session's prompt, so they refuse instead.
+    # A keyless agent reaches every handler here (the router's dependency leaves
+    # that case to them), and each refuses first with a body the webapp reads.
     return JSONResponse(status_code=503, content={
         "error": "INTERNAL_API_KEY is not configured; the plugin platform's skill endpoints "
                  "are disabled. Generate the secret via redamon.sh."})

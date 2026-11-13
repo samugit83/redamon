@@ -37,6 +37,7 @@ import job_runner
 import output_offload
 from neo4j_read_pool import run_neo4j_read
 from kali_auth import kali_auth_headers, note_kali_refusal
+from sandbox_runs import RunTagInterceptor
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -406,6 +407,8 @@ class MCPToolsManager:
         self._generation: int = 0
         # Serialises reconnects across concurrent fireteam tool calls.
         self._reconnect_lock: asyncio.Lock = asyncio.Lock()
+        # Names the chat run on each sandbox call so a stop can kill its processes.
+        self._run_tagger = RunTagInterceptor()
 
     def replace_server_configs(self, server_configs: Dict[str, Dict[str, any]]) -> None:
         """Swap the server config dict. Caller is expected to call get_tools()
@@ -440,7 +443,10 @@ class MCPToolsManager:
         for attempt in range(1, max_retries + 1):
             try:
                 self.client = MultiServerMCPClient(mcp_servers)
+                # Read by get_tools() and baked into each tool it builds.
+                self.client.tool_interceptors = [self._run_tagger]
                 mcp_tools = await self.client.get_tools()
+                self._run_tagger.learn(mcp_tools)
 
                 all_tools = []
                 # Cache tools by name for easy access

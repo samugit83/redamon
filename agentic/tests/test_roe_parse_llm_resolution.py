@@ -25,6 +25,8 @@ from unittest.mock import patch
 
 import pytest
 
+MASTER = "dummy-master-key-roe-parse"
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for path in (str(REPO_ROOT), str(REPO_ROOT / "agentic")):
     if path not in sys.path:
@@ -73,7 +75,8 @@ def test_no_project_loaded_still_uses_the_callers_providers(api, monkeypatch):
     """The regression itself: an empty project scope must not decide the answer."""
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+    # The route takes the master key and refuses a keyless agent (GHSA-8whg-rvcr-r88r).
+    monkeypatch.setenv("INTERNAL_API_KEY", MASTER)
     monkeypatch.delenv("SCANNER_API_KEY", raising=False)
     fetched: list[str] = []
 
@@ -84,7 +87,7 @@ def test_no_project_loaded_still_uses_the_callers_providers(api, monkeypatch):
     with patch.object(api, "fetch_user_providers", fake_fetch), \
          patch("orchestrator_helpers.llm_setup.setup_llm", return_value=_Llm()) as setup, \
          patch.object(api, "_prompt_skew", return_value=None):
-        res = TestClient(api.app).post("/roe/parse", json={
+        res = TestClient(api.app).post("/roe/parse", headers={"x-internal-key": MASTER}, json={
             "text": "scope: example.com", "model": "deepseek/deepseek-chat",
             "user_id": "user-123",
         })
@@ -100,7 +103,8 @@ def test_a_loaded_project_never_lends_its_keys(api, monkeypatch):
     runs on the CALLER's keys even when that project's list is non-empty."""
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+    # The route takes the master key and refuses a keyless agent (GHSA-8whg-rvcr-r88r).
+    monkeypatch.setenv("INTERNAL_API_KEY", MASTER)
     monkeypatch.delenv("SCANNER_API_KEY", raising=False)
     with patch.object(api, "fetch_user_providers",
                       return_value=[{"providerType": "kimi", "apiKey": "sk-caller"}]), \
@@ -108,7 +112,7 @@ def test_a_loaded_project_never_lends_its_keys(api, monkeypatch):
              {"providerType": "kimi", "apiKey": "sk-someone-else"}]}), \
          patch("orchestrator_helpers.llm_setup.setup_llm", return_value=_Llm()) as setup, \
          patch.object(api, "_prompt_skew", return_value=None):
-        TestClient(api.app).post("/roe/parse", json={
+        TestClient(api.app).post("/roe/parse", headers={"x-internal-key": MASTER}, json={
             "text": "t", "model": "kimi/kimi-k2", "user_id": "user-123"})
 
     assert setup.call_args.kwargs.get("kimi_api_key") == "sk-caller"

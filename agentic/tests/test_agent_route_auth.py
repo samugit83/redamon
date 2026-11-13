@@ -117,7 +117,7 @@ class GateBehaviour(unittest.TestCase):
             return self.client.get(self.url, headers=headers or {})
 
     def test_refuses_when_no_master_key_is_configured(self):
-        # Fail-CLOSED, unlike require_master_internal_auth: no key means nobody.
+        # Fail-CLOSED: no key means nobody.
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("INTERNAL_API_KEY", None)
             resp = self.client.get(self.url)

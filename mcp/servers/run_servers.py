@@ -133,6 +133,11 @@ def run_server(name: str, config: dict, transport: str = "sse"):
                     f"start this MCP server without bearer auth (fail-closed)."
                 )
                 raise
+            # Which agent run each spawned process belongs to, so an emergency
+            # stop ends them (GHSA-8whg-rvcr-r88r). Before serving: the route it
+            # may add must sit inside the auth wrapper.
+            from _run_registry import install as install_run_registry
+            install_run_registry(module.mcp, name)
             serve_sse_with_auth(module.mcp, host="0.0.0.0", port=config["port"])
         else:
             module.mcp.run(transport="stdio")

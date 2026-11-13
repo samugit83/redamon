@@ -17,10 +17,15 @@ that:
 2. **Rate limits** with a stdlib token bucket keyed by ``(user_id, source-ip)``.
 3. **Spend-caps** with a per-user rolling daily call counter.
 
-**Fail-open when neither secret is set** (with a one-time warning), matching
-the MCP / WS-ticket rollout convention, so a pre-secret install never hard
--breaks; it closes the moment ``redamon.sh`` generates the key. Rate/spend
-limits are always active (they need no secret) and bound damage either way.
+`_key_ok` admits every caller when neither secret is set (with a one-time
+warning), so `require_internal_auth` only ever runs beside a master-key
+dependency that refuses a keyless agent: `require_master_internal_auth` answers
+503 itself, `require_master_auth_route_refuses_weak` leaves it to a handler that
+does (GHSA-8whg-rvcr-r88r: an agent started without keys ran `/mcp/test` and
+`/kali/exec` for anyone on the network).
+agentic/tests/test_ghsa_8whg_master_key_fail_closed.py fails on a route that
+declares `require_internal_auth` without one. Rate/spend limits are always
+active (they need no secret).
 """
 
 import asyncio
@@ -65,7 +70,6 @@ _CHANGEME = "changeme"
 # Auth
 # ---------------------------------------------------------------------------
 _warned_failopen = False
-_warned_failopen_master = False
 
 
 def _valid_keys() -> list[str]:
@@ -204,19 +208,13 @@ def _enforce_llm_limits(request: Request, user_id: str) -> None:
 
 
 def master_key_is_weak() -> bool:
-    """True when INTERNAL_API_KEY is absent or still the compose default.
-
-    `require_master_internal_auth` fails OPEN in that case so a dev install with
-    no secrets keeps working, which is right for the endpoints that existed when
-    it was written. An endpoint that must not be reachable unauthenticated calls
-    this and refuses for itself, without changing that global behaviour.
-    """
+    """True when INTERNAL_API_KEY is absent or still the compose default."""
     master = os.environ.get("INTERNAL_API_KEY", "")
     return not master or master == _CHANGEME
 
 
 async def require_master_internal_auth(request: Request) -> None:
-    """FastAPI dependency: the MASTER key only. Rejects the scanner token.
+    """FastAPI dependency: the MASTER key only, and FAIL-CLOSED without one.
 
     `require_internal_auth_only` accepts SCANNER_API_KEY as well, which the scan
     containers hold on purpose. That is NOT correct for an endpoint that MUTATES
@@ -227,37 +225,11 @@ async def require_master_internal_auth(request: Request) -> None:
     pass would refuse to correct it -- an integrity attack on the product's own
     output, mounted with a token we hand those containers on purpose.
 
-    Fail-open when no master key exists mirrors `_key_ok`, so a dev install with
-    no secrets behaves as documented rather than bricking.
-    """
-    master = os.environ.get("INTERNAL_API_KEY", "")
-    if not master or master == _CHANGEME:
-        global _warned_failopen_master
-        if not _warned_failopen_master:
-            logger.warning(
-                "llm_guard: INTERNAL_API_KEY is not set; master-only endpoints "
-                "(/graph/triage) are FAIL-OPEN (dev only). Generate the secret "
-                "via redamon.sh to enforce auth."
-            )
-            _warned_failopen_master = True
-        return
-    provided = request.headers.get("x-internal-key", "")
-    if not hmac.compare_digest(provided.encode(), master.encode()):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-async def require_configured_master_auth(request: Request) -> None:
-    """FastAPI dependency: the MASTER key only, and FAIL-CLOSED without one.
-
-    For routes whose open use is code execution or another tenant's data: the
-    workspace file API (read/write/delete any project's files, and the drop the
-    kali-sandbox shares through /workspace), the Metasploit session proxy (runs
-    commands on every host the operator holds a session on), and agent-session
-    stop. The agent port is published on 0.0.0.0, so the fail-open of
-    `require_master_internal_auth` would hand these to anyone on the network.
-    Every redamon.sh install generates the key, and without it the agent
-    WebSocket and the MCP tools already refuse, so refusing here bricks nothing
-    that worked.
+    No master key refuses every caller (503), never admits every caller: the
+    agent port is published on 0.0.0.0, and these routes include `/kali/exec`
+    (`bash -c` in the sandbox) and graph writes (GHSA-8whg-rvcr-r88r). redamon.sh
+    generates the key on every install and refuses to start without it, so a
+    keyless agent is only ever a hand-run `docker compose up`.
     """
     if master_key_is_weak():
         raise HTTPException(
@@ -265,6 +237,40 @@ async def require_configured_master_auth(request: Request) -> None:
             detail="INTERNAL_API_KEY is not configured; this endpoint is disabled. "
                    "Generate the secret via redamon.sh.",
         )
+    _require_master_header(request)
+
+
+def _require_master_header(request: Request) -> None:
+    master = os.environ["INTERNAL_API_KEY"]
+    provided = request.headers.get("x-internal-key", "")
+    if not hmac.compare_digest(provided.encode(), master.encode()):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def require_master_auth_route_refuses_weak(request: Request) -> None:
+    """The MASTER key only, for a route whose handler answers a keyless agent itself.
+
+    With no master key configured this dependency lets the request reach the
+    handler, which MUST start with `if master_key_is_weak(): return <503>`. Those
+    handlers answer in the shape the webapp parses (`error`, `code:
+    not_configured`, a feature marker such as `multi_mute`), so the person reads
+    "not configured" rather than "agent outdated". Nothing else may use it:
+    agentic/tests/test_ghsa_8whg_master_key_fail_closed.py fails on a route that
+    declares it and whose handler does not check `master_key_is_weak()`.
+    """
+    if master_key_is_weak():
+        return
+    _require_master_header(request)
+
+
+async def require_configured_master_auth(request: Request) -> None:
+    """FastAPI dependency: the same rule as `require_master_internal_auth`.
+
+    Kept as its own name because the routes whose open use is code execution or
+    another tenant's data (the workspace file API, the Metasploit session proxy,
+    agent-session stop, `/mcp/*`) declare it, and the route-scope tests read the
+    dependency by name.
+    """
     await require_master_internal_auth(request)
 
 

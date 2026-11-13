@@ -16,6 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
+MASTER = "dummy-master-key-roe-parse"
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for path in (str(REPO_ROOT), str(REPO_ROOT / "agentic")):
     if path not in sys.path:
@@ -50,13 +52,14 @@ class _FastLlm:
 def _post(api, llm, monkeypatch):
     from fastapi.testclient import TestClient
 
-    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+    # The route takes the master key and refuses a keyless agent (GHSA-8whg-rvcr-r88r).
+    monkeypatch.setenv("INTERNAL_API_KEY", MASTER)
     monkeypatch.delenv("SCANNER_API_KEY", raising=False)
     with patch.object(api, "fetch_user_providers", return_value=[{"providerType": "deepseek", "apiKey": "k"}]), \
          patch("orchestrator_helpers.llm_setup.setup_llm", return_value=llm), \
          patch.object(api, "_prompt_skew", return_value=None), \
          patch.object(api, "ROE_PARSE_TIMEOUT_S", 0.2):
-        return TestClient(api.app).post("/roe/parse", json={
+        return TestClient(api.app).post("/roe/parse", headers={"x-internal-key": MASTER}, json={
             "text": "Maximum 5 requests per second.", "model": "deepseek/deepseek-chat", "user_id": "u1",
         })
 

@@ -69,6 +69,9 @@ class _SecretsInEnv(unittest.TestCase):
         self._env.start()
         self.addCleanup(self._env.stop)
         self.out_dir = tempfile.mkdtemp(prefix="stdio-env-")
+        # The child runs as mcp_registry.STDIO_UID under a root agent; mkdtemp's 0700
+        # would hide its dump, not its spawn.
+        os.chmod(self.out_dir, 0o777)
 
     def assertChildEnvClean(self, env: dict):
         for name in AGENT_SECRETS:

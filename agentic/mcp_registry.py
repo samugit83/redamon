@@ -12,6 +12,7 @@ to_mcp_servers_dict() / apply_servers_to_registry().
 from __future__ import annotations
 
 import os
+import stat
 import threading
 import logging
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
@@ -44,6 +45,20 @@ STDIO_INHERITED_ENV: Tuple[str, ...] = ("PATH", "HOME", "LANG")
 
 #: `env -i` starts the server with exactly the environment named on its command line.
 STDIO_ENV_LAUNCHER = "/usr/bin/env"
+
+#: The account a stdio server runs as when the agent is root (GHSA-8whg-rvcr-r88r). A
+#: cleared environment alone hides nothing from a root child: it reads the agent's
+#: secrets back from /proc/1/environ. Another uid cannot. The ids are numeric so the
+#: drop holds in an image built before the account existed (agentic/Dockerfile makes it).
+STDIO_UID = 10001
+STDIO_GID = 10001
+#: Its home: npx/uvx/pip need a writable HOME and the agent's is root-only. It sits
+#: under root-owned /var/lib so no child can plant it before the agent creates it.
+STDIO_HOME = "/var/lib/redamon-mcp"
+STDIO_PRIVDROP = "/usr/bin/setpriv"
+STDIO_PRIVDROP_ARGS: Tuple[str, ...] = (
+    f"--reuid={STDIO_UID}", f"--regid={STDIO_GID}", "--clear-groups", "--no-new-privs",
+)
 
 TOKEN_ENV_VAR_REFUSED = "token_env_var_refused"
 TOKEN_ENV_VAR_REFUSED_MESSAGE = (
@@ -296,10 +311,45 @@ def stdio_spawn_env(srv: MCPServer) -> Dict[str, str]:
     return env
 
 
+def stdio_drops_root() -> bool:
+    """Whether a stdio server starts as STDIO_UID: only root can switch uid, and a
+    non-root agent has no secret-holding root process for its child to read."""
+    return os.geteuid() == 0
+
+
+def _ensure_stdio_home() -> str:
+    try:
+        os.makedirs(STDIO_HOME, mode=0o700, exist_ok=True)
+        st = os.lstat(STDIO_HOME)
+        if stat.S_ISDIR(st.st_mode) and (st.st_uid, st.st_gid) != (STDIO_UID, STDIO_GID):
+            os.chown(STDIO_HOME, STDIO_UID, STDIO_GID)
+    except OSError as exc:
+        logger.warning(f"[mcp] stdio home {STDIO_HOME} unavailable: {exc}")
+    return STDIO_HOME
+
+
 def stdio_launch(srv: MCPServer) -> Tuple[str, List[str]]:
-    """Command and arguments that start `srv` with exactly `stdio_spawn_env(srv)`."""
-    pairs = [f"{k}={v}" for k, v in stdio_spawn_env(srv).items()]
-    return STDIO_ENV_LAUNCHER, ["-i", "--", *pairs, srv.command, *srv.args]
+    """Command and arguments that start `srv` with exactly `stdio_spawn_env(srv)`.
+
+    A root agent starts it in three hops: `env -i` with the agent's PATH and LANG
+    and the unprivileged account's HOME; setpriv down to STDIO_UID (no groups, no
+    capabilities, `--no-new-privs` so no setuid binary regains them); then `env`
+    adding the server's own variables. Those come last so none of them (an
+    LD_PRELOAD, a PATH) reaches setpriv while it is still root, and a server
+    that names its own HOME still gets it.
+    """
+    own = [f"{k}={v}" for k, v in (srv.env or {}).items()]
+    if not stdio_drops_root():
+        pairs = [f"{k}={v}" for k, v in stdio_spawn_env(srv).items()]
+        return STDIO_ENV_LAUNCHER, ["-i", "--", *pairs, srv.command, *srv.args]
+    base = {k: os.environ[k] for k in STDIO_INHERITED_ENV if os.environ.get(k)}
+    base["HOME"] = _ensure_stdio_home()
+    return STDIO_ENV_LAUNCHER, [
+        "-i", "--", *(f"{k}={v}" for k, v in base.items()),
+        STDIO_PRIVDROP, *STDIO_PRIVDROP_ARGS, "--",
+        STDIO_ENV_LAUNCHER, "--", *own,
+        srv.command, *srv.args,
+    ]
 
 
 def to_mcp_servers_dict(
@@ -309,8 +359,8 @@ def to_mcp_servers_dict(
     Convert MCPServer list into the dict shape consumed by MultiServerMCPClient.
 
     Returns (config_dict, warnings). Disabled servers are skipped entirely.
-    Headers are passed through verbatim; a stdio server starts through `env -i`
-    with exactly `stdio_spawn_env(srv)`.
+    Headers are passed through verbatim; a stdio server starts as `stdio_launch`
+    builds it.
     """
     config: Dict[str, Dict[str, Any]] = {}
     warnings: List[ValidationError] = []

@@ -21,6 +21,7 @@ from orchestrator_helpers import create_config
 from orchestrator_helpers.chat_persistence import post_agent_decision, save_chat_message, update_conversation
 from decision_check import UNAVAILABLE as DECISION_CHECK_UNAVAILABLE, RunActor, authorize_decision, bind_run_actor
 from agent_in_the_loop.broker import get_broker
+from sandbox_runs import schedule_sandbox_stop
 
 
 def serialize_for_json(obj):
@@ -688,10 +689,17 @@ class WebSocketManager:
 
         # Cancel any in-flight tool/wave tasks for this session (keys are
         # "<session_key>|...", see _tool_task_key).
+        tools_cancelled = False
         for k, t in list(self._tool_tasks.items()):
             if k.startswith(f"{session_key}|") and t and not t.done():
                 t.cancel()
+                tools_cancelled = True
                 self._tool_tasks.pop(k, None)
+
+        # Cancelling only stops the agent waiting; the sandbox ends the run's
+        # processes itself (GHSA-8whg-rvcr-r88r).
+        if cancelled or tools_cancelled:
+            schedule_sandbox_stop(session_key.split(":", 2)[-1])
 
         conn = self.active_connections.get(session_key)
         if conn:
@@ -2334,6 +2342,7 @@ class WebSocketHandler:
             task.cancel()
             connection._is_stopped = True
             self.ws_manager.clear_task(session_key)
+            schedule_sandbox_stop(connection.session_id)
 
             # Get current state for the STOPPED message
             try:

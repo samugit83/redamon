@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from llm_guard import (master_key_is_weak, require_configured_master_auth,
                        require_internal_auth, require_internal_auth_only,
+                       require_master_auth_route_refuses_weak,
                        require_master_internal_auth, require_master_or_job_credential,
                        require_master_or_run_credential, run_credential_claims,
                        scan_job_ids, set_run_liveness)
@@ -2137,13 +2138,27 @@ async def test_mcp_server(server: dict):
         """
         if srv_obj.transport != "stdio" or not srv_obj.command:
             return None
+        import shutil
         import subprocess
-        # The server's own env and nothing of the agent's (NF-14), as the client spawn gets.
-        spawn_env = mcp_registry.stdio_spawn_env(srv_obj)
+        # Started exactly as the client spawn is: the server's own env and nothing
+        # of the agent's (NF-14), under the unprivileged uid (GHSA-8whg-rvcr-r88r).
+        launcher, launch_args = mcp_registry.stdio_launch(srv_obj)
+        spawn_path = mcp_registry.stdio_spawn_env(srv_obj).get("PATH")
+        # The launcher always exists, so a missing command would surface only as
+        # the launcher's exit code; name it the way a person can act on. A path
+        # (`./server.sh`) resolves against the server's cwd, so only a bare name
+        # is looked up here.
+        if "/" not in srv_obj.command and \
+                shutil.which(srv_obj.command, path=spawn_path) is None:
+            return (
+                f"command not found: '{srv_obj.command}'. Is it installed in "
+                f"the agent container? (e.g. for npx-based MCPs ensure node, "
+                f"for uvx ensure uv)"
+            )
         try:
             proc = subprocess.Popen(
-                [srv_obj.command, *list(srv_obj.args or [])],
-                env=spawn_env,
+                [launcher, *launch_args],
+                env={},
                 cwd=srv_obj.cwd or None,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -4274,9 +4289,8 @@ async def graph_triage(body: GraphTriageRequest):
     outside the LLM rate-limit bucket: these are cheap graph operations, not
     billed LLM calls.
     """
-    # `require_master_internal_auth` fails open with no key so a bare dev
-    # install still boots. This route writes suppression and verdict state, so
-    # it refuses for itself instead of accepting unauthenticated callers.
+    # The dependency already refuses a keyless agent; this keeps the
+    # `not_configured` code for a direct call of the handler.
     if master_key_is_weak():
         # `code`: refused before any graph work, so the webapp can report a
         # write as not done rather than as an unknown outcome.
@@ -4700,15 +4714,15 @@ class MultiMuteSuggestRequest(BaseModel):
 
 
 @app.post("/graph/multi-mute/suggest", tags=["Graph"],
-          dependencies=[Depends(require_master_internal_auth), Depends(require_internal_auth)])
+          dependencies=[Depends(require_master_auth_route_refuses_weak), Depends(require_internal_auth)])
 async def multi_mute_suggest(body: MultiMuteSuggestRequest):
     """Suggest findings like the seed, grouped, for a person to confirm."""
     from multi_mute import service as multi_mute_service
 
     model = (body.model or "").strip()
-    # Stricter than the master-key dependency, which fails open on a dev install
-    # with no key: this spends a user's LLM keys and reads their whole findings
-    # pool, so it refuses for itself.
+    # A keyless agent reaches this handler (its dependency leaves that case
+    # here): answering with the `multi_mute` marker lets the webapp say "not
+    # configured" instead of "agent outdated".
     if master_key_is_weak():
         return JSONResponse(status_code=503, content={
             "error": "INTERNAL_API_KEY is not configured; Multi mute is disabled. "
