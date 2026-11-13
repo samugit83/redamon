@@ -41,6 +41,7 @@ if str(_AGENTIC_DIR) not in sys.path:
 
 import decision_check  # noqa: E402
 from decision_check import DecisionCheck, RunActor, authorize_unasked, run_actor_holds  # noqa: E402
+from writer_check import WriterCheck  # noqa: E402
 
 try:
     import project_settings as ps  # noqa: E402
@@ -531,7 +532,9 @@ class EveryRunBindsItsActor(unittest.TestCase):
             await asyncio.wait_for(conn._active_task, 5)
             return decision_check.current_run_actor.get()
 
+        # The per-run writer check (step 5.11 follow-up) is test_run_writer_check.py's; here it allows.
         with mock.patch.object(websocket_api, "update_conversation", AsyncMock()), \
+                mock.patch.object(websocket_api, "second_writer_check", AsyncMock(return_value=WriterCheck(allowed=True))), \
                 mock.patch.object(websocket_api, "save_chat_message", AsyncMock(return_value=None)):
             outside = asyncio.run(main())
         self.assertEqual(seen["actor"], RunActor(user_id="collab-B", tenant_id="owner-A", project_id="p1",

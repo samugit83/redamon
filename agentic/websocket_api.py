@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 from orchestrator_helpers import create_config
 from orchestrator_helpers.chat_persistence import post_agent_decision, save_chat_message, update_conversation
 from decision_check import UNAVAILABLE as DECISION_CHECK_UNAVAILABLE, RunActor, authorize_decision, bind_run_actor
+from writer_check import WRITER_BUSY, second_writer_check
 from agent_in_the_loop.broker import get_broker
 from sandbox_runs import schedule_sandbox_stop
 
@@ -1721,6 +1722,32 @@ class WebSocketHandler:
         })
         return True
 
+    async def _refused_second_writer(self, connection: WebSocketConnection, start: str,
+                                     answer: Optional[str] = None) -> bool:
+        """Refuse to start a run while another person writes the project (step 5.11 follow-up).
+
+        The ticket was refused at socket open while someone else wrote the project, but runs start
+        over the socket for as long as it stays open, so each start asks the webapp again for the
+        ticket's person (writer_check). Asked after the decision checks and before anything runs or
+        is saved: a refused answer leaves its request open, and the frame names it (`answer`) so the
+        drawer puts its card back. The frame carries the webapp's 409 as the ticket refusal does:
+        its sentence and `busy`, naming who holds the project. True when refused (the frame is sent).
+        """
+        check = await second_writer_check(
+            user_id=connection.user_id, tenant_id=connection.tenant_id or connection.user_id,
+            project_id=connection.project_id, session_id=connection.session_id,
+            actor_id=connection.actor_id, start=start)
+        if check.allowed:
+            return False
+        await connection.send_message(MessageType.ERROR, {
+            "message": check.message,
+            "code": WRITER_BUSY,
+            "busy": check.busy,
+            **({"answer": answer} if answer else {}),
+            "recoverable": True,
+        })
+        return True
+
     def _record_decision(self, connection: WebSocketConnection, callback: 'StreamingCallback',
                          kind: str, row: str, data: dict):
         """An admitted answer: saved with who gave it, and posted for the audit row.
@@ -1891,6 +1918,8 @@ class WebSocketHandler:
                     "recoverable": False
                 })
                 return
+            if await self._refused_second_writer(connection, "query"):
+                return
 
             # Create streaming callback with ws_manager for dynamic connection resolution
             callback = StreamingCallback(connection, self.ws_manager)
@@ -1967,6 +1996,8 @@ class WebSocketHandler:
                 return
             if await self._refused_now(connection, "agent:approve_phase", answer="approval"):
                 return
+            if await self._refused_second_writer(connection, "approval", answer="approval"):
+                return
 
             callback = StreamingCallback(connection, self.ws_manager)
             connection._is_stopped = False
@@ -2038,6 +2069,8 @@ class WebSocketHandler:
                 })
                 return
             if await self._refused_now(connection, "agent:chat", answer="question"):
+                return
+            if await self._refused_second_writer(connection, "question", answer="question"):
                 return
 
             callback = StreamingCallback(connection, self.ws_manager)
@@ -2174,6 +2207,8 @@ class WebSocketHandler:
             if await self._refused_without(connection, *needs, answer="tool_confirmation"):
                 return
             if await self._refused_now(connection, *needs, answer="tool_confirmation", mode=mode):
+                return
+            if await self._refused_second_writer(connection, "tool_confirmation", answer="tool_confirmation"):
                 return
 
             callback = StreamingCallback(connection, self.ws_manager)
@@ -2433,6 +2468,9 @@ class WebSocketHandler:
                 "message": "No stopped execution to resume",
                 "recoverable": True,
             })
+            return
+        # Before the stopped flag clears, so a refused resume can be asked again.
+        if await self._refused_second_writer(connection, "resume"):
             return
 
         connection._is_stopped = False

@@ -44,6 +44,7 @@ except Exception:  # pragma: no cover - only outside the agent image
 if _HAVE:
     from websocket_api import WebSocketConnection, WebSocketHandler, WebSocketManager  # noqa: E402
     from ws_ticket import AGENT_CAPS  # noqa: E402
+    from writer_check import WriterCheck  # noqa: E402
 
 KEY = "uB:pB:sB"
 BOUND_S = 5
@@ -208,6 +209,8 @@ class AtDecisionTime(unittest.TestCase):
         self.resolve = mock.Mock(return_value=True)
         for p in (
             mock.patch.object(websocket_api, "authorize_decision", self.check),
+            # The per-run writer check (step 5.11 follow-up) is test_run_writer_check.py's; here it allows.
+            mock.patch.object(websocket_api, "second_writer_check", mock.AsyncMock(return_value=WriterCheck(allowed=True))),
             mock.patch.object(websocket_api, "save_chat_message", self.saved),
             mock.patch.object(websocket_api, "post_agent_decision", self.posted),
             mock.patch.object(websocket_api, "update_conversation", self.running),
