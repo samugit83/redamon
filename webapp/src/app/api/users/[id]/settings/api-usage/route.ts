@@ -17,7 +17,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getEffectiveUser, getSession, isInternalRequest, isScannerRequest } from '@/lib/session'
-import { visibleProjectsWhere } from '@/lib/authz/visibleProjects'
+import { ownedProjectsWhere } from '@/lib/authz/visibleProjects'
 import { writeAudit } from '@/lib/audit'
 import { readJsonBody } from '@/lib/jsonBody'
 import { safeErrorCode } from '@/lib/routeErrors'
@@ -52,20 +52,21 @@ async function authorize(request: NextRequest, id: string): Promise<NextResponse
 }
 
 /**
- * Scans and agent runs in flight on the projects THIS user sees (visibleProjects.ts),
+ * Scans and agent runs in flight on the projects THIS user owns (ownedProjectsWhere: a shared
+ * project's runs spend its owner's keys, not this user's),
  * scoped server-side: never ids from the request, and never the kali
  * sandbox's session list (it spans every user and is the wrong kind of session).
  */
 async function loadActivity(userId: string): Promise<UserActivity> {
   const [scans, convs] = await Promise.all([
     prisma.scanJob.findMany({
-      where: { status: 'running', project: visibleProjectsWhere({ userId }) },
+      where: { status: 'running', project: ownedProjectsWhere({ userId }) },
       select: { projectId: true, kind: true, startedAt: true, project: { select: { name: true } } },
       orderBy: { createdAt: 'asc' },
       take: 20,
     }),
     prisma.conversation.findMany({
-      where: { agentRunning: true, project: visibleProjectsWhere({ userId }) },
+      where: { agentRunning: true, project: ownedProjectsWhere({ userId }) },
       select: { projectId: true, project: { select: { name: true } } },
       distinct: ['projectId'],
       take: 20,

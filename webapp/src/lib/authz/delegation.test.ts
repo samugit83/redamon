@@ -83,7 +83,7 @@ const rowPolicy = vi.mocked(ownsRow)
 
 /** What projectAccess() answers for a project the caller may reach (the owner's id stays the owner's). */
 function granted(id: string, ownerId: string): ProjectAccess {
-  return Object.freeze({ project: Object.freeze({ id, userId: ownerId }), level: 'owner' as const })
+  return Object.freeze({ project: Object.freeze({ id, userId: ownerId }), level: 'owner' as const, toggles: Object.freeze({ rawData: true }), via: 'owner' as const })
 }
 
 beforeEach(() => {
@@ -242,6 +242,43 @@ describe('the MCP and plugin helpers, which no route permission backs, need the 
   test("the Gateway's tenancy: a project reached below the owner level is a 404, the handler not run", async () => {
     const handler = vi.fn(async () => ({ ok: true }))
     policy.mockResolvedValueOnce(shared)
+    const r = await answer(await withGateway(gatewayRequest('x', {}, { token: await token({ prj: BOB_PROJECT, ses: undefined, conv: undefined }) }), { op: 'x' }, handler))
+    expect(r.status).toBe(404)
+    expect(handler).not.toHaveBeenCalled()
+  })
+})
+
+// Step 4.3: the answers projectAccess() now gives below the owner, as it builds them. Each of these
+// helpers asks meetsLevel(access, 'O'), which no share, break-glass or oversight reaches, so they
+// stay the owner's (4.10 opens MCP to shares by its own opt-in; plugin actions stay the owner's).
+describe.each([
+  ['a read share', 'share', false],
+  ['a share with Raw data & files', 'share', true],
+  ['a break-glass read', 'break_glass', true],
+  ['oversight', 'oversight', false],
+])('the owner-only helpers refuse %s (step 4.3)', (_what, via, rawData) => {
+  const below = (): ProjectAccess => Object.freeze({
+    project: Object.freeze({ id: BOB_PROJECT, userId: BOB }), level: 'read', toggles: Object.freeze({ rawData }), via,
+  }) as ProjectAccess
+
+  test('assertMcpProjectAccess: McpAccessDenied', async () => {
+    policy.mockResolvedValueOnce(below())
+    await expect(assertMcpProjectAccess(ALICE, BOB_PROJECT)).rejects.toThrow(new McpAccessDenied())
+  })
+
+  test('ownsScope: not owned', async () => {
+    policy.mockResolvedValueOnce(below())
+    expect(await ownsScope({ type: 'project', id: BOB_PROJECT }, ALICE)).toBe(false)
+  })
+
+  test('strictContext: 404', async () => {
+    policy.mockResolvedValueOnce(below())
+    expect(status(await strictContext({ projectId: BOB_PROJECT }, ALICE))).toBe(404)
+  })
+
+  test("the Gateway's tenancy: 404, the handler not run", async () => {
+    const handler = vi.fn(async () => ({ ok: true }))
+    policy.mockResolvedValueOnce(below())
     const r = await answer(await withGateway(gatewayRequest('x', {}, { token: await token({ prj: BOB_PROJECT, ses: undefined, conv: undefined }) }), { op: 'x' }, handler))
     expect(r.status).toBe(404)
     expect(handler).not.toHaveBeenCalled()

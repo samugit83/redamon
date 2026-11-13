@@ -94,6 +94,14 @@ describe('a triage run starts on a project the policy lets the actor see, at the
     vi.mocked(projectAccess).mockResolvedValueOnce(access('p-bob', 'bob', 'read'))
     expect(await refuseTriageStart('p-bob', 'alice')).toEqual({ reason: 'Not found' })
   })
+
+  test.each([['share', false], ['share', true], ['break_glass', true], ['oversight', false]] as const)(
+    'step 4.3: a read access through %s (raw data %s), as projectAccess() builds it, does not start one',
+    async (via, rawData) => {
+      vi.mocked(projectAccess).mockResolvedValueOnce({ project: { id: 'p-bob', userId: 'bob' }, level: 'read', toggles: { rawData }, via })
+      expect(await refuseTriageStart('p-bob', 'alice')).toEqual({ reason: 'Not found' })
+    },
+  )
 })
 
 describe('a mute-rule preset is its owner\'s row (ownsRow)', () => {
@@ -122,7 +130,7 @@ describe('the "my projects" lists go by visibleProjectsWhere', () => {
   const SEEN = { id: { in: ['p-bob'] } }
 
   test('the project list', async () => {
-    vi.mocked(visibleProjectsWhere).mockReturnValueOnce(SEEN)
+    vi.mocked(visibleProjectsWhere).mockResolvedValueOnce(SEEN)
     const rows = await (await listProjects()).json() as Array<{ id: string }>
     expect(rows.map((r) => r.id)).toEqual(['p-bob'])
     expect(visibleProjectsWhere).toHaveBeenCalledWith({ userId: 'alice' })
@@ -131,7 +139,7 @@ describe('the "my projects" lists go by visibleProjectsWhere', () => {
   test('the reports, by their project', async () => {
     const findMany = vi.fn(async () => [])
     h.db = { ...h.db, report: { findMany } }
-    vi.mocked(visibleProjectsWhere).mockReturnValueOnce(SEEN)
+    vi.mocked(visibleProjectsWhere).mockResolvedValueOnce(SEEN)
     expect((await listReports(new NextRequest('http://x/api/reports'))).status).toBe(200)
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { project: SEEN } }))
   })
@@ -146,9 +154,11 @@ describe('the "my projects" lists go by visibleProjectsWhere', () => {
       scanJob: { findMany: scanFind, count: scanCount },
       project: { findMany: projectFind },
     }
-    vi.mocked(visibleProjectsWhere).mockReturnValueOnce(SEEN).mockReturnValueOnce(SEEN).mockReturnValueOnce(SEEN)
+    // One filter per request (step 4.3: it may read the sharing policy), used by all three reads.
+    vi.mocked(visibleProjectsWhere).mockResolvedValueOnce(SEEN)
     expect((await jobsView(new NextRequest('http://redamon.test/api/system/jobs'))).status).toBe(200)
-    expect(visibleProjectsWhere).toHaveBeenCalledTimes(3)
+    expect(visibleProjectsWhere).toHaveBeenCalledTimes(1)
+    expect(visibleProjectsWhere).toHaveBeenCalledWith({ userId: 'alice' })
     expect(scanFind).toHaveBeenCalledWith(expect.objectContaining({ where: { status: 'running', project: SEEN } }))
     expect(scanCount).toHaveBeenCalledWith({ where: { status: 'running', project: { NOT: SEEN } } })
     expect(projectFind).toHaveBeenCalledWith(expect.objectContaining({ where: SEEN }))

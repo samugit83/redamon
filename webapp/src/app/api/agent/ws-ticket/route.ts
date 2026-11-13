@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthzIdentity, type AuthzIdentity } from '@/lib/session'
-import { requireProjectAccess } from '@/lib/access'
+import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
 import { requirePermission } from '@/lib/authz/guards'
 import { createWsTicket } from '@/lib/auth'
 import { assertGraphNotActivating } from '@/lib/activationLock'
@@ -12,13 +12,24 @@ import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools
 import { agentTicketCap } from '@/lib/authz/agentCap'
 import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 
-/** The signed-in person, read fresh, when the effective user may see the project a terminal ticket names. */
+/**
+ * The signed-in person, read fresh, when the effective user owns the project a terminal ticket
+ * names. The owner only (step 4.3), as for the MCP and plugin checks no route permission backs:
+ * the terminal's run credential takes the ticket's `sub` as the graph tenant (T15), which for a
+ * collaborator would be the wrong one, until step 5.3 gives the ticket its tenant.
+ */
 async function terminalIdentity(projectId: string): Promise<AuthzIdentity | NextResponse> {
   const identity = await getAuthzIdentity({ fresh: true })
   if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const access = await requireProjectAccess({ userId: (identity.actingAs ?? identity.principal).id }, projectId)
-  return access instanceof NextResponse ? access : identity
+  const access = await projectAccess({ userId: (identity.actingAs ?? identity.principal).id }, projectId, { fresh: true })
+  if (!access) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (!meetsLevel(access, 'O')) {
+    return NextResponse.json({ error: TERMINAL_OWNER_ONLY, code: 'owner_only', permission: 'platform:kali_terminal' }, { status: 403 })
+  }
+  return identity
 }
+
+const TERMINAL_OWNER_ONLY = "Only the project's owner can open the Kali terminal on it."
 
 const TERMINAL_REFUSED =
   'The Kali terminal is open to whoever holds platform:kali_terminal, and to accounts that kept it at the upgrade.'

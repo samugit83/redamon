@@ -46,7 +46,7 @@ function context(permission: PermissionId, effective: EffectiveUser, project: { 
     effective,
     permission,
     capabilities: { ...HOLDS_ALL, userId: effective.userId } as Capabilities,
-    access: project ? { project, level: 'owner' } : null,
+    access: project ? { project, level: 'owner', toggles: { rawData: true }, via: 'owner' } : null,
   } as unknown as PermissionContext
 }
 

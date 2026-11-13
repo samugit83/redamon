@@ -37,7 +37,7 @@ export async function GET() {
     if (eff instanceof NextResponse) return eff
 
     const projects = await prisma.project.findMany({
-      where: visibleProjectsWhere(eff),
+      where: await visibleProjectsWhere(eff),
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,

@@ -40,6 +40,14 @@ vi.mock('@/lib/authz/principal', () => ({
 vi.mock('@/lib/access', () => ({
   requireProjectAccess: (...a: unknown[]) => mockRequireProjectAccess(...a),
 }))
+// The terminal branch asks projectAccess() itself (step 4.3: the owner level). By default it
+// answers what the access double above answers, so every case keeps one project double: a refusal
+// is null, an allowed project the owner's access. A case sets `mockProjectAccess` for another answer.
+const mockProjectAccess = vi.fn()
+vi.mock('@/lib/authz/projectAccess', async (orig) => ({
+  ...(await orig<typeof import('@/lib/authz/projectAccess')>()),
+  projectAccess: (...a: unknown[]) => mockProjectAccess(...a),
+}))
 vi.mock('@/lib/auth', () => ({
   createWsTicket: (...a: unknown[]) => mockCreateWsTicket(...a),
 }))
@@ -97,6 +105,11 @@ beforeEach(() => {
   mockAgentCap.mockReset().mockResolvedValue(ALL_CAP)
   mockLoadPrincipal.mockReset()
   mockRequireProjectAccess.mockReset().mockResolvedValue({ project: { id: 'p', userId: 'real-user' } })
+  mockProjectAccess.mockReset().mockImplementation(async (subject: unknown, projectId: unknown) => {
+    const allowed = await mockRequireProjectAccess(subject, projectId)
+    if (allowed instanceof Response) return null
+    return { project: allowed.project, level: 'owner', toggles: { rawData: true }, via: 'owner' }
+  })
   mockCreateWsTicket.mockReset().mockResolvedValue('signed.ticket.value')
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
   mockCutoff.mockReset().mockResolvedValue({ createdAt: CUTOFF })
@@ -285,6 +298,31 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
     mockRequireProjectAccess.mockResolvedValue(NOT_FOUND)
     expect((await POST(terminal())).status).toBe(404)
     expect(mockLoadPrincipal).not.toHaveBeenCalled()
+  })
+
+  test('the project is asked of the effective user at the owner level, read fresh (step 4.3)', async () => {
+    signedIn(principal('admin-1', 'admin'), 'member-new')
+    expect((await POST(terminal())).status).toBe(200)
+    expect(mockProjectAccess).toHaveBeenCalledWith({ userId: 'member-new' }, 'p', { fresh: true })
+  })
+
+  test.each([
+    ['a read share', 'share', false],
+    ['a read share with Raw data', 'share', true],
+    ['oversight', 'oversight', false],
+    ['break-glass', 'break_glass', true],
+  ])('a read collaborator gets no terminal ticket on the shared project: %s is 403 owner_only, before the grant is read', async (_what, via, rawData) => {
+    // An admin holds the terminal: the refusal is the access level's, not the platform tool's.
+    signedIn(principal('admin-1', 'admin'))
+    mockProjectAccess.mockResolvedValue({ project: { id: 'p', userId: 'someone-else' }, level: 'read', toggles: { rawData }, via })
+    const res = await POST(terminal())
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({
+      error: "Only the project's owner can open the Kali terminal on it.", code: 'owner_only', permission: 'platform:kali_terminal',
+    })
+    expect(mockLoadPrincipal).not.toHaveBeenCalled()
+    expect(mockCreateWsTicket).not.toHaveBeenCalled()
+    expect(mockWriteAudit).not.toHaveBeenCalled()
   })
 
   test('a real account that is gone answers 401', async () => {

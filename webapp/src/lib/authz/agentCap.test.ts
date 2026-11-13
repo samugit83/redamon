@@ -30,6 +30,14 @@ vi.mock('@/lib/prisma', () => ({
     instanceSettings: { findUnique: () => instanceFindUnique() },
     permissionSet: { findMany: async () => [] },
     project: { findUnique: (a: { where: { id: string } }) => projectFindUnique(a) },
+    // Step 4.3: bob holds a share of alice's project with Raw data, at the stored `write` level.
+    projectCollaborator: {
+      findUnique: async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) =>
+        where.projectId_userId.projectId === 'P-alice' && where.projectId_userId.userId === 'bob'
+          ? { access: 'write', rawData: true, expiresAt: null, user: { status: 'active' } }
+          : null,
+    },
+    projectBreakGlass: { findFirst: async () => null },
   },
 }))
 
@@ -110,6 +118,22 @@ describe('agentTicketCap (switch on)', () => {
     expect(await agentTicketCap(alone(member('alice')), 'P-alice')).toEqual([...AGENT_TICKET_CAPS])
     db.instance = { ...db.instance, defaultMemberSetId: 'builtin:recon-operator' }
     expect(await agentTicketCap(alone(member('alice')), 'P-alice')).toEqual(['agent:fireteam'])
+  })
+})
+
+describe('agentTicketCap on a shared project (step 4.3): a read share holds none', () => {
+  beforeEach(() => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true })
+    db.instance = { ...db.instance, sharingPolicy: { enabled: true } }
+  })
+
+  test('each of the four needs a write level, which a share at read (even with Raw data) never reaches', async () => {
+    for (const p of AGENT_TICKET_CAPS) expect([p, ['W+A', 'W+X'].includes(PERMISSIONS[p].level as string)]).toEqual([p, true])
+    // bob holds all four as a Default member and sees the project through the share: still none.
+    expect(await agentTicketCap(alone(member('bob')), 'P-alice')).toEqual([])
+    // An admin acting as bob gets none either; and oversight (the admin's own) never applies while acting.
+    expect(await agentTicketCap({ principal: admin('admin-1'), actingAs: member('bob') }, 'P-alice')).toEqual([])
+    expect(await agentTicketCap(alone(admin('admin-1')), 'P-alice')).toEqual([])
   })
 })
 

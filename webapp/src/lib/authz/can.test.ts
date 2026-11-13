@@ -25,7 +25,10 @@ const db = vi.hoisted(() => ({
   instance: null as Record<string, unknown> | null,
   sets: new Map<string, { id: string; kind: string; name: string; permissions: string[] }>(),
   failProjects: false,
+  shares: new Map<string, { access: string; rawData: boolean; expiresAt: Date | null; user: { status: string } | null }>(),
 }))
+const collaboratorFindUnique = vi.fn(async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) =>
+  db.shares.get(`${where.projectId_userId.projectId}|${where.projectId_userId.userId}`) ?? null)
 const userFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => db.users.get(where.id) ?? null)
 const instanceFindUnique = vi.fn(async () => (db.instance ? { ...db.instance } : null))
 const setFindMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
@@ -41,6 +44,8 @@ vi.mock('@/lib/prisma', () => ({
     instanceSettings: { findUnique: () => instanceFindUnique() },
     permissionSet: { findMany: (a: { where: { id: { in: string[] } } }) => setFindMany(a) },
     project: { findUnique: (a: { where: { id: string } }) => projectFindUnique(a) },
+    projectCollaborator: { findUnique: (a: Parameters<typeof collaboratorFindUnique>[0]) => collaboratorFindUnique(a) },
+    projectBreakGlass: { findFirst: async () => null },
   },
 }))
 
@@ -50,6 +55,8 @@ import { clearCapabilityCachesForTests, type CapabilityPrincipal } from './capab
 import { clearInstanceRootCacheForTests } from './root'
 import { clearPrincipalCacheForTests } from './principal'
 import { PERMISSIONS, PERMISSION_IDS, type PermissionId } from './permissions'
+
+const actsOnLevel = (p: PermissionId): boolean => PERMISSIONS[p].level !== null
 
 function member(id: string, over: Partial<CapabilityPrincipal> = {}): CapabilityPrincipal {
   return { id, role: 'standard', status: 'active', adminProfileId: null, legacyGrants: [], permissionSets: [], permissionOverrides: [], ...over }
@@ -69,7 +76,8 @@ beforeEach(() => {
   db.instance = { rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null, defaultMemberSetId: null }
   db.sets.clear()
   db.failProjects = false
-  for (const fn of [userFindUnique, instanceFindUnique, setFindMany, projectFindUnique]) fn.mockClear()
+  db.shares.clear()
+  for (const fn of [userFindUnique, instanceFindUnique, setFindMany, projectFindUnique, collaboratorFindUnique]) fn.mockClear()
   setFlagsForTests({ identity: true, permissions: true })
   vi.stubEnv('MCP_SERVER_ENABLED', 'true')
   vi.stubEnv('AGENT_IN_THE_LOOP_ENABLED', 'true')
@@ -88,7 +96,7 @@ describe('can(): capability and project access (PE-06)', () => {
     expect(d.allowed).toBe(true)
     if (!d.allowed) return
     expect(d.permission).toBe('recon:scan')
-    expect(d.access).toEqual({ project: { id: 'P-alice', userId: 'alice' }, level: 'owner' })
+    expect(d.access).toEqual({ project: { id: 'P-alice', userId: 'alice' }, level: 'owner', toggles: { rawData: true }, via: 'owner' })
     expect(d.capabilities.userId).toBe('alice')
     expect(d.capabilities.has('recon:scan')).toBe(true)
   })
@@ -338,5 +346,72 @@ describe('can() with fresh (a critical check)', () => {
     expect(await can(alice, 'recon:scan', { projectId: 'P-alice', fresh: true })).toMatchObject({ allowed: false, status: 403 })
     await can(admin('admin-1'), 'recon:read', { actingAs: alice, projectId: 'P-alice', fresh: true })
     expect(userFindUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('can() on a shared project (step 4.3; SH-02, SH-03, IM-07, D-22)', () => {
+  const share = (projectId: string, userId: string, over: Partial<{ access: string; rawData: boolean }> = {}) =>
+    db.shares.set(`${projectId}|${userId}`, { access: 'read', rawData: false, expiresAt: null, user: { status: 'active' }, ...over })
+
+  beforeEach(() => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true })
+    db.instance = { ...db.instance, sharingPolicy: { enabled: true } }
+  })
+
+  test('toggle and capability: a read share reaches the read permissions, R* only with Raw data, never a write', async () => {
+    share('P-alice', 'bob')
+    const read = await can(member('bob'), 'recon:read', { projectId: 'P-alice' })
+    expect(read).toMatchObject({ allowed: true, access: { project: { id: 'P-alice', userId: 'alice' }, level: 'read', toggles: { rawData: false }, via: 'share' } })
+    expect(await can(member('bob'), 'traffic:read', { projectId: 'P-alice' })).toMatchObject({ allowed: false, status: 403, reason: 'project_level', permission: 'traffic:read' })
+    for (const p of ['recon:scan', 'project:settings', 'agent:chat', 'project:delete', 'project:share'] as PermissionId[]) {
+      expect([p, await can(member('bob'), p, { projectId: 'P-alice' })]).toEqual([p, expect.objectContaining({ allowed: false, status: 403, reason: 'project_level' })])
+    }
+    share('P-alice', 'bob', { rawData: true })
+    expect((await can(member('bob'), 'traffic:read', { projectId: 'P-alice' })).allowed).toBe(true)
+    expect(await can(member('bob'), 'recon:scan', { projectId: 'P-alice' })).toMatchObject({ allowed: false, reason: 'project_level' })
+  })
+
+  test('each level still needs the capability: a share never grants a permission the person lacks', async () => {
+    share('P-alice', 'bob', { rawData: true })
+    const denied = member('bob', { permissionOverrides: [{ permission: 'traffic:read', effect: 'deny', expiresAt: null, reason: null }] })
+    expect(await can(denied, 'traffic:read', { projectId: 'P-alice' })).toMatchObject({ allowed: false, status: 403, reason: 'capability' })
+    const noAccess = member('bob', { permissionSets: ['builtin:no-access'] })
+    expect(await can(noAccess, 'recon:read', { projectId: 'P-alice' })).toMatchObject({ allowed: false, status: 403, reason: 'capability' })
+  })
+
+  test('every write level is refused to a read share, for every permission of the registry that needs one', async () => {
+    share('P-alice', 'bob', { access: 'write', rawData: true })
+    const writes = PERMISSION_IDS.filter((p) => actsOnLevel(p) && !['R', 'R*'].includes(PERMISSIONS[p].level as string))
+    expect(writes.length).toBeGreaterThan(20)
+    for (const p of writes) {
+      const d = await can(member('bob'), p, { projectId: 'P-alice' })
+      expect([p, d.allowed]).toEqual([p, false])
+    }
+  })
+
+  test('oversight: an admin reads any project at R, no raw data and no write', async () => {
+    const d = await can(admin('admin-1'), 'recon:read', { projectId: 'P-bob' })
+    expect(d).toMatchObject({ allowed: true, access: { level: 'read', toggles: { rawData: false }, via: 'oversight' } })
+    expect(await can(admin('admin-1'), 'traffic:read', { projectId: 'P-bob' })).toMatchObject({ allowed: false, reason: 'project_level' })
+    expect(await can(admin('admin-1'), 'recon:scan', { projectId: 'P-bob' })).toMatchObject({ allowed: false, reason: 'project_level' })
+  })
+
+  test('act-as via share is read-only: the account acted as reaches the shared project at read, never more', async () => {
+    share('P-alice', 'bob', { access: 'write', rawData: true })
+    const opts = { actingAs: member('bob'), projectId: 'P-alice' }
+    expect(await can(admin('admin-1'), 'recon:read', opts)).toMatchObject({ allowed: true, access: { level: 'read', via: 'share' } })
+    expect(await can(admin('admin-1'), 'project:settings', opts)).toMatchObject({ allowed: false, status: 403, reason: 'project_level' })
+    expect(await can(admin('admin-1'), 'recon:scan', opts)).toMatchObject({ allowed: false, status: 403, reason: 'project_level' })
+  })
+
+  test("the acting admin's own oversight never applies while acting (D-22): a project the account acted as cannot see is 404", async () => {
+    expect((await can(admin('admin-1'), 'recon:read', { projectId: 'P-bob' })).allowed).toBe(true)
+    expect(await can(admin('admin-1'), 'recon:read', { actingAs: member('carol'), projectId: 'P-bob' }))
+      .toEqual({ allowed: false, status: 404, reason: 'project_not_visible', permission: 'recon:read' })
+  })
+
+  test('the people are still the caller\'s read: oversight uses the principal can() was given, no account read', async () => {
+    await can(admin('admin-1'), 'recon:read', { projectId: 'P-bob', fresh: true })
+    expect(userFindUnique).not.toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'admin-1' } }))
   })
 })

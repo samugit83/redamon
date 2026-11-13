@@ -115,7 +115,7 @@ describe('requirePermission', () => {
     expect(ctx.actingAs).toBeNull()
     expect(ctx.effective).toEqual({ userId: 'alice' })
     expect(ctx.permission).toBe('recon:scan')
-    expect(ctx.access).toEqual({ project: { id: 'P-alice', userId: 'alice' }, level: 'owner' })
+    expect(ctx.access).toEqual({ project: { id: 'P-alice', userId: 'alice' }, level: 'owner', toggles: { rawData: true }, via: 'owner' })
     expect(ctx.capabilities.has('recon:scan')).toBe(true)
   })
 
@@ -311,7 +311,7 @@ describe('withPermission', () => {
     const ok = await route(request(), ctxFor('P-alice'))
     expect(ok.status).toBe(200)
     expect(await ok.json()).toEqual({ who: 'alice' })
-    expect(handler.mock.calls[0][2].access).toEqual({ project: { id: 'P-alice', userId: 'alice' }, level: 'owner' })
+    expect(handler.mock.calls[0][2].access).toEqual({ project: { id: 'P-alice', userId: 'alice' }, level: 'owner', toggles: { rawData: true }, via: 'owner' })
 
     const refused = await route(request(), ctxFor('P-bob'))
     expect(refused.status).toBe(404)

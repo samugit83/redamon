@@ -172,6 +172,8 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
   if (eff instanceof NextResponse) return eff
 
   try {
+    // One filter for the three reads below, so they agree on what "mine" is.
+    const mineWhere = await visibleProjectsWhere(eff)
     const [
       mine, recent, othersActive, othersNeedsReview, runningScans, othersRunningScans,
       myProjects, liveScans,
@@ -200,17 +202,17 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
       // Scoped by the projects the operator sees, not by initiator: a scan the agent
       // or a schedule started has no initiator, and it is still this operator's scan.
       prisma.scanJob.findMany({
-        where: { status: 'running', project: visibleProjectsWhere(eff) },
+        where: { status: 'running', project: mineWhere },
         orderBy: { startedAt: 'desc' },
         select: SCAN_SELECT,
       }),
       prisma.scanJob.count({
-        where: { status: 'running', project: { NOT: visibleProjectsWhere(eff) } },
+        where: { status: 'running', project: { NOT: mineWhere } },
       }),
       // Which projects are mine, so a live scan can be attributed without a second
       // round trip per row.
       prisma.project.findMany({
-        where: visibleProjectsWhere(eff),
+        where: mineWhere,
         select: { id: true, name: true },
       }),
       // Every kind the orchestrator is holding right now. Best effort: if it is

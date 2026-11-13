@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     const eff = auth.effective
 
     const reports = await prisma.report.findMany({
-      where: { project: visibleProjectsWhere(eff) },
+      where: { project: await visibleProjectsWhere(eff) },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
