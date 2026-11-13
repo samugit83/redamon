@@ -174,7 +174,7 @@ export async function sweepExpired(): Promise<SweepResult> {
   const failed: SweepPart[] = []
   const ended: ShareEnded[] = []
 
-  const run = async (part: SweepPart, sweep: () => Promise<number>) => {
+  const run = async (part: Exclude<SweepPart, 'auditRetention'>, sweep: () => Promise<number>) => {
     try {
       removed[part] = await sweep()
     } catch (err) {
