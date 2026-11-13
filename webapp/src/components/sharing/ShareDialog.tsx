@@ -9,7 +9,7 @@ import { ApiError, errorMessage, fetchJson, toApiError } from '@/lib/apiError'
 import type { ShareView } from '@/lib/authz/projectShares'
 import { AccessPicker, termsOf, type AccessChoice } from './AccessPicker'
 import { CollaboratorList, displayName, type SharePatch } from './CollaboratorList'
-import { TransferSection } from '@/components/projects/ProjectTransfer/TransferSection'
+import { TransferSection } from '@/components/projects/OwnershipTransfer/TransferSection'
 import {
   NOTE_MAX_CHARS,
   RAW_DATA_WARNING,

@@ -8,7 +8,7 @@ import { useAuth } from '@/providers/AuthProvider'
 import { fetchJson, toApiError } from '@/lib/apiError'
 import type { ClearedView, TransferView } from '@/lib/authz/ownershipTransfer'
 import { FINDING_IDS_NOTE, PROJECT_TRANSFER_CHANGED_EVENT, ROLE_TEXT, clearedLine, personName, untilDate } from './transferText'
-import styles from './ProjectTransfer.module.css'
+import styles from './OwnershipTransfer.module.css'
 
 interface Feed {
   incoming: TransferView[]
