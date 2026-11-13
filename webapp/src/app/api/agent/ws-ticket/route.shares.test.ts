@@ -3,7 +3,8 @@
  * & files, mints no ticket. The chat socket needs `agent:chat` (W+A), CypherFix triage `triage:run`
  * and CodeFix `codefix:run` (write levels too), which a share at read never reaches; the Kali
  * terminal needs the owner level (its run credential takes the ticket's `sub` as the graph tenant,
- * T15). The owner keeps every ticket, the agent's with its `cap`.
+ * T15; step 5.2 lifts it to Exploitation & shells, W+X: route.terminal.test.ts). The owner keeps every
+ * ticket, the agent's with its `cap`.
  *
  * Real guard, can(), projectAccess(), sharing policy reader, capabilities and agentTicketCap; the
  * session (getAuthzIdentity), Prisma, the ticket signer and the activation lock are doubles.
@@ -114,7 +115,11 @@ describe('a read collaborator mints no ticket on the shared project (step 4.3)',
     signedInAs(account('bob', { legacyGrants: ['kali_terminal'] }))
     const res = await post('kali-terminal')
     expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: "Only the project's owner can open the Kali terminal on it.", code: 'owner_only', permission: 'platform:kali_terminal' })
+    // Step 5.2 lifted the owner hold to W+X (Exploitation & shells): a read share stays out of it, named by level.
+    expect(await res.json()).toEqual({
+      error: "Opening the Kali terminal on this project needs Exploitation & shells on it: the project's owner, or a collaborator whose share includes it.",
+      code: 'forbidden', permission: 'platform:kali_terminal', level: 'W+X',
+    })
     expect(h.createWsTicket).not.toHaveBeenCalled()
     expect(h.writeAudit).not.toHaveBeenCalled()
   })

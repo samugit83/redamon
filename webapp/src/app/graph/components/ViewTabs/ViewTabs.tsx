@@ -267,10 +267,10 @@ export const ViewTabs = memo(function ViewTabs({
   // permission, so the tab stays and the ticket route answers.
   const canOpenTerminal = useCan('platform:kali_terminal')
   const sharedToolsCompat = useRbacFlags()?.sharedToolsCompat === true
-  // The terminal's ticket asks the owner level of the open project (its run credential takes the ticket's
-  // account as the graph tenant): a shared project never offers it (step 4.11). No myAccess (sharing
-  // off): the owner's own project, as before.
-  const terminalForThisProject = myAccessMeets(useProjectAccess(), 'O')
+  // The terminal's ticket asks Exploitation & shells (W+X) on the open project (step 5.2): the owner, or
+  // a Read + Write share with that toggle; a read share never offers it (step 4.11). No myAccess
+  // (sharing off): the owner's own project, as before.
+  const terminalForThisProject = myAccessMeets(useProjectAccess(), 'W+X')
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [tableMenuOpen, setTableMenuOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)

@@ -302,10 +302,11 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
     expect(mockLoadPrincipal).not.toHaveBeenCalled()
   })
 
-  test('the project is asked of the effective user at the owner level, read fresh (step 4.3)', async () => {
+  test('the project is asked of the effective user, read fresh, as the account acted as (step 4.3; D-22 since step 5.2)', async () => {
     signedIn(principal('admin-1', 'admin'), 'member-new')
     expect((await POST(terminal())).status).toBe(200)
-    expect(mockProjectAccess).toHaveBeenCalledWith({ userId: 'member-new' }, 'p', { fresh: true })
+    // Under act-as the account's share reaches read only (step 5.2 lifted the terminal to W+X).
+    expect(mockProjectAccess).toHaveBeenCalledWith({ userId: 'member-new' }, 'p', { fresh: true, actingAs: true })
   })
 
   test.each([
@@ -313,14 +314,16 @@ describe('the Kali terminal needs the terminal grant (HD-04)', () => {
     ['a read share with Raw data', 'share', true],
     ['oversight', 'oversight', false],
     ['break-glass', 'break_glass', true],
-  ])('a read collaborator gets no terminal ticket on the shared project: %s is 403 owner_only, before the grant is read', async (_what, via, rawData) => {
+  ])('a read collaborator gets no terminal ticket on the shared project: %s is 403 below W+X, before the grant is read', async (_what, via, rawData) => {
     // An admin holds the terminal: the refusal is the access level's, not the platform tool's.
     signedIn(principal('admin-1', 'admin'))
     mockProjectAccess.mockResolvedValue({ project: { id: 'p', userId: 'someone-else' }, level: 'read', toggles: { rawData }, via })
     const res = await POST(terminal())
     expect(res.status).toBe(403)
+    // Step 5.2: the hold is Exploitation & shells (W+X), not the owner level; the refusal names it.
     expect(await res.json()).toEqual({
-      error: "Only the project's owner can open the Kali terminal on it.", code: 'owner_only', permission: 'platform:kali_terminal',
+      error: "Opening the Kali terminal on this project needs Exploitation & shells on it: the project's owner, or a collaborator whose share includes it.",
+      code: 'forbidden', permission: 'platform:kali_terminal', level: 'W+X',
     })
     expect(mockLoadPrincipal).not.toHaveBeenCalled()
     expect(mockCreateWsTicket).not.toHaveBeenCalled()

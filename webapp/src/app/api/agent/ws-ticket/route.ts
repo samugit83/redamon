@@ -14,23 +14,33 @@ import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
 import { secondWriterResponse } from '@/lib/authz/projectWriters'
 
 /**
- * The signed-in person, read fresh, and the effective user's access, when they own the project a
- * terminal ticket names. The owner only (step 4.3), as for the MCP and plugin checks no route
- * permission backs. The ticket now names the project's owner as the tenant the terminal's run
- * credential takes (`ten`, step 5.3); the hold stays until the level table opens `W+X` (step 5.2).
+ * The signed-in person, read fresh, and the effective user's access, when it reaches Exploitation &
+ * shells (`W+X`) on the project a terminal ticket names: the owner, or a collaborator whose Read +
+ * Write share has that toggle (step 5.2; held at the owner by step 4.3 until the ticket named the
+ * owner as the tenant the terminal's shell and run credential take, `ten`, step 5.3). Under act-as
+ * the account's share reaches read and never more (D-22), as can() decides it. No route permission
+ * backs this level, so it is checked here, beside the platform tool below.
  */
 async function terminalIdentity(projectId: string): Promise<{ identity: AuthzIdentity; access: ProjectAccess } | NextResponse> {
   const identity = await getAuthzIdentity({ fresh: true })
   if (!identity) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const access = await projectAccess({ userId: (identity.actingAs ?? identity.principal).id }, projectId, { fresh: true })
+  const acting = identity.actingAs !== null && identity.actingAs.id !== identity.principal.id
+  const access = await projectAccess({ userId: (identity.actingAs ?? identity.principal).id }, projectId, {
+    fresh: true, ...(acting ? { actingAs: true } : {}),
+  })
   if (!access) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (!meetsLevel(access, 'O')) {
-    return NextResponse.json({ error: TERMINAL_OWNER_ONLY, code: 'owner_only', permission: 'platform:kali_terminal' }, { status: 403 })
+  if (!meetsLevel(access, 'W+X')) {
+    return NextResponse.json(
+      { error: TERMINAL_LEVEL, code: 'forbidden', permission: 'platform:kali_terminal', level: 'W+X' },
+      { status: 403 },
+    )
   }
   return { identity, access }
 }
 
-const TERMINAL_OWNER_ONLY = "Only the project's owner can open the Kali terminal on it."
+const TERMINAL_LEVEL =
+  "Opening the Kali terminal on this project needs Exploitation & shells on it: the project's owner, " +
+  'or a collaborator whose share includes it.'
 
 const TERMINAL_REFUSED =
   'The Kali terminal is open to whoever holds platform:kali_terminal, and to accounts that kept it at the upgrade.'

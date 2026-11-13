@@ -47,4 +47,16 @@ describe('the RedAmon Terminal tab and the project level', () => {
     cleanup()
     expect(tabs(null)).not.toBeNull()
   })
+
+  // Step 5.2: the ticket asks Exploitation & shells (W+X), so a Read + Write share offers the tab only with
+  // that toggle as the server answered it (myAccess.toggles; off for every collaborator until step 5.6).
+  test('a Read + Write share offers it with Exploitation & shells, not without (even with Manage)', () => {
+    const write = (toggles: Partial<Record<'runScans' | 'useAgent' | 'exploit' | 'manage', boolean>>): MyAccess => ({
+      level: 'write', via: 'share', owner: OWNER,
+      toggles: { rawData: true, runScans: false, useAgent: false, exploit: false, manage: false, ...toggles },
+    })
+    expect(tabs(write({ manage: true }))).toBeNull()
+    cleanup()
+    expect(tabs(write({ exploit: true }))).not.toBeNull()
+  })
 })

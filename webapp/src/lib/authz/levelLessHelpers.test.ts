@@ -307,10 +307,11 @@ describe('the routes (step 4.3)', () => {
     expect(uncovered, 'ask requirePermission / withPermission with the action\'s permission (a write level for a write) on the same path, or projectAccess + meetsLevel').toEqual([])
   })
 
-  test('the Kali terminal branch reaches none: it asks projectAccess at the owner level', () => {
+  test('the Kali terminal branch reaches none: it asks projectAccess at Exploitation & shells (W+X)', () => {
     const ticket = reaches.filter((r) => r.file.endsWith('agent/ws-ticket/route.ts'))
     expect(ticket).toEqual([])
-    expect(readFileSync(path.join(API, 'agent', 'ws-ticket', 'route.ts'), 'utf8')).toMatch(/meetsLevel\(access, 'O'\)/)
+    // Step 5.2 lifted the owner hold of step 4.3 to W+X (the ticket names the owner as tenant since 5.3).
+    expect(readFileSync(path.join(API, 'agent', 'ws-ticket', 'route.ts'), 'utf8')).toMatch(/meetsLevel\(access, 'W\+X'\)/)
   })
 
   test('production code outside access.ts never calls a level-less helper, so no route reaches one through a library', () => {
