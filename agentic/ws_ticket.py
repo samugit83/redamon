@@ -83,6 +83,55 @@ def ticket_tenant(claims: dict) -> str:
     return str(claims.get("ten") or claims["sub"])
 
 
+#: The project lock's values while an ownership transfer holds the project (webapp lib/graphHold.ts).
+TRANSFER_STATES = ("transferring", "transfer_split")
+
+_warned_no_database = False
+
+
+def _project_tenancy(dsn: str, project_id: str) -> Optional[tuple]:
+    """(owner user id, activation state) of the project, or None when there is no such project."""
+    import psycopg
+    with psycopg.connect(dsn, connect_timeout=3) as conn:
+        row = conn.execute("SELECT user_id, activation_state FROM projects WHERE id = %s", (project_id,)).fetchone()
+    return (row[0], row[1]) if row else None
+
+
+def ticket_tenancy_refusal(claims: dict) -> Optional[str]:
+    """Why a verified ticket may not open its socket now, or None (review of RBAC step 5.12).
+
+    A ticket names the project's owner as `ten` and stays valid for its lifetime; an ownership transfer
+    moves the project and its graph to a new owner, so a ticket minted before it would write under the
+    old one. Postgres is asked at connect: refused when the project is gone, when `ten` (`sub` on a
+    ticket without one) no longer owns it, or while a transfer holds it; refused too when the database
+    cannot be asked. An agent with no DATABASE_URL (unit tests, a hand-run agent; compose requires it)
+    skips the check, warning once.
+    """
+    global _warned_no_database
+    dsn = os.environ.get("DATABASE_URL", "")
+    if not dsn:
+        if not _warned_no_database:
+            _warned_no_database = True
+            logger.warning("[rbac] ticket tenancy check skipped: DATABASE_URL is not set")
+        return None
+    project_id = str(claims.get("pid") or "")
+    tenant = ticket_tenant(claims)
+    try:
+        row = _project_tenancy(dsn, project_id)
+    except Exception as exc:
+        logger.warning("[rbac] ticket refused: tenancy check failed project=%s: %s", project_id, type(exc).__name__)
+        return "tenancy could not be verified"
+    if row is None:
+        return "project not found"
+    owner, state = row
+    if state in TRANSFER_STATES:
+        return "project ownership transfer in progress"
+    if owner != tenant:
+        logger.warning("[rbac] ticket refused: tenant no longer owns project=%s", project_id)
+        return "ticket tenant no longer owns the project"
+    return None
+
+
 def ticket_secret() -> str:
     """Return the configured signing secret, or '' when unset. An empty value
     makes every WS handler fail CLOSED (S2/S3/S4), not fail-open."""
@@ -146,6 +195,9 @@ def authorize_ws(origin, host, ticket, extra_allowed=None, *, aud):
     claims = verify_ws_ticket(ticket, secret, expected_aud=aud)
     if claims is None:
         return False, None, "missing or invalid ticket"
+    refusal = ticket_tenancy_refusal(claims)
+    if refusal:
+        return False, None, refusal
     return True, claims, "ok"
 
 

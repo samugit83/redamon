@@ -21,7 +21,11 @@ _AGENTIC_DIR = str(Path(__file__).resolve().parents[1])
 if _AGENTIC_DIR not in sys.path:
     sys.path.insert(0, _AGENTIC_DIR)
 
-from ws_ticket import ticket_cap, ticket_tenant, verify_ws_ticket  # noqa: E402
+import os  # noqa: E402
+from unittest import mock  # noqa: E402
+
+import ws_ticket  # noqa: E402
+from ws_ticket import ticket_cap, ticket_tenancy_refusal, ticket_tenant, verify_ws_ticket  # noqa: E402
 
 SECRET = "interop-secret-0123456789abcdef"
 
@@ -96,6 +100,19 @@ class TicketInterop(unittest.TestCase):
         # An empty `ten` written by a buggy minter never verifies.
         empty = _mint_with_jose(SECRET, '{sub:"u1",pid:"p1",sid:"s1",aud:"agent",ten:""}')
         self.assertIsNone(verify_ws_ticket(empty, SECRET, expected_aud="agent"))
+
+    def test_a_ticket_minted_before_an_ownership_transfer_opens_nothing_after_it(self):
+        # Review of step 5.12: the webapp's ticket names the owner it saw (`ten`); the agent asks the database
+        # at connect, so the same token opens a socket while o1 owns the project and not once o2 does.
+        token = _mint_with_jose(SECRET, _SHARED_CLAIMS)
+        if not token:
+            self.skipTest("webapp container / jose unavailable")
+        claims = verify_ws_ticket(token, SECRET, expected_aud="agent")
+        with mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://rbac@db.invalid/redamon"}):
+            for row, refused in ((("o1", "idle"), None), (("o2", "idle"), "ticket tenant no longer owns the project"),
+                                 (("o1", "transfer_split"), "project ownership transfer in progress")):
+                with self.subTest(row=row), mock.patch.object(ws_ticket, "_project_tenancy", return_value=row):
+                    self.assertEqual(ticket_tenancy_refusal(claims), refused)
 
 
 if __name__ == "__main__":

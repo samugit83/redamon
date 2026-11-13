@@ -1745,7 +1745,7 @@ class WebSocketHandler:
             # trusting the self-asserted identity. redamon.sh ensure_auth_secrets
             # always generates AGENT_WS_TICKET_SECRET, so real installs are
             # unaffected; only a token-less dev stack is refused (by design).
-            from ws_ticket import ticket_cap, ticket_secret, ticket_tenant, verify_ws_ticket
+            from ws_ticket import ticket_cap, ticket_secret, ticket_tenancy_refusal, ticket_tenant, verify_ws_ticket
 
             secret = ticket_secret()
             user_id = init_msg.user_id
@@ -1775,6 +1775,11 @@ class WebSocketHandler:
             claims = verify_ws_ticket(init_msg.ticket, secret, expected_aud="agent")
             if claims is None:
                 await _reject_ticket("Invalid or missing ticket", "ws_ticket_invalid")
+                return
+            # A ticket minted before an ownership transfer names the old owner: never opened after it.
+            tenancy = await asyncio.to_thread(ticket_tenancy_refusal, claims)
+            if tenancy:
+                await _reject_ticket(tenancy, "ws_ticket_tenant")
                 return
             # Identity comes from the verified ticket, not the client body.
             user_id = str(claims["sub"])
