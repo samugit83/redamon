@@ -541,6 +541,46 @@ class WebSocketManager:
                 live.append(session_id)
         return live
 
+    def all_sessions(self) -> List[dict]:
+        """Every session of the instance with an open socket or a registered run, for the
+        admin operations view (step 6.5): its person, project and session, whether a run is
+        in progress, whether a socket is open, and the admin behind an act-as run (the run's,
+        else the open socket's). Keys are parsed as live_session_ids does. Ids and flags only:
+        never a message, a title, a ticket or the tenant.
+        """
+        sessions = []
+        for key in sorted(set(self.active_connections) | set(self._active_tasks)):
+            user_id, _, rest = key.partition(":")
+            project_id, _, session_id = rest.partition(":")
+            if not (user_id and project_id and session_id):
+                continue
+            running = self.get_task(key) is not None
+            connection = self.active_connections.get(key)
+            if not running and connection is None:
+                # A run that ended with no socket left: get_task has just forgotten it.
+                continue
+            actor_id = (self.run_actor(key) if running else None) or (connection.actor_id if connection else None)
+            sessions.append({
+                "user_id": user_id, "project_id": project_id, "session_id": session_id,
+                "running": running, "connected": connection is not None, "actor_id": actor_id or None,
+            })
+        return sessions
+
+    def live_run_count(self, user_id: str) -> int:
+        """How many of `user_id`'s runs are in progress, for the agent-run quota (step 6.8).
+
+        The person is the session key's user, parsed as live_session_ids does, so an admin's
+        act-as run is the member's. An open socket without a run does not count.
+        """
+        if not user_id:
+            return 0
+        count = 0
+        for key in list(self._active_tasks):
+            key_user, _, _rest = key.partition(":")
+            if key_user == user_id and self.get_task(key) is not None:
+                count += 1
+        return count
+
     def register_callback(self, session_key: str, callback: 'StreamingCallback'):
         """Register the live StreamingCallback for a session (survives reconnect)."""
         self._active_callbacks[session_key] = callback

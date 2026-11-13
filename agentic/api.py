@@ -1716,6 +1716,31 @@ async def live_agent_sessions(project_id: str):
     return answer
 
 
+@app.get("/agent-sessions/all", tags=["Sessions"], dependencies=[Depends(require_configured_master_auth)])
+async def all_agent_sessions():
+    """Every agent session of the instance, for the admin operations view (step 6.5).
+
+    Each one's person, project and session, whether a run is in progress, whether a
+    socket is open, and the admin behind an act-as run (WebSocketManager.all_sessions).
+    Master key only and fail-closed: it names every user's sessions, and a session id
+    is what /agent-session/stop needs. 503 when the manager is not up.
+    """
+    if not ws_manager:
+        return JSONResponse(content={"error": "agent not ready"}, status_code=503)
+    return {"sessions": ws_manager.all_sessions()}
+
+
+@app.get("/agent-sessions/count", tags=["Sessions"], dependencies=[Depends(require_configured_master_auth)])
+async def count_agent_sessions(user_id: str = Query(..., min_length=1)):
+    """How many of one person's agent runs are in progress, for the agent-run quota
+    (step 6.8): the webapp asks it before minting an agent ticket. Master key only and
+    fail-closed; 503 when the manager is not up, so the caller never reads it as zero.
+    """
+    if not ws_manager:
+        return JSONResponse(content={"error": "agent not ready"}, status_code=503)
+    return {"user_id": user_id, "count": ws_manager.live_run_count(user_id)}
+
+
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health():
     """
