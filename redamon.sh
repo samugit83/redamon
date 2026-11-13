@@ -2656,11 +2656,17 @@ reconcile_gvm_admin_password() {
     return 0
 }
 
-# S11: minimum admin-password length enforced at creation and reset.
+# S11: minimum admin-password length enforced at creation and reset, plus bcrypt's
+# byte bound: create-admin.mjs and reset-password.mjs refuse a longer password, and
+# checking it here asks again instead of ending the install at ensure_admin.
 MIN_ADMIN_PASSWORD_LEN=12
+MAX_ADMIN_PASSWORD_BYTES=72
 _password_strong_enough() {
     local pw="$1"
     [[ ${#pw} -ge $MIN_ADMIN_PASSWORD_LEN ]]
+}
+_password_fits_bcrypt() {
+    [[ $(printf '%s' "$1" | LC_ALL=C wc -c) -le $MAX_ADMIN_PASSWORD_BYTES ]]
 }
 
 # Poll the webapp health endpoint until it answers. Returns 0 once healthy, 1 if
@@ -2701,6 +2707,10 @@ _prompt_and_create_admin() {
             error "ADMIN_PASSWORD too short (minimum ${MIN_ADMIN_PASSWORD_LEN} characters)."
             exit 1
         fi
+        if ! _password_fits_bcrypt "$a_pass"; then
+            error "ADMIN_PASSWORD too long (maximum ${MAX_ADMIN_PASSWORD_BYTES} bytes)."
+            exit 1
+        fi
     else
         # -e on every prompt (issue #210): readline turns an arrow key, pressed
         # early or to fix a typo, into line editing. Without it the raw escape
@@ -2720,6 +2730,10 @@ _prompt_and_create_admin() {
             # S11: reject a weak admin password (min length) instead of warning.
             if ! _password_strong_enough "$a_pass"; then
                 warn "Password too short (minimum ${MIN_ADMIN_PASSWORD_LEN} characters). Try again."
+                continue
+            fi
+            if ! _password_fits_bcrypt "$a_pass"; then
+                warn "Password too long (maximum ${MAX_ADMIN_PASSWORD_BYTES} bytes). Try again."
                 continue
             fi
             break
@@ -2949,6 +2963,10 @@ cmd_reset_password() {
     # S11: enforce a minimum password strength on reset too.
     if ! _password_strong_enough "$NEW_PASS"; then
         error "Password too short (minimum ${MIN_ADMIN_PASSWORD_LEN} characters)."
+        exit 1
+    fi
+    if ! _password_fits_bcrypt "$NEW_PASS"; then
+        error "Password too long (maximum ${MAX_ADMIN_PASSWORD_BYTES} bytes)."
         exit 1
     fi
 

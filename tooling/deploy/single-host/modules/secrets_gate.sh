@@ -3,8 +3,10 @@
 # Runs on the host in the app dir. Verifies the secrets redamon.sh generated; it does
 # NOT set them. Requires _common.sh.
 #
-# AGENT_WS_TICKET_SECRET and TUNNEL_AUTH_TOKEN are load-bearing: unset -> S6 ticket auth
-# and tunnel auth silently fail OPEN. On a public host every secret must be strong.
+# MCP_AUTH_TOKEN, AGENT_WS_TICKET_SECRET and TUNNEL_AUTH_TOKEN fail closed when unset:
+# the Kali servers, the agent WebSocket and the tunnel manager refuse every request, so
+# those features stop working instead of opening up. On a public host every secret must
+# be strong.
 
 secrets_gate() {
   local env_file="${1:?usage: secrets_gate <path-to-.env>}"

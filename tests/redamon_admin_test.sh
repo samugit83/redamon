@@ -3,7 +3,7 @@
 # Test suite for the admin-account creation logic in redamon.sh (issue #156).
 #   - _wait_for_webapp        -> returns 0 when healthy, 1 on timeout (no dead-end)
 #   - _admin_exists           -> parses check-admin.mjs count robustly
-#   - _prompt_and_create_admin-> non-interactive env path + min-length gate,
+#   - _prompt_and_create_admin-> non-interactive env path + min-length and 72-byte gates,
 #                                FORCE_PROMOTE pass-through, exit-3 refusal
 #                                that does not abort the caller
 #   - ensure_admin            -> actionable skip message (points at create-admin)
@@ -81,6 +81,26 @@ assert_eq   "exits non-zero on weak env password"   "$rc" "1"
 assert_true "explains the minimum length"           "echo \"\$out\" | grep -qi 'too short'"
 assert_false "did NOT reach create-admin.mjs"       "echo \"\$out\" | grep -q 'Admin user ready'"
 unset -f docker; unset ADMIN_NAME ADMIN_EMAIL ADMIN_PASSWORD
+
+echo "== _prompt_and_create_admin: non-interactive rejects a password over bcrypt's 72 bytes =="
+# create-admin.mjs refuses it as well, but only after the build, and its non-zero
+# exit ends install; checked here the operator gets the reason first.
+CAPFILE="$(mktemp)"
+docker() { echo "$*" > "$CAPFILE"; return 0; }
+ADMIN_NAME="Bob" ADMIN_EMAIL="bob@example.com" ADMIN_PASSWORD="$(printf 'a%.0s' {1..73})" \
+  out="$(_prompt_and_create_admin 2>&1)"; rc=$?
+assert_eq    "73 bytes: exits non-zero"                 "$rc" "1"
+assert_true  "73 bytes: names the 72-byte bound"        "echo \"\$out\" | grep -q 'too long (maximum 72 bytes)'"
+assert_eq    "73 bytes: create-admin.mjs never runs"    "$(cat "$CAPFILE")" ""
+# Bytes, not characters: 37 x 'é' is 37 characters but 74 bytes.
+ADMIN_NAME="Bob" ADMIN_EMAIL="bob@example.com" ADMIN_PASSWORD="$(printf 'é%.0s' {1..37})" \
+  out="$(LC_ALL=C.UTF-8 _prompt_and_create_admin 2>&1)"; rc=$?
+assert_eq    "37 x 'é' (74 bytes): refused"             "$rc" "1"
+ADMIN_NAME="Bob" ADMIN_EMAIL="bob@example.com" ADMIN_PASSWORD="$(printf 'a%.0s' {1..72})" \
+  out="$(_prompt_and_create_admin 2>&1)"; rc=$?
+assert_eq    "72 bytes: accepted"                       "$rc" "0"
+assert_true  "72 bytes: reaches create-admin.mjs"       "grep -q 'scripts/create-admin.mjs' '$CAPFILE'"
+rm -f "$CAPFILE"; unset -f docker; unset ADMIN_NAME ADMIN_EMAIL ADMIN_PASSWORD
 
 echo "== _prompt_and_create_admin: FORCE_PROMOTE reaches create-admin.mjs only when set =="
 CAPFILE="$(mktemp)"
@@ -293,6 +313,15 @@ docker() { printf "%q\n" "$@" > "$CAPFILE"; }
     assert_true "admin: Left fixes the email instead of storing \\e[D" "grep -qx 'ADMIN_EMAIL=admin@example.test' '$CAPFILE'"
     assert_true "admin: Left fixes the hidden password too"           "grep -qx 'ADMIN_PASSWORD=correct-horse-battery' '$CAPFILE'"
     assert_false "admin: the password is never shown on screen"       "grep -q 'horse' <<< \"\$SCREEN\""
+
+    : > "$CAPFILE"
+    LONG_KEYS="$(printf 'a%.0s' {1..73})${ENTER}"
+    SCREEN="$(_type_at_tty "${CHILD_PRELUDE}_prompt_and_create_admin" "" \
+        "Admin name:" "Alice${ENTER}" "Admin email:" "admin@example.test${ENTER}" \
+        "Admin password:" "$LONG_KEYS" "Confirm password:" "$LONG_KEYS" \
+        "Admin password:" "$PASS_KEYS" "Confirm password:" "$PASS_KEYS")"
+    assert_true "admin: a password over 72 bytes is asked again"      "grep -q 'too long (maximum 72 bytes)' <<< \"\$SCREEN\""
+    assert_true "admin: the second, valid password is the one used"   "grep -qx 'ADMIN_PASSWORD=correct-horse-battery' '$CAPFILE'"
 
     : > "$CAPFILE"
     SCREEN="$(_type_at_tty "${CHILD_PRELUDE}cmd_reset_password" "${UP}" \

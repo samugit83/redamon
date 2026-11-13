@@ -4,7 +4,7 @@
  * (webapp/Dockerfile), and redamon.sh and the single-host deploy.sh are bash. So the fixed
  * part (the floor, the byte bound, the deny list) lives in one JSON file both sides read,
  * the scripts apply it through scripts/lib/passwordRules.mjs, and the two shells keep their
- * own floor variable. This test fails the moment a copy drifts: a floor written twice, a
+ * own floor and byte-bound variables. This test fails the moment a copy drifts: a floor written twice, a
  * script that checks the password its own way, or the two implementations of the rules
  * answering differently.
  *
@@ -28,7 +28,7 @@ const policyJson = JSON.parse(webappFile('scripts/lib/password-policy.json'))
 
 function onlyNumber(source: string, pattern: RegExp, where: string): number {
   const hits = [...source.matchAll(pattern)]
-  expect(hits, `${where}: exactly one definition of the floor`).toHaveLength(1)
+  expect(hits, `${where}: exactly one definition of ${pattern.source}`).toHaveLength(1)
   return Number(hits[0][1])
 }
 
@@ -62,12 +62,17 @@ describe('the password floor has one value everywhere', () => {
     expect(src).not.toMatch(/(floor|minLength|maxBytes|MIN_PASSWORD_LENGTH)\s*[:=]\s*\d/)
   })
 
-  test.each(['redamon.sh', 'tooling/deploy/single-host/deploy.sh'])('%s MIN_ADMIN_PASSWORD_LEN', (rel) => {
-    const src = repoFile(rel)
-    expect(onlyNumber(src, /^MIN_ADMIN_PASSWORD_LEN=(\d+)$/gm, rel)).toBe(policyJson.floor)
-    // The check compares against the variable, never a second literal.
-    expect(src).toMatch(/-ge \$\{?MIN_ADMIN_PASSWORD_LEN\}?/)
-  })
+  test.each(['redamon.sh', 'tooling/deploy/single-host/deploy.sh'])(
+    '%s MIN_ADMIN_PASSWORD_LEN and MAX_ADMIN_PASSWORD_BYTES',
+    (rel) => {
+      const src = repoFile(rel)
+      expect(onlyNumber(src, /^MIN_ADMIN_PASSWORD_LEN=(\d+)$/gm, rel)).toBe(policyJson.floor)
+      expect(onlyNumber(src, /^MAX_ADMIN_PASSWORD_BYTES=(\d+)$/gm, rel)).toBe(policyJson.maxBytes)
+      // The checks compare against the variables, never a second literal.
+      expect(src).toMatch(/-ge \$\{?MIN_ADMIN_PASSWORD_LEN\}?/)
+      expect(src).toMatch(/-le \$\{?MAX_ADMIN_PASSWORD_BYTES\}?/)
+    },
+  )
 })
 
 describe('the scripts and the TypeScript policy agree', () => {
