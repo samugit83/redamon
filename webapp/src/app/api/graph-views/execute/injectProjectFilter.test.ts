@@ -120,9 +120,9 @@ describe('injectProjectFilter — cross-tenant node patterns (regression)', () =
     expect(out).toContain('(:!Muted {project_id: $projectId})')
   })
 
-  test('does NOT double-inject an already-scoped node', () => {
+  test('does NOT double-inject the tenant filter, and still adds the mute exclusion (review of 4.6, finding 5)', () => {
     const input = 'MATCH (n:Host {project_id: $projectId}) RETURN n'
-    expect(injectProjectFilter(input)).toBe(input)
+    expect(injectProjectFilter(input)).toBe('MATCH (n:Host&!Muted {project_id: $projectId}) RETURN n')
   })
 
   test('does NOT mangle a function call like count(n)', () => {
@@ -184,8 +184,10 @@ describe('findUnscopedNodePattern', () => {
     expect(findUnscopedNodePattern('MATCH (n:!CVE) RETURN n')).toBe('n:!CVE')
   })
 
-  test('does not flag anonymous waypoint nodes (no var, no label)', () => {
-    expect(findUnscopedNodePattern('MATCH (h:Host {project_id: $projectId})-[:R]->() RETURN h')).toBeNull()
+  test('an anonymous waypoint node passes once scoped, and is flagged before (review of 4.6: every node pattern is scoped)', () => {
+    const query = 'MATCH (h:Host {project_id: $projectId})-[:R]->() RETURN h'
+    expect(findUnscopedNodePattern(injectProjectFilter(query))).toBeNull()
+    expect(findUnscopedNodePattern('MATCH (h:Host&!Muted {project_id: $projectId})-[:R]->() RETURN h')).toBe('(anonymous)')
   })
 })
 

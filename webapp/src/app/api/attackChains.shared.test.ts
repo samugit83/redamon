@@ -91,7 +91,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({
     run: async (query: string, params?: unknown) => {
       h.queries.push({ query, params })
       if (/DETACH DELETE/.test(query)) return { records: [] }
-      if (/RETURN s\.thought/.test(query)) return { records: TABULAR }
+      if (/RETURN s\.thought|AS tool\b/.test(query)) return { records: TABULAR }
       if (/labels: \['Domain'\], properties: properties\(s\)/.test(query)) return { records: FORGED_NODE }
       if (/RETURN \{type: s\.thought/.test(query)) return { records: FORGED_REL }
       return { records: LIVE }
@@ -231,12 +231,32 @@ describe('POST /api/graph-views/execute', () => {
     expectContent((await res.json()).nodes)
   })
 
-  test.each(BELOW_RAW)('a tabular view (s.thought, an aliased command line, a list of whole nodes) answers no row at R (%s)', async (who) => {
-    const res = await as(who, () => execute('MATCH (s:ChainStep) RETURN s.thought, s.tool_name AS tool'))
+  test.each(BELOW_RAW)('a tabular view (an aliased command line, a list of whole nodes) answers no row at R (%s)', async (who) => {
+    const res = await as(who, () => execute('MATCH (s:ChainStep) RETURN s.tool_name AS tool'))
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.nodes).toEqual([])
     expect(JSON.stringify(body)).not.toMatch(FAKE)
+  })
+
+  // A filter on step content would read it from which rows come back, so a view naming it (or
+  // computing a property name) is refused below R*, before Neo4j (review of 4.6, the 4.9 follow-up).
+  test.each(BELOW_RAW.flatMap(who => [
+    [who, 'MATCH (s:ChainStep) RETURN s.thought, s.tool_name AS tool', 'thought'],
+    [who, "MATCH (s:ChainStep) WHERE s.thought STARTS WITH 'r' RETURN s", 'thought'],
+    [who, "MATCH (f:ChainFailure) WHERE f.lesson_learned CONTAINS 'x' RETURN f", 'lesson_learned'],
+    [who, "MATCH (s:ChainStep) WHERE s['tool_args_summary'] CONTAINS 'pass' RETURN s", 'computed'],
+  ]))('a view naming step content is refused at R (%s): %s', async (who, query, named) => {
+    const res = await as(who, () => execute(query))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain(named)
+    expect(h.queries).toEqual([])
+  })
+
+  test.each(WHOLE)('the same filter runs at R* (%s)', async (who) => {
+    const res = await as(who, () => execute("MATCH (s:ChainStep) WHERE s.thought STARTS WITH 'r' RETURN s"))
+    expect(res.status).toBe(200)
+    expect(h.queries).toHaveLength(1)
   })
 
   test.each(WHOLE)('a tabular view answers its rows at R* (%s)', async (who) => {

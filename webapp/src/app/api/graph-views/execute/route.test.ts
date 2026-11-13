@@ -159,7 +159,7 @@ describe('a view cannot write, whatever its text (fix of the 4.3 review finding 
     ['MATCH (n /* ( */) RETURN n', 200],
     ["MATCH (n {name: '('}) RETURN n", 200],
     ['MATCH(n) RETURN n', 200],
-    ['MATCH (n {name: toString(1)}) RETURN n', 400],
+    ['MATCH (n {name: toString(1)}) RETURN n', 200], // scoped since the review of 4.6 (finding 4)
     ["MATCH (n:Domain {project_id: 'P-someone-else'}) RETURN n", 400],
     ["MATCH (n) WHERE n.name = 'open RETURN n", 400],
   ])('a node pattern the filter used to miss is scoped or refused, never run open: %s', async (query, status) => {
@@ -187,5 +187,44 @@ describe('a failed query says why without echoing it (G-25)', () => {
       name: 'Neo4jError', code: 'ServiceUnavailable' }))
     const res = await run('MATCH (s:Subdomain) RETURN s')
     expect((await res.json()).code).toBe('ServiceUnavailable')
+  })
+})
+
+describe('the review of 4.6: a query the filter does not positively read is refused before Neo4j', () => {
+  test.each([
+    ['MATCH (`x y`) RETURN `x y`', 'cannot be tenant-scoped'],
+    ['MATCH (é) RETURN é', 'non-ASCII'],
+    ['MATCH (n IS Domain) RETURN n', 'cannot be tenant-scoped'],
+    ['MATCH (n$) RETURN n$', '$projectId'],
+    ['MATCH (n\u001c) RETURN n', 'control character'],
+    ['MATCH (n\u0007) RETURN n\u0007', 'control character'],
+    ["MATCH (a:Domain) RETURN apoc.cypher.runFirstColumnMany\u001c('MATCH (n) RETURN n', {})", 'control character'],
+    ["MATCH (a:Domain) RETURN apoc.cypher.runFirstColumnMany('MATCH (n) RETURN n', {})", "built-in functions only"],
+    ['MATCH (a:Domain) WITH a LIMIT 1 MATCH p=(c1:CVE)-[]-{,}(c2:CVE) RETURN p', 'Variable-length'],
+    ['MATCH p=(a:Technology)- -+(c:CVE) RETURN p', 'Variable-length'],
+    ['MATCH (a:Domain) WITH count(a) AS c MATCH (x:CVE) RETURN x', 'cannot be tenant-scoped'],
+  ])('%s', async (query, why) => {
+    const res = await run(query)
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain(why)
+    expect(mockOpen).not.toHaveBeenCalled()
+    expect(mockRun).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['MATCH (n:(Domain|Subdomain)) RETURN n', 'MATCH (n:(Domain|Subdomain)&!Muted {project_id: $projectId}) RETURN n'],
+    ["MATCH (n:Domain {name: toLower('X')}) RETURN n", "MATCH (n:Domain&!Muted {project_id: $projectId, name: toLower('X')}) RETURN n"],
+    ['MATCH (d:Domain) RETURN d.name AS show', 'MATCH (d:Domain&!Muted {project_id: $projectId}) RETURN d.name AS show'],
+    ['MATCH (n:Domain {project_id: $projectId}) RETURN n', 'MATCH (n:Domain&!Muted {project_id: $projectId}) RETURN n'],
+  ])('an owner view the checks used to refuse or leave open runs scoped: %s', async (query, expected) => {
+    const res = await run(query)
+    expect(res.status).toBe(200)
+    expect(executed()).toBe(expected)
+  })
+
+  test('the owner reads step content, so a view filtering on it runs (Raw data & files is theirs)', async () => {
+    const res = await run("MATCH (s:ChainStep) WHERE s.thought STARTS WITH 'a' RETURN s")
+    expect(res.status).toBe(200)
+    expect(executed()).toContain('(s:ChainStep&!Muted {project_id: $projectId})')
   })
 })

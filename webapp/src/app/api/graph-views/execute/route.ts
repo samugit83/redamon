@@ -4,10 +4,11 @@ import { getGraphSession } from '../../graph/neo4j'
 import { formatGraphRecords } from '../../graph/format'
 import {
   injectProjectFilter, findUnscopedNodePattern, namesMutedLabel, hasVariableLengthPath, findDisallowedCall,
-  findWriteClause, unreadableQuery,
+  findStepContentReference, findWriteClause, unreadableQuery,
 } from './injectProjectFilter'
 import { requirePermission } from '@/lib/authz/guards'
 import { graphReadView } from '@/lib/authz/graphReadView'
+import { readsStepContent } from '@/lib/authz/stepContent'
 
 /**
  * Execute a Cypher query (from a saved graph view) against Neo4j,
@@ -60,12 +61,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // A namespaced function bypasses the CALL block above (apoc.* functions need
-    // no CALL) and runs unscoped Cypher / fetches URLs from inside the DB.
+    // Only the built-in pure functions: a plugin function needs no CALL (apoc's
+    // runFirstColumn* runs unscoped Cypher, apoc.load.* fetches URLs).
     const badCall = findDisallowedCall(cypherQuery)
     if (badCall) {
       return NextResponse.json(
-        { error: `The function or procedure '${badCall}' is not permitted in a view query.` },
+        { error: `The function or procedure '${badCall}' is not permitted in a view query: views may call Cypher's built-in functions only.` },
         { status: 400 }
       )
     }
@@ -78,6 +79,18 @@ export async function POST(request: NextRequest) {
         { error: 'Variable-length and quantified path patterns are not allowed: their intermediate nodes cannot be tenant-scoped.' },
         { status: 400 }
       )
+    }
+
+    // Below Raw data & files the answer loses the step content (graphReadView), but a
+    // filter on it would still read it from which rows come back (SH-30).
+    if (!readsStepContent(auth.access)) {
+      const stepContent = findStepContentReference(cypherQuery)
+      if (stepContent) {
+        return NextResponse.json(
+          { error: `This view reads attack-chain step content (${stepContent}), which needs the Raw data & files access.` },
+          { status: 400 }
+        )
+      }
     }
 
     // Inject project_id filter into every node pattern in the Cypher query.

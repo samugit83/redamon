@@ -84,8 +84,9 @@ describe('a node pattern the filter cannot read is refused, never run unscoped',
     expect(q).toBe("MATCH (n:!Muted {project_id: $projectId, name: '('}) RETURN n")
   })
 
-  test('a call inside a node pattern is refused', () => {
-    expect(scopedOrRefused('MATCH (n {name: toString(1)}) RETURN n')).toBeNull()
+  test('a call inside a node pattern\'s property map is scoped (review of 4.6, finding 4)', () => {
+    expect(scopedOrRefused('MATCH (n {name: toString(1)}) RETURN n'))
+      .toBe('MATCH (n:!Muted {project_id: $projectId, name: toString(1)}) RETURN n')
   })
 
   test('MATCH(n) without a space is a node pattern, not a function call', () => {
@@ -93,9 +94,11 @@ describe('a node pattern the filter cannot read is refused, never run unscoped',
     expect(scopedOrRefused('MATCH (a:Host),(b) RETURN a, b')).toContain('(b:!Muted {project_id: $projectId})')
   })
 
-  test('a parenthesised label expression and an inline WHERE are refused', () => {
-    expect(scopedOrRefused('MATCH (n:(Domain|Subdomain)) RETURN n')).toBeNull()
-    expect(scopedOrRefused("MATCH (n:Domain WHERE n.name = 'x') RETURN n")).toBeNull()
+  test('a parenthesised label expression and an inline WHERE are scoped (review of 4.6, finding 4)', () => {
+    expect(scopedOrRefused('MATCH (n:(Domain|Subdomain)) RETURN n'))
+      .toBe('MATCH (n:(Domain|Subdomain)&!Muted {project_id: $projectId}) RETURN n')
+    expect(scopedOrRefused("MATCH (n:Domain WHERE n.name = 'x') RETURN n"))
+      .toBe("MATCH (n:Domain&!Muted {project_id: $projectId} WHERE n.name = 'x') RETURN n")
   })
 
   test('a call written against its paren keeps its arguments: count(n), exists(n.x)', () => {
@@ -115,7 +118,8 @@ describe('a node pattern the filter cannot read is refused, never run unscoped',
   test('a property map naming another project_id is refused, not taken as already scoped', () => {
     expect(scopedOrRefused("MATCH (n:Domain {project_id: 'P-someone-else'}) RETURN n")).toBeNull()
     expect(scopedOrRefused("MATCH (n:Domain {project_id: $projectId, project_id: 'P-x'}) RETURN n")).toBeNull()
-    expect(scopedOrRefused('MATCH (n:Domain {project_id: $projectId}) RETURN n')).toBe('MATCH (n:Domain {project_id: $projectId}) RETURN n')
+    // The exact filter is kept, and the mute exclusion still added (review of 4.6, finding 5).
+    expect(scopedOrRefused('MATCH (n:Domain {project_id: $projectId}) RETURN n')).toBe('MATCH (n:Domain&!Muted {project_id: $projectId}) RETURN n')
   })
 
   test('a quantified relationship is refused like a [*] hop: its nodes are never written', () => {
