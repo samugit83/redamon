@@ -195,6 +195,8 @@ const IDENTITY_READERS: string[] = [
   // Step 3.4: reads an admin's profile and the instance default set only with the permissions
   // switch on, which needs this switch; off, the account type's default (no Root, nothing read).
   'src/lib/authz/capabilities.ts',
+  // Step 4.15: the expiry sweep removes expired links only with the switch on (off, it reads none).
+  'src/lib/authz/expirySweep.ts',
   // Step 2.9: invite and reset links, reached only through routes that answer 404 with the
   // switch off.
   'src/lib/authz/invites.ts',

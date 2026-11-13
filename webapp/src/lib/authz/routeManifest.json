@@ -124,6 +124,7 @@
   {"path":"/api/internal/node-filter-runs/[runId]/finish","guard":"internal","methods":["POST"],"permission":null},
   {"path":"/api/internal/node-filter-runs/[runId]/heartbeat","guard":"internal","methods":["POST"],"permission":null},
   {"path":"/api/internal/plugins/reconcile","guard":"internal","methods":["POST"],"permission":null},
+  {"path":"/api/internal/rbac/sweep","guard":"internal","methods":["POST"],"permission":null},
   {"path":"/api/internal/scan-schedules/[scheduleId]/run","guard":"internal","methods":["POST"],"permission":null},
   {"path":"/api/internal/scan-schedules/due","guard":"internal","methods":["GET"],"permission":null},
   {"path":"/api/internal/supply-chain/guarddog","guard":"internal","methods":["POST"],"permission":null},

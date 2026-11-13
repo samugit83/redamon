@@ -1,0 +1,195 @@
+/**
+ * The RBAC expiry sweep (step 4.15; SH-14, DV-09, T19), run by POST /api/internal/rbac/sweep,
+ * which the orchestrator's reaper loop calls every RBAC_SWEEP_INTERVAL seconds (the webapp has no
+ * scheduler). Expiry is judged lazily wherever access is read, so an expired share, override,
+ * break-glass row or link already counts for nothing and correctness never waits on this sweep: it
+ * writes the `.expired` audit rows and removes the dead rows.
+ *
+ * - expired shares: `project.share.expired`, removed; then, as a revoke does, the agent closes the
+ *   collaborator's sockets on that project (best effort: a close the agent does not confirm logs
+ *   `[rbac] socket-close failed` and the expiry stands);
+ * - expired overrides: `user.override_expired`, removed (capabilities.ts already ignores them);
+ * - expired break-glass rows, and expired unused invite and reset links: removed (their creation
+ *   is audited and names the expiry). A used link is kept, the record of how an account was set up.
+ *
+ * Each part runs only with its switch on, so with a switch off nothing of it is read
+ * (*.flags.off.test.ts): shares and break-glass with sharing in force (RBAC_SHARING_ENABLED and the
+ * instance policy), overrides with RBAC_PERMISSIONS_ENABLED, links with RBAC_IDENTITY_ENABLED.
+ *
+ * Any webapp copy may answer, and two may sweep at once: each audited row is removed by a delete
+ * conditional on its expiry, in the transaction that writes its audit row, and only a delete that
+ * removed the row writes it. Postgres makes a second delete of the same row wait for the first and
+ * then match nothing, and a share renewed after the read no longer matches, so each expiry is
+ * audited once and nothing live is removed.
+ */
+import prisma from '@/lib/prisma'
+import { writeAuditTx } from '@/lib/audit'
+import { closeAgentSockets } from '@/lib/agentSockets'
+import { WS_SOCKETS } from '@/lib/wsTicket'
+import { now } from './clock'
+import { rbacFlags } from './flags'
+import { sharingInForce } from './sharingPolicy'
+
+/** Audited rows of one kind handled per sweep; the rest wait for the next sweep. */
+export const SWEEP_BATCH = 500
+// Expired shares whose sockets are closed at once (as endSessionsOf's batches).
+const SOCKET_CLOSE_BATCH = 8
+
+export type SweepPart = 'shares' | 'breakGlass' | 'overrides' | 'links'
+
+export interface SweepResult {
+  at: string
+  /** Rows removed per part; null when the part's switch is off (or its gate could not be read). */
+  removed: Record<SweepPart, number | null>
+  /** Expired shares whose sockets the agent did not confirm closed. */
+  socketCloseFailed: number
+  /** The parts that failed; their rows stay for the next sweep. */
+  failed: SweepPart[]
+}
+
+interface ShareEnded { userId: string; projectId: string }
+
+const iso = (d: Date | null) => (d ? d.toISOString() : null)
+
+async function sweepShares(at: Date, ended: ShareEnded[]): Promise<number> {
+  const rows = await prisma.projectCollaborator.findMany({
+    where: { expiresAt: { lte: at } },
+    select: {
+      projectId: true, userId: true, access: true, rawData: true, runScans: true, useAgent: true,
+      exploit: true, manage: true, expiresAt: true, grantedById: true,
+    },
+    orderBy: { expiresAt: 'asc' },
+    take: SWEEP_BATCH,
+  })
+  let removed = 0
+  for (const row of rows) {
+    const gone = await prisma.$transaction(async (tx) => {
+      const { count } = await tx.projectCollaborator.deleteMany({
+        where: { projectId: row.projectId, userId: row.userId, expiresAt: { lte: at } },
+      })
+      if (count !== 1) return false
+      await writeAuditTx(tx, {
+        actorId: null,
+        projectId: row.projectId,
+        action: 'project.share.expired',
+        targetType: 'user',
+        targetId: row.userId,
+        before: {
+          access: row.access, rawData: row.rawData, runScans: row.runScans, useAgent: row.useAgent,
+          exploit: row.exploit, manage: row.manage, expiresAt: iso(row.expiresAt), grantedById: row.grantedById,
+        },
+        source: 'system',
+      })
+      return true
+    })
+    if (gone) {
+      removed += 1
+      ended.push({ userId: row.userId, projectId: row.projectId })
+    }
+  }
+  return removed
+}
+
+async function sweepOverrides(at: Date): Promise<number> {
+  const rows = await prisma.userPermissionOverride.findMany({
+    where: { expiresAt: { lte: at } },
+    select: { userId: true, permission: true, effect: true, expiresAt: true, reason: true },
+    orderBy: { expiresAt: 'asc' },
+    take: SWEEP_BATCH,
+  })
+  let removed = 0
+  for (const row of rows) {
+    const gone = await prisma.$transaction(async (tx) => {
+      const { count } = await tx.userPermissionOverride.deleteMany({
+        where: { userId: row.userId, permission: row.permission, expiresAt: { lte: at } },
+      })
+      if (count !== 1) return false
+      // The same override fields as user.permissions_changed records (userPermissionAdmin.ts).
+      await writeAuditTx(tx, {
+        actorId: null,
+        action: 'user.override_expired',
+        targetType: 'user',
+        targetId: row.userId,
+        before: { permission: row.permission, effect: row.effect, expiresAt: iso(row.expiresAt), reason: row.reason },
+        source: 'system',
+      })
+      return true
+    })
+    if (gone) removed += 1
+  }
+  return removed
+}
+
+async function sweepBreakGlass(at: Date): Promise<number> {
+  const { count } = await prisma.projectBreakGlass.deleteMany({ where: { expiresAt: { lte: at } } })
+  return count
+}
+
+async function sweepLinks(at: Date): Promise<number> {
+  const { count } = await prisma.userInvite.deleteMany({ where: { expiresAt: { lte: at }, usedAt: null } })
+  return count
+}
+
+/** Closes the sockets of each ended share; the number the agent did not confirm. Never throws. */
+async function closeEndedShares(ended: readonly ShareEnded[]): Promise<number> {
+  let failed = 0
+  for (let i = 0; i < ended.length; i += SOCKET_CLOSE_BATCH) {
+    const batch = ended.slice(i, i + SOCKET_CLOSE_BATCH)
+    const results = await Promise.all(batch.map(({ userId, projectId }) =>
+      closeAgentSockets({ userId, projectId, kinds: [...WS_SOCKETS], scope: 'access' })))
+    const refused = results.filter((r) => !r.ok).length
+    failed += refused
+    const rest = ended.length - i - batch.length
+    // A whole batch refused: the agent is down, and each further call would wait out its timeout.
+    if (rest > 0 && refused === batch.length) {
+      console.error(`[rbac] socket-close failed for ${rest} more expired share(s): the agent did not answer`)
+      failed += rest
+      break
+    }
+  }
+  return failed
+}
+
+export async function sweepExpired(): Promise<SweepResult> {
+  const at = now()
+  const flags = rbacFlags()
+  const removed: SweepResult['removed'] = { shares: null, breakGlass: null, overrides: null, links: null }
+  const failed: SweepPart[] = []
+  const ended: ShareEnded[] = []
+
+  const run = async (part: SweepPart, sweep: () => Promise<number>) => {
+    try {
+      removed[part] = await sweep()
+    } catch (err) {
+      failed.push(part)
+      console.error(`[rbac] sweep failed part=${part}:`, err)
+    }
+  }
+
+  if (flags.identity) await run('links', () => sweepLinks(at))
+  if (flags.permissions) await run('overrides', () => sweepOverrides(at))
+  if (flags.sharing) {
+    let inForce = false
+    try {
+      inForce = (await sharingInForce()).enabled
+    } catch (err) {
+      failed.push('shares', 'breakGlass')
+      console.error('[rbac] sweep failed part=shares,breakGlass: the sharing policy could not be read:', err)
+    }
+    if (inForce) {
+      await run('shares', () => sweepShares(at, ended))
+      await run('breakGlass', () => sweepBreakGlass(at))
+    }
+  }
+
+  const socketCloseFailed = ended.length ? await closeEndedShares(ended) : 0
+  if (Object.values(removed).some((n) => n)) {
+    const shown = (n: number | null) => (n === null ? 'off' : String(n))
+    console.info(
+      `[rbac] sweep removed shares=${shown(removed.shares)} breakglass=${shown(removed.breakGlass)} `
+      + `overrides=${shown(removed.overrides)} links=${shown(removed.links)}`
+      + (socketCloseFailed ? ` socket_close_failed=${socketCloseFailed}` : ''),
+    )
+  }
+  return { at: at.toISOString(), removed, socketCloseFailed, failed }
+}

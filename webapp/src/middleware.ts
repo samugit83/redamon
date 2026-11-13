@@ -64,6 +64,8 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/internal\/mcp-tokens\/prune$/ },
   // Plugin reconciliation (TD-20), driven by the same loop; the route re-checks the key.
   { method: 'POST', pattern: /^\/api\/internal\/plugins\/reconcile$/ },
+  // The RBAC expiry sweep (step 4.15), driven by the same loop; the route re-checks the key.
+  { method: 'POST', pattern: /^\/api\/internal\/rbac\/sweep$/ },
   // Scan Timeline scheduler: the orchestrator worker polls for due schedules and
   // asks the webapp to run or defer them (the webapp owns the version freeze).
   { method: 'GET', pattern: /^\/api\/internal\/scan-schedules\/due$/ },

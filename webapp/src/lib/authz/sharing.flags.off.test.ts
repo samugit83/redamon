@@ -90,6 +90,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
     const SHARING_STORAGE_READERS = [
       // Step 4.2: shows the policy to admins and takes Root's change only with the switch on.
       'src/app/api/admin/instance-settings/route.ts',
+      // Step 4.15: the expiry sweep, which reads the sharing tables only with sharing in force.
+      'src/lib/authz/expirySweep.ts',
       // Step 4.2: the policy's shape and reader; the reader reads only with the switch on.
       'src/lib/authz/sharingPolicy.ts',
     ]
@@ -103,8 +105,12 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
     expect(readers).toEqual(SHARING_STORAGE_READERS)
   })
 
-  test('no production code reads a collaborator or break-glass row yet (step 4.3 adds the first reader)', () => {
-    const ROW_READERS: string[] = []
+  test('no production code reads a collaborator or break-glass row outside the named readers', () => {
+    const ROW_READERS: string[] = [
+      // Step 4.15: removes expired rows only with sharing in force (switch and policy); the switch
+      // states are pinned in api/internal/rbac/sweep/route.test.ts.
+      'src/lib/authz/expirySweep.ts',
+    ]
     const ACCESSORS = /\.(projectCollaborator|projectBreakGlass)\.|\b(collaborators|collaborations|breakGlass)\s*:\s*\{/
     const files = productionFiles()
     const readers = files.filter((f) => ACCESSORS.test(readFileSync(f, 'utf8'))).map((f) => path.relative(WEBAPP, f)).sort()
