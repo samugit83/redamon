@@ -220,3 +220,23 @@ p4-viewer-raw-workspace-list	4.9	viewer_raw	GET	/api/agent/workspace/list?projec
 p4-viewer-workspace-tree	4.9	viewer	GET	/api/agent/workspace/tree?projectId=${PSHARED_ID}	-	403;has=workspace:read	req:SH-27 req:SH-03 sharing:on
 p4-viewer-raw-workspace-mkdir	4.9	viewer_raw	POST	/api/agent/workspace/mkdir	{"projectId":"${PSHARED_ID}","path":"rbac-viewer-dir"}	403;has=workspace:write	req:SH-27 sharing:on
 p4-viewer-raw-graph-read	4.9	viewer_raw	GET	/api/graph?projectId=${PSHARED_ID}	-	200;has="nodes"	req:SH-30 sharing:on
+
+# ---- step 4.14: oversight and break-glass ----
+# admin_a (Full admin) holds projects:oversee, never projects:administer (Root's own). The "All projects (oversight)"
+# list lists rbac-PA by oversight; usermgr (User manager) and a member are refused it, and acting as someone hides it.
+# Private conversations are never reached by oversight (agent:chat is a write level). The read of rbac-PA writes the
+# day's project.oversee row, which member_a (the owner) then reads in the feed. Break-glass itself needs the confirmed
+# Root with its password: an admin and a member are refused here, Root's rows run on the disposable instance
+# (tests/rbac_breakglass_live.sh: the shared instance's Root is unconfirmed).
+p4-oversee-list	4.14	admin_a	GET	/api/projects/oversight	-	200;has=${PA_ID};has="via":"oversight"	req:SH-47 sharing:on
+p4-oversee-list-member	4.14	member_b	GET	/api/projects/oversight	-	403;has=projects:oversee	req:SH-47 sharing:on
+p4-oversee-list-usermgr	4.14	usermgr	GET	/api/projects/oversight	-	403;has=projects:oversee	req:SH-47 permissions:on sharing:on
+p4-oversee-list-acting	4.14	admin_a_as_member_a	GET	/api/projects/oversight	-	403;has=not_while_acting_as	req:SH-47 req:IM-07 sharing:on
+p4-oversee-list-off	4.14	admin_a	GET	/api/projects/oversight	-	404	req:SH-47 req:DV-30 sharing:off
+p4-oversee-conversations	4.14	admin_a	GET	/api/conversations?projectId=${PA_ID}	-	403;has=agent:chat	req:SH-47 sharing:on
+p4-oversee-day-read	4.14	admin_a	GET	/api/projects/${PA_ID}	-	200;has="via":"oversight"	req:SH-47 req:DV-24 sharing:on
+p4-oversee-owner-feed	4.14	member_a	GET	/api/projects/${PA_ID}/activity?group=oversight	-	200;has="action":"project.oversee";has="label":"Read the project by oversight"	req:SH-47 req:AU-09 sharing:on
+p4-breakglass-admin	4.14	admin_a	POST	/api/projects/${PA_ID}/breakglass	{"reason":"rbac matrix","durationMinutes":5,"stepUpPassword":"rbac-not-the-password"}	403;has=projects:administer	req:SH-18 sharing:on
+p4-breakglass-member	4.14	member_b	POST	/api/projects/${PA_ID}/breakglass	{"reason":"rbac matrix","durationMinutes":5}	403;has=projects:administer	req:SH-18 sharing:on
+p4-breakglass-close-admin	4.14	admin_a	DELETE	/api/projects/${PA_ID}/breakglass	-	403;has=projects:administer	req:SH-18 sharing:on
+p4-breakglass-off	4.14	admin_a	POST	/api/projects/${PA_ID}/breakglass	{"reason":"rbac matrix","durationMinutes":5}	404	req:SH-18 req:DV-30 sharing:off
