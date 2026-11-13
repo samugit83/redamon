@@ -237,7 +237,11 @@ if [ "$IN_FORCE" = 1 ]; then
   logs="$(cd "$ROOT" && docker compose logs --since "$STARTED" webapp 2>/dev/null)"
   check "the webapp logged the revocation of the deleted account" \
     "$(printf '%s' "$logs" | grep -q "\[rbac\] revocation reason=account_deleted user=$TARGET_ID" && echo 1 || echo 0)"
-  echo "E2E-P5-09: plan resolved, account $TARGET_ID deleted, shared project kept under member-b"
+  if [ "$FAIL" -eq 0 ]; then
+    echo "E2E-P5-09: PASS plan resolved, account $TARGET_ID deleted, shared project kept under member-b"
+  else
+    echo "E2E-P5-09: FAIL ($FAIL of $((PASS + FAIL)) checks failed)"
+  fi
 else
   code="$(call "$TMP/jar.admin" GET "$PLAN")"
   check "the deletion plan answers 404" "$([ "$code" = 404 ] && echo 1 || echo 0)" "got $code"
