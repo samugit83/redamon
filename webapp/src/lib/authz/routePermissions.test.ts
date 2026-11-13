@@ -51,6 +51,8 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'GET /api/projects/[id]/my-access': "the account's own access to the project (projectAccess) for the stale-access poll: any signed-in account asks about itself, a project it cannot see answers 404, nothing written (step 4.3)",
   'GET /api/nuclei-templates': 'the templates the account may select or manage, scoped by owner inside (own and instance ones; every one with platform:nuclei_templates): reading the library changes nothing',
   'GET /api/account/activity': "the signed-in account's own notices and the audit rows about it (404 with the identity switch off): an account reads its own history",
+  'GET /api/account/sessions': "the signed-in account's own device sessions, the real account never one acted as (404 with RBAC_GOVERNANCE_ENABLED off): an account reads its own sign-ins (step 6.10)",
+  'DELETE /api/account/sessions/[sid]': "signing one of one's own browsers out (404 with RBAC_GOVERNANCE_ENABLED off): always one's own, and taking access away is never refused (step 6.10)",
   'GET /api/account/llm-providers': "the instance LLM providers an administrator made available to the account through a set it holds, by name and kind only (404 with RBAC_GOVERNANCE_ENABLED off): an account reads what it may already use (step 6.11)",
   'GET /api/agent/health': 'whether the agent answers: an instance fact the drawer shows, no project data',
   'GET /api/agent/host-ip': "the host's address the drawer offers as a callback address: an instance fact, nothing written",

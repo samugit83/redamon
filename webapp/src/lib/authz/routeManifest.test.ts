@@ -217,6 +217,7 @@ const SAME_ORIGIN_ROUTES = [
   '/api/admin/permission-sets',
   '/api/admin/permission-sets/[id]',
   '/api/auth/act-as',
+  '/api/account/sessions/[sid]',
   '/api/auth/sessions/revoke-all',
   '/api/invite/accept',
   '/api/projects/[id]/collaborators',
@@ -239,6 +240,7 @@ const SAME_ORIGIN_ROUTES = [
   '/api/users/[id]/permissions',
   '/api/users/[id]/reset-credentials',
   '/api/users/[id]/revoke-sessions',
+  '/api/users/[id]/sessions/[sid]',
   '/api/users/[id]/settings',
   '/api/users/invite',
 ]
@@ -246,7 +248,7 @@ const SAME_ORIGIN_ROUTES = [
 /** The families a new route joins the list from: accounts, credentials, sessions, Root, instance and access policy, shares. */
 const SAME_ORIGIN_FAMILIES = [
   /^\/api\/users(\/invite)?$/,
-  /^\/api\/users\/\[id\](\/(password|permissions|disable|enable|revoke-sessions|reset-credentials|settings|invite\/[^/]+|mcp-tokens(\/\[tokenId\])?))?$/,
+  /^\/api\/users\/\[id\](\/(password|permissions|disable|enable|revoke-sessions|reset-credentials|settings|invite\/[^/]+|mcp-tokens(\/\[tokenId\])?|sessions(\/\[sid\])?))?$/,
   /^\/api\/auth\/(act-as|sessions\/.+)$/,
   /^\/api\/root\//,
   /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?|llm-providers(\/\[providerId\]|\/policy)?)$/,
