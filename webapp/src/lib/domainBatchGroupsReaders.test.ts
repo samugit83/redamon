@@ -40,6 +40,15 @@ const ALLOWED: Record<string, string> = {
   'tooling/scripts/extract_recon_registry.py': 'registry tooling',
 }
 
+/**
+ * Files that may name the record only on lines of one shape, so a read added elsewhere in them
+ * still fails. settingsRisk.ts (step 5.1a) classes the column's change risk by name, in its
+ * OWN_DIRECTIONS map; it never reads the stored value.
+ */
+const NAMED_ONLY_AS: Record<string, RegExp> = {
+  'webapp/src/lib/authz/settingsRisk.ts': /^\s*domainBatchGroups: '[a-z]+',$/,
+}
+
 const ROOTS: [string, RegExp][] = [
   ['webapp/src', /\.(ts|tsx)$/],
   ['recon', /\.py$/],
@@ -76,7 +85,16 @@ describe.skipIf(!existsSync(join(REPO, 'webapp', 'src')))('domainBatchGroups rea
       for (const file of walk(dir, ext)) {
         const rel = relative(REPO, file)
         if (rel in ALLOWED) continue
-        if (readFileSync(file, 'utf8').includes('domainBatchGroups')) offenders.push(rel)
+        const text = readFileSync(file, 'utf8')
+        if (!text.includes('domainBatchGroups')) continue
+        const shape = NAMED_ONLY_AS[rel]
+        if (!shape) {
+          offenders.push(rel)
+          continue
+        }
+        for (const [i, line] of text.split('\n').entries()) {
+          if (line.includes('domainBatchGroups') && !shape.test(line)) offenders.push(`${rel}:${i + 1}`)
+        }
       }
     }
     expect(offenders).toEqual([])
