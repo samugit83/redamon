@@ -14,7 +14,7 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-// POST /api/projects/[id]/recording/commit — owner-only. body { save: boolean }.
+// POST /api/projects/[id]/recording/commit — auth_profile:manage (the owner, or a co-owner with Manage). body { save: boolean }.
 // save=true saves the recorded session into the ProjectAuthProfile (source
 // "recorded"); save=false discards it. Refuses to overwrite a profile with an
 // EMPTY capture (G3). Never echoes the value back — returns metadata only.

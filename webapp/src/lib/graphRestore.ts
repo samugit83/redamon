@@ -8,8 +8,9 @@
  *
  * Strategy (unchanged from import):
  *   - group nodes by primary label,
- *   - MERGE on the label's uniqueness constraint keys when it has any (avoids
- *     IndexEntryConflictException), CREATE otherwise,
+ *   - MERGE on the label's uniqueness constraint keys plus the target tenant
+ *     (see Tenancy) when it has any (avoids IndexEntryConflictException), CREATE
+ *     otherwise,
  *   - batch with UNWIND,
  *   - recreate relationships by the temporary `_exportId`, then strip it.
  *

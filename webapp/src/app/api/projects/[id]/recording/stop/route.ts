@@ -9,7 +9,7 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-// POST /api/projects/[id]/recording/stop — owner-only. Ends the active recording
+// POST /api/projects/[id]/recording/stop — auth_profile:manage (the owner, or a co-owner with Manage). Ends the active recording
 // (best-effort immediate; the injected tag also drops within one reconcile of
 // expiry). Returns the masked summary of what was captured so the operator can
 // confirm before committing it to the profile (G3).

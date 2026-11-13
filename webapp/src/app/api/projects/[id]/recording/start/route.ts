@@ -10,7 +10,7 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-// POST /api/projects/[id]/recording/start — owner-only. Begins an operator login
+// POST /api/projects/[id]/recording/start — auth_profile:manage (the owner, or a co-owner with Manage). Begins an operator login
 // recording: gated on global proxy enabled AND per-project captureProxyEnabled,
 // single-active across all projects (G10), max-TTL bounded (G2), and refused mid
 // graph-activation (G11).

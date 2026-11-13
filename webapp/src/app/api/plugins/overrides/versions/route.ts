@@ -7,8 +7,9 @@ import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * GET /api/plugins/overrides/versions?point=skill.text&group=<skill>&projectId=<id>: the
- * versions of a built-in skill in the effective user's scope, plus a project they own when
- * `projectId` is given (design §6). Another user's scope is never listed.
+ * versions of a built-in skill in the effective user's scope, plus the project's when `projectId`
+ * names one whose scope they decide (the owner, or a co-owner with Manage: `ownsScope`; design §6).
+ * Another user's scope is never listed.
  *
  * `point=user_skill.text&group=<skill id>`: one of the effective user's own skills, its
  * proposals and its family of saved versions (lib/plugins/userSkillVersionsModel.ts);
