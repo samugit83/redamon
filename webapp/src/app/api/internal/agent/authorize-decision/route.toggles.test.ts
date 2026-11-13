@@ -155,3 +155,14 @@ describe('decisions the project settings take without asking anyone (step 5.4 re
     expect((await ask('fireteam_deploy')).status).toBe(200)
   })
 })
+
+describe('a tool confirmation answering a Fireteam member\'s escalation', () => {
+  test('needs Use AI agent and Exploitation, as the member\'s own confirmation does', async () => {
+    h.access = writeShare({ exploit: true })
+    expect((await ask('tool_confirmation')).status).toBe(200)
+    expect((await ask('tool_confirmation', { mode: 'fireteam_escalation' })).body)
+      .toMatchObject({ permission: 'agent:fireteam', reason: 'project_level' })
+    h.access = writeShare({ useAgent: true, exploit: true })
+    expect((await ask('tool_confirmation', { mode: 'fireteam_escalation' })).status).toBe(200)
+  })
+})

@@ -50,6 +50,17 @@ const KINDS: Readonly<Record<string, DecisionKind>> = Object.freeze({
   fireteam_deploy: { permissions: ['agent:fireteam'] },
 })
 
+/**
+ * A kind's modes, each with the permissions it asks instead of the kind's: a tool confirmation that
+ * answers a Fireteam member's escalation redeploys the member, so it needs `agent:fireteam` too, as
+ * the member's own confirmation does. The agent reads the mode from the run's state.
+ */
+const MODES: Readonly<Record<string, Readonly<Record<string, readonly PermissionId[]>>>> = Object.freeze({
+  tool_confirmation: {
+    fireteam_escalation: ['agent:approve_dangerous', 'agent:fireteam'],
+  },
+})
+
 export type DecisionRefusalReason =
   | 'capability' | 'project_level' | 'project_not_visible' | 'account_inactive' | 'deleted' | 'act_as_refused'
 
@@ -57,6 +68,7 @@ const MAX_ID = 200
 
 interface DecisionCheck {
   kind: string
+  mode: string | null
   userId: string
   projectId: string
   sessionId: string
@@ -71,8 +83,12 @@ function parse(body: unknown): DecisionCheck | null {
   if (typeof b.kind !== 'string' || !Object.hasOwn(KINDS, b.kind)) return null
   if (!id(b.userId) || !id(b.projectId) || !id(b.sessionId)) return null
   if (b.actorId !== undefined && b.actorId !== null && !id(b.actorId)) return null
+  if (b.mode !== undefined && (typeof b.mode !== 'string' || !Object.hasOwn(MODES[b.kind] ?? {}, b.mode))) return null
   const actorId = (b.actorId as string | null | undefined) ?? null
-  return { kind: b.kind, userId: b.userId, projectId: b.projectId, sessionId: b.sessionId, actorId: actorId === b.userId ? null : actorId }
+  return {
+    kind: b.kind, mode: (b.mode as string | undefined) ?? null, userId: b.userId, projectId: b.projectId,
+    sessionId: b.sessionId, actorId: actorId === b.userId ? null : actorId,
+  }
 }
 
 /** As a session counts it (session.ts `tokenAccepted`): the status only with the identity switch on. */
@@ -81,7 +97,8 @@ const inactive = (p: Principal): boolean => rbacFlags().identity && p.status !==
 type Verdict = { allowed: true } | { allowed: false; permission: PermissionId; reason: DecisionRefusalReason }
 
 async function decide(check: DecisionCheck, person: Principal | null, actor: Principal | null): Promise<Verdict> {
-  const { permissions, level } = KINDS[check.kind]
+  const { level } = KINDS[check.kind]
+  const permissions = check.mode ? MODES[check.kind][check.mode] : KINDS[check.kind].permissions
   const refuse = (reason: DecisionRefusalReason, permission: PermissionId = permissions[0]): Verdict =>
     ({ allowed: false, permission, reason })
   if (!person || (check.actorId && !actor)) return refuse('deleted')
@@ -121,7 +138,7 @@ export const POST = withRouteErrors('Could not check the agent decision', async 
   if (verdict.allowed) return NextResponse.json({ allowed: true })
 
   const realActor = check.actorId ?? check.userId
-  console.warn(`[rbac] agent decision refused kind=${check.kind} permission=${verdict.permission} reason=${verdict.reason} session=${check.sessionId}`)
+  console.warn(`[rbac] agent decision refused kind=${check.kind}${check.mode ? ` mode=${check.mode}` : ''} permission=${verdict.permission} reason=${verdict.reason} session=${check.sessionId}`)
   // Best effort: the refusal stands whether or not its row is written.
   await writeAudit({
     actorId: realActor,
@@ -132,7 +149,7 @@ export const POST = withRouteErrors('Could not check the agent decision', async 
     action: 'agent.decision_refused',
     targetType: 'agent_session',
     targetId: check.sessionId,
-    after: { kind: check.kind, reason: verdict.reason },
+    after: { kind: check.kind, ...(check.mode ? { mode: check.mode } : {}), reason: verdict.reason },
     source: 'ui',
   })
   return NextResponse.json({

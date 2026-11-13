@@ -177,6 +177,10 @@ class _Orchestrator:
     resume_after_tool_confirmation_with_streaming = _resume
     resume_after_answer_with_streaming = _resume
 
+    async def pending_tool_confirmation_mode(self, **_kw):
+        """A plain confirmation (the escalation: test_fireteam_escalation_confirmation.py)."""
+        return None
+
 
 async def _settle():
     for _ in range(10):

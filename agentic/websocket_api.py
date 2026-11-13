@@ -1670,7 +1670,7 @@ class WebSocketHandler:
         return True
 
     async def _refused_now(self, connection: WebSocketConnection, *permissions: str,
-                           answer: str, **request) -> bool:
+                           answer: str, mode: Optional[str] = None, **request) -> bool:
         """Refuse a decision the person may no longer take, asked of the webapp now (step 5.4).
 
         The ticket's `cap` is from when the socket opened: the account, the share, a toggle or a
@@ -1679,11 +1679,13 @@ class WebSocketHandler:
         ticket's person (`sub`, with `act` under act-as), never for anyone a frame names. Fail
         closed: an unreachable webapp is a refusal (`decision_check_unavailable`). A refusal for
         a permission keeps the `permission_required` frame of `_refused_without`, so the drawer
-        puts the card back. True when refused (the frame is sent).
+        puts the card back. `mode` is the decision's mode the webapp maps (decision_check
+        DECISION_MODES). True when refused (the frame is sent).
         """
         check = await authorize_decision(
             kind=answer, user_id=connection.user_id, project_id=connection.project_id,
-            session_id=connection.session_id, actor_id=connection.actor_id, permissions=permissions)
+            session_id=connection.session_id, actor_id=connection.actor_id, permissions=permissions,
+            **({"mode": mode} if mode else {}))
         if check.allowed:
             return False
         if check.code == DECISION_CHECK_UNAVAILABLE:
@@ -2155,9 +2157,10 @@ class WebSocketHandler:
                     "recoverable": False
                 })
                 return
-            if await self._refused_without(connection, "agent:approve_dangerous", answer="tool_confirmation"):
+            needs, mode = await self._tool_confirmation_needs(connection)
+            if await self._refused_without(connection, *needs, answer="tool_confirmation"):
                 return
-            if await self._refused_now(connection, "agent:approve_dangerous", answer="tool_confirmation"):
+            if await self._refused_now(connection, *needs, answer="tool_confirmation", mode=mode):
                 return
 
             callback = StreamingCallback(connection, self.ws_manager)
@@ -2178,6 +2181,25 @@ class WebSocketHandler:
             logger.error(f"Invalid tool confirmation message: {e}")
             await connection.send_message(
                 MessageType.ERROR, _invalid_frame("Invalid tool confirmation format", e, True))
+
+    async def _tool_confirmation_needs(self, connection: WebSocketConnection) -> tuple:
+        """The permissions a tool confirmation needs, and the mode to send with it.
+
+        Answering a Fireteam member's escalation redeploys that member (fireteam_redeploy), so it
+        needs `agent:fireteam` as well, as the member's own confirmation does. The mode is read
+        from the run's state, never from the frame; a state that cannot be read asks for both.
+        """
+        try:
+            mode = await self.orchestrator.pending_tool_confirmation_mode(
+                user_id=connection.user_id, project_id=connection.project_id,
+                session_id=connection.session_id)
+        except Exception as e:
+            logger.warning("[rbac] tool confirmation mode unreadable, asking for both permissions "
+                           "error=%s session=%s", type(e).__name__, connection.session_id)
+            mode = "fireteam_escalation"
+        if mode == "fireteam_escalation":
+            return ("agent:approve_dangerous", "agent:fireteam"), mode
+        return ("agent:approve_dangerous",), None
 
     async def _run_orchestrator_tool_confirmation(self, connection: WebSocketConnection, confirmation_msg: ToolConfirmationMessage, callback):
         """Background coroutine that runs tool confirmation resumption."""

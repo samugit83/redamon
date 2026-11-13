@@ -34,6 +34,10 @@ INTERNAL_HEADERS = {"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")}
 DECISION_KINDS = ("approval", "tool_confirmation", "fireteam_member_confirmation",
                   "question", "codefix_push", "fireteam_deploy")
 
+#: The modes a kind can carry, each of which the webapp maps to more permissions: a tool
+#: confirmation answering a Fireteam member's escalation redeploys the member.
+DECISION_MODES = {"tool_confirmation": ("fireteam_escalation",)}
+
 #: A person's answer waits on this call, so it is short; a slower webapp is a refusal.
 DECISION_CHECK_TIMEOUT_S = 5.0
 
@@ -62,17 +66,22 @@ def _unavailable(why: str, kind: str, session_id: str) -> DecisionCheck:
 
 async def authorize_decision(*, kind: str, user_id: str, project_id: str, session_id: str,
                              actor_id: Optional[str] = None,
-                             permissions: tuple = ()) -> DecisionCheck:
+                             permissions: tuple = (), mode: Optional[str] = None) -> DecisionCheck:
     """Whether `user_id` (the ticket's `sub`; `actor_id` its `act`) may take a `kind` decision
     on `project_id` now. `permissions` are the ones the caller's own check asked, used only
-    to name a refused permission the webapp's answer leaves out. Never raises."""
+    to name a refused permission the webapp's answer leaves out; `mode` one of the kind's
+    DECISION_MODES. Raises only on an unknown kind or mode (a caller's bug)."""
     if kind not in DECISION_KINDS:
         raise ValueError(f"unknown decision kind {kind!r}")
+    if mode is not None and mode not in DECISION_MODES.get(kind, ()):
+        raise ValueError(f"unknown mode {mode!r} for decision kind {kind!r}")
     if not INTERNAL_HEADERS.get("X-Internal-Key"):
         return _unavailable("reason=no_internal_key", kind, session_id)
     body: dict = {"kind": kind, "userId": user_id, "projectId": project_id, "sessionId": session_id}
     if actor_id:
         body["actorId"] = actor_id
+    if mode:
+        body["mode"] = mode
     try:
         async with httpx.AsyncClient(timeout=DECISION_CHECK_TIMEOUT_S) as client:
             resp = await client.post(

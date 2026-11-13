@@ -95,6 +95,10 @@ class _Orchestrator:
     resume_after_approval_with_streaming = _resume
     resume_after_tool_confirmation_with_streaming = _resume
 
+    async def pending_tool_confirmation_mode(self, **_kw):
+        """A plain confirmation (the escalation: test_fireteam_escalation_confirmation.py)."""
+        return None
+
 
 def _errors(conn):
     return [m["payload"] for m in conn.websocket.sent if m["type"] == "error"]

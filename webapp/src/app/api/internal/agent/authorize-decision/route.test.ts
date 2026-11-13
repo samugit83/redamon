@@ -335,3 +335,34 @@ describe('a decision nobody is asked about: the Fireteam wave start (step 5.4 re
     expect((await ask({ kind: 'fireteam_deploy' })).status).toBe(200)
   })
 })
+
+describe('a tool confirmation answering a Fireteam member\'s escalation (step 5.4 review, finding 3)', () => {
+  test('the mode adds agent:fireteam: approving it redeploys the member', async () => {
+    db.users.set('alice', account('alice', { permissionOverrides: [deny('agent:fireteam')] }))
+    expect((await ask({ kind: 'tool_confirmation' })).status).toBe(200)
+    const { status, body } = await ask({ kind: 'tool_confirmation', mode: 'fireteam_escalation' })
+    expect([status, body.permission, body.reason]).toEqual([403, 'agent:fireteam', 'capability'])
+    expect(db.audit).toEqual([expect.objectContaining({
+      action: 'agent.decision_refused', permission: 'agent:fireteam',
+      after: { kind: 'tool_confirmation', mode: 'fireteam_escalation', reason: 'capability' },
+    })])
+  })
+
+  test('approve_dangerous is still asked in that mode, and the owner holds both', async () => {
+    expect(await ask({ kind: 'tool_confirmation', mode: 'fireteam_escalation' })).toEqual({ status: 200, body: { allowed: true } })
+    db.users.set('alice', account('alice', { permissionOverrides: [deny('agent:approve_dangerous')] }))
+    clearPrincipalCacheForTests()
+    expect((await ask({ kind: 'tool_confirmation', mode: 'fireteam_escalation' })).body.permission).toBe('agent:approve_dangerous')
+  })
+
+  test('a mode the kind does not have is a 400, never a narrower check', async () => {
+    for (const over of [
+      { kind: 'tool_confirmation', mode: 'plan' }, { kind: 'tool_confirmation', mode: 'toString' },
+      { kind: 'approval', mode: 'fireteam_escalation' }, { kind: 'tool_confirmation', mode: 7 },
+      { kind: 'tool_confirmation', mode: null },
+    ]) {
+      const res = await POST(req(check(over)))
+      expect([JSON.stringify(over), res.status]).toEqual([JSON.stringify(over), 400])
+    }
+  })
+})

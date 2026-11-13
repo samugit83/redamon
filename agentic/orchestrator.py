@@ -39,6 +39,7 @@ from orchestrator_helpers import (
     set_checkpointer,
     create_config,
     get_config_values,
+    get_thread_id,
 )
 from orchestrator_helpers.llm_setup import apply_project_settings
 from agent_context import current_llm, current_llm_wait_listener
@@ -1067,6 +1068,23 @@ class AgentOrchestrator:
         await streaming_callback.on_error(
             NO_PENDING_REQUEST_MESSAGE, recoverable=True, code="no_pending_request", answer=kind)
         return InvokeResponse(error=NO_PENDING_REQUEST_MESSAGE)
+
+    async def pending_tool_confirmation_mode(self, *, user_id: str, project_id: str,
+                                             session_id: str) -> Optional[str]:
+        """The mode of the tool confirmation the person's run waits for: `fireteam_escalation`
+        when it answers a Fireteam member's escalation (approving it redeploys the member), else
+        the request's own (`single`, `plan`); None when none waits. Read from the run's state,
+        for the socket to ask the decision's permissions before anything runs. Raises when the
+        state cannot be read. The thread is the person's (create_config)."""
+        state = await self.graph.aget_state(
+            {"configurable": {"thread_id": get_thread_id(user_id, project_id, session_id)}})
+        values = (state.values if state else None) or {}
+        pending = values.get("tool_confirmation_pending")
+        if not pending:
+            return None
+        if values.get("_tool_confirmation_mode") == "fireteam_escalation":
+            return "fireteam_escalation"
+        return (pending.get("mode") if isinstance(pending, dict) else None) or "single"
 
     # =========================================================================
     # STREAMING PUBLIC API
