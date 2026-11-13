@@ -71,7 +71,9 @@ import { useErrorToast } from '@/hooks/useErrorToast'
 import { useProjectById } from '@/hooks/useProjects'
 import { useScanStartFailure } from '@/hooks/useScanStartFailure'
 import { usePermissionRefused } from '@/hooks/useCan'
-import { useRefusal } from '@/hooks/useRefusal'
+import { useProjectAccess, useRefusal } from '@/hooks/useRefusal'
+import { OwnerCatalogContext } from '@/hooks/useOwnerCatalog'
+import { useProjectOwnerCatalog } from '@/hooks/useProjectOwnerCatalog'
 import { useDrawerOffsets } from '@/hooks/useDrawerOffsets'
 import { useGraphTypeFilterPrefs, useGraphViewPrefs } from '@/hooks/useUserPreferences'
 import { useProject } from '@/providers/ProjectProvider'
@@ -134,6 +136,12 @@ export default function GraphPage() {
     isLoading: graphPrefsLoading,
   } = useGraphViewPrefs(projectId)
   const [isAIOpen, setIsAIOpen] = useState(false)
+  // On a project the person does not own, scans and agent runs spend the OWNER's keys, models,
+  // skills and MCP servers, so Other Scans and the AI drawer show the owner's, read once here by the
+  // settings form's rule (step 5.7); null for the owner and with sharing off (DV-30). The owner's
+  // models only while the drawer, where they are picked, is open.
+  const ownerCatalog = useProjectOwnerCatalog(projectId, useProjectAccess(projectId), { models: isAIOpen })
+  const readsOwnerCatalog = ownerCatalog !== null
   const [pendingNodeQuery, setPendingNodeQuery] = useState<PendingNodeQuery | null>(null)
   const [isFileSystemOpen, setIsFileSystemOpen] = useState(false)
   const [isReconModalOpen, setIsReconModalOpen] = useState(false)
@@ -295,9 +303,10 @@ export default function GraphPage() {
     return () => clearInterval(interval)
   }, [])
 
-  // Check if user has a GitHub access token configured in global settings
+  // Check if user has a GitHub access token configured in global settings (the owner's, on a
+  // project the person does not own: answered by the owner catalog).
   useEffect(() => {
-    if (!userId) return
+    if (!userId || readsOwnerCatalog) return
     const checkToken = async () => {
       try {
         const res = await fetch(`/api/users/${userId}/settings`)
@@ -308,7 +317,8 @@ export default function GraphPage() {
       } catch { /* ignore */ }
     }
     checkToken()
-  }, [userId])
+  }, [userId, readsOwnerCatalog])
+  const githubTokenSet = ownerCatalog ? ownerCatalog.catalog?.keys.githubAccessToken === true : hasGithubToken
 
   // Recon status hook - must be before useGraphData to provide isReconRunning
   const {
@@ -1752,11 +1762,12 @@ export default function GraphPage() {
         agentConversations={agentSummary.conversations}
       />
 
+      <OwnerCatalogContext.Provider value={ownerCatalog}>
       <OtherScansModal
         isOpen={isOtherScansModalOpen}
         onClose={() => setIsOtherScansModalOpen(false)}
         hasReconData={hasReconData}
-        hasGithubToken={hasGithubToken}
+        hasGithubToken={githubTokenSet}
         // Scan Timeline: past versions are read-only; the raw JSON is latest-only.
         viewingPastVersion={isViewingPastVersion}
         isActivatingVersion={isActivatingVersion}
@@ -1800,6 +1811,7 @@ export default function GraphPage() {
         projectId={projectId || undefined}
         isSupplyChainLogsOpen={activeLogsDrawer === 'supplyChain'}
       />
+      </OwnerCatalogContext.Provider>
 
       <ProjectWriters projectId={projectId} />
 
@@ -2164,6 +2176,7 @@ export default function GraphPage() {
         />
       ))}
 
+      <OwnerCatalogContext.Provider value={ownerCatalog}>
       <AgentDrawer
         isOpen={isAIOpen}
         onClose={handleCloseAI}
@@ -2187,6 +2200,7 @@ export default function GraphPage() {
         pendingNodeQuery={pendingNodeQuery}
         onPendingNodeQueryConsumed={handlePendingNodeQueryConsumed}
       />
+      </OwnerCatalogContext.Provider>
 
       <FileSystemDrawer
         isOpen={isFileSystemOpen}

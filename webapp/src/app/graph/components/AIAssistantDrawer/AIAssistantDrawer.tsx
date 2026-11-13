@@ -151,6 +151,7 @@ export function AIAssistantDrawer({
 
   const {
     missingApiKeys,
+    apiKeysReadOnly,
     apiKeyModal,
     apiKeyValue, setApiKeyValue,
     apiKeyVisible, setApiKeyVisible,
@@ -640,7 +641,7 @@ export function AIAssistantDrawer({
         isConnected={isConnected}
         setInputValue={setInputValue}
         missingApiKeys={missingApiKeys}
-        openApiKeyModal={openApiKeyModal}
+        openApiKeyModal={apiKeysReadOnly ? undefined : openApiKeyModal}
         handleTimelineToolConfirmation={guardedToolConfirmation}
         handleToolStop={handleToolStop}
         loop={loop}

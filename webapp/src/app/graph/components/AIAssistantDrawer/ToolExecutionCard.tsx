@@ -148,12 +148,14 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
             {missingApiKey && (
               <span
                 className={styles.apiKeyMissing}
-                title={`Set ${TOOL_KEY_LABEL[item.tool_name] || ''} API key`}
+                title={onAddApiKey
+                  ? `Set ${TOOL_KEY_LABEL[item.tool_name] || ''} API key`
+                  : `The project owner has not set the ${TOOL_KEY_LABEL[item.tool_name] || ''} API key`}
                 onClick={onAddApiKey ? (e) => { e.stopPropagation(); onAddApiKey() } : undefined}
                 role={onAddApiKey ? 'button' : undefined}
                 tabIndex={onAddApiKey ? 0 : undefined}
               >
-                <AlertTriangle size={10} /> No {TOOL_KEY_LABEL[item.tool_name] || 'API'} key - Add
+                <AlertTriangle size={10} /> No {TOOL_KEY_LABEL[item.tool_name] || 'API'} key{onAddApiKey ? ' - Add' : ''}
               </span>
             )}
           </span>

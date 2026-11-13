@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useAlertModal } from '@/components/ui'
 import { readApiError, toApiError } from '@/lib/apiError'
+import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 
 export const API_KEY_INFO: Record<string, { field: string; label: string; hint: string; url: string }> = {
   web_search: { field: 'tavilyApiKey', label: 'Tavily', hint: 'Enables web_search tool for CVE research and exploit lookups', url: 'https://app.tavily.com/home' },
@@ -11,39 +12,50 @@ export const API_KEY_INFO: Record<string, { field: string; label: string; hint: 
   cve_intel: { field: 'pdcpApiKey', label: 'PDCP', hint: 'Optional. Lifts the 10 req/min anonymous rate limit on the ProjectDiscovery CVE database (vulnx).', url: 'https://cloud.projectdiscovery.io' },
 }
 
+/** The drawer tools whose key the given settings (values, or presence flags) do not hold. */
+function missingKeyTools(settings: Record<string, unknown>): Set<string> {
+  return new Set(Object.keys(API_KEY_INFO).filter(tool => !settings[API_KEY_INFO[tool].field]))
+}
+
+/**
+ * The drawer's missing-key warnings and its "add a key" modal. On a project the person does not own
+ * (step 5.7) the agent's tools run on the OWNER's keys: the warnings follow the owner catalog's
+ * presence flags, `apiKeysReadOnly` is set and nothing opens or saves, since only the owner writes
+ * the owner's settings. Otherwise the person's own settings, as before.
+ */
 export function useApiKeyModal(userId: string) {
   const { alertError } = useAlertModal()
-  const [missingApiKeys, setMissingApiKeys] = useState<Set<string>>(new Set())
+  const owner = useOwnerCatalogSource()
+  const apiKeysReadOnly = owner !== null
+  const ownerKeys = owner?.catalog?.keys ?? null
+  const [ownMissingApiKeys, setMissingApiKeys] = useState<Set<string>>(new Set())
+  // While the owner's catalog loads (or failed) no key is called missing, as before the own read.
+  const ownerMissingApiKeys = useMemo(() => (ownerKeys ? missingKeyTools(ownerKeys) : new Set<string>()), [ownerKeys])
+  const missingApiKeys = apiKeysReadOnly ? ownerMissingApiKeys : ownMissingApiKeys
   const [apiKeyModal, setApiKeyModal] = useState<string | null>(null)
   const [apiKeyValue, setApiKeyValue] = useState('')
   const [apiKeyVisible, setApiKeyVisible] = useState(false)
   const [apiKeySaving, setApiKeySaving] = useState(false)
 
   const fetchApiKeyStatus = useCallback(() => {
-    if (!userId) return
+    if (!userId || apiKeysReadOnly) return
     fetch(`/api/users/${userId}/settings`)
       .then(r => r.ok ? r.json() : null)
       .then(settings => {
         if (!settings) return
-        const missing = new Set<string>()
-        if (!settings.tavilyApiKey) missing.add('web_search')
-        if (!settings.shodanApiKey) missing.add('shodan')
-        if (!settings.serpApiKey) missing.add('google_dork')
-        if (!settings.wpscanApiToken) missing.add('execute_wpscan')
-        if (!settings.urlscanApiKey) missing.add('execute_gau')
-        if (!settings.pdcpApiKey) missing.add('cve_intel')
-        setMissingApiKeys(missing)
+        setMissingApiKeys(missingKeyTools(settings))
       })
       .catch(() => {})
-  }, [userId])
+  }, [userId, apiKeysReadOnly])
 
   useEffect(() => { fetchApiKeyStatus() }, [fetchApiKeyStatus])
 
   const openApiKeyModal = useCallback((toolId: string) => {
+    if (apiKeysReadOnly) return
     setApiKeyModal(toolId)
     setApiKeyValue('')
     setApiKeyVisible(false)
-  }, [])
+  }, [apiKeysReadOnly])
 
   const closeApiKeyModal = useCallback(() => {
     setApiKeyModal(null)
@@ -52,7 +64,7 @@ export function useApiKeyModal(userId: string) {
   }, [])
 
   const saveApiKey = useCallback(async () => {
-    if (!userId || !apiKeyModal || !apiKeyValue.trim()) return
+    if (!userId || apiKeysReadOnly || !apiKeyModal || !apiKeyValue.trim()) return
     const info = API_KEY_INFO[apiKeyModal]
     if (!info) return
     setApiKeySaving(true)
@@ -71,10 +83,11 @@ export function useApiKeyModal(userId: string) {
     } finally {
       setApiKeySaving(false)
     }
-  }, [userId, apiKeyModal, apiKeyValue, closeApiKeyModal, fetchApiKeyStatus, alertError])
+  }, [userId, apiKeysReadOnly, apiKeyModal, apiKeyValue, closeApiKeyModal, fetchApiKeyStatus, alertError])
 
   return {
     missingApiKeys,
+    apiKeysReadOnly,
     apiKeyModal,
     apiKeyValue,
     setApiKeyValue,

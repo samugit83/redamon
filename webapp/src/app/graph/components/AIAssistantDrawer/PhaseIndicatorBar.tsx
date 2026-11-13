@@ -8,6 +8,7 @@ import { useProject } from '@/providers/ProjectProvider'
 import { PluginBadge } from '@/components/plugins/PluginBadge'
 import { PluginIcon } from '@/components/plugins/pluginIcons'
 import { usePluginContributions } from '@/hooks/usePluginContributions'
+import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 import { errorMessage } from '@/lib/apiError'
 import type { ChatSessionActionContribution } from '@/lib/plugins/contributions'
 import type { ActionContext } from '@/components/plugins/host/actionClient'
@@ -78,7 +79,17 @@ export function PhaseIndicatorBar({
 }: PhaseIndicatorBarProps) {
   const PhaseIcon = PHASE_CONFIG[currentPhase].icon
   const { userId } = useProject()
-  const [userMcpServers, setUserMcpServers] = useState<UserMcpServer[]>([])
+  // On a project the person does not own (step 5.7) the agent runs on the OWNER's MCP servers and
+  // models: the tools tooltip lists the owner's servers, and the model badge needs Manage to open.
+  const owner = useOwnerCatalogSource()
+  const fromOwner = owner !== null
+  const modelRefusal = owner?.pickRefusal ?? null
+  const [ownMcpServers, setUserMcpServers] = useState<UserMcpServer[]>([])
+  // The catalog answers a server stored without default phases as [], which means every phase there
+  // (as in the tool matrix), so it is read here as a missing field.
+  const userMcpServers: UserMcpServer[] = fromOwner
+    ? (owner.catalog?.mcpServers ?? []).map(srv => ({ ...srv, default_phases: srv.default_phases.length ? srv.default_phases : undefined }))
+    : ownMcpServers
   const { data: contributions, error: contributionsError, refetch: refetchContributions } = usePluginContributions()
   // Only plugins with a gear-menu action; a nav-only plugin adds nothing here.
   const pluginGroups = (contributions ?? []).filter((c) => c.chatSessionActions.length > 0)
@@ -88,7 +99,7 @@ export function PhaseIndicatorBar({
   // toggled their phase checkboxes (in which case they're not in
   // toolPhaseMap and would otherwise be invisible).
   useEffect(() => {
-    if (!userId) return
+    if (!userId || fromOwner) return
     fetch(`/api/users/${userId}/mcp`)
       .then(r => r.ok ? r.json() : null)
       .then((d: { servers?: UserMcpServer[] } | null) => {
@@ -97,7 +108,7 @@ export function PhaseIndicatorBar({
         }
       })
       .catch(() => {})
-  }, [userId])
+  }, [userId, fromOwner])
 
   return (
     <div className={styles.phaseIndicator}>
@@ -332,7 +343,13 @@ export function PhaseIndicatorBar({
       </div>
 
       {modelName && (
-        <button className={styles.modelBadge} onClick={() => setShowModelModal(true)}>
+        <button
+          className={styles.modelBadge}
+          onClick={() => { if (!modelRefusal) setShowModelModal(true) }}
+          aria-disabled={modelRefusal ? true : undefined}
+          title={modelRefusal ?? undefined}
+          style={modelRefusal ? { cursor: 'not-allowed', opacity: 0.7 } : undefined}
+        >
           {formatModelDisplay(modelName)}
         </button>
       )}

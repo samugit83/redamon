@@ -40,7 +40,8 @@ interface ChatAreaProps {
   isConnected: boolean
   setInputValue: (v: string) => void
   missingApiKeys: Set<string>
-  openApiKeyModal: (toolId: string) => void
+  /** Absent when the keys are the project owner's (a collaborator's drawer): nothing to add. */
+  openApiKeyModal?: (toolId: string) => void
   handleTimelineToolConfirmation: (itemId: string, decision: 'approve' | 'reject') => void
   /** Cancel a single running tool card. Receives the tool's item.id. */
   handleToolStop?: (itemId: string) => void

@@ -16,8 +16,9 @@ import { useProject } from '@/providers/ProjectProvider'
 import { ProjectAccessContext } from '@/providers/projectAccessContext'
 import type { MyAccess } from '@/lib/authz/projectAccess'
 import { levelRefusalText } from '@/lib/readOnlyProject'
-import { catalogPickRefusal, fieldChangeRefusal, writeAccessSummary, type FieldChangeRefusal } from '@/lib/settingsFieldAccess'
-import { OwnerCatalogContext, useOwnerCatalog } from '@/hooks/useOwnerCatalog'
+import { fieldChangeRefusal, writeAccessSummary, type FieldChangeRefusal } from '@/lib/settingsFieldAccess'
+import { OwnerCatalogContext } from '@/hooks/useOwnerCatalog'
+import { useProjectOwnerCatalog } from '@/hooks/useProjectOwnerCatalog'
 import { RefusalNotice } from '@/components/auth/ForbiddenNotice'
 import { RegistryFieldsReadOnly } from './RegistryFields'
 import { JevSelectionProvider } from '@/hooks/useHasJevProvider'
@@ -515,8 +516,7 @@ export function ProjectForm({
   // A collaborator's form reads the project OWNER's catalogs (step 5.7): the providers, keys, skills
   // and MCP servers this project runs on are the owner's, not the collaborator's own. Picking from
   // them needs Manage, and only then are the owner's models listed.
-  const pickRefusal = catalogPickRefusal(formAccess)
-  const ownerCatalog = useOwnerCatalog(projectId, { enabled: notOwner, models: notOwner && pickRefusal === null, pickRefusal })
+  const ownerCatalog = useProjectOwnerCatalog(projectId, formAccess)
   const writeSummary = writeAccessSummary(formAccess)
 
   // GitHub Access Token check (stored in Global Settings, not project): the owner's, on a shared project.

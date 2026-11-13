@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useUserSkillsChanged } from '@/lib/userSkillsChannel'
 import { ApiError, readApiError, toApiError } from '@/lib/apiError'
+import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 
 interface SkillData {
   builtIn: { id: string; name: string }[]
@@ -12,9 +13,19 @@ interface SkillData {
  * The skills and this project's toggles for the chat drawer's tooltip. Refetched when a
  * skill version is saved anywhere in the browser, and on demand (`refetch`). A failed read
  * keeps the data it had and sets `error`.
+ *
+ * On a project the person does not own (step 5.7) the toggles name the OWNER's skills, so the user
+ * skills are the owner catalog's, by name; the built-in list is the same for everyone.
  */
 export function useAttackSkillData(userId: string, projectId: string) {
-  const [skillData, setSkillData] = useState<SkillData | null>(null)
+  const [fetched, setSkillData] = useState<SkillData | null>(null)
+  const owner = useOwnerCatalogSource()
+  const ownerCatalog = owner?.catalog ?? null
+  const fromOwner = owner !== null
+  const skillData = useMemo<SkillData | null>(() => {
+    if (!fetched || !fromOwner) return fetched
+    return { ...fetched, user: (ownerCatalog?.attackSkills ?? []).map(s => ({ id: s.id, name: s.name })) }
+  }, [fetched, fromOwner, ownerCatalog])
   const [error, setError] = useState<ApiError | null>(null)
   const [generation, setGeneration] = useState(0)
   const refetch = useCallback(() => setGeneration(g => g + 1), [])

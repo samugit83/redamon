@@ -400,9 +400,12 @@ export function OtherScansModal({
               const invalid = (profile.validationErrors ?? []).length > 0
               // Fails closed in the UI too, and the start route re-checks: a key
               // cleared after this rendered must not produce an opaque failure.
+              // On a project the person does not own the source runs on the owner's keys (step 5.7).
               const blockedReason = secretsRefused ? secretsText
                 : missing.length
-                ? `Set ${missing.map(m => m.label).join(', ')} in Global Settings > API Keys`
+                ? (credentialKeys.readOnly
+                  ? `The project owner has not set ${missing.map(m => m.label).join(', ')}`
+                  : `Set ${missing.map(m => m.label).join(', ')} in Global Settings > API Keys`)
                 : invalid ? 'This source is not fully configured'
                 : scanBlocked ? blockedTitle : ''
 
@@ -457,9 +460,13 @@ export function OtherScansModal({
                 {missing.length > 0 && (
                   <span className={styles.missingKeyNote}>
                     <AlertTriangle size={12} />
-                    <Link href={`${SETTINGS_KEYS_HREF}#trufflehog-keys`} style={{ color: 'inherit' }}>
-                      {missing.map(m => m.label).join(', ')} required
-                    </Link>
+                    {credentialKeys.readOnly ? (
+                      <span>{missing.map(m => m.label).join(', ')} required</span>
+                    ) : (
+                      <Link href={`${SETTINGS_KEYS_HREF}#trufflehog-keys`} style={{ color: 'inherit' }}>
+                        {missing.map(m => m.label).join(', ')} required
+                      </Link>
+                    )}
                   </span>
                 )}
 
