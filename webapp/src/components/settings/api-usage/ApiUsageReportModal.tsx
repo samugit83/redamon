@@ -10,6 +10,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, CircleAlert, CircleCheck, CircleDashed, CircleHelp, ExternalLink, Loader2, RotateCw } from 'lucide-react'
 import { Modal } from '@/components/ui/Modal/Modal'
 import type { KeyResult, Meter } from '@/lib/apiUsage/types'
+import type { CollaboratorSpends } from '@/lib/authz/ownerCredentials'
 import type { ApiUsageController, ShownReport } from './useApiUsageReport'
 import {
   errorText, formatDateTime, formatDuration, formatRelative, keyRoleText, meterFigure, meterShare, notCheckedText,
@@ -158,6 +159,55 @@ function ResultRow({ r }: { r: KeyResult }) {
   )
 }
 
+const SPEND_FEATURE_TEXT: Record<string, string> = {
+  report_narratives: 'report narratives',
+  roe_parse: 'RoE parsing',
+  command_whisperer: 'command whisperer',
+  multi_mute: 'multi mute',
+  text_to_cypher: 'text-to-Cypher',
+  scan: 'scans',
+  triage_run: 'triage runs',
+  agent_session: 'agent sessions',
+  codefix_session: 'CodeFix sessions',
+  shell_session: 'Kali terminal sessions',
+}
+
+/**
+ * Step 5.6 (C1): what collaborators spent of these credentials on the projects you own, from the audit
+ * record of each spend. Counts of uses, not tokens: the providers bill the usage above.
+ */
+function CollaboratorSpendsSection({ spends }: { spends: CollaboratorSpends }) {
+  if (spends.people.length === 0) return null
+  return (
+    <section className={styles.section} aria-label="Spent by collaborators">
+      <h3 className={styles.sectionTitle}>Spent by collaborators, last {spends.sinceDays} days ({spends.people.length})</h3>
+      <p className={styles.muted}>
+        Collaborators you allowed to spend your credentials on a project, and how many times each used them.
+        {spends.truncated ? ' Only the most recent uses were counted.' : ''}
+      </p>
+      <ul className={styles.rows}>
+        {spends.people.map(p => (
+          <li key={p.userId} className={styles.row}>
+            <div className={styles.rowHead}>
+              <span className={styles.service}>{p.name || p.email || 'A deleted account'}</span>
+              {p.email && p.name && <span className={styles.muted}>{p.email}</span>}
+              <span>{p.total} use{p.total === 1 ? '' : 's'}</span>
+            </div>
+            <div className={styles.rowFoot}>
+              <span>
+                {Object.entries(p.byFeature).map(([f, n]) => `${SPEND_FEATURE_TEXT[f] ?? f} ${n}`).join(' · ') || 'other uses'}
+              </span>
+              <span>
+                {p.projects.map(pr => `${pr.name} (${pr.count})`).join(', ')} · last {formatDateTime(p.lastAt)}
+              </span>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 function Chip({ count, label, tone, onClick, icon }: { count: number; label: string; tone: string; onClick: () => void; icon: ReactNode }) {
   return (
     <button type="button" className={`${styles.chip} ${tone}`} onClick={onClick} disabled={count === 0}>
@@ -222,6 +272,8 @@ function ReportView({ shown, stale, controller }: { shown: ShownReport; stale: b
           </section>
         )
       })}
+
+      {controller.meta?.collaboratorSpends && <CollaboratorSpendsSection spends={controller.meta.collaboratorSpends} />}
 
       {report.skippedEmpty?.length > 0 && (
         <details className={styles.skipped}>

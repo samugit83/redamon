@@ -27,6 +27,7 @@ import { runJobs } from '@/lib/apiUsage/runner'
 import { COOLDOWN_MS, checksEnabled, lastFinishedAt, release, runningFor, setRunKeys, tryAcquire } from '@/lib/apiUsage/state'
 import type { ApiUsageReportV1, UserActivity } from '@/lib/apiUsage/types'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { collaboratorSpends, type CollaboratorSpends } from '@/lib/authz/ownerCredentials'
 
 export const dynamic = 'force-dynamic'
 
@@ -118,6 +119,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       // Unknown activity only matters to a POST, which fails closed on its own lookup.
       console.error('[api-usage] activity lookup failed:', e)
     }
+    // Step 5.6 (C1, GV-12): what collaborators spent of this user's credentials on the projects they own,
+    // by collaborator. Present only with write sharing on; a failed read leaves it out of the answer.
+    let spends: CollaboratorSpends | null = null
+    try {
+      spends = await collaboratorSpends(id)
+    } catch (e) {
+      console.error(`[api-usage] collaborator spends lookup failed: ${safeErrorCode(e)}`)
+    }
     return json({
       enabled: checksEnabled(),
       report: row ? (row.report as unknown as ApiUsageReportV1) : null,
@@ -125,6 +134,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       runBy,
       activity,
       tracked: trackedFields(PROBES),
+      ...(spends ? { collaboratorSpends: spends } : {}),
     })
   } catch (error) {
     console.error('[api-usage] failed to load the report:', error)

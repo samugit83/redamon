@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useAlertModal, useToast } from '@/components/ui'
 import { buildInventory, inventoryChanges, savedKeySummary, type LlmInventoryRow, type TrackedField } from '@/lib/apiUsage/inventory'
 import type { ApiUsageReportV1, UserActivity } from '@/lib/apiUsage/types'
+import type { CollaboratorSpends } from '@/lib/authz/ownerCredentials'
 import { formatDateTime, scanKindText } from './format'
 import { formatApiError, readApiError, toApiError, type ApiError } from '@/lib/apiError'
 import { failureText } from '../failureText'
@@ -22,6 +23,8 @@ export interface ApiUsageMeta {
   runBy: { id: string; name: string } | null
   activity: UserActivity | null
   tracked: TrackedField[]
+  /** Step 5.6: who spent your credentials on your projects (write sharing on only). */
+  collaboratorSpends?: CollaboratorSpends
 }
 
 export interface ShownReport {

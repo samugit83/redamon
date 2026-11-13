@@ -227,3 +227,49 @@ describe('ApiUsageControls', () => {
     expect(c.startCheck).not.toHaveBeenCalled()
   })
 })
+
+describe('ApiUsageReportModal: spent by collaborators (step 5.6)', () => {
+  const base = controller()
+  const withSpends = (spends: NonNullable<ApiUsageController['meta']>['collaboratorSpends']) =>
+    controller({ meta: { ...base.meta!, collaboratorSpends: spends } })
+
+  test('usage report breakdown: each collaborator with their uses by feature and project', () => {
+    render(<ApiUsageReportModal controller={withSpends({
+      sinceDays: 30, truncated: false,
+      people: [{
+        userId: 'c1', name: 'Bob', email: 'bob@example.test', total: 3, byFeature: { agent_session: 2, scan: 1 },
+        projects: [{ id: 'P1', name: 'Acme', count: 3 }], lastAt: '2026-09-26T14:32:00.000Z',
+      }],
+    })} />)
+    const section = screen.getByRole('region', { name: 'Spent by collaborators' })
+    expect(within(section).getByRole('heading', { level: 3 }).textContent).toBe('Spent by collaborators, last 30 days (1)')
+    expect(within(section).getByText('Bob')).toBeInTheDocument()
+    expect(within(section).getByText('3 uses')).toBeInTheDocument()
+    expect(within(section).getByText('agent sessions 2 · scans 1')).toBeInTheDocument()
+    expect(within(section).getByText(/Acme \(3\)/)).toBeInTheDocument()
+  })
+
+  test('no breakdown in the answer (write sharing off), or nobody spent: no section', () => {
+    render(<ApiUsageReportModal controller={base} />)
+    expect(screen.queryByRole('region', { name: 'Spent by collaborators' })).not.toBeInTheDocument()
+    cleanup()
+    render(<ApiUsageReportModal controller={withSpends({ sinceDays: 30, truncated: false, people: [] })} />)
+    expect(screen.queryByRole('region', { name: 'Spent by collaborators' })).not.toBeInTheDocument()
+  })
+
+  test('a name is text, never markup; a deleted account and a capped count say so', () => {
+    render(<ApiUsageReportModal controller={withSpends({
+      sinceDays: 30, truncated: true,
+      people: [
+        { userId: 'c2', name: '<img src=x onerror=alert(1)>', email: null, total: 1, byFeature: {}, projects: [], lastAt: '2026-09-26T14:32:00.000Z' },
+        { userId: 'c3', name: null, email: null, total: 1, byFeature: { later_feature: 1 } as never, projects: [], lastAt: '2026-09-26T14:32:00.000Z' },
+      ],
+    })} />)
+    const section = screen.getByRole('region', { name: 'Spent by collaborators' })
+    expect(within(section).getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument()
+    expect(section.querySelector('img')).toBeNull()
+    expect(within(section).getByText('A deleted account')).toBeInTheDocument()
+    expect(within(section).getByText('later_feature 1')).toBeInTheDocument()
+    expect(within(section).getByText(/Only the most recent uses were counted/)).toBeInTheDocument()
+  })
+})
