@@ -525,7 +525,8 @@ export async function applyReconPreset(
   args: { projectId: string; presetId: string; dryRun?: boolean; expectedUpdatedAt?: string }
 ) {
   requireScope(ctx.token, 'preset:apply')
-  const { access } = await mcpProjectAccess(ctx.token, args.projectId)
+  // preset:apply (W); a collaborator's apply is judged like the project save.
+  const { access } = await mcpProjectAccess(ctx.token, args.projectId, 'W')
   enforceRate(ctx, 'write')
 
   // The LIVE writers, not only the scans: the in-app agent re-reads project

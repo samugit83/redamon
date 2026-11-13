@@ -1010,7 +1010,8 @@ export async function preflightScopeCheck(ctx: McpContext, projectId: string) {
 /** Every authorization ever recorded for a project, newest first. */
 export async function listEngagementAuthorizations(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:read')
-  await assertMcpProjectAccess(ctx.token, projectId)
+  // The app's list of authorizations asks Manage (M): a co-owner reads them, a reader does not.
+  await assertMcpProjectAccess(ctx.token, projectId, 'M')
   enforceRate(ctx, 'read')
 
   const rows = await prisma.engagementAuthorization.findMany({

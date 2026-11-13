@@ -140,7 +140,9 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   requireScope(ctx.token, 'project:rescope')
   // Recording what authorized a widening is its own durable claim.
   if (args.authorization !== undefined) requireScope(ctx.token, 'engagement:authorize')
-  const { project: { userId: owner }, access } = await mcpProjectAccess(ctx.token, args.projectId)
+  // project:rescope (M): a co-owner narrows, widening is the owner's (classifyChange), and the
+  // `authorization` argument stays the owner's below.
+  const { project: { userId: owner }, access } = await mcpProjectAccess(ctx.token, args.projectId, 'M')
   // What authorized a wider scope is the owner's to record (OQ-23), whatever level reaches the rest.
   if (args.authorization !== undefined && access.level !== 'owner') {
     throw new McpLevelDenied("Recording an engagement authorization is the project owner's. Nothing was written.")

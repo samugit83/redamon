@@ -182,6 +182,7 @@ export const ONBOARDING_PLAYBOOK: Record<string, PlaybookEntry> = {
     gotchas: [
       'You see this token owner\'s own projects, and the ones shared with them only if the token was set to include shared projects. Another team\'s estate is invisible otherwise, which is not the same as it not existing.',
       'A shared project (`myAccess.level` read) answers the read tools only: writes, starts and natural-language questions are refused there, and raw Cypher and saved views need `myAccess.toggles.rawData`.',
+      'A Read + Write share (`myAccess.level` write) answers the settings, finding and mute tools; a scan start or queue needs `myAccess.toggles.runScans`, a scope change `manage`, and a refusal names the toggle to ask the owner for.',
       'This reports nothing about scan state. A project in the list may never have been scanned.',
     ],
     workflowRefs: ['find-the-project'],

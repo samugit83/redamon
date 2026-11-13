@@ -258,7 +258,8 @@ export async function submitFindingReview(
 ) {
   requireScope(ctx.token, 'triage:review')
   enforceRate(ctx, 'write')
-  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId)
+  // triage:review (W): an agent's review on a Read + Write share; the graph stays the owner's.
+  const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId, 'W')
   const tenant: TriageTenant = { userId: owner, projectId }
 
   let result
@@ -365,7 +366,8 @@ export async function startTriageRun(ctx: McpContext, projectId: string) {
   // able to consume a project's window. The cheap refusals (a live run, the
   // spacing and the daily cap) come before the rate token and cost nothing;
   // the preflight, which reads the graph, only after it, so a caller looping
-  // on a refusal cannot run it unmetered.
+  // on a refusal cannot run it unmetered. The owner's alone until the run names its person
+  // (step 5.10): a collaborator's run started here would spend and be recorded as the owner's.
   const { userId: owner } = await assertMcpProjectAccess(ctx.token, projectId)
   const tenant: TriageTenant = { userId: owner, projectId }
 

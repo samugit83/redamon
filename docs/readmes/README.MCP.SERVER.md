@@ -622,11 +622,21 @@ its user (step 4.10, SH-42). Every existing token keeps both at their defaults
   the project. Then the share must meet the tool's level: `R` for the read
   tools, `R*` for raw Cypher (`query_graph` with `cypher`) and `run_graph_view`
   (an arbitrary answer can carry attack-chain step content, which is raw data),
-  and the owner's for everything else, so every write, start, queue, Kali and
-  loop tool stays the owner's until Phase 5. A level shortfall answers its own
-  message (`McpLevelDenied`, audited `level_denied`); a project the token does
-  not reach is still `Project not found`. A revoked or expired share fails the
-  next call (nothing is cached).
+  and for the write tools the level of the permission behind them, as the app's
+  route asks it (step 5.2, with write sharing in force): `W` for
+  `update_recon_settings`, `apply_recon_preset`, `set_finding_verdict`,
+  `submit_finding_review`, `mute_findings` and `unmute_findings`; `W+S` (Run
+  scans) for `start_recon`, `stop_recon`, `queue_recon` and `cancel_queued_scan`;
+  `M` (Manage) for `update_project_scope` and `list_engagement_authorizations`.
+  The owner's alone: `attach_engagement_authorization` (and `update_project_scope`'s
+  `authorization`), `start_triage_run` / `stop_triage_run` (until the run names
+  its person, step 5.10), the Kali and loop tools (step 5.10), and capturing a
+  project into a preset. A collaborator's settings, preset and scope changes are
+  judged key by key as the project save judges them (step 5.1b). A level
+  shortfall answers its own message naming the toggle the share lacks
+  (`McpLevelDenied`, audited `level_denied`); a project the token does not reach
+  is still `Project not found`. A revoked or expired share fails the next call
+  (nothing is cached).
 - **The tenant.** Every graph, finding, mute and triage read passes the
   project's owner (the check's `userId`) to the agent, never the token's user,
   and the result check holds the rows to the owner.
@@ -635,8 +645,8 @@ its user (step 4.10, SH-42). Every existing token keeps both at their defaults
   `get_recon_settings` drops the `share: secret` columns (the custom header
   lists); `preflight_scope_check` withholds the authorization record
   (`authorizationWithheld: true`; `engagement.hasAuthorization` still says one
-  exists); `list_engagement_authorizations` stays the owner's, as the app's list
-  asks `engagement:authorize` (`M`).
+  exists); `list_engagement_authorizations` needs Manage, as the app's list asks
+  `M`.
 - **`list_projects`.** Owned projects, plus the live shares when the token
   opted in (narrowed by the allowlist), each row with `myAccess` while the
   sharing switch is on.

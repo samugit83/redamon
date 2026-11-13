@@ -193,7 +193,7 @@ export async function muteFindings(
 ) {
   requireScope(ctx.token, 'triage:mute')
   enforceRate(ctx, 'mute')
-  const { userId: tenant } = await assertMcpProjectAccess(ctx.token, projectId)
+  const { userId: tenant } = await assertMcpProjectAccess(ctx.token, projectId, 'W')
 
   const { keys, graphIds } = refsOf(args.findingIds, args.nodeIds, MUTE_MAX_REFS)
   const reason = (args.reason ?? '').trim()
@@ -312,7 +312,7 @@ export async function unmuteFindings(
 ) {
   requireScope(ctx.token, 'triage:mute')
   enforceRate(ctx, 'mute')
-  const { userId: tenant } = await assertMcpProjectAccess(ctx.token, projectId)
+  const { userId: tenant } = await assertMcpProjectAccess(ctx.token, projectId, 'W')
 
   const { keys, graphIds } = refsOf(args.findingIds, args.nodeIds, UNMUTE_MAX_REFS)
   const includeRuleMutes = args.includeRuleMutes === true

@@ -474,10 +474,23 @@ export interface McpProjectAccess {
   access: ProjectAccess
 }
 
-function levelRefusal(needed: ProjectLevel): string {
+/** The words of a write share's toggles (§6.2), for a refusal that names the one a tool needs. */
+const TOGGLE_WORDS: Readonly<Partial<Record<ProjectLevel, string>>> = {
+  'W+S': 'Run scans', 'W+A': 'Use AI agent', 'W+X': 'Exploitation & shells', M: 'Manage',
+}
+
+function levelRefusal(access: ProjectAccess, needed: ProjectLevel): string {
   if (needed === 'R*') {
     return 'This project is shared with your account without Raw data & files, which this tool needs. ' +
       'Ask the owner to include raw data in the share.'
+  }
+  if (access.level === 'write') {
+    // Step 5.2: a Read + Write share reaches the write tools at its toggles' levels, never the owner's.
+    const toggle = TOGGLE_WORDS[needed]
+    return toggle
+      ? `This project is shared with your account at Read + Write without ${toggle}, which this tool ` +
+        'needs. Ask the owner to include it in the share.'
+      : "This tool is the project owner's alone: it is not available on a project shared with your account."
   }
   return 'This project is shared with your account at Read access, so this tool, which changes it or ' +
     "acts on it, is not available. Only the project's owner can use it."
@@ -493,9 +506,10 @@ function levelRefusal(needed: ProjectLevel): string {
  * only through a share (step 4.10; SH-42): never oversight or break-glass, which would turn an
  * admin's opted-in token into a reader of every project; only when the token opted in; and only
  * when its allowlist is empty or names the project. Then the share must meet `needed`, the level
- * of the permission behind the tool (`R` for a read, `R*` for raw data); a write level is the
- * owner's until Phase 5, so `needed` defaults to the owner and a tool that does not name a read
- * level stays the owner's. A revoked or expired share fails the next call: nothing is cached here.
+ * of the permission behind the tool (`R` for a read, `R*` for raw data, `W` and the toggled levels
+ * for a write at Read + Write, step 5.2), as the app's route asks it; `needed` defaults to the
+ * owner, so a tool that names no level stays the owner's. A revoked or expired share fails the next
+ * call: nothing is cached here.
  */
 export async function mcpProjectAccess(
   token: McpProjectToken | string,
@@ -512,7 +526,7 @@ export async function mcpProjectAccess(
     const reach = holder.sharedProjects
     if (access.via !== 'share' || !reach) throw new McpAccessDenied()
     if (reach.allowlist.length > 0 && !reach.allowlist.includes(projectId)) throw new McpAccessDenied()
-    if (!meetsLevel(access, needed)) throw new McpLevelDenied(levelRefusal(needed))
+    if (!meetsLevel(access, needed)) throw new McpLevelDenied(levelRefusal(access, needed))
   }
   return { project: { id: access.project.id, userId: access.project.userId }, access }
 }

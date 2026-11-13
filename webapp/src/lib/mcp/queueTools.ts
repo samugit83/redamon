@@ -110,7 +110,8 @@ export async function queueRecon(ctx: McpContext, projectId: string) {
   // one-start-per-five-minutes window, and its owner was then refused with
   // "Rate limit reached for this token" - blaming their own credential for a
   // stranger's call. `startRecon` orders these the same way.
-  await assertMcpProjectAccess(ctx.token, projectId)
+  // recon:schedule (W+S), as the app's queue; the job's userId is the person, re-checked at dispatch.
+  await assertMcpProjectAccess(ctx.token, projectId, 'W+S')
   enforceRate(ctx, 'start', projectId, { perProject: true })
 
   // `enqueueJob` does NOT check ownership - its header says callers own that -
@@ -180,7 +181,7 @@ export async function cancelQueuedScan(ctx: McpContext, projectId: string, jobId
   requireScope(ctx.token, 'recon:queue')
   enforceRate(ctx, 'write')
 
-  const job = await assertJobInProject(ctx.token, projectId, jobId)
+  const job = await assertJobInProject(ctx.token, projectId, jobId, 'W+S')
 
   if (!(CANCELLABLE as readonly string[]).includes(job.status)) {
     throw new McpToolError(

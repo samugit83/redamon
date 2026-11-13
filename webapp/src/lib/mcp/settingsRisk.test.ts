@@ -4,11 +4,11 @@
  * does (`classifyChange` → `settingsRefusal`, the same text), and refuse it before anything is written.
  * Recording an engagement authorization stays the owner's on both tools that record one.
  *
- * Today every one of these tools asks the owner's level (4.10: a token reaches a shared project's
- * write tools only once Phase 5 lowers their level, step 5.2b), so the classification is inert: the
- * first block proves it. The others "lift" the level the tool asks to the one 5.2b gives it (W for the
- * settings and the preset, M for the scope) through the real `mcpProjectAccess`, as a collaborator's
- * token will then reach them, and prove the per-key judgment that will stand behind it.
+ * Step 5.2b lowered the three tools from the owner's level (4.10) to their permissions' levels: W for
+ * the settings and the preset, M for the scope. The first block proves it on the tools as they are
+ * (no lift): an editor reaches the first two, the scope needs Manage, a read share reaches none. The
+ * others "lift" the level the tool asks to that same level through the real `mcpProjectAccess`, as
+ * written before 5.2b, and prove the per-key judgment behind it.
  *
  * @vitest-environment node
  */
@@ -147,9 +147,19 @@ beforeEach(() => {
   vi.stubGlobal('fetch', h.fetch)
 })
 
-describe('today: every settings writer is the owner\'s (inert until step 5.2b)', () => {
-  test('a write share with Manage reaches none of them; nothing is read for a decision or written', async () => {
-    h.share = CO_OWNER
+describe('the levels the three tools ask (step 5.2b: W, W, M)', () => {
+  test('an editor reaches the settings and the preset; the scope needs Manage, named; nothing written for it', async () => {
+    h.share = EDITOR
+    await updateReconSettings(ctx(), 'p1', { naabuRateLimit: 7 })
+    expect(h.projectUpdateMany).toHaveBeenCalledTimes(1)
+    const scope = updateProjectScope(ctx(), { projectId: 'p1', changes: { githubTargetOrg: 'acme' } })
+    await expect(scope).rejects.toBeInstanceOf(McpLevelDenied)
+    await expect(scope).rejects.toThrow(/without Manage/)
+    expect(h.projectUpdateMany).toHaveBeenCalledTimes(1)
+  })
+
+  test('a read share reaches none of them; nothing is written', async () => {
+    h.share = { project: P, level: 'read', toggles: { rawData: true }, via: 'share' }
     await expect(updateReconSettings(ctx(), 'p1', { naabuRateLimit: 7 })).rejects.toBeInstanceOf(McpLevelDenied)
     await expect(applyReconPreset(ctx(), { projectId: 'p1', presetId: 'secret-hunter' })).rejects.toBeInstanceOf(McpLevelDenied)
     await expect(updateProjectScope(ctx(), { projectId: 'p1', changes: { githubTargetOrg: 'acme' } })).rejects.toBeInstanceOf(McpLevelDenied)

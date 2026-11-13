@@ -380,11 +380,14 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'when the token was set to include shared projects (optionally only the ones it names). ' +
         'Start here to discover a projectId; every other tool needs one. This does not report ' +
         'scan state - use get_recon_status for that.\n\n' +
-        'When sharing is on, each project carries `myAccess`: `level` owner or read, and for a ' +
-        'shared one who shared it and whether the share includes raw data (`toggles.rawData`). ' +
-        'On a read share only the read tools answer; a tool that changes the project, starts ' +
-        'work on it or spends the owner\'s model key is refused, and raw Cypher and saved views ' +
-        'need raw data.\n\n' +
+        'When sharing is on, each project carries `myAccess`: `level` owner, write or read, and for ' +
+        'a shared one who shared it and its toggles (`toggles.rawData`; on a write share also ' +
+        '`runScans`, `useAgent`, `exploit`, `manage`). On a read share only the read tools answer; ' +
+        'a tool that changes the project, starts work on it or spends the owner\'s model key is ' +
+        'refused, and raw Cypher and saved views need raw data. On a write share the tools that ' +
+        'change settings, findings and mutes answer; starting or queueing a scan needs `runScans`, ' +
+        'changing the scope or reading the engagement authorizations needs `manage`, and what is ' +
+        'the owner\'s alone (an engagement authorization, a triage run, the Kali sandbox) is refused.\n\n' +
         'Each project carries `scopeSummary`, its scope in one line, and `enumerateGroupCount`, ' +
         'how many of its scope groups are fully enumerated: that is the difference between a ' +
         'five-host scan and a multi-hour one.',

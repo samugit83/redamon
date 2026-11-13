@@ -56,7 +56,8 @@ export async function startRecon(
   // Split from recon:scan deliberately: 'overwrite' DISCARDS the current graph.
   if (mode === 'overwrite') requireScope(ctx.token, 'recon:overwrite')
 
-  await assertMcpProjectAccess(ctx.token, projectId)
+  // recon:scan (W+S), as POST /api/recon/[projectId]/start asks it; the scan carries its actor.
+  await assertMcpProjectAccess(ctx.token, projectId, 'W+S')
 
   // Stricter than the button (see the file header). describeLiveGraphWriters
   // also covers Conversation.agentRunning and live TriageRuns.
@@ -148,7 +149,7 @@ export async function startRecon(
  */
 export async function stopRecon(ctx: McpContext, projectId: string) {
   requireScope(ctx.token, 'recon:scan')
-  await assertMcpProjectAccess(ctx.token, projectId)
+  await assertMcpProjectAccess(ctx.token, projectId, 'W+S')
   enforceRate(ctx, 'write')
 
   // The orchestrator answers a stop at once: `stopping` while the run drains
@@ -265,7 +266,8 @@ export async function updateReconSettings(
   expectedUpdatedAt?: string
 ): Promise<UpdateSettingsResult> {
   requireScope(ctx.token, 'recon:settings')
-  const { access } = await mcpProjectAccess(ctx.token, projectId)
+  // project:settings (W), as the project PUT; a collaborator's change is then judged column by column.
+  const { access } = await mcpProjectAccess(ctx.token, projectId, 'W')
   enforceRate(ctx, 'write')
 
   // Recon reads its settings ONCE, at container spawn. A write after a start
