@@ -595,3 +595,37 @@ describe('ownership transfer with write sharing not in force (step 5.12)', () =>
     expect(await writeSharingInForce()).toBe(true)
   })
 })
+
+// Step 5.13: the user-deletion wizard. With write sharing switched off the deletion plan answers 404 before a session
+// or a table is read, and the user DELETE asks no plan: it tears every project down as Phase 1 did
+// (users/[id]/route.delete.wizard.test.ts runs the real DELETE in both states). With the switch on and Root's policy at
+// read the plan exists (a shared project can still be deleted anyway) and an offer or a forced transfer answers 409
+// transfers_unavailable (users/[id]/deletion-plan/route.test.ts).
+describe('the user-deletion wizard with write sharing switched off (step 5.13)', () => {
+  test.each([
+    ['every switch off', {}],
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }],
+    ['the write switch set without sharing', { identity: true, permissions: true, sharingWrite: true }],
+  ] as Array<[string, Partial<RbacFlags>]>)('%s: the plan answers 404 to GET and POST, before any session or table is read', async (_what, flags) => {
+    setFlagsForTests(flags)
+    catalogDoubles.identity.mockClear()
+    const { NextRequest } = await import('next/server')
+    const { GET, POST } = await import('@/app/api/users/[id]/deletion-plan/route')
+    const params = { params: Promise.resolve({ id: 'collab' }) }
+    expect((await GET(new NextRequest('http://x/api/users/collab/deletion-plan'), params)).status).toBe(404)
+    const body = JSON.stringify({ action: 'cancel', projectId: 'P-owner' })
+    const post = new NextRequest('http://x/api/users/collab/deletion-plan', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://x' }, body })
+    expect((await POST(post, params)).status).toBe(404)
+    const { deletionWizardOff } = await import('./userDeletion')
+    expect(deletionWizardOff()).toBe(true)
+    expect(catalogDoubles.identity).not.toHaveBeenCalled()
+    expect(db.projectFindUnique).not.toHaveBeenCalled()
+    expect(db.collaboratorFindUnique).not.toHaveBeenCalled()
+  })
+
+  test('contrast, the write switch on: the plan exists (the cases above are not vacuous)', async () => {
+    setFlagsForTests(ALL_ON)
+    const { deletionWizardOff } = await import('./userDeletion')
+    expect(deletionWizardOff()).toBe(false)
+  })
+})
