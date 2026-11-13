@@ -57,3 +57,5 @@ project_allowlist|ARRAY[]::text[]|YES
 {}
 == plugin access rules [step 6.9]
 0
+== user sessions [step 6.10]
+0

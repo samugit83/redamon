@@ -112,3 +112,16 @@ describe('deleting a project or an account (step 4.2)', () => {
     expect(Object.values(now.McpAccessToken.fields).filter((f) => f.type.replace(/\[\]$|\?$/, '') === 'Project')).toEqual([])
   })
 })
+
+// Step 6.10: a device session holds an address and a browser, personal data that must not outlive the
+// account; the admin who revoked it is a plain id, so the record of the revocation outlives that admin.
+describe('deleting an account: device sessions (step 6.10)', () => {
+  test('UserSession rows cascade with the user; the revoker is no foreign key', () => {
+    const session = now.UserSession
+    expect(session, 'model UserSession').toBeDefined()
+    expect(session.fields.user.line).toMatch(/@relation\(\s*fields:\s*\[userId\],\s*references:\s*\[id\],\s*onDelete:\s*Cascade\s*\)/)
+    expect(now.User.fields.deviceSessions?.type).toBe('UserSession[]')
+    expect(session.fields.revokedById).toMatchObject({ type: 'String?', column: 'revoked_by_id' })
+    expect(session.fields.revokedById.line).not.toContain('@relation')
+  })
+})

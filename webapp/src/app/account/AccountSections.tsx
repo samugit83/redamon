@@ -6,6 +6,7 @@ import { useAlertModal } from '@/components/ui'
 import { IdentityLabel, type AccountType } from '@/components/auth/IdentityLabel'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { EffectivePermissions } from '@/components/admin/EffectivePermissions'
+import { DeviceSessions } from '@/components/admin/DeviceSessions'
 import { permissionsUrl, setInForceText, type AccountPermissionsView } from '@/components/admin/permissionModel'
 import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import { useUsers } from '@/hooks/useUsers'
@@ -179,6 +180,13 @@ export function SessionsSection({ account }: { account: AuthUser }) {
           Sign out everywhere
         </button>
       </div>
+      {account.flags?.governance === true && (
+        <DeviceSessions
+          listUrl="/api/account/sessions"
+          revokeUrl={(id) => `/api/account/sessions/${encodeURIComponent(id)}`}
+          subject="self"
+        />
+      )}
       <p className={styles.hint}>
         <Link href="/settings?tab=mcp-tokens">Manage your MCP tokens</Link>
       </p>

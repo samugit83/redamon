@@ -18,6 +18,7 @@ import { PHASE1_ACT_AS_SECONDS, actAsLifetimeSeconds } from '@/lib/authz/session
 import { endPresentedActAs, impersonationPolicy, parseActAsRequest, startImpersonation } from '@/lib/authz/actAs'
 import { actedAsNotice, appendNotice } from '@/lib/authz/accountNotices'
 import { sessionPrincipal } from '@/lib/authz/sessionPrincipal'
+import { sessionDeviceId } from '@/lib/authz/deviceSessions'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { now } from '@/lib/authz/clock'
 import type { Session } from '@/lib/session'
@@ -142,6 +143,7 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
   const token = await startImpersonation({
     admin: actor, targetUserId, seconds, reason: asked.reason, durationMinutes,
     presentedToken: presentedActAsToken(request),
+    deviceSessionId: sessionDeviceId(admin),
   })
   if (policy!.notifyTarget) await noticeTarget(admin, targetUserId, asked.reason, durationMinutes)
   // The token's own expiry: the wall clock jose signs and checks it with.

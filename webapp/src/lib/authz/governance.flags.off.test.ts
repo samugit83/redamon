@@ -61,6 +61,13 @@
  * end, instanceProviders.test.ts and the routes' tests). A project saved on an `instance/` model then
  * fails closed in the agent (instance_provider_unavailable, agentic/tests/test_instance_providers.py).
  *
+ * Step 6.10 adds device sessions. With the switch off a sign-in writes no `UserSession` row and its token
+ * carries no `sid`; getSession ignores a `sid` claim and reads no row (session.deviceSessions.test.ts); a
+ * sign-out touches no row; the expiry sweep reads no device session and its answer has no `devices` key
+ * (sweep/route.test.ts); /api/account/sessions[/[sid]] and /api/users/[id]/sessions[/[sid]] answer 404
+ * before they read the session or the database (the four route files are readers in GOVERNANCE_READERS;
+ * the test at the end); My account shows no device list (AccountSections.tsx, a reader).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -158,18 +165,25 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
 
   test('no production code reads the governance switch outside the named readers', () => {
     const GOVERNANCE_READERS = [
+      'src/app/account/AccountSections.tsx',
       'src/app/admin/layout.tsx',
+      'src/app/api/account/sessions/[sid]/route.ts',
+      'src/app/api/account/sessions/route.ts',
       'src/app/api/admin/audit/[id]/route.ts',
       'src/app/api/admin/audit/export/route.ts',
       'src/app/api/admin/audit/route.ts',
       'src/app/api/admin/users/[id]/route.ts',
       'src/app/api/admin/users/route.ts',
+      'src/app/api/users/[id]/sessions/[sid]/route.ts',
+      'src/app/api/users/[id]/sessions/route.ts',
       'src/app/plugins/[pluginId]/[[...screen]]/page.tsx',
       'src/app/settings/users/layout.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/components/settings/InstanceTunnelSection.tsx',
       'src/lib/instanceProviders/entitlement.ts',
+      'src/lib/authz/deviceSessions.ts',
+      'src/lib/authz/expirySweep.ts',
       'src/lib/authz/quotas.ts',
       'src/lib/plugins/accessRules.ts',
     ]
@@ -388,5 +402,61 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.6): the audit viewer and its expor
     expect(touched).not.toHaveBeenCalled()
     vi.doUnmock('@/lib/prisma')
     vi.doUnmock('@/lib/session')
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.10): device sessions are neither written, checked nor listed', () => {
+  test('the four device session routes answer 404 and read neither the session nor the database', async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    vi.doMock('@/lib/session', () => ({
+      requireSession: vi.fn(async () => { touched('session'); return { userId: 'adm-a', role: 'admin' } }),
+      requireAdmin: vi.fn(async () => { touched('session'); return { userId: 'adm-a', role: 'admin' } }),
+    }))
+    const { GET: mine } = await import('@/app/api/account/sessions/route')
+    const { DELETE: endMine } = await import('@/app/api/account/sessions/[sid]/route')
+    const { GET: theirs } = await import('@/app/api/users/[id]/sessions/route')
+    const { DELETE: endTheirs } = await import('@/app/api/users/[id]/sessions/[sid]/route')
+    const del = (path: string) => new Request(`http://redamon.test${path}`, { method: 'DELETE' }) as never
+    for (const [identity, permissions] of [['', ''], ['true', 'true']]) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', identity)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', permissions)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect((await mine()).status).toBe(404)
+      expect((await endMine(del('/api/account/sessions/s-1'), { params: Promise.resolve({ sid: 's-1' }) })).status).toBe(404)
+      expect((await theirs(new Request('http://redamon.test/api/users/m-1/sessions'), { params: Promise.resolve({ id: 'm-1' }) })).status).toBe(404)
+      expect((await endTheirs(del('/api/users/m-1/sessions/s-1') as never, { params: Promise.resolve({ id: 'm-1', sid: 's-1' }) })).status).toBe(404)
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/session')
+  })
+
+  test('a sign-in names no device session and writes no row', async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => ({
+      default: {
+        instanceSettings: { findUnique: async () => null },
+        userSession: new Proxy({}, { get: (_t, name) => { touched(`userSession.${String(name)}`); return async () => ({ id: 'x' }) } }),
+      },
+    }))
+    const createToken = vi.fn(async () => 'token')
+    vi.doMock('@/lib/auth', () => ({ createToken }))
+    const { issueLoginToken } = await import('@/lib/authz/sessionLifetime')
+    vi.stubEnv('RBAC_IDENTITY_ENABLED', 'true')
+    vi.stubEnv('RBAC_PERMISSIONS_ENABLED', 'true')
+    vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+    const meta = { ip: '192.0.2.1', ipTrusted: false, userAgent: 'Firefox' }
+    await issueLoginToken({ id: 'm-1', role: 'standard', sessionVersion: 0 }, { device: { meta } })
+    expect(createToken).toHaveBeenCalledTimes(1)
+    expect(createToken.mock.calls[0]).toEqual(['m-1', 'standard', 0, expect.not.objectContaining({ sid: expect.anything() })])
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/auth')
   })
 })

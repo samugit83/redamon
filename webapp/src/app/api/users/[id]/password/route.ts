@@ -19,6 +19,8 @@ import { forbiddenResponse } from '@/lib/authz/guards'
 import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
 import { setLoginCookie } from '@/lib/loginCookie'
 import { issueLoginToken } from '@/lib/authz/sessionLifetime'
+import { sessionDeviceId } from '@/lib/authz/deviceSessions'
+import { getClientMeta } from '@/lib/requestMeta'
 import { parseReason, reasonRequired, resetCredentials, resetStatusRefusal } from '@/lib/authz/resetCredentials'
 
 interface RouteParams {
@@ -182,9 +184,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const response = NextResponse.json({ success: true, revokedMcpTokens: revoked.count })
     // A forced change done: this browser's cookie drops the must-change claim (same version),
     // so the person goes on without signing in again; any other cookie with the claim now
-    // disagrees with the account and signs in again (session.ts).
+    // disagrees with the account and signs in again (session.ts). The browser keeps its device
+    // session (governance on, step 6.10).
     if (isSelf && account?.mustChangePassword) {
-      const { token, maxAge } = await issueLoginToken({ id, role: session.role, sessionVersion: account.sessionVersion })
+      const { token, maxAge } = await issueLoginToken(
+        { id, role: session.role, sessionVersion: account.sessionVersion },
+        { device: { meta: getClientMeta(request), keep: sessionDeviceId(session) } },
+      )
       setLoginCookie(response, request, token, maxAge)
     }
     return response

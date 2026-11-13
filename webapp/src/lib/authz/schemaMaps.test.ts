@@ -343,3 +343,56 @@ describe('the plugin allowlist schema (step 6.9)', () => {
     expect(pointing).toEqual([])
   })
 })
+
+// Step 6.10 (phase_06): device sessions. The table arrives empty, a row is written only at a sign-in
+// with RBAC_GOVERNANCE_ENABLED on, and a login token without `sid` stays valid, so nothing changes for
+// an existing session.
+describe('the device sessions schema (step 6.10)', () => {
+  const columnsOf = (model: string) =>
+    Object.entries(now[model]?.fields ?? {}).filter(([, f]) => !isRelation(f.type)).map(([name]) => name)
+
+  test('the new table maps to user_sessions', () => {
+    expect(now.UserSession?.table).toBe('user_sessions')
+  })
+
+  test.each([
+    ['UserSession', 'id', 'String', 'id'],
+    ['UserSession', 'userId', 'String', 'user_id'],
+    ['UserSession', 'sessionVersion', 'Int', 'session_version'],
+    ['UserSession', 'createdAt', 'DateTime', 'created_at'],
+    ['UserSession', 'lastSeenAt', 'DateTime', 'last_seen_at'],
+    ['UserSession', 'expiresAt', 'DateTime', 'expires_at'],
+    ['UserSession', 'ip', 'String?', 'ip'],
+    ['UserSession', 'ipTrusted', 'Boolean', 'ip_trusted'],
+    ['UserSession', 'userAgent', 'String?', 'user_agent'],
+    ['UserSession', 'revokedAt', 'DateTime?', 'revoked_at'],
+    ['UserSession', 'revokedById', 'String?', 'revoked_by_id'],
+    ['UserSession', 'endedBy', 'String?', 'ended_by'],
+  ])('%s.%s is %s in column %s', (model, name, type, column) => {
+    expect(field(model, name)).toMatchObject({ type, column })
+  })
+
+  test('the table holds exactly these columns, found by account and by the two sweep dates', () => {
+    expect(columnsOf('UserSession')).toEqual([
+      'id', 'userId', 'sessionVersion', 'createdAt', 'lastSeenAt', 'expiresAt', 'ip', 'ipTrusted', 'userAgent',
+      'revokedAt', 'revokedById', 'endedBy',
+    ])
+    expect(field('UserSession', 'id').line).toMatch(/@id\s+@default\(cuid\(\)\)/)
+    expect(field('UserSession', 'createdAt').line).toContain('@default(now())')
+    expect(field('UserSession', 'lastSeenAt').line).toContain('@default(now())')
+    expect(field('UserSession', 'ipTrusted').line).toContain('@default(false)')
+    for (const index of ['@@index([userId])', '@@index([expiresAt])', '@@index([revokedAt])']) {
+      expect(now.UserSession.blockAttributes).toContain(index)
+    }
+  })
+
+  // The address and browser are personal data: they go with the account (and with the row, which
+  // the sweep deletes 30 days after it ended). The revoking admin is a plain id, so deleting that
+  // admin keeps the record of the revocation.
+  test('a session goes with its account; the revoker is no foreign key', () => {
+    expect(field('UserSession', 'user')).toMatchObject({ type: 'User' })
+    expect(field('UserSession', 'user').line).toContain('onDelete: Cascade')
+    expect(field('User', 'deviceSessions').type).toBe('UserSession[]')
+    expect(Object.values(now.UserSession.fields).filter((f) => isRelation(f.type)).map((f) => f.type)).toEqual(['User'])
+  })
+})

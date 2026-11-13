@@ -64,7 +64,7 @@ export const POST = withInviteErrors('invite accept', 'Could not set the passwor
     id: account.id, name: account.name, email: account.email, role: account.role,
     ...(account.notices.length ? { notices: account.notices } : {}),
   })
-  const { token, maxAge } = await issueLoginToken(account)
+  const { token, maxAge } = await issueLoginToken(account, { device: { meta: getClientMeta(request) } })
   setLoginCookie(res, request, token, maxAge)
   clearInviteCookie(res, request)
   // A previous admin session's act-as cookie means nothing for this account.

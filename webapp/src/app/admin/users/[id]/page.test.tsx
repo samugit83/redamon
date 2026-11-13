@@ -279,9 +279,9 @@ describe('states', () => {
     await screen.findByRole('heading', { level: 1, name: 'Marco' })
     await section('MCP tokens').findByRole('cell', { name: 'ci agent' })
     expect(screen.getAllByRole('region').map((r) => r.getAttribute('aria-labelledby'))).toEqual(
-      ['user-profile', 'user-permissions', 'user-projects', 'user-tokens', 'user-activity'])
+      ['user-profile', 'user-permissions', 'user-projects', 'user-tokens', 'user-devices', 'user-activity'])
     expect(screen.getAllByRole('heading', { level: 2 }).map((x) => x.textContent)).toEqual(
-      ['Profile', 'Permissions', 'Projects', 'MCP tokens', 'Recent activity'])
+      ['Profile', 'Permissions', 'Projects', 'MCP tokens', 'Device sessions', 'Recent activity'])
     for (const el of [...screen.getAllByRole('button'), ...screen.getAllByRole('link')]) expect(el).not.toHaveAttribute('tabindex', '-1')
   })
 })

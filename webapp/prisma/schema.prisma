@@ -73,6 +73,7 @@ model User {
   // The projects shared with this account, and its break-glass accesses: both go with it.
   collaborations      ProjectCollaborator[]
   breakGlass          ProjectBreakGlass[]
+  deviceSessions      UserSession[]
 
   @@map("users")
 }
@@ -168,6 +169,34 @@ model UserInvite {
 
   @@index([userId, kind])
   @@map("user_invites")
+}
+
+/// One browser's sign-in (GV-17, step 6.10), written at each sign-in while RBAC_GOVERNANCE_ENABLED is
+/// on; its id rides in the login token as `sid`. Revoking the row ends that browser's session at its
+/// next request, within RBAC_AUTHZ_CACHE_MS; the account's other browsers keep theirs. A row whose
+/// `sessionVersion` is below the account's was ended by a version bump (sign out everywhere, a disable,
+/// a reset), so no bump site writes here. The address and browser live as long as the row: the expiry
+/// sweep deletes it 30 days after it was revoked or expired, and it goes with its account.
+model UserSession {
+  id             String    @id @default(cuid())
+  userId         String    @map("user_id")
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionVersion Int       @map("session_version")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  lastSeenAt     DateTime  @default(now()) @map("last_seen_at")
+  expiresAt      DateTime  @map("expires_at")
+  ip             String?
+  ipTrusted      Boolean   @default(false) @map("ip_trusted")
+  userAgent      String?   @map("user_agent")
+  revokedAt      DateTime? @map("revoked_at")
+  // No foreign key: deleting the admin who revoked it keeps the row.
+  revokedById    String?   @map("revoked_by_id")
+  endedBy        String?   @map("ended_by")                // sign_out | self | admin
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@map("user_sessions")
 }
 
 /// A custom permission set (kind member) or admin profile (kind admin). The built-in

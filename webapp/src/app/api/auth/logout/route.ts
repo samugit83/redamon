@@ -8,6 +8,7 @@ import { getSession } from '@/lib/session'
 import { actingAsUserId, presentedActAsToken } from '@/lib/userAudit'
 import { rbacFlags } from '@/lib/authz/flags'
 import { actsAsOthers, endPresentedActAs } from '@/lib/authz/actAs'
+import { endDeviceSessionAtSignOut, sessionDeviceId } from '@/lib/authz/deviceSessions'
 import { safeErrorCode } from '@/lib/routeErrors'
 
 export async function POST(request: NextRequest) {
@@ -31,6 +32,10 @@ export async function POST(request: NextRequest) {
       console.error(`[rbac] act-as end not recorded at sign-out code=${safeErrorCode(err)}`)
     }
   }
+  // Governance switch on: the browser's device session ends with it (step 6.10), so a copy of the
+  // cookie is refused from now on and the Sessions list shows it signed out.
+  const device = session && sessionDeviceId(session)
+  if (session && device) await endDeviceSessionAtSignOut(device, session.userId)
   const response = NextResponse.json({ ok: true })
   const expire = {
     httpOnly: true,

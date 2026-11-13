@@ -200,6 +200,11 @@ const IDENTITY_READERS: string[] = [
   // Step 3.4: reads an admin's profile and the instance default set only with the permissions
   // switch on, which needs this switch; off, the account type's default (no Root, nothing read).
   'src/lib/authz/capabilities.ts',
+  // Step 6.10: device sessions store the session version a sign-in had (a row below the account's
+  // reads as ended), written and read only with the governance switch on, which needs this switch
+  // (governance.flags.off.test.ts).
+  'src/lib/authz/deviceSessionAdmin.ts',
+  'src/lib/authz/deviceSessions.ts',
   // Step 4.15: the expiry sweep removes expired links only with the switch on (off, it reads none).
   'src/lib/authz/expirySweep.ts',
   // Step 2.9: invite and reset links, reached only through routes that answer 404 with the

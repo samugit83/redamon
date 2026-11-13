@@ -11,10 +11,14 @@
  * - expired overrides: `user.override_expired`, removed (capabilities.ts already ignores them);
  * - expired break-glass rows, and expired unused invite and reset links: removed (their creation
  *   is audited and names the expiry). A used link is kept, the record of how an account was set up.
+ * - device sessions (step 6.10): a row revoked or expired more than 30 days ago is removed, with the
+ *   address and browser it kept (no audit row: the revocation was audited, an expiry is not news).
  *
  * Each part runs only with its switch on, so with a switch off nothing of it is read
  * (*.flags.off.test.ts): shares and break-glass with sharing in force (RBAC_SHARING_ENABLED and the
- * instance policy), overrides with RBAC_PERMISSIONS_ENABLED, links with RBAC_IDENTITY_ENABLED.
+ * instance policy), overrides with RBAC_PERMISSIONS_ENABLED, links with RBAC_IDENTITY_ENABLED, device
+ * sessions with RBAC_GOVERNANCE_ENABLED (whose `removed.devices` exists only then, so the answer with
+ * the switch off is the one before it).
  *
  * Any webapp copy may answer, and two may sweep at once: each audited row is removed by a delete
  * conditional on its expiry, in the transaction that writes its audit row, and only a delete that
@@ -30,18 +34,23 @@ import { WS_SOCKETS } from '@/lib/wsTicket'
 import { now } from './clock'
 import { rbacFlags } from './flags'
 import { sharingInForce } from './sharingPolicy'
+import { sweepDeviceSessions } from './deviceSessions'
 
 /** Audited rows of one kind handled per sweep; the rest wait for the next sweep. */
 export const SWEEP_BATCH = 500
 // Expired shares whose sockets are closed at once (as endSessionsOf's batches).
 const SOCKET_CLOSE_BATCH = 8
 
-export type SweepPart = 'shares' | 'breakGlass' | 'overrides' | 'links'
+export type SweepPart = 'shares' | 'breakGlass' | 'overrides' | 'links' | 'devices'
+type CorePart = Exclude<SweepPart, 'devices'>
 
 export interface SweepResult {
   at: string
-  /** Rows removed per part; null when the part's switch is off (or its gate could not be read). */
-  removed: Record<SweepPart, number | null>
+  /**
+   * Rows removed per part; null when the part's switch is off (or its gate could not be read).
+   * `devices` only with the governance switch on.
+   */
+  removed: Record<CorePart, number | null> & { devices?: number | null }
   /** Expired shares whose sockets the agent did not confirm closed. */
   socketCloseFailed: number
   /** The parts that failed; their rows stay for the next sweep. */
@@ -155,6 +164,7 @@ export async function sweepExpired(): Promise<SweepResult> {
   const at = now()
   const flags = rbacFlags()
   const removed: SweepResult['removed'] = { shares: null, breakGlass: null, overrides: null, links: null }
+  if (flags.governance) removed.devices = null
   const failed: SweepPart[] = []
   const ended: ShareEnded[] = []
 
@@ -183,12 +193,15 @@ export async function sweepExpired(): Promise<SweepResult> {
     }
   }
 
+  if (flags.governance) await run('devices', () => sweepDeviceSessions(at))
+
   const socketCloseFailed = ended.length ? await closeEndedShares(ended) : 0
   if (Object.values(removed).some((n) => n)) {
     const shown = (n: number | null) => (n === null ? 'off' : String(n))
     console.info(
       `[rbac] sweep removed shares=${shown(removed.shares)} breakglass=${shown(removed.breakGlass)} `
       + `overrides=${shown(removed.overrides)} links=${shown(removed.links)}`
+      + (removed.devices !== undefined ? ` devices=${shown(removed.devices)}` : '')
       + (socketCloseFailed ? ` socket_close_failed=${socketCloseFailed}` : ''),
     )
   }

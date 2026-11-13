@@ -1,0 +1,119 @@
+/* Step 6.10: one account's device sessions (My account, the admin console's user detail). */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.hint {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.state {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.error {
+  font-size: var(--text-sm);
+  color: var(--status-error);
+  padding: var(--space-2);
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: var(--radius-default);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--table-border);
+}
+
+.item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.ended {
+  opacity: 0.7;
+}
+
+.what {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--font-medium);
+}
+
+.meta {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  padding: 0 var(--space-1-5);
+  border-radius: var(--radius-default);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.current {
+  border-color: var(--status-success);
+  color: var(--status-success);
+}
+
+.revoke {
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-2-5);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--status-error);
+  background: transparent;
+  border: 1px solid var(--status-error);
+  border-radius: var(--radius-default);
+  cursor: pointer;
+}
+
+.revoke:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.revoke:focus-visible,
+.retry:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.revoke:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.retry {
+  align-self: flex-start;
+}

@@ -6,12 +6,13 @@ import { cachedPrincipal, loadPrincipal, type LoadPrincipalOptions, type Princip
 import { rememberSessionPrincipal, sessionPrincipal } from './authz/sessionPrincipal'
 import { rbacFlags } from './authz/flags'
 import {
-  actAsBindingInForce, actAsRuleRefusal, actsAsOthers, bindingOf, endForRefusal, recordActAsEndQuietly,
+  actAsBindingInForce, actAsRuleRefusal, actsAsOthers, bindingOf, endForRefusal, endPresentedActAs, recordActAsEndQuietly,
   type ActAsActor, type ActAsEnd,
 } from './authz/actAs'
 import { sessionHolds } from './authz/adminPermission'
 import { forbiddenResponse } from './authz/guards'
-import { internalError } from './routeErrors'
+import { deviceSessionRefusal, deviceSessionsInForce, rememberSessionDevice, sessionDeviceId } from './authz/deviceSessions'
+import { internalError, safeErrorCode } from './routeErrors'
 
 export interface Session {
   userId: string
@@ -64,9 +65,30 @@ function refuse(cookieStore: CookieStore): null {
 }
 
 /**
+ * A revoked device session (step 6.10) ends this browser's impersonation too, as a sign-out does:
+ * its act-as token was started from this login (`sid`), so the end row is written now (`invalidated`)
+ * and the cookie cleared, and the impersonation cannot resume when this browser signs in again. A
+ * failed end row is logged; the token is dead anyway, since it acts only beside this login.
+ */
+async function refuseDevice(cookieStore: CookieStore, userId: string): Promise<null> {
+  const actAsToken = cookieStore.get(ACT_AS_COOKIE_NAME)?.value
+  if (actAsToken && rbacFlags().permissions) {
+    try {
+      await endPresentedActAs(userId, actAsToken, 'invalidated')
+    } catch (err) {
+      console.error(`[rbac] act-as end not recorded at a revoked device session code=${safeErrorCode(err)}`)
+    }
+  }
+  if (actAsToken) forgetActAs(cookieStore)
+  return refuse(cookieStore)
+}
+
+/**
  * The signed-in account, or null (the caller answers 401). The login JWT proves who
  * signed in; whether that account still exists, its role, its session version and its
  * status are read from the database, so the role claim in the token is never trusted.
+ * With the governance switch on, a token naming a device session (`sid`) also needs that row
+ * live (authz/deviceSessions.ts, cached as the account is); a token without one passes.
  * A refused cookie is cleared (identity switch on). A failed database read throws: it never
  * reads as signed in, and it keeps the cookie.
  */
@@ -83,8 +105,11 @@ export async function getSession({ fresh = false }: SessionOptions = {}): Promis
   // account read from the database, so only a cached answer is read again (DV-25).
   if (cached && !tokenAccepted(payload, cached)) principal = await loadPrincipal(payload.sub, { fresh: true })
   if (!principal || !tokenAccepted(payload, principal)) return refuse(cookieStore)
+  const device = payload.sid && deviceSessionsInForce() ? payload.sid : null
+  if (device && (await deviceSessionRefusal(device, principal.id, { fresh }))) return refuseDevice(cookieStore, principal.id)
   const session = { userId: principal.id, role: principal.role }
   rememberSessionPrincipal(session, principal)
+  rememberSessionDevice(session, device)
   return session
 }
 
@@ -206,6 +231,8 @@ async function impersonation(session: Session, token: string, cookieStore: Cooki
   }
   if (read.expired) return end('expired')
   if (claims.asv !== undefined && claims.asv !== actor.sessionVersion) return end('invalidated')
+  // Started from another device session (governance on): this login is not the one it belongs to.
+  if (claims.sid !== undefined && deviceSessionsInForce() && claims.sid !== sessionDeviceId(session)) return end('invalidated')
   // Minted under the rule before tokens named their start row: nothing tells a replay apart.
   if ('open' in binding) return end('invalidated')
   if (!(await actAsBindingInForce(actor.id, claims.act, binding))) {

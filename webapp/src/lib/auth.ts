@@ -36,6 +36,10 @@ function isSessionVersion(v: unknown): v is number {
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
 }
 
+// A device session id (authz/deviceSessions.ts, a cuid). Anything else in a `sid` claim makes the token invalid.
+const DEVICE_SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/
+const isDeviceSessionClaim = (v: unknown): v is string => typeof v === 'string' && DEVICE_SESSION_ID.test(v)
+
 /**
  * How long a login token lives (identity switch on, step 2.11; lib/authz/sessionLifetime.ts
  * decides it). An admin's token says so (`adm: 1`) and, with `idleMinutes`, carries its idle
@@ -52,16 +56,18 @@ export interface TokenLifetime {
  * helpers refuse the token once the account's version moves on, which signs it out of
  * every browser at once. `pwc: 1` (identity switch on) says the account must change its
  * password: the middleware holds the browser on the change page without a database read.
- * Without `lifetime` the token is the Phase 1 one: 7 days, no lifetime claim.
+ * Without `lifetime` the token is the Phase 1 one: 7 days, no lifetime claim. `sid` (governance
+ * switch on, step 6.10) names the browser's device session, which getSession checks.
  */
 export async function createToken(
   userId: string,
   role: string,
   sv = 0,
-  { pwc = false, lifetime }: { pwc?: boolean; lifetime?: TokenLifetime } = {},
+  { pwc = false, lifetime, sid }: { pwc?: boolean; lifetime?: TokenLifetime; sid?: string } = {},
 ): Promise<string> {
   if (!isSessionVersion(sv)) throw new Error('A session version is a whole number from 0')
-  const claims = { sub: userId, role, sv, ...(pwc ? { pwc: 1 } : {}) }
+  if (sid !== undefined && !isDeviceSessionClaim(sid)) throw new Error('A device session id is a short id')
+  const claims = { sub: userId, role, sv, ...(pwc ? { pwc: 1 } : {}), ...(sid ? { sid } : {}) }
   if (!lifetime) {
     return new SignJWT(claims)
       .setProtectedHeader({ alg: 'HS256' })
@@ -82,10 +88,10 @@ export async function createToken(
 /**
  * The claims of a valid login token. A token minted before the session version existed
  * (and the Playwright helper's `{sub, role}`) is version 0; a version that is present but
- * not a whole number from 0 makes the token invalid, and so does a `pwc` other than 1 or a
- * malformed lifetime claim.
+ * not a whole number from 0 makes the token invalid, and so does a `pwc` other than 1, a
+ * malformed lifetime claim or a `sid` that is not a device session id.
  */
-export async function verifyToken(token: string): Promise<{ sub: string; role: string; sv: number; pwc?: true } | null> {
+export async function verifyToken(token: string): Promise<{ sub: string; role: string; sv: number; pwc?: true; sid?: string } | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret())
     if (!payload.sub || !payload.role) return null
@@ -93,7 +99,12 @@ export async function verifyToken(token: string): Promise<{ sub: string; role: s
     if (!isSessionVersion(sv)) return null
     if (payload.pwc !== undefined && payload.pwc !== 1) return null
     if (!lifetimeClaimsValid(payload)) return null
-    return { sub: payload.sub, role: payload.role as string, sv, ...(payload.pwc === 1 ? { pwc: true as const } : {}) }
+    if (payload.sid !== undefined && !isDeviceSessionClaim(payload.sid)) return null
+    return {
+      sub: payload.sub, role: payload.role as string, sv,
+      ...(payload.pwc === 1 ? { pwc: true as const } : {}),
+      ...(payload.sid !== undefined ? { sid: payload.sid as string } : {}),
+    }
   } catch {
     return null
   }
@@ -170,39 +181,50 @@ const ACT_AS_EXPIRY = '12h'
  * admin's session version when the impersonation started (step 3.14, permissions switch on): a later
  * change of the admin's version ends it. `jti`: the id of the impersonation's start row in the act-as
  * log; the token acts only while that row is the latest of its pair (authz/actAs.ts `ActAsBinding`).
+ * `sid`: the admin's device session it was started from (governance switch on, step 6.10): it acts
+ * only beside that browser's login token, so revoking the device ends it there for good.
  */
 export async function createActAsToken(
   adminUserId: string,
   targetUserId: string,
   seconds?: number,
-  { asv, jti }: { asv?: number; jti?: string } = {},
+  { asv, jti, sid }: { asv?: number; jti?: string; sid?: string } = {},
 ): Promise<string> {
   if (asv !== undefined && !isSessionVersion(asv)) throw new Error('A session version is a whole number from 0')
   if (jti !== undefined && !jti) throw new Error('An act-as token id is a non-empty string')
-  const claims = { sub: adminUserId, act: targetUserId, ...(asv !== undefined ? { asv } : {}), ...(jti ? { jti } : {}) }
+  if (sid !== undefined && !isDeviceSessionClaim(sid)) throw new Error('A device session id is a short id')
+  const claims = {
+    sub: adminUserId, act: targetUserId, ...(asv !== undefined ? { asv } : {}), ...(jti ? { jti } : {}), ...(sid ? { sid } : {}),
+  }
   const jwt = new SignJWT(claims).setProtectedHeader({ alg: 'HS256' })
   if (seconds === undefined) return jwt.setIssuedAt().setExpirationTime(ACT_AS_EXPIRY).sign(getSecret())
   const iat = Math.floor(Date.now() / 1000)
   return jwt.setIssuedAt(iat).setExpirationTime(iat + seconds).sign(getSecret())
 }
 
-/** The claims of an act-as token; `asv` and `jti` only on a token minted with the permissions switch on. */
+/**
+ * The claims of an act-as token; `asv` and `jti` only on a token minted with the permissions switch
+ * on, `sid` only with the governance switch on.
+ */
 export interface ActAsClaims {
   sub: string
   act: string
   asv?: number
   jti?: string
+  sid?: string
 }
 
 function actAsClaims(payload: Record<string, unknown>): ActAsClaims | null {
   if (typeof payload.sub !== 'string' || !payload.sub || typeof payload.act !== 'string' || !payload.act) return null
   if (payload.asv !== undefined && !isSessionVersion(payload.asv)) return null
   if (payload.jti !== undefined && (typeof payload.jti !== 'string' || !payload.jti)) return null
+  if (payload.sid !== undefined && !isDeviceSessionClaim(payload.sid)) return null
   return {
     sub: payload.sub,
     act: payload.act,
     ...(payload.asv !== undefined ? { asv: payload.asv } : {}),
     ...(payload.jti !== undefined ? { jti: payload.jti } : {}),
+    ...(payload.sid !== undefined ? { sid: payload.sid as string } : {}),
   }
 }
 

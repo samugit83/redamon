@@ -434,6 +434,8 @@ export interface ImpersonationStart {
   durationMinutes: number
   /** The act-as token the browser sent: the impersonation it names ends here. */
   presentedToken: string | null
+  /** The admin's device session (governance on, step 6.10): the token acts only beside that login. */
+  deviceSessionId?: string | null
 }
 
 /**
@@ -449,7 +451,9 @@ export async function startImpersonation(start: ImpersonationStart): Promise<str
   const { admin, targetUserId, seconds, reason, durationMinutes } = start
   await settleExpiredActAs({ adminId: admin.id })
   const startId = randomUUID()
-  const token = await createActAsToken(admin.id, targetUserId, seconds, { asv: admin.sessionVersion, jti: startId })
+  const token = await createActAsToken(admin.id, targetUserId, seconds, {
+    asv: admin.sessionVersion, jti: startId, ...(start.deviceSessionId ? { sid: start.deviceSessionId } : {}),
+  })
   const previous = await presentedBy(admin.id, start.presentedToken)
   const ends: ActAsEndInput[] = []
   if (previous) {

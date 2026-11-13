@@ -12,8 +12,11 @@
 import prisma from '@/lib/prisma'
 import { createToken } from '@/lib/auth'
 import { safeErrorCode } from '@/lib/routeErrors'
+import type { ClientMeta } from '@/lib/requestMeta'
 import { rbacFlags } from './flags'
 import { INSTANCE_SETTINGS_ROW } from './root'
+import { now } from './clock'
+import { deviceSessionsInForce, keepDeviceSession, openDeviceSession } from './deviceSessions'
 
 const HOUR = 60 * 60
 
@@ -60,13 +63,24 @@ export async function sessionLifetimes(): Promise<SessionLifetimes> {
 }
 
 /**
+ * The browser a login token is for (step 6.10): `meta` describes it (address, browser), `keep` is the
+ * device session its current cookie names, carried over by a re-issue (a password change).
+ */
+export interface LoginDevice {
+  meta: ClientMeta
+  keep?: string | null
+}
+
+/**
  * A login token for `account` and how long its cookie lives: at sign-in, at an invite accept and
  * when a password change re-issues it. `pwc` is the must-change claim (step 2.8), which like the
- * lifetimes exists only with the switch on.
+ * lifetimes exists only with the switch on. With the governance switch on and a `device`, the token
+ * names that browser's device session (`sid`): the kept one when it is still this account's live row,
+ * else a new one. Writing the row can fail: then no token is issued (the caller answers 500).
  */
 export async function issueLoginToken(
   account: { id: string; role: string; sessionVersion: number },
-  { pwc = false }: { pwc?: boolean } = {},
+  { pwc = false, device }: { pwc?: boolean; device?: LoginDevice } = {},
 ): Promise<{ token: string; maxAge: number }> {
   if (!rbacFlags().identity) {
     return { token: await createToken(account.id, account.role, account.sessionVersion), maxAge: PHASE1_LOGIN_SECONDS }
@@ -74,11 +88,19 @@ export async function issueLoginToken(
   const lifetimes = await sessionLifetimes()
   const admin = account.role === 'admin'
   const seconds = (admin ? lifetimes.adminSessionTtlHours : lifetimes.memberSessionTtlHours) * HOUR
+  const sid = device && deviceSessionsInForce() ? await deviceSessionFor(account, device, seconds) : undefined
   const token = await createToken(account.id, account.role, account.sessionVersion, {
     pwc,
     lifetime: { seconds, admin, idleMinutes: admin ? lifetimes.adminIdleMinutes : null },
+    ...(sid ? { sid } : {}),
   })
   return { token, maxAge: seconds }
+}
+
+async function deviceSessionFor(account: { id: string; sessionVersion: number }, device: LoginDevice, seconds: number): Promise<string> {
+  const expiresAt = new Date(now().getTime() + seconds * 1000)
+  if (device.keep && (await keepDeviceSession(device.keep, account, expiresAt))) return device.keep
+  return openDeviceSession(account, device.meta, expiresAt)
 }
 
 /**

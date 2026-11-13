@@ -111,3 +111,9 @@ SELECT sharing_policy::text FROM instance_settings;
 -- available to everyone holding plugins:use, whatever RBAC_GOVERNANCE_ENABLED says.
 \echo == plugin access rules [step 6.9]
 SELECT count(*) FROM plugin_access_rules;
+
+-- Device sessions arrive empty (step 6.10): a row is written only at a sign-in with
+-- RBAC_GOVERNANCE_ENABLED on, and a login token without `sid` stays valid, so every existing session
+-- goes on as before.
+\echo == user sessions [step 6.10]
+SELECT count(*) FROM user_sessions;

@@ -25,6 +25,9 @@
  *   notices (`appendNotice`), which writes only when the stored list is still the one it read;
  * - (step 6.9) the plugin access rules (`pluginAccessRule`: find, count, delete and create many,
  *   unique per plugin and set), rolled back with the rest.
+ * - (step 6.10) the device sessions (`userSession`: create, find, update and delete many), deleted
+ *   with their account as the schema's cascade, rolled back with the rest; `where` also matches
+ *   `{lte}` on dates.
  */
 import { Prisma } from '@prisma/client'
 
@@ -55,6 +58,7 @@ function matches(row: Row, where: Row = {}): boolean {
       if ('in' in c && !(c.in as unknown[]).includes(v)) return false
       if ('gt' in c && !(v instanceof Date && v.getTime() > (c.gt as Date).getTime())) return false
       if ('lt' in c && !(v instanceof Date && v.getTime() < (c.lt as Date).getTime())) return false
+      if ('lte' in c && !(v instanceof Date && v.getTime() <= (c.lte as Date).getTime())) return false
       continue
     }
     if (cond === null ? v !== null && v !== undefined : v !== cond) return false
@@ -95,6 +99,7 @@ export function createAccountDb() {
     assignments: [] as Row[],
     overrides: [] as Row[],
     pluginRules: [] as Row[],
+    sessions: [] as Row[],
   }
   const failing = new Set<string>()
   const rawCalls: string[] = []
@@ -149,6 +154,7 @@ export function createAccountDb() {
       state.invites = state.invites.filter((v) => v.userId !== r.id)
       state.assignments = state.assignments.filter((v) => v.userId !== r.id)
       state.overrides = state.overrides.filter((v) => v.userId !== r.id)
+      state.sessions = state.sessions.filter((v) => v.userId !== r.id)
       return r
     },
     deleteMany: async (a: { where?: Row } = {}) => {
@@ -158,6 +164,7 @@ export function createAccountDb() {
       state.invites = state.invites.filter((v) => !ids.has(v.userId))
       state.assignments = state.assignments.filter((v) => !ids.has(v.userId))
       state.overrides = state.overrides.filter((v) => !ids.has(v.userId))
+      state.sessions = state.sessions.filter((v) => !ids.has(v.userId))
       return { count: gone.length }
     },
   }
@@ -341,9 +348,45 @@ export function createAccountDb() {
   const userPermissionSet = rowsOf('assignments')
   const userPermissionOverride = rowsOf('overrides')
   const pluginAccessRule = rowsOf('pluginRules')
+  let sessionSeq = 0
+  const userSession = {
+    create: async (a: { data: Row; select?: Row }) => {
+      const at = new Date()
+      const r: Row = {
+        id: `sess-${++sessionSeq}`, createdAt: at, lastSeenAt: at, ip: null, ipTrusted: false, userAgent: null,
+        revokedAt: null, revokedById: null, endedBy: null, ...a.data,
+      }
+      if (!state.users.some((u) => u.id === r.userId)) {
+        throw new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', { code: 'P2003', clientVersion: 'fake' })
+      }
+      state.sessions.push(r)
+      return pick(r, a.select)
+    },
+    findUnique: async (a: { where: Row; select?: Row }) => {
+      const r = state.sessions.find((x) => matches(x, a.where))
+      return r ? pick(r, a.select) : null
+    },
+    findFirst: async (a: { where?: Row; select?: Row } = {}) => {
+      const r = state.sessions.find((x) => matches(x, a.where))
+      return r ? pick(r, a.select) : null
+    },
+    findMany: async (a: { where?: Row; select?: Row; take?: number } = {}) =>
+      state.sessions.filter((x) => matches(x, a.where)).slice(0, a.take ?? Infinity).map((x) => pick(x, a.select)),
+    count: async (a: { where?: Row } = {}) => state.sessions.filter((x) => matches(x, a.where)).length,
+    updateMany: async (a: { where?: Row; data: Row }) => {
+      const rows = state.sessions.filter((x) => matches(x, a.where))
+      for (const r of rows) Object.assign(r, a.data)
+      return { count: rows.length }
+    },
+    deleteMany: async (a: { where?: Row } = {}) => {
+      const gone = state.sessions.filter((x) => matches(x, a.where))
+      state.sessions = state.sessions.filter((x) => !gone.includes(x))
+      return { count: gone.length }
+    },
+  }
   const client = {
     user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, userInvite,
-    permissionSet, userPermissionSet, userPermissionOverride, pluginAccessRule, $executeRaw, $queryRaw,
+    permissionSet, userPermissionSet, userPermissionOverride, pluginAccessRule, userSession, $executeRaw, $queryRaw,
   }
 
   async function $transaction<T>(fn: ((tx: typeof client) => Promise<T>) | Promise<unknown>[]): Promise<T> {
@@ -365,6 +408,7 @@ export function createAccountDb() {
         state.assignments = snapshot.assignments
         state.overrides = snapshot.overrides
         state.pluginRules = snapshot.pluginRules
+        state.sessions = snapshot.sessions
         throw e
       }
     })
@@ -434,6 +478,15 @@ export function createAccountDb() {
       for (const setId of setIds) state.pluginRules.push({ pluginId, setId, createdById: 'admin-1', createdAt: new Date(0) })
     },
     pluginRules: () => state.pluginRules.map((x) => ({ ...x })),
+    /** A device session row (step 6.10), its other columns defaulted: live, never seen since `createdAt`. */
+    seedSession(row: { id: string; userId: string; sessionVersion: number; expiresAt: Date } & Row) {
+      const createdAt = (row.createdAt as Date | undefined) ?? new Date(0)
+      state.sessions.push({
+        createdAt, lastSeenAt: createdAt, ip: null, ipTrusted: false, userAgent: null, revokedAt: null,
+        revokedById: null, endedBy: null, ...row,
+      })
+    },
+    sessions: () => state.sessions.map((x) => ({ ...x })),
     sets: () => state.sets.map((x): Row => ({ ...x, permissions: [...(x.permissions as string[])] })),
     assignments: () => state.assignments.map((x) => ({ ...x })),
     overrides: () => state.overrides.map((x) => ({ ...x })),
@@ -453,6 +506,8 @@ export function createAccountDb() {
       state.assignments = []
       state.overrides = []
       state.pluginRules = []
+      state.sessions = []
+      sessionSeq = 0
       inviteSeq = 0
       setSeq = 0
       actAsSeq = 0

@@ -27,6 +27,7 @@ const h = vi.hoisted(() => {
     breakGlass: [] as Row[],
     overrides: [] as Row[],
     invites: [] as Row[],
+    sessions: [] as Row[],
     audit: [] as Row[],
     instance: null as Row | null,
     /** Every table a call read or wrote. */
@@ -79,6 +80,7 @@ const h = vi.hoisted(() => {
     projectBreakGlass: table('projectBreakGlass', () => s.breakGlass, (r) => { s.breakGlass = r }),
     userPermissionOverride: table('userPermissionOverride', () => s.overrides, (r) => { s.overrides = r }),
     userInvite: table('userInvite', () => s.invites, (r) => { s.invites = r }),
+    userSession: table('userSession', () => s.sessions, (r) => { s.sessions = r }),
     auditLog: {
       create: async ({ data }: { data: Row }) => {
         s.touched.add('auditLog')
@@ -158,7 +160,7 @@ const sweep = async () => {
 
 beforeEach(() => {
   Object.assign(h.s, {
-    collaborators: [], breakGlass: [], overrides: [], invites: [], audit: [],
+    collaborators: [], breakGlass: [], overrides: [], invites: [], sessions: [], audit: [],
     instance: { id: 'instance', sharingPolicy: { enabled: true }, passwordMinLength: 12, passwordAskChangeIfShort: false },
     auditFails: false, afterShareRead: null,
   })
@@ -484,5 +486,53 @@ describe('each part only with its switch on (DV-30)', () => {
     } finally {
       h.client.instanceSettings = { findUnique: async () => ({ ...h.s.instance }) }
     }
+  })
+})
+
+// Step 6.10: device sessions are kept 30 days after they ended (revoked, signed out or expired), with
+// the address and browser they hold, then removed without an audit row; only with the governance switch.
+describe('device sessions (step 6.10)', () => {
+  const GOVERNANCE: Partial<RbacFlags> = { ...ALL_ON, governance: true }
+  const DAY = 24 * 60
+  const deviceRow = (id: string, extra: Row): Row => ({
+    id, userId: 'member-1', sessionVersion: 0, createdAt: ago(60 * DAY), lastSeenAt: ago(40 * DAY), expiresAt: later(DAY),
+    ip: '192.0.2.1', ipTrusted: false, userAgent: 'Firefox', revokedAt: null, revokedById: null, endedBy: null, ...extra,
+  })
+
+  test('governance on: a row revoked or expired 30 days ago or more is removed, a younger or live one stays, no audit row', async () => {
+    setFlagsForTests(GOVERNANCE)
+    h.s.sessions = [
+      deviceRow('revoked-31d', { revokedAt: ago(31 * DAY), endedBy: 'admin' }),
+      deviceRow('signed-out-30d', { revokedAt: ago(30 * DAY), endedBy: 'sign_out' }),
+      deviceRow('expired-45d', { expiresAt: ago(45 * DAY) }),
+      deviceRow('revoked-29d', { revokedAt: ago(29 * DAY), endedBy: 'self' }),
+      deviceRow('expired-2d', { expiresAt: ago(2 * DAY) }),
+      deviceRow('live', {}),
+    ]
+    const { status, body } = await sweep()
+    expect(status).toBe(200)
+    expect(body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0, devices: 3 })
+    expect(h.s.sessions.map((r) => r.id).sort()).toEqual(['expired-2d', 'live', 'revoked-29d'])
+    expect(h.s.audit).toEqual([])
+    expect((await sweep()).body.removed.devices).toBe(0)
+  })
+
+  test('governance off (the other switches on): no device session is read, and the answer has no devices key', async () => {
+    h.s.sessions = [deviceRow('revoked-31d', { revokedAt: ago(31 * DAY) })]
+    const { body } = await sweep()
+    expect(body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0 })
+    expect(h.s.touched.has('userSession')).toBe(false)
+    expect(h.s.sessions).toHaveLength(1)
+  })
+
+  test('the part fails: 500 sweep_incomplete naming it, the other parts still ran', async () => {
+    setFlagsForTests(GOVERNANCE)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const client = h.client as { userSession: { deleteMany: (...a: unknown[]) => Promise<unknown> } }
+    vi.spyOn(client.userSession, 'deleteMany').mockRejectedValueOnce(Object.assign(new Error('db down'), { code: 'P1001' }))
+    h.s.overrides = [override('member-1', 'agent:chat', ago(1))]
+    const { status, body } = await sweep()
+    expect(status).toBe(500)
+    expect(body).toMatchObject({ code: 'sweep_incomplete', failed: ['devices'], removed: { overrides: 1, devices: null } })
   })
 })

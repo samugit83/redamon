@@ -106,8 +106,11 @@ export async function POST(request: NextRequest) {
 
     // The token carries the version the account holds now: raising it later signs this
     // browser out, together with every other one. With the identity switch on it lives as long
-    // as the instance gives this kind of account (step 2.11), and so does its cookie.
-    const { token, maxAge } = await issueLoginToken({ id: user.id, role: user.role, sessionVersion }, { pwc: mustChange })
+    // as the instance gives this kind of account (step 2.11), and so does its cookie; with the
+    // governance switch on it names this browser's new device session (step 6.10).
+    const { token, maxAge } = await issueLoginToken(
+      { id: user.id, role: user.role, sessionVersion }, { pwc: mustChange, device: { meta } },
+    )
 
     const response = NextResponse.json({
       id: user.id,

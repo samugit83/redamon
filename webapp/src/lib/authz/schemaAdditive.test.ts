@@ -101,3 +101,16 @@ describe('the plugin allowlist schema is additive (step 6.9)', () => {
     expect(Object.values(old).map((m) => m.table)).not.toContain('plugin_access_rules')
   })
 })
+
+// Step 6.10: device sessions are one new table and a back-relation on User (no column).
+describe('the device sessions schema is additive (step 6.10)', () => {
+  test('user_sessions is new: no 7.7.2 table is reused', () => {
+    expect(old.UserSession).toBeUndefined()
+    expect(Object.values(old).map((m) => m.table)).not.toContain('user_sessions')
+  })
+
+  test('User gains a relation field only, never a column', () => {
+    expect(old.User.fields.deviceSessions).toBeUndefined()
+    expect(now[baseType(now.User.fields.deviceSessions.type)]).toBeDefined()
+  })
+})

@@ -10,6 +10,7 @@ import { IdentityLabel } from '@/components/auth/IdentityLabel'
 import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import { UserPermissionsPanel } from '@/components/admin/UserPermissionsPanel'
 import { RoleControl } from '@/components/admin/RoleControl'
+import { DeviceSessions } from '@/components/admin/DeviceSessions'
 import { fetchJson, fetchOk, toApiError } from '@/lib/apiError'
 import type { DirectoryRow, UserDetail } from '@/lib/authz/userDirectory'
 import type { AuditRowView } from '@/lib/authz/auditReader'
@@ -186,11 +187,37 @@ export default function AdminUserDetailPage() {
         <McpTokensSection user={user} canRevoke={user.self || user.actions.includes('revoke_sessions')} />
       </section>
 
+      <section className={styles.section} aria-labelledby="user-devices">
+        <h2 id="user-devices" className={styles.sectionTitle}>Device sessions</h2>
+        <DeviceSessionsSection user={user} />
+      </section>
+
       <section className={styles.section} aria-labelledby="user-activity">
         <h2 id="user-activity" className={styles.sectionTitle}>Recent activity</h2>
         {'denied' in audit ? <ForbiddenNotice permission={audit.denied} /> : <AuditRows userId={user.id} rows={audit.rows} />}
       </section>
     </div>
+  )
+}
+
+/**
+ * The browsers the account is signed in from (step 6.10), for whoever may sign it out
+ * (users:revoke_sessions, and on another admin the hierarchy's rule: the row's `revoke_sessions` action).
+ * Revoking an admin's asks for the person's own password.
+ */
+function DeviceSessionsSection({ user }: { user: DirectoryRow }) {
+  if (user.self) return <p className={consoleStyles.state}>Your own browsers are under <Link href="/account">My account</Link>.</p>
+  if (!user.actions.includes('revoke_sessions')) {
+    return <p className={consoleStyles.state}>Only whoever may sign this account out sees its device sessions.</p>
+  }
+  const id = encodeURIComponent(user.id)
+  return (
+    <DeviceSessions
+      listUrl={`/api/users/${id}/sessions`}
+      revokeUrl={(sid) => `/api/users/${id}/sessions/${encodeURIComponent(sid)}`}
+      subject={{ name: user.name }}
+      stepUp={user.accountType === 'admin'}
+    />
   )
 }
 
