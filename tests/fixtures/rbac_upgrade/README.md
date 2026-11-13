@@ -14,6 +14,8 @@ user, host, scan result or secret is in any file here.
 | `expected/<scenario>.after.out` | what `checks.sql` then `checks_after.sql` must print after the new image's startup list, the RBAC switches off |
 | `expected/<scenario>.after.identity.out` | the same with `RBAC_IDENTITY_ENABLED` on and `RBAC_PERMISSIONS_ENABLED` off (the harness picks it when only the identity switch reads on) |
 | `expected/<scenario>.after.permissions.out` | the same with `RBAC_IDENTITY_ENABLED` and `RBAC_PERMISSIONS_ENABLED` on (the harness picks it when both read on) |
+| `expected/<scenario>.capabilities.out`, `.capabilities.identity.out`, `.capabilities.permissions.out` | what each account may do after the upgrade, as `/api/auth/me` must answer it in `serve-check`, picked by the switches as the `.after` files are (below) |
+| `preview_after.sql` | what the startup list wrote, in the lines the `preview` mode makes of the upgrade preview, run after the list only |
 
 ## Scenarios
 
@@ -79,6 +81,57 @@ that changes the upgrade by design appends its queries to `checks_after.sql`, it
 `.after.out`, `.after.identity.out` and `.after.permissions.out`, and the audit actions it writes to
 `UPGRADE_AUDIT_ACTIONS` in the harness (left out of the row-count comparison, pinned by count in
 the markers section instead).
+
+## The capabilities oracles (`serve-check`)
+
+`serve-check` boots the scenario's server as `serve` does, signs every account in with the
+password above, and diffs the `capabilities` of `/api/auth/me` against the scenario's oracle;
+a login cookie minted as 7.7.x minted it (`{sub, role}` with `iat` and a 7-day `exp`, no `sv`,
+no `sid`, signed with the harness's fake `AUTH_SECRET`) must give the same answer, one signed
+with another secret 401, and `/api/projects` must list each account's own projects only. The
+oracle is hand-written, one line per account, `<email>|<tokens>`, the tokens applied left to
+right against the image's own `src/lib/authz/permissionCatalog.json`:
+
+| Token | Meaning |
+| --- | --- |
+| `builtin:<slug>` | adds every permission of that built-in set or admin profile |
+| `root` / `root_unconfirmed` | adds every permission / every one but the Root-only ones |
+| `+<permission>` / `-<permission>` | adds / removes one permission |
+| `login_refused` (alone) | the account has no password: the sign-in must answer 401 |
+
+The statement each file makes, for every scenario (step 7.1, UP-04: each account keeps its
+7.7.x rights, minus the Phase 1 holes and the admin-on-admin actions, plus its legacy grants):
+
+- `.capabilities.out`, every switch off: an admin holds `builtin:full-admin
+  builtin:default-member +admins:manage` (Phase 1's rule: admins manage admins); a member
+  `builtin:default-member` plus a platform permission per legacy grant the boot wrote
+  (`kali_terminal`, `shell_sessions`, `tunnels` -> `platform:<grant>`).
+- `.capabilities.identity.out`, `RBAC_IDENTITY_ENABLED` on: the Root the boot chose holds
+  `root_unconfirmed` (it is automatic until the host confirms it); the other admins lose
+  `admins:manage`; members as above.
+- `.capabilities.permissions.out`, identity and permissions on (also the file for all five
+  switches: the resolution reads no other switch, `src/lib/authz/capabilities.ts`): the same
+  holders, but every account loses `self:mcp_tokens` and `agent:loop`, capped by the instance
+  because the server runs without `MCP_SERVER_ENABLED` and `AGENT_IN_THE_LOOP_ENABLED`, and
+  members lose their legacy grants, which the boot's conversion lapsed (no Keep decision).
+
+A step that changes what an account holds after the upgrade by design updates these lines;
+`bash tests/rbac_upgrade_live.sh selftest` (offline, no Docker) checks that each file names
+every fixture account once and only known sets and permissions.
+
+## The preview diff (`preview`)
+
+`preview` runs the image's `scripts/rbac-upgrade-preview.mjs` on the fixture, as
+`./redamon.sh update` does between the build and the restart, then the startup list. The
+harness reduces each preview section to one line per fact (`root|<email>|<rule>|<candidates>`,
+`legacy_grants|<email>|<grants>`, `tunnel_rows|<email>|<role>|<kinds>|<enabled>`,
+`tunnel_pick|<email>`, `instance_settings|tunnel|<email>|<candidates>` and `|capture|`,
+`stdio_mcp|<email>|<server>`, `mcp_token_env_var|<email>|<server>|<variable>`,
+`scanner_key|set`) and diffs them against what `preview_after.sql` reads of the database the
+run left. The preview must also write nothing and exit 10 exactly when `preview_after.sql`
+says it has something to review (`review|yes`), else 0, when it prints only `root` and
+`instance_settings`. `legacy_grants` after a boot with the permissions switch on is what
+members keep once the conversion ran: only the grants kept as overrides, none in any fixture.
 
 ## The pinned 7.7.2 image
 

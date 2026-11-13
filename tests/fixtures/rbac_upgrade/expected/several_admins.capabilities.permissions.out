@@ -1,0 +1,4 @@
+upg-admin-c@e2e.local|root_unconfirmed -self:mcp_tokens -agent:loop
+upg-admin-b@e2e.local|builtin:full-admin builtin:default-member -self:mcp_tokens -agent:loop
+upg-admin-a@e2e.local|builtin:full-admin builtin:default-member -self:mcp_tokens -agent:loop
+upg-member-a@e2e.local|builtin:default-member -self:mcp_tokens -agent:loop

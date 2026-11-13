@@ -1,0 +1,4 @@
+upg-admin-c@e2e.local|root_unconfirmed
+upg-admin-b@e2e.local|builtin:full-admin builtin:default-member
+upg-admin-a@e2e.local|builtin:full-admin builtin:default-member
+upg-member-a@e2e.local|builtin:default-member +platform:kali_terminal +platform:shell_sessions

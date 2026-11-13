@@ -1,0 +1,5 @@
+upg-admin-a@e2e.local|root_unconfirmed -self:mcp_tokens -agent:loop
+upg-member-a@e2e.local|builtin:default-member -self:mcp_tokens -agent:loop
+upg-member-b@e2e.local|builtin:default-member -self:mcp_tokens -agent:loop
+upg-member-c@e2e.local|login_refused
+upg-member-d@e2e.local|login_refused

@@ -1,0 +1,2 @@
+upg-member-a@e2e.local|builtin:default-member -self:mcp_tokens -agent:loop
+upg-member-b@e2e.local|builtin:default-member -self:mcp_tokens -agent:loop

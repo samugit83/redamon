@@ -352,21 +352,32 @@ caller's environment (the instance settings marker records the switch on); again
 converts the legacy grants: every held grant lapses, since no fixture holds a Keep decision).
 
 ```bash
-bash tests/rbac_upgrade_live.sh all twice parallel failure   # the regression chain
+bash tests/rbac_upgrade_live.sh all twice parallel failure preview serve-check   # the regression chain
 RBAC_UPGRADE_SCENARIOS='^one_admin$' bash tests/rbac_upgrade_live.sh twice
 bash tests/rbac_upgrade_live.sh serve several_admins   # 127.0.0.1:3901 until Ctrl-C
+bash tests/rbac_upgrade_live.sh selftest               # offline: oracles, preview reader, cookie minter
 ```
 
 `twice` runs the list twice; `parallel` starts two containers at once (several webapp copies);
 `failure` deletes a backfill's marker, holds a lock on the table it reads and re-runs only that
 backfill with a 2 s `lock_timeout`: it must log the failure, exit 0 and write no marker, and the
 next run completes it (`RBAC_UPGRADE_FAIL_BACKFILL` picks the backfill: `user-skill-toggles`,
-`rbac-legacy-grants`, `rbac-instance-settings`, `rbac-root`, or `rbac-legacy-overrides` with the
+`rbac-legacy-grants`, `nuclei-template-owners` (locked on `audit_log`: with no template file it
+reads nothing else), `rbac-instance-settings`, `rbac-root`, or `rbac-legacy-overrides` with the
 permissions switch on; the Root choice skips on its data, so that preset also clears the Root it
-chose). `serve` boots the server on the scenario database with fake secrets, the
+chose). `preview` runs the image's upgrade preview on the fixture before the list, as
+`./redamon.sh update` does: it must write nothing, exit 10 exactly when it has something to
+review, and name what the run then wrote (Root, legacy grants, tunnel rows, instance settings
+sources, stdio servers that stop loading, bearers read from the environment), diffed against
+`preview_after.sql`. `serve-check` boots the server and signs every fixture account in: the
+`capabilities` of `/api/auth/me` must equal `expected/<scenario>.capabilities[.identity|.permissions].out`
+(picked by the switches as the `.after` files are), a 7.7.x cookie (`{sub, role}`, no `sv`, no
+`sid`) must answer the same and one signed with another secret 401, and each account must list
+only its own projects. `serve` boots the server on the scenario database with fake secrets, the
 disposable instance for checks that would move or sign out the dev stack's own admin. It needs
-Docker, `redamon-webapp:latest`, `redamon-webapp:rbac-7.7.2` and `postgres:16-alpine`, and
-prints `SKIP` without one (it never pulls or builds); as a `*_live.sh` it is never in the gate.
+Docker, `redamon-webapp:latest`, `redamon-webapp:rbac-7.7.2` and `postgres:16-alpine` (and
+`python3` for `preview`, `serve-check` and `selftest`), and prints `SKIP` without one (it never
+pulls or builds); as a `*_live.sh` it is never in the gate.
 The fixtures' README explains the password, the regeneration (`regen` mode) and how to rebuild
 the pinned image with `git archive 442debbf:webapp | docker build -t redamon-webapp:rbac-7.7.2 -`.
 

@@ -35,12 +35,28 @@
 #             appended to its own DATABASE_URL: it must log a failure, exit 0 and leave
 #             no marker; the lock is released and a third run of the list completes it.
 #             The lock covers only the backfill, never the fatal `db push`.
+#   preview   the image's upgrade preview (scripts/rbac-upgrade-preview.mjs, as
+#             ./redamon.sh update runs it) on the fixture before the list: it must write
+#             nothing, exit 10 exactly when it has something to review (else 0), and name
+#             what the run then wrote: its root, legacy_grants, tunnel_rows,
+#             instance_settings, stdio_mcp, mcp_token_env_var and scanner_key sections,
+#             reduced to one line per fact, diffed against preview_after.sql's lines.
+#   serve-check  the list, then the image's server as `serve` boots it; every fixture
+#             account signs in (or is refused, passwordless) and /api/auth/me's
+#             capabilities must equal expected/<scenario>.capabilities[.identity|
+#             .permissions].out, picked as the .after files are; a 7.7.x cookie ({sub,
+#             role}, no sv, no sid, signed with the fake AUTH_SECRET) must answer the
+#             same, one signed with another secret 401; /api/projects must list each
+#             account's own projects only. The server is removed after each scenario.
 #   serve <scenario>   the list, then the image's server on 127.0.0.1:3901 with fake
 #             secrets, until Ctrl-C: the disposable instance for destructive identity
 #             checks (Root transfer, set-root, upgrade, downgrade). Webapp only: no
 #             agent, recon or graph. Never part of a chain.
 #   regen     rebuild every fixture from seed/<name>.sql with the pinned 7.7.2 image
 #             and rewrite expected/<name>.out (review the diff before committing).
+#   selftest  offline, no Docker: the capabilities oracles name every fixture account
+#             and only known permissions and sets, and the preview reader and the 7.7.x
+#             cookie minter give what they should on canned input.
 #
 # Everything runs in containers named rbac-upg-<pid>-* on a private network of their
 # own (internal, except for serve), fed on stdin (snap Docker cannot read /tmp), and is
@@ -52,23 +68,28 @@
 #   RBAC_UPGRADE_OLD_IMAGE  pinned 7.7.2 image (default redamon-webapp:rbac-7.7.2)
 #   RBAC_UPGRADE_SCENARIOS  scenario name regex (default: all)
 #   RBAC_UPGRADE_FAIL_BACKFILL  the backfill the failure mode breaks: user-skill-toggles
-#                           (default), rbac-legacy-grants, rbac-instance-settings, rbac-root or
-#                           rbac-legacy-overrides (runs only with the permissions switch on)
+#                           (default), rbac-legacy-grants, nuclei-template-owners,
+#                           rbac-instance-settings, rbac-root or rbac-legacy-overrides (runs
+#                           only with the permissions switch on)
+#   RBAC_UPGRADE_PREVIEW_SCRIPT  a preview file fed on stdin to the image's node instead of
+#                           the image's own copy (a working-tree preview before a rebuild)
 #   RBAC_UPGRADE_FAIL_SCRIPT / _FAIL_MARKER / _FAIL_TABLE / _FAIL_LOG
 #                           override that choice: its script, its AuditLog marker action,
 #                           the table it reads inside the marker's transaction, and the
 #                           regex of its failure log line
 #   REDAMON_SHARED_TOOLS_COMPAT, RBAC_*_ENABLED   passed to every run and to serve when set
 #
-# Needs Docker and the images; prints SKIP and exits 0 without them. Live suites
-# (*_live.sh) are not part of the gate.
+# Needs Docker and the images (preview, serve-check and selftest also python3); prints SKIP
+# and exits 0 without them. Live suites (*_live.sh) are not part of the gate.
 #
-# Run:  bash tests/rbac_upgrade_live.sh all twice parallel failure
+# Run:  bash tests/rbac_upgrade_live.sh all twice parallel failure preview serve-check
+#       bash tests/rbac_upgrade_live.sh selftest
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-grants bash tests/rbac_upgrade_live.sh failure
+#       RBAC_UPGRADE_FAIL_BACKFILL=nuclei-template-owners bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-instance-settings bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_FAIL_BACKFILL=rbac-root bash tests/rbac_upgrade_live.sh failure
-#       RBAC_IDENTITY_ENABLED=true bash tests/rbac_upgrade_live.sh all twice parallel failure
-#       RBAC_IDENTITY_ENABLED=true RBAC_PERMISSIONS_ENABLED=true bash tests/rbac_upgrade_live.sh all twice parallel failure
+#       RBAC_IDENTITY_ENABLED=true bash tests/rbac_upgrade_live.sh all twice parallel failure preview serve-check
+#       RBAC_IDENTITY_ENABLED=true RBAC_PERMISSIONS_ENABLED=true bash tests/rbac_upgrade_live.sh all twice parallel failure preview serve-check
 #       RBAC_IDENTITY_ENABLED=true RBAC_PERMISSIONS_ENABLED=true \
 #         RBAC_UPGRADE_FAIL_BACKFILL=rbac-legacy-overrides bash tests/rbac_upgrade_live.sh failure
 #       RBAC_UPGRADE_SCENARIOS='^one_admin$' bash tests/rbac_upgrade_live.sh twice
@@ -97,6 +118,11 @@ case "${RBAC_UPGRADE_FAIL_BACKFILL:-user-skill-toggles}" in
   rbac-legacy-grants)
     d_script=backfill-rbac-legacy-grants.mjs; d_marker=system.rbac_legacy_grants_backfill
     d_table=users; d_log='\[rbac\] could not backfill legacy grants' ;;
+  nuclei-template-owners)
+    # It reads nuclei_templates only after a marker that found files, and no fixture holds a
+    # template file: what it reads with no marker is audit_log, looking for one.
+    d_script=backfill-nuclei-template-owners.mjs; d_marker=system.nuclei_template_owners_backfill
+    d_table=audit_log; d_log='\[rbac\] could not record the nuclei template owners' ;;
   rbac-instance-settings)
     d_script=backfill-rbac-instance-settings.mjs; d_marker=system.rbac_instance_settings_backfill
     d_table=instance_settings; d_log='\[rbac\] could not fill the instance settings' ;;
@@ -110,7 +136,7 @@ case "${RBAC_UPGRADE_FAIL_BACKFILL:-user-skill-toggles}" in
     # writes no override to undo.
     d_script=backfill-rbac-legacy-overrides.mjs; d_marker=system.rbac_legacy_overrides_backfill
     d_table=users; d_log='\[rbac\] could not convert the legacy grants' ;;
-  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles, rbac-legacy-grants, rbac-instance-settings, rbac-root or rbac-legacy-overrides" >&2; exit 2 ;;
+  *) echo "RBAC_UPGRADE_FAIL_BACKFILL: user-skill-toggles, rbac-legacy-grants, nuclei-template-owners, rbac-instance-settings, rbac-root or rbac-legacy-overrides" >&2; exit 2 ;;
 esac
 FAIL_SCRIPT="${RBAC_UPGRADE_FAIL_SCRIPT:-$d_script}"
 FAIL_MARKER="${RBAC_UPGRADE_FAIL_MARKER:-$d_marker}"
@@ -133,6 +159,278 @@ FAKE_INTERNAL_API_KEY=rbac-upgrade-fake-internal-key-0001
 FAKE_SCANNER_API_KEY=rbac-upgrade-fake-scanner-key-0001
 SWITCHES=(REDAMON_SHARED_TOOLS_COMPAT RBAC_IDENTITY_ENABLED RBAC_PERMISSIONS_ENABLED
           RBAC_SHARING_ENABLED RBAC_SHARING_WRITE_ENABLED RBAC_GOVERNANCE_ENABLED)
+# serve-check's control: a login cookie this secret signs must be refused.
+WRONG_AUTH_SECRET=rbac-upgrade-wrong-auth-secret-0001
+AUTH_COOKIE=redamon-auth
+PREVIEW_SCRIPT="${RBAC_UPGRADE_PREVIEW_SCRIPT:-}"
+if [ -n "$PREVIEW_SCRIPT" ]; then
+  [[ "$PREVIEW_SCRIPT" = /* ]] || PREVIEW_SCRIPT="$ROOT/$PREVIEW_SCRIPT"
+  [ -f "$PREVIEW_SCRIPT" ] || { echo "RBAC_UPGRADE_PREVIEW_SCRIPT: no file $PREVIEW_SCRIPT" >&2; exit 2; }
+fi
+
+# The JSON and text work of preview, serve-check and selftest:
+#   mint <secret> <sub> <role>      a 7.7.x login token: {sub, role}, iat, a 7-day exp, HS256
+#   expand <catalog> <oracle>       the lines serve-check must collect for a capabilities oracle
+#   caps <me.json> <email> <way>    those lines from one /api/auth/me answer
+#   projects <list.json> <email>    "<email>|<project id>" per project /api/projects lists
+#   preview <file>                  the preview's sections reduced to preview_after.sql's lines
+#   selftest <fixtures> <catalog>   the offline checks of the selftest mode
+IFS= read -r -d '' PY_HELPER <<'PY'
+import base64, hashlib, hmac, json, os, re, sys, time
+
+def b64(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b'=').decode()
+
+def mint(secret, sub, role, now=None):
+    now = int(time.time()) if now is None else now
+    seg = lambda o: b64(json.dumps(o, separators=(',', ':')).encode())
+    signed = seg({'alg': 'HS256'}) + '.' + seg({'sub': sub, 'role': role, 'iat': now, 'exp': now + 7 * 86400})
+    return signed + '.' + b64(hmac.new(secret.encode(), signed.encode(), hashlib.sha256).digest())
+
+def oracle(path):
+    rows = []
+    for n, line in enumerate(open(path), 1):
+        line = line.strip()
+        if line:
+            email, _, expr = line.partition('|')
+            rows.append((n, email, expr.split()))
+    return rows
+
+# An oracle line is `<email>|<tokens>`, applied left to right: a built-in set id or `root` /
+# `root_unconfirmed` (every permission / all but the Root-only ones) adds its permissions,
+# `+<permission>` adds one, `-<permission>` removes one; `login_refused` alone: no sign-in.
+def expand(catalog, path):
+    perms = catalog['permissions']
+    sets = {s['id']: s['permissions'] for s in catalog['sets']}
+    out = []
+    for n, email, tokens in oracle(path):
+        if tokens == ['login_refused']:
+            out.append(f'{email}|login 401')
+            continue
+        held = set()
+        for t in tokens:
+            if t == 'root':
+                held |= set(perms)
+            elif t == 'root_unconfirmed':
+                held |= {p for p, meta in perms.items() if not meta['rootOnly']}
+            elif t in sets:
+                held |= set(sets[t])
+            elif t[:1] in ('+', '-') and t[1:] in perms:
+                (held.add if t[0] == '+' else held.discard)(t[1:])
+            else:
+                raise SystemExit(f'{path}:{n}: unknown token {t!r}')
+        for way in ('fresh', 'old'):
+            out.append(f'{email}|{way}|account {email}')
+            out.extend(f'{email}|{way}|{p}' for p in held)
+    return out
+
+def caps(path, email, way):
+    try:
+        body = json.load(open(path))
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return [f'{email}|{way}|unreadable answer']
+    held = body.get('capabilities')
+    lines = [f"{email}|{way}|account {body.get('email')}"]
+    if not isinstance(held, list):
+        return lines + [f'{email}|{way}|capabilities {held!r}']
+    return lines + [f'{email}|{way}|{p}' for p in held]
+
+def projects(path, email):
+    try:
+        body = json.load(open(path))
+    except ValueError:
+        return [f'{email}|unreadable answer']
+    if not isinstance(body, list):
+        return [f'{email}|not a list']
+    return [f"{email}|{p.get('id')}" for p in body]
+
+GRANT_LABELS = {'Kali terminal': 'kali_terminal', 'all shell sessions': 'shell_sessions', 'tunnel settings': 'tunnels'}
+HEADS = [('root', 'Root: '), ('legacy_grants', 'Shared tools existing members keep'),
+         ('tunnel_rows', 'Tunnel settings saved in accounts'), ('instance_settings', 'Instance settings'),
+         ('stdio_mcp', 'stdio MCP servers that stop loading'), ('mcp_token_env_var', 'MCP servers that lose the bearer'),
+         ('scanner_key', 'SCANNER_API_KEY is ')]
+ACCOUNT_ROW = re.compile(r'^    (\S+@\S+)(?: \((admin|member)\))?\s{2,}(.+)$')
+
+def preview(lines):
+    """A section starts at a two-space line; its rows are the four-space lines under it."""
+    out, section = [], None
+    for line in (l.rstrip('\n') for l in lines):
+        if line.startswith('  ') and not line.startswith('   '):
+            head = line[2:]
+            section = next((s for s, start in HEADS if head.startswith(start)), None)
+            if section == 'root':
+                only = re.match(r'Root: (\S+), the only admin with a password', head)
+                oldest = re.match(r'Root: (\S+), the oldest of (\d+) admins with a password', head)
+                if only: out.append(f'root|{only.group(1)}|only_admin|1')
+                elif oldest: out.append(f'root|{oldest.group(1)}|oldest_admin|{oldest.group(2)}')
+                elif head.startswith('Root: none yet'): out.append('root|none')
+                else: out.append(f'root|unrecognised|{head}')
+            elif section == 'scanner_key':
+                out.append('scanner_key|' + ('missing' if 'is not set' in head else 'set'))
+            continue
+        if not line.startswith('    '):
+            continue
+        if section == 'instance_settings':
+            m = re.match(r'^    (tunnel|TrafficMind, egress, SCA)\s{2,}(.+)$', line)
+            if m:
+                key, value = ('tunnel' if m.group(1) == 'tunnel' else 'capture'), m.group(2)
+                if value.startswith('none saved'):
+                    out.append(f'instance_settings|{key}|none')
+                else:
+                    count = re.search(r'; (\d+) accounts hold one' if key == 'tunnel' else r'the latest of (\d+) admin rows', value)
+                    out.append(f"instance_settings|{key}|{value.split()[0].rstrip(',')}|{count.group(1) if count else 1}")
+            continue
+        m = ACCOUNT_ROW.match(line)
+        if not m:
+            continue
+        email, role, rest = m.groups()
+        if section == 'legacy_grants':
+            grants = sorted(GRANT_LABELS.get(g.strip(), '?' + g.strip()) for g in rest.split(','))
+            out.append(f"legacy_grants|{email}|{','.join(grants)}")
+        elif section == 'tunnel_rows':
+            kinds, state = (re.split(r'\s{2,}', rest) + ['', ''])[:2]
+            out.append(f'tunnel_rows|{email}|{role}|{kinds}|{state}')
+            if rest.endswith("<- the agent's tunnel"):
+                out.append(f'tunnel_pick|{email}')
+        elif section == 'stdio_mcp':
+            out.extend(f'stdio_mcp|{email}|{name}' for name in rest.split(', '))
+        elif section == 'mcp_token_env_var':
+            for entry in rest.split(', '):
+                e = re.match(r'^(.*) \(([^()]*)\)$', entry)
+                out.append(f'mcp_token_env_var|{email}|{e.group(1)}|{e.group(2)}' if e else f'mcp_token_env_var|{email}|?{entry}')
+    return out
+
+SAMPLE_FULL = """RBAC upgrade preview (read-only: nothing has been changed)
+
+  Accounts: 2 admins, 2 members who can sign in, 0 without a password.
+
+  Root: upg-admin-a@e2e.local, the oldest of 2 admins with a password, chosen automatically at the next start.
+    upg-admin-a@e2e.local  <- proposed
+    upg-admin-b@e2e.local
+    Nothing changes while RBAC_IDENTITY_ENABLED is off. With it on, ./redamon.sh update confirms Root;
+    ./redamon.sh set-root <email> picks another admin.
+
+  Shared tools existing members keep (legacy grants; admins review them on the Users page):
+    upg-member-a@e2e.local  Kali terminal, all shell sessions, tunnel settings
+    upg-member-b@e2e.local  Kali terminal, all shell sessions
+    Accounts created after the upgrade get none.
+
+  Tunnel settings saved in accounts:
+    upg-member-b@e2e.local (member)  chisel  enabled  saved 2026-03-02  <- the agent's tunnel
+    upg-member-a@e2e.local (member)  ngrok  disabled  saved 2026-03-10
+    After the upgrade only admins and members keeping the tunnel grant change it.
+
+  Instance settings, copied at the next start from the accounts' settings (which stay):
+    tunnel                    upg-member-b@e2e.local (member), saved 2026-03-02; 2 accounts hold one
+    TrafficMind, egress, SCA  upg-admin-b@e2e.local, saved 2026-04-01, the latest of 2 admin rows
+    While RBAC_IDENTITY_ENABLED is off the accounts' settings stay in force; each start copies them again.
+
+  stdio MCP servers that stop loading (they run inside the agent; only admins may add them):
+    upg-member-a@e2e.local  upg stdio, upg other (disabled)
+    They stay saved in those accounts.
+
+  MCP servers that lose the bearer they read from the agent's environment:
+    upg-member-b@e2e.local  upg http (UPG_TOKEN)
+
+  SCANNER_API_KEY is set: scan containers use it, never the master key.
+
+  What changes for members:
+    - Emergency stop stops only their own agent runs; admins still stop everyone's.
+"""
+SAMPLE_FULL_LINES = [
+    'root|upg-admin-a@e2e.local|oldest_admin|2',
+    'legacy_grants|upg-member-a@e2e.local|kali_terminal,shell_sessions,tunnels',
+    'legacy_grants|upg-member-b@e2e.local|kali_terminal,shell_sessions',
+    'tunnel_rows|upg-member-b@e2e.local|member|chisel|enabled', 'tunnel_pick|upg-member-b@e2e.local',
+    'tunnel_rows|upg-member-a@e2e.local|member|ngrok|disabled',
+    'instance_settings|tunnel|upg-member-b@e2e.local|2', 'instance_settings|capture|upg-admin-b@e2e.local|2',
+    'stdio_mcp|upg-member-a@e2e.local|upg stdio', 'stdio_mcp|upg-member-a@e2e.local|upg other (disabled)',
+    'mcp_token_env_var|upg-member-b@e2e.local|upg http|UPG_TOKEN', 'scanner_key|set',
+]
+SAMPLE_SHORT = """RBAC upgrade preview (read-only: nothing has been changed)
+  Nothing changes for existing accounts (every account that can sign in is an admin).
+
+  Root: upg-admin-a@e2e.local, the only admin with a password, chosen automatically at the next start.
+    After the restart this update confirms it.
+
+  Instance settings, copied at the next start from the accounts' settings (which stay):
+    tunnel                    none saved (off)
+    TrafficMind, egress, SCA  upg-admin-a@e2e.local, saved 2026-01-05
+    With RBAC_IDENTITY_ENABLED on this copy is the one in force; admins change it in Global Settings.
+
+  SCANNER_API_KEY is not set in .env: scans will refuse to start without it.
+"""
+SAMPLE_SHORT_LINES = ['root|upg-admin-a@e2e.local|only_admin|1', 'instance_settings|tunnel|none',
+                      'instance_settings|capture|upg-admin-a@e2e.local|1', 'scanner_key|missing']
+SAMPLE_NONE = "  Root: none yet (no admin has a password); ./redamon.sh create-admin makes one, and it becomes Root.\n"
+
+def fixture_accounts(path):
+    """The emails of expected/<scenario>.out's users section: the fixture's own oracle."""
+    emails, inside = [], False
+    for line in open(path):
+        if line.startswith('== '):
+            inside = line.startswith('== users ')
+        elif inside and line.strip():
+            emails.append(line.split('|', 1)[0])
+    return emails
+
+def selftest(fixtures, catalog_path):
+    results = []
+    check = lambda label, ok: results.append((label, bool(ok)))
+    catalog = json.load(open(catalog_path))
+    scenarios = sorted(f[:-4] for f in os.listdir(os.path.join(fixtures, 'seed')) if f.endswith('.sql'))
+    for scn in scenarios:
+        accounts = sorted(fixture_accounts(os.path.join(fixtures, 'expected', f'{scn}.out')))
+        for suffix in ('', '.identity', '.permissions'):
+            name = f'expected/{scn}.capabilities{suffix}.out'
+            path = os.path.join(fixtures, name)
+            if not os.path.isfile(path):
+                check(f'{name} exists', False)
+                continue
+            check(f'{name} names every fixture account once, and only those',
+                  sorted(email for _, email, _ in oracle(path)) == accounts)
+            try:
+                expand(catalog, path)
+                check(f'{name} names only known sets and permissions', True)
+            except SystemExit as err:
+                check(f'{name} names only known sets and permissions ({err})', False)
+    check('the preview reader reduces a full report', preview(SAMPLE_FULL.splitlines()) == SAMPLE_FULL_LINES)
+    check('the preview reader reduces a short report', preview(SAMPLE_SHORT.splitlines()) == SAMPLE_SHORT_LINES)
+    check('the preview reader reads "no Root yet"', preview(SAMPLE_NONE.splitlines()) == ['root|none'])
+    token = mint('selftest-secret', 'upg-member-a', 'standard', now=1_700_000_000)
+    head, body, sig = token.split('.')
+    claims = json.loads(base64.urlsafe_b64decode(body + '=' * (-len(body) % 4)))
+    check('the minted cookie is HS256-signed with the secret', hmac.compare_digest(
+        sig, b64(hmac.new(b'selftest-secret', f'{head}.{body}'.encode(), hashlib.sha256).digest())))
+    check('the minted cookie carries {sub, role, iat, exp} and no sv or sid',
+          claims == {'sub': 'upg-member-a', 'role': 'standard', 'iat': 1_700_000_000, 'exp': 1_700_604_800})
+    for label, ok in results:
+        print(f"  {'PASS' if ok else 'FAIL'} {label}")
+    failed = sum(1 for _, ok in results if not ok)
+    print(f'== RESULT: {len(results) - failed} passed, {failed} failed ==')
+    return 1 if failed else 0
+
+def emit(lines):
+    for line in lines:
+        print(line)
+
+cmd, args = sys.argv[1], sys.argv[2:]
+if cmd == 'mint':
+    print(mint(*args))
+elif cmd == 'expand':
+    emit(expand(json.load(open(args[0])), args[1]))
+elif cmd == 'caps':
+    emit(caps(*args))
+elif cmd == 'projects':
+    emit(projects(*args))
+elif cmd == 'preview':
+    emit(preview(open(args[0])))
+elif cmd == 'selftest':
+    sys.exit(selftest(*args))
+PY
+py() { python3 -c "$PY_HELPER" "$@"; }
 
 PFX="rbac-upg-$$"
 NET="$PFX-net"
@@ -141,7 +439,7 @@ LABEL="redamon.rbac-upgrade=$PFX"
 DB_URL="postgresql://postgres:${PG_PASSWORD}@${PG}:5432/redamon"
 
 usage() {
-  echo "usage: bash tests/rbac_upgrade_live.sh <all|twice|parallel|failure>... | serve <scenario> | regen" >&2
+  echo "usage: bash tests/rbac_upgrade_live.sh <all|twice|parallel|failure|preview|serve-check>... | serve <scenario> | regen | selftest" >&2
   echo "  scenarios: $(cd "$FIX/seed" 2>/dev/null && ls -- *.sql 2>/dev/null | sed 's/\.sql$//' | tr '\n' ' ')" >&2
   exit 2
 }
@@ -155,14 +453,26 @@ case "$1" in
     SERVE_SCENARIO="$2"
     [ -f "$FIX/$SERVE_SCENARIO.sql" ] || { echo "unknown scenario: $SERVE_SCENARIO" >&2; usage; }
     MODES=(serve) ;;
-  regen)
+  regen|selftest)
     [ $# -eq 1 ] || usage
-    MODES=(regen) ;;
+    MODES=("$1") ;;
   *)
     for m in "$@"; do
-      case "$m" in all|twice|parallel|failure) MODES+=("$m") ;; *) usage ;; esac
+      case "$m" in all|twice|parallel|failure|preview|serve-check) MODES+=("$m") ;; *) usage ;; esac
     done ;;
 esac
+HAS_SERVE_CHECK=0
+NEEDS_PYTHON=0
+for m in "${MODES[@]}"; do
+  case "$m" in
+    serve-check) HAS_SERVE_CHECK=1; NEEDS_PYTHON=1 ;;
+    preview|selftest) NEEDS_PYTHON=1 ;;
+  esac
+done
+if [ "$NEEDS_PYTHON" -eq 1 ] && ! command -v python3 >/dev/null 2>&1; then
+  echo "SKIP: python3 is not available (preview, serve-check and selftest read JSON and text with it)"
+  exit 0
+fi
 
 SCENARIOS=()
 while IFS= read -r f; do
@@ -172,6 +482,12 @@ while IFS= read -r f; do
 done < <(find "$FIX/seed" -maxdepth 1 -name '*.sql' | LC_ALL=C sort)
 [ "${MODES[0]}" = serve ] && SCENARIOS=("$SERVE_SCENARIO")
 [ "${#SCENARIOS[@]}" -gt 0 ] || { echo "no scenario selected" >&2; exit 2; }
+
+if [ "${MODES[0]}" = selftest ]; then
+  echo "== selftest (offline)"
+  py selftest "$FIX" "$ROOT/webapp/src/lib/authz/permissionCatalog.json"
+  exit $?
+fi
 
 # ---- self-skip without Docker or the images ------------------------------------
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
@@ -184,7 +500,7 @@ for img in "$IMAGE" "$OLD_IMAGE" "$PG_IMAGE"; do
     exit 0
   fi
 done
-if [ "${MODES[0]}" = serve ] && \
+if { [ "${MODES[0]}" = serve ] || [ "$HAS_SERVE_CHECK" -eq 1 ]; } && \
    curl -s -m 2 -o /dev/null "http://127.0.0.1:$SERVE_PORT/" 2>/dev/null; then
   echo "port $SERVE_PORT is already answering: stop that server first" >&2
   exit 2
@@ -426,42 +742,49 @@ mode_failure() {
   else
     fail "$1 failure: the failure is logged (lock timeout)"; show_log "$TMP/fail.log"
   fi
+
+  psql_db -c "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE application_name = '$PFX-lock'" >/dev/null
+  for i in $(seq 1 40); do [ "$(lock_held)" = 0 ] && break; sleep 0.25; done
+  if [ "$(lock_held)" = 0 ]; then pass "$1 failure: lock released"
+  else fail "$1 failure: lock released"; return; fi
+  # Read after the release: the nuclei-template-owners preset locks audit_log itself.
   if [ "$(psql_db -c "SELECT count(*) FROM audit_log WHERE action = '$FAIL_MARKER'")" = 0 ]; then
     pass "$1 failure: no marker written by the failed run"
   else
     fail "$1 failure: no marker written by the failed run"
   fi
 
-  psql_db -c "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE application_name = '$PFX-lock'" >/dev/null
-  for i in $(seq 1 40); do [ "$(lock_held)" = 0 ] && break; sleep 0.25; done
-  if [ "$(lock_held)" = 0 ]; then pass "$1 failure: lock released"
-  else fail "$1 failure: lock released"; return; fi
-
   run_list "$IMAGE" "$TMP/run3.log"; list_ok "$1" "failure run 3" "$TMP/run3.log" $? || return
   verify "$1" "failure run 3 (backfill completed)"
 }
 
-mode_serve() {
+# The list, then the image's server on 127.0.0.1:$SERVE_PORT with the fake secrets, until it
+# answers /api/health. Non-zero (with a FAIL) when any of it does not.
+serve_boot() {
   local scn="$1" web="$PFX-web" i code
-  prepare "$scn" || exit 1
-  run_list "$IMAGE" "$TMP/run1.log"; list_ok "$scn" "serve list" "$TMP/run1.log" $? || exit 1
+  prepare "$scn" || return 1
+  run_list "$IMAGE" "$TMP/run1.log"; list_ok "$scn" "serve list" "$TMP/run1.log" $? || return 1
   verify "$scn" "serve list"
-  docker run -d --name "$web" --label "$LABEL" --network "$NET" -p "127.0.0.1:$SERVE_PORT:3000" \
+  if ! docker run -d --name "$web" --label "$LABEL" --network "$NET" -p "127.0.0.1:$SERVE_PORT:3000" \
     -e DATABASE_URL="$DB_URL" -e CHECKPOINT_DISABLE=1 \
     -e AUTH_SECRET="$FAKE_AUTH_SECRET" -e INTERNAL_API_KEY="$FAKE_INTERNAL_API_KEY" \
     -e SCANNER_API_KEY="$FAKE_SCANNER_API_KEY" "${SWITCH_ARGS[@]}" \
-    --entrypoint sh "$IMAGE" -c 'eval "$(tail -n 1 /app/entrypoint.sh)"' >/dev/null \
-    || { echo "server start failed"; exit 1; }
+    --entrypoint sh "$IMAGE" -c 'eval "$(tail -n 1 /app/entrypoint.sh)"' >/dev/null; then
+    fail "$scn: server starts"; return 1
+  fi
   for i in $(seq 1 120); do
     code="$(curl -s -m 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/api/health" 2>/dev/null || true)"
-    [ "$code" = 200 ] && break
+    [ "$code" = 200 ] && return 0
     sleep 1
   done
-  if [ "$code" != 200 ]; then
-    echo "server not healthy on 127.0.0.1:$SERVE_PORT (got ${code:-nothing})"
-    docker logs "$web" 2>&1 | tail -n 40 | sed 's/^/    | /'
-    exit 1
-  fi
+  fail "$scn: server healthy on 127.0.0.1:$SERVE_PORT (got ${code:-nothing})"
+  docker logs "$web" 2>&1 | tail -n 40 | sed 's/^/    | /'
+  return 1
+}
+
+mode_serve() {
+  local scn="$1"
+  serve_boot "$scn" || exit 1
   echo
   echo "== Serving scenario $scn at http://127.0.0.1:$SERVE_PORT (Ctrl-C stops and removes it)"
   echo "   password of every account with one: $FIXTURE_PASSWORD"
@@ -470,6 +793,111 @@ mode_serve() {
   psql_db -c "SELECT email, role, CASE WHEN password = '' THEN 'passwordless' ELSE 'password' END
     FROM users ORDER BY created_at" | sed 's/^/     /'
   while :; do sleep 3600 & SLEEP_PID=$!; wait "$SLEEP_PID"; done
+}
+
+# ---- preview -----------------------------------------------------------------------------
+# The upgrade preview as ./redamon.sh update runs it (`node scripts/rbac-upgrade-preview.mjs` in the
+# new image, before its startup list), or RBAC_UPGRADE_PREVIEW_SCRIPT fed on stdin.
+run_preview() { # out_file err_file -> the preview's exit code
+  local args=(--rm --label "$LABEL" --network "$NET" -e DATABASE_URL="$DB_URL" -e CHECKPOINT_DISABLE=1
+              -e SCANNER_API_KEY="$FAKE_SCANNER_API_KEY" "${SWITCH_ARGS[@]}" -w /app --entrypoint node)
+  if [ -n "$PREVIEW_SCRIPT" ]; then
+    docker run -i "${args[@]}" "$IMAGE" --input-type=module - < "$PREVIEW_SCRIPT" > "$1" 2> "$2"
+  else
+    docker run "${args[@]}" "$IMAGE" scripts/rbac-upgrade-preview.mjs < /dev/null > "$1" 2> "$2"
+  fi
+}
+
+mode_preview() {
+  prepare "$1" || return
+  local rc want_rc=0
+  run_preview "$TMP/preview.txt" "$TMP/preview.err"; rc=$?
+  snapshot "$TMP/after-preview.txt"
+  assert_same "$1 preview: the preview writes nothing" "$TMP/before.txt" "$TMP/after-preview.txt"
+  run_list "$IMAGE" "$TMP/run1.log"; list_ok "$1" "preview run" "$TMP/run1.log" $? || return
+  verify "$1" "preview run"
+
+  if ! psql_db < "$FIX/preview_after.sql" > "$TMP/preview.wrote" 2>&1; then
+    fail "$1 preview: preview_after.sql runs"; show_log "$TMP/preview.wrote"; return
+  fi
+  grep -qx 'review|yes' "$TMP/preview.wrote" && want_rc=10
+  # Nothing to review: the preview prints only its two `always` sections.
+  if [ "$want_rc" -eq 10 ]; then
+    { grep -v '^review|' "$TMP/preview.wrote"; echo 'scanner_key|set'; }
+  else
+    grep -E '^(root|instance_settings)\|' "$TMP/preview.wrote"
+  fi | LC_ALL=C sort > "$TMP/preview.want"
+
+  if [ "$rc" -eq "$want_rc" ]; then pass "$1 preview: exits $want_rc"
+  else fail "$1 preview: exits $want_rc (got $rc)"; show_log "$TMP/preview.err"; fi
+  py preview "$TMP/preview.txt" | LC_ALL=C sort > "$TMP/preview.said"
+  local before=$FAIL
+  assert_same "$1 preview: the preview names what the run wrote (preview_after.sql)" "$TMP/preview.want" "$TMP/preview.said"
+  [ "$FAIL" -gt "$before" ] && { echo "    the preview printed:"; show_log "$TMP/preview.txt"; }
+}
+
+# ---- serve-check -------------------------------------------------------------------------
+SERVE_BASE="http://127.0.0.1:$SERVE_PORT"
+login() { # email jar -> HTTP code
+  curl -s -m 30 -o "$TMP/body" -w '%{http_code}' -c "$2" -X POST "$SERVE_BASE/api/auth/login" \
+    -H 'Content-Type: application/json' --data-binary "{\"email\":\"$1\",\"password\":\"$FIXTURE_PASSWORD\"}"
+}
+http_get() { # path curl-args... -> HTTP code; the answer in $TMP/body
+  local path="$1"; shift
+  curl -s -m 30 -o "$TMP/body" -w '%{http_code}' "$@" "$SERVE_BASE$path"
+}
+
+mode_serve_check() {
+  local scn="$1" oracle="$FIX/expected/$1.capabilities${AFTER_SUFFIX#after}.out"
+  local email expr code id role token first=""
+  if [ ! -s "$TMP/catalog.json" ] && ! docker run --rm --entrypoint cat "$IMAGE" \
+      /app/src/lib/authz/permissionCatalog.json > "$TMP/catalog.json" 2>/dev/null; then
+    rm -f "$TMP/catalog.json"; fail "$scn serve-check: $IMAGE carries src/lib/authz/permissionCatalog.json"; return
+  fi
+  [ -f "$oracle" ] || { fail "$scn serve-check: ${oracle#"$FIX"/} exists"; return; }
+  serve_boot "$scn" || { docker rm -f "$PFX-web" >/dev/null 2>&1; return; }
+
+  psql_db -c "SELECT email FROM users" | LC_ALL=C sort > "$TMP/accounts.db"
+  cut -d'|' -f1 "$oracle" | sed '/^$/d' | LC_ALL=C sort > "$TMP/accounts.oracle"
+  assert_same "$scn serve-check: ${oracle#"$FIX"/} names every fixture account" "$TMP/accounts.db" "$TMP/accounts.oracle"
+  if ! py expand "$TMP/catalog.json" "$oracle" > "$TMP/caps.want.raw" 2> "$TMP/caps.err"; then
+    fail "$scn serve-check: ${oracle#"$FIX"/} expands"; show_log "$TMP/caps.err"; docker rm -f "$PFX-web" >/dev/null 2>&1; return
+  fi
+  LC_ALL=C sort "$TMP/caps.want.raw" > "$TMP/caps.want"
+  psql_db -c "SELECT u.email || '|' || p.id FROM projects p JOIN users u ON u.id = p.user_id
+    WHERE u.password <> ''" | LC_ALL=C sort > "$TMP/projects.want"
+
+  : > "$TMP/caps.got.raw"; : > "$TMP/projects.got.raw"
+  while IFS='|' read -r email expr <&3; do
+    [ -n "$email" ] || continue
+    rm -f "$TMP/jar"
+    code="$(login "$email" "$TMP/jar")"
+    if [ "$expr" = login_refused ]; then echo "$email|login $code" >> "$TMP/caps.got.raw"; continue; fi
+    if [ "$code" = 200 ]; then
+      code="$(http_get /api/auth/me -b "$TMP/jar")"
+      if [ "$code" = 200 ]; then py caps "$TMP/body" "$email" fresh; else echo "$email|fresh|status $code"; fi >> "$TMP/caps.got.raw"
+      code="$(http_get /api/projects -b "$TMP/jar")"
+      if [ "$code" = 200 ]; then py projects "$TMP/body" "$email"; else echo "$email|status $code"; fi >> "$TMP/projects.got.raw"
+    else
+      echo "$email|fresh|login $code" >> "$TMP/caps.got.raw"
+    fi
+    IFS='|' read -r id role < <(psql_db -c "SELECT id, role FROM users WHERE email = '$email'" < /dev/null)
+    [ -n "$first" ] || first="$id|$role"
+    token="$(py mint "$FAKE_AUTH_SECRET" "$id" "$role")"
+    code="$(http_get /api/auth/me -H "Cookie: $AUTH_COOKIE=$token")"
+    if [ "$code" = 200 ]; then py caps "$TMP/body" "$email" old; else echo "$email|old|status $code"; fi >> "$TMP/caps.got.raw"
+  done 3< "$oracle"
+  LC_ALL=C sort "$TMP/caps.got.raw" > "$TMP/caps.got"
+  LC_ALL=C sort "$TMP/projects.got.raw" > "$TMP/projects.got"
+  assert_same "$scn serve-check: capabilities at sign-in and with a 7.7.x cookie match ${oracle#"$FIX"/}" "$TMP/caps.want" "$TMP/caps.got"
+  assert_same "$scn serve-check: every account lists its own projects only" "$TMP/projects.want" "$TMP/projects.got"
+  if [ -n "$first" ]; then
+    token="$(py mint "$WRONG_AUTH_SECRET" "${first%%|*}" "${first#*|}")"
+    code="$(http_get /api/auth/me -H "Cookie: $AUTH_COOKIE=$token")"
+    if [ "$code" = 401 ]; then pass "$scn serve-check: a cookie signed with another secret is refused (401)"
+    else fail "$scn serve-check: a cookie signed with another secret is refused (got $code)"; fi
+  fi
+  docker rm -f "$PFX-web" >/dev/null 2>&1
 }
 
 mode_regen() {
@@ -501,12 +929,13 @@ case "${MODES[0]}" in
   regen) start_infra internal; mode_regen; echo "== regen done: review git diff tests/fixtures/rbac_upgrade"; exit 0 ;;
 esac
 
-start_infra internal
+# serve-check publishes the server's port, which an internal network cannot.
+if [ "$HAS_SERVE_CHECK" -eq 1 ]; then start_infra public; else start_infra internal; fi
 started=$(date +%s)
 for mode in "${MODES[@]}"; do
   for scn in "${SCENARIOS[@]}"; do
     echo "== $mode: $scn"
-    "mode_$mode" "$scn"
+    "mode_${mode//-/_}" "$scn"
   done
 done
 echo "== RESULT: $PASS passed, $FAIL failed ($(( $(date +%s) - started ))s) =="
