@@ -105,6 +105,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'agent.tool_confirmation': 'Answered an agent tool confirmation',
     'agent.decision_refused': 'An answer to the agent was refused when it was made',
     'agent.emergency_stop': 'Pressed the emergency stop',
+    'agent.run_stop': 'Stopped an agent run from the operations view',
     'agent.session_interact': 'Sent input to an agent session',
     'agent.session_kill': 'Stopped an agent session',
     'agent.job_kill': 'Stopped an agent job',

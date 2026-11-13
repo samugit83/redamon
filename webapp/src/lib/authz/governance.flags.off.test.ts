@@ -80,6 +80,13 @@
  * and both route.test.ts files), and /admin/projects and /admin/shares sit under /admin, which does
  * not exist.
  *
+ * Step 6.5 adds the operations view. With the switch off GET /api/admin/operations and POST
+ * /api/admin/operations/agent-runs/stop answer 404 before they read the session, the database, the
+ * agent or the orchestrator (both route files are readers in GOVERNANCE_READERS; the test at the end,
+ * and api/admin/operations/route.test.ts), and /admin/operations sits under /admin, which does not
+ * exist. The members' memory meter (/api/system/stats), their scan activity (/api/system/jobs) and the
+ * emergency stop (/api/agent/emergency-stop-all) read no switch and stay as they were.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -185,6 +192,8 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/api/admin/audit/[id]/route.ts',
       'src/app/api/admin/audit/export/route.ts',
       'src/app/api/admin/audit/route.ts',
+      'src/app/api/admin/operations/agent-runs/stop/route.ts',
+      'src/app/api/admin/operations/route.ts',
       'src/app/api/admin/projects/[id]/route.ts',
       'src/app/api/admin/projects/route.ts',
       'src/app/api/admin/shares/[projectId]/[userId]/route.ts',
@@ -545,6 +554,51 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.4): the projects and shares overvi
       expect(() => AdminLayout({ children: createElement(page) })).toThrow('NEXT_NOT_FOUND')
     }
     expect(nav.notFound).toHaveBeenCalledTimes(2)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.5): the operations view does not exist', () => {
+  test('GET /api/admin/operations and POST /api/admin/operations/agent-runs/stop answer 404 and read neither the session, the database, the agent nor the orchestrator', async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    vi.doMock('@/lib/session', () => ({
+      requireSession: vi.fn(async () => { touched('session'); return { userId: 'ops-1', role: 'admin' } }),
+      getSession: vi.fn(async () => { touched('session'); return { userId: 'ops-1', role: 'admin' } }),
+    }))
+    vi.doMock('@/lib/agentFetch', () => ({ agentFetch: vi.fn(async () => { touched('agent'); return new Response('{}') }), AgentUnreachableError: Error }))
+    vi.doMock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn(async () => { touched('orchestrator'); return new Response('{}') }) }))
+    const { GET: operations } = await import('@/app/api/admin/operations/route')
+    const { POST: stopRun } = await import('@/app/api/admin/operations/agent-runs/stop/route')
+    for (const on of ['', 'true']) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', on)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', on)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect((await operations(new Request('http://redamon.test/api/admin/operations') as never)).status).toBe(404)
+      expect((await stopRun(new Request('http://redamon.test/api/admin/operations/agent-runs/stop', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ userId: 'm-1', projectId: 'p-1', sessionId: 's-1' }),
+      }) as never)).status).toBe(404)
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/session')
+    vi.doUnmock('@/lib/agentFetch')
+    vi.doUnmock('@/lib/orchestrator')
+  })
+
+  test.each([
+    ['every switch off', {}],
+    ['identity and permissions on', { identity: true, permissions: true }],
+  ])('/admin/operations: 404 before the page renders or reads anything (%s)', async (_name, flags) => {
+    const { default: OperationsPage } = await import('@/app/admin/operations/page')
+    setFlagsForTests(flags)
+    expect(() => AdminLayout({ children: createElement(OperationsPage) })).toThrow('NEXT_NOT_FOUND')
+    expect(nav.notFound).toHaveBeenCalledTimes(1)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
