@@ -237,6 +237,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/internal/job-queue/[id]/dispatch', guard: 'internal', methods: ['POST'], permission: null },
   { path: '/api/internal/job-queue/candidates', guard: 'internal', methods: ['GET'], permission: null },
   { path: '/api/internal/job-queue/reconcile', guard: 'internal', methods: ['POST'], permission: null },
+  { path: '/api/internal/llm-usage', guard: 'internal', methods: ['GET', 'POST'], permission: null },
   { path: '/api/internal/mcp-tokens/prune', guard: 'internal', methods: ['POST'], permission: null },
   { path: '/api/internal/node-filter-runs/[runId]', guard: 'internal', methods: ['GET'], permission: null },
   { path: '/api/internal/node-filter-runs/[runId]/finish', guard: 'internal', methods: ['POST'], permission: null },
