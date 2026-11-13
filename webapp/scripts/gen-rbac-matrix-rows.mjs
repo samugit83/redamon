@@ -1,10 +1,10 @@
 /**
- * Live route-matrix rows for the permissions the routes ask (steps 3.8, 3.9, 4.7):
- * tests/fixtures/rbac_matrix/p3_generated.tsv and p4_generated.tsv, run by tests/rbac_matrix_live.sh
- * like any other file.
+ * Live route-matrix rows for the permissions the routes ask (steps 3.8, 3.9, 4.7, 5.2):
+ * tests/fixtures/rbac_matrix/p3_generated.tsv, p4_generated.tsv and p5_generated.tsv, run by
+ * tests/rbac_matrix_live.sh like any other file.
  *
- *   node scripts/gen-rbac-matrix-rows.mjs           write both files, print how many rows
- *   node scripts/gen-rbac-matrix-rows.mjs --check   change nothing, exit 1 if either file is stale
+ *   node scripts/gen-rbac-matrix-rows.mjs           write the three files, print how many rows
+ *   node scripts/gen-rbac-matrix-rows.mjs --check   change nothing, exit 1 if any file is stale
  *
  * Run from webapp/ (only Node is needed). For each permission the rows come from one
  * representative route, checked against the route manifest (routeManifest.json, the JSON copy
@@ -35,6 +35,15 @@
  * permission, because the level decides, not the set: the reader's set holds it. Only the
  * representatives that call the reader's project are used (not a throwaway: a refusal that failed
  * would delete the shared project).
+ *
+ * p5_generated.tsv (step 5.2, SH-02, SH-03, PE-25): the same project representatives, called by the
+ * Read + Write collaborators on member_c's PSHARED (WRITERS: an editor without a toggle, an operator
+ * with Run scans, a red-teamer with Exploitation & shells, a co-owner with Manage; never PA or
+ * member_b). With write sharing in force (`sharingwrite:on`) a writer reaches R, R* and W, M with
+ * Manage, and a run level (W+S, W+A, W+X) only with its toggle AND the owner's consent, which the seed
+ * does not give (step 5.6): those rows prove the run levels stay closed without it. With write sharing
+ * not in force (`sharingwrite:off`, sharing still on) each share reads as Read without Raw data: the
+ * editor's rows answer as p4's viewer.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -43,6 +52,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const WEBAPP = join(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = join('..', 'tests', 'fixtures', 'rbac_matrix', 'p3_generated.tsv')
 const OUT_SHARED = join('..', 'tests', 'fixtures', 'rbac_matrix', 'p4_generated.tsv')
+const OUT_WRITE = join('..', 'tests', 'fixtures', 'rbac_matrix', 'p5_generated.tsv')
 
 /**
  * The seeded accounts, in the order an allowed or a refused row picks them, with their set, how the
@@ -69,6 +79,25 @@ export const READERS = [
   { actor: 'viewer', id: 'viewer', via: 'share', set: 'builtin:default-member', seeded: 'default', user: 'VIEWER_ID', project: 'PSHARED_ID', tags: 'req:SH-07 req:SH-02' },
   { actor: 'admin_a', id: 'oversee', via: 'oversight', set: 'builtin:default-member', seeded: 'default', user: 'ADMIN_A_ID', project: 'PA_ID', tags: 'req:SH-07 req:SH-47' },
 ]
+
+/**
+ * The writers of p5_generated.tsv (step 5.2): member_c's Read + Write collaborators on PSHARED
+ * (e2e-rbac-seed.mjs), each on *Default member*, with the toggles their share stores. `off` marks the
+ * one whose rows are repeated with write sharing not in force.
+ */
+export const WRITERS = [
+  { actor: 'editor', id: 'editor', set: 'builtin:default-member', user: 'EDITOR_ID', project: 'PSHARED_ID', toggles: {}, off: true },
+  { actor: 'woperator', id: 'operator', set: 'builtin:default-member', user: 'WOPERATOR_ID', project: 'PSHARED_ID', toggles: { runScans: true } },
+  { actor: 'redteamer', id: 'redteamer', set: 'builtin:default-member', user: 'REDTEAMER_ID', project: 'PSHARED_ID', toggles: { exploit: true } },
+  { actor: 'coowner', id: 'coowner', set: 'builtin:default-member', user: 'COOWNER_ID', project: 'PSHARED_ID', toggles: { manage: true } },
+]
+
+/** Whether a Read + Write share with `toggles` reaches `level` with no owner consent (meetsLevel + 5.6). */
+export function writeShareReaches(level, toggles) {
+  if (level === 'R' || level === 'R*' || level === 'W') return true
+  if (level === 'M') return toggles.manage === true
+  return false
+}
 
 const NOT_REFUSED = ';lacks="code":"forbidden"'
 
@@ -210,6 +239,52 @@ export function generateSharedRows(manifest, catalog) {
   return rows
 }
 
+/** The p5_generated rows, or throws naming the first representative the manifest cannot back. */
+export function generateWriteRows(manifest, catalog) {
+  const byPath = new Map(manifest.map(e => [e.path, e]))
+  const sets = new Map(catalog.sets.map(s => [s.id, new Set(s.permissions)]))
+  const rows = []
+  for (const writer of WRITERS) {
+    for (const [permission, r] of Object.entries(REPRESENTATIVES)) {
+      const entry = catalog.permissions[permission]
+      if (!entry) throw new Error(`${permission}: not in the permission registry`)
+      if (entry.kind !== 'member' || entry.scope !== 'project' || entry.level === null) continue
+      const text = r.path + r.body
+      if (!text.includes('{P}') || text.includes('{TMP}') || text.includes('{U}')) continue
+      if (manifestPermission(byPath.get(r.route), r.method) !== permission) {
+        throw new Error(`${permission}: the manifest gives ${r.method} ${r.route} another permission`)
+      }
+      if (sets.get(writer.set)?.has(permission) !== true) continue
+      const fill = t => t.replace('{P}', `\${${writer.project}}`)
+      const refused = `403;has=${permission}`
+      rows.push([`p5g-${writer.id}-${permission}`, '5.2', writer.actor, r.method, fill(r.path), fill(r.body),
+        writeShareReaches(entry.level, writer.toggles) ? r.allow : refused,
+        'req:SH-02 req:SH-03 probe:generated sharing:on sharingwrite:on'])
+      if (writer.off) {
+        rows.push([`p5g-${writer.id}-off-${permission}`, '5.2', writer.actor, r.method, fill(r.path), fill(r.body),
+          entry.level === 'R' ? r.allow : refused, 'req:SH-02 req:DV-30 probe:generated sharing:on sharingwrite:off'])
+      }
+    }
+  }
+  return rows
+}
+
+export function renderWriteRows(rows) {
+  const header = [
+    '# Live RBAC route matrix: Phase 5 write sharing, generated by webapp/scripts/gen-rbac-matrix-rows.mjs (step 5.2).',
+    '# Do not edit: change the representative or writer table there and run `node scripts/gen-rbac-matrix-rows.mjs`',
+    "# from webapp/. Each project permission's representative request, called by member_c's Read + Write",
+    '# collaborators on PSHARED: editor (no toggle), woperator (Run scans), redteamer (Exploitation & shells),',
+    '# coowner (Manage). With write sharing in force (sharingwrite:on: RBAC_SHARING_WRITE_ENABLED and the policy',
+    "# maxLevel \"write\") R, R* and W answer as for the owner, M for the co-owner, and every run level (W+S, W+A,",
+    "# W+X) is refused: it also needs the owner's consent, which the seed does not give (step 5.6). With it not",
+    '# in force (sharingwrite:off) the editor reads as Read without Raw data: R answers, the rest 403.',
+    '#',
+    '# id\tsince\tactor\tmethod\tpath\tbody\texpect\ttags',
+  ]
+  return [...header, ...rows.map(r => r.join('\t'))].join('\n') + '\n'
+}
+
 export function renderSharedRows(rows) {
   const header = [
     '# Live RBAC route matrix: Phase 4, generated by webapp/scripts/gen-rbac-matrix-rows.mjs (step 4.7). Do not edit:',
@@ -248,6 +323,7 @@ export function run(argv, webappDir = WEBAPP, log = console.log) {
     const catalog = readJson(webappDir, 'src/lib/authz/permissionCatalog.json')
     files.push({ out: OUT, text: renderRows(generateRows(manifest, catalog)) })
     files.push({ out: OUT_SHARED, text: renderSharedRows(generateSharedRows(manifest, catalog)) })
+    files.push({ out: OUT_WRITE, text: renderWriteRows(generateWriteRows(manifest, catalog)) })
   } catch (err) {
     log(`problem  ${err.message}. Nothing was written.`)
     return 1

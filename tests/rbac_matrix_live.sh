@@ -42,7 +42,10 @@
 #           switch is off, AND Root's policy instance_settings.sharing_policy enabled, as
 #           sharingPolicy.ts reads it; the policy is read by psql once, only when the
 #           switch is on and a selected row is so tagged, and a policy that cannot be read
-#           fails those rows),
+#           fails those rows), sharingwrite:on | sharingwrite:off (whether write sharing is
+#           in force, step 5.2: sharing in force AND RBAC_SHARING_WRITE_ENABLED on, which
+#           reads off while the sharing switch is off, AND Root's policy `maxLevel` "write",
+#           as maxShareLevel reads it; read and failed the same way),
 #           origin:<url> (the Origin header
 #           the row sends instead of the webapp's own, e.g. a page of another site)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
@@ -186,7 +189,7 @@ declare -A ACTOR_ERR=()
 user_key() { # actor name -> seed key prefix (MEMBER_A, ...)
   case "$1" in
     owner_a) echo MEMBER_A ;; owner_b) echo MEMBER_B ;;
-    admin_a|admin_b|member_a|member_b|member_c|managed|deleted|operator|analyst|noaccess|usermgr|viewer|viewer_raw|viewer_tmp) echo "${1^^}" ;;
+    admin_a|admin_b|member_a|member_b|member_c|managed|deleted|operator|analyst|noaccess|usermgr|viewer|viewer_raw|viewer_tmp|editor|woperator|redteamer|coowner) echo "${1^^}" ;;
     *) return 1 ;;
   esac
 }
@@ -243,21 +246,23 @@ shift_session_version() { # user-id +1|-1 -> 0 when exactly that account's versi
   [ "$(printf "update users set session_version = session_version %s 1 where id = '%s' and session_version %s returning id;\n" \
     "${2:0:1}" "$1" "$([ "$2" = -1 ] && echo '> 0' || echo '>= 0')" | db_sql)" = "$1" ] && cache_settle
 }
-IDENTITY=""; PERMISSIONS=""; SHARING=""; CACHE_MS=""
+IDENTITY=""; PERMISSIONS=""; SHARING=""; SHARINGWRITE=""; CACHE_MS=""
 switch_value() { # raw env value -> on|off, parsed as webapp/src/lib/authz/flags.ts does
   case "$(printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in true|1|yes) echo on ;; *) echo off ;; esac
 }
-read_switches() { # the webapp's switches (IDENTITY, PERMISSIONS, SHARING = on|off) and cache bound, read once
+read_switches() { # the webapp's switches (IDENTITY, PERMISSIONS, SHARING, SHARINGWRITE = on|off) and cache bound, read once
   [ -n "$IDENTITY" ] && return
   local env rest
   env="$(cd "$ROOT" && docker compose exec -T webapp sh -c \
-    'printf "%s|%s|%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_PERMISSIONS_ENABLED:-}" "${RBAC_SHARING_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
+    'printf "%s|%s|%s|%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_PERMISSIONS_ENABLED:-}" "${RBAC_SHARING_ENABLED:-}" "${RBAC_SHARING_WRITE_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
   IDENTITY="$(switch_value "${env%%|*}")"; rest="${env#*|}"
   PERMISSIONS="$(switch_value "${rest%%|*}")"; rest="${rest#*|}"
-  SHARING="$(switch_value "${rest%%|*}")"
+  SHARING="$(switch_value "${rest%%|*}")"; rest="${rest#*|}"
+  SHARINGWRITE="$(switch_value "${rest%%|*}")"
   # flags.ts: each switch requires the one before it and reads off without it.
   [ "$IDENTITY" = on ] || PERMISSIONS=off
   [ "$PERMISSIONS" = on ] || SHARING=off
+  [ "$SHARING" = on ] || SHARINGWRITE=off
   CACHE_MS="${rest#*|}"; CACHE_MS="${CACHE_MS//[[:space:]]/}"
 }
 # parseSharingPolicy (webapp/src/lib/authz/sharingPolicy.ts) in SQL: `enabled` true and every
@@ -274,6 +279,26 @@ SHARING_POLICY_SQL="select coalesce((select case when jsonb_typeof(p) = 'object'
                    and (p->>'defaultExpiryDays')::numeric % 1 = 0 end, false))
   then 'on' else 'off' end
   from (select sharing_policy::jsonb as p from instance_settings where id = 'instance') s), 'off');"
+# maxShareLevel (sharingPolicy.ts) in SQL: the policy as above, valid and enabled, with `maxLevel` "write".
+SHARING_WRITE_POLICY_SQL="select /* rbac-write-policy */ coalesce((select case when jsonb_typeof(p) = 'object'
+    and p->'enabled' = 'true'::jsonb and p->'maxLevel' = '\"write\"'::jsonb
+    and (not p ? 'membersMayGrantExploit' or jsonb_typeof(p->'membersMayGrantExploit') = 'boolean')
+    and (not p ? 'adminsSeeAllShares' or jsonb_typeof(p->'adminsSeeAllShares') = 'boolean')
+    and (not p ? 'defaultExpiryDays' or jsonb_typeof(p->'defaultExpiryDays') = 'null'
+         or coalesce(case when jsonb_typeof(p->'defaultExpiryDays') = 'number'
+              then (p->>'defaultExpiryDays')::numeric between 1 and 3650
+                   and (p->>'defaultExpiryDays')::numeric % 1 = 0 end, false))
+  then 'on' else 'off' end
+  from (select sharing_policy::jsonb as p from instance_settings where id = 'instance') s), 'off');"
+SHARING_WRITE_POLICY=""
+read_sharing_write_policy() { # Root's policy allows write -> SHARING_WRITE_POLICY = on | off | unknown, read once
+  [ -n "$SHARING_WRITE_POLICY" ] && return
+  case "$(printf '%s\n' "$SHARING_WRITE_POLICY_SQL" | db_sql)" in
+    on) SHARING_WRITE_POLICY=on ;;
+    off) SHARING_WRITE_POLICY=off ;;
+    *) SHARING_WRITE_POLICY=unknown ;;
+  esac
+}
 SHARING_POLICY=""
 read_sharing_policy() { # Root's sharing policy -> SHARING_POLICY = on | off | unknown, read once
   [ -n "$SHARING_POLICY" ] && return
@@ -331,7 +356,7 @@ for line in "${ROWS[@]}"; do
     echo "SKIP  $label  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
   fi
   off_switch=""; policy_unread=""
-  for sw in identity permissions sharing; do
+  for sw in identity permissions sharing sharingwrite; do
     [[ " $tags " =~ \ $sw:(on|off)\  ]] || continue
     want="${BASH_REMATCH[1]}"
     read_switches
@@ -339,6 +364,17 @@ for line in "${ROWS[@]}"; do
     case "$sw" in
       identity) state="$IDENTITY" ;;
       permissions) state="$PERMISSIONS" ;;
+      sharingwrite) state="$SHARINGWRITE"
+         # In force only with sharing in force and Root's policy at write (maxShareLevel).
+         if [ "$state" = on ]; then
+           read_sharing_policy
+           [ "$SHARING_POLICY" = unknown ] && { policy_unread=1; break; }
+           read_sharing_write_policy
+           [ "$SHARING_WRITE_POLICY" = unknown ] && { policy_unread=1; break; }
+           if [ "$SHARING_POLICY" = off ] || [ "$SHARING_WRITE_POLICY" = off ]; then
+             state=off; why="sharingwrite switch on, Root's policy"
+           fi
+         fi ;;
       *) state="$SHARING"
          # The switch alone is not sharing in force: with Root's policy still `{}` the
          # webapp answers owner-only, so the sharing:off rows must run.

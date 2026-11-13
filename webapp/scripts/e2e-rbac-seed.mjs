@@ -45,6 +45,13 @@ const USERS = [
   { key: 'VIEWER', email: 'rbac-viewer@e2e.local', name: 'RBAC Viewer', role: 'standard', login: true },
   { key: 'VIEWER_RAW', email: 'rbac-viewer-raw@e2e.local', name: 'RBAC Viewer Raw', role: 'standard', login: true },
   { key: 'VIEWER_TMP', email: 'rbac-viewer-tmp@e2e.local', name: 'RBAC Viewer Tmp', role: 'standard', login: true },
+  // Phase 5's Read + Write collaborators on PSHARED (step 5.2, p5_generated.tsv): an editor without a toggle,
+  // an operator with Run scans, a red-teamer with Exploitation & shells, a co-owner with Manage. Each owns
+  // nothing; their shares read as Read while write sharing is not in force.
+  { key: 'EDITOR', email: 'rbac-editor@e2e.local', name: 'RBAC Editor', role: 'standard', login: true },
+  { key: 'WOPERATOR', email: 'rbac-woperator@e2e.local', name: 'RBAC Write Operator', role: 'standard', login: true },
+  { key: 'REDTEAMER', email: 'rbac-redteamer@e2e.local', name: 'RBAC Red-teamer', role: 'standard', login: true },
+  { key: 'COOWNER', email: 'rbac-coowner@e2e.local', name: 'RBAC Co-owner', role: 'standard', login: true },
 ]
 
 // The two throwaway projects exist to be deleted by the matrix: one by the owner,
@@ -65,11 +72,18 @@ const PROJECTS = [
 ]
 
 // Read shares on PSHARED (step 4.4). They count only with sharing in force (RBAC_SHARING_ENABLED and
-// the instance policy enabled); with it off each row is inert and the viewers see nothing.
+// the instance policy enabled); with it off each row is inert and the viewers see nothing. The write
+// shares (step 5.2) are Read + Write only with write sharing in force too (RBAC_SHARING_WRITE_ENABLED
+// and the policy's maxLevel "write"); their Raw data column is off, so read as Read they lack it. No
+// owner consent is seeded: Run scans, Use AI agent and Exploitation count only with it (step 5.6).
 const SHARES = [
   { project: 'PSHARED', user: 'VIEWER', rawData: false },
   { project: 'PSHARED', user: 'VIEWER_RAW', rawData: true },
   { project: 'PSHARED', user: 'VIEWER_TMP', rawData: false },
+  { project: 'PSHARED', user: 'EDITOR', access: 'write', rawData: false },
+  { project: 'PSHARED', user: 'WOPERATOR', access: 'write', rawData: false, runScans: true },
+  { project: 'PSHARED', user: 'REDTEAMER', access: 'write', rawData: false, exploit: true },
+  { project: 'PSHARED', user: 'COOWNER', access: 'write', rawData: false, manage: true },
 ]
 
 const FAKES = {
@@ -135,8 +149,8 @@ try {
       const projectId = ids[sh.project]
       const userId = ids[sh.user]
       const terms = {
-        access: 'read', rawData: sh.rawData, runScans: false, useAgent: false, exploit: false, manage: false,
-        expiresAt: null, note: null, grantedById: ids.MEMBER_C,
+        access: sh.access ?? 'read', rawData: sh.rawData, runScans: sh.runScans === true, useAgent: sh.useAgent === true,
+        exploit: sh.exploit === true, manage: sh.manage === true, expiresAt: null, note: null, grantedById: ids.MEMBER_C,
       }
       await prisma.projectCollaborator.upsert({
         where: { projectId_userId: { projectId, userId } },

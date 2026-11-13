@@ -14,6 +14,10 @@
 #     (sharingPolicy.ts), so with the switch on and the policy still `{}` the
 #     owner-only rows run; the policy is read once, by psql, only when a selected
 #     row needs it, and an unreadable policy fails the rows that need it;
+#   - sharingwrite:on|off the same for RBAC_SHARING_WRITE_ENABLED (step 5.2), which
+#     reads off while sharing is not in force, and also while Root's policy does
+#     not allow write (`maxLevel` "write", maxShareLevel); both policy reads happen
+#     once, only when a selected row needs them;
 #   - on/true/1/yes in any case and with spaces are on, anything else is off;
 #   - the switches are read from the webapp container once per run, and not at
 #     all when no selected row needs them.
@@ -58,6 +62,12 @@ printf '%s\n' \
   $'v-share-on-2\t4.3\tanon\tGET\t/api/v/share-on-2\t-\t200\tsharing:on' \
   $'v-share-off\t4.3\tanon\tGET\t/api/v/share-off\t-\t200\tsharing:off' \
   > "$T/tests/fixtures/rbac_matrix/v.tsv"
+printf '%s\n' \
+  $'w-plain\t5.2\tanon\tGET\t/api/w/plain\t-\t200\treq:SH-02' \
+  $'w-write-on\t5.2\tanon\tGET\t/api/w/write-on\t-\t200\treq:SH-02 sharing:on sharingwrite:on' \
+  $'w-write-off\t5.2\tanon\tGET\t/api/w/write-off\t-\t200\tsharing:on sharingwrite:off' \
+  $'w-write-only\t5.2\tanon\tGET\t/api/w/write-only\t-\t200\tsharingwrite:on' \
+  > "$T/tests/fixtures/rbac_matrix/w.tsv"
 
 # docker: the webapp's switches come from FAKE_* through the runner's own in-container
 # command (run here by sh), the seed prints the keys the runner requires, every call is logged.
@@ -69,7 +79,11 @@ case "$*" in
   *"ps --status running"*) echo fake-webapp ;;
   *" postgres "*)
     sql="$(cat)"
-    if grep -q sharing_policy <<<"$sql"; then
+    if grep -q rbac-write-policy <<<"$sql"; then
+      echo "write-policy-read" >> "$STUB_LOG"
+      [ "${FAKE_WRITE_POLICY-on}" = FAIL ] && exit 1
+      printf '%s\n' "${FAKE_WRITE_POLICY-on}"
+    elif grep -q sharing_policy <<<"$sql"; then
       echo "policy-read" >> "$STUB_LOG"
       [ "${FAKE_POLICY-on}" = FAIL ] && exit 1
       printf '%s\n' "${FAKE_POLICY-on}"
@@ -81,7 +95,8 @@ case "$*" in
     for a in "$@"; do [ "$prev" = -c ] && script="$a"; prev="$a"; done
     echo "switches-read" >> "$STUB_LOG"
     env -i PATH="$PATH" RBAC_IDENTITY_ENABLED="${FAKE_IDENTITY-}" RBAC_PERMISSIONS_ENABLED="${FAKE_PERMISSIONS-}" \
-      RBAC_SHARING_ENABLED="${FAKE_SHARING-}" RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
+      RBAC_SHARING_ENABLED="${FAKE_SHARING-}" RBAC_SHARING_WRITE_ENABLED="${FAKE_SHARING_WRITE-}" \
+      RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
   *" node "*)
     if grep -q SEED; then
       printf 'PA_ID=pa\nPB_ID=pb\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
@@ -106,13 +121,14 @@ STUB
 printf '#!/usr/bin/env bash\necho "sleep $*" >> "$STUB_LOG"\n' > "$W/bin/sleep"
 chmod +x "$W/bin/docker" "$W/bin/curl" "$W/bin/sleep"
 
-# run <identity> <permissions> [row filter] [matrix file] [cache ms] [sharing] [policy]: OUT holds
-# the output, RC the status, LOG the stub calls.
+# run <identity> <permissions> [row filter] [matrix file] [cache ms] [sharing] [policy] [write] [write policy]:
+# OUT holds the output, RC the status, LOG the stub calls.
 run() {
   : > "$W/calls.log"
   OUT="$(cd "$W" && PATH="$W/bin:$PATH" STUB_LOG="$W/calls.log" BASE_URL=http://rbac-runner-test.invalid \
     FAKE_IDENTITY="$1" FAKE_PERMISSIONS="$2" FAKE_CACHE_MS="${5:-5000}" FAKE_SHARING="${6:-}" RBAC_MATRIX_ROWS="${3:-}" \
-    FAKE_POLICY="${7-on}" bash "$T/tests/rbac_matrix_live.sh" "${4:-t}" 2>&1)"; RC=$?
+    FAKE_POLICY="${7-on}" FAKE_SHARING_WRITE="${8:-}" FAKE_WRITE_POLICY="${9-on}" \
+    bash "$T/tests/rbac_matrix_live.sh" "${4:-t}" 2>&1)"; RC=$?
   LOG="$(cat "$W/calls.log")"
 }
 line()     { grep -E "^(PASS|SKIP|FAIL) +$1 " <<<"$OUT" | head -1; }
@@ -120,6 +136,7 @@ verdict()  { line "$1" | awk '{print $1}'; }
 requests() { grep '^request ' <<<"$LOG" | sed 's/^request //' | tr '\n' ' '; }
 reads()    { grep -c '^switches-read$' <<<"$LOG"; }
 policy_reads() { grep -c '^policy-read$' <<<"$LOG"; }
+write_policy_reads() { grep -c '^write-policy-read$' <<<"$LOG"; }
 
 # =============================================================================
 section "identity on, permissions on"
@@ -235,6 +252,32 @@ eq "an answer that is neither on nor off fails the tagged rows" "$(verdict v-sha
 run true true '' v 5000 true ''
 eq "an empty answer fails them too (the query always returns one row)" "$(verdict v-share-off)" "FAIL"
 
+section "write sharing (step 5.2): the sharingwrite tag follows the effective state"
+run true true '' w 5000 true on true on
+eq "all on, policy at write: sharingwrite:on runs" "$(verdict w-write-on)" "PASS"
+eq "all on, policy at write: sharingwrite:off skips" "$(verdict w-write-off)" "SKIP"
+has "named" "(sharingwrite switch on)" "$(line w-write-off)"
+eq "the write policy is read once for two tagged rows" "$(write_policy_reads)" "1"
+run true true '' w 5000 true on true off
+eq "Root's policy at read: sharingwrite:on skips" "$(verdict w-write-on)" "SKIP"
+has "the skip names the policy" "(sharingwrite switch on, Root's policy off)" "$(line w-write-on)"
+eq "Root's policy at read: the write-off row runs" "$(verdict w-write-off)" "PASS"
+run true true '' w 5000 true off true on
+eq "sharing policy off: write is not in force either" "$(verdict w-write-on)" "SKIP"
+run true true '' w 5000 true on '' on
+eq "write switch unset: sharingwrite:off runs" "$(verdict w-write-off)" "PASS"
+eq "write switch unset: no write policy read" "$(write_policy_reads)" "0"
+run true true '' w 5000 '' on true on
+eq "sharing switch off: the write switch reads off, whatever it says" "$(verdict w-write-on)" "SKIP"
+has "named off" "(sharing switch off)" "$(line w-write-on)"
+eq "a row tagged sharingwrite:on alone skips too (the chain, not the sharing tag)" "$(verdict w-write-only)" "SKIP"
+has "named as the write switch, off" "(sharingwrite switch off)" "$(line w-write-only)"
+run true true '' w 5000 true on true FAIL
+eq "write policy unreadable: the write rows fail" "$(verdict w-write-on) $(verdict w-write-off)" "FAIL FAIL"
+eq "write policy unreadable: the untagged row runs" "$(verdict w-plain)" "PASS"
+run true true '' u 1500 true on true on
+eq "the cache bound still parses after the write value" "$(grep '^sleep ' <<<"$LOG" | tr '\n' ' ')" "sleep 3 sleep 3 "
+
 section "the runner documents the tag"
 HEADER="$(sed -n '1,/^set -uo pipefail/p' "$RUNNER")"
 has "permissions:on | permissions:off in the row format" "permissions:on | permissions:off" "$HEADER"
@@ -242,6 +285,8 @@ has "and the chain" "RBAC_PERMISSIONS_ENABLED" "$HEADER"
 has "sharing:on | sharing:off in the row format" "sharing:on | sharing:off" "$HEADER"
 has "and its chain" "RBAC_SHARING_ENABLED" "$HEADER"
 has "and Root's policy" "instance_settings.sharing_policy" "$HEADER"
+has "sharingwrite:on | sharingwrite:off in the row format" "sharingwrite:on | sharingwrite:off" "$HEADER"
+has "and its switch" "RBAC_SHARING_WRITE_ENABLED" "$HEADER"
 
 echo
 echo "-----------------------------------------"

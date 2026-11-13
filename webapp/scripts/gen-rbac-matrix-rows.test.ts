@@ -11,7 +11,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, test, expect } from 'vitest'
-import { ACTORS, READERS, REPRESENTATIVES, generateRows, generateSharedRows, renderRows, renderSharedRows, run } from './gen-rbac-matrix-rows.mjs'
+import {
+  ACTORS, READERS, REPRESENTATIVES, WRITERS, generateRows, generateSharedRows, generateWriteRows, renderRows, renderSharedRows,
+  renderWriteRows, run, writeShareReaches,
+} from './gen-rbac-matrix-rows.mjs'
 import { parseAuthProfileInput } from '../src/lib/authProfile'
 import { isValidPluginId } from '../src/lib/plugins/ids'
 
@@ -96,6 +99,14 @@ describe('gen-rbac-matrix-rows', () => {
       expect(run(['--check'], join(dir, 'webapp'), (l: string) => sharedLog.push(l))).toBe(1)
       expect(sharedLog.join('\n')).toMatch(/p4_generated\.tsv is out of date/)
       expect(readFileSync(shared, 'utf8')).toBe('stale\n')
+      // ...and the step 5.2 file.
+      expect(run([], join(dir, 'webapp'), () => {})).toBe(0)
+      const write = join(dir, 'tests', 'fixtures', 'rbac_matrix', 'p5_generated.tsv')
+      expect(readFileSync(write, 'utf8')).toBe(renderWriteRows(generateWriteRows(manifest, catalog)))
+      writeFileSync(write, 'stale\n')
+      const writeLog: string[] = []
+      expect(run(['--check'], join(dir, 'webapp'), (l: string) => writeLog.push(l))).toBe(1)
+      expect(writeLog.join('\n')).toMatch(/p5_generated\.tsv is out of date/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -246,6 +257,75 @@ describe('gen-rbac-matrix-rows', () => {
       const ids = new Set(rows.map(r => r[0]))
       for (const r of shared) expect(ids.has(r[0])).toBe(false)
       expect(new Set(shared.map(r => r[0])).size).toBe(shared.length)
+    })
+  })
+
+  describe('p5_generated.tsv: the Read + Write collaborators (step 5.2)', () => {
+    const written: Row[] = generateWriteRows(manifest, catalog)
+    type Writer = { actor: string; id: string; set: string; user: string; project: string; toggles: Record<string, boolean>; off?: boolean }
+    const writers = WRITERS as Writer[]
+    const on = written.filter(r => r[7].endsWith('sharingwrite:on'))
+    const off = written.filter(r => r[7].endsWith('sharingwrite:off'))
+    const permissionOf = (row: Row) => row[0].replace(/^p5g-[a-z]+-(off-)?/, '')
+    const levelOf = (row: Row) => catalog.permissions[permissionOf(row)].level as string
+    const allowOf = (row: Row) => (REPRESENTATIVES as Record<string, { allow: string }>)[permissionOf(row)].allow
+
+    test('editor allowed at W, viewer-like refused above it; toggle required; Manage-only refused at W; owner-only refused at M', () => {
+      for (const row of on) {
+        const writer = writers.find(w => row[0].startsWith(`p5g-${w.id}-`))!
+        const level = levelOf(row)
+        expect(row[6], row[0]).toBe(writeShareReaches(level, writer.toggles) ? allowOf(row) : `403;has=${permissionOf(row)}`)
+      }
+      const at = (id: string, permission: string) => on.find(r => r[0] === `p5g-${id}-${permission}`)![6]
+      expect(at('editor', 'project:settings')).toMatch(/^400/)
+      expect(at('editor', 'triage:mute')).toMatch(/^400/)
+      expect(at('editor', 'graph:edit')).toBe('403;has=graph:edit')
+      expect(at('coowner', 'graph:edit')).not.toMatch(/^403/)
+      expect(at('coowner', 'project:export')).toBe('200')
+      // Without the owner's consent (step 5.6) no toggle opens a run level, Manage included.
+      for (const id of ['operator', 'redteamer', 'coowner']) expect(at(id, 'recon:scan')).toBe('403;has=recon:scan')
+      expect(at('editor', 'recon:scan')).toBe('403;has=recon:scan')
+    })
+
+    test('the level table: R, R* and W always, M with Manage, never a run level or O without consent', () => {
+      expect(['R', 'R*', 'W'].every(l => writeShareReaches(l, {}))).toBe(true)
+      expect(writeShareReaches('M', {})).toBe(false)
+      expect(writeShareReaches('M', { manage: true })).toBe(true)
+      for (const l of ['W+S', 'W+A', 'W+X', 'O']) expect(writeShareReaches(l, { runScans: true, useAgent: true, exploit: true, manage: true })).toBe(false)
+    })
+
+    test('the switch-off rows: the editor reads as Read without Raw data, as p4\'s viewer', () => {
+      const editorOff = off.filter(r => r[2] === 'editor')
+      expect(editorOff.length).toBe(off.length)
+      expect(editorOff.length).toBe(on.filter(r => r[2] === 'editor').length)
+      for (const row of editorOff) expect(row[6], row[0]).toBe(levelOf(row) === 'R' ? allowOf(row) : `403;has=${permissionOf(row)}`)
+    })
+
+    test('every row calls PSHARED (member_c\'s), never PA or member_b, under sharing:on, with eight columns and unique ids', () => {
+      for (const row of written) {
+        const keys = [...`${row[4]} ${row[5]}`.matchAll(/\$\{(\w+)\}/g)].map(m => m[1])
+        expect(keys.length, row[0]).toBeGreaterThan(0)
+        for (const k of keys) expect(k, row[0]).toBe('PSHARED_ID')
+        expect(row[7]).toMatch(/ sharing:on sharingwrite:(on|off)$/)
+      }
+      for (const l of renderWriteRows(written).split('\n').filter((x: string) => x && !x.startsWith('#'))) expect(l.split('\t')).toHaveLength(8)
+      const ids = new Set([...rows, ...generateSharedRows(manifest, catalog)].map(r => r[0]))
+      for (const r of written) expect(ids.has(r[0])).toBe(false)
+      expect(new Set(written.map(r => r[0])).size).toBe(written.length)
+    })
+
+    test('the seed creates each writer with its write share and toggles on PSHARED, and the runner signs it in', () => {
+      const seed = readFileSync(join(WEBAPP, 'scripts', 'e2e-rbac-seed.mjs'), 'utf8')
+      const runner = readFileSync(join(WEBAPP, '..', 'tests', 'rbac_matrix_live.sh'), 'utf8')
+      for (const w of writers) {
+        const key = w.user.replace(/_ID$/, '')
+        expect(seed, key).toMatch(new RegExp(`\\{ key: '${key}', email: 'rbac-[a-z-]+@e2e\\.local'`))
+        const share = new RegExp(`\\{ project: 'PSHARED', user: '${key}', access: 'write'[^}]*\\}`).exec(seed)?.[0] ?? ''
+        expect(share, key).not.toBe('')
+        for (const t of ['runScans', 'useAgent', 'exploit', 'manage']) expect([key, t, share.includes(`${t}: true`)]).toEqual([key, t, w.toggles[t] === true])
+        expect(runner).toMatch(new RegExp(`\\b${w.actor}\\b`))
+      }
+      expect(seed).not.toMatch(/ownerCredentialConsent/)
     })
   })
 
