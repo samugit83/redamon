@@ -62,6 +62,21 @@ describe('internalError', () => {
     expect(console.error).toHaveBeenCalledWith('PUT /x failed:', err)
   })
 
+  // A Prisma validation error renders the whole call, its arguments included: an apiKey or an AWS
+  // secret being written would reach the container log (fix of the 6.11 review, finding 4).
+  test('a Prisma validation error is logged by its class alone, never its rendering of the arguments', async () => {
+    const { Prisma } = await import('@prisma/client')
+    const err = new Prisma.PrismaClientValidationError(
+      'Invalid `prisma.userLlmProvider.create()` invocation:\n\n{\n  data: {\n    apiKey: "sk-LEAK-CANARY-123",\n    timeout: 99999999999\n  }\n}\n\nValue out of range for the type.',
+      { clientVersion: 'test' },
+    )
+    const res = internalError(err, 'Failed to create LLM provider')
+    expect(await res.json()).toEqual({ error: 'Failed to create LLM provider', code: 'PrismaClientValidationError' })
+    const logged = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().map((x) => (x instanceof Error ? `${x.message} ${x.stack}` : String(x))).join('\n')
+    expect(logged).toContain('PrismaClientValidationError')
+    expect(logged).not.toContain('sk-LEAK-CANARY-123')
+  })
+
   test('takes a status and extra safe fields', async () => {
     const res = internalError(new Error('x'), 'Saved, but the audit failed', { status: 502, extra: { committed: true } })
     expect(res.status).toBe(502)

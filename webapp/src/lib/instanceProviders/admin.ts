@@ -34,6 +34,11 @@ import {
  */
 export const MAX_PROVIDER_SETS = 50
 const MAX_NAME = 100
+/**
+ * Bounds of the integer settings: the columns are 32-bit, and a value beyond them makes Prisma refuse
+ * the write with an error that renders the key being written.
+ */
+const INT_BOUNDS = { timeout: [1, 86_400], maxTokens: [1, 2_000_000] } as const
 const MAX_SET_ID = 128
 const SECRET_FIELDS = ['apiKey', 'awsAccessKeyId', 'awsSecretKey', 'awsBearerToken'] as const
 
@@ -114,7 +119,10 @@ async function parseProvider(body: Record<string, unknown>, existing: InstanceLl
     if (body[f] !== undefined && typeof body[f] !== 'string') return refuse(400, 'invalid_field', `${f} must be a string.`)
   }
   for (const f of ['timeout', 'maxTokens'] as const) {
-    if (body[f] !== undefined && !(Number.isInteger(body[f]) && (body[f] as number) > 0)) return refuse(400, 'invalid_field', `${f} must be a positive whole number.`)
+    const [min, max] = INT_BOUNDS[f]
+    if (body[f] !== undefined && !(Number.isInteger(body[f]) && (body[f] as number) >= min && (body[f] as number) <= max)) {
+      return refuse(400, 'invalid_field', `${f} must be a whole number from ${min} to ${max}.`)
+    }
   }
   if (body.temperature !== undefined && !(typeof body.temperature === 'number' && body.temperature >= 0 && body.temperature <= 2)) {
     return refuse(400, 'invalid_field', 'temperature must be a number from 0 to 2.')
@@ -136,13 +144,15 @@ async function parseProvider(body: Record<string, unknown>, existing: InstanceLl
     return (sent as string).trim()
   }
   const compatible = providerType === 'openai_compatible'
+  const bedrock = providerType === 'bedrock'
   const data: InstanceProviderData = {
     providerType,
     name: name.trim(),
-    apiKey: secret('apiKey'),
+    apiKey: bedrock ? '' : secret('apiKey'),
     baseUrl: compatible ? str(body.baseUrl, existing?.baseUrl ?? '').trim() : '',
     modelIdentifier: compatible ? str(body.modelIdentifier, existing?.modelIdentifier ?? '').trim() : '',
-    defaultHeaders: body.defaultHeaders === undefined
+    // Bedrock sends no headers; the ones of a provider turned into Bedrock are not kept.
+    defaultHeaders: bedrock ? {} : body.defaultHeaders === undefined
       ? (existing?.defaultHeaders ?? {})
       : restoreMaskedHeaders(body.defaultHeaders, existing?.defaultHeaders ?? {}),
     timeout: (body.timeout as number | undefined) ?? existing?.timeout ?? 120,
@@ -178,6 +188,19 @@ async function parseProvider(body: Record<string, unknown>, existing: InstanceLl
 /** What an audit row says of a provider: never a secret, never the endpoint (it can hold credentials). */
 function auditFacts(p: Pick<InstanceProviderData, 'name' | 'providerType' | 'modelIdentifier'>, setIds: readonly string[]) {
   return { name: p.name, providerType: p.providerType, modelIdentifier: p.modelIdentifier, setIds: [...setIds] }
+}
+
+/**
+ * The stored provider as the re-entry rule must see it: a kind change clears the secrets the new kind
+ * does not use (a Bedrock provider's AWS fields, another kind's key and headers), so they are not
+ * "kept for the new endpoint". The new kind's own secrets still need typing again (HD-24).
+ */
+function secretsTheKindKeeps(existing: InstanceLlmProviderRecord, body: Record<string, unknown>): InstanceLlmProviderRecord {
+  const kind = typeof body.providerType === 'string' ? body.providerType : existing.providerType
+  if (kind === existing.providerType) return existing
+  return kind === 'bedrock'
+    ? { ...existing, apiKey: '', defaultHeaders: {} }
+    : { ...existing, awsAccessKeyId: '', awsSecretKey: '', awsBearerToken: '' }
 }
 
 const secretsChanged = (a: InstanceProviderData, b: InstanceProviderData): boolean =>
@@ -222,7 +245,7 @@ export async function updateProvider(request: NextRequest, session: Session, id:
   if (!existing) return refuse(404, 'not_found', 'No such instance provider.')
   const setIds = body.setIds === undefined ? null : parseSetIds(body.setIds)
   if (setIds instanceof NextResponse) return setIds
-  const reentry = llmProviderSecretReentry(existing, body)
+  const reentry = llmProviderSecretReentry(secretsTheKindKeeps(existing, body), body)
   if (reentry) return secretReentryResponse(reentry)
   const data = await parseProvider(body, existing)
   if (data instanceof NextResponse) return data

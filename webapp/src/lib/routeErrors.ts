@@ -50,10 +50,19 @@ export interface InternalErrorOptions {
   extra?: Record<string, unknown>
 }
 
+/**
+ * Prisma's validation error renders the whole call, the values written included: a provider key, a
+ * token or a password being saved. Only its class reaches the log.
+ */
+function loggable(err: unknown): unknown {
+  const name = err && typeof err === 'object' ? (err as { name?: unknown }).name : undefined
+  return name === 'PrismaClientValidationError' ? `${name} (its rendering of the call is not logged: it holds the values written)` : err
+}
+
 /** A 500 (or `status`) whose body is `{error: message, code}`; the full error goes to the log. */
 export function internalError(err: unknown, message: string, opts: InternalErrorOptions = {}): NextResponse {
   const code = safeErrorCode(err)
-  console.error(`${opts.log ?? message}:`, err)
+  console.error(`${opts.log ?? message}:`, loggable(err))
   return NextResponse.json({ error: message, code, ...opts.extra }, { status: opts.status ?? 500 })
 }
 

@@ -135,6 +135,16 @@ describe('writes, each with Root\'s password', () => {
     })
   })
 
+  test('changing the kind of a saved provider empties its secret fields, so the new kind\'s are typed', async () => {
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Shared OpenAI' }))
+    const form = screen.getByRole('form', { name: 'Edit Shared OpenAI' })
+    fireEvent.change(within(form).getByLabelText('Kind'), { target: { value: 'anthropic' } })
+    expect(within(form).getByLabelText('API key')).toHaveValue('')
+    fireEvent.change(within(form).getByLabelText('Kind'), { target: { value: 'openai' } })
+    expect(within(form).getByLabelText('API key')).toHaveValue('••••••••1234')
+  })
+
   test('a refused save keeps the dialog open with the reason', async () => {
     routes['POST /api/admin/llm-providers'] = { status: 400, body: { error: 'An API key is required.', code: 'key_required' } }
     renderPanel()

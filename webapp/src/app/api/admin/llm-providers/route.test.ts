@@ -268,6 +268,29 @@ describe('provider key never returned unmasked', () => {
     expect(store.updateInstanceProvider).not.toHaveBeenCalled()
   })
 
+  // Fix of the 6.11 review, finding 5: the old kind's secrets are not "kept" across a kind change;
+  // they are cleared, and the new kind's own secret must be typed.
+  test('Bedrock to a keyed kind: the AWS secrets are cleared, the new key typed is enough', async () => {
+    h.providers.set('inst-1', provider({ providerType: 'bedrock', apiKey: '', defaultHeaders: {}, awsAccessKeyId: 'AKIAEXAMPLE0001', awsSecretKey: AWS_SECRET }))
+    const res = await PUT(req('/inst-1', 'PUT', { providerType: 'openai', apiKey: 'sk-typed-again', stepUpPassword: 'root-pass' }), params('inst-1'))
+    expect(res.status).toBe(200)
+    const data = (store.updateInstanceProvider.mock.calls[0][2] as { data: InstanceLlmProviderRecord }).data
+    expect(data).toMatchObject({ providerType: 'openai', apiKey: 'sk-typed-again', awsAccessKeyId: '', awsSecretKey: '', awsBearerToken: '' })
+  })
+
+  test('a keyed kind to Bedrock: the key and the headers are cleared, the AWS credentials typed are enough', async () => {
+    const res = await PUT(req('/inst-1', 'PUT', { providerType: 'bedrock', awsBearerToken: 'bedrock-typed', stepUpPassword: 'root-pass' }), params('inst-1'))
+    expect(res.status).toBe(200)
+    const data = (store.updateInstanceProvider.mock.calls[0][2] as { data: InstanceLlmProviderRecord }).data
+    expect(data).toMatchObject({ providerType: 'bedrock', apiKey: '', awsBearerToken: 'bedrock-typed', defaultHeaders: {} })
+  })
+
+  test('a kind change between two keyed kinds still needs the key typed again (HD-24)', async () => {
+    const res = await PUT(req('/inst-1', 'PUT', { providerType: 'anthropic', apiKey: '••••••••1234', stepUpPassword: 'root-pass' }), params('inst-1'))
+    expect(res.status).toBe(400)
+    expect((await res.json()).code).toBe('secret_reentry_required')
+  })
+
   test('DELETE removes the provider and its sets, audited without a secret', async () => {
     const res = await DELETE(req('/inst-1', 'DELETE', { stepUpPassword: 'root-pass' }), params('inst-1'))
     expect(res.status).toBe(200)
@@ -295,6 +318,10 @@ describe('what a provider may be', () => {
     ['a set that does not exist', { setIds: ['set-gone'] }, 'unknown_set'],
     ['a built-in set that does not exist', { setIds: ['builtin:nope'] }, 'unknown_set'],
     ['a bad temperature', { temperature: 9 }, 'invalid_field'],
+    // The columns are 32-bit: Prisma would refuse the write with an error that renders the key.
+    ['a timeout beyond its column', { timeout: 2 ** 31 }, 'invalid_field'],
+    ['a timeout of a day and more', { timeout: 86_401 }, 'invalid_field'],
+    ['a max tokens beyond its column', { maxTokens: 2 ** 31 }, 'invalid_field'],
   ])('%s → 400 %s, nothing written', async (_n, over, code) => {
     const res = await POST(req('', 'POST', { ...NEW, ...over }))
     expect(res.status).toBe(400)

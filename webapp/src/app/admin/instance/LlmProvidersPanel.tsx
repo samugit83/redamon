@@ -189,6 +189,17 @@ export function LlmProvidersPanel() {
   })
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => (d ? { ...d, [key]: value } : d))
+  // A saved provider moved to another kind keeps no secret of the old one: the new kind's are typed
+  // (the route clears the old kind's and asks the new one's again). Back to its kind, they come back masked.
+  const setKind = (kind: string) => setDraft((d) => {
+    if (!d) return d
+    const saved = d.id ? view.providers.find((p) => p.id === d.id) : undefined
+    if (!saved) return { ...d, providerType: kind }
+    const secrets = kind === saved.providerType
+      ? { apiKey: saved.apiKey, awsAccessKeyId: saved.awsAccessKeyId, awsSecretKey: saved.awsSecretKey, awsBearerToken: saved.awsBearerToken }
+      : { apiKey: '', awsAccessKeyId: '', awsSecretKey: '', awsBearerToken: '' }
+    return { ...d, providerType: kind, ...secrets }
+  })
   const toggleSet = (id: string, on: boolean) =>
     setDraft((d) => (d ? { ...d, setIds: on ? [...d.setIds, id].sort() : d.setIds.filter((s) => s !== id) } : d))
 
@@ -213,7 +224,7 @@ export function LlmProvidersPanel() {
       {draft ? (
         <form onSubmit={submit} className={styles.page} style={{ gap: 'var(--space-2)' }} aria-label={draft.id ? `Edit ${draft.name}` : 'New instance LLM provider'}>
           <FieldRow id="llm-kind" label="Kind" hint="A chat model provider. Changing the kind of a saved provider needs its key typed again.">
-            <select id="llm-kind" className="select" value={draft.providerType} aria-describedby="llm-kind-hint" onChange={(e) => set('providerType', e.target.value)}>
+            <select id="llm-kind" className="select" value={draft.providerType} aria-describedby="llm-kind-hint" onChange={(e) => setKind(e.target.value)}>
               {view.kinds.map((k) => <option key={k} value={k}>{KIND_LABELS[k] ?? k}</option>)}
             </select>
           </FieldRow>
