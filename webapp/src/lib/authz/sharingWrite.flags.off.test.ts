@@ -217,3 +217,78 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
     expect(readersOf(NAMES)).toEqual(PHASE5_TABLE_READERS)
   })
 })
+
+// Step 5.7a: GET /api/projects/[id]/owner-catalog, the owner's catalogs for a collaborator's project form
+// (names and presence, lib/ownerCatalog.ts, mocked here: its own test proves no value leaves it). With write
+// sharing not in force a write share with Manage reads the catalog as a Read share does, and the model options
+// (`?models=1`, level M: the co-owner's pickers) are refused to it; the owner's answer does not change; with
+// sharing off the route does not exist. The real guard, can() and projectAccess() decide.
+const catalogDoubles = vi.hoisted(() => ({
+  identity: vi.fn(),
+  ownerCatalog: vi.fn(async (ownerId: string) => ({ ownerCatalogOf: ownerId })),
+  ownerModelOptions: vi.fn(async () => ({ models: { Group: [] } })),
+}))
+vi.mock('@/lib/session', () => ({ getAuthzIdentity: (...a: unknown[]) => catalogDoubles.identity(...a), mayActAs: async () => false }))
+vi.mock('@/lib/ownerCatalog', () => ({
+  ownerCatalog: (...a: [string]) => catalogDoubles.ownerCatalog(...a),
+  ownerModelOptions: () => catalogDoubles.ownerModelOptions(),
+}))
+
+describe('GET /api/projects/[id]/owner-catalog with write sharing not in force (step 5.7a)', () => {
+  const signIn = (id: string) =>
+    catalogDoubles.identity.mockResolvedValue({ session: { userId: id, role: 'standard' }, principal: member(id), actingAs: null })
+  const get = async (query = '') => {
+    const [{ NextRequest }, { GET }] = await Promise.all([import('next/server'), import('@/app/api/projects/[id]/owner-catalog/route')])
+    return GET(new NextRequest(`http://x/api/projects/P-owner/owner-catalog${query}`), { params: Promise.resolve({ id: 'P-owner' }) })
+  }
+  beforeEach(() => {
+    catalogDoubles.identity.mockReset()
+    catalogDoubles.ownerCatalog.mockClear()
+    catalogDoubles.ownerModelOptions.mockClear()
+  })
+
+  test.each([
+    ['every switch off', {}],
+    ['identity + permissions on', { identity: true, permissions: true }],
+    ['the write switch set without sharing', { identity: true, permissions: true, sharingWrite: true }],
+  ] as Array<[string, Partial<RbacFlags>]>)('%s: 404 for the owner and the write share, nothing read', async (_what, flags) => {
+    setFlagsForTests(flags)
+    for (const who of ['owner', 'collab']) {
+      signIn(who)
+      const res = await get('?models=1')
+      expect([who, res.status, await res.json()]).toEqual([who, 404, { error: 'Not found' }])
+    }
+    expect(catalogDoubles.identity).not.toHaveBeenCalled()
+    expect(catalogDoubles.ownerCatalog).not.toHaveBeenCalled()
+    expect(db.projectFindUnique).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }, { enabled: true, maxLevel: 'write' }],
+    ["the write switch on, Root's policy at read", ALL_ON, { enabled: true, maxLevel: 'read' }],
+  ] as Array<[string, Partial<RbacFlags>, Record<string, unknown>]>)(
+    '%s: the write share with Manage reads the catalog, its model options are refused, the owner keeps both',
+    async (_what, flags, policy) => {
+      setFlagsForTests(flags)
+      db.policy = policy
+      signIn('collab')
+      const read = await get()
+      expect([read.status, await read.json()]).toEqual([200, { ownerCatalogOf: 'owner' }])
+      const models = await get('?models=1')
+      expect(models.status).toBe(403)
+      expect(await models.json()).toEqual(expect.objectContaining({ code: 'forbidden', permission: 'recon:read', level: 'M' }))
+      expect(catalogDoubles.ownerModelOptions).not.toHaveBeenCalled()
+      signIn('owner')
+      const own = await get('?models=1')
+      expect([own.status, await own.json()]).toEqual([200, { ownerCatalogOf: 'owner', models: { Group: [] } }])
+      expect(catalogDoubles.ownerCatalog.mock.calls.map(([ownerId]) => ownerId)).toEqual(['owner', 'owner'])
+    },
+  )
+
+  test('contrast, write sharing in force: the same Manage row gets the model options', async () => {
+    setFlagsForTests(ALL_ON)
+    signIn('collab')
+    expect((await get('?models=1')).status).toBe(200)
+    expect(catalogDoubles.ownerModelOptions).toHaveBeenCalledTimes(1)
+  })
+})
