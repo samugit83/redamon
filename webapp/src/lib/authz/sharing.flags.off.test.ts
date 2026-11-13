@@ -139,6 +139,10 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
     const SHARING_STORAGE_READERS = [
       // Step 4.4: the live matrix's fixtures (Read shares on a synthetic project), run by hand only.
       'scripts/e2e-rbac-seed.mjs',
+      // Step 6.1: the admin console reads `sharingPolicy.adminsSeeAllShares` (GET /api/admin/instance-settings)
+      // only while /api/auth/me reports sharing in force; with the switch off auth/me has no `sharing` key, the
+      // policy is never asked and the Shares item stays hidden (test at the end; AdminConsole.test.tsx).
+      'src/app/admin/AdminConsole.tsx',
       // Step 4.2: shows the policy to admins and takes Root's change only with the switch on.
       'src/app/api/admin/instance-settings/route.ts',
       // Step 4.15: the expiry sweep, which reads the sharing tables only with sharing in force.
@@ -343,5 +347,16 @@ describe("a person's own access with RBAC_SHARING_ENABLED off: no myAccess, no /
     const res = await myAccessGet()
     expect(res.status).toBe(200)
     expect((await res.json()).myAccess).toEqual({ ...mine, owner: { name: 'owner', email: 'owner@example.test' } })
+  })
+})
+
+describe('the admin console with sharing off (step 6.1)', () => {
+  test('it asks the sharing policy only when /api/auth/me reports sharing in force, so the Shares item stays hidden', () => {
+    const src = readFileSync(path.join(WEBAPP, 'src/app/admin/AdminConsole.tsx'), 'utf8')
+    // One policy read, behind the `sharing` key auth/me omits with the switch off (route.sharing.test.ts);
+    // not asked, the answer is 'no' and the Shares section closes.
+    expect(src.match(/\/api\/admin\/instance-settings/g)).toHaveLength(1)
+    expect(src).toMatch(/useAllSharesView\(user\?\.sharing\?\.enabled === true[ )]/)
+    expect(src).toMatch(/return ask \? answer : 'no'/)
   })
 })
