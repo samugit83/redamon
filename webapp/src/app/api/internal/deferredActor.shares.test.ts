@@ -76,6 +76,10 @@ function seedModels() {
       h.scheduleUpdates.push(args as { where: unknown; data: Record<string, unknown> })
       return {}
     },
+    updateMany: (args: unknown) => {
+      h.scheduleUpdates.push(args as { where: unknown; data: Record<string, unknown> })
+      return { count: 1 }
+    },
   }
 }
 
@@ -142,7 +146,7 @@ describe('a Read collaborator\'s deferred work', () => {
     expect(await runIt()).toMatchObject({ ok: false, paused: true, code: 'actor_no_access' })
     expect(h.startFullScan).not.toHaveBeenCalled()
     expect(h.scheduleUpdates).toHaveLength(1)
-    expect(h.scheduleUpdates[0].data).toMatchObject({ enabled: false })
+    expect(h.scheduleUpdates[0]).toMatchObject({ where: { id: 's1', userId: COLLABORATOR }, data: { enabled: false } })
     expect(h.audit.mock.calls[0][0]).toMatchObject({ action: 'scan_schedule.paused', projectId: SHARED_PROJECT })
   })
 })

@@ -52,6 +52,7 @@ const CASES: RouteCase[] = [
   { route: 'POST /api/projects/[id]/schedules', handler: async () => (await import('./route')).POST, permission: 'recon:schedule', params: p, body: { mode: 'once' } },
   { route: 'PATCH /api/projects/[id]/schedules/[scheduleId]', handler: async () => (await import('./[scheduleId]/route')).PATCH, permission: 'recon:schedule', params: { ...p, scheduleId: 'S1' }, body: { label: 'x' } },
   { route: 'DELETE /api/projects/[id]/schedules/[scheduleId]', handler: async () => (await import('./[scheduleId]/route')).DELETE, permission: 'recon:schedule', params: { ...p, scheduleId: 'S1' } },
+  { route: 'POST /api/projects/[id]/schedules/[scheduleId]/confirm', handler: async () => (await import('./[scheduleId]/confirm/route')).POST, permission: 'recon:schedule', params: { ...p, scheduleId: 'S1' }, body: {}, fresh: true },
   { route: 'DELETE /api/projects/[id]/schedules/history', handler: async () => (await import('./history/route')).DELETE, permission: 'scan:versions_delete', params: p, body: {} },
   { route: 'POST /api/projects/[id]/queue', handler: async () => (await import('../queue/route')).POST, permission: 'recon:schedule', params: p, body: { kind: 'gvm', payload: {} } },
   { route: 'POST /api/job-queue/[id]/cancel', handler: async () => (await import('@/app/api/job-queue/[id]/cancel/route')).POST, permission: 'recon:schedule', params: job, projectId: OWNED_PROJECT, arrange: queuedJob() },

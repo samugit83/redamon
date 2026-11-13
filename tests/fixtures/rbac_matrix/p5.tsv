@@ -1,0 +1,15 @@
+# Live RBAC route matrix: Phase 5 (sharing, write and active). Each step adds the rows of the behaviour it
+# changes, in its own block; a row of an earlier file whose answer a step changes is tagged superseded-by:p5
+# there. Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
+#
+# Step 5.5: the schedule confirmation (POST .../schedules/[scheduleId]/confirm) makes the confirmer a
+# schedule's actor. recon:schedule at the Manage level (the owner until 5.2 adds Manage), same-origin
+# JSON. "Allowed" is proved without a write: a body-less request passes the guard, the level and the
+# origin, then gets 415; a schedule id that does not exist answers 404 after them.
+p5-sched-confirm-owner	5.5	member_c	POST	/api/projects/${PSHARED_ID}/schedules/rbac-no-such-schedule/confirm	-	415	req:SH-12 req:DV-38
+p5-sched-confirm-owner-missing	5.5	member_c	POST	/api/projects/${PSHARED_ID}/schedules/rbac-no-such-schedule/confirm	{}	404;has=Not found	req:SH-12
+p5-sched-confirm-viewer	5.5	viewer	POST	/api/projects/${PSHARED_ID}/schedules/rbac-no-such-schedule/confirm	{}	403;has=recon:schedule	req:SH-12 sharing:on
+p5-sched-confirm-viewer-raw	5.5	viewer_raw	POST	/api/projects/${PSHARED_ID}/schedules/rbac-no-such-schedule/confirm	{}	403;has=recon:schedule	req:SH-12 sharing:on
+p5-sched-confirm-stranger	5.5	member_a	POST	/api/projects/${PSHARED_ID}/schedules/rbac-no-such-schedule/confirm	{}	404	req:SH-12
+p5-sched-confirm-anon	5.5	anon	POST	/api/projects/${PSHARED_ID}/schedules/rbac-no-such-schedule/confirm	{}	401	req:SH-12
+p5-sched-confirm-cross-origin	5.5	member_c	POST	/api/projects/${PSHARED_ID}/schedules/rbac-no-such-schedule/confirm	{}	403;has=cross_origin	req:SH-12 origin:https://rbac-other-site.example

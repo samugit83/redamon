@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   projectFindMany: vi.fn(),
   findSchedule: vi.fn(),
   updateSchedule: vi.fn(),
+  updateManySchedule: vi.fn(),
   countJobs: vi.fn(),
   start: vi.fn(),
   createJob: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock('@/lib/prisma', () => ({
       findMany: (...a: unknown[]) => h.findScheduleMany(...a),
       findUnique: (...a: unknown[]) => h.findSchedule(...a),
       update: (...a: unknown[]) => h.updateSchedule(...a),
+      updateMany: (...a: unknown[]) => h.updateManySchedule(...a),
     },
     scanJob: { count: (...a: unknown[]) => h.countJobs(...a) },
     project: {
@@ -86,6 +88,7 @@ beforeEach(() => {
   h.findScheduleMany.mockResolvedValue([])
   h.findSchedule.mockResolvedValue(SCHEDULE)
   h.updateSchedule.mockResolvedValue({})
+  h.updateManySchedule.mockResolvedValue({ count: 1 })
   h.countJobs.mockResolvedValue(0)
   h.projectFindMany.mockResolvedValue([])
   h.start.mockResolvedValue({ ok: true, versionId: 'v3', versionSeq: 3, scanJobId: 'job1', frozenVersionId: 'v2' })
@@ -483,9 +486,10 @@ describe('POST /run: a schedule whose actor lost access to the project (step 5.5
     expect(h.start).not.toHaveBeenCalled()
     expect(h.enqueue).not.toHaveBeenCalled()
     expect(h.actorRefusal).toHaveBeenCalledWith('collab-1', 'p1', ['recon:scan'])
-    expect(h.updateSchedule).toHaveBeenCalledTimes(1)
-    const update = h.updateSchedule.mock.calls[0][0]
-    expect(update.where).toEqual({ id: 's1' })
+    expect(h.updateSchedule).not.toHaveBeenCalled()
+    expect(h.updateManySchedule).toHaveBeenCalledTimes(1)
+    const update = h.updateManySchedule.mock.calls[0][0]
+    expect(update.where).toEqual({ id: 's1', userId: 'collab-1' })
     expect(update.data).toMatchObject({ enabled: false, lastRunAt: expect.any(Date), nextRunAt: expect.any(Date) })
     // D-13: the schedule keeps its actor until a person confirms it.
     expect(update.data).not.toHaveProperty('userId')
@@ -496,6 +500,17 @@ describe('POST /run: a schedule whose actor lost access to the project (step 5.5
     })
     expect(console.warn).toHaveBeenCalledWith(
       '[rbac] schedule s1 paused: actor collab-1 lost recon:scan on project p1 (project_level)')
+  })
+
+  test('a confirmation that landed while it fired is not undone (two at once)', async () => {
+    h.actorRefusal.mockResolvedValue(LOST)
+    h.updateManySchedule.mockResolvedValue({ count: 0 })
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    const res = await runIt()
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ ok: false, skipped: 'actor_changed' })
+    expect(h.start).not.toHaveBeenCalled()
+    expect(h.audit).not.toHaveBeenCalled()
   })
 
   test('an overwrite schedule needs recon:overwrite of its actor too', async () => {
@@ -520,6 +535,7 @@ describe('POST /run: a schedule whose actor lost access to the project (step 5.5
     expect(res.status).toBe(500)
     expect(h.start).not.toHaveBeenCalled()
     expect(h.updateSchedule).not.toHaveBeenCalled()
+    expect(h.updateManySchedule).not.toHaveBeenCalled()
   })
 
   test('a schedule a person already turned off is refused before any access check', async () => {

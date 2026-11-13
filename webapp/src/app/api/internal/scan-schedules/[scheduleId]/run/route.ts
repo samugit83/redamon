@@ -129,10 +129,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       schedule.userId, schedule.projectId, queuedJobPermissions('full_recon', { mode: schedule.scanMode }),
     )
     if (refusal) {
-      await prisma.scanSchedule.update({
-        where: { id: scheduleId },
+      // Only while the schedule still names this actor: a confirmation that landed since the read
+      // above made someone else its actor, and pausing would undo it (two at once).
+      const paused = await prisma.scanSchedule.updateMany({
+        where: { id: scheduleId, userId: schedule.userId },
         data: { lastRunAt: now, nextRunAt, enabled: false },
       })
+      if (paused.count === 0) {
+        console.info(`[scanScheduler] schedule ${scheduleId} changed actor while firing; left to its next run`)
+        return NextResponse.json({ ok: false, skipped: 'actor_changed' }, { status: 409 })
+      }
       const reason = actorScanRefusalReason(refusal, 'scheduled')
       console.warn(
         `[rbac] schedule ${scheduleId} paused: actor ${refusal.userId} lost ${refusal.permission} ` +
