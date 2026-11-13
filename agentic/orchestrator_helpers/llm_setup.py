@@ -208,7 +208,11 @@ def setup_llm(
 
     if provider == "instance":
         native_model, build_kwargs = instance_build_args(model_name, custom_llm_config)
-        return setup_llm(native_model, **build_kwargs)
+        from llm_budget import attach_instance_budget
+        # The daily budget (GV-12) is asked before every call; the row names its list's owner.
+        return attach_instance_budget(setup_llm(native_model, **build_kwargs),
+                                      owner_id=str(custom_llm_config.get("userId") or ""),
+                                      provider_id=str(custom_llm_config.get("id") or ""))
 
     if provider == "loop":
         from agent_in_the_loop import loop_enabled
