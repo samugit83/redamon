@@ -62,6 +62,8 @@ ORIGINAL_FLAG="$(grep '^MCP_SERVER_ENABLED=' "$ENV_FILE" 2>/dev/null || true)"
 ORIGINAL_DISABLED="$(grep '^MCP_DISABLED_TOOLS=' "$ENV_FILE" 2>/dev/null || true)"
 NGINX_NAME="redamon-mcp-live-nginx-$$"
 WORK="$REPO_ROOT/.mcp-live-check.$$"
+# Every restart below is `up -d --no-deps webapp`: only the webapp's env changes, and without
+# --no-deps compose may recreate postgres and neo4j under the other sessions using the stack.
 
 cleanup() {
     docker rm -f "$NGINX_NAME" >/dev/null 2>&1 || true
@@ -78,7 +80,7 @@ cleanup() {
     else
         sed -i '/^MCP_SERVER_ENABLED=/d' "$ENV_FILE"
     fi
-    docker compose up -d webapp >/dev/null 2>&1 || true
+    docker compose up -d --no-deps webapp >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -88,7 +90,7 @@ set_flag() {   # set_flag true|false  -> writes .env and restarts the webapp
     else
         printf '\nMCP_SERVER_ENABLED=%s\n' "$1" >> "$ENV_FILE"
     fi
-    docker compose up -d webapp >/dev/null 2>&1
+    docker compose up -d --no-deps webapp >/dev/null 2>&1
     for _ in $(seq 1 40); do
         [[ "$(curl -s -o /dev/null -w '%{http_code}' "$WEBAPP_URL/api/health" 2>/dev/null)" == "200" ]] && return 0
         sleep 1
@@ -140,7 +142,7 @@ print("yes" if want in names else "no")
 set_disabled() {  # set_disabled <csv> -> writes .env and restarts the webapp
     sed -i '/^MCP_DISABLED_TOOLS=/d' "$ENV_FILE"
     printf 'MCP_DISABLED_TOOLS=%s\n' "$1" >> "$ENV_FILE"
-    docker compose up -d webapp >/dev/null 2>&1
+    docker compose up -d --no-deps webapp >/dev/null 2>&1
     for _ in $(seq 1 40); do
         [[ "$(curl -s -o /dev/null -w '%{http_code}' "$WEBAPP_URL/api/health" 2>/dev/null)" == "200" ]] && return 0
         sleep 1
