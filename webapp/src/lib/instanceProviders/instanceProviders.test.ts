@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   readFails: false,
   principals: new Map<string, Record<string, unknown>>(),
   sets: new Map<string, SetRow>(),
+  root: null as null | { rootUserId: string; rootConfirmedAt: Date | null },
 }))
 const store = vi.hoisted(() => ({
   readInstanceProviders: vi.fn(async (ids?: readonly string[]) =>
@@ -37,7 +38,8 @@ const loadPrincipal = vi.fn(async (id: string) => h.principals.get(id) ?? null)
 
 vi.mock('@/lib/prisma', () => ({
   default: {
-    instanceSettings: { findUnique: async () => null },
+    instanceSettings: { findUnique: async () => (h.root ? { ...h.root, rootAssignedBy: 'host', defaultMemberSetId: null } : null) },
+    user: { findUnique: async ({ where }: { where: { id: string } }) => (h.principals.has(where.id) ? { email: `${where.id}@example.com`, role: 'admin' } : null) },
     permissionSet: {
       findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
         where.id.in.flatMap((id) => (h.sets.has(id) ? [{ ...h.sets.get(id)! }] : [])),
@@ -89,6 +91,7 @@ beforeEach(() => {
   h.assignments = [{ setId: RED.id, providerId: 'inst-a' }, { setId: 'builtin:recon-operator', providerId: 'inst-b' }]
   h.byoForbidden = false
   h.readFails = false
+  h.root = null
   h.sets = new Map([[RED.id, RED], [BLUE.id, BLUE]])
   h.principals = new Map(Object.entries({
     alice: account('alice', { permissionSets: [RED.id] }),
@@ -97,6 +100,7 @@ beforeEach(() => {
     dave: account('dave', { status: 'disabled', permissionSets: [RED.id] }),
     analyst: account('analyst', { permissionSets: ['builtin:read-only-analyst'] }),
     admin: account('admin', { role: 'admin', adminProfileId: 'builtin:full-admin' }),
+    root: account('root', { role: 'admin' }),
   }))
   for (const fn of Object.values(store)) fn.mockClear()
   loadPrincipal.mockClear()
@@ -139,11 +143,9 @@ describe('assigned only through sets', () => {
     expect(store.readInstanceProviders).toHaveBeenCalledWith(['inst-b'])
   })
 
-  test('no assignment at all: no account is read', async () => {
+  test('no assignment at all: a member, an admin and an account never assigned get none', async () => {
     h.assignments = []
-    expect(await entitledInstanceProviders('alice')).toEqual([])
-    expect(loadPrincipal).not.toHaveBeenCalled()
-    expect(store.readInstanceProviders).not.toHaveBeenCalled()
+    for (const id of ['alice', 'admin', 'carol']) expect(await entitledInstanceProviders(id)).toEqual([])
   })
 
   test('a provider of a non-chat or unknown kind is never offered', async () => {
@@ -257,5 +259,35 @@ describe('model ids and the agent twin', () => {
     const keyed = /_INSTANCE_KEYED_KINDS = \{([^}]*)\}/.exec(py)?.[1] ?? ''
     const pyKinds = [...keyed.matchAll(/"([a-z_]+)":/g)].map((m) => m[1])
     expect([...pyKinds, 'openai_compatible'].sort()).toEqual([...INSTANCE_PROVIDER_KINDS].sort())
+  })
+})
+
+// Fix of the 6.11 review, finding 6: the Root branch of the capability resolution holds no set, so
+// "through a set" never reached Root. Decision: Root (confirmed or chosen automatically) uses every
+// instance provider, assigned or not: it holds every permission that is not a Root power, and using a
+// provider is none; it is also who manages them.
+describe('Root', () => {
+  test.each([
+    ['the confirmed Root', new Date(0)],
+    ['a Root chosen automatically', null],
+  ])('%s is offered every instance provider, assigned or not', async (_name, confirmedAt) => {
+    h.root = { rootUserId: 'root', rootConfirmedAt: confirmedAt }
+    expect(ids(await entitledInstanceProviders('root'))).toEqual(['inst-a', 'inst-b', 'inst-c'])
+    h.assignments = []
+    expect(ids(await entitledInstanceProviders('root'))).toEqual(['inst-a', 'inst-b', 'inst-c'])
+  })
+
+  test('only chat kinds, as for everyone; another admin still only through a set', async () => {
+    h.root = { rootUserId: 'root', rootConfirmedAt: new Date(0) }
+    h.providers.push(provider('inst-jev', { providerType: 'jev' }))
+    expect(ids(await entitledInstanceProviders('root'))).toEqual(['inst-a', 'inst-b', 'inst-c'])
+    expect(await entitledInstanceProviders('admin')).toEqual([])
+  })
+
+  test('switch off: Root too is offered none, and nothing is read', async () => {
+    setFlagsForTests({ identity: true, permissions: true })
+    h.root = { rootUserId: 'root', rootConfirmedAt: new Date(0) }
+    expect(await entitledInstanceProviders('root')).toEqual([])
+    expect(store.readInstanceProviders).not.toHaveBeenCalled()
   })
 })

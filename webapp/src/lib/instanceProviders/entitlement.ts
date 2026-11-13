@@ -6,11 +6,12 @@ import { readByoLlmForbidden, readInstanceProviders, readProviderAssignments } f
 
 /**
  * Who may use an instance provider (step 6.11, GV-15): whoever holds a permission set the provider
- * is assigned to, and nobody else. Holding a set means being under it in the capability resolution
+ * is assigned to, and Root. Holding a set means being under it in the capability resolution
  * (capabilities.ts `sets`): a set assigned, the instance default set or *Default member* for a member
- * never assigned, an admin's profile. An account that is gone or not active holds none, and Root is
- * offered a provider only through a set it holds, like everyone. There is no other way in: no
- * permission, no override and no admin bypass names a provider.
+ * never assigned, an admin's profile. An account that is gone or not active holds none. Root holds no
+ * set (its branch of the resolution grants permissions, not sets) and uses every provider: it holds
+ * every permission that is not a Root power, and using a provider is none (decision of the 6.11
+ * review). There is no other way in: no permission, no override and no admin bypass names a provider.
  *
  * On a project the owner's entitlements decide (C1, D-06): the agent fetches the OWNER's provider
  * list for every run of the project, whoever starts it, so a collaborator spends the owner's
@@ -29,15 +30,17 @@ export function instanceProvidersInForce(): boolean {
 /** The instance providers this account may use, in creation order. */
 export async function entitledInstanceProviders(userId: string): Promise<InstanceLlmProviderRecord[]> {
   if (!instanceProvidersInForce()) return []
-  const assignments = await readProviderAssignments()
-  if (assignments.length === 0) return []
   const principal = await loadPrincipal(userId)
-  if (!principal) return []
-  const held = new Set((await capabilitiesInForce(principal)).sets.map((s) => s.id))
+  if (!principal || principal.status !== 'active') return []
+  const capabilities = await capabilitiesInForce(principal)
+  // A row of a kind the agent cannot build as a chat model never leaves the webapp.
+  const chat = (rows: InstanceLlmProviderRecord[]) => rows.filter((p) => isInstanceProviderKind(p.providerType))
+  if (capabilities.accountType === 'root') return chat(await readInstanceProviders())
+  const held = new Set(capabilities.sets.map((s) => s.id))
+  const assignments = await readProviderAssignments()
   const ids = [...new Set(assignments.filter((a) => held.has(a.setId)).map((a) => a.providerId))]
   if (ids.length === 0) return []
-  // A row of a kind the agent cannot build as a chat model never leaves the webapp.
-  return (await readInstanceProviders(ids)).filter((p) => isInstanceProviderKind(p.providerType))
+  return chat(await readInstanceProviders(ids))
 }
 
 /** The same list as the person sees it: names and kinds, never a key, an endpoint or a header. */
