@@ -42,8 +42,11 @@ export async function POST(request: NextRequest) {
   const projectId = typeof body.project_id === 'string' ? body.project_id : ''
   const auth = await requirePermission(request, 'agent:assistants', { projectId })
   if (auth instanceof NextResponse) return auth
-  const eff = auth.effective
   const access = auth.access!
+  // The graph tenant is the project's owner, whose id its nodes carry. The key owner is the
+  // owner too: agent:assistants is a write level, which only the owner reaches until Phase 5
+  // decides whose key a collaborator's question spends.
+  const owner = access.project.userId
 
   try {
     const resp = await agentFetch('/text-to-cypher', {
@@ -51,9 +54,10 @@ export async function POST(request: NextRequest) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...body,
-        // The session decides whose projects and whose LLM key are used, never
+        // The access check decides whose graph and whose LLM key are used, never
         // the caller's body.
-        user_id: eff.userId,
+        user_id: owner,
+        tenant_user_id: owner,
         project_id: access.project.id,
       }),
     }, { timeoutMs: GENERATE_TIMEOUT_MS })

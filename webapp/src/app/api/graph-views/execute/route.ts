@@ -4,6 +4,7 @@ import { getGraphSession } from '../../graph/neo4j'
 import { formatGraphRecords } from '../../graph/format'
 import { injectProjectFilter, findUnscopedNodePattern, namesMutedLabel, hasVariableLengthPath, findDisallowedCall } from './injectProjectFilter'
 import { requirePermission } from '@/lib/authz/guards'
+import { graphReadView } from '@/lib/authz/graphReadView'
 
 /**
  * Execute a Cypher query (from a saved graph view) against Neo4j,
@@ -21,8 +22,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Only the project's effective owner may run a (read-only) view query against
-    // its subgraph.
+    // Anyone who reads the project's graph may run a (read-only) view query against
+    // it; the tenant filter below is the project, never the caller.
     const auth = await requirePermission(request, 'graph:cypher', { projectId })
     if (auth instanceof NextResponse) return auth
 
@@ -83,7 +84,7 @@ export async function POST(request: NextRequest) {
     const session = getGraphSession()
     try {
       const result = await session.run(filtered, { projectId })
-      const { nodes, links } = formatGraphRecords(result.records)
+      const { nodes, links } = graphReadView(formatGraphRecords(result.records), auth.access)
       return NextResponse.json({ nodes, links, projectId })
     } finally {
       await session.close()

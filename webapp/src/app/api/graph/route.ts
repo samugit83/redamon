@@ -5,6 +5,7 @@ import { getCached, setCached, invalidateCache } from './cache'
 import { truncateGraph } from './truncate'
 import { GRAPH_PERF_DEBUG } from './config'
 import { requirePermission } from '@/lib/authz/guards'
+import { graphReadView } from '@/lib/authz/graphReadView'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { graphError } from './graphErrors'
 
@@ -21,10 +22,10 @@ export const GET = withRouteErrors('The graph could not be loaded', async (reque
     )
   }
 
-  // The graph is scoped to a project; the caller's effective user must own that
-  // project. Since a project has exactly one owner, proving ownership here scopes
-  // the returned subgraph to the effective user (blocks the impersonation-URL BOLA
-  // where an admin simulating X, or any user, reads another user's graph by id).
+  // The graph is the project's, whoever reads it: the owner, or someone the project's
+  // access admits (a share, oversight). A project the effective user cannot see answers
+  // 404 before any read (the impersonation-URL BOLA where an admin simulating X, or any
+  // user, reads another user's graph by id).
   const auth = await requirePermission(request, 'graph:read', { projectId })
   if (auth instanceof NextResponse) return auth
 
@@ -46,14 +47,15 @@ export const GET = withRouteErrors('The graph could not be loaded', async (reque
   if (cached) {
     const cacheAge = Date.now() - cached.timestamp
     if (GRAPH_PERF_DEBUG) console.log(`[GraphPerf:API] Cache HIT for ${projectId} (age=${cacheAge}ms)`)
+    const view = graphReadView({ ...cached.data, etag: cached.etag }, auth.access)
 
     // If client has same ETag, return 304
-    if (ifNoneMatch && ifNoneMatch === `"${cached.etag}"`) {
+    if (ifNoneMatch && ifNoneMatch === `"${view.etag}"`) {
       if (GRAPH_PERF_DEBUG) console.log(`[GraphPerf:API] 304 Not Modified -- ETag matched for ${projectId}`)
       return new NextResponse(null, {
         status: 304,
         headers: {
-          'ETag': `"${cached.etag}"`,
+          'ETag': `"${view.etag}"`,
           'Cache-Control': 'private, no-cache',
         },
       })
@@ -66,11 +68,11 @@ export const GET = withRouteErrors('The graph could not be loaded', async (reque
       // `truncated: {truncated:false,...}` -- a truthy object -- while the
       // miss omitted the key entirely, so `if (data.truncated)` answered
       // differently for identical data depending on cache state.
-      { nodes: cached.data.nodes, links: cached.data.links, projectId,
+      { nodes: view.nodes, links: view.links, projectId,
         ...(cached.info?.truncated ? { truncated: cached.info } : {}) },
       {
         headers: {
-          'ETag': `"${cached.etag}"`,
+          'ETag': `"${view.etag}"`,
           'Cache-Control': 'private, no-cache',
         },
       }
@@ -95,8 +97,9 @@ export const GET = withRouteErrors('The graph could not be loaded', async (reque
       )
     }
 
-    // Cache the result and get ETag
-    const etag = setCached(projectId, { nodes, links }, info)
+    // The cache holds the project's graph; each reader gets its view of it.
+    const view = graphReadView({ nodes, links, etag: setCached(projectId, { nodes, links }, info) }, auth.access)
+    const etag = view.etag
 
     // Check if client already has this version
     if (ifNoneMatch && ifNoneMatch === `"${etag}"`) {
@@ -110,7 +113,7 @@ export const GET = withRouteErrors('The graph could not be loaded', async (reque
       })
     }
 
-    const responseData = JSON.stringify({ nodes, links, projectId, ...(info.truncated ? { truncated: info } : {}) })
+    const responseData = JSON.stringify({ nodes: view.nodes, links: view.links, projectId, ...(info.truncated ? { truncated: info } : {}) })
     if (GRAPH_PERF_DEBUG) console.log(`[GraphPerf:API] Response size: ${(responseData.length / 1024).toFixed(1)}KB`)
 
     return new NextResponse(responseData, {

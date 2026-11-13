@@ -46,6 +46,11 @@ describe('identity comes from the session, never the body', () => {
     expect(agentBody().user_id).toBe('owner')
   })
 
+  test("the graph tenant and the key owner sent upstream are the project's owner; a body's tenant_user_id is ignored (step 4.6, NF-11)", async () => {
+    await post({ question: 'q', project_id: 'p1', user_id: 'victim', tenant_user_id: 'victim' })
+    expect(agentBody()).toMatchObject({ user_id: 'owner', tenant_user_id: 'owner', project_id: 'p1' })
+  })
+
   test('the project id sent upstream is the one the access check resolved', async () => {
     h.access.mockResolvedValue({ project: { id: 'p1', userId: 'owner' } })
     await post({ question: 'q', project_id: 'p1' })
