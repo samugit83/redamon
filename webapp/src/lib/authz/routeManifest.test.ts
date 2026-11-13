@@ -236,6 +236,12 @@ const SAME_ORIGIN_ROUTES = [
   '/api/projects/[id]/leave',
   // Makes the confirmer a schedule's actor (step 5.5): a change of who acts, so same-origin too.
   '/api/projects/[id]/schedules/[scheduleId]/confirm',
+  // An ownership transfer (step 5.12): the offer, its answer, its withdrawal and the re-pick list's dismissal.
+  '/api/projects/[id]/transfer',
+  '/api/projects/[id]/transfer/accept',
+  '/api/projects/[id]/transfer/acknowledge',
+  '/api/projects/[id]/transfer/cancel',
+  '/api/projects/[id]/transfer/decline',
   '/api/root/transfer',
   '/api/root/transfer/accept',
   '/api/root/transfer/cancel',

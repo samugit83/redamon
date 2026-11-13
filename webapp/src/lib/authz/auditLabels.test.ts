@@ -258,6 +258,9 @@ describe('audit action labels (step 4.13, UI-08, AU-09)', () => {
         // Step 5.6: the owner's consent to collaborators spending the project's credentials, and each spend.
         'credits.used', 'project.conversations_policy', 'project.owner_consent.grant', 'project.owner_consent.withdraw',
         'project.share.expired', 'project.share.grant', 'project.share.leave', 'project.share.lookup', 'project.share.revoke', 'project.share.update',
+        // Step 5.12: an ownership transfer, from the offer to its end.
+        'project.transfer.accept', 'project.transfer.cancel', 'project.transfer.completed', 'project.transfer.decline',
+        'project.transfer.expired', 'project.transfer.failed', 'project.transfer.offer',
       ],
       prefixes: [],
     })

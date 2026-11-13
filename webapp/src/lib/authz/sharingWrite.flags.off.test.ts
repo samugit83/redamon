@@ -206,6 +206,9 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
       // breakdown is read only with the switch on (block below).
       'src/lib/authz/ownerConsent.ts',
       'src/lib/authz/ownerCredentials.ts',
+      // Step 5.12: every transfer route answers 404 with the switch off, nothing read, and with Root's policy at
+      // read (maxShareLevel) once its guard ran (the transfers block below).
+      'src/lib/authz/ownershipTransfer.ts',
       // Step 5.2a: a share stored at write is `write` only with the switch on (through maxShareLevel), tests above.
       'src/lib/authz/projectAccess.ts',
       // Step 4.4: write grants answer 409 write_sharing_off with the switch off (collaborators route tests).
@@ -230,6 +233,9 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
       // Step 5.6: the one reader and writer of ProjectAccessPolicy, asked by projectAccess() only for a write answer
       // (write in force), by the share routes only with write in force, by the access-policy route only past its 404.
       'src/lib/authz/ownerConsent.ts',
+      // Step 5.12: the one reader and writer of ProjectTransfer; on completion it also clears the consent and moves the
+      // conversations that follow the owner. Reached only past the transfer routes' 404 (the transfers block below).
+      'src/lib/authz/ownershipTransfer.ts',
     ]
     const NAMES = new RegExp(
       '\\b(projectAccessPolicy|ProjectAccessPolicy|project_access_policies|accessPolicy|conversationShares?|ConversationShare|' +
@@ -523,5 +529,63 @@ describe('conversations with write sharing not in force (step 5.8)', () => {
     expect((await GET(new NextRequest('http://x/api/conversations/policy?projectId=P-owner'))).status).toBe(404)
     expect((await POST(json('http://x/api/conversations/policy?projectId=P-owner', { managersSeeAllConversations: true }))).status).toBe(404)
     expect(catalogDoubles.identity).not.toHaveBeenCalled()
+  })
+})
+
+// Step 5.12: ownership transfer. With the write switch off every transfer route (the offer and its state, accept,
+// decline, cancel, the re-pick dismissal and the account's banner feed) answers 404 before a session or a table is
+// read; with Root's policy at read the owner's routes answer 404 once their guard ran, and nothing about a transfer
+// is read (this file's Prisma double has no transfer table: a read would fail the route). The user deletion keeps
+// the Phase 1 teardown (step 5.13 builds the wizard).
+describe('ownership transfer with write sharing not in force (step 5.12)', () => {
+  const json = async (url: string, body: unknown = {}) => {
+    const { NextRequest } = await import('next/server')
+    return new NextRequest(url, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://x' }, body: JSON.stringify(body) })
+  }
+  const params = { params: Promise.resolve({ id: 'P-owner' }) }
+
+  test.each([
+    ['every switch off', {}],
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }],
+    ['the write switch set without sharing', { identity: true, permissions: true, sharingWrite: true }],
+  ] as Array<[string, Partial<RbacFlags>]>)('%s: every transfer route answers 404, before any session or table is read', async (_what, flags) => {
+    setFlagsForTests(flags)
+    catalogDoubles.identity.mockClear()
+    const { NextRequest } = await import('next/server')
+    const offer = await import('@/app/api/projects/[id]/transfer/route')
+    const routes = await Promise.all([
+      import('@/app/api/projects/[id]/transfer/accept/route'), import('@/app/api/projects/[id]/transfer/decline/route'),
+      import('@/app/api/projects/[id]/transfer/cancel/route'), import('@/app/api/projects/[id]/transfer/acknowledge/route'),
+    ])
+    const feed = await import('@/app/api/projects/transfers/route')
+    expect((await offer.GET(new NextRequest('http://x/api/projects/P-owner/transfer'), params)).status).toBe(404)
+    expect((await offer.POST(await json('http://x/api/projects/P-owner/transfer', { toUserId: 'collab', oldOwnerRole: 'leave' }), params)).status).toBe(404)
+    for (const { POST } of routes) expect((await POST(await json('http://x/api/projects/P-owner/transfer/x'), params)).status).toBe(404)
+    expect((await feed.GET(new NextRequest('http://x/api/projects/transfers'))).status).toBe(404)
+    expect(catalogDoubles.identity).not.toHaveBeenCalled()
+    expect(db.projectFindUnique).not.toHaveBeenCalled()
+    expect(db.collaboratorFindUnique).not.toHaveBeenCalled()
+  })
+
+  test("the write switch on, Root's policy at read: the owner's offer, cancel and dismissal answer 404 after the guard; nothing about a transfer is read", async () => {
+    setFlagsForTests(ALL_ON)
+    db.policy = { enabled: true, maxLevel: 'read' }
+    catalogDoubles.identity.mockResolvedValue({ session: { userId: 'owner', role: 'standard' }, principal: member('owner'), actingAs: null })
+    const offer = await import('@/app/api/projects/[id]/transfer/route')
+    const { POST: CANCEL } = await import('@/app/api/projects/[id]/transfer/cancel/route')
+    const { POST: DISMISS } = await import('@/app/api/projects/[id]/transfer/acknowledge/route')
+    const res = await offer.POST(await json('http://x/api/projects/P-owner/transfer', { toUserId: 'collab', oldOwnerRole: 'leave', stepUpPassword: 'pw' }), params)
+    expect([res.status, await res.json()]).toEqual([404, { error: 'Not found' }])
+    expect((await CANCEL(await json('http://x/api/projects/P-owner/transfer/cancel'), params)).status).toBe(404)
+    expect((await DISMISS(await json('http://x/api/projects/P-owner/transfer/acknowledge'), params)).status).toBe(404)
+    const { writeSharingInForce } = await import('./ownershipTransfer')
+    expect(await writeSharingInForce()).toBe(false)
+    expect(db.collaboratorFindUnique).not.toHaveBeenCalled()
+  })
+
+  test('contrast, write sharing in force: the same offer reaches the transfer writer (the cases above are not vacuous)', async () => {
+    setFlagsForTests(ALL_ON)
+    const { writeSharingInForce } = await import('./ownershipTransfer')
+    expect(await writeSharingInForce()).toBe(true)
   })
 })

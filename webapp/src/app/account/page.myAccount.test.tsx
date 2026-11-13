@@ -195,6 +195,24 @@ describe('My activity', () => {
     expect(items[0].textContent).toMatch(/A scan schedule "nightly" on your project "Client X" paused: Bob Collab no longer has access/)
   })
 
+  test('the ownership transfer notices say who gave or took which project (step 5.12)', async () => {
+    const at = '2026-11-12T10:00:00.000Z'
+    h.activity.body = {
+      notices: [
+        { id: 'n2', type: 'project_transfer', at, by: { name: 'Olga Owner', email: 'olga@e2e.local' }, project: { id: 'P1', name: 'Client X' },
+          direction: 'received', oldOwnerRole: 'leave', cleared: 2, shownAt: null },
+        { id: 'n1', type: 'project_transfer', at, by: { name: 'Bob Collab', email: 'bob@e2e.local' }, project: { id: 'P2', name: 'Client Y' },
+          direction: 'given', oldOwnerRole: 'co-owner', cleared: 0, shownAt: at },
+      ],
+      events: [],
+    }
+    renderPage()
+    const region = screen.getByRole('region', { name: 'My activity' })
+    const text = (await within(region).findAllByRole('listitem')).map((i) => i.textContent)
+    expect(text[0]).toMatch(/Olga Owner gave you the project "Client X" \(2 settings to re-pick\)/)
+    expect(text[1]).toMatch(/You gave the project "Client Y" to Bob Collab and stayed as a co-owner/)
+  })
+
   test('an act-as row says why, for how long and how it ended, when the row holds it', async () => {
     const laura = { name: 'Laura', email: 'laura@e2e.local' }
     h.activity.body = {

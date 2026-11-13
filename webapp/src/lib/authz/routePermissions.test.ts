@@ -49,6 +49,10 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'GET /api/projects/defaults': 'the default values of a new project form: registry data, no project, nothing written',
   'POST /api/projects/[id]/leave': "giving up one's own share of the project (the effective user's share row; none answers 404, 404 too with sharing not in force): one's own share is always one's to leave, so no permission gates it (step 4.4)",
   'GET /api/projects/[id]/my-access': "the account's own access to the project (projectAccess) for the stale-access poll: any signed-in account asks about itself, a project it cannot see answers 404, nothing written (step 4.3)",
+  'GET /api/projects/[id]/transfer': "the ownership transfer offer as the asker may see it (projectAccess, a project it cannot see answers 404): the owner their open offer and the settings to re-pick, the recipient the offer made to them, anyone else nothing; the offer itself (POST) asks project:transfer (step 5.12)",
+  'POST /api/projects/[id]/transfer/accept': "the recipient answers an offer made to them, with their own password, while still an active collaborator: the owner's offer is the grant, so no permission of the recipient's gates it, and an admin acting as them is refused (step 5.12)",
+  'POST /api/projects/[id]/transfer/decline': "the recipient turns down an offer made to them: always theirs to refuse, so no permission gates it, and an admin acting as them is refused (step 5.12)",
+  'GET /api/projects/transfers': "the account's own ownership transfer offers and re-pick lists, for the header's banners: any signed-in account reads its own, nothing written (step 5.12)",
   'GET /api/nuclei-templates': 'the templates the account may select or manage, scoped by owner inside (own and instance ones; every one with platform:nuclei_templates): reading the library changes nothing',
   'GET /api/account/activity': "the signed-in account's own notices and the audit rows about it (404 with the identity switch off): an account reads its own history",
   'GET /api/account/sessions': "the signed-in account's own device sessions, the real account never one acted as (404 with RBAC_GOVERNANCE_ENABLED off): an account reads its own sign-ins (step 6.10)",
@@ -140,6 +144,7 @@ const NO_ROWS: Readonly<Record<string, string>> = {
   'audit:read': 'the console routes answer 404 with RBAC_GOVERNANCE_ENABLED off, which the generated rows do not turn on; Security auditor holds it and User manager lacks it: api/admin/audit/route.test.ts covers both, and the governance rows of step 6.13 run them live',
   'audit:export': 'as audit:read: 404 with RBAC_GOVERNANCE_ENABLED off, which the generated rows do not turn on; api/admin/audit/route.test.ts covers the holder, the refusal and the audit row',
   'agent:conversations_share': 'every holder request that passes the route\'s own checks shares a conversation or changes the owner\'s policy, and both routes answer 404 unless write sharing is in force, which the generated rows do not set up; conversations.access.test.ts covers holders and refusals (step 5.8)',
+  'project:transfer': 'every holder request that passes the route\'s own checks offers, cancels or dismisses an ownership transfer (with the owner\'s password), and every transfer route answers 404 unless write sharing is in force, which the generated rows do not set up; transfer/route.test.ts and ownershipTransfer.test.ts cover holders and refusals (step 5.12)',
   'platform:operations': 'the operations view answers 404 with RBAC_GOVERNANCE_ENABLED off, which the generated rows do not turn on, and its stop acts on a running agent run; Platform operator holds it and User manager lacks it: api/admin/operations/route.test.ts covers both, and the governance rows of step 6.13 run them live (step 6.5)',
 }
 
@@ -305,7 +310,7 @@ describe('route permissions: every route (steps 3.8, 3.9; PE-19, PE-22)', () => 
     }
     // A later phase's feature is that phase's to wire (each later manifest test requires its own); the
     // ones a step has wired are listed here.
-    const WIRED_NEW_FEATURES = new Set<string>(['project:share', 'audit:read', 'audit:export', 'projects:oversee', 'projects:administer', 'platform:operations', 'agent:conversations_share'])
+    const WIRED_NEW_FEATURES = new Set<string>(['project:share', 'audit:read', 'audit:export', 'projects:oversee', 'projects:administer', 'platform:operations', 'agent:conversations_share', 'project:transfer'])
     expect(PERMISSION_IDS.filter(p => !PERMISSIONS[p].gatesExisting && named().includes(p) && !WIRED_NEW_FEATURES.has(p))).toEqual([])
   })
 

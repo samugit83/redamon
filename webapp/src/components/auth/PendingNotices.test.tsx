@@ -220,3 +220,38 @@ describe('the schedule pause notice (step 5.5, D-13)', () => {
   })
 })
 
+
+describe('the ownership transfer notices (step 5.12, SH-15)', () => {
+  const transfer = (over: Record<string, unknown> = {}) => ({
+    id: 't1', type: 'project_transfer', at: '2026-11-12T10:00:00.000Z', by: { name: 'Olga Owner', email: 'olga@e2e.local' },
+    project: { id: 'P1', name: 'Client X' }, direction: 'received', oldOwnerRole: 'co-owner', cleared: 2, ...over,
+  })
+
+  test('the new owner: who gave it, that their keys are spent now, and the settings to re-pick', () => {
+    const text = noticeMessage(readNoticeViews([transfer()])[0])
+    expect(text).toContain('Olga Owner (olga@e2e.local) gave you the project "Client X"')
+    expect(text).toMatch(/use your keys/)
+    expect(text).toMatch(/2 settings that used Olga Owner \(olga@e2e\.local\)'s own providers, templates or token were cleared/)
+    expect(noticeMessage(readNoticeViews([transfer({ cleared: 0 })])[0])).not.toMatch(/cleared/)
+  })
+
+  test('the old owner: to whom, and whether they stay as a co-owner', () => {
+    const by = { name: 'Bob Collab', email: 'bob@e2e.local' }
+    expect(noticeMessage(readNoticeViews([transfer({ direction: 'given', by, cleared: 0 })])[0]))
+      .toMatch(/^You gave your project "Client X" to Bob Collab \(bob@e2e\.local\) on .*You stay on it as a co-owner\.$/)
+    expect(noticeMessage(readNoticeViews([transfer({ direction: 'given', by, oldOwnerRole: 'leave', cleared: 0 })])[0]))
+      .toMatch(/You no longer have access to it\.$/)
+  })
+
+  test('only well-formed ones are read', () => {
+    expect(readNoticeViews([transfer({ project: null }), transfer({ direction: 'up' }), transfer({ cleared: 'x' }), transfer()])).toHaveLength(1)
+  })
+
+  test('shown in the app dialog under its own title', async () => {
+    const onDone = vi.fn()
+    render(<AlertProvider><Harness notices={[transfer()]} onDone={onDone} /></AlertProvider>)
+    expect(await screen.findByRole('dialog', { name: 'A project changed owner' })).toHaveTextContent('Client X')
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
+  })
+})

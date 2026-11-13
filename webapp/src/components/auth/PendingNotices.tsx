@@ -51,6 +51,17 @@ export type AccountNoticeView =
     project: { id: string; name: string }
     schedule: { id: string; label: string }
   }
+  | {
+    id: string
+    type: 'project_transfer'
+    at: string
+    /** The other person: who took the project, or who gave it (step 5.12). */
+    by: { name: string; email: string }
+    project: { id: string; name: string }
+    direction: 'given' | 'received'
+    oldOwnerRole: 'co-owner' | 'leave'
+    cleared: number
+  }
 
 type Alerts = ReturnType<typeof useOptionalAlertModal>
 
@@ -60,6 +71,7 @@ const TITLES: Record<AccountNoticeView['type'], string> = {
   acted_as: 'An administrator acted as you',
   break_glass: 'Root opened break-glass access to your project',
   schedule_paused: 'A scan schedule on your project paused',
+  project_transfer: 'A project changed owner',
 }
 
 function isView(v: unknown): v is AccountNoticeView {
@@ -85,6 +97,12 @@ function isView(v: unknown): v is AccountNoticeView {
     const schedule = n.schedule as Record<string, unknown> | null | undefined
     return !!project && typeof project === 'object' && typeof project.id === 'string' && typeof project.name === 'string'
       && !!schedule && typeof schedule === 'object' && typeof schedule.id === 'string' && typeof schedule.label === 'string'
+  }
+  if (n.type === 'project_transfer') {
+    const project = n.project as Record<string, unknown> | null | undefined
+    return !!project && typeof project === 'object' && typeof project.id === 'string' && typeof project.name === 'string'
+      && (n.direction === 'given' || n.direction === 'received') && (n.oldOwnerRole === 'co-owner' || n.oldOwnerRole === 'leave')
+      && Number.isSafeInteger(n.cleared)
   }
   return n.type === 'email_changed' && typeof n.from === 'string' && typeof n.to === 'string' && typeof n.self === 'boolean'
 }
@@ -125,6 +143,17 @@ export function noticeMessage(n: AccountNoticeView): string {
     return `${which} on your project "${n.project.name}" paused on ${when}: ${who} no longer has access to the project, `
       + 'and the schedule ran as them. It stays paused until you or a co-owner confirm it in the Scans tab; '
       + 'it then runs as whoever confirms it.'
+  }
+  if (n.type === 'project_transfer') {
+    const who = `${n.by.name || n.by.email}${n.by.name && n.by.email ? ` (${n.by.email})` : ''}`
+    if (n.direction === 'given') {
+      return `You gave your project "${n.project.name}" to ${who} on ${when}. `
+        + (n.oldOwnerRole === 'co-owner' ? 'You stay on it as a co-owner.' : 'You no longer have access to it.')
+    }
+    const repick = n.cleared > 0
+      ? ` ${n.cleared} setting${n.cleared === 1 ? '' : 's'} that used ${who}'s own providers, templates or token were cleared: the project shows which, to re-pick.`
+      : ''
+    return `${who} gave you the project "${n.project.name}" on ${when}: you own it now, and its scans and agent runs use your keys.${repick}`
   }
   const how = n.mode === 'link' ? 'with a reset link' : 'with a temporary password'
   const why = n.reason ? `Reason: ${n.reason}.` : 'No reason was given.'

@@ -9,6 +9,8 @@
  * access to a project tells its owner (step 4.14, SH-18): who, when, why, for how long, which project.
  * A scan schedule that paused itself because the person it runs as lost access to the project tells
  * the project's owner (step 5.5, D-13): which schedule, which project, whose access ended.
+ * An ownership transfer tells both people (step 5.12, SH-15): which project, who gave or took it,
+ * whether the old owner stayed as a co-owner, and how many settings the new owner has to re-pick.
  *
  * The first sign-in after a reset is the one whose account last signed in before the latest
  * reset notice; only that sign-in records its address and browser (DV-11).
@@ -88,7 +90,23 @@ export interface SchedulePausedNotice {
   shownAt?: string
 }
 
-export type AccountNotice = CredentialsResetNotice | EmailChangedNotice | ActedAsNotice | BreakGlassNotice | SchedulePausedNotice
+export interface ProjectTransferNotice {
+  id: string
+  type: 'project_transfer'
+  /** When the transfer completed (ISO). */
+  at: string
+  /** The other person: who took the project (`given`) or who gave it (`received`). */
+  by: { id: string; name: string; email: string }
+  project: { id: string; name: string }
+  direction: 'given' | 'received'
+  oldOwnerRole: 'co-owner' | 'leave'
+  /** Settings cleared for the new owner to re-pick (0 for the old owner). */
+  cleared: number
+  shownAt?: string
+}
+
+export type AccountNotice =
+  | CredentialsResetNotice | EmailChangedNotice | ActedAsNotice | BreakGlassNotice | SchedulePausedNotice | ProjectTransferNotice
 
 /** What the person is shown: the notice without the admin's account id. */
 export type NoticeView =
@@ -134,6 +152,16 @@ export type NoticeView =
     project: { id: string; name: string }
     schedule: { id: string; label: string }
   }
+  | {
+    id: string
+    type: 'project_transfer'
+    at: string
+    by: { name: string; email: string }
+    project: { id: string; name: string }
+    direction: 'given' | 'received'
+    oldOwnerRole: 'co-owner' | 'leave'
+    cleared: number
+  }
 
 const text = (v: unknown): v is string => typeof v === 'string'
 
@@ -161,6 +189,12 @@ function isNotice(v: unknown): v is AccountNotice {
     const schedule = n.schedule as Record<string, unknown> | null | undefined
     return !!project && typeof project === 'object' && text(project.id) && text(project.name)
       && !!schedule && typeof schedule === 'object' && text(schedule.id) && text(schedule.label)
+  }
+  if (n.type === 'project_transfer') {
+    const project = n.project as Record<string, unknown> | null | undefined
+    return !!project && typeof project === 'object' && text(project.id) && text(project.name)
+      && (n.direction === 'given' || n.direction === 'received') && (n.oldOwnerRole === 'co-owner' || n.oldOwnerRole === 'leave')
+      && Number.isSafeInteger(n.cleared) && (n.cleared as number) >= 0
   }
   return n.type === 'email_changed' && text(n.from) && text(n.to) && typeof n.self === 'boolean'
 }
@@ -207,6 +241,18 @@ export function schedulePausedNotice(
   return {
     id: randomUUID(), type: 'schedule_paused', at: at.toISOString(), by,
     project: { id: project.id, name: project.name }, schedule: { id: schedule.id, label: schedule.label },
+  }
+}
+
+export function projectTransferNotice(
+  { by, at, project, direction, oldOwnerRole, cleared }: {
+    by: ProjectTransferNotice['by']; at: Date; project: ProjectTransferNotice['project']
+    direction: ProjectTransferNotice['direction']; oldOwnerRole: ProjectTransferNotice['oldOwnerRole']; cleared: number
+  },
+): ProjectTransferNotice {
+  return {
+    id: randomUUID(), type: 'project_transfer', at: at.toISOString(), by,
+    project: { id: project.id, name: project.name }, direction, oldOwnerRole, cleared,
   }
 }
 
@@ -270,6 +316,12 @@ export function noticeView(n: AccountNotice): NoticeView {
     return {
       id: n.id, type: n.type, at: n.at, by,
       project: { id: n.project.id, name: n.project.name }, schedule: { id: n.schedule.id, label: n.schedule.label },
+    }
+  }
+  if (n.type === 'project_transfer') {
+    return {
+      id: n.id, type: n.type, at: n.at, by, project: { id: n.project.id, name: n.project.name },
+      direction: n.direction, oldOwnerRole: n.oldOwnerRole, cleared: n.cleared,
     }
   }
   return { id: n.id, type: n.type, at: n.at, by, reason: n.reason, mode: n.mode }

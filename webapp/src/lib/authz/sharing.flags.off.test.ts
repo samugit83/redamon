@@ -192,6 +192,9 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/lib/authz/expirySweep.ts',
       // Step 4.14: the oversight list's own shares and break-glass rows, behind its route's gate (below).
       'src/lib/authz/oversight.ts',
+      // Step 5.12: the ownership transfer reads and moves the project's shares, reached only past the transfer
+      // routes' 404 (write sharing in force, which needs this switch; sharingWrite.flags.off.test.ts).
+      'src/lib/authz/ownershipTransfer.ts',
       // Step 4.3: reads a share and the break-glass rows only with sharing in force (tests below).
       'src/lib/authz/projectAccess.ts',
       // Step 4.4: the share writers, behind the share routes' gate (sharingPolicyForRoutes, below).
@@ -229,6 +232,9 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/lib/authz/expirySweep.ts',
       // Step 4.14: the oversight list's shares and break-glass rows, reached only past its route's gate (below).
       'src/lib/authz/oversight.ts',
+      // Step 5.12: the ownership transfer reads and moves the project's shares, reached only past the transfer
+      // routes' 404 (write sharing in force; sharingWrite.flags.off.test.ts).
+      'src/lib/authz/ownershipTransfer.ts',
       // Step 4.3: projectAccess() and the lists' share filter, both only with sharing in force (tests below).
       'src/lib/authz/projectAccess.ts',
       // Step 4.4: the share writers, reached only past the share routes' gate (below).

@@ -26,6 +26,7 @@ import {
   pendingNotices,
   readNotices,
   schedulePausedNotice,
+  projectTransferNotice,
   withNotice,
 } from './accountNotices'
 import type { CredentialsResetNotice } from './accountNotices'
@@ -269,5 +270,42 @@ describe('the schedule pause notice to the owner (step 5.5, D-13)', () => {
       expect(readNotices([bad])).toEqual([])
     }
     expect(latestReset([good])).toBeNull()
+  })
+})
+
+describe('the ownership transfer notices to both people (step 5.12, SH-15)', () => {
+  const OLD = { id: 'owner-1', name: 'Olga Owner', email: 'olga@e2e.local' }
+  const NEW = { id: 'collab-1', name: 'Bob Collab', email: 'bob@e2e.local' }
+  const notice = (over: Partial<Parameters<typeof projectTransferNotice>[0]> = {}) => projectTransferNotice({
+    by: OLD, at: AT, project: { id: 'P1', name: 'Client X' }, direction: 'received', oldOwnerRole: 'co-owner', cleared: 3, ...over,
+  })
+
+  test('which project, who gave or took it, the old owner\'s role and how many settings to re-pick', () => {
+    expect(notice()).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/), type: 'project_transfer', at: '2026-11-12T10:00:00.000Z',
+      by: OLD, project: { id: 'P1', name: 'Client X' }, direction: 'received', oldOwnerRole: 'co-owner', cleared: 3,
+    })
+  })
+
+  test("is read, kept and handed over like the others, without the other person's account id", async () => {
+    const list = withNotice([reset()], notice({ by: NEW, direction: 'given', oldOwnerRole: 'leave', cleared: 0 }))
+    expect(readNotices(list).map((n) => n.type)).toEqual(['credentials_reset', 'project_transfer'])
+    expect(noticeView(readNotices(list)[1])).toEqual({
+      id: expect.any(String), type: 'project_transfer', at: '2026-11-12T10:00:00.000Z',
+      by: { name: 'Bob Collab', email: 'bob@e2e.local' }, project: { id: 'P1', name: 'Client X' },
+      direction: 'given', oldOwnerRole: 'leave', cleared: 0,
+    })
+    const shown = await handOverNotices('owner-1', list)
+    expect(JSON.stringify(shown)).not.toContain('collab-1')
+  })
+
+  test('a malformed one reads as none', () => {
+    const good = notice()
+    for (const bad of [
+      { ...good, project: null }, { ...good, project: { id: 'P1' } }, { ...good, direction: 'sideways' },
+      { ...good, oldOwnerRole: 'boss' }, { ...good, cleared: -1 }, { ...good, cleared: 1.5 }, { ...good, by: { name: 'x' } },
+    ]) {
+      expect(readNotices([bad])).toEqual([])
+    }
   })
 })

@@ -207,7 +207,7 @@ function RootTransferRow({ selfId }: { selfId: string }) {
 
 interface NoticeItem {
   id: string
-  type: 'credentials_reset' | 'email_changed' | 'break_glass' | 'schedule_paused'
+  type: 'credentials_reset' | 'email_changed' | 'break_glass' | 'schedule_paused' | 'project_transfer'
   at: string
   by: { name: string; email: string }
   reason?: string | null
@@ -218,6 +218,9 @@ interface NoticeItem {
   durationMinutes?: number
   project?: { id: string; name: string }
   schedule?: { id: string; label: string }
+  direction?: 'given' | 'received'
+  oldOwnerRole?: 'co-owner' | 'leave'
+  cleared?: number
   shownAt: string | null
 }
 
@@ -249,6 +252,12 @@ function noticeText(n: NoticeItem): string {
   if (n.type === 'schedule_paused') {
     const who = n.by.name || n.by.email || 'the person it ran as'
     return `A scan schedule${n.schedule?.label ? ` "${n.schedule.label}"` : ''} on your project "${n.project?.name ?? ''}" paused: ${who} no longer has access`
+  }
+  if (n.type === 'project_transfer') {
+    const who = n.by.name || n.by.email
+    return n.direction === 'given'
+      ? `You gave the project "${n.project?.name ?? ''}" to ${who}${n.oldOwnerRole === 'co-owner' ? ' and stayed as a co-owner' : ''}`
+      : `${who} gave you the project "${n.project?.name ?? ''}"${n.cleared ? ` (${n.cleared} setting${n.cleared === 1 ? '' : 's'} to re-pick)` : ''}`
   }
   return `Your password was reset with ${n.mode === 'link' ? 'a reset link' : 'a temporary password'}${n.reason ? ` (reason: ${n.reason})` : ''}`
 }

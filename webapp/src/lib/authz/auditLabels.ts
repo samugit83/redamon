@@ -45,6 +45,14 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'project.share.leave': 'Left the project (gave up a share)',
     'project.share.expired': 'A share expired',
     'project.share.lookup': 'Looked up an account to share with',
+    // Step 5.12 (SH-15): an ownership transfer, from the offer to its end.
+    'project.transfer.offer': 'Offered the project to a collaborator',
+    'project.transfer.cancel': 'Cancelled the ownership transfer offer',
+    'project.transfer.decline': 'Declined the ownership transfer offer',
+    'project.transfer.expired': 'The ownership transfer offer expired',
+    'project.transfer.accept': 'Accepted the ownership transfer offer',
+    'project.transfer.completed': 'The project changed owner',
+    'project.transfer.failed': 'An ownership transfer attempt failed',
     // Step 5.6 (C1): the owner's consent to collaborators spending the project's credentials, and each
     // collaborator spend of them.
     'project.owner_consent.grant': "Allowed collaborators to spend the owner's credentials",
