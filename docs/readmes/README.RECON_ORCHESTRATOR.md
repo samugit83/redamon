@@ -105,6 +105,8 @@ Content-Type: application/json
 }
 ```
 
+Every start body (recon, partial recon, GVM, GitHub hunt, TruffleHog, supply chain, AI attack surface) may also carry `actor_user_id`, the person who started the scan (RBAC step 5.5), and `actor_max_concurrent`, that person's scan quota: the scan is admitted and capped on the actor (`[scan] start <kind> project=<id> tenant=<owner> actor=<person>`), the actor is kept on the run state and listed by `/system/active-scans`, and the container's own config stays the tenant's. A body without it is admitted on the tenant, as before; a run adopted after an orchestrator restart has no actor.
+
 Starts a new recon container for the specified project. The container will:
 1. Fetch project settings from `{webapp_api_url}/api/projects/{projectId}`
 2. Run the recon pipeline

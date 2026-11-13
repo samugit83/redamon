@@ -47,6 +47,10 @@ python3 tooling/scripts/seed_schema_catalog.py
 the tenancy model, the `Muted` label, Scan Timeline. It deliberately lists no
 labels.
 
+### Moving a project to another owner
+
+`TenancyMixin.retenant_project(project_id, from_user_id, to_user_id)` ([graph_db/mixins/tenancy_mixin.py](../../graph_db/mixins/tenancy_mixin.py), RBAC step 5.12) changes the tenant key of every node of one project, in batches: every label keyed on `(user_id, project_id)` or indexed so (41, checked against the schema catalog), then a label-free sweep for labels an older release wrote, then relationships stamped with the tenant; only `user_id` changes, node ids stay (Postgres rows reference them). A key collision with a node the new owner already holds is refused before any write (`retenant_conflict`); a failed write moves back what it moved (`retenant_failed`); a failed move back raises `retenant_rollback_failed` with what moved, and the same call again completes it. The agent's `POST /graph/retenant` (master key) runs it for an ownership transfer; `tests/rbac_retenant_live.sh` runs it on a live database.
+
 ## Configuration
 
 The graph is automatically populated after each recon scan phase completes. Graph updates are controlled by the `UPDATE_GRAPH_DB` setting in the project configuration. GitHub Secret Hunt results are also ingested into the graph after scan completion.
