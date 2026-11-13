@@ -169,13 +169,21 @@ export interface SharingInForce {
   maxLevel: ShareLevel
 }
 
+/**
+ * The highest level a share reaches under `policy`: write only with RBAC_SHARING_WRITE_ENABLED on
+ * and Root's `maxLevel` at write. Otherwise a share stored at write reads as read (projectAccess).
+ */
+export function maxShareLevel(policy: Readonly<SharingPolicy>): ShareLevel {
+  return rbacFlags().sharingWrite && policy.maxLevel === 'write' ? 'write' : 'read'
+}
+
 /** Whether sharing is in force, for the screens (/api/auth/me). Switch off: off, nothing read. */
 export async function sharingInForce(): Promise<SharingInForce> {
   const policy = await sharingPolicyInForce()
   if (!policy) return { enabled: false, maxLevel: 'read' }
   return {
     enabled: policy.enabled,
-    maxLevel: rbacFlags().sharingWrite && policy.maxLevel === 'write' ? 'write' : 'read',
+    maxLevel: maxShareLevel(policy),
   }
 }
 

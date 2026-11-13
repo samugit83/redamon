@@ -6,6 +6,9 @@
  * approval, a dangerous-tool confirmation or a Fireteam member confirmation the claim lacks
  * (agentic/tests/test_approval_cap.py).
  *
+ * Step 5.2a: with write sharing in force a write share reaches none of the four either, until step
+ * 5.6 turns the run toggles on (`effectiveToggles`), whatever toggles its row holds.
+ *
  * Prisma (projects, the instance row, custom sets) is a double; the registry, the built-in sets,
  * the resolution and can() are the real ones.
  *
@@ -17,6 +20,7 @@ const db = vi.hoisted(() => ({
   projects: new Map<string, { id: string; userId: string }>(),
   instance: null as Record<string, unknown> | null,
   failProjects: false,
+  bobShare: null as Record<string, unknown> | null,
 }))
 const instanceFindUnique = vi.fn(async () => (db.instance ? { ...db.instance } : null))
 const projectFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => {
@@ -34,7 +38,7 @@ vi.mock('@/lib/prisma', () => ({
     projectCollaborator: {
       findUnique: async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) =>
         where.projectId_userId.projectId === 'P-alice' && where.projectId_userId.userId === 'bob'
-          ? { access: 'write', rawData: true, expiresAt: null, user: { status: 'active' } }
+          ? { access: 'write', rawData: true, expiresAt: null, user: { status: 'active' }, ...db.bobShare }
           : null,
     },
     projectBreakGlass: { findFirst: async () => null },
@@ -62,6 +66,7 @@ beforeEach(() => {
   db.projects.set('P-bob', { id: 'P-bob', userId: 'bob' })
   db.instance = { rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null, defaultMemberSetId: null }
   db.failProjects = false
+  db.bobShare = null
   instanceFindUnique.mockClear()
   projectFindUnique.mockClear()
   setFlagsForTests({ identity: true, permissions: true })
@@ -134,6 +139,26 @@ describe('agentTicketCap on a shared project (step 4.3): a read share holds none
     // An admin acting as bob gets none either; and oversight (the admin's own) never applies while acting.
     expect(await agentTicketCap({ principal: admin('admin-1'), actingAs: member('bob') }, 'P-alice')).toEqual([])
     expect(await agentTicketCap(alone(admin('admin-1')), 'P-alice')).toEqual([])
+  })
+})
+
+describe('agentTicketCap on a shared project with write sharing in force (step 5.2a)', () => {
+  beforeEach(() => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
+    db.instance = { ...db.instance, sharingPolicy: { enabled: true, maxLevel: 'write' } }
+  })
+
+  test('run toggles read false until 5.6: a write share holds none of the four, whatever its row says', async () => {
+    db.bobShare = { runScans: true, useAgent: true, exploit: true, manage: true }
+    expect(await agentTicketCap(alone(member('bob')), 'P-alice')).toEqual([])
+    db.bobShare = { runScans: false, useAgent: false, exploit: false, manage: false }
+    expect(await agentTicketCap(alone(member('bob')), 'P-alice')).toEqual([])
+  })
+
+  test('an admin acting as the collaborator holds none (D-22), and the owner holds all four as before', async () => {
+    db.bobShare = { runScans: true, useAgent: true, exploit: true, manage: true }
+    expect(await agentTicketCap({ principal: admin('admin-1'), actingAs: member('bob') }, 'P-alice')).toEqual([])
+    expect(await agentTicketCap(alone(member('alice')), 'P-alice')).toEqual([...AGENT_TICKET_CAPS])
   })
 })
 

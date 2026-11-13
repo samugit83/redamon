@@ -19,6 +19,11 @@
  * write handler whose permission needs only R or R* lets every read share through, so the routes
  * that have one are listed by name with the reason they write nothing (review of 4.3).
  *
+ * From step 5.2a a write share passes a W-level check (and the toggled levels its row opens): that is
+ * the point of write sharing, and which actions need M or O is each permission's level in the
+ * registry. What this test asks still holds unchanged: a read share, oversight and break-glass never
+ * reach a write level (projectAccess.test.ts, the level table), so the checks it requires stop them.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/levelLessHelpers.test.ts
  * @vitest-environment node
  */

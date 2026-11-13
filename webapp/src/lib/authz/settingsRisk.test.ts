@@ -6,30 +6,16 @@
  *
  * @vitest-environment node
  */
-import { describe, test, expect, vi } from 'vitest'
+import { describe, test, expect } from 'vitest'
 import { fieldKeys, fieldsWhere, loadRegistry } from '@/lib/reconSettings/registry'
 import { directionOf } from '@/lib/roe/roeWidening'
 import { RECON_PRESETS } from '@/lib/recon-presets'
-import type { ProjectAccess } from './projectAccess'
-import type { ProjectLevel } from './permissions'
+import { effectiveToggles, type ProjectAccess } from './projectAccess'
 import { EXPLOIT_GATES, OWN_DIRECTIONS, classifyChange, classifyField } from './settingsRisk'
 
-// meetsLevel's write rows are step 5.2a's (phase 5 Design, "Levels"): write reaches R, R* and W;
-// W+S, W+A and W+X also need their toggle; M needs manage; O stays the owner's. This double
-// stands in for those rows only; the owner and read rows are the real table.
-vi.mock('./projectAccess', async importOriginal => {
-  const actual = await importOriginal<typeof import('./projectAccess')>()
-  const TOGGLE: Partial<Record<ProjectLevel, string>> = { 'W+S': 'runScans', 'W+A': 'useAgent', 'W+X': 'exploit', M: 'manage' }
-  return {
-    ...actual,
-    meetsLevel: (access: ProjectAccess, needed: ProjectLevel) => {
-      if ((access.level as string) !== 'write') return actual.meetsLevel(access, needed)
-      if (needed === 'R' || needed === 'R*' || needed === 'W') return true
-      const toggle = TOGGLE[needed]
-      return toggle !== undefined && (access.toggles as unknown as Record<string, boolean>)[toggle] === true
-    },
-  }
-})
+// The level decision is the real meetsLevel table (write rows from step 5.2a): write reaches R, R*
+// and W; W+S, W+A and W+X also need their toggle; M needs manage; O stays the owner's. These
+// accesses carry the toggles a write share could hold once step 5.6 turns the run toggles on.
 
 type Toggles = Partial<Record<'rawData' | 'runScans' | 'useAgent' | 'exploit' | 'manage', boolean>>
 
@@ -140,6 +126,13 @@ describe('the spec cases', () => {
     // Opening the post-exploitation phase is the same call.
     expect(verdictOf({ agentActivatePostExplPhase: false }, { agentActivatePostExplPhase: true }, CO_OWNER).ok).toBe(false)
     expect(verdictOf({ agentActivatePostExplPhase: false }, { agentActivatePostExplPhase: true }, RED_TEAM_CO_OWNER).ok).toBe(true)
+  })
+
+  test('a co-owner as projectAccess answers today (Exploitation reads off until step 5.6) cannot loosen an approval gate', () => {
+    const today = access('write', effectiveToggles({ manage: true, exploit: true, runScans: true, useAgent: true }))
+    expect(verdictOf({ agentRequireToolConfirmation: true }, { agentRequireToolConfirmation: false }, today).refused)
+      .toEqual([expect.objectContaining({ key: 'agentRequireToolConfirmation', needs: 'manage+exploit' })])
+    expect(verdictOf({ agentGuardrailEnabled: true }, { agentGuardrailEnabled: false }, today).ok).toBe(true)
   })
 
   test('widening scope needs the owner', () => {

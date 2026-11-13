@@ -17,8 +17,9 @@
  * `mayActAs`) is checked first, and an `actingAs` it refuses throws `ActAsNotAllowedError` (a
  * caller that built one without the rule is a bug, never a refusal to show). The project is the
  * account acted as, as `getEffectiveUser` answers today, so a project shared with that account is
- * read only and the admin's own oversight never applies (D-22); a member permission needs both
- * people to hold it (§4.7: the admin uses only what both may do); an administration or platform
+ * read only, even a write share (projectAccess's `actingAs`), and the admin's own oversight never
+ * applies (D-22); a member permission needs both people to hold it (§4.7: the admin uses only what
+ * both may do); an administration or platform
  * permission stays the real person's (user administration, plugins, platform tools read the real
  * session).
  *
@@ -156,7 +157,7 @@ export async function can(principal: CapabilityPrincipal, permission: Permission
   if (onProject) {
     if (!opts.projectId) return Object.freeze({ allowed: false, status: 400, reason: 'project_required', permission })
     const subject = actingAs ?? principal
-    access = await projectAccess({ userId: subject.id }, opts.projectId, { fresh, principal: subject })
+    access = await projectAccess({ userId: subject.id }, opts.projectId, { fresh, principal: subject, ...(actingAs ? { actingAs: true } : {}) })
     if (!access) return Object.freeze({ allowed: false, status: 404, reason: 'project_not_visible', permission })
   }
 

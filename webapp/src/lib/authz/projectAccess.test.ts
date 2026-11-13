@@ -9,6 +9,12 @@
  * `projects:administer` is `read` with raw, `projects:oversee` is `read` without raw; an expired,
  * disabled or deleted collaborator's share is inert. `meetsLevel` gives each level its table.
  *
+ * Step 5.2a (SH-02, SH-03, SH-07, PE-25, D-22): with write sharing in force (RBAC_SHARING_WRITE_ENABLED
+ * and Root's `maxLevel: 'write'`) a live `write` share is `write`, Raw data included, with the
+ * Manage toggle of its row; Run scans, Use AI agent and Exploitation & shells read false until step
+ * 5.6 (`effectiveToggles`). Otherwise, and for the account an admin acts as, it reads exactly as in
+ * Phase 4. `meetsLevel`: write reaches R, R* and W, each toggle its level, never O.
+ *
  * Prisma is a double (the project, the share, the break-glass rows, the accounts, the instance row);
  * the clock is injected; the policy reader, the principal and the capabilities are the real ones.
  *
@@ -21,6 +27,10 @@ interface Share {
   rawData: boolean
   expiresAt: Date | null
   user: { status: string } | null
+  runScans?: boolean
+  useAgent?: boolean
+  exploit?: boolean
+  manage?: boolean
 }
 
 const db = vi.hoisted(() => ({
@@ -60,7 +70,7 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
-import { projectAccess, meetsLevel, type ProjectAccess } from './projectAccess'
+import { projectAccess, meetsLevel, effectiveToggles, myAccessView, type ProjectAccess } from './projectAccess'
 import { PROJECT_LEVELS, type ProjectLevel } from './permissions'
 import { setFlagsForTests } from './flags'
 import { setNowForTests } from './clock'
@@ -88,6 +98,13 @@ const owner = (projectId = 'P', userId = 'owner-1') =>
   ({ project: { id: projectId, userId }, level: 'owner', toggles: { rawData: true }, via: 'owner' })
 const read = (via: string, rawData: boolean, projectId = 'P', userId = 'owner-1') =>
   ({ project: { id: projectId, userId }, level: 'read', toggles: { rawData }, via })
+const NO_RUNS = { runScans: false, useAgent: false, exploit: false }
+const write = (manage = false, over: Record<string, boolean> = {}, projectId = 'P', userId = 'owner-1') =>
+  ({ project: { id: projectId, userId }, level: 'write', toggles: { rawData: true, ...NO_RUNS, manage, ...over }, via: 'share' })
+const PHASE4_SHARE_SELECT = { access: true, rawData: true, expiresAt: true, user: { select: { status: true } } }
+const WRITE_SHARE_SELECT = { ...PHASE4_SHARE_SELECT, runScans: true, useAgent: true, exploit: true, manage: true }
+const ALL_TOGGLES = { runScans: true, useAgent: true, exploit: true, manage: true }
+const shareSelect = (arg: unknown) => (arg as { select: unknown }).select
 
 const WRITE_LEVELS: ProjectLevel[] = ['W', 'W+S', 'W+A', 'W+X', 'M', 'O']
 
@@ -214,11 +231,16 @@ describe('projectAccess with sharing in force (step 4.3)', () => {
     expect(userFindUnique).not.toHaveBeenCalled()
   })
 
-  test('write row read as read while write is off (Phase 5 gives write its own level)', async () => {
-    share('P', 'viewer', { access: 'write' })
+  test('write row read as read while write is off: the write switch off, or on with Root\'s policy at read (step 5.2a)', async () => {
+    share('P', 'viewer', { access: 'write', ...ALL_TOGGLES })
     expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(read('share', false))
     setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
+    db.instance = { ...db.instance, sharingPolicy: { enabled: true, maxLevel: 'read' } }
+    clearSharingPolicyCacheForTests()
     expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(read('share', false))
+    // Both off paths read the share exactly as Phase 4 did: no toggle column.
+    expect(collaboratorFindUnique).toHaveBeenCalledTimes(2)
+    for (const [arg] of collaboratorFindUnique.mock.calls) expect(shareSelect(arg)).toEqual(PHASE4_SHARE_SELECT)
   })
 
   test('a share of an access kind the policy does not know is inert (fail closed)', async () => {
@@ -365,7 +387,8 @@ describe('meetsLevel: the level table (step 4.3)', () => {
   })
 
   test('an access level the policy does not know meets nothing (fail closed)', () => {
-    for (const level of ['viewer', 'write', 'manage', '']) {
+    // `write` became a level in step 5.2a (its table is below).
+    for (const level of ['viewer', 'manage', 'editor', 'WRITE', '']) {
       const unknown = { project: { id: 'P', userId: 'owner-1' }, level, toggles: { rawData: true }, via: 'share' } as unknown as ProjectAccess
       expect([level, levelsMet(unknown)]).toEqual([level, []])
     }
@@ -374,5 +397,148 @@ describe('meetsLevel: the level table (step 4.3)', () => {
   test('a read access without its toggles meets R only (a missing toggle is off)', () => {
     const bare = { project: { id: 'P', userId: 'owner-1' }, level: 'read' } as unknown as ProjectAccess
     expect(levelsMet(bare)).toEqual(['R'])
+  })
+})
+
+describe('projectAccess with write sharing in force (step 5.2a)', () => {
+  const WRITE_ON = { identity: true, permissions: true, sharing: true, sharingWrite: true }
+  beforeEach(() => setFlagsForTests(WRITE_ON))
+
+  test('write share: write with Raw data included, via the share; the owner stays the tenant', async () => {
+    share('P', 'viewer', { access: 'write' })
+    const access = (await projectAccess({ userId: 'viewer' }, 'P'))!
+    expect(access).toEqual(write())
+    expect(Object.isFrozen(access) && Object.isFrozen(access.toggles) && Object.isFrozen(access.project)).toBe(true)
+    expect(access.project.userId).toBe('owner-1')
+    expect(collaboratorFindUnique).toHaveBeenCalledWith({
+      where: { projectId_userId: { projectId: 'P', userId: 'viewer' } },
+      select: WRITE_SHARE_SELECT,
+    })
+  })
+
+  test('run toggles read false until 5.6: Manage comes from the row, Run scans, Use AI agent and Exploitation & shells never', async () => {
+    share('P', 'viewer', { access: 'write', ...ALL_TOGGLES })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(true))
+    share('P', 'viewer', { access: 'write', runScans: true, useAgent: true, exploit: true, manage: false })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(false))
+  })
+
+  test('a write share decides alone: no break-glass row and no account is read', async () => {
+    share('P', 'root-1', { access: 'write' })
+    db.breakGlass.push({ projectId: 'P', userId: 'root-1', expiresAt: new Date(NOW.getTime() + HOUR) })
+    expect(await projectAccess({ userId: 'root-1' }, 'P')).toEqual(write())
+    expect(breakGlassFindFirst).not.toHaveBeenCalled()
+    expect(userFindUnique).not.toHaveBeenCalled()
+  })
+
+  test("Root's policy at read: a write share reads as read, with the row's Raw data, Phase 4's select", async () => {
+    db.instance = { ...db.instance, sharingPolicy: { enabled: true, maxLevel: 'read' } }
+    share('P', 'viewer', { access: 'write', rawData: true, ...ALL_TOGGLES })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(read('share', true))
+    expect(shareSelect(collaboratorFindUnique.mock.calls[0][0])).toEqual(PHASE4_SHARE_SELECT)
+  })
+
+  test('act-as via a write share is read-only (D-22, IM-07): read with the row\'s Raw data, nothing above', async () => {
+    share('P', 'viewer', { access: 'write', rawData: false, ...ALL_TOGGLES })
+    const acted = (await projectAccess({ userId: 'viewer' }, 'P', { actingAs: true }))!
+    expect(acted).toEqual(read('share', false))
+    expect(WRITE_LEVELS.filter((l) => meetsLevel(acted, l))).toEqual([])
+    expect(shareSelect(collaboratorFindUnique.mock.calls[0][0])).toEqual(PHASE4_SHARE_SELECT)
+    // The same account signed in itself reaches write.
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(write(true))
+    // The owner acted as is still the owner (act-as onto an owned project is today's behaviour).
+    expect(await projectAccess({ userId: 'owner-1' }, 'P', { actingAs: true })).toEqual(owner())
+  })
+
+  test('a read share stays read; the owner is unchanged; break-glass and oversight stay read', async () => {
+    share('P', 'viewer', { rawData: true, ...ALL_TOGGLES })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toEqual(read('share', true))
+    expect(await projectAccess({ userId: 'owner-1' }, 'P')).toEqual(owner())
+    expect(await projectAccess({ userId: 'admin-1' }, 'P')).toEqual(read('oversight', false))
+    db.breakGlass.push({ projectId: 'P', userId: 'root-1', expiresAt: new Date(NOW.getTime() + HOUR) })
+    expect(await projectAccess({ userId: 'root-1' }, 'P')).toEqual(read('break_glass', true))
+  })
+
+  test('an expired, disabled or deleted collaborator\'s write share is inert, as a read share is', async () => {
+    share('P', 'viewer', { access: 'write', manage: true, expiresAt: new Date(NOW.getTime()) })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toBeNull()
+    share('P', 'viewer', { access: 'write', manage: true, user: { status: 'disabled' } })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toBeNull()
+    share('P', 'viewer', { access: 'write', manage: true, user: null })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toBeNull()
+  })
+
+  test('the write switch set while sharing is off reads off: owner only, nothing read', async () => {
+    setFlagsForTests({ identity: true, permissions: true, sharingWrite: true })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    share('P', 'viewer', { access: 'write', ...ALL_TOGGLES })
+    expect(await projectAccess({ userId: 'viewer' }, 'P')).toBeNull()
+    expect(collaboratorFindUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('effectiveToggles: the run toggles stay off until step 5.6', () => {
+  test('every combination of the row: Run scans, Use AI agent, Exploitation & shells false; Manage the row\'s', () => {
+    for (let bits = 0; bits < 16; bits++) {
+      const row = { runScans: (bits & 1) > 0, useAgent: (bits & 2) > 0, exploit: (bits & 4) > 0, manage: (bits & 8) > 0 }
+      expect([row, effectiveToggles(row)]).toEqual([row, { ...NO_RUNS, manage: row.manage }])
+    }
+  })
+
+  test('Manage is on only for a stored true (fail closed on anything else)', () => {
+    for (const manage of ['true', 1, null, undefined, {}]) {
+      expect(effectiveToggles({ manage } as never).manage).toBe(false)
+    }
+  })
+})
+
+describe('meetsLevel: the write rows (step 5.2a)', () => {
+  const W = (toggles: Record<string, boolean>) =>
+    ({ project: { id: 'P', userId: 'owner-1' }, level: 'write', toggles: { rawData: true, ...NO_RUNS, manage: false, ...toggles }, via: 'share' }) as ProjectAccess
+
+  test('an editor (no toggle) meets R, R* and W: write includes Raw data & files', () => {
+    expect(levelsMet(W({}))).toEqual(['R', 'R*', 'W'])
+  })
+
+  test('each toggle opens its own level and no other; the owner level never', () => {
+    expect(levelsMet(W({ runScans: true }))).toEqual(['R', 'R*', 'W', 'W+S'])
+    expect(levelsMet(W({ useAgent: true }))).toEqual(['R', 'R*', 'W', 'W+A'])
+    expect(levelsMet(W({ exploit: true }))).toEqual(['R', 'R*', 'W', 'W+X'])
+    expect(levelsMet(W({ manage: true }))).toEqual(['R', 'R*', 'W', 'M'])
+    expect(levelsMet(W({ runScans: true, useAgent: true, exploit: true, manage: true }))).toEqual(['R', 'R*', 'W', 'W+S', 'W+A', 'W+X', 'M'])
+  })
+
+  test('a co-owner without Exploitation & shells does not reach W+X (Manage implies no run toggle)', () => {
+    expect(meetsLevel(W({ manage: true }), 'W+X')).toBe(false)
+    expect(meetsLevel(W({ manage: true }), 'W+S')).toBe(false)
+    expect(meetsLevel(W({ manage: true }), 'W+A')).toBe(false)
+  })
+
+  test('a write access without its toggles meets R, R* and W only (a missing toggle is off)', () => {
+    const bare = { project: { id: 'P', userId: 'owner-1' }, level: 'write' } as unknown as ProjectAccess
+    expect(levelsMet(bare)).toEqual(['R', 'R*', 'W'])
+    const truthy = { ...bare, toggles: { rawData: true, manage: 'yes', exploit: 1 } } as unknown as ProjectAccess
+    expect(levelsMet(truthy)).toEqual(['R', 'R*', 'W'])
+  })
+
+  test('a level the table does not know is never met by a write access', () => {
+    expect(meetsLevel(W({ runScans: true, useAgent: true, exploit: true, manage: true }), 'X' as ProjectLevel)).toBe(false)
+  })
+})
+
+describe('myAccessView: what a person is told of a write share (step 5.2a)', () => {
+  const who = { name: 'Owner', email: 'owner@example.test' }
+
+  test('a write access carries its four toggles as meetsLevel answers them', () => {
+    expect(myAccessView(write(true) as ProjectAccess, who)).toEqual({
+      level: 'write', toggles: { rawData: true, runScans: false, useAgent: false, exploit: false, manage: true }, via: 'share', owner: who,
+    })
+  })
+
+  test('an owner or read answer keeps the Phase 4 shape, Raw data alone (DV-30)', () => {
+    expect(myAccessView(owner() as ProjectAccess, who)).toEqual({ level: 'owner', toggles: { rawData: true }, via: 'owner', owner: who })
+    expect(myAccessView(read('share', false) as ProjectAccess, null)).toEqual({
+      level: 'read', toggles: { rawData: false }, via: 'share', owner: { name: null, email: null },
+    })
   })
 })

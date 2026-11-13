@@ -415,3 +415,76 @@ describe('can() on a shared project (step 4.3; SH-02, SH-03, IM-07, D-22)', () =
     expect(userFindUnique).not.toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'admin-1' } }))
   })
 })
+
+describe('can() with write sharing in force (step 5.2a; SH-02, SH-03, SH-07, PE-25, D-22)', () => {
+  type Row = { access: string; rawData: boolean; runScans?: boolean; useAgent?: boolean; exploit?: boolean; manage?: boolean }
+  const share = (over: Partial<Row> = {}) =>
+    db.shares.set('P-alice|bob', { access: 'write', rawData: false, expiresAt: null, user: { status: 'active' }, ...over } as never)
+  const levelOf = (p: PermissionId) => PERMISSIONS[p].level as string
+  const projectPermissions = PERMISSION_IDS.filter(actsOnLevel)
+  const allowedFor = async (who: CapabilityPrincipal, opts: { actingAs?: CapabilityPrincipal } = {}) => {
+    const out: PermissionId[] = []
+    for (const p of projectPermissions) if ((await can(who, p, { projectId: 'P-alice', ...opts })).allowed) out.push(p)
+    return out
+  }
+
+  beforeEach(() => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
+    db.instance = { ...db.instance, sharingPolicy: { enabled: true, maxLevel: 'write' } }
+  })
+
+  test('editor allowed at W: R, R* and W permissions pass, the access is write with the owner as tenant', async () => {
+    share()
+    expect(await can(member('bob'), 'project:settings', { projectId: 'P-alice' })).toMatchObject({
+      allowed: true, access: { project: { id: 'P-alice', userId: 'alice' }, level: 'write', via: 'share' },
+    })
+    for (const p of ['triage:mute', 'scan:versions', 'graph:views', 'traffic:read', 'workspace:write'] as PermissionId[]) {
+      expect([p, (await can(member('bob'), p, { projectId: 'P-alice' })).allowed]).toEqual([p, true])
+    }
+  })
+
+  test('Manage-only refused at W; owner-only refused at M; run toggles closed until 5.6 even when the row has them', async () => {
+    share({ runScans: true, useAgent: true, exploit: true })
+    const editor = await allowedFor(member('bob'))
+    expect(editor.filter((p) => !['R', 'R*', 'W'].includes(levelOf(p)))).toEqual([])
+    expect(editor.length).toBeGreaterThan(15)
+    for (const p of ['graph:edit', 'scan:versions_delete', 'roe:manage', 'project:export', 'recon:scan', 'agent:chat', 'agent:approve_phase', 'project:delete'] as PermissionId[]) {
+      expect([p, await can(member('bob'), p, { projectId: 'P-alice' })]).toEqual([p, expect.objectContaining({ allowed: false, status: 403, reason: 'project_level' })])
+    }
+    share({ runScans: true, useAgent: true, exploit: true, manage: true })
+    const coOwner = await allowedFor(member('bob'))
+    expect(coOwner.filter((p) => !['R', 'R*', 'W', 'M'].includes(levelOf(p)))).toEqual([])
+    expect(coOwner).toEqual(expect.arrayContaining(['graph:edit', 'scan:versions_delete', 'roe:manage', 'project:export']))
+    for (const p of ['project:delete', 'project:transfer'] as PermissionId[]) {
+      expect([p, await can(member('bob'), p, { projectId: 'P-alice' })]).toEqual([p, expect.objectContaining({ allowed: false, reason: 'project_level' })])
+    }
+  })
+
+  test('capability required: a write share never grants a permission the person lacks', async () => {
+    share({ manage: true })
+    const denied = member('bob', { permissionOverrides: [{ permission: 'project:settings', effect: 'deny', expiresAt: null, reason: null }] })
+    expect(await can(denied, 'project:settings', { projectId: 'P-alice' })).toMatchObject({ allowed: false, status: 403, reason: 'capability' })
+    expect(await can(member('bob', ANALYST), 'graph:edit', { projectId: 'P-alice' })).toMatchObject({ allowed: false, status: 403, reason: 'capability' })
+  })
+
+  test('act-as via a write share is read-only (D-22): the admin acting as the editor reaches R and R* only', async () => {
+    share({ rawData: true, manage: true })
+    const opts = { actingAs: member('bob') }
+    expect(await can(admin('admin-1'), 'recon:read', { projectId: 'P-alice', ...opts })).toMatchObject({ allowed: true, access: { level: 'read', via: 'share' } })
+    expect(await can(admin('admin-1'), 'project:settings', { projectId: 'P-alice', ...opts })).toMatchObject({ allowed: false, status: 403, reason: 'project_level' })
+    expect((await allowedFor(admin('admin-1'), opts)).filter((p) => !['R', 'R*'].includes(levelOf(p)))).toEqual([])
+    // bob signed in himself reaches write.
+    expect((await can(member('bob'), 'project:settings', { projectId: 'P-alice' })).allowed).toBe(true)
+  })
+
+  test('the owner is unchanged: every project permission a Default member holds, with write in force', async () => {
+    share({ manage: true })
+    const owner = []
+    for (const p of projectPermissions) if ((await can(member('alice'), p, { projectId: 'P-alice' })).allowed) owner.push(p)
+    setFlagsForTests({ identity: true, permissions: true, sharing: true })
+    const before = []
+    for (const p of projectPermissions) if ((await can(member('alice'), p, { projectId: 'P-alice' })).allowed) before.push(p)
+    expect(owner).toEqual(before)
+    expect(owner).toEqual(expect.arrayContaining(['project:delete', 'graph:edit', 'project:settings']))
+  })
+})
