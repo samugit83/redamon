@@ -54,7 +54,10 @@ const { CANDIDATE_ORDER, SINGLETON_ID, chooseRoot } = await import(sibling('back
 const {
   CAPTURE_ROW_ORDER, MARKER_ACTION: INSTANCE_MARKER_ACTION, TUNNEL_ROW_ORDER, identitySwitchOn,
 } = await import(sibling('backfill-rbac-instance-settings.mjs'))
-const { permissionsSwitchOn } = await import(sibling('backfill-rbac-legacy-overrides.mjs'))
+const {
+  CHANGED_ACTION, KEEP_ACTION, LEGACY_PERMISSION, MARKER_ACTION: OVERRIDES_MARKER_ACTION,
+  latestDecisions, permissionsSwitchOn, planLegacyOverrides,
+} = await import(sibling('backfill-rbac-legacy-overrides.mjs'))
 
 export const READ_ONLY_SQL = 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY'
 export const NOTHING_CHANGES_EXIT = 0
@@ -67,6 +70,7 @@ export const NEW_COLUMNS = [
   { table: 'instance_settings', column: 'root_user_id', step: '2.1' },
   { table: 'instance_settings', column: 'root_confirmed_at', step: '2.1' },
   { table: 'instance_settings', column: 'updated_by_id', step: '2.1' },
+  { table: 'user_permission_overrides', column: 'permission', step: '3.3' },
 ]
 const INSTANCE_COLUMNS = NEW_COLUMNS.filter((c) => c.table === 'instance_settings').map((c) => `${c.table}.${c.column}`)
 
@@ -123,11 +127,24 @@ export async function readUpgradeState(prisma) {
       enabled: m.enabled !== false, tokenEnvVar: m.token_env_var ?? '', hasToken: m.has_token === true,
     }))
 
+    const actions = [CUTOFF_ACTION, MARKER_ACTION, REMOVE_ACTION, INSTANCE_MARKER_ACTION, KEEP_ACTION, CHANGED_ACTION, OVERRIDES_MARKER_ACTION]
     const audit = (await tx.$queryRawUnsafe(
-      `SELECT action, target_id, after, created_at FROM audit_log
-        WHERE action IN ($1, $2, $3, $4) ORDER BY created_at, id`,
-      CUTOFF_ACTION, MARKER_ACTION, REMOVE_ACTION, INSTANCE_MARKER_ACTION,
-    )).map((a) => ({ action: a.action, targetId: a.target_id, after: a.after, createdAt: a.created_at }))
+      `SELECT action, target_type, target_id, actor_id, after, created_at FROM audit_log
+        WHERE action IN (${actions.map((_, i) => `$${i + 1}`).join(', ')}) ORDER BY created_at, id`,
+      ...actions,
+    )).map((a) => ({
+      action: a.action, targetType: a.target_type, targetId: a.target_id, actorId: a.actor_id, after: a.after, createdAt: a.created_at,
+    }))
+
+    // The overrides standing on the platform tools: the conversion skips a grant one covers.
+    const legacyPermissions = Object.values(LEGACY_PERMISSION)
+    const overrides = present.has('user_permission_overrides.permission')
+      ? (await tx.$queryRawUnsafe(
+        `SELECT user_id, permission, effect, expires_at FROM user_permission_overrides
+          WHERE permission IN (${legacyPermissions.map((_, i) => `$${i + 1}`).join(', ')}) ORDER BY user_id, permission`,
+        ...legacyPermissions,
+      )).map((o) => ({ userId: o.user_id, permission: o.permission, effect: o.effect, expiresAt: o.expires_at ?? null }))
+      : []
 
     // The Root and whether an admin saved the row; never the tunnel or capture values.
     const [row] = hasInstanceSettings
@@ -141,7 +158,7 @@ export async function readUpgradeState(prisma) {
       ? { rootUserId: row.root_user_id ?? null, rootConfirmedAt: row.root_confirmed_at ?? null, adminSaved: row.admin_saved === true }
       : null
 
-    return { now, columns: [...present].sort(), users, settings, mcpServers, audit, instance }
+    return { now, columns: [...present].sort(), users, settings, mcpServers, audit, overrides, instance }
   }, { timeout: 60_000, maxWait: 10_000 })
 }
 
@@ -198,6 +215,56 @@ function legacyGrantsPlan(state) {
   const { accounts } = planLegacyGrants(members, tunnelHolders, removed)
   return { done: false, cutoff, accounts: accounts.map((a) => ({ id: a.member.id, grants: a.next })) }
 }
+
+/**
+ * What the same boot's conversion (backfill-rbac-legacy-overrides.mjs, step 3.15) then does with
+ * the grants the legacy-grants backfill leaves in the column, by its own planLegacyOverrides:
+ * null with the permissions switch off, where it does not run. `kept`: each member's grants held
+ * as an override grant after the boot; `lapsed`: those the members can use now and lose (none
+ * once a conversion ran on this schema: the resolution stopped reading the column then);
+ * `changes`: the boot writes or removes something.
+ */
+function conversionPlan(state, env, plan) {
+  if (!permissionsSwitchOn(env)) return null
+  const after = new Map(state.users.map((u) => [u.id, u.legacyGrants ?? []]))
+  for (const a of plan.accounts) after.set(a.id, a.grants)
+  const members = state.users
+    .filter((u) => !isAdmin(u) && after.get(u.id).some((g) => LEGACY_GRANTS.includes(g)))
+    .map((u) => ({ id: u.id, legacyGrants: after.get(u.id) }))
+  const ids = new Set(members.map((m) => m.id))
+  const decisions = latestDecisions(state.audit.filter((a) =>
+    (a.action === KEEP_ACTION || a.action === REMOVE_ACTION) && a.targetType === 'user' && ids.has(a.targetId)))
+  const pair = (id, permission) => `${id}\u0000${permission}`
+  const standing = new Set(state.overrides.filter((o) => ids.has(o.userId)).map((o) => pair(o.userId, o.permission)))
+  const changedAt = new Map()
+  for (const a of state.audit) {
+    if (a.action !== CHANGED_ACTION || !ids.has(a.targetId)) continue
+    if (!changedAt.has(a.targetId) || a.createdAt > changedAt.get(a.targetId)) changedAt.set(a.targetId, a.createdAt)
+  }
+  const anchor = state.audit.find((a) => a.action === OVERRIDES_MARKER_ACTION)?.createdAt ?? null
+  const now = new Date(state.now)
+  const { overrides } = planLegacyOverrides({ members, decisions, standing, changedAt, anchor, now })
+  const written = new Set(overrides.map((o) => pair(o.userId, o.permission)))
+  const granted = new Set(state.overrides
+    .filter((o) => o.effect === 'grant' && (o.expiresAt === null || new Date(o.expiresAt) > now))
+    .map((o) => pair(o.userId, o.permission)))
+  // Once converted, the column was not read before this boot either: nothing lapses now.
+  const lapses = !(plan.done && anchor)
+  const kept = []
+  const lapsed = []
+  for (const m of members) {
+    const held = LEGACY_GRANTS.filter((g) => m.legacyGrants.includes(g))
+    const keeps = held.filter((g) => written.has(pair(m.id, LEGACY_PERMISSION[g])) || granted.has(pair(m.id, LEGACY_PERMISSION[g])))
+    if (keeps.length > 0) kept.push({ id: m.id, grants: keeps })
+    const loses = held.filter((g) => !keeps.includes(g))
+    if (lapses && loses.length > 0) lapsed.push({ id: m.id, grants: loses })
+  }
+  return { kept, lapsed, changes: overrides.length > 0 || lapsed.length > 0 }
+}
+
+const grantList = (list, email) => pad(list
+  .map((a) => [email(a.id), a.grants.filter((g) => LEGACY_GRANTS.includes(g)).map((g) => GRANT_LABELS[g]).join(', ')])
+  .sort((x, y) => x[0].localeCompare(y[0])))
 
 /**
  * The report's sections, in print order. `render(ctx)` returns null when the section has
@@ -262,18 +329,33 @@ export const SECTIONS = [
     },
   },
   {
+    // With the permissions switch on, what the conversion keeps (step 3.15); the column otherwise.
     id: 'legacy_grants', step: '1.8',
-    render: ({ grants, email }) => {
-      const listed = grants.filter((a) => a.grants.some((g) => LEGACY_GRANTS.includes(g)))
+    render: ({ grants, conversion, email }) => {
+      const listed = (conversion ? conversion.kept : grants).filter((a) => a.grants.some((g) => LEGACY_GRANTS.includes(g)))
       if (listed.length === 0) return null
       return {
         affects: true,
         lines: [
-          '  Shared tools existing members keep (legacy grants; admins review them on the Users page):',
-          ...pad(listed
-            .map((a) => [email(a.id), a.grants.filter((g) => LEGACY_GRANTS.includes(g)).map((g) => GRANT_LABELS[g]).join(', ')])
-            .sort((x, y) => x[0].localeCompare(y[0]))),
+          conversion
+            ? '  Shared tools existing members keep (an admin kept them: permission overrides, 90 days from the first conversion):'
+            : '  Shared tools existing members keep (legacy grants; admins review them on the Users page):',
+          ...grantList(listed, email),
           '    Accounts created after the upgrade get none.',
+        ],
+      }
+    },
+  },
+  {
+    id: 'legacy_grants_lapse', step: '3.15',
+    render: ({ conversion, email }) => {
+      if (!conversion || conversion.lapsed.length === 0) return null
+      return {
+        affects: true,
+        lines: [
+          '  Shared tools existing members lose at the next start (RBAC_PERMISSIONS_ENABLED is on: a legacy grant no admin kept lapses):',
+          ...grantList(conversion.lapsed, email),
+          '    Admins give a tool back as a permission override (Users page, Permissions).',
         ],
       }
     },
@@ -447,8 +529,9 @@ export function buildReport(state, { env = {}, templateFiles = 0 } = {}) {
   const role = (id) => (isAdmin(usersById.get(id) ?? {}) ? 'admin' : 'member')
   const plan = legacyGrantsPlan(state)
   const grants = plan.accounts.filter((a) => a.grants.length > 0)
+  const conversion = conversionPlan(state, env, plan)
   const header = 'RBAC upgrade preview (read-only: nothing has been changed)'
-  const ctx = { state, env, templateFiles, grants, email, role, full: true }
+  const ctx = { state, env, templateFiles, grants, conversion, email, role, full: true }
   const asSection = ({ s, out }) => ({ id: s.id, step: s.step, lines: out.lines })
   const always = SECTIONS.filter((s) => s.always).map((s) => ({ s, out: s.render(ctx) })).filter((x) => x.out)
   const alwaysLines = always.flatMap(({ out }) => ['', ...out.lines])
@@ -456,11 +539,22 @@ export function buildReport(state, { env = {}, templateFiles = 0 } = {}) {
 
   if (plan.done) {
     const scanner = SECTIONS.find((s) => s.id === 'scanner_key').render({ env, full: false })
-    const lines = [header, `  The RBAC hardening is already in place (since ${day(plan.cutoff)}): nothing changes for existing accounts.`, ...alwaysLines]
+    // The permissions switch turned on since: this start converts the grants the column holds.
+    const converting = conversion?.changes
+      ? SECTIONS.filter((s) => s.id === 'legacy_grants' || s.id === 'legacy_grants_lapse')
+        .map((s) => ({ s, out: s.render(ctx) })).filter((x) => x.out)
+      : []
+    const verdict = converting.length > 0
+      ? `  The RBAC hardening is already in place (since ${day(plan.cutoff)}); this start converts the legacy grants (RBAC_PERMISSIONS_ENABLED is on).`
+      : `  The RBAC hardening is already in place (since ${day(plan.cutoff)}): nothing changes for existing accounts.`
+    const lines = [header, verdict, ...converting.flatMap(({ out }) => ['', ...out.lines]), ...alwaysLines]
     if (scanner) lines.push('', ...scanner.lines)
     return {
-      applied: true, review: Boolean(scanner?.affects) || alwaysAffects, grants: [],
-      sections: [...always.map(asSection), ...(scanner ? [{ id: 'scanner_key', step: '1.16', lines: scanner.lines }] : [])],
+      applied: true, review: Boolean(scanner?.affects) || alwaysAffects || converting.length > 0, grants: [],
+      sections: [
+        ...converting.map(asSection), ...always.map(asSection),
+        ...(scanner ? [{ id: 'scanner_key', step: '1.16', lines: scanner.lines }] : []),
+      ],
       text: `${lines.join('\n')}\n`,
     }
   }

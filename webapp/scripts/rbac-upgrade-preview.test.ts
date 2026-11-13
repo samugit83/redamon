@@ -30,6 +30,9 @@ import {
   CAPTURE_ROW_ORDER, MARKER_ACTION as INSTANCE_MARKER_ACTION, deriveInstanceValues,
 } from './backfill-rbac-instance-settings.mjs'
 import {
+  CHANGED_ACTION, KEEP_ACTION, LEGACY_PERMISSION, MARKER_ACTION as OVERRIDES_MARKER_ACTION, backfillRbacLegacyOverrides,
+} from './backfill-rbac-legacy-overrides.mjs'
+import {
   MEMBER_CHANGES, NEW_COLUMNS, NOTHING_CHANGES_EXIT, READ_ONLY_SQL, REVIEW_EXIT, SECTIONS,
   buildReport, previewRbacUpgrade, readUpgradeState,
   BUILTIN_SET_NAMES, DOWNGRADE_COLUMNS, DOWNGRADE_SECTIONS, DOWNGRADE_TABLES, DOWNGRADE_TARGET, FULL_ADMIN_PROFILE,
@@ -54,11 +57,14 @@ let db: FakePrisma
 let t = T0
 // The instance settings row (step 2.1's table; the fake Prisma has no such model).
 let instanceRow: { rootUserId?: string | null; rootConfirmedAt?: Date | null; adminSaved?: boolean } | null = null
+// The permission overrides (step 3.3's table; absent on 7.7.x, so null until a test creates it).
+let overrideRows: Row[] | null = null
 
 beforeEach(() => {
   db = createFakePrisma()
   t = T0
   instanceRow = null
+  overrideRows = null
   setNowForTests(() => new Date(t))
 })
 afterEach(() => setNowForTests(null))
@@ -96,6 +102,7 @@ function sqlDb(opts: { legacyColumn?: boolean; instanceTable?: boolean } = {}) {
       return NEW_COLUMNS
         .filter((c: { table: string; column: string }) => legacyColumn || `${c.table}.${c.column}` !== 'users.legacy_grants')
         .filter((c: { table: string }) => instanceTable || c.table !== 'instance_settings')
+        .filter((c: { table: string }) => overrideRows !== null || c.table !== 'user_permission_overrides')
         .filter((c: { table: string; column: string }) => params.includes(`${c.table}.${c.column}`))
         .map((c: { table: string; column: string }) => ({ table_name: c.table, column_name: c.column }))
     }
@@ -129,10 +136,20 @@ function sqlDb(opts: { legacyColumn?: boolean; instanceTable?: boolean } = {}) {
         ...(legacyColumn ? { legacy_grants: u.legacyGrants } : {}),
       }))
     }
+    if (/FROM user_permission_overrides/.test(sql)) {
+      if (overrideRows === null) throw new Error('relation "user_permission_overrides" does not exist')
+      return overrideRows
+        .filter((o) => params.includes(o.permission))
+        .map((o) => ({ user_id: o.userId, permission: o.permission, effect: o.effect, expires_at: o.expiresAt ?? null }))
+    }
     if (/FROM audit_log/.test(sql)) {
       return db.rows('auditLog')
         .filter((r) => params.includes(r.action))
-        .map((r) => ({ action: r.action, target_id: r.targetId ?? null, after: r.after ?? null, created_at: r.createdAt }))
+        .sort((a, b) => (a.createdAt as Date).getTime() - (b.createdAt as Date).getTime() || String(a.id).localeCompare(String(b.id)))
+        .map((r) => ({
+          action: r.action, target_type: r.targetType ?? null, target_id: r.targetId ?? null, actor_id: r.actorId ?? null,
+          after: r.after ?? null, created_at: r.createdAt,
+        }))
     }
     throw new Error(`unexpected SQL: ${sql}`)
   }
@@ -445,7 +462,7 @@ describe('the report', () => {
 
   test('each section and each member-visible change names the step whose behaviour it reports', () => {
     expect(SECTIONS.map((s: { id: string }) => s.id)).toEqual([
-      'accounts', 'root', 'legacy_grants', 'tunnel_rows', 'instance_settings', 'stdio_mcp', 'mcp_token_env_var',
+      'accounts', 'root', 'legacy_grants', 'legacy_grants_lapse', 'tunnel_rows', 'instance_settings', 'stdio_mcp', 'mcp_token_env_var',
       'scanner_key', 'member_changes',
     ])
     for (const s of [...SECTIONS, ...MEMBER_CHANGES]) expect(s.step).toMatch(/^\d+\.\d+(-\d+\.\d+)?$/)
@@ -597,6 +614,139 @@ describe('who will be Root, and where the instance settings come from (HD-31 Roo
       expect(r.review).toBe(false)
       expect(r.sections.map((s: { id: string }) => s.id)).toEqual(['root', 'instance_settings'])
     }
+  })
+})
+
+// With RBAC_PERMISSIONS_ENABLED on, the boot runs backfill-rbac-legacy-overrides.mjs right after the
+// legacy-grants backfill: a grant an admin kept becomes a 90-day override, every other one lapses
+// (step 3.15). The preview reports that, not the column (found by step 7.1's harness).
+describe('with the permissions switch on, the same boot converts the legacy grants (step 3.15)', () => {
+  const PERMS_ON = { ...SCANNER_SET, RBAC_IDENTITY_ENABLED: 'true', RBAC_PERMISSIONS_ENABLED: 'true' }
+  const LABEL_GRANT: Record<string, string> = { 'Kali terminal': 'kali_terminal', 'all shell sessions': 'shell_sessions', 'tunnel settings': 'tunnels' }
+  /** A section's account rows as {email: grants}. */
+  const rowsOf = (r: { sections: { id: string; lines: string[] }[] }, id: string) => Object.fromEntries(
+    (r.sections.find((s) => s.id === id)?.lines ?? [])
+      .map((l) => l.match(/^ {4}(\S+@\S+)\s{2,}(.+)$/))
+      .filter((m): m is RegExpMatchArray => m !== null)
+      .map((m) => [m[1], m[2].split(', ').map((g) => LABEL_GRANT[g] ?? `?${g}`).sort()]),
+  )
+  const decide = (action: string, targetId: string, grant: string) => {
+    t += 60_000
+    db.seed('auditLog', [{ id: `d-${t}`, action, targetType: 'user', targetId, actorId: 'admin', after: { grant }, source: 'api', createdAt: new Date(t) }])
+  }
+  /** The conversion on the fake's rows, with `overrideRows` as its override table. */
+  async function convert() {
+    overrideRows ??= []
+    const table = overrideRows
+    const withOverrides = {
+      $transaction: (fn: (tx: unknown) => Promise<unknown>) => db.$transaction((tx) => fn(Object.assign(Object.create(tx), {
+        userPermissionOverride: {
+          findMany: async ({ where }: { where: { userId: { in: string[] }; permission: { in: string[] } } }) =>
+            table.filter((o) => where.userId.in.includes(o.userId as string) && where.permission.in.includes(o.permission as string)),
+          createMany: async ({ data }: { data: Row[] }) => { table.push(...data); return { count: data.length } },
+        },
+      }))),
+    }
+    return backfillRbacLegacyOverrides(withOverrides as never, PERMS_ON as never, { now: () => new Date(t) })
+  }
+  /** Each member's legacy grants in the column, by email. */
+  const column = () => Object.fromEntries(db.rows('user')
+    .filter((u) => u.role !== 'admin' && (u.legacyGrants as string[]).some((g) => g in LEGACY_PERMISSION))
+    .map((u) => [u.email, (u.legacyGrants as string[]).filter((g) => g in LEGACY_PERMISSION).sort()]))
+  const keptBy = (rows: Row[]) => {
+    const out: Record<string, string[]> = {}
+    for (const o of rows) {
+      const grant = Object.entries(LEGACY_PERMISSION).find(([, p]) => p === o.permission)![0]
+      const email = `${o.userId as string}@e2e.local`
+      out[email] = [...(out[email] ?? []), grant].sort()
+    }
+    return out
+  }
+  const minus = (a: Record<string, string[]>, b: Record<string, string[]>) => Object.fromEntries(Object.entries(a)
+    .map(([k, v]) => [k, v.filter((g) => !(b[k] ?? []).includes(g))]).filter(([, v]) => v.length > 0))
+
+  test('a first upgrade (7.7.x has no Keep): every grant the backfill writes lapses at that boot, none is listed as kept', async () => {
+    user('admin', { role: 'admin' })
+    user('alice')
+    user('ngrok')
+    settings('ngrok', { ngrokAuthtoken: SECRET_NGROK })
+    const r = await report({ legacyColumn: false, env: PERMS_ON })
+    expect(predicted(r)).toEqual({ alice: ['kali_terminal', 'shell_sessions'], ngrok: ['kali_terminal', 'shell_sessions', 'tunnels'] })
+    expect(r.sections.map((s: { id: string }) => s.id)).not.toContain('legacy_grants')
+    expect(r.text).not.toMatch(/Shared tools existing members keep/)
+    expect(rowsOf(r, 'legacy_grants_lapse')).toEqual({
+      'alice@e2e.local': ['kali_terminal', 'shell_sessions'], 'ngrok@e2e.local': ['kali_terminal', 'shell_sessions', 'tunnels'],
+    })
+    expect(r.sections.find((s: { id: string }) => s.id === 'legacy_grants_lapse')!.lines.join('\n')).toMatch(/RBAC_PERMISSIONS_ENABLED/)
+    expect(r.review).toBe(true)
+    // Switch off: the column is what members keep, and nothing lapses.
+    const off = await report({ legacyColumn: false })
+    expect(rowsOf(off, 'legacy_grants')).toEqual(rowsOf(r, 'legacy_grants_lapse'))
+    expect(off.sections.map((s: { id: string }) => s.id)).not.toContain('legacy_grants_lapse')
+  })
+
+  test('the hardening in place before the switch went on: the preview names exactly the overrides and the lapses the conversion writes', async () => {
+    user('admin', { role: 'admin' })
+    user('alice')
+    user('bob')
+    settings('bob', { chiselServerUrl: 'https://chisel.example.invalid:8443' })
+    await backfillRbacLegacyGrants(db)
+    decide(KEEP_ACTION, 'alice', 'kali_terminal')
+    decide(KEEP_ACTION, 'alice', 'shell_sessions')
+    decide(REMOVE_ACTION, 'alice', 'shell_sessions')
+    decide(KEEP_ACTION, 'bob', 'tunnels')
+    t += 60_000
+    db.seed('auditLog', [{ id: `c-${t}`, action: CHANGED_ACTION, targetType: 'user', targetId: 'bob', actorId: 'admin', source: 'api', createdAt: new Date(t) }])
+    overrideRows = []
+    t += 60_000
+    const before = column()
+    const r = await report({ env: PERMS_ON })
+    expect(r.review).toBe(true)
+    expect(r.text).toMatch(/already in place/)
+    expect(r.text).toMatch(/this start converts the legacy grants/)
+
+    const result = await convert()
+    expect(result).toMatchObject({ ran: true, marker: true })
+    expect(column()).toEqual(before)
+    const kept = keptBy(overrideRows)
+    expect(kept).toEqual({ 'alice@e2e.local': ['kali_terminal'] })
+    expect(rowsOf(r, 'legacy_grants')).toEqual(kept)
+    expect(rowsOf(r, 'legacy_grants_lapse')).toEqual(minus(before, kept))
+  })
+
+  test('the conversion already ran: nothing lapses again, and the report says the hardening is in place', async () => {
+    user('alice')
+    await backfillRbacLegacyGrants(db)
+    decide(KEEP_ACTION, 'alice', 'tunnels')
+    await convert()
+    expect(db.rows('auditLog').filter((a) => a.action === OVERRIDES_MARKER_ACTION)).toHaveLength(1)
+    t += 60_000
+    const r = await report({ env: PERMS_ON })
+    expect(r.review).toBe(false)
+    expect(r.text).toMatch(/already in place/)
+    expect(r.sections.map((s: { id: string }) => s.id)).toEqual(['root', 'instance_settings'])
+  })
+
+  test('after a downgrade dropped the overrides and the column: a Keep is written again (within its 90 days), the rest lapses', async () => {
+    user('alice')
+    user('bob')
+    await backfillRbacLegacyGrants(db)
+    decide(KEEP_ACTION, 'alice', 'kali_terminal')
+    await convert()
+    expect(keptBy(overrideRows!)).toEqual({ 'alice@e2e.local': ['kali_terminal'] })
+    // 7.7.2's db push: the table and the column go, the audit rows stay.
+    overrideRows = []
+    for (const u of db.rows('user')) db.tables.user.set(u.id as string, { ...u, legacyGrants: [] })
+    t += 10 * 86_400_000
+    const r = await report({ env: PERMS_ON })
+    expect(r.applied).toBe(false)
+    expect(rowsOf(r, 'legacy_grants')).toEqual({ 'alice@e2e.local': ['kali_terminal'] })
+    expect(rowsOf(r, 'legacy_grants_lapse')).toEqual({
+      'alice@e2e.local': ['shell_sessions'], 'bob@e2e.local': ['kali_terminal', 'shell_sessions'],
+    })
+    await backfillRbacLegacyGrants(db)
+    await convert()
+    expect(keptBy(overrideRows)).toEqual(rowsOf(r, 'legacy_grants'))
   })
 })
 
