@@ -9,6 +9,7 @@ import { safeErrorCode } from '@/lib/routeErrors'
 import { isChatProvider } from '@/lib/llmProviderKinds'
 import { isLoopModel } from '@/lib/agentInTheLoop'
 import { entitledInstanceProviders, ownProvidersWithheld } from '@/lib/instanceProviders/entitlement'
+import { exhaustedBudget, recordUsage, utcDay } from '@/lib/instanceProviders/budget'
 import { isInstanceModel, splitInstanceModel, type InstanceLlmProviderRecord } from '@/lib/instanceProviders/rows'
 import { builtinSendsTemperature, customSendsTemperature, rejectsTemperature } from '@/lib/llmTemperature'
 
@@ -357,6 +358,18 @@ export async function POST(request: NextRequest) {
         ? []
         : (await prisma.userLlmProvider.findMany({ where: { userId } })).filter(isChatProvider)
 
+    // The daily budget on instance providers (GV-12): the person's own feature, so one budget.
+    if (instanceRow) {
+      const exhausted = await exhaustedBudget([userId])
+      if (exhausted) {
+        console.info(`[rbac] llm_budget_exhausted: user ${exhausted.userId} limit ${exhausted.limit} used ${exhausted.used}`)
+        return NextResponse.json({
+          error: `Your daily budget of ${exhausted.limit} model calls on instance LLM providers is used up; it starts again at 00:00 UTC.`,
+          code: 'llm_budget_exhausted', featureId: 'preset_generator', model, limit: exhausted.limit,
+        }, { status: 429 })
+      }
+    }
+
     let rawResponse: string
 
     if (resolved.kind === 'custom') {
@@ -462,6 +475,11 @@ export async function POST(request: NextRequest) {
           sslVerify: provider.sslVerify,
         })
       }
+    }
+
+    if (instanceRow) {
+      await recordUsage([{ userId, day: utcDay(), count: 1 }])
+        .catch((err) => console.error('[rbac] llm_usage_record_failed:', safeErrorCode(err)))
     }
 
     if (!rawResponse) {

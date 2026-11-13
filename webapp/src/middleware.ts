@@ -95,6 +95,10 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/internal\/agent\/decisions$/ },
   // ...and asks, before it accepts an answer, whether that person may still take it (step 5.4).
   { method: 'POST', pattern: /^\/api\/internal\/agent\/authorize-decision$/ },
+  // The daily budget on instance LLM providers (step 6.11): the agent reads a person's limit and use,
+  // and reports its counts every minute. The route re-checks the master key.
+  { method: 'GET', pattern: /^\/api\/internal\/llm-usage$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/llm-usage$/ },
 ]
 
 // Fail-open rollout: default log-only (never blocks), so an omitted route shows

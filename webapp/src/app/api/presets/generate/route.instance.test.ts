@@ -32,6 +32,16 @@ vi.mock('@/lib/instanceProviders/entitlement', () => ({
   ownProvidersWithheld: (id: string) => withheld(id),
 }))
 
+const budget = vi.hoisted(() => ({
+  exhausted: null as null | { userId: string; limit: number; used: number },
+  recorded: [] as unknown[],
+}))
+vi.mock('@/lib/instanceProviders/budget', () => ({
+  exhaustedBudget: vi.fn(async () => budget.exhausted),
+  recordUsage: vi.fn(async (entries: unknown[]) => { budget.recorded.push(...entries); return entries.length }),
+  utcDay: () => '2026-11-13',
+}))
+
 import { POST } from './route'
 
 const OWN_OPENAI = { id: 'own-1', providerType: 'openai', apiKey: OWN_KEY, baseUrl: '', timeout: 30, maxTokens: 4096, temperature: 0 }
@@ -56,6 +66,8 @@ beforeEach(() => {
   mockProviders.mockResolvedValue([OWN_OPENAI])
   entitled.mockResolvedValue([instance()])
   withheld.mockResolvedValue(false)
+  budget.exhausted = null
+  budget.recorded = []
   vi.stubGlobal('fetch', fetchMock)
   fetchMock.mockResolvedValue(new Response(JSON.stringify({
     choices: [{ message: { content: '{"naabuEnabled": true}' } }],
@@ -126,5 +138,30 @@ describe('byoLlmForbidden (fix of the 6.11 review, finding 1)', () => {
     const res = await generate()
     expect(res.status).toBe(503)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('the daily budget on instance providers (GV-12)', () => {
+  test('budget refused when exhausted: 429 llm_budget_exhausted, the provider never called, nothing recorded', async () => {
+    budget.exhausted = { userId: 'alice', limit: 20, used: 20 }
+    saved('instance/inst-1/gpt-5')
+    const res = await generate()
+    expect(res.status).toBe(429)
+    expect(await res.json()).toMatchObject({ code: 'llm_budget_exhausted', limit: 20, model: 'instance/inst-1/gpt-5' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(budget.recorded).toEqual([])
+  })
+
+  test('usage recorded and attributed: one call for the person, after the provider answered', async () => {
+    saved('instance/inst-1/gpt-5')
+    expect((await generate()).status).toBe(200)
+    expect(budget.recorded).toEqual([{ userId: 'alice', day: '2026-11-13', count: 1 }])
+  })
+
+  test('an own provider model is neither checked nor counted', async () => {
+    budget.exhausted = { userId: 'alice', limit: 0, used: 0 }
+    saved('gpt-5')
+    expect((await generate()).status).toBe(200)
+    expect(budget.recorded).toEqual([])
   })
 })
