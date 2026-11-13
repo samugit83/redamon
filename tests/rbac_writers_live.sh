@@ -23,9 +23,14 @@
 # agent container (tests/rbac_writers_live_ws.py) member-b, as the collaborator, opens the agent
 # socket while nobody writes; the owner starts a writer (a live TriageRun row of the owner); the
 # collaborator's next message and a resume are refused with project_writer_busy naming the owner,
-# and no run starts. The owner is unaffected (their own run beside their own writer: 200); the
-# collaborator's check answers 409 until the owner's run ends, then 200; the agent logged each
-# refusal. Sharing not in force: the check answers 200 for both, with member-b's run live.
+# and no run starts (no conversation row ever appears for its session); the owner's own socket with
+# a 201-character session id is refused its message too (the writer check's 400 refuses everyone).
+# The owner is unaffected (their own run beside their own writer: 200); the collaborator's check
+# answers 409 until the owner's run ends, then 200; the agent logged each refusal and no run start
+# for either session. Sharing not in force: the check answers 200 for both, with member-b's run live.
+#
+# In every state: a 201-character session id is never signed (the ticket answers 400
+# invalid_session_id), the bound the writer check reads it by.
 #
 # The trap deletes the run and runs e2e-rbac-cleanup.mjs (the project and every fixture account),
 # even on a failure or Ctrl-C. Response bodies and passwords are never printed.
@@ -166,6 +171,11 @@ sign_in "${SEED[MEMBER_C_EMAIL]}" "$JAR" || { check "sign in as the owner" 0; ex
 TICKET="{\"projectId\":\"$PROJECT_ID\",\"sessionId\":\"rbac-writers-session\",\"socket\":\"agent\"}"
 OTHER_EMAIL="${SEED[MEMBER_B_EMAIL]}"
 
+LONG_TICKET="{\"projectId\":\"$PROJECT_ID\",\"sessionId\":\"$(printf 's%.0s' {1..201})\",\"socket\":\"agent\"}"
+code="$(call "$JAR" POST /api/agent/ws-ticket "$LONG_TICKET")"
+ok=0; [ "$code" = 400 ] && has '"code":"invalid_session_id"' && ok=1
+check "a 201-character session id is never signed: the ticket answers 400 invalid_session_id" "$ok" "got $code"
+
 start_other_writer
 if [ "$IN_FORCE" = 1 ]; then
   code="$(call "$JAR" GET "/api/projects/$PROJECT_ID/writers")"
@@ -222,8 +232,11 @@ if [ "$IN_FORCE" = 1 ]; then
   printf "UPDATE triage_runs SET status = 'completed', finished_at = now() WHERE id = '%s';\n" "$OWNER_RUN_ID" | db_sql > /dev/null
   out="$(writer_check with-key "$OTHER_ID")"
   check "once the owner's run ended the collaborator's run may start -> $out" "$([ "$out" = '200 {"allowed":true}' ] && echo 1 || echo 0)"
-  refused="$(cd "$ROOT" && docker compose logs --since "$since" agent 2>/dev/null | grep -c '\[rbac\] agent run refused project_writer_busy')"
-  check "the agent logged each per-run refusal -> ${refused:-0}" "$([ "${refused:-0}" -ge 2 ] && echo 1 || echo 0)"
+  agent_log="$(cd "$ROOT" && docker compose logs --since "$since" agent 2>/dev/null)"
+  refused="$(grep -c '\[rbac\] agent run refused project_writer_busy' <<< "$agent_log")"
+  check "the agent logged each per-run refusal -> ${refused:-0}" "$([ "${refused:-0}" -ge 3 ] && echo 1 || echo 0)"
+  started="$(grep -cE '(Processing query|Resuming execution) for session rbac-writers-' <<< "$agent_log")"
+  check "and logged no run start for either refused session -> ${started:-0}" "$([ "${started:-1}" = 0 ] && echo 1 || echo 0)"
 else
   code="$(call "$JAR" POST /api/agent/ws-ticket "$TICKET")"
   check "sharing not in force: the owner's ticket is minted with the other run live" "$([ "$code" = 200 ] && echo 1 || echo 0)" "got $code"
