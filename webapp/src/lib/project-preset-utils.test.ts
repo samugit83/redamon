@@ -799,7 +799,8 @@ describe('ProjectForm: both preset kinds go through loadPreset', () => {
 
   test('it saves only the preset fields, not the whole form, as a compare-and-swap', () => {
     expect(loadPreset).toMatch(/pickPresetFields\(next/)
-    expect(loadPreset).toMatch(/const versioned = savedVersionRef\.current \? \{ \.\.\.saved, updatedAt: savedVersionRef\.current \} : saved/)
+    // withoutOwnerSecrets (step 5.2): a collaborator's save leaves the owner's secret columns out.
+    expect(loadPreset).toMatch(/const versioned = withoutOwnerSecrets\(savedVersionRef\.current \? \{ \.\.\.saved, updatedAt: savedVersionRef\.current \} : saved\)/)
     expect(loadPreset).toMatch(/mutateAsync\(\{ projectId, data: versioned/)
   })
 
