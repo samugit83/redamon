@@ -247,6 +247,8 @@ const SAME_ORIGIN_ROUTES = [
   '/api/root/transfer/cancel',
   '/api/users',
   '/api/users/[id]',
+  // Step 5.13: the deletion plan's offer, forced transfer and cancel resolve a shared project before a deletion.
+  '/api/users/[id]/deletion-plan',
   '/api/users/[id]/disable',
   '/api/users/[id]/enable',
   '/api/users/[id]/invite/cancel',
