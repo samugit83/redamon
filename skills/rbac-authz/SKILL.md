@@ -16,7 +16,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.1.0"
   scope: [root, webapp, agentic]
   auto_invoke:
     - "Editing webapp/src/lib/authz, a route's permission guard, or the route manifest"
@@ -127,6 +127,27 @@ triage write, `redamon-testing` for the tests.
   session revoked. A ticket and a queued scan are checked only when they start, so without it the
   person's runs, sockets, queued scans, schedules and triage run go on. A new reason joins
   `ProjectReduction` or `AccountReduction` with its entry in `PLANS`.
+- **A start that writes a project asks who else is writing it.** With sharing in force one
+  person writes a project at a time: while anyone writes it (a scan, an agent run, a triage run, a
+  mute-rule apply), another person's scan start or agent run is refused, 409 `project_writer_busy`
+  naming who holds it (`secondWriterRefusal` / `secondWriterResponse`,
+  [projectWriters.ts](../../webapp/src/lib/authz/projectWriters.ts); `SECOND_WRITER_POLICY`).
+  The scan starts and the chat ticket ask it; a new start path asks the same function, never its
+  own query. A socket outlives its ticket, so the agent asks again before every run it starts on
+  the socket (a message, an approval, an answer, a tool confirmation, a resume: `_refused_second_writer`
+  in [websocket_api.py](../../agentic/websocket_api.py)) through
+  [writer_check.py](../../agentic/writer_check.py) and the internal-key
+  [writer-check route](../../webapp/src/app/api/internal/agent/writer-check/route.ts), which reads
+  the owner from the database. Keep the agent's answer map: 200 `{allowed: true}` starts; 409
+  `project_writer_busy` refuses in the webapp's words; no answer or a 5xx is unverified (the owner,
+  `sub == ten`, goes ahead with `[rbac] project_writer_unverified`, anyone else is refused); any
+  other answer (400, 401, 404, a malformed body) refuses everyone, the owner included, because the
+  browser picks the session id and an answer it can provoke must never let a run through.
+- **One rule for a session id: `isWsSessionId`** ([wsTicket.ts](../../webapp/src/lib/wsTicket.ts):
+  1-200 characters, no control or line-separator character). The ticket mint (400
+  `invalid_session_id`) and the writer-check route use it, so a ticket the mint signed is never
+  refused by the check. A client value written into an `[rbac]` log line goes through `logValue`
+  ([routeErrors.ts](../../webapp/src/lib/routeErrors.ts); the agent's `_loggable`).
 - **A privileged change and its audit row commit together.** Write the row with
   `writeAuditTx(tx, entry)` inside `auditedTransaction(prisma, async (tx) => ...)`
   ([audit.ts](../../webapp/src/lib/audit.ts), [auditForward.ts](../../webapp/src/lib/auditForward.ts)):

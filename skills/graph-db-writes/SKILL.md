@@ -7,11 +7,13 @@ description: >
   missing the tenant key silently merges one project's data into another's.
   Trigger: editing anything under graph_db/mixins/; adding or changing an
   update_graph_from_* method; writing a Cypher MERGE/CREATE that adds a node,
-  relationship or property; adding a new node label to the graph.
+  relationship or property; adding a new node label to the graph; editing the
+  restore of an import or version (webapp/src/lib/graphRestore.ts) or the
+  re-tenant of an ownership transfer (graph_db/mixins/tenancy_mixin.py).
 license: MIT
 metadata:
   author: redamon
-  version: "1.2.0"
+  version: "1.3.0"
   scope: [root]
   auto_invoke:
     - "Writing to the Neo4j graph or editing a graph_db mixin"
@@ -127,6 +129,41 @@ graph-write rules it depends on.
   database and `MATCH (n {id: $id})` can read or write another project's node.
   Every read and write carries `user_id`/`project_id`; agent-facing queries go
   through `scope_query`, never `inject_tenant_filter` alone.
+- **NEVER move a project's graph to another owner by hand; call `retenant_project`.**
+  An ownership transfer sets `Project.userId` to the new owner, and the nodes
+  follow only through `TenancyMixin.retenant_project(project_id, from_user_id,
+  to_user_id)` in [graph_db/mixins/tenancy_mixin.py](../../graph_db/mixins/tenancy_mixin.py),
+  reached by the agent's master-key `POST /graph/retenant` (`graph_retenant` in
+  [agentic/api.py](../../agentic/api.py)), which the webapp calls while it holds the
+  project lock ([ownershipTransfer.ts](../../webapp/src/lib/authz/ownershipTransfer.ts)).
+  It changes `user_id` and nothing else: no node is recreated (relationships and
+  element ids survive), `updated_at` stays (the prune and the Recon Delta read it),
+  ids keep the user id they were minted with (Postgres rows reference them),
+  `muted_by` keeps naming the person, reference labels are never touched. It
+  refuses when the new owner already holds a node with the same key in the project
+  (`retenant_conflict`, nothing moved) and runs itself back when a write fails
+  (`retenant_failed`; `retenant_rollback_failed` leaves the project split, and the
+  same call again completes it). It moves label by label through `TENANT_LABELS`,
+  built from the uniqueness keys ending in `(user_id, project_id)` and the
+  `(user_id, project_id)` tenant indexes in `graph_db/schema.py`, then sweeps any
+  label left: give a new per-project label one of the two. Do not put the user id
+  in a new label's natural id: a transfer keeps it, so the new owner's next scan
+  mints a second node for the same finding.
+- **NEVER let a restore MERGE on an id that carries no tenant.** `restoreGraph` in
+  [webapp/src/lib/graphRestore.ts](../../webapp/src/lib/graphRestore.ts) (the project
+  import and version activation) stamps `project_id` from its caller and MERGEs on
+  the label's constraint keys plus `project_id`, plus `user_id` when it re-owns
+  (an import). The agent-session labels (`SESSION_ID_KEYS`: `AttackChain`,
+  `ChainStep`, `ChainFinding`, `ChainDecision`, `ChainFailure`) are unique on their
+  own id alone in `schema_keys.py`, so they get fresh ids first
+  (`freshSessionIds`: a step's `chain_id` follows its chain; the import passes
+  `renamedChainIds` so a chain takes its imported conversation's session id).
+  Merged on the exported ids, an import into the database that still held the
+  source project matched the source's chain nodes, re-stamped them into the import,
+  and the import's delete removed them. A new label keyed on a global id is
+  either a reference label (never restored, `isReferenceNode`) or joins
+  `SESSION_ID_KEYS`; [graphRestore.globalIds.test.ts](../../webapp/src/lib/graphRestore.globalIds.test.ts)
+  reads `schema_keys.py` and fails until it is decided.
 - **ALWAYS reuse an existing node label before inventing one.** Discovered
   hostnames are `Subdomain`, not a new label. Check
   [graph_db/schema_sections.md](../../graph_db/schema_sections.md) first - that
@@ -179,6 +216,7 @@ Copied from [graph_db/mixins/graphql_mixin.py](../../graph_db/mixins/graphql_mix
 | vuln scan (GVM) | [gvm_mixin.py](../../graph_db/mixins/gvm_mixin.py) |
 | GraphQL probes | [graphql_mixin.py](../../graph_db/mixins/graphql_mixin.py) |
 | supply-chain packages | [supply_chain_mixin.py](../../graph_db/mixins/supply_chain_mixin.py) |
+| a project's move to a new owner (re-tenant) | [tenancy_mixin.py](../../graph_db/mixins/tenancy_mixin.py) |
 
 ## Resources
 
@@ -186,4 +224,5 @@ Copied from [graph_db/mixins/graphql_mixin.py](../../graph_db/mixins/graphql_mix
 - [graph_db/schema_keys.py](../../graph_db/schema_keys.py) - each label's uniqueness key; schema.py renders its constraints from it
 - [docs/readmes/GRAPH.SCHEMA.md](../../docs/readmes/GRAPH.SCHEMA.md) - the rationale: design principles, tenancy strategy, the Muted label. No longer lists labels
 - [graph_db/neo4j_client.py](../../graph_db/neo4j_client.py) - the mixin MRO (do not edit; edit a mixin)
-- Related skill: `recon-tool-integration`
+- [tests/test_graph_retenant.py](../../tests/test_graph_retenant.py), [agentic/tests/test_graph_retenant_route.py](../../agentic/tests/test_graph_retenant_route.py) - the re-tenant and its route
+- Related skills: `recon-tool-integration`; `rbac-authz` for who owns a project (the tenant)
