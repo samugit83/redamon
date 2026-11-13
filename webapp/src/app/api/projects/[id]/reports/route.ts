@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
 import { gatherReportData } from '@/lib/report/reportData'
+import { reportHoldsStepContent } from '@/lib/report/stepContent'
 import { generateReportHtml, type LLMNarratives } from '@/lib/report/reportTemplate'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import path from 'path'
@@ -130,6 +131,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           cveLowCount: reportData.metrics.cveLowCount,
           totalRemediations: reportData.metrics.totalRemediations,
           exploitableCount: reportData.metrics.exploitableCount,
+          // Opening a report that holds fireteam step content needs Raw data & files (lib/report/stepContent.ts).
+          stepContent: reportHoldsStepContent(reportData),
         },
       },
     })

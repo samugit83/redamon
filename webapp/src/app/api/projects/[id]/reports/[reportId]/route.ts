@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { requirePermission } from '@/lib/authz/guards'
+import { requireLevel, requirePermission } from '@/lib/authz/guards'
+import { reportMayHoldStepContent } from '@/lib/report/stepContent'
 import { internalError } from '@/lib/routeErrors'
 
 interface RouteParams {
@@ -21,6 +22,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     })
     if (!report) {
       return NextResponse.json({ error: 'Report not found' }, { status: 404 })
+    }
+    // A report that holds fireteam step content, or predates the record of it, is raw data.
+    if (reportMayHoldStepContent(report.metrics)) {
+      const raw = requireLevel(auth, 'R*')
+      if (raw) return raw
     }
 
     if (!existsSync(report.filePath)) {
