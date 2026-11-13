@@ -1742,6 +1742,95 @@ async def count_agent_sessions(user_id: str = Query(..., min_length=1)):
     return {"user_id": user_id, "count": ws_manager.live_run_count(user_id)}
 
 
+def _project_work(project_id: str) -> dict:
+    """What this agent runs on one project now: agent runs (whoever's), the project's
+    triage run and its CodeFix runs. Each keeps the tenant it started with, so an
+    ownership transfer must wait for them. A CodeFix run lives only as its open socket."""
+    from cypherfix_triage.websocket_handler import _active_run
+    return {
+        "session_ids": ws_manager.live_session_ids(project_id),
+        "codefix_sockets": len(PROXIED_SOCKETS.matching(kinds=("cypherfix-codefix",), project_id=project_id)),
+        "triage_run": _active_run(project_id) is not None,
+    }
+
+
+@app.get("/agent-sessions/project-work", tags=["Sessions"], dependencies=[Depends(require_master_internal_auth)])
+async def project_agent_work(project_id: str = Query(..., min_length=1)):
+    """The agent runs, CodeFix runs and triage run of one project, for the webapp's
+    ownership-transfer check (step 5.12). Master key only; 503 while the manager is
+    not up, so the caller never reads it as idle."""
+    if not ws_manager:
+        return JSONResponse(content={"error": "agent not ready"}, status_code=503)
+    return {"project_id": project_id, **_project_work(project_id)}
+
+
+class GraphRetenantRequest(BaseModel):
+    project_id: str
+    from_user_id: str
+    to_user_id: str
+
+
+#: The answer for each way the mixin's re-tenant can end short (RetenantError.code).
+_RETENANT_ANSWERS = {
+    "retenant_invalid": (400, "The re-tenant was refused: its arguments are invalid."),
+    "retenant_conflict": (409, "Nodes the new owner already holds in this project collide with the project's "
+                               "own; nothing was moved."),
+    "retenant_failed": (500, "The re-tenant failed and was run back: the graph is as it was."),
+    "retenant_rollback_failed": (500, "The re-tenant failed and could not be run back: the project's graph is "
+                                      "split between the two owners. The same call again completes it."),
+}
+
+
+@app.post("/graph/retenant", tags=["Graph"], dependencies=[Depends(require_master_internal_auth)])
+async def graph_retenant(body: GraphRetenantRequest):
+    """Move one project's graph from its old owner to its new one (RBAC step 5.12).
+
+    The webapp calls it while it holds the project lock (no new scan, ticket or
+    settings write) and after it found no live work, then moves the project in
+    Postgres; the reverse call runs the move back when that fails. Idempotent
+    (TenancyMixin.retenant_project): a repeated call moves what is left.
+
+    Refused (409 `project_busy`) while this agent runs anything on the project: such
+    a run writes under the tenant it started with. Scans are the webapp's check (the
+    orchestrator's status), since the agent does not see them.
+    """
+    for value in (body.project_id, body.from_user_id, body.to_user_id):
+        if not _RUN_ID_RE.fullmatch(value or ""):
+            return JSONResponse(status_code=400, content={"error": "invalid project or user id", "code": "retenant_invalid"})
+    if not ws_manager:
+        return JSONResponse(status_code=503, content={
+            "error": "The agent is not ready, so its live runs cannot be checked.", "code": "agent_not_ready"})
+    work = _project_work(body.project_id)
+    busy = [name for name, live in (("agent_run", work["session_ids"]), ("triage_run", work["triage_run"]),
+                                    ("codefix_run", work["codefix_sockets"])) if live]
+    if busy:
+        logger.warning("[rbac] retenant refused project=%s: live %s", body.project_id, ",".join(busy))
+        return JSONResponse(status_code=409, content={
+            "error": "The agent is running work on this project; it keeps the old owner until it ends.",
+            "code": "project_busy", "busy": busy})
+
+    from graph_db.mixins.tenancy_mixin import RetenantError
+    try:
+        result = await asyncio.to_thread(
+            lambda: _triage_graph_client().retenant_project(body.project_id, body.from_user_id, body.to_user_id))
+    except RetenantError as exc:
+        status, sentence = _RETENANT_ANSWERS.get(exc.code, (500, "The re-tenant failed."))
+        if status >= 500:
+            logger.error("[rbac] retenant %s project=%s", exc.code, body.project_id)
+        answer = {"error": sentence, "code": exc.code}
+        if exc.conflicts:
+            answer["conflicts"] = exc.conflicts
+        if exc.moved:
+            answer["moved"] = exc.moved
+        return JSONResponse(status_code=status, content=answer)
+    except Exception as exc:
+        # Raised before the mixin's first write (the client or the preflight): nothing moved.
+        logger.error("[rbac] retenant graph_unavailable project=%s: %s", body.project_id, type(exc).__name__)
+        return JSONResponse(status_code=503, content={
+            "error": "The graph database could not be reached; nothing was moved.", "code": "graph_unavailable"})
+    return result
+
+
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health():
     """
