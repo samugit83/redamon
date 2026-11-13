@@ -4,18 +4,21 @@ import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { requireEffectiveUser, requireConversationAccessBySession } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
+import { conversationRunRefusal } from '@/lib/authz/conversationRun'
 
 // POST /api/conversations/by-session/[sessionId]/fireteams
 // Create a new Fireteam row and its FireteamMember rows. Called by the agent with
-// X-Internal-Key (carve-out); browser callers must own the session.
+// X-Internal-Key (carve-out, only on a conversation of the run's own person and
+// project); browser callers must own the session.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
 ) {
   try {
     const { sessionId } = await params
+    const internal = isInternalRequest(request)
 
-    if (!isInternalRequest(request)) {
+    if (!internal) {
       const eff = await requireEffectiveUser()
       if (eff instanceof NextResponse) return eff
       const guard = await requireConversationAccessBySession(eff, sessionId)
@@ -51,6 +54,9 @@ export async function POST(
       conversation = await prisma.conversation.create({
         data: { userId, projectId, sessionId },
       })
+    } else if (internal) {
+      const refused = conversationRunRefusal(conversation, body, sessionId)
+      if (refused) return refused
     }
 
     const fireteam = await prisma.fireteam.create({

@@ -37,7 +37,8 @@ const params = { params: Promise.resolve({ sessionId: 's1' }) }
 const post = (content: string) => POST(
   new NextRequest('http://x/api/conversations/by-session/s1/messages', {
     method: 'POST',
-    body: JSON.stringify({ type: 'user_message', data: { content } }),
+    // The agent names its run's person and project (runBinding.test.ts).
+    body: JSON.stringify({ type: 'user_message', data: { content }, userId: 'u1', projectId: 'p1' }),
   }),
   params,
 )
@@ -47,7 +48,7 @@ const titleWrites = () => mockConvUpdate.mock.calls
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockFindUnique.mockResolvedValue({ id: 'c1', sessionId: 's1', title: null })
+  mockFindUnique.mockResolvedValue({ id: 'c1', sessionId: 's1', title: null, userId: 'u1', projectId: 'p1' })
   mockConvUpdate.mockResolvedValue({})
 })
 
@@ -65,7 +66,7 @@ describe('by-session messages POST — conversation title', () => {
   })
 
   test('an already-titled conversation is not retitled', async () => {
-    mockFindUnique.mockResolvedValue({ id: 'c1', sessionId: 's1', title: 'Existing' })
+    mockFindUnique.mockResolvedValue({ id: 'c1', sessionId: 's1', title: 'Existing', userId: 'u1', projectId: 'p1' })
     await post(wrapNodeContextQuery('IP: 192.0.2.1', 'ctx', 'q'))
     expect(titleWrites()).toEqual([])
   })

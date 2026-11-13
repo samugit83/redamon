@@ -4,19 +4,22 @@ import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { requireEffectiveUser, requireConversationAccessBySession } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
+import { conversationRunRefusal } from '@/lib/authz/conversationRun'
 import { conversationTitleFromUserMessage } from '@/lib/agentQueryEnvelope'
 
 // POST /api/conversations/by-session/[sessionId]/messages
 // Append messages by session ID (used by the agent backend with X-Internal-Key -
-// carve-out; browser callers may only append to a session they own).
+// carve-out, only to a conversation of the run's own person and project; browser
+// callers may only append to a session they own).
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
 ) {
   try {
     const { sessionId } = await params
+    const internal = isInternalRequest(request)
 
-    if (!isInternalRequest(request)) {
+    if (!internal) {
       const eff = await requireEffectiveUser()
       if (eff instanceof NextResponse) return eff
       const guard = await requireConversationAccessBySession(eff, sessionId)
@@ -43,6 +46,9 @@ export async function POST(
       conversation = await prisma.conversation.create({
         data: { projectId, userId, sessionId },
       })
+    } else if (internal) {
+      const refused = conversationRunRefusal(conversation, body, sessionId)
+      if (refused) return refused
     }
 
     // Support single or batch messages. Each item may carry optional
