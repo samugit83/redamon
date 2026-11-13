@@ -227,6 +227,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/gvm/[projectId]/stop', guard: 'project', methods: ['POST'], permission: 'scan:gvm' },
   { path: '/api/gvm/available', guard: 'session', methods: ['GET'], permission: null },
   { path: '/api/health', guard: 'public', methods: ['GET'], permission: null },
+  { path: '/api/internal/agent/authorize-decision', guard: 'internal', methods: ['POST'], permission: null },
   { path: '/api/internal/agent/decisions', guard: 'internal', methods: ['POST'], permission: null },
   { path: '/api/internal/auth-profile/[projectId]/observe', guard: 'internal', methods: ['POST'], permission: null },
   { path: '/api/internal/capture-config', guard: 'internal', methods: ['GET'], permission: null },
