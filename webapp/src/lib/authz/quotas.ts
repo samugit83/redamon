@@ -35,7 +35,7 @@ import { rbacFlags } from './flags'
 import { now } from './clock'
 import { loadPrincipal } from './principal'
 import { resolveCapabilities } from './capabilities'
-import { isBuiltinSetId } from './builtinSets'
+import { BUILTIN_SETS, isBuiltinSetId } from './builtinSets'
 
 export const QUOTA_FIELDS = [
   'maxProjects',
@@ -409,6 +409,27 @@ export function changedQuotaKeys(before: QuotaStore, after: QuotaStore): string[
     }
   }
   return out
+}
+
+/** What the quota editor names: every set and profile, and the accounts the per-user entries name. */
+export interface QuotaTargets {
+  quotaSets: { id: string; name: string; kind: string }[]
+  /** Present only for whoever may read the user directory (users:read); otherwise the editor shows ids. */
+  quotaUsers?: { id: string; email: string; name: string }[]
+}
+
+export async function quotaTargetsView(store: QuotaStore, { withUsers }: { withUsers: boolean }): Promise<QuotaTargets> {
+  const userIds = Object.keys(store.perUser)
+  const [stored, users] = await Promise.all([
+    prisma.permissionSet.findMany({ select: { id: true, name: true, kind: true }, orderBy: { name: 'asc' } }),
+    withUsers && userIds.length
+      ? prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, email: true, name: true } })
+      : null,
+  ])
+  return {
+    quotaSets: [...BUILTIN_SETS.map((s) => ({ id: s.id, name: s.name, kind: s.kind })), ...stored],
+    ...(withUsers ? { quotaUsers: users ?? [] } : {}),
+  }
 }
 
 /** The value written to the column. */

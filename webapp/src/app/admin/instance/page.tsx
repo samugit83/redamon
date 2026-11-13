@@ -18,6 +18,7 @@ import { SharingPolicyPanel, sharingPolicyOf } from './SharingPolicyPanel'
 import { DefaultSetPanel } from './DefaultSetPanel'
 import { NucleiTemplatesPanel } from './NucleiTemplatesPanel'
 import { TrafficMindPanel } from './TrafficMindPanel'
+import { QuotasPanel } from './QuotasPanel'
 import styles from './instance.module.css'
 
 type State =
@@ -109,13 +110,7 @@ export default function InstancePage() {
       case 'default-set':
         return <DefaultSetPanel key={id} canEdit={isConfirmedRoot && holds('roles:manage')} unconfirmedRoot={unconfirmedRoot} />
       case 'quotas':
-        return (
-          <Panel key={id} id={id} title={TITLES[id]} lead="Limits per permission set or per account.">
-            <p className={styles.state}>
-              No quota is set: every account creates projects, runs scans and starts agent runs without a per-account limit.
-            </p>
-          </Panel>
-        )
+        return <QuotasPanel key={id} settings={settings!} onSaved={onSaved} />
       case 'tunnels':
         return (
           <Panel key={id} id={id} title={TITLES[id]} lead="The ngrok or chisel tunnel every user's reverse shells share (port 4444).">

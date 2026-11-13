@@ -27,6 +27,10 @@ import {
 } from '@/lib/sharedInstanceSettings'
 import { CAPTURE_RECREATE_FIELDS, pushTunnelConfig, reconcileCaptureProxy } from '@/lib/sharedSettingsEffects'
 import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
+import {
+  applyQuotaPatch, changedQuotaKeys, parseQuotaPatch, parseQuotaStore, quotasInForce, quotaStoreToJson,
+  quotaTargetsView, unknownQuotaTargets, type QuotaPatch,
+} from '@/lib/authz/quotas'
 
 /**
  * The settings the instance shares because it runs one of each (step 2.4, ID-32): the
@@ -61,6 +65,15 @@ import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
  * it, with its password, and the whole policy is stored (no user-row mirror: 7.7.x has no home for
  * it). With the switch off the route is the one before: the policy is neither shown nor read from
  * a body.
+ *
+ * The quotas (step 6.8, GV-09..GV-13) are the `instance:quotas` holder's (Full admin holds it; no
+ * password asked), with RBAC_GOVERNANCE_ENABLED on only: `quotas` is the stored
+ * `{defaults, perSet, perUser}` (lib/authz/quotas.ts), answered with the sets the editor names and,
+ * to a users:read holder, the accounts its per-user entries name. A PUT's `quotas` is a patch:
+ * `defaults` replaces the defaults, each named set or account entry is replaced (or removed by null);
+ * a value out of bounds is 400 `invalid_field`, a new entry for a set or account that does not exist
+ * 400 `unknown_quota_target`. The audit row names the changed keys (`defaults.maxProjects`,
+ * `perUser.<id>`), never the values. With the switch off nothing is shown or read from a body.
  */
 
 const TUNNEL_STRINGS = ['ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'] as const
@@ -91,6 +104,8 @@ interface Access {
   capture: boolean
   /** platform:tunnels, or the escape hatch: the tunnel fields. */
   tunnels: SharedToolAccess
+  /** instance:quotas, with RBAC_GOVERNANCE_ENABLED on: the quotas. */
+  quotas: boolean
 }
 
 async function access(fresh: boolean): Promise<Access | NextResponse> {
@@ -104,7 +119,8 @@ async function access(fresh: boolean): Promise<Access | NextResponse> {
   if (!admin && !capture && !tunnels.allowed) {
     return forbidden('Only whoever holds the instance tunnel or the traffic capture opens the instance settings.', 'platform:tunnels')
   }
-  return { session, principal, admin, capture, tunnels }
+  const quotas = quotasInForce() && (await sessionHolds(session, 'instance:quotas', { fresh }))
+  return { session, principal, admin, capture, tunnels, quotas }
 }
 
 const ROOT_ONLY_POLICY = 'Only Root can change the instance security policy.'
@@ -134,13 +150,21 @@ function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings
   }
 }
 
+/** The answer: the view, plus the quotas with the names their editor shows for an instance:quotas holder. */
+async function answer(row: InstanceSettings, a: Access, standing: RootStanding, warnings: SaveWarning[] = []) {
+  if (!a.quotas) return NextResponse.json(view(row, a, standing, warnings))
+  const quotas = parseQuotaStore(row.quotas)
+  const targets = await quotaTargetsView(quotas, { withUsers: await sessionHolds(a.session, 'users:read') })
+  return NextResponse.json({ ...view(row, a, standing, warnings), quotas, canManageQuotas: true, ...targets })
+}
+
 export const GET = withRouteErrors('Could not read the instance settings', async (_request: NextRequest) => {
   if (!rbacFlags().identity) return notFound()
   const a = await access(false)
   if (a instanceof NextResponse) return a
   const row = await instanceSettingsInForce()
   if (!row) return notReady()
-  return NextResponse.json(view(row, a, a.admin ? await rootStanding(a.session.userId) : 'none'))
+  return answer(row, a, a.admin ? await rootStanding(a.session.userId) : 'none')
 })
 
 export const PUT = withRouteErrors('Could not save the instance settings', async (request: NextRequest) => {
@@ -166,6 +190,11 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   if ('error' in sharing) {
     return NextResponse.json({ error: sharing.error.message, code: 'invalid_field', field: sharing.error.field }, { status: 400 })
   }
+  const quotaPatch: { patch: QuotaPatch } | { error: { field: string; message: string } } =
+    quotasInForce() && 'quotas' in body ? parseQuotaPatch(body.quotas) : { patch: {} }
+  if ('error' in quotaPatch) {
+    return NextResponse.json({ error: quotaPatch.error.message, code: 'invalid_field', field: quotaPatch.error.field }, { status: 400 })
+  }
 
   const row = await instanceSettingsInForce()
   if (!row) return notReady()
@@ -187,6 +216,21 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   const standing = a.admin || policyChanges.length || sharingChanges.length ? await rootStanding(a.session.userId) : 'none'
   if (policyChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_POLICY)
   if (sharingChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_SHARING)
+  const storedQuotas = parseQuotaStore(row.quotas)
+  const nextQuotas = applyQuotaPatch(storedQuotas, quotaPatch.patch)
+  const quotaChanges = changedQuotaKeys(storedQuotas, nextQuotas)
+  if (quotaChanges.length && !a.quotas) {
+    return forbidden('Only whoever holds instance:quotas changes the quotas.', 'instance:quotas', { fields: quotaChanges })
+  }
+  if (quotaChanges.length) {
+    const unknown = await unknownQuotaTargets(quotaPatch.patch)
+    if (unknown.sets.length || unknown.users.length) {
+      return NextResponse.json(
+        { error: 'A quota names a permission set or an account that does not exist.', code: 'unknown_quota_target', ...unknown },
+        { status: 400 },
+      )
+    }
+  }
 
   // A new chisel URL must come with its auth typed again (HD-24), and re-pointing a
   // configured tunnel takes the person's password (ID-25); before anything is written.
@@ -197,8 +241,8 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     if (refused) return refused
   }
 
-  if (!tunnelChanges.length && !captureChanges.length && !policyChanges.length && !sharingChanges.length) {
-    return NextResponse.json(view(row, a, standing))
+  if (!tunnelChanges.length && !captureChanges.length && !policyChanges.length && !sharingChanges.length && !quotaChanges.length) {
+    return answer(row, a, standing)
   }
 
   const data: Record<string, unknown> = {}
@@ -210,6 +254,11 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   }
   for (const f of policyChanges) data[f] = policy.patch[f]
   if (sharingChanges.length) data.sharingPolicy = sharingPolicyToStore(row.sharingPolicy, sharing.patch)
+  if (quotaChanges.length) data.quotas = quotaStoreToJson(nextQuotas)
+  const changedKeys = {
+    ...(sharingChanges.length ? { sharingPolicy: sharingChanges } : {}),
+    ...(quotaChanges.length ? { quotas: quotaChanges } : {}),
+  }
   // A use of the escape hatch is recorded only when it changes something.
   if (tunnelChanges.length && a.tunnels.via === 'compat') {
     await sharedToolAccess(a.principal, 'tunnels')
@@ -219,7 +268,7 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     data,
     actor: auditActorOf(sessionActor(a.session)),
     tunnelVia: tunnelChanges.length ? a.tunnels.via : null,
-    ...(sharingChanges.length ? { changedKeys: { sharingPolicy: sharingChanges } } : {}),
+    ...(Object.keys(changedKeys).length ? { changedKeys } : {}),
   })
   if (sharingChanges.length) invalidateSharingPolicy()
 
@@ -233,5 +282,5 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     const tunnelWarning = await pushTunnelConfig(saved)
     if (tunnelWarning) warnings.push(tunnelWarning)
   }
-  return NextResponse.json(view(saved, a, standing, warnings))
+  return answer(saved, a, standing, warnings)
 })

@@ -404,8 +404,15 @@ describe('Nuclei templates (platform:nuclei_templates)', () => {
 
 describe('quotas, plugins and the other platform tools', () => {
   test('Full admin: quotas unlimited, the Plugins link, and where the tools without a panel live', async () => {
+    // Step 6.8 replaced 6.7's placeholder line with the editor: every quota starts unlimited (OQ-39).
+    routes['GET /api/admin/instance-settings'] = {
+      status: 200,
+      body: settingsFor(false, { quotas: { defaults: {}, perSet: {}, perUser: {} }, canManageQuotas: true, quotaSets: [], quotaUsers: [] }),
+    }
     renderPage(auth(FULL_ADMIN, 'admin'))
-    expect(await screen.findByRole('region', { name: 'Quotas' })).toHaveTextContent('No quota is set')
+    const quotas = await screen.findByRole('region', { name: 'Quotas' })
+    expect(quotas).toHaveTextContent('No set has its own quota.')
+    expect(within(quotas).getAllByRole('combobox').every((c) => (c as HTMLSelectElement).value === 'unlimited')).toBe(true)
     expect(within(region('Plugins')).getByRole('link', { name: 'Open the Plugins page' })).toHaveAttribute('href', '/plugins')
     const other = region('Platform tools used elsewhere')
     expect(within(other).queryByRole('note')).toBeNull()
