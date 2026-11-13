@@ -7,9 +7,13 @@ So before each run starts (a message, an approval, an answer to the agent's ques
 confirmation, a resume) the socket asks the webapp again (`POST /api/internal/agent/writer-check`,
 agentic/writer_check.py) for its ticket's person (`sub`), project and session. A 409
 `project_writer_busy` refuses the run with the webapp's own sentence naming who holds the project
-(the ticket refusal's payload); any other answer, or none, lets the project's owner's run start and
-refuses anyone else's (fail closed, as the webapp does with a source it cannot read). A refused run
-starts nothing, saves nothing, and the card of a refused answer comes back in the drawer (`answer`).
+(the ticket refusal's payload). No answer (the webapp unreachable or slow), a 5xx, or no internal key
+lets the project's owner's run start and refuses anyone else's (fail closed, as the webapp does with
+a source it cannot read). Any other answer (a 400 or 422 for a check the webapp refused as asked, a
+401, a 404, a malformed body) refuses everyone, the owner included: the session id is the browser's,
+so an answer the request can provoke must never let a run through. A refused run starts nothing,
+saves nothing, and the card of a refused answer comes back in the drawer (`answer`). The session id
+reaches the log lines without a control character, and bounded.
 
 Run: ./agentic/run_tests.sh tests/test_run_writer_check.py
 """
@@ -55,6 +59,15 @@ UNVERIFIED_BUSY = "whether someone else is writing this project could not be ver
 UNVERIFIED_MESSAGE = f"Nothing was started: {UNVERIFIED_BUSY}. Try again shortly."
 REFUSED = WriterCheck(allowed=False, message=BUSY_ERROR, busy=BUSY)
 UNVERIFIED = WriterCheck(allowed=False, message=UNVERIFIED_MESSAGE, busy=UNVERIFIED_BUSY)
+
+
+def rejected(status):
+    busy = f"whether someone else is writing this project could not be checked (the webapp answered HTTP {status})"
+    return WriterCheck(allowed=False, message=f"Nothing was started: {busy}. Reload the chat and try again.", busy=busy)
+
+
+#: The webapp's writer-check route refuses a session id over 200 characters (lib/wsTicket.ts).
+LONG_SID = "s" * 201
 
 
 class _Webapp:
@@ -123,26 +136,76 @@ class SecondWriterCheck(unittest.TestCase):
     def test_the_owner_is_refused_too_by_another_person_s_writer(self):
         self.assertEqual(_ask(_Webapp(*BUSY_409), user_id=OWNER), REFUSED)
 
-    def test_every_other_answer_is_unverified_the_collaborator_refused(self):
-        answers = [
-            (200, {"allowed": False}), (200, {"allowed": "true"}), (200, {}), (200, b"not json"), (200, "[]"),
-            (409, {"code": "project_writer_busy"}), (409, {"code": "other", "busy": BUSY, "error": BUSY_ERROR}),
-            (409, {"code": "project_writer_busy", "busy": BUSY, "error": 7}),
-            (409, {"code": "project_writer_busy", "busy": "x" * 2001, "error": BUSY_ERROR}),
-            (401, {"error": "Unauthorized"}), (400, {"code": "invalid_writer_check"}), (404, {}),
-            (500, {"error": "x", "code": "P1001"}), (502, b"<html>"), (204, b""),
-        ]
-        for status, body in answers:
+    #: Answers the webapp gave that neither allow the run nor refuse it in its own words.
+    REJECTED_ANSWERS = (
+        (200, {"allowed": False}), (200, {"allowed": "true"}), (200, {}), (200, b"not json"), (200, "[]"),
+        (204, b""), (302, b""),
+        (409, {"code": "project_writer_busy"}), (409, {"code": "other", "busy": BUSY, "error": BUSY_ERROR}),
+        (409, {"code": "project_writer_busy", "busy": BUSY, "error": 7}),
+        (409, {"code": "project_writer_busy", "busy": "x" * 2001, "error": BUSY_ERROR}),
+        (400, {"error": "Not an agent writer check", "code": "invalid_writer_check"}), (400, b"<html>"),
+        (422, {"code": "invalid"}), (401, {"error": "Unauthorized"}), (403, {}), (404, {}), (413, b""),
+    )
+    #: The webapp answered that it could not decide: the unreadable-source rule.
+    UNVERIFIED_ANSWERS = ((500, {"error": "x", "code": "P1001"}), (502, b"<html>"), (503, {}), (504, b""))
+
+    def test_any_other_answer_refuses_everyone_the_owner_included(self):
+        for status, body in self.REJECTED_ANSWERS:
+            for person in (COLLAB, OWNER):
+                with self.subTest(status=status, body=body, person=person), \
+                        self.assertLogs("writer_check", "WARNING") as logs:
+                    self.assertEqual(_ask(_Webapp(status, body), user_id=person), rejected(status))
+                self.assertIn(f"[rbac] agent run refused project_writer_busy start=query session=sB rejected status={status}",
+                              logs.output[-1])
+
+    def test_a_5xx_is_unverified_the_collaborator_refused(self):
+        for status, body in self.UNVERIFIED_ANSWERS:
             with self.subTest(status=status, body=body), self.assertLogs("writer_check", "WARNING") as logs:
                 self.assertEqual(_ask(_Webapp(status, body)), UNVERIFIED)
             self.assertIn("[rbac] agent run refused project_writer_busy start=query session=sB unverified", logs.output[-1])
 
-    def test_every_other_answer_lets_the_owner_s_run_start_with_a_log_line(self):
-        for status, body in ((500, {"code": "P1001"}), (404, {}), (200, b"not json")):
+    def test_a_5xx_lets_the_owner_s_run_start_with_a_log_line(self):
+        for status, body in self.UNVERIFIED_ANSWERS:
             with self.subTest(status=status), self.assertLogs("writer_check", "WARNING") as logs:
                 self.assertEqual(_ask(_Webapp(status, body), user_id=OWNER), ALLOWED)
             self.assertIn("[rbac] project_writer_unverified start=query session=sB", logs.output[-1])
             self.assertIn("the owner's run goes ahead", logs.output[-1])
+
+    def test_the_owner_s_long_session_id_cannot_pass_the_check(self):
+        """The review's case: a session id the route refuses (400) once read as "could not ask", which let
+        the owner's run start beside a collaborator's partial recon."""
+        webapp = _Webapp(by_person={OWNER: BUSY_409})
+        route = webapp.handler
+
+        def validating(request):
+            if len(json.loads(request.content)["sessionId"]) > 200:
+                webapp.requests.append(request)
+                return httpx.Response(400, json={"error": "Not an agent writer check", "code": "invalid_writer_check"})
+            return route(request)
+
+        webapp.handler = validating
+        self.assertEqual(_ask(webapp, user_id=OWNER, session_id=LONG_SID), rejected(400))
+        self.assertEqual(_ask(webapp, user_id=OWNER), REFUSED)
+        self.assertEqual([len(b["sessionId"]) for b in webapp.bodies()], [201, 2])
+
+    def test_a_session_id_cannot_forge_a_log_line_on_any_outcome(self):
+        forged = "sB\r\n[rbac] project_writer_unverified start=query session=x: the owner's run goes ahead" + "x" * 500
+        cases = (
+            (_Webapp(*BUSY_409), COLLAB), (_Webapp(400, {}), OWNER), (_Webapp(500, {}), OWNER), (_Webapp(500, {}), COLLAB),
+            (_Webapp(raises=httpx.ConnectError("refused")), OWNER),
+        )
+        for webapp, person in cases:
+            with self.subTest(status=webapp.status, person=person), self.assertLogs("writer_check", "WARNING") as logs:
+                _ask(webapp, user_id=person, session_id=forged)
+            (line,) = logs.output
+            self.assertNotIn("\n", line)
+            self.assertNotIn("\r", line)
+            self.assertIn("session=sB??[rbac] project_writer_unverified", line)
+            self.assertNotIn("x" * 201, line)
+        with mock.patch.dict(writer_check.INTERNAL_HEADERS, {"X-Internal-Key": ""}), \
+                self.assertLogs("writer_check", "WARNING") as logs:
+            asyncio.run(second_writer_check(user_id=OWNER, tenant_id=OWNER, project_id="p", session_id=forged, start="query"))
+        self.assertNotIn("\n", logs.output[0])
 
     def test_webapp_unreachable_owner_proceeds_collaborator_refused(self):
         for exc in (httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), OSError("down")):
@@ -261,7 +324,7 @@ class EveryRunStartAsks(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def _start(self, method, payload, *, user=COLLAB, tenant=OWNER, act=None, cap=None, orch=None):
+    def _start(self, method, payload, *, user=COLLAB, tenant=OWNER, act=None, cap=None, orch=None, session="sB"):
         orch = orch or _Orchestrator()
 
         async def main():
@@ -270,11 +333,11 @@ class EveryRunStartAsks(unittest.TestCase):
             conn = WebSocketConnection(_WS())
             conn.cap = cap
             conn.actor_id = act
-            await mgr.authenticate(conn, user, "pB", "sB", verified=True)
+            await mgr.authenticate(conn, user, "pB", session, verified=True)
             conn.tenant_id = tenant
             conn._is_stopped = True  # handle_resume restarts only a stopped run
             await getattr(handler, method)(conn, dict(payload))
-            started = mgr.get_task(f"{user}:pB:sB")
+            started = mgr.get_task(f"{user}:pB:{session}")
             if conn._active_task is not None:
                 await asyncio.wait_for(conn._active_task, BOUND_S)
             await _settle()
@@ -362,6 +425,25 @@ class EveryRunStartAsks(unittest.TestCase):
         self.assertIsNone(answer)
         self.assertEqual(self._errors(conn2)[0]["answer"], "approval")
         self.assertEqual([b["userId"] for b in webapp.bodies()], [COLLAB, COLLAB, OWNER, COLLAB])
+
+    def test_owner_socket_with_a_session_id_the_route_refuses_starts_nothing_end_to_end(self):
+        """A ticket signed before the mint's bound (or by anything else) with a 201-char session id: the
+        route's 400 refuses the owner's run too, on every run start."""
+        webapp = _Webapp(400, {"error": "Not an agent writer check", "code": "invalid_writer_check"})
+        client, key = _real_client(webapp)
+        with mock.patch.object(websocket_api, "second_writer_check", second_writer_check), client, key:
+            for method, payload, _, answer in self.STARTS:
+                with self.subTest(method=method):
+                    for m in (self.saved, self.posted, self.running):
+                        m.reset_mock()
+                    conn, started, orch = self._start(method, payload, user=OWNER, session=LONG_SID)
+                    self._nothing_started(conn, started, orch)
+                    self.assertEqual(self._errors(conn), [{
+                        "message": rejected(400).message, "code": "project_writer_busy", "busy": rejected(400).busy,
+                        **({"answer": answer} if answer else {}), "recoverable": True,
+                    }])
+        self.assertEqual({b["sessionId"] for b in webapp.bodies()}, {LONG_SID})
+        self.assertEqual({b["userId"] for b in webapp.bodies()}, {OWNER})
 
     def test_webapp_unreachable_end_to_end_owner_runs_collaborator_refused(self):
         webapp = _Webapp(raises=httpx.ConnectError("no route"))
