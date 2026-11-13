@@ -24,9 +24,14 @@ export type Direction =
   | 'addition'
   | 'disable'
   | 'enable'
-  /** A time of day or a date: moving earlier (or clearing it) widens. */
+  /** A date: moving earlier (or clearing it) widens. */
   | 'earlier'
   | 'later'
+  /**
+   * One end of the daily window, judged with the other end as the minutes of a day the window
+   * admits: a minute added widens, whichever end moved.
+   */
+  | 'window'
   | 'any'
   /** Moving up the field's ordered `values` widens. */
   | 'higher'
@@ -38,8 +43,8 @@ export const ENGAGEMENT_DIRECTIONS: Readonly<Record<string, Direction>> = {
   roeExcludedHostReasons: 'never',
   roeTimeWindowEnabled: 'disable',
   roeTimeWindowDays: 'addition',
-  roeTimeWindowStartTime: 'earlier',
-  roeTimeWindowEndTime: 'later',
+  roeTimeWindowStartTime: 'window',
+  roeTimeWindowEndTime: 'window',
   roeTimeWindowTimezone: 'any',
   roeForbiddenTools: 'removal',
   roeForbiddenCategories: 'removal',
@@ -52,7 +57,43 @@ export const ENGAGEMENT_DIRECTIONS: Readonly<Record<string, Direction>> = {
 
 /** The window's own switch: its days, hours and zone only matter while it is on. */
 const WINDOW_SWITCH = 'roeTimeWindowEnabled'
-const WINDOW_PARTS = new Set(['roeTimeWindowDays', 'roeTimeWindowStartTime', 'roeTimeWindowEndTime', 'roeTimeWindowTimezone'])
+const WINDOW_START = 'roeTimeWindowStartTime'
+const WINDOW_END = 'roeTimeWindowEndTime'
+const WINDOW_PARTS = new Set(['roeTimeWindowDays', WINDOW_START, WINDOW_END, 'roeTimeWindowTimezone'])
+
+const MINUTES_PER_DAY = 24 * 60
+const hhmm = (minute: number): string =>
+  `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`
+
+/**
+ * The minutes of a day a window admits, computed as every reader does (recon `_time_in_window`, the
+ * orchestrator's start check, the agent's warning, `insideScanWindow`): the stored HH:MM text
+ * compared as text, both ends inclusive, a start after the end crossing midnight, and a value that
+ * is not text read as the default 09:00 / 18:00. Comparing as the readers compare, rather than
+ * parsing, keeps a malformed stored value judged by what it actually admits.
+ */
+function windowMinutes(start: unknown, end: unknown): boolean[] {
+  const s = typeof start === 'string' ? start : '09:00'
+  const e = typeof end === 'string' ? end : '18:00'
+  return Array.from({ length: MINUTES_PER_DAY }, (_, m) => {
+    const t = hhmm(m)
+    return s <= e ? t >= s && t <= e : t >= s || t <= e
+  })
+}
+
+/** Why the window `beforeRow` -> `afterRow` admits a minute it did not, or null. */
+function widerWindow(key: string, before: unknown, after: unknown, beforeRow: Record<string, unknown>, afterRow: Record<string, unknown>): string | null {
+  const wasStart = key === WINDOW_START ? before : beforeRow[WINDOW_START]
+  const wasEnd = key === WINDOW_END ? before : beforeRow[WINDOW_END]
+  const nowStart = key === WINDOW_START ? after : afterRow[WINDOW_START]
+  const nowEnd = key === WINDOW_END ? after : afterRow[WINDOW_END]
+  const was = windowMinutes(wasStart, wasEnd)
+  const added = windowMinutes(nowStart, nowEnd).filter((inside, m) => inside && !was[m]).length
+  if (added === 0) return null
+  const label = (s: unknown, e: unknown) => `${typeof s === 'string' ? s : '09:00'}-${typeof e === 'string' ? e : '18:00'}`
+  return `the daily window ${label(wasStart, wasEnd)} becomes ${label(nowStart, nowEnd)}, ` +
+    `${added} more minutes a day (it starts earlier or ends later; an end before the start crosses midnight)`
+}
 
 /** How a change to `key` is judged, or undefined when it can never widen. */
 export function directionOf(key: string, spec: RegistryField | undefined = field(key)): Direction | undefined {
@@ -93,6 +134,7 @@ export function wideningReason(
   }
 
   const direction = directionOf(key, spec)
+  if (direction === 'window') return widerWindow(key, before, after, beforeRow, afterRow)
   return direction ? byDirection(direction, spec, before, after) : null
 }
 
@@ -133,6 +175,9 @@ function byDirection(direction: Direction, spec: RegistryField, before: unknown,
     }
     case 'any':
       return 'changes the window'
+    case 'window':
+      // Judged with the other end, in wideningReason.
+      return null
     case 'higher': {
       const order = spec.values ?? []
       return order.indexOf(asText(after)) > order.indexOf(asText(before)) ? 'allows a later phase' : null

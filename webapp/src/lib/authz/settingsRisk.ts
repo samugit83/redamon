@@ -161,11 +161,13 @@ const SCOPE_TARGET = 'targetDomain'
 
 /**
  * The stored columns classifyChange reads beside the changed ones: the RoE window's switch, since
- * a window part widens only while the window is on (`wideningReason`), and the target the
- * subdomain prefixes are read under. A writer that reads only the changed columns would judge a
- * window edit as narrowing.
+ * a window part widens only while the window is on, and both ends of the daily window, which are
+ * judged together (`wideningReason`); and the target the subdomain prefixes are read under. A
+ * writer that reads only the changed columns would judge a window edit as narrowing.
  */
-export const RISK_CONTEXT_KEYS: readonly string[] = Object.freeze(['roeTimeWindowEnabled', SCOPE_TARGET])
+export const RISK_CONTEXT_KEYS: readonly string[] = Object.freeze([
+  'roeTimeWindowEnabled', 'roeTimeWindowStartTime', 'roeTimeWindowEndTime', SCOPE_TARGET,
+])
 
 /** The select of the stored values classifyChange needs to judge a change to `keys`. */
 export function riskSelect(keys: Iterable<string>): Record<string, true> {

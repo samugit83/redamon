@@ -214,6 +214,26 @@ describe('a co-owner (roe:manage)', () => {
     expect((await post({ nucleiRateLimit: 20 }, { nucleiRateLimit: 20, roeGlobalMaxRps: 10 })).status).toBe(200)
   })
 
+  test('a replace that makes the daily window cross midnight needs the owner, however its ends move', async () => {
+    as('co-owner')
+    const window = { roeTimeWindowEnabled: true, roeTimeWindowStartTime: '09:00', roeTimeWindowEndTime: '18:00' }
+    // 09:00-18:00 -> 09:00-08:00: the end moves earlier, the window grows to 23 hours.
+    h.row = withRoe(window)
+    const endOnly = await post({ roeTimeWindowEndTime: '08:00' }, { roeTimeWindowEndTime: '08:00', roeGlobalMaxRps: 10 })
+    expect(endOnly.status).toBe(403)
+    expect((await endOnly.json()).refused).toEqual([expect.objectContaining({ key: 'roeTimeWindowEndTime', needs: 'owner', reason: expect.stringMatching(/window/) })])
+    nothingWritten()
+    // A later start and an earlier end: 17:00-10:00, overnight.
+    const both = { roeTimeWindowStartTime: '17:00', roeTimeWindowEndTime: '10:00' }
+    const res = await post(both, { ...both, roeGlobalMaxRps: 10 })
+    expect(res.status).toBe(403)
+    expect((await res.json()).refused.map((r: { key: string }) => r.key).sort()).toEqual(['roeTimeWindowEndTime', 'roeTimeWindowStartTime'])
+    nothingWritten()
+    // The same ends inside the window narrow it: a co-owner's.
+    const inside = { roeTimeWindowStartTime: '10:00', roeTimeWindowEndTime: '17:00' }
+    expect((await post(inside, { ...inside, roeGlobalMaxRps: 10 })).status).toBe(200)
+  })
+
   test("the document's own record (the client it names) goes with the document", async () => {
     as('co-owner')
     h.row = withRoe({ roeClientName: 'Old Client Example' })

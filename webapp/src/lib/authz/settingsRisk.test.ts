@@ -255,6 +255,33 @@ describe('the directions the generic rules get wrong or do not cover', () => {
     expect(judge(['www', 'api'], ['api'], '').needs).toBe('manage')
   })
 
+  test('the daily window is judged whole: an end before the start crosses midnight, as every reader reads it', () => {
+    const on = { roeTimeWindowEnabled: true, roeTimeWindowStartTime: '09:00', roeTimeWindowEndTime: '18:00' }
+    const judge = (start: string, end: string, before: Record<string, unknown> = on) =>
+      classifyChange(before, { roeTimeWindowStartTime: start, roeTimeWindowEndTime: end }, CO_OWNER)
+    // 09:00-08:00 is 23 hours a day, not an earlier close.
+    expect(judge('09:00', '08:00').refused).toEqual([
+      expect.objectContaining({ key: 'roeTimeWindowEndTime', needs: 'owner', reason: expect.stringMatching(/09:00-18:00 .*09:00-08:00/) }),
+    ])
+    // A later start and an earlier end, each "narrower" alone, make 17:00-10:00 overnight.
+    expect(judge('17:00', '10:00').refused.map(c => c.key)).toEqual(['roeTimeWindowEndTime', 'roeTimeWindowStartTime'])
+    expect(judge('10:00', '17:00').ok).toBe(true)
+    const overnight = { ...on, roeTimeWindowStartTime: '22:00', roeTimeWindowEndTime: '06:00' }
+    expect(judge('23:00', '05:00', overnight).ok).toBe(true)
+    expect(judge('21:00', '06:00', overnight).refused.map(c => c.key)).toEqual(['roeTimeWindowStartTime'])
+    expect(judge('22:00', '07:00', overnight).refused.map(c => c.key)).toEqual(['roeTimeWindowEndTime'])
+    // An overnight window cut to a daytime one that lies inside it narrows.
+    expect(judge('00:00', '05:00', overnight).ok).toBe(true)
+  })
+
+  test('a window edit reads the other end as stored: an end alone can make the window overnight', () => {
+    const stored = { roeTimeWindowEnabled: true, roeTimeWindowStartTime: '07:00', roeTimeWindowEndTime: '08:00' }
+    expect(classifyChange(stored, { roeTimeWindowEndTime: '06:00' }, CO_OWNER).refused).toEqual([
+      expect.objectContaining({ key: 'roeTimeWindowEndTime', needs: 'owner' }),
+    ])
+    expect(RISK_CONTEXT_KEYS).toEqual(expect.arrayContaining(['roeTimeWindowStartTime', 'roeTimeWindowEndTime']))
+  })
+
   test('the derived batch groups never decide on their own', () => {
     expect(classifyField('domainBatchGroups', [], [{ rootDomain: 'x.test', prefixes: ['*'], hosts: [], wildcard: true }]).needs).toBe('manage')
   })

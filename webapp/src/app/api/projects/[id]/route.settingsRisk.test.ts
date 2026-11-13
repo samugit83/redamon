@@ -249,6 +249,34 @@ describe('a co-owner (Manage)', () => {
     expect(selects().some(s => s.roeTimeWindowEnabled === true && s.roeTimeWindowDays === true)).toBe(true)
   })
 
+  test('the window\'s hours are judged together: 09:00-18:00 -> 09:00-08:00 crosses midnight and needs the owner', async () => {
+    as('co-owner')
+    h.stored = { ...STORED, roeTimeWindowEnabled: true, roeTimeWindowStartTime: '09:00', roeTimeWindowEndTime: '18:00' }
+    const res = await put({ roeTimeWindowEndTime: '08:00' })
+    expect(res.status).toBe(403)
+    expect((await res.json()).refused).toEqual([expect.objectContaining({ key: 'roeTimeWindowEndTime', needs: 'owner' })])
+    expect(wrote()).toBe(false)
+  })
+
+  test('a later start with an earlier end (17:00-10:00) is an overnight window: the owner\'s', async () => {
+    as('co-owner')
+    h.stored = { ...STORED, roeTimeWindowEnabled: true, roeTimeWindowStartTime: '09:00', roeTimeWindowEndTime: '18:00' }
+    const res = await put({ roeTimeWindowStartTime: '17:00', roeTimeWindowEndTime: '10:00' })
+    expect(res.status).toBe(403)
+    expect((await res.json()).refused.map((r: { key: string }) => r.key)).toEqual(['roeTimeWindowEndTime', 'roeTimeWindowStartTime'])
+    expect(wrote()).toBe(false)
+    expect((await put({ roeTimeWindowStartTime: '10:00', roeTimeWindowEndTime: '17:00' })).status).toBe(200)
+  })
+
+  test('an end time saved alone is judged against the stored start, which the route reads', async () => {
+    as('co-owner')
+    // 07:00-08:00 -> 07:00-06:00 is 23 hours; against the reader default 09:00 it would look narrower.
+    h.stored = { ...STORED, roeTimeWindowEnabled: true, roeTimeWindowStartTime: '07:00', roeTimeWindowEndTime: '08:00' }
+    const res = await put({ roeTimeWindowEndTime: '06:00' })
+    expect(res.status).toBe(403)
+    expect(selects().some(s => s.roeTimeWindowEndTime === true && s.roeTimeWindowStartTime === true)).toBe(true)
+  })
+
   test('the same day added while the window is off widens nothing', async () => {
     as('co-owner')
     const res = await put({ roeTimeWindowDays: ['mon', 'sun'] })
