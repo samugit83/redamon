@@ -137,6 +137,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
 
   test('no production code names the sharing storage outside the named files', () => {
     const SHARING_STORAGE_READERS = [
+      // Step 4.4: the live matrix's fixtures (Read shares on a synthetic project), run by hand only.
+      'scripts/e2e-rbac-seed.mjs',
       // Step 4.2: shows the policy to admins and takes Root's change only with the switch on.
       'src/app/api/admin/instance-settings/route.ts',
       // Step 4.15: the expiry sweep, which reads the sharing tables only with sharing in force.
@@ -160,6 +162,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
 
   test('no production code reads a collaborator or break-glass row outside the named readers', () => {
     const ROW_READERS: string[] = [
+      // Step 4.4: the live matrix's fixtures write the Read shares the p4 rows sign in with (run by hand).
+      'scripts/e2e-rbac-seed.mjs',
       // Step 4.15: removes expired rows only with sharing in force (switch and policy); the switch
       // states are pinned in api/internal/rbac/sweep/route.test.ts.
       'src/lib/authz/expirySweep.ts',

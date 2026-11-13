@@ -40,6 +40,11 @@ const USERS = [
   { key: 'ANALYST', email: 'rbac-analyst@e2e.local', name: 'RBAC Read-only Analyst', role: 'standard', login: true, sets: ['builtin:read-only-analyst'] },
   { key: 'NOACCESS', email: 'rbac-noaccess@e2e.local', name: 'RBAC No Access', role: 'standard', login: true, sets: ['builtin:no-access'] },
   { key: 'USERMGR', email: 'rbac-usermgr@e2e.local', name: 'RBAC User Manager', role: 'admin', login: true, adminProfileId: 'builtin:user-manager' },
+  // Phase 4's collaborators on PSHARED (SHARES below); each owns nothing. VIEWER_TMP's share is the one
+  // the matrix revokes, grants again and leaves: the next seed puts it back.
+  { key: 'VIEWER', email: 'rbac-viewer@e2e.local', name: 'RBAC Viewer', role: 'standard', login: true },
+  { key: 'VIEWER_RAW', email: 'rbac-viewer-raw@e2e.local', name: 'RBAC Viewer Raw', role: 'standard', login: true },
+  { key: 'VIEWER_TMP', email: 'rbac-viewer-tmp@e2e.local', name: 'RBAC Viewer Tmp', role: 'standard', login: true },
 ]
 
 // The two throwaway projects exist to be deleted by the matrix: one by the owner,
@@ -55,12 +60,24 @@ const PROJECTS = [
   { key: 'PNOACCESS', owner: 'NOACCESS', name: 'rbac-PNOACCESS' },
   { key: 'POPERATOR_TMP', owner: 'OPERATOR', name: 'rbac-POPERATOR-tmp' },
   { key: 'PANALYST_TMP', owner: 'ANALYST', name: 'rbac-PANALYST-tmp' },
+  // Shared by member_c, never PA: baseline rows expect member_b to get 404 on PA whatever the switches.
+  { key: 'PSHARED', owner: 'MEMBER_C', name: 'rbac-PSHARED' },
+]
+
+// Read shares on PSHARED (step 4.4). They count only with sharing in force (RBAC_SHARING_ENABLED and
+// the instance policy enabled); with it off each row is inert and the viewers see nothing.
+const SHARES = [
+  { project: 'PSHARED', user: 'VIEWER', rawData: false },
+  { project: 'PSHARED', user: 'VIEWER_RAW', rawData: true },
+  { project: 'PSHARED', user: 'VIEWER_TMP', rawData: false },
 ]
 
 const FAKES = {
   A_TAVILY_SECRET: 'rbac-fake-tavily-key-0000000000000001',
   A_MCP_BEARER: 'rbac-fake-mcp-bearer-000000000000001',
   B_TAVILY_SECRET: 'rbac-fake-tavily-key-0000000000000002',
+  // PSHARED's owner-only fields (step 4.1): the owner reads it, a collaborator never does.
+  SHARE_SECRET: 'rbac-fake-share-secret-0001',
 }
 
 const CONV_PA_SESSION = 'rbac-sess-PA'
@@ -102,6 +119,33 @@ try {
     const userId = ids[p.owner]
     ids[p.key] = (await findOrCreate('project', { userId, name: p.name },
       { userId, name: p.name, targetDomain: TARGET_DOMAIN })).id
+  }
+
+  await prisma.project.update({
+    where: { id: ids.PSHARED },
+    data: {
+      cypherfixGithubToken: FAKES.SHARE_SECRET,
+      graphqlAuthValue: FAKES.SHARE_SECRET,
+      httpxCustomHeaders: [`X-Rbac-Share: ${FAKES.SHARE_SECRET}`],
+    },
+  })
+  // An image from before step 4.2 has no share table: the sharing rows then cannot run anyway.
+  if (prisma.projectCollaborator) {
+    for (const sh of SHARES) {
+      const projectId = ids[sh.project]
+      const userId = ids[sh.user]
+      const terms = {
+        access: 'read', rawData: sh.rawData, runScans: false, useAgent: false, exploit: false, manage: false,
+        expiresAt: null, note: null, grantedById: ids.MEMBER_C,
+      }
+      await prisma.projectCollaborator.upsert({
+        where: { projectId_userId: { projectId, userId } },
+        update: terms,
+        create: { projectId, userId, ...terms },
+      })
+    }
+  } else {
+    console.error('SEED_NOTE: no project_collaborators table in this image: the shares were not seeded')
   }
 
   const pa = ids.PA
