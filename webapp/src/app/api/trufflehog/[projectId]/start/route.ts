@@ -40,7 +40,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     // S-4: held from the activation check through the orchestrator's answer
     // (startUnderGraphLock), since the run writes the live graph.
-    return await startUnderGraphLock(projectId, () => startTrufflehogScan(request, projectId, auth.effective.userId))
+    return await startUnderGraphLock(projectId, () => startTrufflehogScan(request, projectId, auth.effective.userId), {
+      personId: auth.effective.userId,
+      ownerId: auth.access?.project.userId,
+    })
   } catch (error) {
     return internalError(error, 'Failed to start Secret Multiscanner scan', { log: 'Error starting TruffleHog scan' })
   }

@@ -24,6 +24,7 @@ import { withGraphStartLock } from '@/lib/projectGraphLock'
 import { parseScanMode, recordScanStart, type ScanTrigger } from '@/lib/scanTimeline'
 import { legacyGraphDomains, legacyGraphRefusal } from '@/lib/legacyGraph'
 import { IP_HOSTNAME_SELECT, ipHostnameStartProblem, resolveScopeGroups } from '@/lib/scopeGroups'
+import { secondWriterRefusal, secondWriterResponse } from '@/lib/authz/projectWriters'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
@@ -210,12 +211,18 @@ export async function dispatchStart(
  * and the run would write into the half-restored graph; a save could freeze
  * the graph while the run writes into it. A save or an activation holding the
  * lock refuses the start with 409.
+ *
+ * `writer` is who starts it: inside the lock, before the route's own checks,
+ * another person writing the project refuses the start (step 5.11), so two
+ * people pressing Start at once meet each other here.
  */
 export async function startUnderGraphLock(
   projectId: string,
   start: () => Promise<NextResponse>,
+  writer: { personId: string; ownerId?: string },
 ): Promise<NextResponse> {
-  const held = await withGraphStartLock(projectId, start)
+  const held = await withGraphStartLock(projectId, async () =>
+    (await secondWriterResponse({ projectId, ...writer })) ?? start())
   if (held.acquired) return held.value
   const refused = graphLockedStartRefusal(held.heldBy)
   return NextResponse.json(
@@ -247,6 +254,11 @@ async function dispatchOtherStart(
     },
   })
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
+
+  // Another person writing the project: 409, which the queue reads as busy and
+  // requeues, so a deferred start waits its turn (step 5.11).
+  const otherWriter = await secondWriterRefusal({ projectId, personId: opts.actorUserId ?? null, ownerId: project.userId })
+  if (otherWriter) return { ok: false, status: 409, error: otherWriter.error, busy: otherWriter.busy, code: otherWriter.code }
 
   // A partial run loads the project settings as a full one does, and recon
   // refuses an IP-mode hostname policy it may not run (an unconfirmed scan_all,

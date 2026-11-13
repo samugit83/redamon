@@ -158,6 +158,25 @@ export async function sessionRunningCheck(
   return { running: false }
 }
 
+/**
+ * Who is running an agent session on this project: the author (Conversation.userId, the ticket's
+ * `sub`) of each flagged session the agent confirms live, for the second-writer check (step 5.11).
+ * Read-only: a stale flag is left for checkAgentSessions to clear. With no flag set nobody is, and
+ * the agent is not asked.
+ */
+export async function runningSessionAuthors(
+  projectId: string,
+): Promise<{ userIds: string[] } | { failure: LiveCheckFailure }> {
+  const flagged = await prisma.conversation.findMany({
+    where: { projectId, agentRunning: true },
+    select: { userId: true, sessionId: true },
+  })
+  if (flagged.length === 0) return { userIds: [] }
+  const live = await liveSessions(projectId)
+  if (!('ids' in live)) return { failure: live.failure }
+  return { userIds: [...new Set(flagged.filter(c => live.ids.has(c.sessionId)).map(c => c.userId))] }
+}
+
 /** The phrase describeLiveGraphWriters and the MCP busy messages use, or null when idle. */
 export function describeAgentSessionState(state: AgentSessionState): string | null {
   if (state === 'running') return 'an agent session is running'

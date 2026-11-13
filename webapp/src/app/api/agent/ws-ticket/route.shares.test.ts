@@ -35,6 +35,8 @@ vi.mock('@/lib/auditActor', () => ({
 vi.mock('@/lib/auth', () => ({ createWsTicket: h.createWsTicket }))
 vi.mock('@/lib/audit', () => ({ writeAudit: h.writeAudit }))
 vi.mock('@/lib/activationLock', () => ({ assertGraphNotActivating: async () => null }))
+// Nobody else is writing the project (step 5.11's check, route.writers.test.ts).
+vi.mock('@/lib/authz/projectWriters', () => ({ secondWriterResponse: async () => null }))
 vi.mock('@/lib/prisma', () => ({
   default: {
     project: { findUnique: async ({ where }: { where: { id: string } }) => (where.id === 'P-alice' ? { id: 'P-alice', userId: 'alice' } : null) },

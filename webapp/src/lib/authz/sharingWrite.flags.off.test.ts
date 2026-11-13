@@ -318,3 +318,41 @@ describe('the settings writers with write sharing not in force (step 5.1b)', () 
     expect(classifyChange(STORED, EVERY_CLASS, collab).refused.map(c => c.key)).toEqual(Object.keys(EVERY_CLASS).sort())
   })
 })
+
+// Step 5.11: the second-writer check (projectWriters.ts) refuses a start only while ANOTHER person writes the project.
+// With write sharing not in force no collaborator reaches a level that starts a writer (the scans W+S, the agent and
+// triage W+A), so every live writer is the owner's and the owner's starts and agent tickets answer as before; with
+// sharing not in force the check reads nothing at all, whatever runs (DV-30).
+const writersOrchestrator = vi.hoisted(() => vi.fn())
+vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: (...a: unknown[]) => writersOrchestrator(...a) }))
+
+describe('the second-writer check with write sharing not in force (step 5.11)', () => {
+  const WRITER_STARTS: PermissionId[] = ['recon:scan', 'recon:partial', 'scan:gvm', 'scan:secrets', 'scan:supply_chain', 'scan:ai_attack', 'agent:chat', 'triage:run']
+
+  test.each([
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }, { enabled: true, maxLevel: 'write' }],
+    ["the write switch on, Root's policy at read", ALL_ON, { enabled: true, maxLevel: 'read' }],
+  ] as Array<[string, Partial<RbacFlags>, Record<string, unknown>]>)('%s: a write-stored share with every toggle starts no writer', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    for (const p of WRITER_STARTS) {
+      expect([p, (await can(member('collab'), p, { projectId: 'P-owner' })).allowed]).toEqual([p, false])
+    }
+  })
+
+  test("sharing not in force: nothing is read and nothing refused, another person's scan listed or not", async () => {
+    const { secondWriterRefusal } = await import('./projectWriters')
+    writersOrchestrator.mockResolvedValue({ ok: true, status: 200, json: async () => ({ scans: [{ kind: 'gvm', project_id: 'P-owner', status: 'running', actor_user_id: 'collab' }] }) })
+    for (const flags of [{}, { identity: true, permissions: true }] as Array<Partial<RbacFlags>>) {
+      setFlagsForTests(flags)
+      expect(await secondWriterRefusal({ projectId: 'P-owner', personId: 'owner' })).toBeNull()
+      expect(await secondWriterRefusal({ projectId: 'P-owner', personId: 'collab' })).toBeNull()
+    }
+    setFlagsForTests({ identity: true, permissions: true, sharing: true })
+    db.policy = { enabled: false }
+    clearSharingPolicyCacheForTests()
+    expect(await secondWriterRefusal({ projectId: 'P-owner', personId: 'owner' })).toBeNull()
+    expect(writersOrchestrator).not.toHaveBeenCalled()
+    expect(db.projectFindUnique).not.toHaveBeenCalled()
+  })
+})

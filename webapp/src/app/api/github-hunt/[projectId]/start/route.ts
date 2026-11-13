@@ -30,7 +30,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     // S-4: held from the activation check through the orchestrator's answer
     // (startUnderGraphLock), since the run writes the live graph.
-    return await startUnderGraphLock(projectId, () => startGithubHunt(projectId, auth.effective.userId))
+    return await startUnderGraphLock(projectId, () => startGithubHunt(projectId, auth.effective.userId), {
+      personId: auth.effective.userId,
+      ownerId: auth.access?.project.userId,
+    })
   } catch (error) {
     return internalError(error, 'Failed to start GitHub Secret Hunt', { log: 'Error starting GitHub Secret Hunt' })
   }

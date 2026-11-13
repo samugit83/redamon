@@ -11,6 +11,7 @@ import { loadPrincipal } from '@/lib/authz/principal'
 import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { agentTicketCap } from '@/lib/authz/agentCap'
 import { WS_SOCKETS, isWsSocket } from '@/lib/wsTicket'
+import { secondWriterResponse } from '@/lib/authz/projectWriters'
 
 /**
  * The signed-in person, read fresh, and the effective user's access, when they own the project a
@@ -122,6 +123,14 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
   // the agent reasons over that graph, so it must not attach mid-swap.
   const activating = await assertGraphNotActivating(projectId)
   if (activating) return activating
+
+  // Step 5.11: the chat socket is where agent runs start, so another person writing the project
+  // refuses its ticket, naming them; the same person reconnects as before. Triage keeps its
+  // preflight, which already waits for agent sessions and the other writers.
+  if (socket === 'agent') {
+    const otherWriter = await secondWriterResponse({ projectId, personId: eff.userId, ownerId: tenant })
+    if (otherWriter) return otherWriter
+  }
 
   // Null when AGENT_WS_TICKET_SECRET is unset: the agent then refuses the socket.
   const realActor = actor && actor !== eff.userId ? actor : undefined

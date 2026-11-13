@@ -19,6 +19,7 @@ import {
   type GraphLockHolder,
 } from '@/lib/projectGraphLock'
 import { describeScanWriters } from '@/lib/graphWriters'
+import { secondWriterRefusal } from '@/lib/authz/projectWriters'
 import { currentAuthorization, loadEngagement } from '@/lib/engagement'
 import { settingsFingerprint } from '@/lib/jobQueue'
 import { normalizeOrchestratorStartError, type NormalizedStartError } from '@/lib/orchestratorError'
@@ -247,6 +248,12 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
   // out an activation in this process; the row still answers for one that a
   // crashed webapp left mid-swap, until its TTL.
   if (await isActivationInProgress(projectId)) return activationRefusal()
+
+  // Another person writing the project refuses the start, naming them, before
+  // anything is frozen (step 5.11). The same person's writers are left to the
+  // check below, as before.
+  const otherWriter = await secondWriterRefusal({ projectId, personId: input.actorUserId ?? null })
+  if (otherWriter) return { ok: false, status: 409, error: otherWriter.error, busy: otherWriter.busy, code: otherWriter.code }
 
   // Risk 1 + Section 3.3: reject a start while a scan or partial recon is already
   // rewriting the graph, BEFORE we freeze it. The orchestrator refuses the
