@@ -2,7 +2,8 @@
  * Attack chains on a shared project (step 4.9; SH-30, SH-07): a reader below `R*` (a Read share
  * without Raw data & files, an overseer) sees every chain's structure and findings and none of its
  * step content: what the agent thought and reasoned, the command line it ran, what came back and
- * the error (ChainStep), and the copies on a failure (error, lesson) and a phase decision (reason).
+ * the error (ChainStep), and the copies on a failure (error, lesson) and a phase decision (reason),
+ * an exploit finding's console commands and cracked password, and the chain's final outcome.
  * The owner and a share with Raw data & files read it whole. One helper decides it
  * (`stripStepContent`, through graphReadView for the first two outputs):
  *
@@ -48,18 +49,21 @@ const CONTENT = {
 }
 const FAILURE_CONTENT = { error_message: 'rbac-fake-error', lesson_learned: 'rbac-fake-output-analysis' }
 const DECISION_CONTENT = { reason: 'rbac-fake-decision-reason' }
-const FAKE = /rbac-fake-(thought|reasoning|output|pass|error|decision)/
+const FAKE = /rbac-fake-(thought|reasoning|output|pass|error|decision|outcome)/
 
 const tenant = { user_id: 'alice', project_id: 'P-alice', chain_id: 'chain-1' }
 const node = (id: number, label: string, properties: Record<string, unknown>) => driverNode(id, [label], { ...tenant, ...properties })
 const rel = (id: number, start: number, end: number, type: string) => driverRel(id, start, end, type)
 const record = driverRecord
 
-const CHAIN = node(20, 'AttackChain', { title: 'rbac chain', status: 'active', objective: 'reach the admin panel' })
+const CHAIN = node(20, 'AttackChain', { title: 'rbac chain', status: 'active', objective: 'reach the admin panel', final_outcome: 'rbac-fake-outcome' })
 const STEP = node(21, 'ChainStep', { step_id: 'step-1', iteration: 1, phase: 'exploitation', tool_name: 'curl', success: false, duration_ms: 12, ...CONTENT })
 const FAILURE = node(22, 'ChainFailure', { failure_id: 'f-1', failure_type: 'tool_error', tool_name: 'curl', iteration: 1, ...FAILURE_CONTENT })
 const DECISION = node(23, 'ChainDecision', { decision_id: 'd-1', decision_type: 'phase_transition', from_state: 'informational', to_state: 'exploitation', made_by: 'user', approved: true, ...DECISION_CONTENT })
-const FINDING = node(24, 'ChainFinding', { finding_id: 'cf-1', title: 'admin panel exposed', severity: 'high', evidence: 'HTTP 200 on /admin' })
+const FINDING = node(24, 'ChainFinding', {
+  finding_id: 'cf-1', finding_type: 'exploit_success', title: 'admin panel exposed', severity: 'high', evidence: 'HTTP 200 on /admin',
+  commands_used: ['use auxiliary/scanner/http/http_login', 'set PASSWORD rbac-fake-pass'], password: 'rbac-fake-pass',
+})
 const DOMAIN = driverNode(1, ['Domain'], { name: 'app.rbac.test', user_id: 'alice', project_id: 'P-alice' })
 
 const LIVE = [
@@ -139,8 +143,13 @@ function expectStructureWithoutContent(nodes: GraphNode[]) {
   const decision = byType(nodes, 'ChainDecision')
   expect(decision.properties).not.toHaveProperty('reason')
   expect(decision.properties).toMatchObject({ decision_type: 'phase_transition', from_state: 'informational', to_state: 'exploitation' })
-  expect(byType(nodes, 'ChainFinding').properties).toMatchObject({ title: 'admin panel exposed', evidence: 'HTTP 200 on /admin' })
-  expect(byType(nodes, 'AttackChain').properties).toMatchObject({ title: 'rbac chain', objective: 'reach the admin panel' })
+  const finding = byType(nodes, 'ChainFinding')
+  expect(finding.properties).toMatchObject({ title: 'admin panel exposed', evidence: 'HTTP 200 on /admin' })
+  expect(finding.properties).not.toHaveProperty('commands_used')
+  expect(finding.properties).not.toHaveProperty('password')
+  const chain = byType(nodes, 'AttackChain')
+  expect(chain.properties).toMatchObject({ title: 'rbac chain', objective: 'reach the admin panel' })
+  expect(chain.properties).not.toHaveProperty('final_outcome')
   expect(nodes.map(n => n.type).sort()).toEqual(['AttackChain', 'ChainDecision', 'ChainFailure', 'ChainFinding', 'ChainStep', 'Domain'])
   expect(JSON.stringify(nodes)).not.toMatch(FAKE)
 }
@@ -148,6 +157,8 @@ function expectContent(nodes: GraphNode[]) {
   expect(byType(nodes, 'ChainStep').properties).toMatchObject(CONTENT)
   expect(byType(nodes, 'ChainFailure').properties).toMatchObject(FAILURE_CONTENT)
   expect(byType(nodes, 'ChainDecision').properties).toMatchObject(DECISION_CONTENT)
+  expect(byType(nodes, 'ChainFinding').properties).toMatchObject({ password: 'rbac-fake-pass' })
+  expect(byType(nodes, 'AttackChain').properties).toMatchObject({ final_outcome: 'rbac-fake-outcome' })
 }
 
 beforeEach(async () => {

@@ -6,7 +6,8 @@
  * Step 4.9: the copies of step content on ChainFailure (error_message, lesson_learned) and
  * ChainDecision (reason) go with it; the export's and the MCP tools' `labels` shape is read like the
  * render shape's `type`; a node with nothing to strip keeps its identity, and the array too when no
- * node changed (graphReadView keeps the ETag then). RAW_DATA_GRAPH_PROPS pins today's answer to
+ * node changed (graphReadView keeps the ETag then). The 4.9 review added an exploit_success
+ * ChainFinding's console commands and cracked password, and an AttackChain's final outcome. RAW_DATA_GRAPH_PROPS pins today's answer to
  * OQ-R7 (option b: the display-only secret properties stay visible at Read), and option (a)'s list
  * run through withoutRawProps proves that switching is one line.
  *
@@ -113,11 +114,40 @@ describe('stripStepContent: the copies of step content on the other chain nodes 
     })
   })
 
-  test('the content map names the three chain labels; ChainFinding and AttackChain are not in it', () => {
-    expect(Object.keys(STEP_CONTENT_BY_LABEL).sort()).toEqual(['ChainDecision', 'ChainFailure', 'ChainStep'])
+  test('the content map names the five chain labels and only the content each carries', () => {
+    expect(Object.keys(STEP_CONTENT_BY_LABEL).sort()).toEqual(['AttackChain', 'ChainDecision', 'ChainFailure', 'ChainFinding', 'ChainStep'])
     expect(STEP_CONTENT_BY_LABEL.ChainStep).toBe(STEP_CONTENT_PROPS)
     expect([...STEP_CONTENT_BY_LABEL.ChainFailure].sort()).toEqual(['error_message', 'lesson_learned'])
     expect([...STEP_CONTENT_BY_LABEL.ChainDecision]).toEqual(['reason'])
+    expect([...STEP_CONTENT_BY_LABEL.ChainFinding].sort()).toEqual(['commands_used', 'password'])
+    expect([...STEP_CONTENT_BY_LABEL.AttackChain]).toEqual(['final_outcome'])
+  })
+
+  test('an exploit_success ChainFinding loses the console commands and the cracked password, keeps the finding (4.9 review)', () => {
+    const exploit = {
+      id: '12', name: 'Exploit success', type: 'ChainFinding',
+      properties: {
+        finding_id: 'cf-1', finding_type: 'exploit_success', severity: 'critical', title: 'Exploit success: cve_exploit on 10.0.0.5',
+        evidence: 'session 1 opened', metasploit_module: 'exploit/unix/ftp/vsftpd_234_backdoor', payload: 'cmd/unix/interact',
+        target_ip: '10.0.0.5', session_id: 1, username: 'admin',
+        commands_used: ['use exploit/x', 'set PASSWORD rbac-fake-pass', 'run'], password: 'rbac-fake-pass',
+      },
+    }
+    const [out] = stripStepContent([exploit], access('read', false))
+    expect(out.properties).not.toHaveProperty('commands_used')
+    expect(out.properties).not.toHaveProperty('password')
+    expect(out.properties).toMatchObject({ finding_type: 'exploit_success', title: exploit.properties.title, evidence: 'session 1 opened', username: 'admin', session_id: 1 })
+    expect(JSON.stringify(out)).not.toContain('rbac-fake-pass')
+    expect(stripStepContent([exploit], access('read', true))[0]).toBe(exploit)
+  })
+
+  test('an AttackChain loses its final outcome (the model\'s completion reason), keeps title, objective and status (4.9 review)', () => {
+    const chain = {
+      id: '13', name: 'Chain', type: 'AttackChain',
+      properties: { chain_id: 'c-1', title: 'rbac chain', objective: 'reach the admin panel', status: 'completed', final_outcome: 'logged in as admin with hunter2' },
+    }
+    const [out] = stripStepContent([chain], access('read', false, 'oversight'))
+    expect(out.properties).toEqual({ chain_id: 'c-1', title: 'rbac chain', objective: 'reach the admin panel', status: 'completed' })
   })
 
   test('the export\'s and the MCP tools\' shape (labels, no type) is stripped like the render shape', () => {

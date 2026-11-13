@@ -8,9 +8,12 @@
  * Two other chain nodes carry copies of it, so they lose them too: a failed step's `ChainFailure`
  * holds the same `error_message` and, as `lesson_learned`, the step's `output_analysis`
  * (think_node.py writes both from the step); a phase change's `ChainDecision` holds the agent's
- * `reason` for asking it. The structure stays: ids, chain, iteration, phase, tool name, success,
- * duration, agent, failure and decision types, who decided, the timestamps. `ChainFinding`s are
- * findings, readable at Read.
+ * `reason` for asking it. An `exploit_success` `ChainFinding` carries `commands_used` (the
+ * Metasploit console lines word for word, the same text `tool_args_summary` holds) and `password`
+ * (the credential the step cracked); an `AttackChain` carries `final_outcome`, the model's own
+ * completion reason (chain_graph_writer.py). The structure stays: ids, chain, iteration, phase, tool
+ * name, success, duration, agent, failure and decision types, who decided, the timestamps. The rest
+ * of a `ChainFinding` (title, evidence, module, target, username) is a finding, readable at Read.
  *
  * One helper for every output that serialises chain-node properties: `/api/graph` and
  * graph-views/execute (through graphReadView.ts), `versions/[versionId]/graph`, the export's
@@ -38,6 +41,8 @@ export const STEP_CONTENT_BY_LABEL: Readonly<Record<string, readonly string[]>> 
   [STEP_CONTENT_LABEL]: STEP_CONTENT_PROPS,
   ChainFailure: Object.freeze(['error_message', 'lesson_learned']),
   ChainDecision: Object.freeze(['reason']),
+  ChainFinding: Object.freeze(['commands_used', 'password']),
+  AttackChain: Object.freeze(['final_outcome']),
 })
 
 /**
