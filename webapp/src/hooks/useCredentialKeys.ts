@@ -1,7 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useOptionalProject } from '@/providers/ProjectProvider'
+import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 import { readApiError, type ApiError } from '@/lib/apiError'
 import { failureText } from '@/components/settings/failureText'
 
@@ -18,6 +19,11 @@ import { failureText } from '@/components/settings/failureText'
  * hook can report whether a key is SET but can never show what it is. PUT
  * accepts a partial body and treats a '••••' prefix as "keep what you have", so
  * writing one key here cannot clobber the other twenty-one.
+ *
+ * In a collaborator's project form (step 5.7) the scans run on the project
+ * OWNER's keys: `isSet` answers from the owner's catalog (presence only),
+ * `readOnly` is set and `save` refuses, so the inline editors offer nothing to
+ * type into. Nobody but the owner writes the owner's account settings.
  */
 
 /** The prefix the API masks secrets with. Writing it back is a no-op server-side. */
@@ -56,6 +62,8 @@ export interface CredentialKeysApi {
   masked: (name: string) => string
   /** Persists one key. Resolves true on success. */
   save: (name: string, value: string, options?: SaveOptions) => Promise<boolean>
+  /** The keys are not the person's own (the project owner's, in a collaborator's form): nothing to save. */
+  readOnly?: boolean
   /** The key currently being written, or null. */
   saving: string | null
   error: string
@@ -80,6 +88,8 @@ export function useCredentialKeys(): CredentialKeysApi {
   // outside a ProjectProvider, and a throw here would blank the whole surface
   // rather than degrade one input.
   const userId = useOptionalProject()?.userId ?? null
+  const owner = useOwnerCatalogSource()
+  const ownerForm = owner !== null
   const [values, setValues] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<string | null>(null)
@@ -87,7 +97,8 @@ export function useCredentialKeys(): CredentialKeysApi {
   const [loadError, setLoadError] = useState('')
 
   const refresh = useCallback(async () => {
-    if (!userId) { setLoading(false); return }
+    // A collaborator's own keys are not the ones this project spends.
+    if (!userId || ownerForm) { setLoading(false); return }
     try {
       const res = await fetch(`/api/users/${userId}/settings`)
       if (!res.ok) {
@@ -103,7 +114,7 @@ export function useCredentialKeys(): CredentialKeysApi {
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [userId, ownerForm])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -160,5 +171,22 @@ export function useCredentialKeys(): CredentialKeysApi {
     }
   }, [userId, refresh])
 
+  const ownerKeys = owner?.catalog?.keys ?? null
+  const ownerStatus = owner?.status
+  const ownerError = owner?.error ?? null
+  const ownerRetry = owner?.retry
+  const ownerApi = useMemo<CredentialKeysApi | null>(() => (ownerStatus === undefined ? null : {
+    loading: ownerStatus === 'loading',
+    isSet: (name: string) => (ownerKeys as Record<string, boolean> | null)?.[name] === true,
+    masked: () => '',
+    readOnly: true,
+    save: async () => false,
+    saving: null,
+    error: '',
+    loadError: ownerError ?? undefined,
+    refresh: async () => { ownerRetry?.() },
+  }), [ownerStatus, ownerKeys, ownerError, ownerRetry])
+
+  if (ownerApi) return ownerApi
   return { loading, isSet, masked, save, saving, error, loadError: loadError || undefined, refresh }
 }

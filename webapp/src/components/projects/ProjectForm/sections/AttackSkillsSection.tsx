@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { SETTINGS_SKILLS_HREF } from '@/lib/settingsLinks'
 import { ChevronDown, Bug, KeyRound, Mail, Swords, Loader2, Settings, Zap, Database, Code2, Globe, Terminal, FolderTree, Download, ShieldAlert, FileCode2, Binary, Split, Search, GitBranch, ShieldOff, AlertTriangle, Upload, Files } from 'lucide-react'
@@ -26,6 +26,7 @@ import { useSkillUpload } from '@/components/userSkills/useSkillUpload'
 import { MAX_ENABLED_USER_SKILLS_PER_PROJECT, MAX_SKILLS_PER_USER, USER_SKILL_LIMIT_TEXT } from '@/lib/userSkills'
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
 import { formatApiError, readApiError, toApiError } from '@/lib/apiError'
+import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 import styles from '../ProjectForm.module.css'
 
 const LOAD_FAILED = 'Your skills could not be loaded'
@@ -192,10 +193,21 @@ function getConfig(data: FormData): AttackSkillConfig {
 export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }: AttackSkillsSectionProps) {
   const { userId } = useProject()
   const { alertError, alert: showAlert } = useAlertModal()
+  // A collaborator's form (step 5.7): the toggles pick among the project OWNER's skills, listed by
+  // name from the owner's catalog; turning one on or off needs Manage, and only the owner uploads.
+  const owner = useOwnerCatalogSource()
+  const ownerForm = owner !== null
+  const skillRefusal = owner?.pickRefusal ?? null
+  const ownerCatalog = owner?.catalog ?? null
+  const ownerSkills = useMemo<UserSkillDef[]>(() => (ownerCatalog?.attackSkills ?? []).map(s => ({
+    id: s.id, name: s.name, createdAt: '', quarantinedAt: s.quarantined ? 'quarantined' : null,
+  })), [ownerCatalog])
   const [builtInOpen, setBuiltInOpen] = useState(true)
   const [userOpen, setUserOpen] = useState(true)
-  const [userSkills, setUserSkills] = useState<UserSkillDef[]>([])
-  const [loading, setLoading] = useState(true)
+  const [ownSkills, setUserSkills] = useState<UserSkillDef[]>([])
+  const userSkills = ownerForm ? ownerSkills : ownSkills
+  const [ownLoading, setLoading] = useState(true)
+  const loading = ownerForm ? owner.status === 'loading' : ownLoading
   // The failed read's " (code · HTTP n)"; null while the list is good.
   const [loadError, setLoadError] = useState<string | null>(null)
   // Whose list is loaded: until it is the current user's, the cap and the free slots would be
@@ -219,7 +231,7 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
   userSkillsRef.current = userSkills
 
   const fetchUserSkills = useCallback(async () => {
-    if (!userId) return
+    if (!userId || ownerForm) return
     if (loadedFor.current !== userId) setLoading(true)
     try {
       const resp = await fetch(`/api/users/${userId}/attack-skills`)
@@ -236,7 +248,7 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [userId, ownerForm])
 
   useEffect(() => { fetchUserSkills() }, [fetchUserSkills])
   // A version saved in another window (a review in the chat drawer) appears here at once;
@@ -508,7 +520,7 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
               className={`${styles.sectionIcon} ${userOpen ? styles.sectionIconOpen : ''}`}
             />
           </div>
-          <div className={styles.userSkillsHeaderActions}>
+          {!ownerForm && <div className={styles.userSkillsHeaderActions}>
             <button
               type="button"
               className={`${styles.sectionHeaderButton} ${styles.sectionHeaderButtonPrimary}`}
@@ -539,16 +551,23 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
                 : <Download size={12} />}
               Import from Community
             </button>
-          </div>
+          </div>}
         </div>
 
         {userOpen && (
           <div className={styles.sectionContent}>
-            <p className={styles.sectionDescription}>
-              Your own agent skills. Upload .md files here, one at a time or in a batch, or manage them
-              in Global Settings. A skill is off until you turn it on here; uploads and community imports
-              from this section can turn the new skills on for this project.
-            </p>
+            {ownerForm ? (
+              <p className={styles.sectionDescription}>
+                The project owner&apos;s agent skills, by name. A skill is off until it is turned on here;
+                {skillRefusal ? ' turning one on or off needs Manage.' : ' only the owner uploads or edits them.'}
+              </p>
+            ) : (
+              <p className={styles.sectionDescription}>
+                Your own agent skills. Upload .md files here, one at a time or in a batch, or manage them
+                in Global Settings. A skill is off until you turn it on here; uploads and community imports
+                from this section can turn the new skills on for this project.
+              </p>
+            )}
 
             {userSkills.length > 0 && (
               <div className={styles.skillFilterBar}>
@@ -557,8 +576,8 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
                   <input
                     className="textInput"
                     type="search"
-                    placeholder="Search your skills"
-                    aria-label="Search your skills"
+                    placeholder={ownerForm ? "Search the owner's skills" : 'Search your skills'}
+                    aria-label={ownerForm ? "Search the owner's skills" : 'Search your skills'}
                     value={skillQuery}
                     onChange={e => setSkillQuery(e.target.value)}
                     style={{ flex: 1, minWidth: 0 }}
@@ -588,6 +607,13 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
               <div className={styles.skillListNote}>
                 <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Loading...
               </div>
+            ) : ownerForm && owner.status === 'error' ? (
+              <div className={styles.skillListNote} role="alert">
+                {owner.error}{' '}
+                <button type="button" className="secondaryButton" onClick={owner.retry}>Retry</button>
+              </div>
+            ) : ownerForm && userSkills.length === 0 ? (
+              <div className={styles.skillListNote}>The project owner has no agent skills.</div>
             ) : userSkills.length === 0 && loadError !== null ? (
               <div className={styles.skillListNote} role="alert">
                 {LOAD_FAILED}{loadError}. Reload the page.
@@ -619,14 +645,14 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
                     <div key={skill.id} className={`${styles.skillPanel} ${enabled ? '' : styles.skillPanelOff}`}>
                       <div className={styles.skillHead}>
                         <span
-                          title={quarantined ? 'Quarantined: release it in Global Settings to turn it on' : blockedByLimit ? LIMIT_TOOLTIP : undefined}
+                          title={skillRefusal ?? (quarantined ? 'Quarantined: release it in Global Settings to turn it on' : blockedByLimit ? LIMIT_TOOLTIP : undefined)}
                           data-testid={`user-skill-toggle-${skill.id}`}
                         >
                           <Toggle
                             checked={enabled}
                             onChange={(v) => toggleUser(skill.id, v)}
                             size="large"
-                            disabled={(quarantined && !enabled) || blockedByLimit}
+                            disabled={(quarantined && !enabled) || blockedByLimit || skillRefusal !== null}
                             aria-label={skill.name}
                           />
                         </span>
@@ -650,23 +676,29 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
                               <AlertTriangle size={11} aria-hidden /> {sibling.name} is also on: the agent sees two versions of the same skill.
                             </div>
                           )}
-                          <div className={styles.skillDetail}>
-                            {skill.description || (
-                              <span className={styles.skillDetailEmpty}>No description</span>
-                            )}
-                          </div>
-                          <div className={styles.skillDetail}>
-                            Uploaded {new Date(skill.createdAt).toLocaleDateString()}
-                          </div>
+                          {!ownerForm && (
+                            <>
+                              <div className={styles.skillDetail}>
+                                {skill.description || (
+                                  <span className={styles.skillDetailEmpty}>No description</span>
+                                )}
+                              </div>
+                              <div className={styles.skillDetail}>
+                                Uploaded {new Date(skill.createdAt).toLocaleDateString()}
+                              </div>
+                            </>
+                          )}
                         </div>
-                        <button
-                          type="button"
-                          className={`iconButton ${styles.skillIconButton}`}
-                          title="Download .md"
-                          onClick={() => downloadSkill(skill.id, skill.name)}
-                        >
-                          <Download size={14} />
-                        </button>
+                        {!ownerForm && (
+                          <button
+                            type="button"
+                            className={`iconButton ${styles.skillIconButton}`}
+                            title="Download .md"
+                            onClick={() => downloadSkill(skill.id, skill.name)}
+                          >
+                            <Download size={14} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   )

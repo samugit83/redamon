@@ -56,6 +56,10 @@ interface CredentialShortcutProps {
  * read, so the box always starts empty and a save REPLACES rather than edits.
  * The reveal toggle therefore only shows what the user is currently typing,
  * which is what it is for - checking a pasted token.
+ *
+ * Keys that are not the person's own (a collaborator's project form, step 5.7:
+ * `keys.readOnly`) show whether the project owner has set the key, and nothing
+ * to type into.
  */
 export function CredentialShortcut({
   settingsKey,
@@ -80,6 +84,30 @@ export function CredentialShortcut({
   const isSet = keys.isSet(settingsKey)
   const busy = keys.saving === settingsKey
   const blocking = !isSet && !optional
+
+  if (keys.readOnly) {
+    return (
+      <div className={`${styles.wrap} ${blocking ? styles.missing : ''}`} data-testid={`owner-key-${settingsKey}`}>
+        <div className={styles.head}>
+          <span>{field.label}</span>
+          <span className={`${styles.badge} ${styles.badgeGlobal}`}>Owner&apos;s setting</span>
+          {isSet ? (
+            <span className={`${styles.badge} ${styles.badgeSet}`}>Set</span>
+          ) : optional ? (
+            <span className={`${styles.badge} ${styles.badgeOptional}`}>Optional</span>
+          ) : (
+            <span className={`${styles.badge} ${styles.badgeMissing}`}>Required</span>
+          )}
+        </div>
+        {keys.loadError && (
+          <p className={styles.error} role="alert">{keys.loadError}, so this key may already be set.</p>
+        )}
+        <p className={styles.hint}>
+          This project runs on its owner&apos;s keys. Only the owner can {isSet ? 'replace' : 'set'} this one, in their Global Settings.
+        </p>
+      </div>
+    )
+  }
 
   // A new endpoint (the GitHub Enterprise host) whose stored secret the server will not
   // carry over (HD-24): ask for it, or to clear it, so both go in the same save.

@@ -13,6 +13,7 @@ import {
 } from '@/components/shared/FeatureModelGate'
 import { getLlmFeature, modelAllowedForFeature, type FeatureId } from '@/lib/llmFeatures'
 import type { Project } from '@prisma/client'
+import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 import styles from '../ProjectForm.module.css'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -116,6 +117,9 @@ function AccountFeatureModels() {
 
 export function CypherFixSettingsSection({ data, updateField }: CypherFixSettingsSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
+  // A collaborator's form (step 5.7): the two models are the OWNER's account settings, which the
+  // owner's runs use; the collaborator's own account settings would mean nothing here.
+  const ownerForm = useOwnerCatalogSource() !== null
 
   return (
     <div className={`${styles.section} ${styles.formSkin}`}>
@@ -147,7 +151,7 @@ export function CypherFixSettingsSection({ data, updateField }: CypherFixSetting
               <input
                 type="password"
                 className="textInput"
-                value={data.cypherfixGithubToken}
+                value={data.cypherfixGithubToken ?? ''}
                 onChange={(e) => updateField('cypherfixGithubToken', e.target.value)}
                 placeholder="ghp_xxxxxxxxxxxx"
               />
@@ -213,7 +217,14 @@ export function CypherFixSettingsSection({ data, updateField }: CypherFixSetting
           </div>
 
           <div className={styles.fieldRow}>
-            <AccountFeatureModels />
+            {ownerForm ? (
+              <p className={styles.fieldHint} data-testid="owner-feature-models">
+                The Triage review and CodeFix models are the project owner&apos;s account settings: this
+                project&apos;s runs use the owner&apos;s, and only the owner changes them, in their Global Settings.
+              </p>
+            ) : (
+              <AccountFeatureModels />
+            )}
           </div>
 
           {/* How much a triage run may spend on the AI review */}

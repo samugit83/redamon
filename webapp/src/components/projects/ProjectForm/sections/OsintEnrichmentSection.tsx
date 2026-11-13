@@ -5,6 +5,7 @@ import { ChevronDown, ShieldCheck, Info, Play } from 'lucide-react'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
+import { readKeySettings, useOwnerKeys } from '@/hooks/useOwnerCatalog'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 
@@ -30,12 +31,13 @@ interface KeyStatus {
 export function OsintEnrichmentSection({ data, updateField, onRun, onRunUncover }: OsintEnrichmentSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
   const { userId } = useProject()
+  // A collaborator's form: the project owner's keys, whose scans these are (step 5.7).
+  const ownerKeys = useOwnerKeys()
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null)
 
   const checkApiKeys = useCallback(() => {
     if (!userId) return
-    fetch(`/api/users/${userId}/settings`)
-      .then(r => r.ok ? r.json() : null)
+    readKeySettings(userId, ownerKeys)
       .then(settings => {
         if (settings) {
           setKeyStatus({
@@ -50,7 +52,7 @@ export function OsintEnrichmentSection({ data, updateField, onRun, onRunUncover 
         }
       })
       .catch(() => setKeyStatus({ censys: false, fofa: false, otx: false, netlas: false, virusTotal: false, zoomEye: false, criminalIp: false }))
-  }, [userId])
+  }, [userId, ownerKeys])
 
   useEffect(() => { checkApiKeys() }, [checkApiKeys])
 

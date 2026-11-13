@@ -16,6 +16,8 @@ import { useProject } from '@/providers/ProjectProvider'
 import { ProjectAccessContext } from '@/providers/projectAccessContext'
 import type { MyAccess } from '@/lib/authz/projectAccess'
 import { levelRefusalText } from '@/lib/readOnlyProject'
+import { catalogPickRefusal, fieldChangeRefusal, writeAccessSummary, type FieldChangeRefusal } from '@/lib/settingsFieldAccess'
+import { OwnerCatalogContext, useOwnerCatalog } from '@/hooks/useOwnerCatalog'
 import { RefusalNotice } from '@/components/auth/ForbiddenNotice'
 import { RegistryFieldsReadOnly } from './RegistryFields'
 import { JevSelectionProvider } from '@/hooks/useHasJevProvider'
@@ -454,19 +456,7 @@ export function ProjectForm({
     return () => clearRoeEntry('create')
   }, [mode])
 
-  // GitHub Access Token check (stored in Global Settings, not project)
   const { userId } = useProject()
-  const [hasGithubToken, setHasGithubToken] = useState(false)
-
-  useEffect(() => {
-    if (!userId) return
-    fetch(`/api/users/${userId}/settings`)
-      .then(r => r.ok ? r.json() : null)
-      .then(settings => {
-        if (settings) setHasGithubToken(!!settings.githubAccessToken)
-      })
-      .catch(() => setHasGithubToken(false))
-  }, [userId])
 
   // Deep link into one section: /projects/<id>/settings#github-secret-hunting.
   // The tab has to be selected first - the section is not in the DOM until then -
@@ -522,6 +512,26 @@ export function ProjectForm({
     for (const key of OWNER_SECRET_KEYS) delete kept[key]
     return kept as T
   }, [notOwner])
+  // A collaborator's form reads the project OWNER's catalogs (step 5.7): the providers, keys, skills
+  // and MCP servers this project runs on are the owner's, not the collaborator's own. Picking from
+  // them needs Manage, and only then are the owner's models listed.
+  const pickRefusal = catalogPickRefusal(formAccess)
+  const ownerCatalog = useOwnerCatalog(projectId, { enabled: notOwner, models: notOwner && pickRefusal === null, pickRefusal })
+  const writeSummary = writeAccessSummary(formAccess)
+
+  // GitHub Access Token check (stored in Global Settings, not project): the owner's, on a shared project.
+  const [ownGithubToken, setHasGithubToken] = useState(false)
+  useEffect(() => {
+    if (!userId || notOwner) return
+    fetch(`/api/users/${userId}/settings`)
+      .then(r => r.ok ? r.json() : null)
+      .then(settings => {
+        if (settings) setHasGithubToken(!!settings.githubAccessToken)
+      })
+      .catch(() => setHasGithubToken(false))
+  }, [userId, notOwner])
+  const hasGithubToken = notOwner ? ownerCatalog?.catalog?.keys.githubAccessToken === true : ownGithubToken
+
   const presetRefusal = levelRefusalText(formAccess, 'preset:apply')
   const exportRefusal = levelRefusalText(formAccess, 'project:export')
   const reconStartRefusal = levelRefusalText(formAccess, 'recon:scan')
@@ -769,12 +779,32 @@ export function ProjectForm({
   // Log drawers pin to the body wrapper, which moves as the form scrolls.
   useDrawerOffsets(bodyRef, { trackScroll: true })
 
+  // A collaborator's change their access does not reach (a gate loosened, the scope changed, the
+  // owner's secret) is refused where it is made, with the reason (step 5.7); the project PUT would
+  // refuse the whole save for it (step 5.1). Judged against the row as stored, as the PUT judges.
+  const changeRefusal = useCallback((changes: Record<string, unknown>): FieldChangeRefusal | null => fieldChangeRefusal(
+    serverRowRef.current ?? {}, formDataRef.current as unknown as Record<string, unknown>, changes, formAccess,
+  ), [formAccess])
+  // One notice per field while the person keeps trying (a locked text box gets a key press each time).
+  const refusalShownAt = useRef<Record<string, number>>({})
+  const announceRefusal = (refusal: FieldChangeRefusal) => {
+    const now = Date.now()
+    if (now - (refusalShownAt.current[refusal.key] ?? 0) < 4000) return
+    refusalShownAt.current[refusal.key] = now
+    toast.warning(refusal.text, 'Not changed')
+  }
+
   const updateField = <K extends keyof ProjectFormData>(
     field: K,
     value: ProjectFormData[K]
   ) => {
     // A control the read-only fieldset cannot disable (one drawn without a form element) still changes nothing.
     if (readOnly) return
+    const refusal = changeRefusal({ [field]: value })
+    if (refusal) {
+      announceRefusal(refusal)
+      return
+    }
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
@@ -785,7 +815,8 @@ export function ProjectForm({
     field: K,
     value: ProjectFormData[K]
   ) => {
-    if (!projectId || mode !== 'edit' || readOnly) return
+    // updateField has already said why a refused change was not made.
+    if (!projectId || mode !== 'edit' || readOnly || changeRefusal({ [field]: value })) return
     try {
       const saved = await saveProjectFields(projectId, { [field]: value }, savedVersionRef.current, 'Failed to save')
       if (!saved.ok) {
@@ -806,10 +837,15 @@ export function ProjectForm({
       }
       toast.error(toApiError(err, 'Failed to save setting').message)
     }
-  }, [projectId, mode, readOnly, toast, setBaseline, adoptSavedVersion, savedDespiteError])
+  }, [projectId, mode, readOnly, changeRefusal, toast, setBaseline, adoptSavedVersion, savedDespiteError])
 
   const updateMultipleFields = (fields: Partial<ProjectFormData>) => {
     if (readOnly) return
+    const refusal = changeRefusal(fields as Record<string, unknown>)
+    if (refusal) {
+      announceRefusal(refusal)
+      return
+    }
     setFormData(prev => ({ ...prev, ...fields }))
   }
 
@@ -1292,11 +1328,19 @@ export function ProjectForm({
 
   return (
     <ProjectAccessContext.Provider value={formAccessScope}>
+    <OwnerCatalogContext.Provider value={ownerCatalog}>
     <RegistryFieldsReadOnly.Provider value={readOnly}>
     <JevSelectionProvider
       ownerUserId={mode === 'create' ? userId : initialData?.userId ?? null}
       ownerUnavailable={mode === 'edit' && !initialData?.userId}
       selectedProviderId={formData.jevProviderId ?? null}
+      catalog={ownerCatalog ? {
+        status: ownerCatalog.status,
+        providers: ownerCatalog.catalog?.jevProviders ?? [],
+        error: ownerCatalog.error,
+        retry: ownerCatalog.retry,
+        selectionRefusal: ownerCatalog.pickRefusal,
+      } : null}
     >
     <form onSubmit={handleSubmit} className={styles.form}>
       <div className={styles.header}>
@@ -1405,6 +1449,11 @@ export function ProjectForm({
       </div>
       {readOnlyText && (
         <RefusalNotice refusal={{ kind: 'level', permission: 'project:settings', text: readOnlyText }} className={styles.readOnlyNotice} />
+      )}
+      {writeSummary && (
+        <div className={`${styles.callout} ${styles.calloutInfo} ${styles.readOnlyNotice}`} role="note" data-testid="write-access-notice">
+          <span>{writeSummary}</span>
+        </div>
       )}
       {saveBlockedReason && (
         <p id="project-save-blocked" className={styles.saveBlockedReason} role="status">{saveBlockedReason}</p>
@@ -1852,6 +1901,7 @@ export function ProjectForm({
     </form>
     </JevSelectionProvider>
     </RegistryFieldsReadOnly.Provider>
+    </OwnerCatalogContext.Provider>
     </ProjectAccessContext.Provider>
   )
 }

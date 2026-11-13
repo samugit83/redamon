@@ -35,7 +35,7 @@ export function JevTokenPanel({ userId, onSelect }: {
   onSelect: (providerId: string | null) => void
 }) {
   const {
-    status, lookupStatus, provider, providers, selectedProviderId, ownerUserId, error, refresh,
+    status, lookupStatus, provider, providers, selectedProviderId, ownerUserId, error, refresh, selectionRefusal,
   } = useJevProvider()
   const [adding, setAdding] = useState(false)
   const selectId = useId()
@@ -78,6 +78,8 @@ export function JevTokenPanel({ userId, onSelect }: {
             className="select"
             value={selectedProviderId ?? ''}
             onChange={event => onSelect(event.target.value || null)}
+            disabled={selectionRefusal !== null}
+            title={selectionRefusal ?? undefined}
           >
             <option value="">Not configured — deterministic fallback</option>
             {missing && (
@@ -106,7 +108,7 @@ export function JevTokenPanel({ userId, onSelect }: {
         </>
       )}
 
-      {selectedProviderId && lookupStatus !== 'ready' && (
+      {selectedProviderId && lookupStatus !== 'ready' && selectionRefusal === null && (
         <button type="button" className={styles.linkButton} onClick={() => onSelect(null)}>
           Clear Jev selection
         </button>

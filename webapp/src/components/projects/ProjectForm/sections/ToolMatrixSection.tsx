@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { ChevronDown, Grid3X3, AlertTriangle, Eye, EyeOff, Loader2, Server } from 'lucide-react'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
@@ -8,6 +8,7 @@ import { Modal } from '@/components/ui/Modal/Modal'
 import { WikiInfoButton } from '@/components/ui/WikiInfoButton'
 import { failureText } from '@/components/settings/failureText'
 import { readApiError } from '@/lib/apiError'
+import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 import styles from '../ProjectForm.module.css'
 
 const ALL_PHASES = ['informational', 'exploitation', 'post_exploitation'] as const
@@ -101,10 +102,34 @@ interface ToolMatrixSectionProps {
 export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
   const { userId } = useProject()
-  const [missingKeys, setMissingKeys] = useState<Set<string>>(new Set())
+  // A collaborator's form (step 5.7): the agent runs with the project OWNER's keys, tradecraft and
+  // MCP servers, so the matrix shows those, by name and presence, and offers no key to save.
+  const owner = useOwnerCatalogSource()
+  const ownerForm = owner !== null
+  const [ownMissingKeys, setMissingKeys] = useState<Set<string>>(new Set())
   // A failed read must not mark a tool as missing its key: that is a guess.
-  const [keyStatusError, setKeyStatusError] = useState<string | null>(null)
-  const [userMcpServers, setUserMcpServers] = useState<ManifestServer[]>([])
+  const [ownKeyStatusError, setKeyStatusError] = useState<string | null>(null)
+  const [ownMcpServers, setUserMcpServers] = useState<ManifestServer[]>([])
+  const ownerCatalog = owner?.catalog ?? null
+  const ownerMissingKeys = useMemo(() => {
+    const missing = new Set<string>()
+    if (!ownerCatalog) return missing
+    for (const [tool, info] of Object.entries(TOOL_KEY_INFO)) {
+      if (tool === 'tradecraft_lookup') continue
+      if (ownerCatalog.keys[info.field as keyof typeof ownerCatalog.keys] !== true) missing.add(tool)
+    }
+    if (!ownerCatalog.tradecraftResources.some(r => r.enabled)) missing.add('tradecraft_lookup')
+    return missing
+  }, [ownerCatalog])
+  const missingKeys = ownerForm ? ownerMissingKeys : ownMissingKeys
+  const keyStatusError = ownerForm
+    ? (owner.status === 'error' ? `${owner.error ?? "Couldn't read the project owner's keys"}` : null)
+    : ownKeyStatusError
+  const userMcpServers: ManifestServer[] = ownerForm
+    ? (ownerCatalog?.mcpServers ?? []).map(srv => ({ ...srv, description: '' }))
+    : ownMcpServers
+  // Choosing the owner's MCP tools' phases needs Manage (step 5.7).
+  const mcpRefusal = owner?.pickRefusal ?? null
 
   // Source the user MCP list from the DATABASE (the user's saved
   // configuration), not from the agent's runtime manifest. The DB is the
@@ -113,7 +138,7 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
   // an agent restart). Reading from the DB means the matrix always
   // reflects what the user has saved, regardless of agent state.
   useEffect(() => {
-    if (!userId) return
+    if (!userId || ownerForm) return
     fetch(`/api/users/${userId}/mcp`)
       .then(r => r.ok ? r.json() : null)
       .then((d: { servers?: ManifestServer[] } | null) => {
@@ -122,7 +147,7 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
         }
       })
       .catch(() => {/* graceful: matrix still works with built-ins */})
-  }, [userId])
+  }, [userId, ownerForm])
 
   // API key modal state
   const [keyModal, setKeyModal] = useState<string | null>(null) // tool id or null
@@ -133,7 +158,7 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
 
   // Fetch API key status from global settings
   const fetchKeyStatus = useCallback(() => {
-    if (!userId) return
+    if (!userId || ownerForm) return
     const SETTINGS_FAILED = "Couldn't check which API keys are set"
     fetch(`/api/users/${userId}/settings`)
       .then(async r => {
@@ -170,7 +195,7 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
           })
       })
       .catch(err => setKeyStatusError(failureText(SETTINGS_FAILED, err)))
-  }, [userId])
+  }, [userId, ownerForm])
 
   useEffect(() => { fetchKeyStatus() }, [fetchKeyStatus])
 
@@ -299,7 +324,13 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
                 <div key={tool.id} className={styles.toolPhaseRow}>
                   <span className={styles.toolPhaseName}>
                     {tool.label}
-                    {needsKey && keyInfo && (
+                    {needsKey && keyInfo && ownerForm && (
+                      <span className={styles.apiKeyMissing} data-testid={`owner-key-missing-${tool.id}`}>
+                        <AlertTriangle size={12} />
+                        {tool.id === 'tradecraft_lookup' ? "The owner has no enabled tradecraft resource" : `The owner has no ${keyInfo.label} key`}
+                      </span>
+                    )}
+                    {needsKey && keyInfo && !ownerForm && (
                       <span
                         className={styles.apiKeyMissing}
                         title={`Set ${keyInfo.label} API key`}
@@ -331,16 +362,32 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
               <Server size={14} />
               MCP Tool Plugins
             </h3>
-            <p className={styles.sectionDescription}>
-              User-installed MCP Tool Plugins - add or edit in{' '}
-              <a href="/settings?tab=mcp">
-                Global Settings → MCP Tool Plugins
-              </a>.
-            </p>
+            {ownerForm ? (
+              <p className={styles.sectionDescription}>
+                The project owner&apos;s MCP Tool Plugins. Only the owner adds or edits them, in their Global Settings.
+                {mcpRefusal && <> Their phases here need Manage.</>}
+              </p>
+            ) : (
+              <p className={styles.sectionDescription}>
+                User-installed MCP Tool Plugins - add or edit in{' '}
+                <a href="/settings?tab=mcp">
+                  Global Settings → MCP Tool Plugins
+                </a>.
+              </p>
+            )}
 
-            {userMcpServers.length === 0 ? (
+            {ownerForm && owner.status === 'loading' ? (
               <p className={styles.itemEmpty}>
-                No MCP Tool Plugins configured for this user yet.
+                <Loader2 size={12} className={styles.spinner} /> Loading the project owner&apos;s MCP Tool Plugins…
+              </p>
+            ) : ownerForm && owner.status === 'error' ? (
+              <p className={styles.itemEmpty} role="alert">
+                {owner.error}{' '}
+                <button type="button" className="secondaryButton" onClick={owner.retry}>Retry</button>
+              </p>
+            ) : userMcpServers.length === 0 ? (
+              <p className={styles.itemEmpty}>
+                {ownerForm ? 'The project owner has no MCP Tool Plugins.' : 'No MCP Tool Plugins configured for this user yet.'}
               </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
@@ -381,7 +428,9 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
                                 <input
                                   type="checkbox"
                                   checked={effectivePhases.includes(phase)}
-                                  disabled={!srv.enabled}
+                                  disabled={!srv.enabled || mcpRefusal !== null}
+                                  title={mcpRefusal ?? undefined}
+                                  aria-label={`${tool.name}: ${phase.replace('_', '-')}`}
                                   onChange={() => togglePhase(phase)}
                                 />
                               </label>

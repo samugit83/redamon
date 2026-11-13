@@ -5,6 +5,7 @@ import { ChevronDown, Globe, Info, Play, ShieldCheck } from 'lucide-react'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
+import { readKeySettings, useOwnerKeys } from '@/hooks/useOwnerCatalog'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 
@@ -40,19 +41,20 @@ function UrlscanToggle({ checked, onChange, label, description, hint }: {
 export function UrlscanSection({ data, updateField, onRun }: UrlscanSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
   const { userId } = useProject()
+  // A collaborator's form: the project owner's keys, whose scans these are (step 5.7).
+  const ownerKeys = useOwnerKeys()
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null)
 
   const checkApiKey = useCallback(() => {
     if (!userId) return
-    fetch(`/api/users/${userId}/settings`)
-      .then(r => r.ok ? r.json() : null)
+    readKeySettings(userId, ownerKeys)
       .then(settings => {
         if (settings) {
           setHasApiKey(!!settings.urlscanApiKey)
         }
       })
       .catch(() => setHasApiKey(false))
-  }, [userId])
+  }, [userId, ownerKeys])
 
   useEffect(() => { checkApiKey() }, [checkApiKey])
 

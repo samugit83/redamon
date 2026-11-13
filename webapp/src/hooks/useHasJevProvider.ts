@@ -3,6 +3,7 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { isJevProvider } from '@/lib/llmProviderKinds'
 import { readApiError, toApiError } from '@/lib/apiError'
+import type { CatalogProvider } from '@/lib/ownerCatalog'
 
 export type JevProviderStatus = 'loading' | 'yes' | 'no' | 'error'
 
@@ -23,8 +24,26 @@ interface JevSelectionState {
   selectedProviderId: string | null
   ownerUserId: string | null
   error: string | null
+  /** Why the selection cannot be changed here (a collaborator below Manage, step 5.7), or null. */
+  selectionRefusal: string | null
   refresh: () => void
 }
+
+/**
+ * The owner's Jev configurations as a collaborator's form reads them (the owner catalog, step 5.7):
+ * names and whether a credential is stored, never the credential.
+ */
+export interface JevCatalogLookup {
+  status: 'loading' | 'ready' | 'error'
+  providers: CatalogProvider[]
+  error: string | null
+  retry: () => void
+  /** Why the person may not change the selection, or null. */
+  selectionRefusal: string | null
+}
+
+/** Stands in for the masked key of a catalog row: the catalog says a key is stored, never which. */
+const STORED = '••••'
 
 const CHANGED_EVENT = 'redamon:jev-provider-changed'
 const JevSelectionContext = createContext<JevSelectionState | null>(null)
@@ -52,11 +71,13 @@ export function notifyJevProviderChanged(): void {
  * (validateJevEngineChange) is the authority on whether a switch-on is allowed.
  */
 export function JevSelectionProvider({
-  ownerUserId, selectedProviderId, ownerUnavailable = false, children,
+  ownerUserId, selectedProviderId, ownerUnavailable = false, catalog = null, children,
 }: {
   ownerUserId: string | null
   selectedProviderId: string | null
   ownerUnavailable?: boolean
+  /** A collaborator's form: the owner's rows come from the owner catalog, not the owner's account route. */
+  catalog?: JevCatalogLookup | null
   children: ReactNode
 }) {
   const [lookup, setLookup] = useState<{
@@ -74,8 +95,9 @@ export function JevSelectionProvider({
     return () => window.removeEventListener(CHANGED_EVENT, refresh)
   }, [refresh])
 
+  const fromCatalog = catalog !== null
   useEffect(() => {
-    if (!ownerUserId) return
+    if (!ownerUserId || fromCatalog) return
     let cancelled = false
     ;(async () => {
       try {
@@ -97,13 +119,18 @@ export function JevSelectionProvider({
       }
     })()
     return () => { cancelled = true }
-  }, [ownerUserId, nonce])
+  }, [ownerUserId, nonce, fromCatalog])
 
   // Never show a previous owner's configurations, even for the render before an effect runs.
-  const lookupStatus = ownerUnavailable ? 'limited'
+  const lookupStatus = catalog ? catalog.status
+    : ownerUnavailable ? 'limited'
     : !ownerUserId || lookup.ownerUserId !== ownerUserId || lookup.nonce !== nonce ? 'loading'
     : lookup.status
-  const providers = lookupStatus === 'ready' ? lookup.providers : []
+  const providers = lookupStatus !== 'ready' ? []
+    : catalog ? catalog.providers.map(row => ({
+      id: row.id, name: row.name, providerType: row.type, apiKey: row.hasKey ? STORED : '', modelIdentifier: '',
+    }))
+    : lookup.providers
   const provider = providers.find(row =>
     row.id === selectedProviderId && typeof row.apiKey === 'string' && row.apiKey.trim()) ?? null
   const status: JevProviderStatus = lookupStatus === 'loading' ? 'loading'
@@ -112,7 +139,9 @@ export function JevSelectionProvider({
 
   return createElement(JevSelectionContext.Provider, { value: {
     status, lookupStatus, provider, providers, selectedProviderId, ownerUserId,
-    error: lookupStatus === 'error' ? lookup.error : null, refresh,
+    error: lookupStatus !== 'error' ? null : catalog ? catalog.error : lookup.error,
+    selectionRefusal: catalog?.selectionRefusal ?? null,
+    refresh: catalog ? catalog.retry : refresh,
   } }, children)
 }
 
@@ -120,7 +149,7 @@ export function JevSelectionProvider({
 export function useJevProvider(): JevSelectionState {
   return useContext(JevSelectionContext) ?? {
     status: 'error', lookupStatus: 'limited', provider: null, providers: [],
-    selectedProviderId: null, ownerUserId: null, error: null, refresh: () => {},
+    selectedProviderId: null, ownerUserId: null, error: null, selectionRefusal: null, refresh: () => {},
   }
 }
 

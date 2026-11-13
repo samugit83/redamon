@@ -5,6 +5,7 @@ import { ChevronDown, Radar, AlertTriangle, Info, Play } from 'lucide-react'
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import { useProject } from '@/providers/ProjectProvider'
+import { readKeySettings, useOwnerKeys } from '@/hooks/useOwnerCatalog'
 import { ipHostnameOverrides } from '@/lib/ipHostnameOverrides'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
@@ -21,19 +22,20 @@ interface ShodanSectionProps {
 export function ShodanSection({ data, updateField, onRun }: ShodanSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
   const { userId } = useProject()
+  // A collaborator's form: the project owner's keys, whose scans these are (step 5.7).
+  const ownerKeys = useOwnerKeys()
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null) // null = loading
 
   const checkApiKey = useCallback(() => {
     if (!userId) return
-    fetch(`/api/users/${userId}/settings`)
-      .then(r => r.ok ? r.json() : null)
+    readKeySettings(userId, ownerKeys)
       .then(settings => {
         if (settings) {
           setHasApiKey(!!settings.shodanApiKey)
         }
       })
       .catch(() => setHasApiKey(false))
-  }, [userId])
+  }, [userId, ownerKeys])
 
   useEffect(() => { checkApiKey() }, [checkApiKey])
 

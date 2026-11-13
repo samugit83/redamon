@@ -14,6 +14,7 @@ import { announceProjectWrite } from '@/lib/projectVersion'
 import { errorMessage, fetchJson, formatApiError, readApiError, toApiError } from '@/lib/apiError'
 import type { GraphInputs, PartialReconParams, UserTargets } from '@/lib/recon-types'
 import { useOpenApiSourceLabels } from '@/hooks/useOpenApiSourceLabels'
+import { readKeySettings, useOwnerKeys } from '@/hooks/useOwnerCatalog'
 import { publicDocumentUrl, type OpenApiSourceRow } from '@/lib/openapiSourceStatus'
 import { SECTION_INPUT_MAP, SECTION_NODE_MAP, SECTION_ENRICH_MAP } from '../nodeMapping'
 import { WORKFLOW_TOOLS } from './workflowDefinition'
@@ -441,7 +442,9 @@ export function PartialReconModal({
   const [loadingInputs, setLoadingInputs] = useState(false)
   // Set when the graph could not be read: the counts are then unknown, not zero.
   const [graphReadError, setGraphReadError] = useState<string | null>(null)
-  const [userSettings, setUserSettings] = useState<Record<string, string> | null>(null)
+  const [userSettings, setUserSettings] = useState<Record<string, unknown> | null>(null)
+  // A collaborator's form: the run spends the project owner's keys (step 5.7).
+  const ownerKeys = useOwnerKeys()
   const [customSubdomains, setCustomSubdomains] = useState('')
   const [ipHostnames, setIpHostnames] = useState<{ mode: string; recorded: number | null } | null>(null)
   // The SAVED project's hostname policy (04_ui_spec.md §5): what the
@@ -560,14 +563,13 @@ export function PartialReconModal({
     }
     // Fetch user settings for API key warnings (only for tools that need keys)
     if (userId && TOOL_API_KEYS[toolId]) {
-      fetch(`/api/users/${userId}/settings`)
-        .then(r => r.ok ? r.json() : null)
+      readKeySettings(userId, ownerKeys)
         .then(s => setUserSettings(s || {}))
         .catch(() => setUserSettings(null))
     } else {
       setUserSettings(null)
     }
-  }, [isOpen, toolId, projectId, formRootsKey, userId])
+  }, [isOpen, toolId, projectId, formRootsKey, userId, ownerKeys])
 
   // JS file upload handlers (JsRecon only)
   const handleJsFileUpload = useCallback(async (file: File) => {

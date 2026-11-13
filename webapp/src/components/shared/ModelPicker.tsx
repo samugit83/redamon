@@ -13,6 +13,7 @@ import { isLoopModel } from '@/lib/agentInTheLoop'
 import { formatApiError, toApiError } from '@/lib/apiError'
 import styles from '@/components/projects/ProjectForm/ProjectForm.module.css'
 import { MODELS_LOAD_FAILED, fetchModelOptions } from './modelOptions'
+import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 
 interface ModelPickerProps {
   userId?: string | null
@@ -40,6 +41,10 @@ interface ModelPickerProps {
  * provider, supports search-as-you-type, and falls back to a manual text
  * input when /api/models fails. Shared by AgentBehaviourSection (agent
  * conversational model) and TargetSection (recon AI hook model).
+ *
+ * Inside a collaborator's project form (step 5.7) a picker given no `models` lists
+ * the project OWNER's models instead, read once for the form, and only at Manage:
+ * below it the picker shows the stored model and is disabled with the reason.
  */
 export function ModelPicker({
   userId,
@@ -60,7 +65,12 @@ export function ModelPicker({
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const provided = models !== undefined
+  // A collaborator's form: the owner's models, or none below Manage (the picker is then locked).
+  const owner = useOwnerCatalogSource()
+  const ownerSource = owner && models === undefined ? owner : null
+  const lockedReason = ownerSource?.pickRefusal ?? null
+  const provided = models !== undefined || ownerSource !== null
+  const isDisabled = !!disabled || lockedReason !== null
 
   useEffect(() => {
     if (provided) return
@@ -70,9 +80,13 @@ export function ModelPicker({
       .finally(() => setFetchLoading(false))
   }, [userId, provided])
 
-  const allModels = models ?? fetchedModels
-  const modelsLoading = provided ? false : fetchLoading
-  const modelsError = provided ? null : fetchError
+  const allModels = models ?? ownerSource?.models ?? fetchedModels
+  const modelsLoading = ownerSource
+    ? !lockedReason && ownerSource.modelsStatus === 'loading'
+    : provided ? false : fetchLoading
+  const modelsError = ownerSource
+    ? (ownerSource.modelsStatus === 'error' ? ownerSource.modelsError ?? MODELS_LOAD_FAILED : null)
+    : provided ? null : fetchError
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -91,7 +105,7 @@ export function ModelPicker({
     setSearch('')
   }, [onChange])
 
-  const open = dropdownOpen && !disabled
+  const open = dropdownOpen && !isDisabled
 
   const filteredModels: Record<string, ModelOption[]> = {}
   const lowerSearch = search.toLowerCase()
@@ -110,10 +124,11 @@ export function ModelPicker({
     <div className={styles.modelSelector} ref={dropdownRef}>
       <div
         className={`${styles.modelSelectorInput} ${open ? styles.modelSelectorInputFocused : ''}`}
-        aria-disabled={disabled || undefined}
-        style={disabled ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}
+        aria-disabled={isDisabled || undefined}
+        title={lockedReason ?? undefined}
+        style={isDisabled ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}
         onClick={() => {
-          if (disabled) return
+          if (isDisabled) return
           setDropdownOpen(true)
           setTimeout(() => inputRef.current?.focus(), 0)
         }}
