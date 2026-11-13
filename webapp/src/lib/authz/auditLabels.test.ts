@@ -171,6 +171,7 @@ function templateExpansions(): Record<string, string[] | { family: string }> {
 const WRITTEN_LATER: Readonly<Record<string, string>> = {
   'project.oversee': 'step 4.14: one row per admin, project and day of oversight reads',
   'project.breakglass': "step 4.14: Root's break-glass on a project",
+  'scan_schedule.confirmed': 'step 5.5: the owner confirms a paused schedule (schedules/[scheduleId]/confirm)',
 }
 
 const found = readActions(productionFiles().map(file => ({ file, source: readFileSync(file, 'utf8') })))

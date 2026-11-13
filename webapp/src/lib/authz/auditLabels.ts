@@ -82,6 +82,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'scan-schedule.delete': 'Deleted a scan schedule',
     'scan_schedule.skipped': 'A scheduled scan was skipped',
     'scan_schedule.paused': 'A scan schedule was paused: the person it runs as lost access',
+    'scan_schedule.confirmed': 'Confirmed a paused scan schedule, which now runs as them',
     'schedule.paused': 'A scan schedule was paused',
     'scan-job.history-clear': 'Cleared the scan history',
     'job_queue.cancelled': 'A queued job was cancelled',
