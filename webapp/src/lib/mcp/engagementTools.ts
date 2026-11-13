@@ -71,6 +71,7 @@ import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
 import { JEV_PROVIDER_TYPES } from '@/lib/llmProviderKinds'
 import { normalizeUserSkillToggles, UserSkillError } from '@/lib/userSkills'
 import { ownershipTokenForCreate } from '@/lib/ownershipToken'
+import { projectQuotaReached, quotaRefusalMessage } from '@/lib/authz/quotas'
 
 // --- create_project -----------------------------------------------------------------
 
@@ -311,6 +312,17 @@ export async function createProject(ctx: McpContext, args: CreateProjectArgs) {
   if (args.idempotencyKey) {
     const seen = await findByIdempotencyKey(ctx, args.idempotencyKey)
     if (seen) return seen
+  }
+
+  // The token user's maxProjects quota (step 6.8), as the HTTP create and import obey it: after the
+  // replay above (which creates nothing), before anything is judged or written.
+  const overQuota = await projectQuotaReached(ctx.token.userId)
+  if (overQuota) {
+    throw new McpToolError(
+      quotaRefusalMessage('maxProjects', overQuota.limit, ctx.token.userId, overQuota.used),
+      'quota_exceeded',
+      { quota: 'maxProjects', limit: overQuota.limit },
+    )
   }
 
   const data: Record<string, unknown> = {

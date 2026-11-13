@@ -39,7 +39,8 @@ import { setFlagsForTests } from './flags'
 import { setNowForTests } from './clock'
 import {
   QUOTA_FIELDS, UNLIMITED, actorScanCap, activeMcpTokenCount, applyQuotaPatch, changedQuotaKeys,
-  clearQuotaWarningsForTests, parseQuotaPatch, parseQuotaStore, projectQuotaRefusal, quotaFor, quotaLimit,
+  clearQuotaWarningsForTests, latestTokenExpiryAllowed, mcpTokenQuotaRefusal, mcpTokenQuotaView,
+  parseQuotaPatch, parseQuotaStore, projectQuotaReached, projectQuotaRefusal, quotaFor, quotaLimit,
   resolveQuota, storeIsEmpty, unknownQuotaTargets, type QuotaStore,
 } from './quotas'
 
@@ -210,6 +211,54 @@ describe('scan cap and token count', () => {
     expect(db.tokenCount).toHaveBeenCalledWith({
       where: { userId: 'u1', revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date('2026-11-13T12:00:00Z') } }] },
     })
+  })
+})
+
+describe('token count and expiry', () => {
+  const NOW = new Date('2026-11-13T12:00:00Z')
+  const DAY = 86_400_000
+
+  beforeEach(() => {
+    db.instanceRow = { quotas: { defaults: { maxMcpTokens: 2, maxMcpTokenExpiryDays: 90 } } }
+    member([])
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  test('the latest expiry allowed is the end (UTC) of the day N days out', () => {
+    expect(latestTokenExpiryAllowed(90, NOW).toISOString()).toBe('2027-02-11T23:59:59.999Z')
+  })
+
+  test('expiry: "never" and anything past the allowed day refused; within it allowed', async () => {
+    db.tokenCount.mockResolvedValue(0)
+    expect((await mcpTokenQuotaRefusal('u1', null, { counting: false }))!.status).toBe(409)
+    const late = await mcpTokenQuotaRefusal('u1', new Date(NOW.getTime() + 91 * DAY), { counting: false })
+    expect(await late!.json()).toMatchObject({ code: 'quota_exceeded', quota: 'maxMcpTokenExpiryDays', limit: 90 })
+    expect(await mcpTokenQuotaRefusal('u1', new Date(NOW.getTime() + 90 * DAY), { counting: true })).toBeNull()
+    expect(await mcpTokenQuotaRefusal('u1', latestTokenExpiryAllowed(90), { counting: false })).toBeNull()
+  })
+
+  test('token count: counted only when asked (a mint, a revival); at the limit refused', async () => {
+    db.tokenCount.mockResolvedValue(2)
+    const soon = new Date(NOW.getTime() + 30 * DAY)
+    expect(await mcpTokenQuotaRefusal('u1', soon, { counting: false })).toBeNull()
+    expect(db.tokenCount).not.toHaveBeenCalled()
+    const res = await mcpTokenQuotaRefusal('u1', soon, { counting: true })
+    expect(await res!.json()).toMatchObject({ quota: 'maxMcpTokens', limit: 2 })
+  })
+
+  test('the screen\'s view: limits and the count, or null when neither token quota applies', async () => {
+    db.tokenCount.mockResolvedValue(1)
+    expect(await mcpTokenQuotaView('u1')).toEqual({ maxMcpTokens: 2, maxMcpTokenExpiryDays: 90, active: 1 })
+    db.instanceRow = { quotas: { defaults: { maxProjects: 1 } } }
+    expect(await mcpTokenQuotaView('u1')).toBeNull()
+  })
+
+  test('projectQuotaReached gives the limit and the count for the MCP error', async () => {
+    db.instanceRow = { quotas: { defaults: { maxProjects: 1 } } }
+    db.projectCount.mockResolvedValue(1)
+    expect(await projectQuotaReached('u1')).toEqual({ limit: 1, used: 1 })
+    db.projectCount.mockResolvedValue(0)
+    expect(await projectQuotaReached('u1')).toBeNull()
   })
 })
 

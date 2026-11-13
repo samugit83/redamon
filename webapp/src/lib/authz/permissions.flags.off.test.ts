@@ -253,6 +253,10 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
       'src/lib/authz/permissionSetAdmin.ts',
       // Step 3.4: selects the assignments and overrides only with the switch on.
       'src/lib/authz/principal.ts',
+      // Step 6.8: quotas name the stored permission sets (the editor's names, an entry's set exists,
+      // a report's set names), read only with the governance switch on, which needs this switch; off,
+      // nothing is read and everyone is unlimited (governance.flags.off.test.ts).
+      'src/lib/authz/quotas.ts',
       // Step 3.9: whether a shared-tool caller passed an account read with its sets, only with the
       // switch on (off, Phase 1's rule reads the role and the legacy grants alone).
       'src/lib/authz/sharedTools.ts',

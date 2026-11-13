@@ -41,6 +41,7 @@ import { agentInTheLoopEnabled } from '@/lib/agentInTheLoop'
 import { rootTokensRefusal } from '@/lib/authz/rootProtection'
 import { scopeGrantRefusal, ungrantableScopesOf } from '@/lib/mcp/scopePermissions'
 import { rbacFlags } from '@/lib/authz/flags'
+import { mcpTokenQuotaRefusal, mcpTokenQuotaView } from '@/lib/authz/quotas'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -81,10 +82,13 @@ export const GET = withRouteErrors('Could not load tokens', async (request: Next
     // The browser cannot read the deployment's switches; the token UI needs this one.
     // `ungrantableScopes` exists only with the permissions switch on (off: today's answer).
     const ungrantable = await ungrantableScopesOf(id)
+    // The token quotas (step 6.8), so the screen offers only the expiries they allow; absent when none applies.
+    const tokenQuota = await mcpTokenQuotaView(id)
     return NextResponse.json({
       tokens,
       features: { agentInTheLoop: agentInTheLoopEnabled() },
       ...(ungrantable ? { ungrantableScopes: ungrantable } : {}),
+      ...(tokenQuota ? { tokenQuota } : {}),
     })
   } catch (error) {
     return internalError(error, 'Could not load tokens', { log: '[mcp-tokens] list failed' })
@@ -142,6 +146,10 @@ export const POST = withRouteErrors('Could not create the token', async (request
   // Before the password: a scope the person cannot hold costs no step-up attempt.
   const ungrantable = await scopeGrantRefusal(id, scopeResult.scopes)
   if (ungrantable) return NextResponse.json(ungrantable, { status: 403 })
+  // The token quotas (step 6.8, GV-13), also before the password: the longest lifetime ("never"
+  // included) and the count of tokens that still work.
+  const overQuota = await mcpTokenQuotaRefusal(id, expiryResult.expiresAt, { counting: true })
+  if (overQuota) return overQuota
 
   // Step-up: a stolen 7-day session cookie must not silently become a
   // credential that outlives logout and password changes. The helper throttles

@@ -96,6 +96,26 @@ const EDIT_EXPIRY_PRESETS: { value: EditExpiry; label: string }[] = [
 
 const DAY_MS = 86_400_000
 
+/** The account's token quotas as the list answers them (step 6.8); absent when neither applies. */
+interface TokenQuota { maxMcpTokens: number | null; maxMcpTokenExpiryDays: number | null; active: number }
+
+/** The mint's expiry choices a maxMcpTokenExpiryDays allows: no longer preset and no "No expiry". */
+export function mintExpiryOptions(maxDays: number | null): typeof EXPIRY_OPTIONS {
+  return maxDays === null ? EXPIRY_OPTIONS : EXPIRY_OPTIONS.filter(o => o.value !== 'never' && o.value <= maxDays)
+}
+
+/** The edit's expiry choices it allows: the longer presets and "No expiry" go; "Expire now" and a date stay. */
+export function editExpiryPresets(maxDays: number | null): typeof EDIT_EXPIRY_PRESETS {
+  return maxDays === null ? EDIT_EXPIRY_PRESETS : EDIT_EXPIRY_PRESETS.filter(o => o.value !== 'never' && !(Number(o.value) > maxDays))
+}
+
+/** The mint's starting expiry: the usual default when allowed, else the longest allowed preset. */
+export function defaultMintExpiry(maxDays: number | null): number | 'never' {
+  const allowed = mintExpiryOptions(maxDays)
+  if (allowed.some(o => o.value === MCP_DEFAULT_EXPIRY_DAYS)) return MCP_DEFAULT_EXPIRY_DAYS
+  return allowed.length ? allowed[allowed.length - 1].value : MCP_DEFAULT_EXPIRY_DAYS
+}
+
 /** What the chosen expiry would be, so the UI can tell widening before the server does. */
 function prospectiveExpiry(choice: EditExpiry, date: string, current: string | null): Date | null {
   switch (choice) {
@@ -181,6 +201,11 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
   >(null)
   const [copied, setCopied] = useState<'token' | 'snippet' | null>(null)
 
+  const [tokenQuota, setTokenQuota] = useState<TokenQuota | null>(null)
+  const maxExpiryDays = tokenQuota?.maxMcpTokenExpiryDays ?? null
+  const mintOptions = mintExpiryOptions(maxExpiryDays)
+  const mintDefault = defaultMintExpiry(maxExpiryDays)
+
   const [editing, setEditing] = useState<TokenRow | null>(null)
   const [editName, setEditName] = useState('')
   const [editProfile, setEditProfile] = useState<ProfileId>(DEFAULT_PROFILE)
@@ -250,6 +275,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
       setTokens(Array.isArray(data.tokens) ? data.tokens : [])
       setLoopOn(data.features?.agentInTheLoop === true)
       setScopeLimits(data.ungrantableScopes && typeof data.ungrantableScopes === 'object' ? data.ungrantableScopes : undefined)
+      setTokenQuota(data.tokenQuota && typeof data.tokenQuota === 'object' ? data.tokenQuota : null)
     } catch (e) {
       // Never a silent empty list: that reads as "you have no tokens" and
       // prompts a duplicate mint.
@@ -285,16 +311,16 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
     setName('')
     setProfile(DEFAULT_PROFILE)
     setScopes(grantable([...DEFAULT_MCP_SCOPES]))
-    setExpiresInDays(MCP_DEFAULT_EXPIRY_DAYS)
+    setExpiresInDays(mintDefault)
     setPassword('')
     setIncludeShared(false)
     setAllowlist([])
     setFormError(null)
     setBaseline({
       name: '', profile: DEFAULT_PROFILE, scopes: grantable([...DEFAULT_MCP_SCOPES]),
-      expiresInDays: MCP_DEFAULT_EXPIRY_DAYS, password: '', includeShared: false, allowlist: [],
+      expiresInDays: mintDefault, password: '', includeShared: false, allowlist: [],
     })
-  }, [setBaseline, grantable])
+  }, [setBaseline, grantable, mintDefault])
 
   const toggleScope = (s: McpScope) => {
     setScopes(prev => (prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]))
@@ -674,12 +700,21 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
                 id="mcpTokenExpiry"
                 className={`select ${styles.control}`}
                 value={String(expiresInDays)}
+                aria-describedby={tokenQuota ? 'mcpTokenQuotaHint' : undefined}
                 onChange={e => setExpiresInDays(e.target.value === 'never' ? 'never' : Number(e.target.value))}
               >
-                {EXPIRY_OPTIONS.map(o => (
+                {mintOptions.map(o => (
                   <option key={String(o.value)} value={String(o.value)}>{o.label}</option>
                 ))}
               </select>
+              {tokenQuota && (
+                <span id="mcpTokenQuotaHint" className="formHint">
+                  {maxExpiryDays !== null && (mintOptions.length
+                    ? `Your administrator limits MCP tokens to ${maxExpiryDays} days. `
+                    : `Your administrator limits MCP tokens to ${maxExpiryDays} days, shorter than any choice here: ask them to raise it. `)}
+                  {tokenQuota.maxMcpTokens !== null && `${tokenQuota.active} of ${tokenQuota.maxMcpTokens} tokens in use.`}
+                </span>
+              )}
             </div>
 
             <ScopeChecklist selected={scopes} onToggle={toggleScope} profile={profile} loopOff={!loopOn} limits={scopeLimits} />
@@ -790,7 +825,7 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
                     ? `Keep current (${tokenState(editing) === 'expired' ? 'expired ' : ''}${fmtDate(editing.expiresAt)})`
                     : 'Keep current (no expiry)'}
                 </option>
-                {EDIT_EXPIRY_PRESETS.map(o => (
+                {editExpiryPresets(maxExpiryDays).map(o => (
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
               </select>
@@ -811,9 +846,13 @@ export default function McpTokensTab({ userId, onDirtyChange }: Props) {
                   className={`textInput ${styles.control}`}
                   value={editDate}
                   min={todayIso()}
+                  max={maxExpiryDays !== null ? new Date(Date.now() + maxExpiryDays * DAY_MS).toISOString().slice(0, 10) : undefined}
                   onChange={e => setEditDate(e.target.value)}
                 />
-                <span className="formHint">The token works until the end of that day (UTC).</span>
+                <span className="formHint">
+                  The token works until the end of that day (UTC).
+                  {maxExpiryDays !== null && ` Your administrator limits MCP tokens to ${maxExpiryDays} days.`}
+                </span>
               </div>
             )}
 

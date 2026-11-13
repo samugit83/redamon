@@ -53,6 +53,7 @@ import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { rootTokensRefusal } from '@/lib/authz/rootProtection'
 import { ownsRow } from '@/lib/authz/rowOwner'
 import { scopeGrantRefusal } from '@/lib/mcp/scopePermissions'
+import { mcpTokenQuotaRefusal } from '@/lib/authz/quotas'
 
 interface RouteParams {
   params: Promise<{ id: string; tokenId: string }>
@@ -216,6 +217,13 @@ export const PATCH = withRouteErrors('Could not update the token', async (reques
     // Only the scopes it adds: one already on the token stays capped on every call.
     const ungrantable = await scopeGrantRefusal(id, (data.scopes ?? []).filter(s => !existing.scopes.includes(s)))
     if (ungrantable) return NextResponse.json(ungrantable, { status: 403 })
+    // The token quotas (step 6.8, GV-13): a later or no expiry obeys the longest lifetime, and reviving
+    // an expired token counts it again, as a mint would. Before the password.
+    if ('expiresAt' in data) {
+      const revived = existing.expiresAt !== null && existing.expiresAt.getTime() <= Date.now()
+      const overQuota = await mcpTokenQuotaRefusal(id, after.expiresAt, { counting: revived })
+      if (overQuota) return overQuota
+    }
     // The shared step-up: one attempt budget with the mint and every other
     // step-up route. This route keeps its own answers (401 + passwordRequired).
     const proof = await checkStepUp(request, body.password)

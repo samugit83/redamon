@@ -231,16 +231,23 @@ const FIELD_WORDS: Readonly<Record<QuotaField, string>> = {
   llmDailyCalls: 'model calls a day on instance providers',
 }
 
-/** The 409 every quota refusal answers, logged with the fixed `[rbac] quota_exceeded` code. */
-export function quotaExceededResponse(field: QuotaField, limit: number, userId: string, used: number | null): NextResponse {
+/**
+ * The refusal's text, and its `[rbac] quota_exceeded` log line (how an operator learns a quota refused
+ * something). Shared by the routes' 409 and the MCP tools' error.
+ */
+export function quotaRefusalMessage(field: QuotaField, limit: number, userId: string, used: number | null): string {
   console.warn(`[rbac] quota_exceeded quota=${field} user=${userId} limit=${limit} used=${used ?? '-'}`)
+  if (field === 'maxMcpTokenExpiryDays') {
+    return `Quota reached: MCP tokens may last at most ${limit} days, so choose a shorter expiry ("no expiry" is not allowed). ` +
+      'Ask an administrator to raise it.'
+  }
+  return `Quota reached: your limit is ${limit} ${FIELD_WORDS[field]}. Ask an administrator to raise it.`
+}
+
+/** The 409 every quota refusal answers: `{error, code: 'quota_exceeded', quota, limit}`. */
+export function quotaExceededResponse(field: QuotaField, limit: number, userId: string, used: number | null): NextResponse {
   return NextResponse.json(
-    {
-      error: `Quota reached: your limit is ${limit} ${FIELD_WORDS[field]}. Ask an administrator to raise it.`,
-      code: 'quota_exceeded',
-      quota: field,
-      limit,
-    },
+    { error: quotaRefusalMessage(field, limit, userId, used), code: 'quota_exceeded', quota: field, limit },
     { status: 409 },
   )
 }
@@ -250,15 +257,21 @@ export function ownedProjectCount(userId: string): Promise<number> {
   return prisma.project.count({ where: { userId } })
 }
 
-/**
- * Before a project is created for `ownerId` (the project create, the import, MCP create_project):
- * the 409 when they already own their limit, else null.
- */
-export async function projectQuotaRefusal(ownerId: string): Promise<NextResponse | null> {
+/** When `ownerId` already owns their maxProjects: the limit and the count; null when they may create one more. */
+export async function projectQuotaReached(ownerId: string): Promise<{ limit: number; used: number } | null> {
   const limit = await quotaLimit(ownerId, 'maxProjects')
   if (limit === null) return null
-  const owned = await ownedProjectCount(ownerId)
-  return owned < limit ? null : quotaExceededResponse('maxProjects', limit, ownerId, owned)
+  const used = await ownedProjectCount(ownerId)
+  return used < limit ? null : { limit, used }
+}
+
+/**
+ * Before a project is created for `ownerId` (the project create, the import; MCP create_project uses
+ * projectQuotaReached for its own error): the 409 when they already own their limit, else null.
+ */
+export async function projectQuotaRefusal(ownerId: string): Promise<NextResponse | null> {
+  const reached = await projectQuotaReached(ownerId)
+  return reached ? quotaExceededResponse('maxProjects', reached.limit, ownerId, reached.used) : null
 }
 
 /** The MCP tokens that can still be used: not revoked, not expired. What maxMcpTokens counts. */
@@ -266,6 +279,48 @@ export function activeMcpTokenCount(userId: string): Promise<number> {
   return prisma.mcpAccessToken.count({
     where: { userId, revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: now() } }] },
   })
+}
+
+const DAY_MS = 86_400_000
+
+/**
+ * The latest expiry a maxMcpTokenExpiryDays of `days` allows: the end (UTC) of the day `days` from
+ * now, so a preset ("90 days", counted from this instant) and a picked date (which lasts to the end of
+ * its UTC day) are judged alike.
+ */
+export function latestTokenExpiryAllowed(days: number, at: Date = now()): Date {
+  const d = new Date(at.getTime() + days * DAY_MS)
+  d.setUTCHours(23, 59, 59, 999)
+  return d
+}
+
+/**
+ * A token mint, or an expiry change that widens a token (step 6.8, GV-13): the 409 when the expiry
+ * is later than maxMcpTokenExpiryDays allows (no expiry included), or, when `counting` (a mint, or
+ * an expired token revived), when the account already holds maxMcpTokens working tokens; else null.
+ */
+export async function mcpTokenQuotaRefusal(
+  userId: string,
+  expiresAt: Date | null,
+  { counting }: { counting: boolean },
+): Promise<NextResponse | null> {
+  const { quota } = await quotaFor(userId)
+  const days = quota.maxMcpTokenExpiryDays
+  if (days !== null && (expiresAt === null || expiresAt.getTime() > latestTokenExpiryAllowed(days).getTime())) {
+    return quotaExceededResponse('maxMcpTokenExpiryDays', days, userId, null)
+  }
+  if (counting && quota.maxMcpTokens !== null) {
+    const used = await activeMcpTokenCount(userId)
+    if (used >= quota.maxMcpTokens) return quotaExceededResponse('maxMcpTokens', quota.maxMcpTokens, userId, used)
+  }
+  return null
+}
+
+/** What the token screen needs to offer only what the quota allows; null when neither token quota applies. */
+export async function mcpTokenQuotaView(userId: string): Promise<{ maxMcpTokens: QuotaValue; maxMcpTokenExpiryDays: QuotaValue; active: number } | null> {
+  const { quota } = await quotaFor(userId)
+  if (quota.maxMcpTokens === null && quota.maxMcpTokenExpiryDays === null) return null
+  return { maxMcpTokens: quota.maxMcpTokens, maxMcpTokenExpiryDays: quota.maxMcpTokenExpiryDays, active: await activeMcpTokenCount(userId) }
 }
 
 /**
