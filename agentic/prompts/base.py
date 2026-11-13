@@ -96,6 +96,13 @@ to `kali_shell cat /tmp/...`, wastes a tool call, and prevents `fs_grep`
 from scanning the file. Workspace paths also persist across the
 engagement; `/tmp` is wiped when the kali sandbox restarts.
 
+FILES FOR THE USER TO DOWNLOAD (payloads, generated documents, exports) -
+not output capture: the file IS the result. Write it under
+`__WORKSPACE_ROOT__/notes/` with its full path, e.g.
+`msfvenom ... -o __WORKSPACE_ROOT__/notes/payload.exe`. The chat shows a
+download card only for a file of this project's workspace; a file under
+`/tmp` (or anywhere else) cannot be downloaded from the chat.
+
 JOB SPAWN POLICY - decide per call, not by default:
 
 SPAWN with job_spawn when ALL hold:

@@ -33,8 +33,8 @@
    "sha256": "9a943c512128036757226936c961215d68aa7317d820e9a0375aefb8e4f68464"
   },
   "all_off/exploitation/phishing_social_engineering": {
-   "chars": 15632,
-   "sha256": "ffe921dbbecea728042a8f4a6d45787aed7dbda3e0d080454ee583bf7eed408a"
+   "chars": 16211,
+   "sha256": "d40b31962670c9447fc152efeb9e0d7a302d2ce36f100729921018b9fb1fdeee"
   },
   "all_off/exploitation/rce": {
    "chars": 44995,
@@ -89,8 +89,8 @@
    "sha256": "9a943c512128036757226936c961215d68aa7317d820e9a0375aefb8e4f68464"
   },
   "all_off/informational/phishing_social_engineering": {
-   "chars": 15632,
-   "sha256": "ffe921dbbecea728042a8f4a6d45787aed7dbda3e0d080454ee583bf7eed408a"
+   "chars": 16211,
+   "sha256": "d40b31962670c9447fc152efeb9e0d7a302d2ce36f100729921018b9fb1fdeee"
   },
   "all_off/informational/rce": {
    "chars": 44995,
@@ -145,8 +145,8 @@
    "sha256": "9cc39e821e538d21a7c53fcdcaec160a91dd538ea313a7f22ba30c0c05fb0c26"
   },
   "all_on/exploitation/phishing_social_engineering": {
-   "chars": 15797,
-   "sha256": "90b32b756dfe65183490e2546d961035f08e997f5bb47b8ae1d0f33c1f86f900"
+   "chars": 16376,
+   "sha256": "a3810e604e432d8817ea0b87330ef35ea5426a93bf411242027d6d8e6fde5068"
   },
   "all_on/exploitation/rce": {
    "chars": 69040,
@@ -201,8 +201,8 @@
    "sha256": "9cc39e821e538d21a7c53fcdcaec160a91dd538ea313a7f22ba30c0c05fb0c26"
   },
   "all_on/informational/phishing_social_engineering": {
-   "chars": 15797,
-   "sha256": "90b32b756dfe65183490e2546d961035f08e997f5bb47b8ae1d0f33c1f86f900"
+   "chars": 16376,
+   "sha256": "a3810e604e432d8817ea0b87330ef35ea5426a93bf411242027d6d8e6fde5068"
   },
   "all_on/informational/rce": {
    "chars": 69040,
@@ -289,8 +289,8 @@
    "sha256": "9ac5e1b1ebf6e0f53cfc65089914197caeacd242faee51b1aacee874e5a61156"
   },
   "defaults/exploitation/phishing_social_engineering": {
-   "chars": 15632,
-   "sha256": "ffe921dbbecea728042a8f4a6d45787aed7dbda3e0d080454ee583bf7eed408a"
+   "chars": 16211,
+   "sha256": "d40b31962670c9447fc152efeb9e0d7a302d2ce36f100729921018b9fb1fdeee"
   },
   "defaults/exploitation/rce": {
    "chars": 57191,
@@ -345,8 +345,8 @@
    "sha256": "9ac5e1b1ebf6e0f53cfc65089914197caeacd242faee51b1aacee874e5a61156"
   },
   "defaults/informational/phishing_social_engineering": {
-   "chars": 15632,
-   "sha256": "ffe921dbbecea728042a8f4a6d45787aed7dbda3e0d080454ee583bf7eed408a"
+   "chars": 16211,
+   "sha256": "d40b31962670c9447fc152efeb9e0d7a302d2ce36f100729921018b9fb1fdeee"
   },
   "defaults/informational/rce": {
    "chars": 57191,
@@ -513,8 +513,8 @@
    "sha256": "c5c97aea59c74e7365f29179df53f7eb60d40a3bd30f82f5ca113228d22a0398"
   },
   "tool_missing/exploitation/phishing_social_engineering": {
-   "chars": 15613,
-   "sha256": "0496499bfe52f304191ce2c4b4a73a6c27c5fcadeef1fec1a6340ed45ac5a68f"
+   "chars": 16192,
+   "sha256": "7933a5c0df4c7733a39ef72edec571b47cf6096e7a535e6191762100aeca7935"
   },
   "tool_missing/exploitation/rce": {
    "chars": 28,
@@ -569,8 +569,8 @@
    "sha256": "c5c97aea59c74e7365f29179df53f7eb60d40a3bd30f82f5ca113228d22a0398"
   },
   "tool_missing/informational/phishing_social_engineering": {
-   "chars": 15613,
-   "sha256": "0496499bfe52f304191ce2c4b4a73a6c27c5fcadeef1fec1a6340ed45ac5a68f"
+   "chars": 16192,
+   "sha256": "7933a5c0df4c7733a39ef72edec571b47cf6096e7a535e6191762100aeca7935"
   },
   "tool_missing/informational/rce": {
    "chars": 28,
@@ -664,12 +664,12 @@
    "sha256": "09020455934bd0fb4799eed59370315e9aeb9795fc4527efe3d85dc44567d598"
   },
   "all_off/phishing_social_engineering": {
-   "chars": 15569,
+   "chars": 16148,
    "parts": [
-    "ef7716911b0ca89b3c482ab641579f105ab2d9ad6b62d1b4a8811f2a3dcdf922",
+    "3768be7b6e399df2dcb1f5bcfab64c6bf2d8d1d51620a85fb826c951c75a7003",
     "323a021b4d056b009ee4edfd9869fe9f1381032a0487a2caf1c29d84f61709ef"
    ],
-   "sha256": "c4e0ad6a3a9c26431338ef5f78222f20e33278282dbba99714dabcb9dc0ea9e1"
+   "sha256": "9ec949f02297271898a1a5f886cbc3de56dae77680b424ad69cb4041bd1e3ef4"
   },
   "all_off/rce": {
    "chars": 44947,
@@ -796,13 +796,13 @@
    "sha256": "a0c8f7035ac0ac959bc63e1e7467ddb49071e7488d400688a630526f41b4fa69"
   },
   "all_on/phishing_social_engineering": {
-   "chars": 15734,
+   "chars": 16313,
    "parts": [
-    "ef7716911b0ca89b3c482ab641579f105ab2d9ad6b62d1b4a8811f2a3dcdf922",
+    "3768be7b6e399df2dcb1f5bcfab64c6bf2d8d1d51620a85fb826c951c75a7003",
     "323a021b4d056b009ee4edfd9869fe9f1381032a0487a2caf1c29d84f61709ef",
     "da843701269d4d8805509da2a2f17bbd2fa1792c1a9004f899ab9cd9fce501a4"
    ],
-   "sha256": "61b4f89dd69df0e17473c38e017b28591be33210fc0f5eec5caefb61880adef5"
+   "sha256": "b9aed2cc05bae2215b4b7e09fff1db058c0ed496ab744106d7ad81ae8b1fe243"
   },
   "all_on/rce": {
    "chars": 68992,
@@ -963,12 +963,12 @@
    "sha256": "c33d9b488f1ae071ebd5a5dbf048951e8ed452a30d395a645edfbe84d85be2cc"
   },
   "defaults/phishing_social_engineering": {
-   "chars": 15569,
+   "chars": 16148,
    "parts": [
-    "ef7716911b0ca89b3c482ab641579f105ab2d9ad6b62d1b4a8811f2a3dcdf922",
+    "3768be7b6e399df2dcb1f5bcfab64c6bf2d8d1d51620a85fb826c951c75a7003",
     "323a021b4d056b009ee4edfd9869fe9f1381032a0487a2caf1c29d84f61709ef"
    ],
-   "sha256": "c4e0ad6a3a9c26431338ef5f78222f20e33278282dbba99714dabcb9dc0ea9e1"
+   "sha256": "9ec949f02297271898a1a5f886cbc3de56dae77680b424ad69cb4041bd1e3ef4"
   },
   "defaults/rce": {
    "chars": 57143,
@@ -1179,12 +1179,12 @@
    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "tool_missing/phishing_social_engineering": {
-   "chars": 15569,
+   "chars": 16148,
    "parts": [
-    "ef7716911b0ca89b3c482ab641579f105ab2d9ad6b62d1b4a8811f2a3dcdf922",
+    "3768be7b6e399df2dcb1f5bcfab64c6bf2d8d1d51620a85fb826c951c75a7003",
     "323a021b4d056b009ee4edfd9869fe9f1381032a0487a2caf1c29d84f61709ef"
    ],
-   "sha256": "c4e0ad6a3a9c26431338ef5f78222f20e33278282dbba99714dabcb9dc0ea9e1"
+   "sha256": "9ec949f02297271898a1a5f886cbc3de56dae77680b424ad69cb4041bd1e3ef4"
   },
   "tool_missing/rce": {
    "chars": 0,

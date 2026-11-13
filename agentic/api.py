@@ -12,12 +12,10 @@ Endpoints:
 """
 
 import asyncio
-import base64
 import json
 import logging
 import os
 import re
-import shlex
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, List, Literal, Optional
@@ -2634,94 +2632,32 @@ async def test_llm_provider(body: LlmProviderTestRequest):
 
 @app.get("/files", tags=["Files"], dependencies=[Depends(require_configured_master_auth)])
 async def download_file(
-    path: str = Query(..., description="File path inside kali-sandbox (must be under /tmp/)"),
+    projectId: str = Query("", description="Project whose workspace holds the file"),
+    path: str = Query(..., description="/workspace/<projectId>/... or a workspace-relative path"),
 ):
     """
-    Download a file from kali-sandbox via the kali_shell MCP tool.
+    Download a file the agent wrote into a project's workspace (a chat download card).
 
-    Reads the file using base64 encoding through the existing MCP tool,
-    decodes it, and returns the binary content.
-    Security: Only paths under /tmp/ are allowed.
+    Only that project's workspace is served: a path anywhere else (the shared
+    sandbox's /tmp, another project's workspace, a `..` segment, a symlink out of
+    the workspace) answers 403, a missing file or anything but a regular file 404.
+    The bytes come from the bind mount through the descriptor that was checked
+    (open_download_for_project), never through a shell. The projectId is not an
+    authorization: the webapp checks the caller may read the project, then calls
+    with the master key.
     """
-    # Security: restrict to /tmp/ paths and prevent directory traversal
-    if not path.startswith("/tmp/"):
-        return Response(content="Forbidden: only /tmp/ paths allowed", status_code=403)
-    normalized = os.path.normpath(path)
-    if not normalized.startswith("/tmp/"):
-        return Response(content="Forbidden: path traversal detected", status_code=403)
-
-    # The file is read INSIDE kali-sandbox via kali_shell, which runs the command
-    # through `bash -c`, so `normalized` is interpolated into a shell string.
-    # `os.path.normpath` collapses `.`/`..`/`//` but does NOT strip shell
-    # metacharacters (`;`, `|`, `` ` ``, `$(...)`), so a path like `/tmp/x; id`
-    # would inject a second command. Quote it so it is always a single literal
-    # argument. This is the actual injection fix; the `/tmp/` prefix check above
-    # is not sufficient on its own.
-    safe_path = shlex.quote(normalized)
-
-    if not orchestrator or not orchestrator.tool_executor:
-        return Response(content="Agent not initialized", status_code=503)
-
+    if not projectId:
+        return Response(content="projectId required", status_code=400)
+    relative = workspace_fs.sandbox_workspace_relative(projectId, path)
+    if relative is None:
+        return Response(content="Forbidden: the file is outside this project's workspace", status_code=403)
     try:
-        # Check file exists first
-        check_result = await orchestrator.tool_executor.execute(
-            "kali_shell",
-            {"command": f"test -f {safe_path} && stat -c '%s' {safe_path}"},
-            "informational",
-            skip_phase_check=True,
-        )
-        if not check_result.get("success") or not check_result.get("output", "").strip():
+        fd, size, mime, filename = workspace_fs.open_download_for_project(projectId, relative)
+    except ValueError as e:
+        if str(e).startswith("not a file"):
             return Response(content="File not found", status_code=404)
-
-        # Read file as base64
-        b64_result = await orchestrator.tool_executor.execute(
-            "kali_shell",
-            {"command": f"base64 -w0 {safe_path}"},
-            "informational",
-            skip_phase_check=True,
-        )
-        if not b64_result.get("success"):
-            return Response(
-                content=f"Error reading file: {b64_result.get('error', 'unknown')}",
-                status_code=500,
-            )
-
-        b64_str = (b64_result.get("output") or "").strip()
-        file_bytes = base64.b64decode(b64_str)
-        filename = os.path.basename(normalized)
-
-        # Content type mapping for common payload/document types
-        ext = os.path.splitext(filename)[1].lower()
-        content_types = {
-            ".exe": "application/x-msdownload",
-            ".elf": "application/x-elf",
-            ".pdf": "application/pdf",
-            ".docm": "application/vnd.ms-word.document.macroEnabled.12",
-            ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
-            ".apk": "application/vnd.android.package-archive",
-            ".war": "application/x-webarchive",
-            ".ps1": "text/plain",
-            ".py": "text/plain",
-            ".sh": "text/plain",
-            ".hta": "text/html",
-            ".lnk": "application/x-ms-shortcut",
-            ".rtf": "application/rtf",
-            ".vba": "text/plain",
-            ".macho": "application/x-mach-binary",
-        }
-        content_type = content_types.get(ext, "application/octet-stream")
-
-        return Response(
-            content=file_bytes,
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Length": str(len(file_bytes)),
-            },
-        )
-    except Exception as e:
-        logger.error(f"File download error: {e}")
-        return Response(content=f"Error reading file: {str(e)}", status_code=500)
+        return Response(content="Forbidden: the file is outside this project's workspace", status_code=403)
+    return _ws_downloads.stream_fd(fd, size, mime, filename)
 
 
 # =============================================================================

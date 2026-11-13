@@ -32,15 +32,34 @@ def clear_stale_streaming_state(update: dict) -> dict:
     }
 
 
-def detect_generated_file(step: dict) -> dict | None:
-    """Detect if a tool execution created a downloadable file in /tmp/.
+# An absolute path as a shell command or a tool's output names it: up to the next
+# blank, quote, shell operator or `$` (an unexpanded variable names no file).
+_ABS_PATH = r'(/[^\s;"\'|&<>`$]+)'
 
-    Checks both tool_args (for explicit -o /tmp/... flags) and
-    tool_output (for file listing output confirming creation).
 
-    Returns:
-        dict with file metadata or None if no file detected.
+def _project_files(pattern: str, text: str, project_id: str):
+    """The paths `pattern` finds in `text` that name a file of the run's project
+    workspace, in order; a path elsewhere (the shared sandbox's /tmp, another
+    project's workspace, a `..` segment, a directory) is skipped."""
+    from workspace_fs import sandbox_workspace_relative
+
+    for m in re.finditer(pattern, text):
+        path = m.group(1).rstrip(".,)")
+        if sandbox_workspace_relative(project_id, path) is not None:
+            yield path
+
+
+def detect_generated_file(step: dict, project_id: str | None) -> dict | None:
+    """The download card for a file this step wrote into the run's project
+    workspace (`/workspace/<projectId>/...`), or None.
+
+    The webapp downloads a card's file from that project's workspace only, for a
+    person who may read the project, so a file anywhere else (the sandbox's /tmp,
+    shared by every member) gets no card. Checks the command (an explicit `-o` or
+    `cp` target, confirmed by the output) and the output ("Saved as/to <path>").
     """
+    if not project_id:
+        return None
     tool_args = step.get("tool_args", {})
     output = (step.get("tool_output") or "") + (step.get("output_analysis") or "")
     command = ""
@@ -50,44 +69,25 @@ def detect_generated_file(step: dict) -> dict | None:
     elif isinstance(tool_args, str):
         command = tool_args
 
-    # Pattern 1: msfvenom -o /tmp/filename
-    m = re.search(r'-o\s+(/tmp/[^\s;"\']+)', command)
-    if m:
-        filepath = m.group(1)
-        filename = os.path.basename(filepath)
-        # Verify file mentioned in output (success indicator)
-        if filename in output and "[ERROR]" not in output[:200]:
-            return {
-                "filepath": filepath,
-                "filename": filename,
-                "source": "msfvenom",
-                "description": f"Generated payload: {filename}",
-            }
-
-    # Pattern 2: cp ... /tmp/filename (from fileformat module copy)
-    m = re.search(r'cp\s+\S+\s+(/tmp/[^\s;"\']+)', command)
-    if m:
-        filepath = m.group(1)
-        filename = os.path.basename(filepath)
-        if filename in output and "[ERROR]" not in output[:200]:
-            return {
-                "filepath": filepath,
-                "filename": filename,
-                "source": "fileformat",
-                "description": f"Generated document: {filename}",
-            }
-
-    # Pattern 3: Output mentions a file was saved to /tmp/
-    m = re.search(r'[Ss]aved\s+(?:as\s+|to\s+)?(/tmp/[^\s"\']+)', output)
-    if m:
-        filepath = m.group(1)
+    def card(filepath: str, source: str, what: str) -> dict:
         filename = os.path.basename(filepath)
         return {
             "filepath": filepath,
             "filename": filename,
-            "source": "tool_output",
-            "description": f"Generated file: {filename}",
+            "source": source,
+            "description": f"{what}: {filename}",
+            "projectId": project_id,
         }
+
+    succeeded = "[ERROR]" not in output[:200]
+    for pattern, source, what in ((r'-o\s+' + _ABS_PATH, "msfvenom", "Generated payload"),
+                                  (r'cp\s+\S+\s+' + _ABS_PATH, "fileformat", "Generated document")):
+        for filepath in _project_files(pattern, command, project_id):
+            if succeeded and os.path.basename(filepath) in output:
+                return card(filepath, source, what)
+
+    for filepath in _project_files(r'[Ss]aved\s+(?:(?:as|to):?\s+)?' + _ABS_PATH, output, project_id):
+        return card(filepath, "tool_output", "Generated file")
 
     return None
 
@@ -218,9 +218,10 @@ async def emit_streaming_events(state: dict, callback) -> None:
                     "recommended_next_steps": cstep.get("recommended_next_steps", []),
                 })
 
-                # Detect file creation in tool output and notify frontend
                 if cstep.get("tool_name") in ("kali_shell", "execute_code", "metasploit_console"):
-                    file_info = detect_generated_file(cstep)
+                    from agent_context import current_project_id
+                    file_info = detect_generated_file(
+                        cstep, state.get("project_id") or current_project_id.get())
                     if file_info:
                         await callback.on_file_ready(file_info)
 

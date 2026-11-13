@@ -1200,6 +1200,38 @@ async def fs_archive(paths: list, dest: str, format: str = "tar.gz") -> str:
 # argument instead of reading the contextvar so the HTTP layer doesn't have
 # to fiddle with contextvar state per request.
 
+#: Where the agent and kali-sandbox mount every project's workspace (compose). A
+#: file the agent writes for the person is named `/workspace/<projectId>/...`,
+#: the only absolute form the webapp's download route accepts. Fixed, unlike
+#: WORKSPACE_ROOT (the agent's own mount, which tests move).
+SANDBOX_WORKSPACE_ROOT = "/workspace"
+
+
+def sandbox_workspace_relative(project_id: str, path: Optional[str]) -> Optional[str]:
+    """`path` relative to project `project_id`'s workspace, or None when it points
+    anywhere else.
+
+    `path` is absolute under `/workspace/<projectId>/` (as the sandbox and a chat
+    download card name it) or already workspace-relative. An empty, `.` or `..`
+    segment, a backslash or a NUL is refused, so nothing climbs out before
+    resolve_for_project's own confinement, which also refuses a symlink escape.
+    """
+    try:
+        _validate_project_id(project_id)
+    except ValueError:
+        return None
+    if not isinstance(path, str) or not path or "\\" in path or "\x00" in path:
+        return None
+    if path.startswith("/"):
+        prefix = f"{SANDBOX_WORKSPACE_ROOT}/{project_id}/"
+        if not path.startswith(prefix):
+            return None
+        path = path[len(prefix):]
+    if any(part in ("", ".", "..") for part in path.split("/")):
+        return None
+    return path
+
+
 def resolve_for_project(project_id: str, user_path: Optional[str], follow_symlinks: bool = True) -> Path:
     """Public variant of _resolve_safe that takes project_id explicitly."""
     _validate_project_id(project_id)
