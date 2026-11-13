@@ -47,6 +47,7 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'GET /api/js-recon/trufflehog/available': 'whether the TruffleHog image is present: an instance fact the JS recon tab reads, no project data',
   'GET /api/projects': 'the projects the account can see (visibleProjectsWhere): seeing one is project access, and each action on it asks its own permission',
   'GET /api/projects/defaults': 'the default values of a new project form: registry data, no project, nothing written',
+  'GET /api/projects/[id]/my-access': "the account's own access to the project (projectAccess) for the stale-access poll: any signed-in account asks about itself, a project it cannot see answers 404, nothing written (step 4.3)",
   'GET /api/nuclei-templates': 'the templates the account may select or manage, scoped by owner inside (own and instance ones; every one with platform:nuclei_templates): reading the library changes nothing',
   'GET /api/account/activity': "the signed-in account's own notices and the audit rows about it (404 with the identity switch off): an account reads its own history",
   'GET /api/agent/health': 'whether the agent answers: an instance fact the drawer shows, no project data',

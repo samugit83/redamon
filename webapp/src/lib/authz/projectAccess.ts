@@ -152,3 +152,21 @@ export function meetsLevel(access: ProjectAccess, needed: ProjectLevel): boolean
   if (needed === 'R') return true
   return needed === 'R*' && access.toggles?.rawData === true
 }
+
+/** What a person is told of their own access to a project: the project GET's `myAccess` and /my-access. */
+export interface MyAccess {
+  level: ProjectAccessLevel
+  toggles: ProjectAccessToggles
+  via: ProjectAccessVia
+  /** Who shared it, for "Read access, shared by <owner>". */
+  owner: { name: string | null; email: string | null }
+}
+
+export function myAccessView(access: ProjectAccess, owner: { name?: string | null; email?: string | null } | null | undefined): MyAccess {
+  return {
+    level: access.level,
+    toggles: { rawData: meetsLevel(access, 'R*') },
+    via: access.via,
+    owner: { name: owner?.name ?? null, email: owner?.email ?? null },
+  }
+}

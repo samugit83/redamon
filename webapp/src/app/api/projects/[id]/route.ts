@@ -27,7 +27,7 @@ import { isStdioServer } from '@/lib/mcp/schema'
 import { ownerRunsStdio, serversForAgent } from '@/lib/mcp/userServerAccess'
 import { scannerJobRefusal } from '@/lib/authz/jobCredential'
 import { projectReadView } from '@/lib/authz/projectReadView'
-import type { ProjectAccess } from '@/lib/authz/projectAccess'
+import { myAccessView, type ProjectAccess } from '@/lib/authz/projectAccess'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -207,9 +207,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       })
     }
 
-    // A browser caller who is not the owner never receives the owner's secrets (HD-27).
+    // A browser caller who is not the owner never receives the owner's secrets (HD-27), and
+    // every browser caller learns its own access (step 4.3), which the project screens follow.
     const body = isServiceCaller ? projectForCaller : projectReadView(projectForCaller, access)
-    return NextResponse.json({ ...body, ...skillOverridesField })
+    const mine = access ? { myAccess: myAccessView(access, project.user) } : {}
+    return NextResponse.json({ ...body, ...mine, ...skillOverridesField })
   } catch (error) {
     return internalError(error, 'Failed to fetch project')
   }
