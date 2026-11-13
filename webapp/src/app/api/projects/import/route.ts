@@ -450,16 +450,21 @@ export async function POST(request: NextRequest) {
 
     // Import conversations
     const conversationIdMap = new Map<string, string>()
+    // A chain id is its conversation's session id: the graph restore gives each
+    // imported chain the renamed one, so it follows its imported conversation.
+    const renamedChainIds = new Map<string, string>()
     const conversationsFile = zip.file('conversations/conversations.json')
     if (conversationsFile) {
       const conversations: ExportedConversation[] = JSON.parse(await conversationsFile.async('text'))
 
       for (const conv of conversations) {
+        const sessionId = `${conv.sessionId}_imported_${randomUUID().substring(0, 8)}`
+        if (typeof conv.sessionId === 'string' && conv.sessionId) renamedChainIds.set(conv.sessionId, sessionId)
         const newConv = await prisma.conversation.create({
           data: {
             projectId: newProject.id,
             userId,
-            sessionId: `${conv.sessionId}_imported_${randomUUID().substring(0, 8)}`,
+            sessionId,
             title: conv.title,
             status: 'completed',
             agentRunning: false,
@@ -866,10 +871,12 @@ export async function POST(request: NextRequest) {
 
           // Shared with Scan Timeline version activation (lib/graphRestore.ts):
           // same MERGE-vs-CREATE-by-constraint, batching and _exportId wiring.
-          // Nodes are re-owned under the importing user and the new project.
+          // Nodes are re-owned under the importing user and the new project; the
+          // agent-session nodes get new ids, so the source's chain stays its own (R-15).
           const restored = await restoreGraph(session, nodes, relationships, {
             projectId: newProject.id,
             userId,
+            renamedChainIds,
             ...(Array.isArray(referenceLinks) ? { referenceLinks } : {}),
           })
           stats.neo4jNodes = restored.nodes
