@@ -55,14 +55,17 @@ p2-enable-anon	2.3	anon	POST	/api/users/${MEMBER_C_ID}/enable	{}	401	req:ID-13
 # `tunnels` legacy holder, none seeded here), and the user settings PUT refuses a real change
 # of one with 409 before anything is written. Off, the route does not exist (404) and the
 # p1 tunnel rows hold. No row writes: the PUTs are refused before the row is read or written
-# (not JSON 415, a tunnel field that is not text 400, a member 403, a moved field 409). The
+# (not JSON 415, a tunnel field that is not text 400, a member 403, a moved field 409). Since
+# step 3.9 a member holding neither field group (no tunnel, no capture) and no administrator
+# account is refused naming platform:tunnels, with the permissions switch on or off
+# (instance:settings is Root's security policy, not this gate). The
 # tunnel sync takes only the sandbox's bearer whatever the switch (the accepted call:
 # tests/test_e2e_security_live.sh).
 p2-instance-settings-off	2.4	admin_a	GET	/api/admin/instance-settings	-	404	req:ID-32 identity:off
 p2-instance-settings-off-put	2.4	admin_a	PUT	/api/admin/instance-settings	{"chiselServerUrl":42}	404	req:ID-32 identity:off
 p2-instance-settings-anon	2.4	anon	GET	/api/admin/instance-settings	-	401	req:ID-32
-p2-instance-settings-member	2.4	member_c	GET	/api/admin/instance-settings	-	403;has=instance:settings	req:ID-32 identity:on
-p2-instance-settings-member-put	2.4	member_c	PUT	/api/admin/instance-settings	{"captureProxyEnabled":false}	403;has=instance:settings	req:ID-32 identity:on
+p2-instance-settings-member	2.4	member_c	GET	/api/admin/instance-settings	-	403;has="permission":"platform:tunnels"	req:ID-32 identity:on
+p2-instance-settings-member-put	2.4	member_c	PUT	/api/admin/instance-settings	{"captureProxyEnabled":false}	403;has="permission":"platform:tunnels"	req:ID-32 identity:on
 p2-instance-settings-admin	2.4	admin_a	GET	/api/admin/instance-settings	-	200;has="canManageTunnels":true;has="canManageCapture":true;has=captureEgressBlockPrivate	req:ID-32 identity:on
 p2-instance-settings-admin-not-json	2.4	admin_a	PUT	/api/admin/instance-settings	-	415	req:ID-32 identity:on
 p2-instance-settings-admin-bad-field	2.4	admin_a	PUT	/api/admin/instance-settings	{"chiselServerUrl":42}	400;has=invalid_field	req:ID-32 identity:on
