@@ -529,7 +529,7 @@ function splitTopLevel(inner: string): Array<{ key: string; value: string }> | n
 }
 
 // Two node patterns in one path: a relationship and nothing else between them (`--`, `-->`,
-// `<-[r:R]-`, with the spaces Neo4j allows inside an arrow). Quantified forms never get here.
+// `<-[r:HAS_PORT]-`, with the spaces Neo4j allows inside an arrow). Quantified forms never get here.
 const RELATIONSHIP_GAP = /^\s*<?\s*-\s*(?:\[[^[\]]*\]\s*)?-\s*>?\s*$/
 
 interface Analysis {
@@ -613,7 +613,7 @@ export function hasVariableLengthPath(cypher: string): boolean {
   if ('problem' in read) return true
   const code = neutralView(read)
   const squeezed = code.replace(/\s+/g, '')
-  if (/\[[^[\]]*\*[^[\]]*\]/.test(squeezed)) return true // `-[*1..3]-`, `-[:R*]-`
+  if (/\[[^[\]]*\*[^[\]]*\]/.test(squeezed)) return true // `-[*1..3]-`, `-[:HAS_PORT*]-`
   // a relationship's brackets hold `*` beside a nested list: `-[r*1..2 {tags: [1]}]-`
   for (let i = squeezed.indexOf('-['); i !== -1; i = squeezed.indexOf('-[', i + 1)) {
     const close = matching(squeezed, i + 1)

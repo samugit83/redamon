@@ -182,7 +182,7 @@ def find_disallowed_call(cypher: str) -> Optional[str]:
 
 #: A relationship carrying `*` (variable length), a quantifier applied to a
 #: path/relationship group (`{n,m}`, `{,m}`), or a quantified relationship
-#: (`-[:R]->+`, `-->*`, `<--+`). Matched against the code with every space
+#: (`-[:HAS_PORT]->+`, `-->*`, `<--+`). Matched against the code with every space
 #: removed: Neo4j accepts whitespace between the parts of an arrow (`- ->+`),
 #: and squeezing it out keeps these patterns free of `\s*` runs that backtrack.
 _VAR_LENGTH_REL_RE = re.compile(r'\[[^\[\]]*\*[^\[\]]*\]')
@@ -1127,7 +1127,7 @@ def _is_relationship_gap(gap: str) -> bool:
 
 def _path_roots(cypher: str, patterns: List[Tuple[int, int, str, bool]]) -> List[int]:
     """For each pattern, a representative of its path: the patterns joined to it
-    by relationship patterns (`(a)-[:R]->(b)<--(c)` is one path; a comma, a new
+    by relationship patterns (`(a)-[:HAS_PORT]->(b)<--(c)` is one path; a comma, a new
     clause or a UNION starts another). A pattern is joined to the first one that
     starts after it ends, as the webapp's saved-view filter reads it."""
     view = _code_only(cypher)
@@ -1285,7 +1285,7 @@ def find_disallowed_character(cypher: str) -> Optional[str]:
     way Neo4j does, or None.
 
     Neo4j's lexer accepts Unicode dashes and arrowheads in a relationship
-    (`(a)\u2014[:R]\u2014+(b)` is `(a)-[:R]-+(b)`), reads several control
+    (`(a)\u2014[:HAS_PORT]\u2014+(b)` is `(a)-[:HAS_PORT]-+(b)`), reads several control
     characters as whitespace and ignores format characters inside names; this
     scanner reads ASCII punctuation only, so each of those hid an arrow, a
     quantifier or a keyword from it. Rather than mirror the lexer, such a
