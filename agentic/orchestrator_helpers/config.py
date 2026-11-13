@@ -1,6 +1,6 @@
 """Configuration and session management helpers for the orchestrator."""
 
-from typing import TYPE_CHECKING, Tuple, List
+from typing import TYPE_CHECKING, Tuple, List, Optional
 
 from state import AgentState
 from project_settings import get_setting
@@ -58,7 +58,8 @@ def get_thread_id(user_id: str, project_id: str, session_id: str) -> str:
 def create_config(
     user_id: str,
     project_id: str,
-    session_id: str
+    session_id: str,
+    tenant_user_id: Optional[str] = None,
 ) -> dict:
     """
     Create config for graph invocation with checkpointer thread_id.
@@ -66,11 +67,16 @@ def create_config(
     Config contains:
     - thread_id: For MemorySaver checkpointer (session persistence)
     - user_id, project_id, session_id: For logging in nodes
+    - tenant_user_id: the graph tenant (get_tenant_id)
 
     Args:
-        user_id: User identifier
+        user_id: The person running the session (the ticket's `sub`): the thread id,
+            the chat, the run registry and the Agent in the Loop scope are theirs
         project_id: Project identifier
         session_id: Session identifier for conversation continuity
+        tenant_user_id: The project's owner (the ticket's `ten`), whose id the
+            project's graph nodes, traffic and run credentials carry. None or empty
+            is `user_id`: a ticket without `ten` came from an owner (RBAC T9).
 
     Returns:
         Config dict for graph.invoke()
@@ -94,6 +100,7 @@ def create_config(
         "configurable": {
             "thread_id": thread_id,
             "user_id": user_id,
+            "tenant_user_id": tenant_user_id or user_id,
             "project_id": project_id,
             "session_id": session_id
         }
@@ -185,6 +192,30 @@ def get_identifiers(state: AgentState, config=None) -> Tuple[str, str, str]:
         session_id = state.get("session_id", "unknown")
 
     return (user_id, project_id, session_id)
+
+
+def get_tenant_id(state: AgentState, config=None) -> str:
+    """The graph tenant of this run: the project's owner, whose id every graph read and
+    write, the REDAMON_CTX tag and the run credentials carry (set_tenant_context, the
+    chain writers). `get_identifiers` keeps answering the person, who keys the thread,
+    the chat and the loop scope.
+
+    From the config (create_config always writes it), else the state (initialize_node
+    copies it there for the Fireteam members), else the person: a config built
+    without a tenant is an owner's, as every config was before step 5.3.
+    """
+    configurable = None
+    if isinstance(config, dict):
+        configurable = config.get("configurable")
+    elif config is not None:
+        configurable = getattr(config, "configurable", None)
+    tenant = configurable.get("tenant_user_id") if isinstance(configurable, dict) else None
+    if not tenant and isinstance(state, dict):
+        tenant = state.get("tenant_user_id")
+    if tenant:
+        return tenant
+    user_id, _project_id, _session_id = get_identifiers(state, config)
+    return user_id
 
 
 def is_session_config_complete() -> Tuple[bool, List[str]]:

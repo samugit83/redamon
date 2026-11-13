@@ -25,7 +25,7 @@ import httpx
 from langchain_core.messages import SystemMessage
 
 from state import AgentState, FireteamMemberResult, ChainFindingExtract
-from orchestrator_helpers.config import get_identifiers
+from orchestrator_helpers.config import get_identifiers, get_tenant_id
 from project_settings import get_setting, TOOL_MUTEX_GROUPS
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
 
@@ -86,6 +86,7 @@ def _build_member_state(
     spec: dict,
     member_id: str,
     fireteam_id: str,
+    tenant_user_id: Optional[str] = None,
 ) -> dict:
     """Construct a fresh FireteamMemberState dict from parent state + spec.
 
@@ -136,6 +137,10 @@ def _build_member_state(
         "current_phase": parent_state.get("current_phase", "informational"),
         "attack_path_type": parent_state.get("attack_path_type", ""),
         "user_id": parent_state.get("user_id", ""),
+        # The graph tenant the deploy node resolved (config.get_tenant_id): the
+        # member writes its chain and runs its tools on the project owner's graph.
+        "tenant_user_id": (tenant_user_id or parent_state.get("tenant_user_id")
+                           or parent_state.get("user_id", "")),
         "project_id": parent_state.get("project_id", ""),
         "session_id": parent_state.get("session_id", ""),
         "parent_target_info": dict(parent_state.get("target_info") or {}),
@@ -468,6 +473,7 @@ async def fireteam_deploy_node(
 ) -> dict:
     """Fan out N fireteam members concurrently. Returns merged results."""
     user_id, project_id, session_id = get_identifiers(state, config)
+    tenant_id = get_tenant_id(state, config)
     plan_data = state.get("_current_fireteam_plan")
     if not plan_data or not plan_data.get("members"):
         logger.error("[%s] fireteam_deploy_node called with empty plan", session_id)
@@ -524,7 +530,7 @@ async def fireteam_deploy_node(
     logger.info(f"{'=' * 80}")
 
     # Propagate ContextVars BEFORE create_task so children inherit them.
-    set_tenant_context(user_id, project_id)
+    set_tenant_context(tenant_id, project_id)
     set_phase_context(state.get("current_phase", "informational"))
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))
@@ -587,7 +593,8 @@ async def fireteam_deploy_node(
 
     async def _run_one(spec: dict, member_id: str) -> dict:
         async with sem:
-            member_state = _build_member_state(state, spec, member_id, fireteam_id_key)
+            member_state = _build_member_state(state, spec, member_id, fireteam_id_key,
+                                               tenant_user_id=tenant_id)
             t0 = time.monotonic()
             logger.info(
                 "[%s] wave=%s member=%s (%s) STARTED tools=%s max_iter=%s",

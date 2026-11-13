@@ -10,7 +10,7 @@ import httpx
 from state import AgentState
 from orchestrator_helpers import roe_gate
 from orchestrator_helpers.json_utils import json_dumps_safe
-from orchestrator_helpers.config import get_identifiers
+from orchestrator_helpers.config import get_identifiers, get_tenant_id
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
 from kali_auth import kali_auth_headers, note_kali_refusal
 
@@ -110,7 +110,8 @@ async def execute_tool_node(
         }
 
     # Set context
-    set_tenant_context(user_id, project_id, session_id)
+    # The project's owner: the graph, the traffic tag and the run credential are theirs.
+    set_tenant_context(get_tenant_id(state, config), project_id, session_id)
     set_phase_context(phase)
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))

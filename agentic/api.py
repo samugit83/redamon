@@ -1597,7 +1597,10 @@ async def emergency_stop_all():
 
 
 class SessionStopRequest(BaseModel):
-    user_id: str
+    # The session's person (the ticket's `sub`, the Conversation's author). Absent: every
+    # run of that project and session, whoever's (purge-orphan-chains knows the chain's
+    # session but not its person, since a chain names the project's owner).
+    user_id: Optional[str] = None
     project_id: str
     session_id: str
 
@@ -1678,9 +1681,15 @@ async def stop_agent_session(body: SessionStopRequest):
 
     Called when a conversation is deleted so its agent loop stops instead of
     continuing to run headlessly and re-seeding the Neo4j attack-chain graph.
+    Without `user_id`, the session's runs in that project whoever's (an orphan chain).
     """
     if not ws_manager:
         return JSONResponse(content={"stopped": False}, status_code=503)
+    if not body.user_id:
+        stopped = await ws_manager.stop_project_session(body.project_id, body.session_id)
+        logger.info(f"Agent session stop requested for *:{body.project_id}:{body.session_id}: "
+                    f"cancelled={stopped}")
+        return {"stopped": stopped}
     session_key = f"{body.user_id}:{body.project_id}:{body.session_id}"
     stopped = await ws_manager.stop_session(session_key)
     logger.info(f"Agent session stop requested for {session_key}: cancelled={stopped}")
@@ -4604,8 +4613,11 @@ class TriageRunStartRequest(BaseModel):
     (for an MCP start) the cooldown BEFORE calling: `stop_project_run` and this
     start are keyed on the project alone.
     """
-    user_id: str
+    user_id: str                     # the graph tenant: the project's owner
     project_id: str
+    # The person the run is for (`TriageRun.actorUserId`); absent, the tenant, as before
+    # (step 5.3: a collaborator's run reads the owner's graph and records them).
+    actor_user_id: Optional[str] = None
     real_actor_user_id: Optional[str] = None
     trigger: str = "app"             # app | mcp
     token_id: Optional[str] = None   # the MCP token's id, never the token
@@ -4638,12 +4650,14 @@ async def triage_run_start(body: TriageRunStartRequest):
         return JSONResponse(status_code=400, content={"error": "trigger must be app or mcp"})
     if body.token_id is not None and not _RUN_ID_RE.fullmatch(body.token_id):
         return JSONResponse(status_code=400, content={"error": "invalid token id"})
-    if body.real_actor_user_id is not None and not _RUN_ID_RE.fullmatch(body.real_actor_user_id):
-        return JSONResponse(status_code=400, content={"error": "invalid actor id"})
+    for actor in (body.actor_user_id, body.real_actor_user_id):
+        if actor is not None and not _RUN_ID_RE.fullmatch(actor):
+            return JSONResponse(status_code=400, content={"error": "invalid actor id"})
 
     from cypherfix_triage.websocket_handler import start_detached_run
     run, attached, refusal = start_detached_run(
         body.user_id, body.project_id,
+        actor_user_id=body.actor_user_id,
         real_actor_user_id=body.real_actor_user_id,
         trigger=body.trigger, token_id=body.token_id,
         max_review_budget=body.max_review_budget)
@@ -5808,10 +5822,13 @@ def _terminal_run_credential(claims: dict) -> tuple:
 
     from machine_credential import TERMINAL_TTL_SECONDS, CredentialRefused, mint_run_credential
 
+    from ws_ticket import ticket_tenant
+
     run_id = uuid.uuid4().hex
     try:
-        # Phase 5 makes `ten` the project's tenant rather than the ticket's user.
-        return mint_run_credential("graph", str(claims["sub"]), str(claims["pid"]),
+        # The project's owner (`ten`): redagraph reads the project's graph, which carries
+        # the owner's id whoever opened the terminal (RBAC T15).
+        return mint_run_credential("graph", ticket_tenant(claims), str(claims["pid"]),
                                    run_id, TERMINAL_TTL_SECONDS), run_id
     except (CredentialRefused, ValueError) as e:
         logger.warning("[rbac] terminal run credential not minted: %s", getattr(e, "code", type(e).__name__))
@@ -5849,10 +5866,12 @@ async def kali_terminal_proxy(websocket: WebSocket):
         return
 
     # Identity from the VERIFIED ticket, forwarded to the upstream PTY as query
-    # params (never from the browser's self-asserted frame).
+    # params (never from the browser's self-asserted frame). The shell's user is the
+    # project's tenant (`ten`): its REDAMON_USER_ID tags the traffic it captures.
     from urllib.parse import urlencode, urlparse
+    from ws_ticket import ticket_tenant
     _tenant = urlencode({
-        "user_id": str(claims["sub"]),
+        "user_id": ticket_tenant(claims),
         "project_id": str(claims["pid"]),
         "session_id": str(claims["sid"]),
     })

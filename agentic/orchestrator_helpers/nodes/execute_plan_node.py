@@ -15,7 +15,7 @@ import httpx
 
 from state import AgentState
 from orchestrator_helpers import roe_gate
-from orchestrator_helpers.config import get_identifiers
+from orchestrator_helpers.config import get_identifiers, get_tenant_id
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
 from kali_auth import kali_auth_headers, note_kali_refusal
 
@@ -317,8 +317,9 @@ async def execute_plan_node(
     logger.info(f"Tools: {[s.get('tool_name') for s in steps]}")
     logger.info(f"{'='*60}")
 
-    # Set context (ContextVar — inherited by child tasks in asyncio)
-    set_tenant_context(user_id, project_id)
+    # Set context (ContextVar — inherited by child tasks in asyncio); the tenant is the
+    # project's owner, whose graph and traffic the tools use.
+    set_tenant_context(get_tenant_id(state, config), project_id)
     set_phase_context(phase)
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))

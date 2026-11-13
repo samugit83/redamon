@@ -14,7 +14,7 @@ from state import (
     utc_now,
 )
 import orchestrator_helpers.chain_graph_writer as chain_graph
-from orchestrator_helpers.config import get_identifiers
+from orchestrator_helpers.config import get_identifiers, get_tenant_id
 from prompts import PHASE_TRANSITION_MESSAGE, USER_QUESTION_MESSAGE
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ async def process_approval_node(state: AgentState, config, *, neo4j_creds) -> di
             neo4j_uri, neo4j_user, neo4j_password,
             chain_id=session_id,
             step_id=state.get("_last_chain_step_id"),
-            user_id=user_id, project_id=project_id,
+            user_id=get_tenant_id(state, config), project_id=project_id,
             decision_type="phase_transition",
             from_state=from_phase,
             to_state=new_phase,
@@ -144,7 +144,7 @@ async def process_approval_node(state: AgentState, config, *, neo4j_creds) -> di
             neo4j_uri, neo4j_user, neo4j_password,
             chain_id=session_id,
             step_id=state.get("_last_chain_step_id"),
-            user_id=user_id, project_id=project_id,
+            user_id=get_tenant_id(state, config), project_id=project_id,
             decision_type="phase_transition",
             from_state=transition.get("from_phase", state.get("current_phase", "informational")),
             to_state=transition.get("to_phase", "exploitation"),

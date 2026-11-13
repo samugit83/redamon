@@ -835,7 +835,9 @@ async def fireteam_member_think_node(
     member_id = state.get("member_id") or "unknown"
     member_name = state.get("member_name") or member_id
     session_id = state.get("session_id") or ""
-    user_id = state.get("user_id") or ""
+    # The graph tenant (the project's owner) every chain write below carries; a member
+    # state from before step 5.3 has none, and its user_id was the owner.
+    tenant_id = state.get("tenant_user_id") or state.get("user_id") or ""
     project_id = state.get("project_id") or ""
     fireteam_id = state.get("fireteam_id") or None
     prev_step_id = state.get("_last_chain_step_id")
@@ -873,7 +875,7 @@ async def fireteam_member_think_node(
                 step_id=chain_step_id,
                 chain_id=session_id,
                 prev_step_id=prev_step_id,
-                user_id=user_id,
+                user_id=tenant_id,
                 project_id=project_id,
                 iteration=int(prev_step.get("iteration") or 0),
                 phase=state.get("current_phase", "informational"),
@@ -900,7 +902,7 @@ async def fireteam_member_think_node(
                         neo4j_uri, neo4j_user, neo4j_password,
                         chain_id=session_id,
                         step_id=chain_step_id,
-                        user_id=user_id,
+                        user_id=tenant_id,
                         project_id=project_id,
                         failure_type="tool_error",
                         tool_name=prev_step.get("tool_name", ""),
@@ -912,8 +914,8 @@ async def fireteam_member_think_node(
         except Exception as e:
             logger.warning("member chain_step write failed: %s", e)
 
-    # Propagate tenant context so tools called downstream know who we are.
-    set_tenant_context(state.get("user_id", ""), state.get("project_id", ""))
+    # Propagate tenant context so tools called downstream know whose graph it is.
+    set_tenant_context(tenant_id, project_id)
     set_phase_context(state.get("current_phase", "informational"))
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))
@@ -1235,7 +1237,7 @@ async def fireteam_member_think_node(
                         neo4j_uri, neo4j_user, neo4j_password,
                         step_id=prev_chain_step_id,
                         extracted_info=extracted_info,
-                        user_id=user_id,
+                        user_id=tenant_id,
                         project_id=project_id,
                         tool_name=prev_step.get("tool_name") or "" if prev_step else "",
                     )
@@ -1251,7 +1253,7 @@ async def fireteam_member_think_node(
                         neo4j_uri, neo4j_user, neo4j_password,
                         chain_id=session_id,
                         step_id=prev_chain_step_id,
-                        user_id=user_id,
+                        user_id=tenant_id,
                         project_id=project_id,
                         attack_type=details.get("attack_type", state.get("attack_path_type", "cve_exploit")),
                         target_ip=details.get("target_ip", ""),
@@ -1276,7 +1278,7 @@ async def fireteam_member_think_node(
                         neo4j_uri, neo4j_user, neo4j_password,
                         chain_id=session_id,
                         step_id=prev_chain_step_id,
-                        user_id=user_id,
+                        user_id=tenant_id,
                         project_id=project_id,
                         finding_type=cf.finding_type,
                         severity=cf.severity,
@@ -1490,7 +1492,7 @@ async def fireteam_member_think_node(
                                 step_id=_sid,
                                 chain_id=session_id,
                                 prev_step_id=_prev,
-                                user_id=user_id,
+                                user_id=tenant_id,
                                 project_id=project_id,
                                 iteration=plan_iteration,
                                 phase=current_phase,
@@ -1521,7 +1523,7 @@ async def fireteam_member_think_node(
                             neo4j_uri, neo4j_user, neo4j_password,
                             chain_id=session_id,
                             step_id=step_id,
-                            user_id=user_id,
+                            user_id=tenant_id,
                             project_id=project_id,
                             failure_type="tool_error",
                             tool_name=plan_step.get("tool_name", ""),
@@ -1546,7 +1548,7 @@ async def fireteam_member_think_node(
                         neo4j_uri, neo4j_user, neo4j_password,
                         chain_id=session_id,
                         step_id=last_written_step_id,
-                        user_id=user_id,
+                        user_id=tenant_id,
                         project_id=project_id,
                         attack_type=details.get("attack_type", state.get("attack_path_type", "cve_exploit")),
                         target_ip=details.get("target_ip", ""),
@@ -1567,7 +1569,7 @@ async def fireteam_member_think_node(
                         neo4j_uri, neo4j_user, neo4j_password,
                         chain_id=session_id,
                         step_id=last_written_step_id,
-                        user_id=user_id,
+                        user_id=tenant_id,
                         project_id=project_id,
                         finding_type=cf.finding_type,
                         severity=cf.severity,

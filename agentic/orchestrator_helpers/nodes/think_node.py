@@ -32,7 +32,7 @@ import orchestrator_helpers.chain_graph_writer as chain_graph
 from orchestrator_helpers.agent_context import get_agent_context
 from orchestrator_helpers.json_utils import json_dumps_safe, normalize_content
 from orchestrator_helpers.parsing import try_parse_llm_decision
-from orchestrator_helpers.config import get_identifiers, is_session_config_complete
+from orchestrator_helpers.config import get_identifiers, get_tenant_id, is_session_config_complete
 from orchestrator_helpers.finding_guard import unrecorded_confirmations, unrecorded_note
 from orchestrator_helpers.llm_retry import retry_llm_call
 from orchestrator_helpers.llm_retry import llm_error_reason
@@ -263,6 +263,9 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         neo4j_creds: Tuple of (neo4j_uri, neo4j_user, neo4j_password).
     """
     user_id, project_id, session_id = get_identifiers(state, config)
+    # The project's owner: the graph the tools read and the chain writes below carry
+    # (user_id is the person, for the logs).
+    tenant_id = get_tenant_id(state, config)
     neo4j_uri, neo4j_user, neo4j_password = neo4j_creds
 
     iteration = state.get("current_iteration", 0) + 1
@@ -276,7 +279,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     logger.info(f"[{user_id}/{project_id}/{session_id}] Think node - iteration {iteration}, phase: {phase}")
 
     # Set context for tools
-    set_tenant_context(user_id, project_id)
+    set_tenant_context(tenant_id, project_id)
     set_phase_context(phase)
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))
@@ -1433,7 +1436,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                     step_id=step_id,
                     chain_id=session_id,
                     prev_step_id=prev_step_id,
-                    user_id=user_id, project_id=project_id,
+                    user_id=tenant_id, project_id=project_id,
                     iteration=step_iteration, phase=phase,
                     tool_name=pending_step.get("tool_name"),
                     tool_args_summary=str(pending_step.get("tool_args", {}))[:500],
@@ -1460,7 +1463,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                         neo4j_uri, neo4j_user, neo4j_password,
                         chain_id=session_id,
                         step_id=step_id,
-                        user_id=user_id,
+                        user_id=tenant_id,
                         project_id=project_id,
                         attack_type=details.get("attack_type", state.get("attack_path_type", "cve_exploit")),
                         target_ip=details.get("target_ip", merged_target.primary_target),
@@ -1486,7 +1489,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                 chain_graph.fire_record_finding(
                     neo4j_uri, neo4j_user, neo4j_password,
                     chain_id=session_id, step_id=step_id,
-                    user_id=user_id, project_id=project_id,
+                    user_id=tenant_id, project_id=project_id,
                     finding_type=cf.finding_type, severity=cf.severity,
                     title=cf.title, evidence=cf.evidence,
                     confidence=cf.confidence, phase=phase,
@@ -1505,7 +1508,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                 chain_graph.fire_record_failure(
                     neo4j_uri, neo4j_user, neo4j_password,
                     chain_id=session_id, step_id=step_id,
-                    user_id=user_id, project_id=project_id,
+                    user_id=tenant_id, project_id=project_id,
                     failure_type="tool_error",
                     tool_name=pending_step.get("tool_name", ""),
                     error_message=pending_step.get("error_message", ""),
@@ -1774,7 +1777,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                     step_id=_sid,
                     chain_id=session_id,
                     prev_step_id=_prev,
-                    user_id=user_id, project_id=project_id,
+                    user_id=tenant_id, project_id=project_id,
                     iteration=plan_iteration, phase=phase,
                     tool_name=_ps.get("tool_name", ""),
                     tool_args_summary=str(_ps.get("tool_args", {}))[:500],
@@ -1801,7 +1804,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                 chain_graph.fire_record_failure(
                     neo4j_uri, neo4j_user, neo4j_password,
                     chain_id=session_id, step_id=step_id,
-                    user_id=user_id, project_id=project_id,
+                    user_id=tenant_id, project_id=project_id,
                     failure_type="tool_error",
                     tool_name=plan_step.get("tool_name", ""),
                     error_message=plan_step.get("error_message", ""),
@@ -1820,7 +1823,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                         neo4j_uri, neo4j_user, neo4j_password,
                         chain_id=session_id,
                         step_id=last_step_id,
-                        user_id=user_id,
+                        user_id=tenant_id,
                         project_id=project_id,
                         attack_type=details.get("attack_type", state.get("attack_path_type", "cve_exploit")),
                         target_ip=details.get("target_ip", merged_target.primary_target),
@@ -1849,7 +1852,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
                 chain_graph.fire_record_finding(
                     neo4j_uri, neo4j_user, neo4j_password,
                     chain_id=session_id, step_id=last_step_id,
-                    user_id=user_id, project_id=project_id,
+                    user_id=tenant_id, project_id=project_id,
                     finding_type=cf.finding_type, severity=cf.severity,
                     title=cf.title, evidence=cf.evidence,
                     confidence=cf.confidence, phase=phase,
@@ -2164,6 +2167,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             chain_graph.fire_update_chain_attack_path(
                 neo4j_uri, neo4j_user, neo4j_password,
                 chain_id=session_id, attack_path_type=resolved,
+                user_id=tenant_id, project_id=project_id,
             )
 
     elif decision.action == "ask_user":

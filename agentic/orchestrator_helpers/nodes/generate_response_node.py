@@ -11,7 +11,7 @@ from state import (
 )
 import orchestrator_helpers.chain_graph_writer as chain_graph
 from orchestrator_helpers.json_utils import json_dumps_safe, normalize_content
-from orchestrator_helpers.config import get_identifiers
+from orchestrator_helpers.config import get_identifiers, get_tenant_id
 from orchestrator_helpers.llm_retry import describe_llm_failure, retry_llm_call
 from logging_config import redact_text
 from agent_in_the_loop.broker import get_broker
@@ -248,6 +248,7 @@ async def generate_response_node(
     chain_graph.fire_update_chain_status(
         neo4j_uri, neo4j_user, neo4j_password,
         chain_id=session_id,
+        user_id=get_tenant_id(state, config), project_id=project_id,
         status="completed",
         final_outcome=state.get("completion_reason", ""),
         total_steps=total,

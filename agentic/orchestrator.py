@@ -923,9 +923,10 @@ class AgentOrchestrator:
         question: str,
         user_id: str,
         project_id: str,
-        session_id: str
+        session_id: str,
+        tenant_user_id: Optional[str] = None,
     ) -> InvokeResponse:
-        """Main entry point for agent invocation."""
+        """Main entry point for agent invocation. `tenant_user_id`: create_config."""
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized. Call initialize() first.")
 
@@ -940,7 +941,7 @@ class AgentOrchestrator:
         logger.info(f"[{user_id}/{project_id}/{session_id}] Invoking with: {question[:10000]}")
 
         try:
-            config = create_config(user_id, project_id, session_id)
+            config = create_config(user_id, project_id, session_id, tenant_user_id)
             input_data = {
                 # A node-scoped question carries scanner text: fenced (B20).
                 "messages": [HumanMessage(content=fence_node_context(question))]
@@ -1130,9 +1131,15 @@ class AgentOrchestrator:
         streaming_callback,
         guidance_queue=None,
         graph_view_cypher=None,
+        tenant_user_id: Optional[str] = None,
     ) -> InvokeResponse:
         """
         Invoke agent with streaming callbacks for real-time updates.
+
+        `user_id` is the person running the session (the thread, the chat, the run
+        and the Agent in the Loop scope are theirs); `tenant_user_id` the project's
+        owner, whose graph the nodes read and write (create_config). Every resume
+        below takes the same pair.
 
         The streaming_callback should have methods:
         - on_thinking(iteration, phase, thought, reasoning)
@@ -1167,7 +1174,7 @@ class AgentOrchestrator:
         self._graph_view_cyphers[session_id] = graph_view_cypher
 
         try:
-            config = create_config(user_id, project_id, session_id)
+            config = create_config(user_id, project_id, session_id, tenant_user_id)
             input_data = clear_stale_streaming_state({
                 # A node-scoped question carries scanner text: fenced (B20).
                 "messages": [HumanMessage(content=fence_node_context(question))],
@@ -1216,6 +1223,7 @@ class AgentOrchestrator:
         streaming_callback,
         guidance_queue=None,
         on_admitted=None,
+        tenant_user_id: Optional[str] = None,
     ) -> InvokeResponse:
         """Resume after approval with streaming callbacks. `on_admitted` saves the
         decision once the run is admitted (_stream_graph)."""
@@ -1230,7 +1238,7 @@ class AgentOrchestrator:
         logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with streaming approval: {decision}")
 
         refusal = await self._refuse_stray_answer(
-            create_config(user_id, project_id, session_id), session_id,
+            create_config(user_id, project_id, session_id, tenant_user_id), session_id,
             "phase_transition_pending", "approval", streaming_callback)
         if refusal is not None:
             return refusal
@@ -1240,7 +1248,7 @@ class AgentOrchestrator:
 
         pending = None
         try:
-            config = create_config(user_id, project_id, session_id)
+            config = create_config(user_id, project_id, session_id, tenant_user_id)
 
             current_state = await self.graph.aget_state(config)
             if not current_state or not current_state.values:
@@ -1299,6 +1307,7 @@ class AgentOrchestrator:
         streaming_callback,
         guidance_queue=None,
         on_admitted=None,
+        tenant_user_id: Optional[str] = None,
     ) -> InvokeResponse:
         """Resume after answer with streaming callbacks. `on_admitted` saves the
         answer once the run is admitted (_stream_graph)."""
@@ -1317,7 +1326,7 @@ class AgentOrchestrator:
 
         pending = None
         try:
-            config = create_config(user_id, project_id, session_id)
+            config = create_config(user_id, project_id, session_id, tenant_user_id)
 
             current_state = await self.graph.aget_state(config)
             if not current_state or not current_state.values:
@@ -1376,6 +1385,7 @@ class AgentOrchestrator:
         streaming_callback,
         guidance_queue=None,
         on_admitted=None,
+        tenant_user_id: Optional[str] = None,
     ) -> InvokeResponse:
         """Resume after tool confirmation with streaming callbacks. `on_admitted`
         saves the decision once the run is admitted (_stream_graph)."""
@@ -1390,7 +1400,7 @@ class AgentOrchestrator:
         logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with streaming tool confirmation: {decision}")
 
         refusal = await self._refuse_stray_answer(
-            create_config(user_id, project_id, session_id), session_id,
+            create_config(user_id, project_id, session_id, tenant_user_id), session_id,
             "tool_confirmation_pending", "tool_confirmation", streaming_callback)
         if refusal is not None:
             return refusal
@@ -1400,7 +1410,7 @@ class AgentOrchestrator:
 
         pending = None
         try:
-            config = create_config(user_id, project_id, session_id)
+            config = create_config(user_id, project_id, session_id, tenant_user_id)
 
             current_state = await self.graph.aget_state(config)
             if not current_state or not current_state.values:
@@ -1459,7 +1469,8 @@ class AgentOrchestrator:
         project_id: str,
         session_id: str,
         streaming_callback,
-        guidance_queue=None
+        guidance_queue=None,
+        tenant_user_id: Optional[str] = None,
     ) -> InvokeResponse:
         """Resume execution from last checkpoint (after stop)."""
         if not self._initialized:
@@ -1476,7 +1487,7 @@ class AgentOrchestrator:
         self._guidance_queues[session_id] = guidance_queue
 
         try:
-            config = create_config(user_id, project_id, session_id)
+            config = create_config(user_id, project_id, session_id, tenant_user_id)
 
             current_state = await self.graph.aget_state(config)
             if not current_state or not current_state.values:

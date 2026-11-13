@@ -64,7 +64,7 @@ class _ScriptedRun:
 
     async def invoke_with_streaming(self, *, question, user_id, project_id, session_id,
                                     streaming_callback, guidance_queue=None,
-                                    graph_view_cypher=None):
+                                    graph_view_cypher=None, tenant_user_id=None):
         cb = streaming_callback
         await cb.on_tool_start("execute_code", {"code": "print(1)"}, step_id="step0001")
         self.started.set()

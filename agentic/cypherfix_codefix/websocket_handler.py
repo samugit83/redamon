@@ -86,7 +86,7 @@ async def handle_codefix_websocket(websocket: WebSocket):
     _agentic = str(_Path(__file__).resolve().parents[1])
     if _agentic not in _sys.path:
         _sys.path.insert(0, _agentic)
-    from ws_ticket import authorize_ws, cors_allowlist
+    from ws_ticket import authorize_ws, cors_allowlist, ticket_tenant
     from websocket_api import PROXIED_SOCKETS
 
     _origin = websocket.headers.get("origin")
@@ -117,9 +117,10 @@ async def handle_codefix_websocket(websocket: WebSocket):
                 await websocket.send_json({"type": "pong"})
 
             elif msg_type == "init":
-                # Identity from the VERIFIED ticket claims (S4), not the frame.
+                # Identity from the VERIFIED ticket claims (S4), not the frame. The
+                # project's tenant (`ten`, its owner), whose graph and settings it is.
                 state = CodeFixState()
-                state.user_id = str(_claims["sub"])
+                state.user_id = ticket_tenant(_claims)
                 state.project_id = str(_claims["pid"])
                 state.session_id = str(_claims["sid"])
                 state.streaming_callback = callback

@@ -80,8 +80,13 @@ class TriageOrchestrator:
     def __init__(self, user_id: str, project_id: str, callback,
                  real_actor_user_id: str | None = None,
                  trigger: str = "app", token_id: str | None = None,
-                 max_review_budget: int | None = None):
+                 max_review_budget: int | None = None,
+                 actor_user_id: str | None = None):
+        # The graph tenant (the project's owner): every read, the publish and the
+        # telemetry line name it. The person the run is for is `actor_user_id`,
+        # recorded on the TriageRun row; absent, the tenant (an owner's run).
         self.user_id = user_id
+        self.actor_user_id = actor_user_id or user_id
         self.project_id = project_id
         self.callback = callback
         self.real_actor_user_id = real_actor_user_id
@@ -125,7 +130,7 @@ class TriageOrchestrator:
         self.model = model
 
         self.run_client = TriageRunClient(
-            self.project_id, self.user_id, self.real_actor_user_id)
+            self.project_id, self.actor_user_id, self.real_actor_user_id)
 
         try:
             # A review needs the owner's Triage review model, and nothing stands

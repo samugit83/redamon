@@ -338,7 +338,8 @@ def start_detached_run(user_id: str, project_id: str,
                        trigger: str = "app", token_id: str | None = None,
                        max_review_budget: int | None = None,
                        socket: WebSocket | None = None,
-                       session_id: str = "") -> tuple:
+                       session_id: str = "",
+                       actor_user_id: str | None = None) -> tuple:
     """Start a run whose lifetime is its own, or attach to the one going.
 
     The one start path, for the websocket (a person) and for
@@ -349,6 +350,11 @@ def start_detached_run(user_id: str, project_id: str,
     The slot is held until the old run has recorded its outcome, so a start
     right after a Stop gets a clear "still finishing" rather than the webapp's
     "a run is already in progress" (C19).
+
+    `user_id` is the graph tenant, the project's owner: the run reads and
+    publishes the owner's graph. `actor_user_id` is the person the run is for,
+    recorded as its `actorUserId` (the tenant when absent, as before step 5.3);
+    `real_actor_user_id` the admin behind an act-as.
     """
     running = _active_run(project_id)
     if running is not None:
@@ -367,6 +373,7 @@ def start_detached_run(user_id: str, project_id: str,
     orchestrator = TriageOrchestrator(
         user_id=user_id, project_id=project_id,
         callback=TriageRunCallback(run),
+        actor_user_id=actor_user_id,
         real_actor_user_id=real_actor_user_id,
         trigger=trigger, token_id=token_id,
         max_review_budget=max_review_budget,
@@ -424,7 +431,7 @@ async def handle_triage_websocket(websocket: WebSocket):
     _agentic = str(_Path(__file__).resolve().parents[1])
     if _agentic not in _sys.path:
         _sys.path.insert(0, _agentic)
-    from ws_ticket import authorize_ws, cors_allowlist
+    from ws_ticket import authorize_ws, cors_allowlist, ticket_tenant
     from websocket_api import PROXIED_SOCKETS
 
     _origin = websocket.headers.get("origin")
@@ -460,9 +467,10 @@ async def handle_triage_websocket(websocket: WebSocket):
 
             elif msg_type == "init":
                 # Identity is bound from the VERIFIED ticket claims (S4), not the
-                # self-asserted init frame.
+                # self-asserted init frame. The state's user is the graph tenant
+                # (`ten`, the project's owner); the person is `sub`, recorded at start.
                 state: TriageState = _new_state(
-                    str(_claims["sub"]), str(_claims["pid"]), str(_claims["sid"]))
+                    ticket_tenant(_claims), str(_claims["pid"]), str(_claims["sid"]))
                 await websocket.send_json({
                     "type": "connected", "session_id": state["session_id"],
                 })
@@ -494,6 +502,7 @@ async def handle_triage_websocket(websocket: WebSocket):
                 # computing, and after a reload the tab cannot know one exists.
                 run, attached, refusal = start_detached_run(
                     state["user_id"], state["project_id"],
+                    actor_user_id=str(_claims["sub"]),
                     # The person actually signed in, when an admin acts as
                     # the owner (B13). Absent from a ticket minted before
                     # the claim existed.

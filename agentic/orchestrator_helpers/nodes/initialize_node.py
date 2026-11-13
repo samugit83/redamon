@@ -17,7 +17,7 @@ from state import (
     utc_now,
 )
 import orchestrator_helpers.chain_graph_writer as chain_graph
-from orchestrator_helpers.config import get_config_values
+from orchestrator_helpers.config import get_config_values, get_tenant_id
 from orchestrator_helpers.phase import classify_attack_path, determine_phase_for_new_objective
 from neo4j_read_pool import run_neo4j_read
 from project_settings import get_setting
@@ -286,10 +286,12 @@ async def _bind_scanned_hostnames(neo4j_creds, user_id, project_id, session_id) 
     bind_ip_hostnames_scanned(names)
 
 
-async def _scope_gate(state, llm, user_id, project_id, session_id, neo4j_creds=None) -> tuple[dict | None, dict]:
+async def _scope_gate(state, llm, user_id, project_id, session_id, neo4j_creds=None,
+                      tenant_id=None) -> tuple[dict | None, dict]:
     """(refusal, updates). The scope checks run at session start and again on any
     later turn whose scope differs from the one last checked: a mid-session
-    rescope must not inherit the old scope's approval."""
+    rescope must not inherit the old scope's approval. The scanned names are read
+    from the graph of `tenant_id`, the project's owner (`user_id` when None)."""
     from project_settings import SETTINGS_SOURCE_KEY, scope_signature
 
     previous = state.get("_scope_signature")
@@ -311,7 +313,7 @@ async def _scope_gate(state, llm, user_id, project_id, session_id, neo4j_creds=N
         refusal["_scope_signature"] = _SETTINGS_UNAVAILABLE
         return refusal, {}
 
-    await _bind_scanned_hostnames(neo4j_creds, user_id, project_id, session_id)
+    await _bind_scanned_hostnames(neo4j_creds, tenant_id or user_id, project_id, session_id)
     signature = scope_signature()
     if state.get("execution_trace") and not retry and previous == signature:
         return None, {"_scope_signature": signature}
@@ -398,7 +400,8 @@ def _roe_warning_update(user_id, project_id, session_id) -> dict:
 async def initialize_node(state: AgentState, config, *, llm, neo4j_creds) -> dict:
     """Initialize state, after the scope gate (_scope_gate) lets the turn run."""
     user_id, project_id, session_id = get_config_values(config)
-    refusal, updates = await _scope_gate(state, llm, user_id, project_id, session_id, neo4j_creds=neo4j_creds)
+    refusal, updates = await _scope_gate(state, llm, user_id, project_id, session_id, neo4j_creds=neo4j_creds,
+                                         tenant_id=get_tenant_id(state, config))
     if refusal is not None:
         return refusal
     if updates.get("_guardrail_blocked") is False:
@@ -421,6 +424,9 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
         neo4j_creds: Tuple of (neo4j_uri, neo4j_user, neo4j_password).
     """
     user_id, project_id, session_id = get_config_values(config)
+    # The project's owner: the chain is written, and prior chains read, under their id;
+    # kept in the state for the Fireteam members (user_id stays the person).
+    tenant_id = get_tenant_id(state, config)
     neo4j_uri, neo4j_user, neo4j_password = neo4j_creds
 
     logger.info(f"[{user_id}/{project_id}/{session_id}] Initializing state...")
@@ -434,6 +440,7 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
         logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with approval response: {state.get('user_approval_response')}")
         return {
             "user_id": user_id,
+            "tenant_user_id": tenant_id,
             "project_id": project_id,
             "session_id": session_id,
         }
@@ -442,6 +449,7 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
         logger.info(f"[{user_id}/{project_id}/{session_id}] Resuming with question answer")
         return {
             "user_id": user_id,
+            "tenant_user_id": tenant_id,
             "project_id": project_id,
             "session_id": session_id,
         }
@@ -529,7 +537,7 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
             chain_graph.fire_create_attack_chain(
                 neo4j_uri, neo4j_user, neo4j_password,
                 chain_id=session_id,
-                user_id=user_id,
+                user_id=tenant_id,
                 project_id=project_id,
                 title=latest_message[:200] if latest_message else "Untitled",
                 objective=latest_message[:500],
@@ -554,6 +562,7 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
                 "todo_list": [],  # Clear TODO list for new objective
                 "phase_history": state.get("phase_history", []),
                 "user_id": user_id,
+                "tenant_user_id": tenant_id,
                 "project_id": project_id,
                 "session_id": session_id,
                 "awaiting_user_approval": False,
@@ -579,7 +588,7 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
     chain_graph.fire_create_attack_chain(
         neo4j_uri, neo4j_user, neo4j_password,
         chain_id=session_id,
-        user_id=user_id,
+        user_id=tenant_id,
         project_id=project_id,
         title=latest_message[:200] if latest_message else "Untitled",
         objective=current_objective_content[:500],
@@ -603,6 +612,7 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
         "original_objective": state.get("original_objective", latest_message),  # Backward compat
         "target_info": state.get("target_info", TargetInfo().model_dump()),
         "user_id": user_id,
+        "tenant_user_id": tenant_id,
         "project_id": project_id,
         "session_id": session_id,
         "awaiting_user_approval": False,
@@ -627,7 +637,7 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
                 run_neo4j_read(
                     chain_graph.query_prior_chains,
                     neo4j_uri, neo4j_user, neo4j_password,
-                    user_id, project_id, session_id,
+                    tenant_id, project_id, session_id,
                 ),
                 timeout=PRIOR_CHAINS_WAIT_S,
             )

@@ -241,6 +241,10 @@ class WebSocketConnection:
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
         self.user_id: Optional[str] = None
+        #: The project's owner (the ticket's `ten`, ws_ticket.ticket_tenant): the graph
+        #: tenant the session's runs read and write. `user_id` stays the person, who keys
+        #: the session, the chat and the loop scope. None until a verified init.
+        self.tenant_id: Optional[str] = None
         self.project_id: Optional[str] = None
         self.session_id: Optional[str] = None
         #: The person signed in when an admin acts as `user_id` (the ticket's `act`),
@@ -582,6 +586,24 @@ class WebSocketManager:
                 keys.append(key)
         return await self._emergency_stop(keys, EMERGENCY_STOP_OWN_MESSAGE)
 
+    async def stop_project_session(self, project_id: str, session_id: str,
+                                   message: str = "Session stopped (conversation deleted)") -> bool:
+        """stop_session for every key of `session_id` in `project_id`, whoever's.
+
+        For a caller that knows the session but not its person: an orphan attack
+        chain names its project's owner (the tenant), never the person whose run
+        keys it. Parsed as live_session_ids does. True if a live run was cancelled.
+        """
+        if not project_id or not session_id:
+            return False
+        cancelled = False
+        for key in sorted(set(self._active_tasks) | set(self.active_connections)):
+            _user, _, rest = key.partition(":")
+            key_project, _, key_session = rest.partition(":")
+            if key_project == project_id and key_session == session_id:
+                cancelled = await self.stop_session(key, message=message) or cancelled
+        return cancelled
+
     async def _emergency_stop(self, keys, message: str) -> int:
         """stop_session for each key with a live run (its tool tasks too)."""
         stopped = 0
@@ -663,6 +685,10 @@ class ProxiedSocket:
     # The run of the graph credential a terminal's shell was handed: it is honoured
     # only while this entry exists (holds_run).
     run: Optional[str] = None
+    # The ticket's graph tenant (ws_ticket.ticket_tenant), whom that credential names.
+    # Revocation matches `sub`, the person, never this: a collaborator's revoke must not
+    # close the owner's sockets.
+    ten: str = ""
 
 
 class ProxiedSocketRegistry:
@@ -679,18 +705,21 @@ class ProxiedSocketRegistry:
     def add(self, ws, kind: str, claims: dict, run: Optional[str] = None) -> ProxiedSocket:
         if kind not in PROXIED_KINDS:
             raise ValueError(f"not a proxied socket kind: {kind!r}")
+        from ws_ticket import ticket_tenant
         entry = ProxiedSocket(
             ws=ws, kind=kind, sub=str(claims["sub"]),
             act=str(claims["act"]) if claims.get("act") else None,
-            pid=str(claims["pid"]), sid=str(claims["sid"]), run=run or None)
+            pid=str(claims["pid"]), sid=str(claims["sid"]), run=run or None,
+            ten=ticket_tenant(claims))
         self._entries[id(ws)] = entry
         return entry
 
-    def holds_run(self, run: str, user_id: str, project_id: str) -> bool:
+    def holds_run(self, run: str, tenant: str, project_id: str) -> bool:
         """Whether an open terminal socket was handed the graph credential of `run`,
-        for that user and project: a copy of the credential dies with the socket."""
+        for that tenant (the credential's `ten`) and project: a copy of the credential
+        dies with the socket."""
         return bool(run) and any(
-            e.kind == "kali-terminal" and e.run == run and e.sub == user_id and e.pid == project_id
+            e.kind == "kali-terminal" and e.run == run and e.ten == tenant and e.pid == project_id
             for e in list(self._entries.values()))
 
     def remove(self, ws) -> None:
@@ -1616,7 +1645,7 @@ class WebSocketHandler:
             # trusting the self-asserted identity. redamon.sh ensure_auth_secrets
             # always generates AGENT_WS_TICKET_SECRET, so real installs are
             # unaffected; only a token-less dev stack is refused (by design).
-            from ws_ticket import ticket_cap, ticket_secret, verify_ws_ticket
+            from ws_ticket import ticket_cap, ticket_secret, ticket_tenant, verify_ws_ticket
 
             secret = ticket_secret()
             user_id = init_msg.user_id
@@ -1652,6 +1681,7 @@ class WebSocketHandler:
             project_id = str(claims["pid"])
             session_id = str(claims["sid"])
             verified = True
+            connection.tenant_id = ticket_tenant(claims)
             connection.actor_id = str(claims["act"]) if claims.get("act") else None
             connection.cap = ticket_cap(claims)
 
@@ -1796,6 +1826,7 @@ class WebSocketHandler:
                 streaming_callback=callback,
                 guidance_queue=connection.guidance_queue,
                 graph_view_cypher=connection.graph_view_cypher,
+                tenant_user_id=connection.tenant_id,
             )
             logger.info(f"Query completed for session {connection.session_id}")
         except asyncio.CancelledError:
@@ -1854,6 +1885,7 @@ class WebSocketHandler:
             result = await self.orchestrator.resume_after_approval_with_streaming(
                 session_id=connection.session_id,
                 user_id=connection.user_id,
+                tenant_user_id=connection.tenant_id,
                 project_id=connection.project_id,
                 decision=approval_msg.decision,
                 modification=approval_msg.modification,
@@ -1922,6 +1954,7 @@ class WebSocketHandler:
             result = await self.orchestrator.resume_after_answer_with_streaming(
                 session_id=connection.session_id,
                 user_id=connection.user_id,
+                tenant_user_id=connection.tenant_id,
                 project_id=connection.project_id,
                 answer=answer,
                 streaming_callback=callback,
@@ -2049,6 +2082,7 @@ class WebSocketHandler:
             result = await self.orchestrator.resume_after_tool_confirmation_with_streaming(
                 session_id=connection.session_id,
                 user_id=connection.user_id,
+                tenant_user_id=connection.tenant_id,
                 project_id=connection.project_id,
                 decision=confirmation_msg.decision,
                 modifications=confirmation_msg.modifications,
@@ -2177,7 +2211,8 @@ class WebSocketHandler:
 
             # Get current state for the STOPPED message
             try:
-                config = create_config(connection.user_id, connection.project_id, connection.session_id)
+                config = create_config(connection.user_id, connection.project_id, connection.session_id,
+                                       connection.tenant_id)
                 current_state = await self.orchestrator.graph.aget_state(config)
                 iteration = current_state.values.get("current_iteration", 0) if current_state and current_state.values else 0
                 phase = current_state.values.get("current_phase", "informational") if current_state and current_state.values else "informational"
@@ -2278,6 +2313,7 @@ class WebSocketHandler:
         try:
             result = await self.orchestrator.resume_execution_with_streaming(
                 user_id=connection.user_id,
+                tenant_user_id=connection.tenant_id,
                 project_id=connection.project_id,
                 session_id=connection.session_id,
                 streaming_callback=callback,

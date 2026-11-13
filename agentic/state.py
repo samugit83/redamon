@@ -624,6 +624,9 @@ class FireteamMemberState(TypedDict):
     current_phase: Phase
     attack_path_type: str
     user_id: str
+    # The graph tenant (the project's owner), whose id the member's chain writes and
+    # tools carry; user_id stays the person (config.get_tenant_id).
+    tenant_user_id: str
     project_id: str
     session_id: str
     parent_target_info: dict     # snapshot of parent target_info at deploy time
@@ -1017,6 +1020,8 @@ class AgentState(TypedDict):
 
     # Session context
     user_id: str
+    # The graph tenant: the project's owner (config.get_tenant_id). user_id is the person.
+    tenant_user_id: str
     project_id: str
     session_id: str
 

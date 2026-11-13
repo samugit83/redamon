@@ -10,7 +10,9 @@ the agent verifies it here before registering the session.
 
 Ticket format: a standard compact HS256 JWS produced by the webapp via `jose`
 (`webapp/src/lib/auth.ts` -> createWsTicket), claims `{ sub, pid, sid, aud, iat, exp }`,
-plus an optional `act`: the person actually signed in when an admin simulates
+plus `ten`: the project's owner, whose graph, traffic and credentials the socket's work
+uses (ticket_tenant; `sub` stays the person, who keys the session, the chat and the
+loop), an optional `act`: the person actually signed in when an admin simulates
 `sub`, which a triage run records as its real actor, and on an `agent` ticket `cap`:
 the agent permissions that person holds on the project (ticket_cap).
 
@@ -67,6 +69,18 @@ def ticket_cap(claims: dict) -> Optional[frozenset]:
         logger.warning("[rbac] ticket cap malformed: the connection holds no agent permission")
         return frozenset()
     return frozenset(c for c in cap if isinstance(c, str) and c in AGENT_CAPS)
+
+
+def ticket_tenant(claims: dict) -> str:
+    """The graph tenant a verified ticket names (its `ten`): the project's owner.
+
+    A ticket without `ten` was minted by a webapp from before step 5.3 (tickets live 60 s
+    across an update), which minted agent, triage and CodeFix tickets only for the
+    project's owner and terminal tickets only for an owner too: its `sub` is the tenant,
+    as before. A `ten` that is present but not a non-empty string never verifies
+    (verify_ws_ticket), so this never falls back over a malformed one.
+    """
+    return str(claims.get("ten") or claims["sub"])
 
 
 def ticket_secret() -> str:
@@ -146,9 +160,10 @@ def verify_ws_ticket(ticket: Optional[str], secret: str, *, expected_aud: str,
 
     Returns the claims dict on success, or None if the ticket is missing,
     malformed, wrong-algorithm, has a bad signature, is expired, lacks the
-    required `sub`/`pid`/`sid` claims, or names no socket or another one than
-    `expected_aud`. Never raises. `expected_aud` has no default, so a caller
-    cannot forget to say which socket it guards.
+    required `sub`/`pid`/`sid` claims, carries a `ten` that is not a non-empty
+    string, or names no socket or another one than `expected_aud`. Never
+    raises. `expected_aud` has no default, so a caller cannot forget to say
+    which socket it guards.
     """
     if not ticket or not secret:
         return None
@@ -187,6 +202,11 @@ def verify_ws_ticket(ticket: Optional[str], secret: str, *, expected_aud: str,
         return None
 
     if not payload.get("sub") or not payload.get("pid") or not payload.get("sid"):
+        return None
+    # The webapp signed it, so a malformed `ten` is a bug there: refused, never read as `sub`,
+    # which would run a collaborator's work on their own empty graph.
+    if "ten" in payload and not (isinstance(payload["ten"], str) and payload["ten"]):
+        logger.warning("[rbac] ticket refused: malformed tenant")
         return None
 
     presented = payload.get("aud")

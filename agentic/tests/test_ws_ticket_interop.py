@@ -8,7 +8,7 @@ silently fail S6 open in production.
 Runs the real `jose` SignJWT inside the webapp container, with the claim set
 `createWsTicket` (webapp/src/lib/auth.ts) writes, then verifies the exact token
 string here, and the `cap` claim of an `agent` ticket (step 3.9b) reads back as the
-permissions it lists. `auth.wsTicket.test.ts` pins that claim set on the TypeScript side. SKIPs cleanly if the webapp container / docker is unavailable.
+permissions it lists, and its `ten` (step 5.3) as the graph tenant beside the person in `sub`. `auth.wsTicket.test.ts` pins that claim set on the TypeScript side. SKIPs cleanly if the webapp container / docker is unavailable.
 
 Run: python3 agentic/tests/test_ws_ticket_interop.py
 """
@@ -21,13 +21,15 @@ _AGENTIC_DIR = str(Path(__file__).resolve().parents[1])
 if _AGENTIC_DIR not in sys.path:
     sys.path.insert(0, _AGENTIC_DIR)
 
-from ws_ticket import ticket_cap, verify_ws_ticket  # noqa: E402
+from ws_ticket import ticket_cap, ticket_tenant, verify_ws_ticket  # noqa: E402
 
 SECRET = "interop-secret-0123456789abcdef"
 
 _TERMINAL_CLAIMS = '{sub:"u1",pid:"p1",sid:"s1",aud:"kali-terminal",act:"a1"}'
 # An `agent` ticket also carries `cap` (step 3.9b): the agent permissions its person holds.
 _AGENT_CLAIMS = '{sub:"u1",pid:"p1",sid:"s1",aud:"agent",cap:["agent:approve_phase","agent:fireteam"]}'
+# Every ticket names the project's owner as `ten` (step 5.3): here a collaborator's, owned by o1.
+_SHARED_CLAIMS = '{sub:"u1",pid:"p1",sid:"s1",aud:"agent",ten:"o1",act:"a1",cap:[]}'
 
 
 def _node_mint(claims: str) -> str:
@@ -81,6 +83,19 @@ class TicketInterop(unittest.TestCase):
         self.assertIsNotNone(claims, "jose-minted agent ticket rejected by Python verifier (interop bug)")
         self.assertEqual(ticket_cap(claims), frozenset({"agent:approve_phase", "agent:fireteam"}))
         self.assertIsNone(ticket_cap(verify_ws_ticket(self.token, SECRET, expected_aud="kali-terminal")))
+
+    def test_a_ticket_s_ten_reads_as_the_tenant_beside_the_person(self):
+        token = _mint_with_jose(SECRET, _SHARED_CLAIMS)
+        if not token:
+            self.skipTest("webapp container / jose unavailable")
+        claims = verify_ws_ticket(token, SECRET, expected_aud="agent")
+        self.assertIsNotNone(claims, "jose-minted ticket with ten rejected by Python verifier (interop bug)")
+        self.assertEqual((claims["sub"], ticket_tenant(claims), claims["act"]), ("u1", "o1", "a1"))
+        # A ticket without `ten` (this class's terminal ticket) names its person, as before.
+        self.assertEqual(ticket_tenant(verify_ws_ticket(self.token, SECRET, expected_aud="kali-terminal")), "u1")
+        # An empty `ten` written by a buggy minter never verifies.
+        empty = _mint_with_jose(SECRET, '{sub:"u1",pid:"p1",sid:"s1",aud:"agent",ten:""}')
+        self.assertIsNone(verify_ws_ticket(empty, SECRET, expected_aud="agent"))
 
 
 if __name__ == "__main__":
