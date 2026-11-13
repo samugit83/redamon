@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requirePermission } from '@/lib/authz/guards'
-import { triageCaller } from '@/lib/triage/routeCaller'
+import { triageCaller, triagePerson } from '@/lib/triage/routeCaller'
 import prisma from '@/lib/prisma'
 import { readJsonBody } from '@/lib/jsonBody'
 import { graphTriage, realActorUserId } from '@/lib/triageClient'
@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
     keys: wanted,
     include_seed: includeSeed === true,
     concept,
-    muted_by: caller.userId,
+    muted_by: triagePerson(auth),
     exempt_pairs: pairs,
   })
   // An agent that predates Multi mute refuses the op, or answers without the marker.
@@ -117,13 +117,13 @@ export async function POST(request: NextRequest) {
   if (muted.length > 0) {
     const realActor = await realActorUserId()
     await writeAudit({
-      actorId: realActor ?? caller.userId,
+      actorId: realActor ?? triagePerson(auth),
       action: 'muted_nodes.multi_muted',
       targetType: 'project',
       targetId: caller.projectId,
       after: {
         realActorUserId: realActor,
-        effectiveUserId: caller.userId,
+        effectiveUserId: triagePerson(auth),
         batchId,
         model: typeof result.body.model === 'string' ? result.body.model : null,
         promptVersion: typeof result.body.prompt_version === 'string' ? result.body.prompt_version : null,

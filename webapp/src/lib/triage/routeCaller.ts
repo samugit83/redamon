@@ -13,3 +13,14 @@ export function triageCaller(auth: PermissionContext): TriageCaller {
   if (!project) throw new Error('triageCaller needs a context that checked a project')
   return { userId: project.userId, projectId: project.id }
 }
+
+/**
+ * The person a triage write is attributed to (step 5.2; SH-24, SH-25): the effective user, never the
+ * tenant. On a shared project a collaborator's mute and verdict name the collaborator (`muted_by`,
+ * `triage_verdict_by`, the audit actor) while the graph keeps the owner as tenant. For the owner, and
+ * an admin acting as the owner, it is the owner, exactly as before. Under act-as a share reaches
+ * read only (D-22), so an acting admin never writes on someone else's project here.
+ */
+export function triagePerson(auth: PermissionContext): string {
+  return auth.effective.userId
+}

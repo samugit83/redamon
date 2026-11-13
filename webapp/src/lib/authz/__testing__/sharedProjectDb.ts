@@ -35,6 +35,11 @@ export interface ShareRow {
   rawData: boolean
   expiresAt: Date | null
   status?: string
+  /** The Read + Write toggles (step 5.2): read by projectAccess() only with write sharing in force. */
+  runScans?: boolean
+  useAgent?: boolean
+  exploit?: boolean
+  manage?: boolean
 }
 
 type Method = (...args: unknown[]) => unknown
@@ -132,7 +137,9 @@ export function sharedProjectPrisma(h: { db: SharedProjectDb }): unknown {
       findUnique: (args) => {
         const { where } = args as { where: { projectId_userId: { projectId: string; userId: string } } }
         const row = db().shares.get(`${where.projectId_userId.projectId}|${where.projectId_userId.userId}`)
-        return row ? { access: row.access, rawData: row.rawData, expiresAt: row.expiresAt, user: { status: row.status ?? 'active' } } : null
+        if (!row) return null
+        const { status, ...share } = row
+        return { ...share, user: { status: status ?? 'active' } }
       },
     },
     projectBreakGlass: {

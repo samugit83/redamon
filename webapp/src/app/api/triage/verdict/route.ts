@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requirePermission } from '@/lib/authz/guards'
-import { triageCaller } from '@/lib/triage/routeCaller'
+import { triageCaller, triagePerson } from '@/lib/triage/routeCaller'
 import { realActorUserId } from '@/lib/triageClient'
 import { readJsonBody } from '@/lib/jsonBody'
 import { writeAudit } from '@/lib/audit'
@@ -45,6 +45,10 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  // The person the decision is attributed to; the owner stays the tenant. A collaborator's verdict
+  // names them (`triage_verdict_by`), so it never trains the owner's detectors, which learn from the
+  // owner's own decisions only. The owner's request is the one sent before step 5.2.
+  const person = triagePerson(auth)
   try {
     const result = await recordVerdict(caller, {
       findingId: ref.findingId,
@@ -52,9 +56,10 @@ export async function POST(request: NextRequest) {
       status: status as VerdictStatus,
       reason: typeof reason === 'string' ? reason.slice(0, 500) : '',
       channel: 'app',
+      ...(person !== caller.userId ? { verdictBy: person } : {}),
     })
     void writeAudit({
-      actorId: caller.userId,
+      actorId: person,
       action: 'triage.verdict',
       targetType: 'finding',
       targetId: ref.findingId,

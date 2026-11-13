@@ -20,15 +20,18 @@ async function realActor(): Promise<{ id: string; email: string | null } | null>
 /**
  * Called with the agent's answer to a `mute`. Only a mute that landed is written:
  * an already-muted finding was left exactly as it was, and a refusal or a failure
- * changed nothing.
+ * changed nothing. `person` is the effective user the mute is attributed to
+ * (routeCaller `triagePerson`): the collaborator on a shared project, never the
+ * tenant; it defaults to the tenant, the owner, as before step 5.2.
  */
 export async function auditSingleMute(
   caller: TriageCaller,
   answer: { status: number; body: Record<string, unknown> },
   mute: { key: string; reason: string; graphId?: string },
+  person: string = caller.userId,
 ): Promise<void> {
   if (answer.status !== 200 || answer.body.muted !== true || answer.body.already === true) return
-  const actor = auditActorOf((await realActor()) ?? { id: caller.userId }, caller.userId)
+  const actor = auditActorOf((await realActor()) ?? { id: person }, person)
   await writeAudit({
     ...actorFields(actor),
     action: 'muted_nodes.muted',

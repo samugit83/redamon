@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requirePermission } from '@/lib/authz/guards'
-import { triageCaller } from '@/lib/triage/routeCaller'
+import { triageCaller, triagePerson } from '@/lib/triage/routeCaller'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { graphTriage } from '@/lib/triageClient'
 import { auditSingleMute } from '@/lib/triage/muteAudit'
@@ -48,11 +48,12 @@ export const POST = withRouteErrors('The finding could not be muted.', async (re
   const answer = await graphTriage('mute', caller, {
     node_id: nodeId,
     reason: muteReason,
-    muted_by: caller.userId,
+    // The person, not the tenant: on a shared project the collaborator who muted it.
+    muted_by: triagePerson(auth),
   })
   // The Graph Map serves a cached copy for up to 10 s; a muted finding must
   // leave it now, not then.
   if (answer.status >= 200 && answer.status < 300) invalidateCache(caller.projectId)
-  await auditSingleMute(caller, answer, { key: nodeId, reason: muteReason })
+  await auditSingleMute(caller, answer, { key: nodeId, reason: muteReason }, triagePerson(auth))
   return NextResponse.json(answer.body, { status: answer.status })
 })
