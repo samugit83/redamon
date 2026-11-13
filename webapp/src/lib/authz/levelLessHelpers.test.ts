@@ -12,7 +12,12 @@
  * permission at a write level (W and above) on the same path: the check must stand outside every
  * branch (if, ternary, `&&`/`||`/`??`, switch case, loop, catch) that does not also hold the call.
  * A read handler (GET, HEAD) that reaches one needs a permission with a project level. Production
- * code outside access.ts never calls these helpers, so no route reaches one through a library.
+ * code outside access.ts never calls these helpers, so no route reaches one through a library: the
+ * helper modules beside the routes (any non-route module under src/app/api) count as library code.
+ *
+ * The level stops a read collaborator's write only when the write handler's permission asks one: a
+ * write handler whose permission needs only R or R* lets every read share through, so the routes
+ * that have one are listed by name with the reason they write nothing (review of 4.3).
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/levelLessHelpers.test.ts
  * @vitest-environment node
@@ -22,6 +27,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { PERMISSIONS, isPermissionId } from './permissions'
+import { ROUTE_MANIFEST, type HttpMethod, type RouteManifestEntry } from './routeManifest'
 
 const WEBAPP = path.resolve(__dirname, '../../..')
 const API = path.join(WEBAPP, 'src', 'app', 'api')
@@ -157,7 +163,54 @@ function files(dir: string, keep: (file: string) => boolean): string[] {
   return out
 }
 
-const routes = files(API, (f) => path.basename(f) === 'route.ts')
+/** Paths relative to webapp/, `/`-separated. */
+const relative = (file: string): string => path.relative(WEBAPP, file).split(path.sep).join('/')
+
+/** The files `analyse` reads, from their handlers. */
+export const isRouteFile = (file: string): boolean => /^src\/app\/api\/(?:.+\/)?route\.ts$/.test(file)
+
+/** What the library check reads: every module but tests and route files, those under src/app/api too. */
+export const isLibraryModule = (file: string): boolean =>
+  /\.(ts|tsx)$/.test(file) && !/\.test\.(ts|tsx)$/.test(file) && !isRouteFile(file)
+
+/** The library modules among `modules` that call a level-less helper. */
+export function libraryCallers(modules: ReadonlyArray<{ file: string; source: string }>): string[] {
+  return modules.filter(({ file, source }) => {
+    if (!isLibraryModule(file)) return false
+    const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+    return descendants(sf).some((n) => ts.isCallExpression(n) && LEVEL_LESS.has(callName(n) ?? ''))
+  }).map(({ file }) => file)
+}
+
+const READ_LEVELS = new Set(['R', 'R*'])
+
+/** `METHOD path` of every write handler whose manifest permission needs only R or R*. */
+export function readLevelWrites(manifest: readonly RouteManifestEntry[]): string[] {
+  const out: string[] = []
+  for (const entry of manifest) {
+    for (const method of entry.methods.filter((m) => WRITE_METHODS.has(m))) {
+      const p = entry.permission
+      const permission = p && typeof p === 'object' ? p[method as HttpMethod] : p
+      if (typeof permission !== 'string' || !isPermissionId(permission)) continue
+      const level = PERMISSIONS[permission].level
+      if (level !== null && READ_LEVELS.has(level)) out.push(`${method} ${entry.path}`)
+    }
+  }
+  return out.sort()
+}
+
+/**
+ * The write handlers a read collaborator passes, each with why it changes nothing. A new one fails
+ * until it asks a write-level permission or is listed here with its reason; a stale one fails too.
+ */
+const READ_LEVEL_WRITES: Readonly<Record<string, string>> = {
+  'POST /api/agent/workspace/bulk-archive': 'streams an archive of the files named, as the archive-download GET does at the same permission (workspace:read, R*); writes nothing',
+  'POST /api/analytics/unseen': 'a POST only to carry the per-tab watermarks: label counts and the Red Zone GETs called in-process (graph:read); writes nothing',
+  'POST /api/graph-views/execute': 'read-only Neo4j session (fix of review finding 1)',
+}
+
+const SOURCES = files(path.join(WEBAPP, 'src'), (f) => /\.(ts|tsx)$/.test(f)).map(relative)
+const routes = SOURCES.filter(isRouteFile)
 
 describe('the analysis (fixtures)', () => {
   const uncovered = (src: string) => analyse(src).filter((r) => !r.covered).map((r) => `${r.method} ${r.helper} via ${r.via.join(' > ')}`)
@@ -236,7 +289,7 @@ describe('the analysis (fixtures)', () => {
 })
 
 describe('the routes (step 4.3)', () => {
-  const reaches = routes.flatMap((file) => analyse(readFileSync(file, 'utf8'), file).map((r) => ({ ...r, file: path.relative(WEBAPP, file) })))
+  const reaches = routes.flatMap((file) => analyse(readFileSync(path.join(WEBAPP, file), 'utf8'), file).map((r) => ({ ...r, file })))
 
   test('every route was read, and the analysis finds the handlers that reach a level-less helper (not vacuous)', () => {
     expect(routes.length).toBeGreaterThan(300)
@@ -256,12 +309,55 @@ describe('the routes (step 4.3)', () => {
   })
 
   test('production code outside access.ts never calls a level-less helper, so no route reaches one through a library', () => {
-    const lib = files(path.join(WEBAPP, 'src'), (f) => /\.(ts|tsx)$/.test(f) && !/\.test\.(ts|tsx)$/.test(f) && !f.startsWith(API + path.sep))
-    const callers = lib.filter((file) => {
-      const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
-      return descendants(sf).some((n) => ts.isCallExpression(n) && LEVEL_LESS.has(callName(n) ?? ''))
-    }).map((f) => path.relative(WEBAPP, f))
+    const lib = SOURCES.filter(isLibraryModule)
+    // Not vacuous: the helper modules beside the routes are read as well.
+    expect(lib.filter((f) => f.startsWith('src/app/api/')).length).toBeGreaterThan(10)
+    const callers = libraryCallers(lib.map((file) => ({ file, source: readFileSync(path.join(WEBAPP, file), 'utf8') })))
     // access.ts: guardProject and requireProjectScopedResource are built on requireProjectAccess.
     expect(callers).toEqual(['src/lib/access.ts'])
+  })
+})
+
+describe('the library check (fixtures, review of 4.3)', () => {
+  const call = 'export async function check(eff, id) { return requireProjectAccess(eff, id) }'
+
+  test('a helper module under src/app/api is library code: its call is found; a route file is left to the route analysis', () => {
+    expect(libraryCallers([
+      { file: 'src/app/api/foo/shared.ts', source: call },
+      { file: 'src/app/api/foo/bar/helpers.tsx', source: call },
+      { file: 'src/app/api/foo/routes.ts', source: call },
+      { file: 'src/app/api/foo/route.ts', source: call },
+      { file: 'src/app/api/foo/route.test.ts', source: call },
+      { file: 'src/lib/thing.ts', source: call },
+      { file: 'src/lib/quiet.ts', source: 'export const x = 1 // guardProject(id)' },
+    ])).toEqual(['src/app/api/foo/shared.ts', 'src/app/api/foo/bar/helpers.tsx', 'src/app/api/foo/routes.ts', 'src/lib/thing.ts'])
+  })
+
+  test('route files are exactly the route.ts files under src/app/api', () => {
+    expect(['src/app/api/route.ts', 'src/app/api/a/[id]/route.ts', 'src/app/api/a/route.tsx', 'src/app/api/a/myroute.ts', 'src/lib/route.ts']
+      .filter(isRouteFile)).toEqual(['src/app/api/route.ts', 'src/app/api/a/[id]/route.ts'])
+  })
+})
+
+describe('write handlers behind a read-level permission (review of 4.3)', () => {
+  test('found from the manifest: a per-method permission, a write level, a key route and an unknown id are told apart', () => {
+    const manifest: RouteManifestEntry[] = [
+      { path: '/api/a', guard: 'project', methods: ['GET', 'POST'], permission: { GET: 'graph:read', POST: 'graph:read' } },
+      { path: '/api/b', guard: 'project', methods: ['GET', 'DELETE'], permission: { GET: 'graph:read', DELETE: 'graph:edit' } },
+      { path: '/api/c', guard: 'project', methods: ['PUT', 'PATCH'], permission: 'workspace:read' },
+      { path: '/api/d', guard: 'internal', methods: ['POST'], permission: null },
+      { path: '/api/e', guard: 'project', methods: ['POST'], permission: 'no:such' },
+      { path: '/api/f', guard: 'session', methods: ['GET'], permission: 'recon:read' },
+    ]
+    expect(readLevelWrites(manifest)).toEqual(['PATCH /api/c', 'POST /api/a', 'PUT /api/c'])
+  })
+
+  test('on the tree: exactly the listed routes, each with its reason', () => {
+    expect(ROUTE_MANIFEST.length).toBeGreaterThan(300)
+    for (const [route, why] of Object.entries(READ_LEVEL_WRITES)) expect([route, why.length > 20]).toEqual([route, true])
+    expect(
+      readLevelWrites(ROUTE_MANIFEST),
+      'a write handler a read share passes: ask a write-level permission, or list it in READ_LEVEL_WRITES with why it writes nothing',
+    ).toEqual(Object.keys(READ_LEVEL_WRITES).sort())
   })
 })
