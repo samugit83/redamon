@@ -21,6 +21,7 @@
  *    preset audits its settings, which is the only undo there is.
  */
 import prisma from '@/lib/prisma'
+import { ACTIVATION_STATE_TRANSFERRING, TRANSFER_IN_PROGRESS_MESSAGE, holdOf } from '@/lib/graphHold'
 import { writeAudit } from '@/lib/audit'
 import { canonicalJson } from '@/lib/fingerprint'
 import { RECON_PRESETS, getPresetById, type ReconPreset } from '@/lib/recon-presets'
@@ -559,12 +560,16 @@ export async function applyReconPreset(
 
   const select = {
     ...Object.fromEntries([...PRESET_FIELD_KEYS, ...APPLY_CONTEXT_FIELDS].map(k => [k, true])),
-    updatedAt: true,
+    updatedAt: true, activationState: true, activationStartedAt: true,
   }
   assertReadableSelect(select, 'apply_recon_preset')
   const row = await prisma.project.findUnique({ where: { id: args.projectId }, select }) as
     (Record<string, unknown> & { updatedAt: Date }) | null
   if (!row) throw new McpToolError('Project not found', 'not_found')
+  // A transfer clears the old owner's providers and templates from the row (step 5.12): no preset meanwhile.
+  if (holdOf(row as { activationState?: string; activationStartedAt?: Date | null }) === ACTIVATION_STATE_TRANSFERRING) {
+    throw new McpToolError(TRANSFER_IN_PROGRESS_MESSAGE, 'project_transfer_in_progress')
+  }
 
   const application = computePresetApplication(row, preset.settings, defaults, preset)
   const problem = await validateApplication(application, row, args.projectId, ctx.token.userId)

@@ -447,3 +447,16 @@ describe('apply_recon_preset', () => {
     expect(r.queuedJobsNeedingReview.jobIds).toEqual(['j1'])
   })
 })
+
+// Review of 5.12 (finding 5): a preset waits while an ownership transfer holds the project.
+describe('apply_recon_preset during an ownership transfer (review of 5.12)', () => {
+  test('refused with project_transfer_in_progress, nothing written', async () => {
+    h.projectFind.mockImplementation(async (args: { select?: Record<string, unknown> }) =>
+      args.select && Object.keys(args.select).length === 2 && 'userId' in args.select
+        ? { id: 'p1', userId: 'owner' }
+        : projectRow({ activationState: 'transferring', activationStartedAt: new Date() }))
+    await expect(applyReconPreset(ctx(), { projectId: 'p1', presetId: 'stealth-recon' }))
+      .rejects.toMatchObject({ code: 'project_transfer_in_progress' })
+    expect(h.projectUpdateMany).not.toHaveBeenCalled()
+  })
+})

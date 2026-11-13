@@ -673,3 +673,20 @@ describe('REGRESSION: a busy refusal does not burn the start window (F10)', () =
     await expect(startRecon(ctx(), 'p1')).resolves.toBeTruthy()
   })
 })
+
+// Review of 5.12 (finding 5): while an ownership transfer holds the project it clears the settings that name the old
+// owner's own providers and templates, so a settings write then is refused like the project form's save.
+describe('update_recon_settings during an ownership transfer (review of 5.12)', () => {
+  test('refused with project_transfer_in_progress, nothing written; an activation refuses nothing here', async () => {
+    h.findProject
+      .mockResolvedValueOnce({ id: 'p1', userId: 'owner' })
+      .mockResolvedValueOnce({ naabuThreads: 10, updatedAt: READ_AT, activationState: 'transfer_split', activationStartedAt: null })
+    await expect(updateReconSettings(ctx(), 'p1', { naabuThreads: 25 })).rejects.toMatchObject({ code: 'project_transfer_in_progress' })
+    expect(h.updateManyProjects).not.toHaveBeenCalled()
+    h.findProject
+      .mockResolvedValueOnce({ id: 'p1', userId: 'owner' })
+      .mockResolvedValueOnce({ naabuThreads: 10, updatedAt: READ_AT, activationState: 'activating', activationStartedAt: new Date() })
+      .mockResolvedValueOnce({ naabuThreads: 25 })
+    await expect(updateReconSettings(ctx(), 'p1', { naabuThreads: 25 })).resolves.toBeTruthy()
+  })
+})

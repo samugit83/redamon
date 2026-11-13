@@ -38,6 +38,7 @@ import {
 import { markOutOfPolicy } from '@/lib/ipHostnamePolicy'
 import { refreshActiveRecordingScope } from '@/lib/recordingSession'
 import { activationBusy } from '@/lib/activationLock'
+import { ACTIVATION_STATE_TRANSFERRING, TRANSFER_IN_PROGRESS_MESSAGE, holdOf } from '@/lib/graphHold'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
 import { LEGACY_GRAPH_MESSAGE, legacyGraphDomains } from '@/lib/legacyGraph'
@@ -170,10 +171,15 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
     // Not changed here; read for the soft guardrail and the recording scope, and
     // ipMode because the hostname policy applies only to an IP project.
     targetGuardrailEnabled: true, roeExcludedHosts: true, ipMode: true,
+    activationState: true, activationStartedAt: true,
   }
   assertReadableSelect(select, 'update_project_scope')
   const row = await prisma.project.findUnique({ where: { id: args.projectId }, select }) as Row | null
   if (!row) throw new McpToolError('Project not found', 'not_found')
+  // The project changes owner meanwhile (step 5.12): its scope waits for the transfer to end.
+  if (holdOf(row as { activationState?: string; activationStartedAt?: Date | null }) === ACTIVATION_STATE_TRANSFERRING) {
+    throw new McpToolError(TRANSFER_IN_PROGRESS_MESSAGE, 'project_transfer_in_progress')
+  }
 
   const data: Record<string, unknown> = { ...filtered.data }
   let addedRoots: string[] = []

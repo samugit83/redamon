@@ -20,6 +20,7 @@ import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 
 import prisma from '@/lib/prisma'
+import { ACTIVATION_STATE_TRANSFERRING, TRANSFER_IN_PROGRESS_MESSAGE, holdOf } from '@/lib/graphHold'
 import { writeAudit } from '@/lib/audit'
 import { roeTextDigest } from '@/lib/engagement'
 import { guardProjectWrite, recordProjectWrite } from '@/lib/projectWriteGuards'
@@ -139,6 +140,11 @@ export async function applyRoe(input: ApplyRoeInput): Promise<NextResponse> {
   if (!row) {
     log('not_found')
     return err(404, 'not_found', 'The project no longer exists.')
+  }
+  // The RoE writes settings an ownership transfer is moving (step 5.12): it waits for the transfer to end.
+  if (holdOf(row as { activationState?: string; activationStartedAt?: Date | null }) === ACTIVATION_STATE_TRANSFERRING) {
+    log('transfer_in_progress')
+    return err(409, 'project_transfer_in_progress', TRANSFER_IN_PROGRESS_MESSAGE)
   }
   const expected = new Date(input.rowVersion)
   if (Number.isNaN(expected.getTime()) || row.updatedAt.getTime() !== expected.getTime()) {

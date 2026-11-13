@@ -546,3 +546,12 @@ describe('an IP project\'s hostname policy (Hostnames on target IPs, design §6.
     expect(r).not.toHaveProperty('hostnamePolicyMarked')
   })
 })
+
+// Review of 5.12 (finding 5): the scope waits while an ownership transfer holds the project.
+describe('update_project_scope during an ownership transfer (review of 5.12)', () => {
+  test('refused with project_transfer_in_progress, nothing written', async () => {
+    row = { ...row, activationState: 'transfer_split', activationStartedAt: null }
+    await expect(call({ gvmScanTargets: 'ips_only' })).rejects.toMatchObject({ code: 'project_transfer_in_progress' })
+    expect(h.projectUpdateMany).not.toHaveBeenCalled()
+  })
+})

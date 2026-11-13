@@ -506,3 +506,14 @@ describe('a transaction that fails names its cause', () => {
     expect(await res.json()).toEqual({ error: 'Failed to apply the Rules of Engagement.', code: 'P2028' })
   })
 })
+
+// Review of 5.12 (finding 5): an ownership transfer holds the project while it moves its settings; the RoE waits.
+describe('during an ownership transfer (review of 5.12)', () => {
+  test('a replace and a remove answer 409 project_transfer_in_progress and write nothing', async () => {
+    h.row = freshRow({ activationState: 'transfer_split', activationStartedAt: null })
+    const res = await post({ changes: { roeGlobalMaxRps: 5 }, parsedFields: { roeGlobalMaxRps: 5 } })
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('project_transfer_in_progress')
+    nothingWritten()
+  })
+})

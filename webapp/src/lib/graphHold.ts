@@ -42,11 +42,14 @@ export function holdOf(row: { activationState?: string | null; activationStarted
   return isStale(row.activationStartedAt, Date.now()) ? null : row.activationState as GraphHold
 }
 
+export const TRANSFER_IN_PROGRESS_MESSAGE =
+  "This project's ownership is being transferred. Try again in a moment, once it finishes."
+
 /** The 409 of a write refused while the project moves to its new owner (step 5.12). */
 export function transferInProgressResponse(): NextResponse {
   return NextResponse.json(
     {
-      error: "This project's ownership is being transferred. Try again in a moment, once it finishes.",
+      error: TRANSFER_IN_PROGRESS_MESSAGE,
       code: 'project_transfer_in_progress',
       transferInProgress: true,
     },

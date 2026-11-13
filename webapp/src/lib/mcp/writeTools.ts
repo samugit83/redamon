@@ -21,6 +21,7 @@
  *    the containment is a code check rather than prompt wording.
  */
 import prisma from '@/lib/prisma'
+import { ACTIVATION_STATE_TRANSFERRING, TRANSFER_IN_PROGRESS_MESSAGE, holdOf } from '@/lib/graphHold'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { describeLiveGraphWriters, describeScanWriters } from '@/lib/graphWriters'
 import { startFullScan } from '@/lib/startFullScan'
@@ -292,9 +293,12 @@ export async function updateReconSettings(
 
   const before = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { ...reconSettingsSelect(), updatedAt: true, userId: true },
+    select: { ...reconSettingsSelect(), updatedAt: true, userId: true, activationState: true, activationStartedAt: true },
   })
   if (!before) throw new McpToolError('Project not found', 'not_found')
+  // An ownership transfer clears the settings that name the old owner's own providers and templates
+  // (step 5.12): a write meanwhile could put one back.
+  if (holdOf(before) === ACTIVATION_STATE_TRANSFERRING) throw new McpToolError(TRANSFER_IN_PROGRESS_MESSAGE, 'project_transfer_in_progress')
 
   // The rules over several fields that the project form's save enforces. Judged
   // on the stored row with this change applied, so a rule over two fields sees
