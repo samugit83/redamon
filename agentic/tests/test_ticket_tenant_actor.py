@@ -282,12 +282,39 @@ def _calls(path: Path):
     return [n for n in ast.walk(ast.parse(path.read_text())) if isinstance(n, ast.Call)]
 
 
+_PERSON_READERS = ("get_identifiers", "get_config_values")
+
+
 def _is_person(node) -> bool:
-    """`user_id`, or `state.get("user_id", ...)`: the person, never the tenant."""
+    """The person, never the tenant: `user_id`, `state.get("user_id", ...)`, `state["user_id"]`,
+    `config["configurable"]["user_id"]`, `get_identifiers(...)[0]`, `get_config_values(...)[0]`."""
     if isinstance(node, ast.Name):
         return node.id == "user_id"
+    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+        if node.slice.value == "user_id":
+            return True
+        call = node.value
+        if node.slice.value == 0 and isinstance(call, ast.Call):
+            name = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None)
+            return name in _PERSON_READERS
+        return False
     return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
             and bool(node.args) and isinstance(node.args[0], ast.Constant) and node.args[0].value == "user_id")
+
+
+class TheScanKnowsEveryWayToNameThePerson(unittest.TestCase):
+    def test_each_person_shape_is_caught_and_the_tenant_is_not(self):
+        def expr(src):
+            return ast.parse(src, mode="eval").body
+        for src in ('user_id', 'state.get("user_id")', 'state.get("user_id", "")', 'state["user_id"]',
+                    'config["configurable"]["user_id"]', 'get_identifiers(state, config)[0]',
+                    'config_mod.get_identifiers(state, config)[0]', 'get_config_values(config)[0]'):
+            with self.subTest(person=src):
+                self.assertTrue(_is_person(expr(src)))
+        for src in ('tenant_id', 'get_tenant_id(state, config)', 'state["tenant_user_id"]',
+                    'state.get("tenant_user_id")', 'get_identifiers(state, config)[1]', 'ids[0]'):
+            with self.subTest(not_person=src):
+                self.assertFalse(_is_person(expr(src)))
 
 
 class EveryNodeCallSiteHandsTheTenant(unittest.TestCase):

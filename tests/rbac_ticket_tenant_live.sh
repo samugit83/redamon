@@ -2,8 +2,10 @@
 #
 # Live check of RBAC step 5.3 (SH-33, SH-34, SH-38), run against the LIVE stack after the agent
 # and the webapp are rebuilt from a HEAD that holds the step:
-#   - the webapp names the project's owner as `ten` in every ticket it mints (member A on its
-#     project PA, each of the four sockets), beside `sub`;
+#   - the webapp names the project's owner as `ten` in every ticket it mints, beside `sub` (member A
+#     on its project PA, the three project sockets: chat, CypherFix triage and CodeFix; a Kali
+#     terminal ticket also needs platform:kali_terminal, so the terminal's tenant is checked in the
+#     agent container below, with a ticket that check signs itself);
 #   - inside the agent container (tests/rbac_ticket_tenant_live_ws.py), with tickets it signs
 #     itself (a collaborator mints no agent ticket from the webapp until step 5.6 opens Use AI
 #     agent): an empty `ten` is refused; a collaborator's chat socket on A's project opens, and a
