@@ -14,6 +14,7 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Action | Skill |
 | ------ | ----- |
 | Adding a node label, relationship, or property to the graph schema | `graph-db-writes` |
+| Adding a path a project collaborator can reach, or a ticket, token or job that carries a tenant and an actor | `rbac-authz` |
 | Adding an agent model call site, a retry loop, or a path that builds an LLM from a model id | `agent-in-the-loop` |
 | Adding or editing a test file in any section | `redamon-testing` |
 | Changing how a triage score, review or verdict is computed or written | `priority-board-triage` |
@@ -22,7 +23,9 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Checking or ratcheting a coverage floor | `redamon-testing` |
 | Editing the Agent in the Loop broker, adapter, routes or loop MCP tools | `agent-in-the-loop` |
 | Editing the Priority Board, the triage graph mixin, or the MCP triage tools | `priority-board-triage` |
+| Editing the caller-supplied Cypher filters (injectProjectFilter.ts, graph_db/tenant_filter.py) | `rbac-authz` |
 | Editing the plugin platform: the plugins lib or routes, the plugin runner, or the Gateway | `plugin-platform` |
+| Editing webapp/src/lib/authz, a route's permission guard, or the route manifest | `rbac-authz` |
 | Investigating a red, skipped or xfailed test | `redamon-testing` |
 | Writing to the Neo4j graph or editing a graph_db mixin | `graph-db-writes` |
 
@@ -192,3 +195,4 @@ Maintained by hand (not touched by `sync.sh`). One row per skill.
 | `priority-board-triage` | Priority Board layers: nobody writes a score (combine_layers only), one layer per writer, never updated_at, legacy-tolerant readers | [SKILL.md](skills/priority-board-triage/SKILL.md) |
 | `plugin-platform` | Plugin platform: no plugin logic in the base, plugin services only via plugins_converge, overlay-only webapp wiring, every Gateway call re-authorized, plugins only propose | [SKILL.md](skills/plugin-platform/SKILL.md) |
 | `agent-in-the-loop` | Agent in the Loop (an external MCP client answers the agent's model calls): only inside its own run scope, never retried, refused on every session-less builder, a driver token holds read scopes only, a person picks the brain and answers every approval | [SKILL.md](skills/agent-in-the-loop/SKILL.md) |
+| `rbac-authz` | Authorization: every check through lib/authz (the helper per case), the read views for non-owners, the Cypher allowlists, tenant vs actor in every hop, onAccessReduced on every access loss, audit inside auditedTransaction, a switch with its flags-off test, the route manifest | [SKILL.md](skills/rbac-authz/SKILL.md) |

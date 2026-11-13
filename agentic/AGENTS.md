@@ -13,6 +13,7 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Adding a Community Agent Skill (importable .md attack workflow) | `add-community-skill` |
 | Adding a built-in attack skill to the agent | `builtin-agent-skill` |
 | Adding a non-chat provider type, or a path that picks any provider row | `llm-provider-integration` |
+| Adding a path a project collaborator can reach, or a ticket, token or job that carries a tenant and an actor | `rbac-authz` |
 | Adding a tool the agent can call | `agentic-tool-integration` |
 | Adding an agent model call site, a retry loop, or a path that builds an LLM from a model id | `agent-in-the-loop` |
 | Adding or editing an MCP server the agent uses | `agentic-tool-integration` |
@@ -26,7 +27,9 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Editing the Agent in the Loop broker, adapter, routes or loop MCP tools | `agent-in-the-loop` |
 | Editing the Priority Board, the triage graph mixin, or the MCP triage tools | `priority-board-triage` |
 | Editing the agent tool registry, phase map, or PhaseAwareToolExecutor dispatch | `agentic-tool-integration` |
+| Editing the caller-supplied Cypher filters (injectProjectFilter.ts, graph_db/tenant_filter.py) | `rbac-authz` |
 | Editing the plugin platform: the plugins lib or routes, the plugin runner, or the Gateway | `plugin-platform` |
+| Editing webapp/src/lib/authz, a route's permission guard, or the route manifest | `rbac-authz` |
 
 ---
 
