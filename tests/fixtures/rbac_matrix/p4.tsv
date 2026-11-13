@@ -170,3 +170,17 @@ p4-oversee-graph-overview	4.6	admin_a	GET	/api/analytics/graph-overview?projectI
 p4-oversee-graph-views-execute	4.6	admin_a	POST	/api/graph-views/execute	{"projectId":"${PA_ID}","cypherQuery":"MATCH (d:Domain) RETURN d"}	200;has="nodes"	req:SH-18 sharing:on
 p4-oversee-graph-node-delete	4.6	admin_a	DELETE	/api/graph?projectId=${PA_ID}&nodeId=rbac-no-such-node	-	403;has=graph:edit	req:SH-18 sharing:on
 p4-oversee-text-to-cypher	4.6	admin_a	POST	/api/agent/text-to-cypher	{"project_id":"${PA_ID}"}	403;has=agent:assistants;lacks="upstreamStatus"	req:SH-18 sharing:on
+
+# ---- step 4.5: owned and shared lists, Shared with me ----
+# The project list holds the projects shared with the person, each row with `myAccess` (owner, or read with its Raw
+# data toggle, and the owner who shared it); member_b (no share) never lists PSHARED. With RBAC_SHARING_ENABLED off
+# the list carries no myAccess (DV-30) and the viewer lists nothing of member_c's. The scan activity view answers the
+# viewer; the seed queues nothing on PSHARED, so a shared project's jobs with their initiator, and the count as their
+# complement, are unit-tested (system/jobs/route.shared.test.ts). The reports list is p4-viewer-reports-all (4.7).
+p4-list-viewer	4.5	viewer	GET	/api/projects	-	200;has=${PSHARED_ID};has="level":"read";has="via":"share";has="rawData":false	req:SH-39 req:SH-09 sharing:on
+p4-list-viewer-raw	4.5	viewer_raw	GET	/api/projects	-	200;has=${PSHARED_ID};has="via":"share";has="rawData":true	req:SH-39 sharing:on
+p4-list-owner	4.5	member_c	GET	/api/projects	-	200;has=${PSHARED_ID};has="level":"owner";lacks="via":"share"	req:SH-39 sharing:on
+p4-list-not-shared	4.5	member_b	GET	/api/projects	-	200;lacks=${PSHARED_ID}	req:SH-39 sharing:on
+p4-list-off-owner	4.5	member_c	GET	/api/projects	-	200;has=${PSHARED_ID};lacks="myAccess"	req:SH-39 req:DV-30 sharing:off
+p4-list-off-viewer	4.5	viewer	GET	/api/projects	-	200;lacks=${PSHARED_ID}	req:SH-39 req:DV-30 sharing:off
+p4-jobs-viewer	4.5	viewer	GET	/api/system/jobs	-	200;has="mine";has="others"	req:SH-39 sharing:on
