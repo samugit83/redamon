@@ -5,6 +5,7 @@ import { internalError } from '@/lib/routeErrors'
 import { writeAudit } from '@/lib/audit'
 import { actingAdminId } from '@/lib/roe/actor'
 import { attachmentDisposition, downloadContentType } from '@/lib/roe/limits'
+import { ROE_DOCUMENT_OWNER_ONLY, ownerOnlyRefusal } from '@/lib/authz/projectReadView'
 
 // GET /api/projects/[id]/roe/download - Download the original RoE document
 export async function GET(
@@ -15,9 +16,11 @@ export async function GET(
     const { id } = await params
 
     // The document names the client, their contacts and what may be attacked:
-    // it is the owner's, like every other project read.
+    // it stays the owner's even on a shared project (OQ-53), whatever roe:read reaches.
     const auth = await requirePermission(request, 'roe:read', { projectId: id })
     if (auth instanceof NextResponse) return auth
+    const refused = ownerOnlyRefusal(auth.access, 'roe:read', ROE_DOCUMENT_OWNER_ONLY)
+    if (refused) return refused
     const eff = auth.effective
 
     const project = await prisma.project.findUnique({

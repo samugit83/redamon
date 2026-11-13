@@ -26,6 +26,8 @@ import { templateSelectionRefusal, withoutUnselectableTemplates } from '@/lib/nu
 import { isStdioServer } from '@/lib/mcp/schema'
 import { ownerRunsStdio, serversForAgent } from '@/lib/mcp/userServerAccess'
 import { scannerJobRefusal } from '@/lib/authz/jobCredential'
+import { projectReadView } from '@/lib/authz/projectReadView'
+import type { ProjectAccess } from '@/lib/authz/projectAccess'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -87,9 +89,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       if (refused) return refused
     }
     const isServiceCaller = isInternalRequest(request) || isScannerRequest(request)
+    let access: ProjectAccess | null = null
     if (!isServiceCaller) {
       const auth = await requirePermission(request, 'recon:read', { projectId: id })
       if (auth instanceof NextResponse) return auth
+      access = auth.access
     }
 
     const project = await prisma.project.findUnique({
@@ -203,7 +207,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       })
     }
 
-    return NextResponse.json({ ...projectForCaller, ...skillOverridesField })
+    // A browser caller who is not the owner never receives the owner's secrets (HD-27).
+    const body = isServiceCaller ? projectForCaller : projectReadView(projectForCaller, access)
+    return NextResponse.json({ ...body, ...skillOverridesField })
   } catch (error) {
     return internalError(error, 'Failed to fetch project')
   }

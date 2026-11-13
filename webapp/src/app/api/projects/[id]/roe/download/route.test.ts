@@ -1,5 +1,6 @@
 /**
- * GET /api/projects/[id]/roe/download: the document is the owner's.
+ * GET /api/projects/[id]/roe/download: the document is the owner's, on a shared project too
+ * (OQ-53: a read collaborator reaches roe:read but never the document).
  *
  * Before this the route had no object-level check at all: any signed-in user
  * holding a project id downloaded another user's signed Rules of Engagement,
@@ -14,13 +15,26 @@ import { NextRequest } from 'next/server'
 const mockFindUnique = vi.fn()
 const mockGetEffectiveUser = vi.fn()
 const mockAudit = vi.fn()
+// The access level the guard grants; null keeps the double's answer (the owner). Until step 4.3
+// projectAccess() only ever answers the owner, so a read collaborator is this level.
+const h = vi.hoisted(() => ({ level: null as string | null }))
 
 vi.mock('@/lib/prisma', () => ({
   default: { project: { findUnique: (...a: unknown[]) => mockFindUnique(...a) } },
 }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => mockAudit(...a) }))
 vi.mock('@/lib/session', () => ({ getSession: async () => null }))
-vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser()))
+vi.mock('@/lib/authz/guards', async () => {
+  const guards = await import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overEffectiveUser())
+  return {
+    ...guards,
+    requirePermission: async (...a: Parameters<typeof guards.requirePermission>) => {
+      const ctx = await guards.requirePermission(...a)
+      if (h.level === null || ctx instanceof Response || !ctx.access) return ctx
+      return { ...ctx, access: { ...ctx.access, level: h.level } } as unknown as typeof ctx
+    },
+  }
+})
 vi.mock('@/lib/access', async () => {
   const actual = await vi.importActual<typeof import('@/lib/access')>('@/lib/access')
   return { ...actual, requireEffectiveUser: () => mockGetEffectiveUser() }
@@ -49,7 +63,38 @@ const get = () =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  h.level = null
   delete process.env.ACCESS_ENFORCE
+})
+
+const documentRead = () =>
+  mockFindUnique.mock.calls.some(([args]) => Boolean((args as { select?: Record<string, boolean> })?.select?.roeDocumentData))
+
+describe('owner only (OQ-53)', () => {
+  test('read collaborator 403', async () => {
+    mockGetEffectiveUser.mockResolvedValue({ userId: 'reader' })
+    wire('reader')
+    h.level = 'read'
+    const res = await get()
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({
+      error: "Only the project's owner can download the rules of engagement document.",
+      code: 'owner_only',
+      permission: 'roe:read',
+    })
+    expect(documentRead()).toBe(false)
+    expect(mockAudit).not.toHaveBeenCalled()
+  })
+
+  test('owner unchanged', async () => {
+    mockGetEffectiveUser.mockResolvedValue({ userId: 'victim' })
+    wire('victim')
+    h.level = 'owner'
+    const res = await get()
+    expect(res.status).toBe(200)
+    expect(Buffer.from(await res.arrayBuffer()).equals(BYTES)).toBe(true)
+    expect(mockAudit).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('BOLA', () => {
