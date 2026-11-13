@@ -22,9 +22,9 @@
  * the agent, the database) makes the answer unverified: the owner's start goes ahead as before,
  * anyone else's is refused (fail closed), each with an `[rbac]` log line.
  *
- * Residual: an agent socket opened before another person's writer started can still start a run;
- * the ticket is the webapp's only chokepoint for agent runs, and the per-run check is the agent's
- * (recorded in the step entry).
+ * Agent runs start over the chat socket long after its ticket was checked, so the agent asks again
+ * before each run starts (/api/internal/agent/writer-check, agentic/writer_check.py), and gets
+ * secondWriterResponse's answer for the ticket's person.
  */
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'

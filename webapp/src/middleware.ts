@@ -95,6 +95,8 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/internal\/agent\/decisions$/ },
   // ...and asks, before it accepts an answer, whether that person may still take it (step 5.4).
   { method: 'POST', pattern: /^\/api\/internal\/agent\/authorize-decision$/ },
+  // ...and, before each run starts on an open socket, whether another person is writing the project.
+  { method: 'POST', pattern: /^\/api\/internal\/agent\/writer-check$/ },
   // The daily budget on instance LLM providers (step 6.11): the agent reads a person's limit and use,
   // and reports its counts every minute. The route re-checks the master key.
   { method: 'GET', pattern: /^\/api\/internal\/llm-usage$/ },
