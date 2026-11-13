@@ -220,6 +220,8 @@ const SAME_ORIGIN_ROUTES = [
   '/api/projects/[id]/collaborators',
   '/api/projects/[id]/collaborators/[userId]',
   '/api/projects/[id]/leave',
+  // Makes the confirmer a schedule's actor (step 5.5): a change of who acts, so same-origin too.
+  '/api/projects/[id]/schedules/[scheduleId]/confirm',
   '/api/root/transfer',
   '/api/root/transfer/accept',
   '/api/root/transfer/cancel',

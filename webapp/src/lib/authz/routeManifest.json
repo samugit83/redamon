@@ -226,6 +226,7 @@
   {"path":"/api/projects/[id]/roe/revisions/[revId]/download","guard":"project","methods":["GET"],"permission":"roe:read"},
   {"path":"/api/projects/[id]/schedules","guard":"project","methods":["GET","POST"],"permission":{"GET":"recon:read","POST":"recon:schedule"},"note":"GET recon:read; POST recon:schedule, plus recon:scan (a schedule starts full recons as its author) and recon:overwrite for an overwrite schedule (requireAlso) (step 3.8)"},
   {"path":"/api/projects/[id]/schedules/[scheduleId]","guard":"project","methods":["PATCH","DELETE"],"permission":"recon:schedule","note":"recon:schedule on the project; a PATCH that turns the schedule on also needs recon:scan, one that sets overwrite mode recon:overwrite (requireAlso) (step 3.8)"},
+  {"path":"/api/projects/[id]/schedules/[scheduleId]/confirm","guard":"project","methods":["POST"],"permission":"recon:schedule","sameOrigin":true,"note":"recon:schedule on the project, read fresh, at the Manage level (requireLevel M: the owner until 5.2 adds Manage), plus recon:scan and recon:overwrite for an overwrite schedule (requireAlso): the confirmer becomes the schedule's actor (step 5.5, D-13)"},
   {"path":"/api/projects/[id]/schedules/history","guard":"project","methods":["DELETE"],"permission":"scan:versions_delete"},
   {"path":"/api/projects/[id]/supply-chain-batch","guard":"project","methods":["POST"],"permission":"scan:supply_chain"},
   {"path":"/api/projects/[id]/versions","guard":"project","methods":["GET","POST"],"permission":{"GET":"recon:read","POST":"scan:versions"}},
