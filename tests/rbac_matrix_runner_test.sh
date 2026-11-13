@@ -44,7 +44,8 @@ has()   { if grep -qF -- "$2" <<<"$3"; then ok "$1"; else bad "$1" "absent" "$2"
 section() { printf '\n== %s ==\n' "$1"; }
 
 W="$(mktemp -d)"; PG=""
-trap 'rm -rf "$W"; [ -z "$PG" ] || docker rm -f "$PG" >/dev/null 2>&1' EXIT
+# -v: a --rm container removed with rm -f keeps its anonymous volume (postgres declares one).
+trap 'rm -rf "$W"; [ -z "$PG" ] || docker rm -f -v "$PG" >/dev/null 2>&1' EXIT
 T="$W/root"
 mkdir -p "$T/tests/fixtures/rbac_matrix" "$T/webapp/scripts" "$T/testing/e2e" "$W/bin"
 cp "$RUNNER" "$T/tests/rbac_matrix_live.sh"

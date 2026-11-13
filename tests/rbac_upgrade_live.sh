@@ -74,8 +74,9 @@
 #
 # Everything runs in containers named rbac-upg-<pid>-* on a private network of their
 # own (internal, except for serve), fed on stdin (snap Docker cannot read /tmp), and is
-# removed on exit, Ctrl-C included. The running stack is never touched. Fixture users
-# share one synthetic password (README.md).
+# removed on exit, Ctrl-C included, with the database's volume rbac-upg-<pid>-pgdata.
+# The running stack is never touched. Fixture users share one synthetic password
+# (README.md).
 #
 # Environment:
 #   RBAC_UPGRADE_IMAGE      image under test (default redamon-webapp:latest)
@@ -530,7 +531,10 @@ cleanup() {
   [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null
   local ids
   ids="$(docker ps -aq --filter "label=$LABEL" 2>/dev/null)"
-  [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1
+  [ -n "$ids" ] && docker rm -f -v $ids >/dev/null 2>&1
+  # Named volumes outlive `rm -v`: the database's is removed by its label once its container is gone.
+  ids="$(docker volume ls -q --filter "label=$LABEL" 2>/dev/null)"
+  [ -n "$ids" ] && docker volume rm $ids >/dev/null 2>&1
   docker network rm "$NET" >/dev/null 2>&1
   rm -rf "$TMP"
 }
@@ -569,7 +573,10 @@ start_infra() { # internal | public
   local net_flag=--internal
   [ "$1" = public ] && net_flag=
   docker network create $net_flag --label "$LABEL" "$NET" >/dev/null || { echo "network create failed"; exit 1; }
-  docker run -d --name "$PG" --label "$LABEL" --network "$NET" \
+  # A named, labelled volume instead of the image's anonymous one: cleanup removes it by label, and a
+  # run killed before its trap leaves a volume that names its run (rbac-upg-<pid>-pgdata).
+  docker volume create --label "$LABEL" "$PFX-pgdata" >/dev/null || { echo "volume create failed"; exit 1; }
+  docker run -d --name "$PG" --label "$LABEL" --network "$NET" -v "$PFX-pgdata:/var/lib/postgresql/data" \
     -e POSTGRES_PASSWORD="$PG_PASSWORD" -e POSTGRES_DB=redamon "$PG_IMAGE" >/dev/null \
     || { echo "postgres start failed"; exit 1; }
   local i
@@ -709,7 +716,7 @@ mode_parallel() {
   done
   ra="$(docker wait "$a")"; rb="$(docker wait "$b")"
   docker logs "$a" > "$TMP/par-a.log" 2>&1; docker logs "$b" > "$TMP/par-b.log" 2>&1
-  docker rm -f "$a" "$b" >/dev/null 2>&1
+  docker rm -f -v "$a" "$b" >/dev/null 2>&1
   list_ok "$1" "parallel copy A" "$TMP/par-a.log" "$ra"
   list_ok "$1" "parallel copy B" "$TMP/par-b.log" "$rb"
   verify "$1" "parallel"
@@ -871,13 +878,13 @@ mode_serve_check() {
     rm -f "$TMP/catalog.json"; fail "$scn serve-check: $IMAGE carries src/lib/authz/permissionCatalog.json"; return
   fi
   [ -f "$oracle" ] || { fail "$scn serve-check: ${oracle#"$FIX"/} exists"; return; }
-  serve_boot "$scn" || { docker rm -f "$PFX-web" >/dev/null 2>&1; return; }
+  serve_boot "$scn" || { docker rm -f -v "$PFX-web" >/dev/null 2>&1; return; }
 
   psql_db -c "SELECT email FROM users" | LC_ALL=C sort > "$TMP/accounts.db"
   cut -d'|' -f1 "$oracle" | sed '/^$/d' | LC_ALL=C sort > "$TMP/accounts.oracle"
   assert_same "$scn serve-check: ${oracle#"$FIX"/} names every fixture account" "$TMP/accounts.db" "$TMP/accounts.oracle"
   if ! py expand "$TMP/catalog.json" "$oracle" > "$TMP/caps.want.raw" 2> "$TMP/caps.err"; then
-    fail "$scn serve-check: ${oracle#"$FIX"/} expands"; show_log "$TMP/caps.err"; docker rm -f "$PFX-web" >/dev/null 2>&1; return
+    fail "$scn serve-check: ${oracle#"$FIX"/} expands"; show_log "$TMP/caps.err"; docker rm -f -v "$PFX-web" >/dev/null 2>&1; return
   fi
   LC_ALL=C sort "$TMP/caps.want.raw" > "$TMP/caps.want"
   psql_db -c "SELECT u.email || '|' || p.id FROM projects p JOIN users u ON u.id = p.user_id
@@ -913,7 +920,7 @@ mode_serve_check() {
     if [ "$code" = 401 ]; then pass "$scn serve-check: a cookie signed with another secret is refused (401)"
     else fail "$scn serve-check: a cookie signed with another secret is refused (got $code)"; fi
   fi
-  docker rm -f "$PFX-web" >/dev/null 2>&1
+  docker rm -f -v "$PFX-web" >/dev/null 2>&1
 }
 
 # ---- downgrade ---------------------------------------------------------------------------
@@ -932,7 +939,7 @@ run_list_as() { # image log docker-args... -> exit code of the list
 
 start_web() { # image auth_secret docker-args... -> 0 once /api/health answers 200 on $SERVE_PORT
   local image="$1" secret="$2" web="$PFX-web" i code; shift 2
-  docker rm -f "$web" >/dev/null 2>&1
+  docker rm -f -v "$web" >/dev/null 2>&1
   docker run -d --name "$web" --label "$LABEL" --network "$NET" -p "127.0.0.1:$SERVE_PORT:3000" \
     -e DATABASE_URL="$DB_URL" -e CHECKPOINT_DISABLE=1 -e AUTH_SECRET="$secret" \
     -e INTERNAL_API_KEY="$FAKE_INTERNAL_API_KEY" -e SCANNER_API_KEY="$FAKE_SCANNER_API_KEY" "$@" \
@@ -945,7 +952,7 @@ start_web() { # image auth_secret docker-args... -> 0 once /api/health answers 2
   docker logs "$web" 2>&1 | tail -n 40 | sed 's/^/    | /'
   return 1
 }
-stop_web() { docker rm -f "$PFX-web" >/dev/null 2>&1; }
+stop_web() { docker rm -f -v "$PFX-web" >/dev/null 2>&1; }
 
 run_report() { # out err args... -> exit code: the new image's preview (or RBAC_UPGRADE_PREVIEW_SCRIPT) with args
   local out="$1" err="$2"; shift 2
