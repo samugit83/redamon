@@ -2,8 +2,9 @@
  * GET /api/projects/[id]/my-access (step 4.3, PE-21 per project): the signed-in account's own
  * access to one project, for the stale-access poll of an open project (step 4.11). The effective
  * user's level, toggles and how it was reached, and the owner's name and email; a project the
- * account cannot see is 404, the same as one that does not exist. With sharing not in force only the
- * owner gets an answer, as every project route answers today.
+ * account cannot see is 404, the same as one that does not exist. With RBAC_SHARING_ENABLED off the
+ * route does not exist (404 for everyone, nothing read: DV-30); with the switch on but the instance
+ * policy disabled only the owner gets an answer, as every project route answers.
  *
  * The session (requireEffectiveUser) and Prisma are doubles; projectAccess(), the sharing policy
  * reader and the capabilities are the real ones.
@@ -17,6 +18,7 @@ const h = vi.hoisted(() => ({
   eff: null as null | { userId: string },
   shares: new Map<string, { access: string; rawData: boolean; expiresAt: Date | null; user: { status: string } }>(),
   failProjects: false,
+  policy: { enabled: true } as unknown,
 }))
 const userFindUnique = vi.hoisted(() => vi.fn(async ({ where }: { where: { id: string } }) => ({
   id: where.id, email: `${where.id}@example.test`, name: `Name of ${where.id}`, role: where.id.startsWith('admin') ? 'admin' : 'standard',
@@ -38,7 +40,7 @@ vi.mock('@/lib/prisma', () => ({
         h.shares.get(`${where.projectId_userId.projectId}|${where.projectId_userId.userId}`) ?? null,
     },
     projectBreakGlass: { findFirst: async () => null },
-    instanceSettings: { findUnique: async () => ({ sharingPolicy: { enabled: true }, rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null, defaultMemberSetId: null }) },
+    instanceSettings: { findUnique: async () => ({ sharingPolicy: h.policy, rootUserId: null, rootConfirmedAt: null, rootAssignedBy: null, defaultMemberSetId: null }) },
     permissionSet: { findMany: async () => [] },
     user: { findUnique: userFindUnique },
   },
@@ -62,6 +64,7 @@ beforeEach(() => {
   h.eff = null
   h.shares.clear()
   h.failProjects = false
+  h.policy = { enabled: true }
   userFindUnique.mockClear()
   projectFindUnique.mockClear()
   setFlagsForTests({})
@@ -77,7 +80,32 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('GET /api/projects/[id]/my-access, sharing not in force', () => {
+describe('GET /api/projects/[id]/my-access, RBAC_SHARING_ENABLED off: the route does not exist (DV-30)', () => {
+  test.each([
+    ['every switch off', {}],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }],
+    ['the sharing switch set without permissions', { identity: true, sharing: true }],
+  ])('%s: 404 for the owner, a share holder, an admin and no session; nothing read', async (_what, flags) => {
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    h.shares.set('P-alice|bob', { access: 'read', rawData: true, expiresAt: null, user: { status: 'active' } })
+    for (const eff of [{ userId: 'alice' }, { userId: 'bob' }, { userId: 'admin-1' }, null]) {
+      h.eff = eff
+      const res = await get()
+      expect([eff, res.status]).toEqual([eff, 404])
+      expect(await res.json()).toEqual({ error: 'Not found' })
+    }
+    expect(projectFindUnique).not.toHaveBeenCalled()
+    expect(userFindUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /api/projects/[id]/my-access, the switch on but the policy disabled: the owner only', () => {
+  beforeEach(() => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true })
+    h.policy = {}
+  })
+
   test('no session: 401, nothing read', async () => {
     expect((await get()).status).toBe(401)
     expect(projectFindUnique).not.toHaveBeenCalled()
@@ -94,8 +122,9 @@ describe('GET /api/projects/[id]/my-access, sharing not in force', () => {
 
   test('anyone else, even with a share row: 404, the same as a project that does not exist, and the owner is not read', async () => {
     h.shares.set('P-alice|bob', { access: 'read', rawData: true, expiresAt: null, user: { status: 'active' } })
-    for (const flags of [{}, { identity: true, permissions: true }]) {
-      setFlagsForTests(flags)
+    for (const policy of [{}, { enabled: 'yes' }]) {
+      h.policy = policy
+      clearSharingPolicyCacheForTests()
       h.eff = { userId: 'bob' }
       const other = await get()
       expect(other.status).toBe(404)

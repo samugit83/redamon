@@ -28,6 +28,7 @@ import { ownerRunsStdio, serversForAgent } from '@/lib/mcp/userServerAccess'
 import { scannerJobRefusal } from '@/lib/authz/jobCredential'
 import { projectReadView } from '@/lib/authz/projectReadView'
 import { myAccessView, type ProjectAccess } from '@/lib/authz/projectAccess'
+import { rbacFlags } from '@/lib/authz/flags'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -207,10 +208,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       })
     }
 
-    // A browser caller who is not the owner never receives the owner's secrets (HD-27), and
-    // every browser caller learns its own access (step 4.3), which the project screens follow.
+    // A browser caller who is not the owner never receives the owner's secrets (HD-27). With
+    // RBAC_SHARING_ENABLED on every browser caller also learns its own access, which the project
+    // screens follow; off, the body stays the owner-only one, without the key (DV-30).
     const body = isServiceCaller ? projectForCaller : projectReadView(projectForCaller, access)
-    const mine = access ? { myAccess: myAccessView(access, project.user) } : {}
+    const mine = access && rbacFlags().sharing ? { myAccess: myAccessView(access, project.user) } : {}
     return NextResponse.json({ ...body, ...mine, ...skillOverridesField })
   } catch (error) {
     return internalError(error, 'Failed to fetch project')

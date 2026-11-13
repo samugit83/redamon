@@ -259,3 +259,89 @@ describe('the share routes with sharing not in force (step 4.4)', () => {
     }
   })
 })
+
+// A person's own access (review of 4.3): the project GET's `myAccess` and GET /my-access exist only
+// with the switch on. requireEffectiveUser and requirePermission are doubles; vi.mock is hoisted,
+// so they stand for the whole file, but every other export of both modules stays real and only the
+// two routes below call them. The switch and projectAccess() are the real ones.
+const ownAccess = vi.hoisted(() => ({ eff: { userId: 'owner' } as { userId: string } | null }))
+vi.mock('@/lib/access', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/access')>('@/lib/access')),
+  requireEffectiveUser: async () => {
+    const { NextResponse } = await import('next/server')
+    return ownAccess.eff ?? NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  },
+}))
+vi.mock('@/lib/authz/guards', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/authz/guards')>('@/lib/authz/guards')),
+  requirePermission: async (_r: Request, permission: string, opts: { projectId?: string } = {}) => ({
+    session: { userId: 'owner', role: 'standard' },
+    principal: { id: 'owner', role: 'standard' },
+    actingAs: null,
+    effective: { userId: 'owner' },
+    permission,
+    access: { project: { id: opts.projectId, userId: 'owner' }, level: 'owner', toggles: { rawData: true }, via: 'owner' },
+  }),
+}))
+
+describe("a person's own access with RBAC_SHARING_ENABLED off: no myAccess, no /my-access (review of 4.3)", () => {
+  const OFF: Array<[string, Parameters<typeof setFlagsForTests>[0]]> = [
+    ['every switch off', {}],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }],
+    ['the sharing switch set without permissions', { identity: true, sharing: true }],
+  ]
+  const ROW = {
+    id: 'P-owner', userId: 'owner', name: 'p', targetDomain: 'example.test', ipMode: false, domainBatchMode: false,
+    nucleiSelectedCustomTemplates: [], nucleiTemplates: [], nucleiCustomTemplates: [], authProfile: null,
+    user: { id: 'owner', name: 'Owner', email: 'owner@example.test' },
+  }
+
+  async function projectGet() {
+    const { NextRequest } = await import('next/server')
+    const { GET } = await import('@/app/api/projects/[id]/route')
+    db.projectFindUnique.mockResolvedValueOnce(ROW as never)
+    return GET(new NextRequest('http://x/api/projects/P-owner'), { params: Promise.resolve({ id: 'P-owner' }) })
+  }
+  async function myAccessGet() {
+    const { NextRequest } = await import('next/server')
+    const { GET } = await import('@/app/api/projects/[id]/my-access/route')
+    return GET(new NextRequest('http://x/api/projects/P-owner/my-access'), { params: Promise.resolve({ id: 'P-owner' }) })
+  }
+
+  beforeEach(() => {
+    ownAccess.eff = { userId: 'owner' }
+  })
+
+  test.each(OFF)('%s: the project GET answers the owner the row and its user as before, without myAccess', async (_what, flags) => {
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const res = await projectGet()
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).not.toHaveProperty('myAccess')
+    expect(body.user).toEqual(ROW.user)
+  })
+
+  test.each(OFF)('%s: GET /my-access does not exist: 404 for the owner and a stranger, nothing read', async (_what, flags) => {
+    setFlagsForTests(flags)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const eff of [{ userId: 'owner' }, { userId: 'stranger' }, null]) {
+      ownAccess.eff = eff
+      const res = await myAccessGet()
+      expect([eff, res.status]).toEqual([eff, 404])
+      expect(await res.json()).toEqual({ error: 'Not found' })
+    }
+    expect(db.projectFindUnique).not.toHaveBeenCalled()
+    expect(db.userFindUnique).not.toHaveBeenCalled()
+    expect(instanceFindUnique).not.toHaveBeenCalled()
+  })
+
+  test('the contrast, the switch on: the owner reads both', async () => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true })
+    const mine = { level: 'owner', toggles: { rawData: true }, via: 'owner' }
+    expect((await (await projectGet()).json()).myAccess).toEqual({ ...mine, owner: { name: 'Owner', email: 'owner@example.test' } })
+    const res = await myAccessGet()
+    expect(res.status).toBe(200)
+    expect((await res.json()).myAccess).toEqual({ ...mine, owner: { name: 'owner', email: 'owner@example.test' } })
+  })
+})

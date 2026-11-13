@@ -2,13 +2,14 @@
  * GET /api/projects/[id] returns `myAccess` to a browser caller (step 4.3, PE-21 per project): the
  * caller's level, toggles, how the access was reached and the owner's name and email (the `user`
  * the row already carries, which stays). The owner reads `owner`, every toggle, through `owner`,
- * beside the row as before; a service caller (master or scanner key) reads no `myAccess`.
+ * beside the row as before; a service caller (master or scanner key) reads no `myAccess`. With
+ * RBAC_SHARING_ENABLED off nobody reads it: the body is the one before step 4.3 (DV-30).
  *
  * The guard is doubled to hand the access under test, in the shape projectAccess() builds.
  *
  * @vitest-environment node
  */
-import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 
 const MASTER = 'internal-key-for-tests-0000000000000'
@@ -60,6 +61,7 @@ vi.mock('@/lib/authz/guards', async () => {
 })
 
 import { GET } from './route'
+import { setFlagsForTests } from '@/lib/authz/flags'
 
 function get(headers: Record<string, string> = {}) {
   return GET(new NextRequest('http://localhost/api/projects/proj-1', { headers }), { params: Promise.resolve({ id: 'proj-1' }) })
@@ -69,8 +71,10 @@ const OWNER = { name: 'Owner', email: 'owner@e2e.local' }
 
 beforeEach(() => {
   h.access = { level: 'owner', toggles: { rawData: true }, via: 'owner' }
+  setFlagsForTests({ identity: true, permissions: true, sharing: true })
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
+afterEach(() => setFlagsForTests(null))
 
 describe('GET /api/projects/[id] myAccess', () => {
   test('the owner: myAccess says owner, beside the whole row and its user as before', async () => {
@@ -95,6 +99,19 @@ describe('GET /api/projects/[id] myAccess', () => {
   test('a service caller (master key) reads no myAccess', async () => {
     const body = await (await get({ 'x-internal-key': MASTER })).json()
     expect(body).not.toHaveProperty('myAccess')
+    expect(body.cypherfixGithubToken).toBe(FAKE)
+  })
+})
+
+describe('GET /api/projects/[id] with RBAC_SHARING_ENABLED off (DV-30)', () => {
+  test.each([
+    ['every switch off', {}],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }],
+  ])('%s: the owner reads the row and its user as before, and no myAccess', async (_what, flags) => {
+    setFlagsForTests(flags)
+    const body = await (await get()).json()
+    expect(body).not.toHaveProperty('myAccess')
+    expect(body.user).toEqual({ id: 'owner-1', name: 'Owner', email: 'owner@e2e.local' })
     expect(body.cypherfixGithubToken).toBe(FAKE)
   })
 })
