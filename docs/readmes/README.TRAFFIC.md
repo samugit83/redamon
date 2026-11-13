@@ -577,15 +577,22 @@ never HTML**, because they are attacker-controlled.
 
 ### API routes
 
-All routes under [`webapp/src/app/api/traffic/`](../../webapp/src/app/api/traffic/)
-enforce `requireEffectiveUser` + `requireProjectAccess`. Tenant fields always come
-from the session / route, never the client.
+Each route under [`webapp/src/app/api/traffic/`](../../webapp/src/app/api/traffic/)
+asks its permission through `requirePermission` (`traffic:read` and `traffic:export`
+at the Raw data level `R*`, `traffic:delete` at `W`), which decides through
+`projectAccess()`: the owner, and, with project sharing in force, a collaborator
+whose share includes Raw data & files (or Root's break-glass) read the project's
+traffic; a share without it, or an admin's oversight, gets 403. Every read filters on
+`{projectId, userId: <the project's owner>}` (`trafficTenant.ts`, `trafficRows`),
+never on the caller: both ingest paths stamp the owner, so an owner sees the rows it
+saw before and a collaborator sees exactly those. Tenant fields always come from the
+session / route, never the client.
 
 - **`GET [projectId]`** : paginated filtered list. Summary columns only, bodies
   never in the list. Whitelisted `orderBy`, max page size 200. Shared predicate
   `buildTrafficWhere`.
 - **`GET [projectId]/[id]`** : one full transaction incl. headers and bodies.
-  `findFirst({id, projectId, ownerScope})`, so a cross-tenant id returns 404
+  `findFirst` on the id and `trafficRows(projectId, auth)`, so a cross-tenant id returns 404
   (anti-enumeration). Offloaded bodies resolved only through the owned row.
 - **`GET [projectId]/export`** : streams the current filtered set as CSV or JSON,
   keyset-paginated, 50k-row cap with a truncation marker, CSV formula-injection

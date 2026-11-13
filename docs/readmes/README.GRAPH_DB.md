@@ -87,7 +87,10 @@ Queries sent through the AI agent, the MCP server or a saved graph view are
 tenant-scoped before they run, and they refuse variable-length paths and namespaced
 function calls ([graph_db/tenant_filter.py](../../graph_db/tenant_filter.py),
 [injectProjectFilter.ts](../../webapp/src/app/api/graph-views/execute/injectProjectFilter.ts);
-rules in the [MCP Server wiki page](../../redamon.wiki/MCP-Server.md)). To read an
+rules in the [MCP Server wiki page](../../redamon.wiki/MCP-Server.md)). A saved view
+is stricter: it runs read-only and accepts only Neo4j's built-in functions, ASCII
+outside strings, `:Label` node patterns and the `$projectId` parameter (the
+[Attack Surface Graph wiki page](../../redamon.wiki/Attack-Surface-Graph.md)). To read an
 attack chain's steps there, match `(s:ChainStep {chain_id: $chain_id})`: `HAS_STEP`
 links only the first step, and a `NEXT_STEP*` walk is refused.
 
