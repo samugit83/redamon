@@ -3,13 +3,16 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { auditActor } from '@/lib/auditActor'
 import { getEffectiveUser } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
-import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
+import { bodyOwnerMatches, scopeRefusal, scopeRefusalResponse, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { requirePermission } from '@/lib/authz/guards'
 
-/** POST /api/plugins/overrides/change-sets/[id]/reject: a pending proposal is rejected (design §6). */
+/**
+ * POST /api/plugins/overrides/change-sets/[id]/reject: a pending proposal is rejected (design §6), by
+ * whoever decides its scope (changeSetAccess.ts: a project's at Manage, step 5.10).
+ */
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
@@ -29,7 +32,9 @@ export const POST = pluginRoute('override reject', 'The proposal could not be re
 
   const { id } = await params
   const set = await ov.getChangeSet(id)
-  if (!set || !(await ownsScope(set.scope, eff.userId))) return notFound()
+  if (!set) return notFound()
+  const refused = await scopeRefusal(set.scope, eff.userId, { actingAs: !!auth.actingAs })
+  if (refused) return scopeRefusalResponse(refused, 'plugins:approve_overrides')
   if (!bodyOwnerMatches(set.scope, eff.userId, parsed.body.scopeOwnerId)) {
     return NextResponse.json({ error: 'This version does not belong to the user you are acting as.', code: 'wrong_owner' }, { status: 403 })
   }

@@ -1,5 +1,5 @@
 import { BUILTIN_SKILLS } from './builtinSkills'
-import { ownsScope } from './changeSetAccess'
+import { ownsScope, type ScopeAccessOptions } from './changeSetAccess'
 import * as ov from './overrides'
 import { dormantReason, findInstall, type DormantReason } from './registry'
 
@@ -36,9 +36,13 @@ export interface SummaryModel {
   skills: SkillSummary[]
 }
 
-/** The summary for one project, or null when the caller does not own it. */
-export async function buildSummaryModel(effectiveUserId: string, projectId: string): Promise<SummaryModel | null> {
-  if (!(await ownsScope({ type: 'project', id: projectId }, effectiveUserId))) return null
+/** The summary for one project, or null when the caller does not decide its proposals (changeSetAccess.ts). */
+export async function buildSummaryModel(
+  effectiveUserId: string,
+  projectId: string,
+  opts: ScopeAccessOptions = {},
+): Promise<SummaryModel | null> {
+  if (!(await ownsScope({ type: 'project', id: projectId }, effectiveUserId, opts))) return null
   const env = { agentSupportsSeam: true }
   const names = new Map<string, Promise<string>>()
   const nameOf = (pluginId: string) => {

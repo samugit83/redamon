@@ -170,6 +170,7 @@ const SPEND_FEATURE_TEXT: Record<string, string> = {
   agent_session: 'agent sessions',
   codefix_session: 'CodeFix sessions',
   shell_session: 'Kali terminal sessions',
+  plugin_llm: 'plugin model calls',
 }
 
 /**

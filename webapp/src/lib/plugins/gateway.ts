@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { PluginInstall } from '@prisma/client'
 import prisma from '@/lib/prisma'
-import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
+import { meetsLevel, projectAccess, type ProjectAccess, type ProjectAccessSubject } from '@/lib/authz/projectAccess'
+import type { ProjectLevel } from '@/lib/authz/permissions'
 import { ownsRow } from '@/lib/authz/rowOwner'
 import { isJsonContentType } from '@/lib/jsonBody'
 import { pluginAllowedFor } from './accessRules'
@@ -10,7 +11,7 @@ import { now } from './clock'
 import { PluginDataError, type PluginOwner } from './dataStore'
 import { completeJob, jobIsActive, type JobError } from './jobs'
 import { PluginOverrideError } from './overrides'
-import type { PluginPermission } from './permissions'
+import { pluginProjectLevels, type PluginPermission } from './permissions'
 import { hasPermission, servesActions, showsContributions } from './registry'
 import { gatewayCallsPerToken } from './settings'
 import { SkillPartsRegistryError } from './skillPartsRegistry'
@@ -27,10 +28,11 @@ import { isStorableJson } from './storableText'
  * the body (64 KB, up to 8 MB for the operations that carry data, bounded in depth and
  * containers, its text storable); the install row (enabled, ready, not revoked, at the
  * token's version); the permission, granted by the admin AND declared by the stored
- * manifest; the user; the project and session, asked for the token's user (`projectAccess()`
- * at the owner level, `ownsRow`); the plugin still available to that user (the per-plugin
- * allowlists, accessRules.ts). Strict on purpose: never through requireProjectAccess,
- * which reads the browser's effective user (RV-33). The frame never reads cookies, the
+ * manifest; the user; the project, asked for the token's user (`projectAccess()`, at the levels
+ * the plugin's permissions need, `pluginLevels`; step 5.10) and still owned by the token's
+ * tenant; the session, its author's (`ownsRow`), never opened by project access alone; the
+ * plugin still available to that user (the per-plugin allowlists, accessRules.ts). Strict on
+ * purpose: never through requireProjectAccess, which reads the browser's effective user (RV-33). The frame never reads cookies, the
  * session, the effective user or X-Internal-Key: these routes are cookie-less in
  * middleware.ts and plugin code must not borrow a browser's identity.
  *
@@ -90,6 +92,13 @@ export interface GatewayContext {
   userId: string
   /** The admin acting as `userId`, when one started the action. */
   actorId: string | null
+  /**
+   * Whose project it is (the token's `ten`, checked against the project's owner): the model and keys
+   * a call spends. `userId` outside a project and on the user's own.
+   */
+  tenantId: string
+  /** The user's access to the token's project, as this call checked it; null outside a project. */
+  access: ProjectAccess | null
   projectId: string | null
   sessionId: string | null
   conversation: GatewayConversation | null
@@ -307,20 +316,57 @@ export function assertPermission(ctx: Pick<GatewayContext, 'plugin'>, permission
 
 const NOT_FOUND = () => new GatewayError(404, 'not_found', 'Not found')
 
+/** The permissions a plugin may use now: granted by the admin and declared by its stored manifest. */
+export function usablePermissions(plugin: PluginInstall): string[] {
+  return declaredPermissions(plugin.manifest).filter((p) => hasPermission(plugin, p))
+}
+
 /**
- * Whose data the call may reach: the token's project at the owner level of `projectAccess()` for
- * the token's user (no route permission backs a Gateway call, so access below the owner's never
- * reaches one), and the session's conversation its author's (`ownsRow`) and in that project.
+ * The project levels a run of this plugin needs of its person (step 5.10, SH-35): Read + Write, and
+ * Use AI agent when it may call a model; the owner's alone when it declares no permission.
  */
-async function checkTenancy(claims: CallTokenClaims): Promise<GatewayConversation | null> {
+export function pluginLevels(plugin: PluginInstall): ProjectLevel[] {
+  return pluginProjectLevels(usablePermissions(plugin))
+}
+
+/**
+ * Whether `subject` may hand this conversation to a plugin: its author only. Project access alone
+ * never opens another person's conversation; an explicit conversation share (step 5.8) is the one
+ * other way in, and joins here when it exists.
+ */
+export function conversationReachable(subject: ProjectAccessSubject, conversation: { userId: string }): boolean {
+  return ownsRow(subject, conversation.userId)
+}
+
+/**
+ * Whose data the call may reach: the token's project, where `projectAccess()` for the token's user
+ * must meet every level the plugin needs (an admin acting as the user reaches a share no further
+ * than read, D-22) and whose owner must still be the token's tenant; outside a project the tenant
+ * is the user. Then the session's conversation, the user's to reach (`conversationReachable`) and in
+ * that project. Every refusal is the same 404: a share revoked, narrowed or moved mid-action ends
+ * the plugin's reach as a deleted project does.
+ */
+async function checkTenancy(
+  claims: CallTokenClaims,
+  levels: readonly ProjectLevel[],
+): Promise<{ conversation: GatewayConversation | null; access: ProjectAccess | null }> {
   const user = await prisma.user.findUnique({ where: { id: claims.sub }, select: { id: true } })
   if (!user) throw new GatewayError(401, 'invalid_token', 'The user this call token acts for no longer exists.')
   const subject = { userId: claims.sub }
+  let access: ProjectAccess | null = null
   if (claims.prj) {
-    const access = await projectAccess(subject, claims.prj)
-    if (!access || !meetsLevel(access, 'O')) throw NOT_FOUND()
+    access = claims.act === undefined
+      ? await projectAccess(subject, claims.prj)
+      : await projectAccess(subject, claims.prj, { actingAs: true })
+    const reached = access
+    // The tenant still owns the project: a token minted before a transfer reaches it no more.
+    if (!reached || !ownsRow({ userId: claims.ten }, reached.project.userId) || !levels.every((l) => meetsLevel(reached, l))) {
+      throw NOT_FOUND()
+    }
+  } else if (claims.ten !== claims.sub) {
+    throw NOT_FOUND()
   }
-  if (!claims.ses) return null
+  if (!claims.ses) return { conversation: null, access }
   if (!claims.prj) throw NOT_FOUND()
   const conversation = await prisma.conversation.findUnique({
     where: { sessionId: claims.ses },
@@ -340,13 +386,13 @@ async function checkTenancy(claims: CallTokenClaims): Promise<GatewayConversatio
   })
   if (
     !conversation ||
-    !ownsRow(subject, conversation.userId) ||
+    !conversationReachable(subject, conversation) ||
     conversation.projectId !== claims.prj ||
     (claims.conv !== undefined && conversation.id !== claims.conv)
   ) {
     throw NOT_FOUND()
   }
-  return conversation
+  return { conversation, access }
 }
 
 /** The owner of a data call: the token's user, or the token's project. Never the body's ids. */
@@ -488,11 +534,12 @@ async function run(
     checkPermission(plugin, permission)
   }
   let conversation: GatewayConversation | null = null
+  let access: ProjectAccess | null = null
   try {
-    conversation = await checkTenancy(claims)
+    ;({ conversation, access } = await checkTenancy(claims, pluginLevels(plugin)))
   } catch (e) {
     if (!opts.jobEnd || !(e instanceof GatewayError) || e.code !== 'not_found') throw e
-    lapsed ??= { code: 'context_gone', message: 'The project or chat session this job ran for no longer exists.' }
+    lapsed ??= { code: 'context_gone', message: 'The project or chat session this job ran for no longer exists, or its user can no longer act on it.' }
   }
   if (!(await pluginAllowedFor(claims.sub, claims.pid))) {
     const message = `Plugin ${claims.pid} is not available to the user this call acts for: an administrator limited it to permission sets that user holds none of.`
@@ -509,6 +556,8 @@ async function run(
     manifest: plugin.manifest as Record<string, unknown>,
     userId: claims.sub,
     actorId: claims.act ?? null,
+    tenantId: claims.ten,
+    access,
     projectId: claims.prj ?? null,
     sessionId: claims.ses ?? null,
     conversation,

@@ -5,18 +5,18 @@ import { readFeatureModel } from '@/lib/featureModels'
 import { readJsonBody } from '@/lib/jsonBody'
 import { pluginFeatureId } from '@/lib/llmFeatures'
 import { auditActor } from '@/lib/auditActor'
-import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
-import { ownsRow } from '@/lib/authz/rowOwner'
+import { meetsLevel, projectAccess, type ProjectAccess } from '@/lib/authz/projectAccess'
+import type { ProjectLevel } from '@/lib/authz/permissions'
 import { getEffectiveUser } from '@/lib/session'
 import { PLUGIN_NOT_ALLOWED_MESSAGE, pluginAllowedFor } from './accessRules'
 import { CallTokenConfigError, mintCallToken } from './callToken'
 import { now } from './clock'
 import { isValidPluginId } from './ids'
-import { retireCallToken } from './gateway'
+import { conversationReachable, pluginLevels, retireCallToken, usablePermissions } from './gateway'
 import { failJob, markRunning, startJob, type JobContext, type JobPick } from './jobs'
 import { internalErrorResponse } from './lifecycleRoutes'
 import * as ov from './overrides'
-import { findInstall, hasPermission, servesActions } from './registry'
+import { findInstall, servesActions } from './registry'
 import { RunnerError, RunnerUnavailableError, cancelJob, runAction } from './runnerClient'
 import { InvalidPickError, resolvePick } from './sessionPick'
 import { crossOriginResponse, sameOrigin } from './sameOrigin'
@@ -27,9 +27,10 @@ import { actionMaxTimeoutSeconds } from './settings'
  * A plugin action started from the UI (README.PLUGINS.md §7.7): POST
  * /api/plugins/[pluginId]/actions/[actionId] with `{context: {projectId?, sessionId?},
  * params}`. The webapp decides everything the plugin may reach before the runner sees the
- * call: the effective user, the plugin available to them (accessRules.ts), the project and
- * session (strictly theirs), the permissions both granted and declared, the timeout; then it
- * mints the call token the plugin's code will hold. A sync action answers its result;
+ * call: the effective user, the plugin available to them (accessRules.ts), the project (theirs,
+ * or shared with them at the levels the plugin's permissions need, step 5.10) and the session
+ * (theirs), the permissions both granted and declared, the timeout; then it mints the call
+ * token the plugin's code will hold, naming the project's owner as its tenant. A sync action answers its result;
  * an async one becomes a job (jobs.ts) and answers 202 `{jobId}`.
  *
  * A result naming a change set to review (`reviewProposal`) is kept only when that change
@@ -37,6 +38,10 @@ import { actionMaxTimeoutSeconds } from './settings'
  * id, and the UI would open the review modal on it (RV-21).
  */
 const PARAMS_MAX_BYTES = 64 * 1024
+/** A collaborator's model-calling run on a project whose owner chose no model for the plugin. */
+export const OWNER_MODEL_REQUIRED = 'owner_model_required'
+export const OWNER_MODEL_TEXT =
+  "This project's owner has not chosen a model for this plugin in Models by feature; on a shared project the owner's choice is used. Ask the owner to choose one."
 // A job's deadline: its timeout, plus time for the runner's own timeout answer and report.
 const JOB_GRACE_SECONDS = 60
 
@@ -61,14 +66,9 @@ function declaredAction(plugin: PluginInstall, actionId: string): ManifestAction
   return a && Number.isInteger(a.timeoutSeconds) && a.timeoutSeconds > 0 ? a : null
 }
 
-function grantedAndDeclared(plugin: PluginInstall): string[] {
-  const declared = isObj(plugin.manifest) && Array.isArray(plugin.manifest.permissions) ? plugin.manifest.permissions : []
-  return declared.filter((p): p is string => typeof p === 'string' && hasPermission(plugin, p))
-}
-
 export async function checkReviewProposal(
   result: Json,
-  who: { pluginId: string; userId: string; projectId: string | null },
+  who: { pluginId: string; userId: string; projectId: string | null; access: ProjectAccess | null },
 ): Promise<Json> {
   if (!('reviewProposal' in result)) return result
   const rp = result.reviewProposal
@@ -76,7 +76,10 @@ export async function checkReviewProposal(
   delete rest.reviewProposal
   if (isObj(rp) && typeof rp.changeSetId === 'string' && typeof rp.extensionPoint === 'string') {
     const set = await ov.getChangeSet(rp.changeSetId)
-    const inScope = !!set && (set.scope.type === 'user' ? set.scope.id === who.userId : set.scope.id === who.projectId)
+    // A project's proposals are reviewed by whoever decides them (Manage, changeSetAccess.ts): the
+    // window would open on a 404 for anyone else.
+    const decidesProject = !!who.access && meetsLevel(who.access, 'M')
+    const inScope = !!set && (set.scope.type === 'user' ? set.scope.id === who.userId : decidesProject && set.scope.id === who.projectId)
     if (set && inScope && set.pluginId === who.pluginId && set.point === rp.extensionPoint) {
       return { ...rest, reviewProposal: { extensionPoint: rp.extensionPoint, changeSetId: rp.changeSetId } }
     }
@@ -143,13 +146,28 @@ function runnerFailure(e: unknown, extra: Json = {}): NextResponse | null {
   return refuse(status, code, message, { ...own, ...extra })
 }
 
-/**
- * The context of an action or a picker, owned by `userId`: the project at the owner level of
- * `projectAccess()` (no route permission backs a plugin action, so access below the owner's never
- * runs one), the session's conversation its author's (`ownsRow`) and in that project.
- */
-export async function strictContext(raw: unknown, userId: string): Promise<JobContext | NextResponse> {
-  if (raw === undefined || raw === null) return { projectId: null, sessionId: null, conversationId: null }
+export interface ContextOptions {
+  /**
+   * The project levels the plugin's run needs (gateway.ts `pluginLevels`, step 5.10). Absent, the
+   * owner's alone, with every shortfall a 404; given, a project shared with the person below one of
+   * them answers 403 naming the level.
+   */
+  levels?: readonly ProjectLevel[]
+  /** The person is the account an admin acts as: a share reaches read and no further (D-22). */
+  actingAs?: boolean
+}
+
+/** A checked context, the person's access to its project and its tenant: the project's owner, else the person. */
+interface ResolvedContext {
+  context: JobContext
+  access: ProjectAccess | null
+  tenantId: string
+}
+
+const OWNER_ONLY: readonly ProjectLevel[] = ['O']
+
+async function resolveContext(raw: unknown, userId: string, opts: ContextOptions): Promise<ResolvedContext | NextResponse> {
+  if (raw === undefined || raw === null) return { context: { projectId: null, sessionId: null, conversationId: null }, access: null, tenantId: userId }
   if (!isObj(raw)) return refuse(400, 'invalid_context', 'context must be an object')
   const { projectId, sessionId } = raw
   const optionalText = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v.length > 0 && v.length <= 128)
@@ -158,9 +176,26 @@ export async function strictContext(raw: unknown, userId: string): Promise<JobCo
   }
   const notFound = refuse(404, 'not_found', 'Not found')
   let conversationId: string | null = null
+  let tenantId = userId
+  let access: ProjectAccess | null = null
   if (projectId) {
-    const access = await projectAccess({ userId }, projectId as string)
-    if (!access || !meetsLevel(access, 'O')) return notFound
+    access = opts.actingAs === true
+      ? await projectAccess({ userId }, projectId as string, { actingAs: true })
+      : await projectAccess({ userId }, projectId as string)
+    const reached = access
+    if (!reached) return notFound
+    const missing = (opts.levels ?? OWNER_ONLY).find((level) => !meetsLevel(reached, level))
+    if (missing) {
+      // A collaborator is told what the share lacks; oversight and break-glass never run a plugin.
+      if (!opts.levels || reached.via !== 'share') return notFound
+      return refuse(
+        403,
+        'forbidden',
+        `Your access to this project does not reach this plugin (plugins:use, level ${missing}).`,
+        { permission: 'plugins:use', level: missing },
+      )
+    }
+    tenantId = reached.project.userId
   }
   if (sessionId) {
     if (!projectId) return notFound
@@ -168,10 +203,20 @@ export async function strictContext(raw: unknown, userId: string): Promise<JobCo
       where: { sessionId: sessionId as string },
       select: { id: true, userId: true, projectId: true },
     })
-    if (!conv || !ownsRow({ userId }, conv.userId) || conv.projectId !== projectId) return notFound
+    if (!conv || !conversationReachable({ userId }, conv) || conv.projectId !== projectId) return notFound
     conversationId = conv.id
   }
-  return { projectId: (projectId as string) ?? null, sessionId: (sessionId as string) ?? null, conversationId }
+  return { context: { projectId: (projectId as string) ?? null, sessionId: (sessionId as string) ?? null, conversationId }, access, tenantId }
+}
+
+/**
+ * The context of an action or a picker, for `userId`: the project through `projectAccess()` at the
+ * levels `opts` names (the owner's alone unless it names others), the session's conversation one
+ * the person may reach (`conversationReachable`: its author) and in that project.
+ */
+export async function strictContext(raw: unknown, userId: string, opts: ContextOptions = {}): Promise<JobContext | NextResponse> {
+  const resolved = await resolveContext(raw, userId, opts)
+  return resolved instanceof NextResponse ? resolved : resolved.context
 }
 
 /** How far an action got, for the 500 of an unexpected failure: the step, and the job it created. */
@@ -180,12 +225,17 @@ interface ActionTrace {
   jobId?: string
 }
 
-export async function handleAction(request: NextRequest, pluginId: string, actionId: string): Promise<NextResponse> {
+export async function handleAction(
+  request: NextRequest,
+  pluginId: string,
+  actionId: string,
+  opts: { actingAs?: boolean } = {},
+): Promise<NextResponse> {
   const started = Date.now()
   const trace: ActionTrace = { step: 'checking the request' }
   let res: NextResponse
   try {
-    res = await act(request, pluginId, actionId, trace)
+    res = await act(request, pluginId, actionId, trace, opts.actingAs === true)
   } catch (e) {
     res = internalErrorResponse(
       e,
@@ -198,7 +248,7 @@ export async function handleAction(request: NextRequest, pluginId: string, actio
   return res
 }
 
-async function act(request: NextRequest, pluginId: string, actionId: string, trace: ActionTrace): Promise<NextResponse> {
+async function act(request: NextRequest, pluginId: string, actionId: string, trace: ActionTrace, actingAs: boolean): Promise<NextResponse> {
   if (!sameOrigin(request)) return crossOriginResponse(request)
   const parsed = await readJsonBody(request)
   if (parsed instanceof NextResponse) return parsed
@@ -229,8 +279,9 @@ async function act(request: NextRequest, pluginId: string, actionId: string, tra
     return refuse(413, 'params_too_large', `params are limited to ${PARAMS_MAX_BYTES} bytes of JSON`)
   }
   trace.step = 'checking the project and session'
-  const context = await strictContext(body.context, eff.userId)
-  if (context instanceof NextResponse) return context
+  const resolved = await resolveContext(body.context, eff.userId, { levels: pluginLevels(plugin), actingAs })
+  if (resolved instanceof NextResponse) return resolved
+  const { context, access, tenantId } = resolved
 
   // A pick is re-derived from the session, never trusted: the plugin receives the
   // server's {kind, point, target, ref}, and the job records it.
@@ -247,7 +298,9 @@ async function act(request: NextRequest, pluginId: string, actionId: string, tra
   }
 
   trace.step = 'reading the chosen model'
-  if (action.llm && !(await readFeatureModel(eff.userId, pluginFeatureId(pluginId)))) {
+  // On a shared project the run spends the owner's model choice and keys (C1), never the person's.
+  if (action.llm && !(await readFeatureModel(tenantId, pluginFeatureId(pluginId)))) {
+    if (tenantId !== eff.userId) return refuse(409, OWNER_MODEL_REQUIRED, OWNER_MODEL_TEXT, { featureId: pluginFeatureId(pluginId) })
     return refuse(409, 'model_required', 'Choose a model for this plugin in Models by feature.', { featureId: pluginFeatureId(pluginId) })
   }
 
@@ -260,10 +313,11 @@ async function act(request: NextRequest, pluginId: string, actionId: string, tra
     version: plugin.activeVersion,
     sub: eff.userId,
     act: actor,
+    ten: tenantId,
     prj: context.projectId ?? undefined,
     ses: context.sessionId ?? undefined,
     conv: context.conversationId ?? undefined,
-    perms: grantedAndDeclared(plugin),
+    perms: usablePermissions(plugin),
     timeoutSeconds,
   }
   const ctx: Json = { pluginId, version: plugin.activeVersion, userId: eff.userId }
@@ -284,7 +338,7 @@ async function act(request: NextRequest, pluginId: string, actionId: string, tra
       if (out.kind !== 'result') return refuse(502, 'runner_bad_answer', 'The plugin runner answered a sync action as a job.')
       if (!out.ok) return NextResponse.json({ ok: false, error: out.error })
       trace.step = 'checking the result'
-      const result = await checkReviewProposal(out.result, { pluginId, userId: eff.userId, projectId: context.projectId })
+      const result = await checkReviewProposal(out.result, { pluginId, userId: eff.userId, projectId: context.projectId, access })
       return NextResponse.json({ ok: true, result })
     }
 

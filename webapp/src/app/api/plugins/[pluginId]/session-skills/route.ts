@@ -4,6 +4,7 @@ import { sessionRunningCheck } from '@/lib/agentSessions'
 import { getEffectiveUser } from '@/lib/session'
 import { strictContext } from '@/lib/plugins/actions'
 import { PLUGIN_NOT_ALLOWED_MESSAGE, pluginAllowedFor } from '@/lib/plugins/accessRules'
+import { pluginLevels } from '@/lib/plugins/gateway'
 import { isValidPluginId } from '@/lib/plugins/ids'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
@@ -18,7 +19,8 @@ import { requirePermission } from '@/lib/authz/guards'
  * and declares, with why a skill cannot be picked (deleted, credentials, quarantined),
  * whether the agent is running in the session, and the suggested pick.
  *
- * The same ownership check as an action start, and the same answers when the plugin does
+ * The same project and session check as an action start (the plugin's levels on a shared
+ * project, step 5.10), and the same answers when the plugin does
  * not serve or is not available to the person (403 `plugin_not_allowed`, accessRules.ts),
  * except that an unknown plugin is `plugin_not_found`: the picker tells it from a session
  * that has no conversation yet, which is `not_found`. A built-in skill carries the
@@ -52,7 +54,10 @@ export const GET = pluginRoute('session skills', 'The skills of this session cou
   const qs = request.nextUrl.searchParams
   const sessionId = qs.get('sessionId')
   if (!sessionId) return refuse(400, 'invalid_context', 'sessionId is required')
-  const context = await strictContext({ projectId: qs.get('projectId'), sessionId }, eff.userId)
+  const context = await strictContext({ projectId: qs.get('projectId'), sessionId }, eff.userId, {
+    levels: pluginLevels(plugin),
+    actingAs: !!auth.actingAs,
+  })
   if (context instanceof NextResponse) return context
   const conversation = await prisma.conversation.findUnique({
     where: { id: context.conversationId! },

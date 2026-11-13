@@ -8,7 +8,8 @@ import { actionMaxTimeoutSeconds } from './settings'
  * Call tokens (README.PLUGINS.md §7.3, TD-07): the only credential plugin code ever
  * holds. The webapp mints one per action run and the worker sends it to the Gateway,
  * which re-checks everything it names on every call (gateway.ts); the token only says
- * who is asking, never what they may still do.
+ * who is asking (`sub`, and `act` under act-as) and for whose project (`ten`, its owner),
+ * never what they may still do.
  *
  * Signed with PLUGIN_CALL_TOKEN_SECRET, never AUTH_SECRET, and the claims carry no
  * `role`: the middleware accepts any AUTH_SECRET-signed JWT with `sub` and `role` as a
@@ -39,6 +40,11 @@ export interface CallTokenClaims {
   ver: string
   /** The effective user the action runs for. */
   sub: string
+  /**
+   * The tenant (step 5.10): the owner of the token's project, whose model and keys a call spends,
+   * else `sub`. A token minted before the claim existed reads as `sub`, the owner it was minted for.
+   */
+  ten: string
   /** The admin acting as `sub`, when one is. */
   act?: string
   prj?: string
@@ -57,6 +63,8 @@ export interface MintCallTokenInput {
   pluginId: string
   version: string
   sub: string
+  /** The project's owner; `sub` when absent. The Gateway refuses a token whose tenant no longer owns its project. */
+  ten?: string
   act?: string
   prj?: string
   ses?: string
@@ -109,6 +117,7 @@ export async function mintCallToken(
   if (!isValidPluginId(input.pluginId)) throw new TypeError(`invalid plugin id ${JSON.stringify(input.pluginId)}`)
   if (!nonEmpty(input.version)) throw new TypeError('a call token needs the plugin version')
   if (!nonEmpty(input.sub)) throw new TypeError('a call token needs the user it acts for')
+  if (input.ten !== undefined && !nonEmpty(input.ten)) throw new TypeError('a call token names its tenant, or leaves it out')
   if (!isKind(input.kind)) throw new TypeError(`invalid call token kind ${JSON.stringify(input.kind)}`)
   if ((input.kind === 'job') !== nonEmpty(input.jid)) {
     throw new TypeError('a job token needs its job id, and only a job token carries one')
@@ -119,6 +128,7 @@ export async function mintCallToken(
   const claims: Record<string, unknown> = {
     pid: input.pluginId,
     ver: input.version,
+    ten: input.ten ?? input.sub,
     perms: [...input.perms],
     kind: input.kind,
   }
@@ -157,8 +167,9 @@ export async function verifyCallToken(
   } catch {
     return null
   }
-  const { pid, ver, sub, perms, kind, jti, iat, exp } = payload
+  const { pid, ver, sub, ten, perms, kind, jti, iat, exp } = payload
   if (!isValidPluginId(pid) || !nonEmpty(ver) || !nonEmpty(sub) || !nonEmpty(jti)) return null
+  if (ten !== undefined && !nonEmpty(ten)) return null
   if (!Array.isArray(perms) || !perms.every((p) => typeof p === 'string')) return null
   if (!isKind(kind) || !opts.kinds.includes(kind)) return null
   if (typeof iat !== 'number' || typeof exp !== 'number') return null
@@ -166,7 +177,9 @@ export async function verifyCallToken(
     if (payload[k] !== undefined && !nonEmpty(payload[k])) return null
   }
   if ((kind === 'job') !== nonEmpty(payload.jid)) return null
-  const claims: CallTokenClaims = { pid, ver, sub, perms: perms as string[], kind, jti, aud: CALL_TOKEN_AUDIENCE, iat, exp }
+  const claims: CallTokenClaims = {
+    pid, ver, sub, ten: (ten as string | undefined) ?? sub, perms: perms as string[], kind, jti, aud: CALL_TOKEN_AUDIENCE, iat, exp,
+  }
   for (const k of OPTIONAL_STRING_CLAIMS) if (nonEmpty(payload[k])) claims[k] = payload[k] as string
   return claims
 }

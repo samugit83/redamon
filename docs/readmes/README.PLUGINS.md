@@ -854,7 +854,8 @@ A plugin reaches the outside world only through the SDK, which has two halves:
   reach any other webapp route. The single-host deploy also denies these prefixes at nginx.
 
 Each action invocation carries a short-lived **call token**, minted by the webapp and bound
-to `(plugin, version, acting user, project, session)`. The session is set only when the action
+to `(plugin, version, acting user, project, session)`, plus the project's owner as its **tenant**
+(`ten`; the acting user outside a project). The session is set only when the action
 was started from a session, so `sdk.session.read` can read that one session and nothing else.
 A token lives no longer than its action (`403 action_ended`) or job (`403 job_ended`) and makes
 at most `PLUGIN_GATEWAY_CALLS_PER_TOKEN` calls. The Gateway authorizes every call again: the
@@ -863,10 +864,23 @@ permission granted and declared, the tenancy of the project and session, and, wi
 `RBAC_GOVERNANCE_ENABLED` on, the plugin still available to the token's user (§7.1, per-plugin
 allowlists; `403 plugin_not_allowed`).
 
+**On a project shared with the user** (RBAC sharing, step 5.10) the tenancy check asks
+`projectAccess()` for the token's user at the levels the plugin's permissions need, on every call:
+Read + Write for any permission (a run writes the project's plugin data and may propose), and also
+Use AI agent for `llm:invoke` (which counts only while the owner consents to collaborators
+spending the project's credentials). A plugin that declares no permission stays the owner's. The
+project's owner must still be the token's tenant, so a token minted before a transfer reaches it
+no more. A Read share, oversight and break-glass never run a plugin; an admin acting as a
+collaborator reaches the share at Read and runs none. A refusal at the Gateway is the same `404
+not_found` as a deleted project (a share revoked or narrowed mid-action ends the plugin's reach at
+its next call; a job then ends `context_gone`); at the action start a collaborator below a level is
+told which one (`403 forbidden`, `level`). A session is still its author's only: project access
+alone never hands a plugin another person's conversation.
+
 | SDK call | Permission | What the Gateway does |
 |---|---|---|
 | `sdk.session.read()` | `session:read` | returns the transcript of the token's session, masked and capped (see below) |
-| `sdk.llm.invoke(messages, *, max_tokens, temperature)` | `llm:invoke` | forwards to the agent, which runs the model the user chose for this plugin |
+| `sdk.llm.invoke(messages, *, max_tokens, temperature)` | `llm:invoke` | forwards to the agent, which runs the model the user chose for this plugin; on a shared project the owner's choice with the owner's keys, each call recorded as `credits.used` for the user first (`503 spend_not_recorded` when it cannot be) |
 | `sdk.data.get / put / delete / query / count` | always granted | reads and writes rows of the plugin's own data, within its quotas; `query` takes `prefix`, `where` (top-level JSON equality), `order`, `limit` and `cursor`, and answers `{items, next}` (§7.4) |
 | `sdk.override.get(point, target_group)` | `override:<point>` | returns the factory parts of the target with their checksums, the version that applies, if any, and the limits |
 | `sdk.override.propose(point, target_group, parts, *, note, meta, scope)` | `override:<point>` | has the agent validate the snapshot and stores it as **Proposed** (§7.6) |
@@ -1144,7 +1158,8 @@ agent follows. It is defined precisely:
   leaves that skill on factory text; it does not fall back to a user version nobody chose for
   the project.
 - **Approval (principle 5).** A valid proposal is stored as **Proposed** and changes nothing.
-  The scope's owner, or an admin, sees it in the **core** review window, opened from the chat
+  The scope's owner, or an admin acting as them, or for a project scope a co-owner whose share
+  holds Manage, sees it in the **core** review window, opened from the chat
   right after the plugin's action or from "N pending" in project settings, as a before/after
   comparison of every part against the version it would replace, with the plugin's note, and
   approves or rejects it.
@@ -1334,15 +1349,18 @@ plugin UI, and where the skill-version decisions live:
   texts and the whole-skill size with the agent, then stores the next number.
 - **Versions** (`SkillVersionsModal`, `GET /api/plugins/overrides/versions`, `POST
   /api/plugins/overrides/reset`) list the factory row and every version of a skill for the
-  viewer's user scope and a project they own. A version number is never reused, so the list
+  viewer's user scope and a project whose proposals they decide (owned, or shared with Manage). A version number is never reused, so the list
   can skip numbers after a deletion. Reset works whatever state the plugin is in. A project
   reset makes the project follow the owner's user-scope version, or the factory text.
 - **Project settings** show, per built-in skill of a saved project, a chip naming the version
   that governs it, Versions, Reset and "N pending" (`GET /api/plugins/overrides/summary`), plus
   `project.skills.row` contributions. Reset is its own API call, never part of the project
   save.
-- Who decides: the scope owner, or an admin acting as them (the audit names the admin). A
-  user-scope decision carries the owner id, which must equal the effective user.
+- Who decides: the scope owner, or an admin acting as them (the audit names the admin); on a
+  project scope also a co-owner whose share holds Manage (step 5.10, `changeSetAccess.ts`). A
+  collaborator below Manage, who may still run a plugin that proposes, is answered `403` naming
+  level `M` on approve, reject, delete and reset and sees no review window for the project's
+  proposals. A user-scope decision carries the owner id, which must equal the effective user.
 - Project export and import leave plugin rows out: the export manifest says
   `excluded: ["plugin_overrides", "plugin_data"]`, and the import never reads a plugin file.
 

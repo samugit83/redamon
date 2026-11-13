@@ -35,7 +35,7 @@ export const GET = pluginRoute('override versions', 'The versions could not be r
   if (point !== 'skill.text') {
     return NextResponse.json({ error: 'Only skill.text and user_skill.text versions are listed here.', code: 'bad_point' }, { status: 400 })
   }
-  const model = await buildVersionsModel(eff.userId, group, projectId)
+  const model = await buildVersionsModel(eff.userId, group, projectId, { actingAs: !!auth.actingAs })
   if (!model) return NextResponse.json({ error: 'No such built-in skill.', code: 'unknown_skill' }, { status: 404 })
   return NextResponse.json(model, { headers: { 'Cache-Control': 'no-store' } })
 })

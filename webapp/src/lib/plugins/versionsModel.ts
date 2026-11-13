@@ -1,6 +1,6 @@
 import type { PluginInstall } from '@prisma/client'
 import { isBuiltinSkill } from './builtinSkills'
-import { ownsScope } from './changeSetAccess'
+import { ownsScope, type ScopeAccessOptions } from './changeSetAccess'
 import { skillDisplayName } from './overrideOps'
 import * as ov from './overrides'
 import { dormantReason, findInstall, type DormantReason } from './registry'
@@ -109,8 +109,13 @@ async function scopeVersions(
   }
 }
 
-/** The versions model, or null for an unknown skill. `projectId` is listed only if owned. */
-export async function buildVersionsModel(effectiveUserId: string, group: string, projectId?: string | null): Promise<VersionsModel | null> {
+/** The versions model, or null for an unknown skill. `projectId` is listed only when the caller decides its proposals. */
+export async function buildVersionsModel(
+  effectiveUserId: string,
+  group: string,
+  projectId?: string | null,
+  opts: ScopeAccessOptions = {},
+): Promise<VersionsModel | null> {
   if (!isBuiltinSkill(group)) return null
 
   let factoryText: Record<string, string> | null = null
@@ -130,7 +135,7 @@ export async function buildVersionsModel(effectiveUserId: string, group: string,
   const env = { agentSupportsSeam: registryError !== 'agent_outdated' }
   const names = new Map<string, Promise<string>>()
   const scopes: ScopeVersions[] = [await scopeVersions({ type: 'user', id: effectiveUserId }, group, env, names)]
-  if (projectId && (await ownsScope({ type: 'project', id: projectId }, effectiveUserId))) {
+  if (projectId && (await ownsScope({ type: 'project', id: projectId }, effectiveUserId, opts))) {
     scopes.push(await scopeVersions({ type: 'project', id: projectId }, group, env, names))
   }
 

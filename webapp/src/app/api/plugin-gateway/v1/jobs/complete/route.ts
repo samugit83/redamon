@@ -26,7 +26,7 @@ export function POST(request: NextRequest) {
       throw e
     }
     if (report.result && !ctx.lapsed) {
-      report.result = await checkReviewProposal(report.result, { pluginId: ctx.pluginId, userId: ctx.userId, projectId: ctx.projectId })
+      report.result = await checkReviewProposal(report.result, { pluginId: ctx.pluginId, userId: ctx.userId, projectId: ctx.projectId, access: ctx.access })
     }
     const { found, changed } = await completeJob(ctx.pluginId, ctx.userId, ctx.claims.jid!, report, { lapsed: ctx.lapsed })
     if (!found) throw new GatewayError(404, 'not_found', 'No such job.')

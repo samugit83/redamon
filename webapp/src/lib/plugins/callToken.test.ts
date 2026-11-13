@@ -176,6 +176,49 @@ describe('refusals', () => {
   })
 })
 
+// Step 5.10 (SH-35): the token names the project's owner as its tenant beside the person it acts for.
+describe('the tenant claim', () => {
+  test('a token names its tenant beside the person: the owner of a shared project', async () => {
+    const { token } = await mintCallToken({ ...base, sub: 'collaborator-1', ten: 'owner-1' })
+    expect(await verifyCallToken(token, { kinds: ['action'] })).toMatchObject({ sub: 'collaborator-1', ten: 'owner-1', prj: 'project-1' })
+    expect(decodeJwt(token)).toMatchObject({ sub: 'collaborator-1', ten: 'owner-1' })
+  })
+
+  test('without a tenant the person is the tenant, and the claim is written all the same', async () => {
+    const { token } = await mintCallToken(base)
+    expect(decodeJwt(token).ten).toBe('user-1')
+    expect((await verifyCallToken(token, { kinds: ['action'] }))!.ten).toBe('user-1')
+  })
+
+  test('an empty tenant is refused at mint', async () => {
+    await expect(mintCallToken({ ...base, ten: '' })).rejects.toThrow(/tenant/)
+  })
+
+  test('a token minted before the claim existed reads as its own user (the owner it was minted for)', async () => {
+    const legacy = await new SignJWT({ pid: 'skiller', ver: '1.2.0', perms: [], kind: 'action', prj: 'project-1' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject('user-1')
+      .setJti('11111111-2222-3333-4444-555555555555')
+      .setAudience(CALL_TOKEN_AUDIENCE)
+      .setIssuedAt(Math.floor(T0.getTime() / 1000))
+      .setExpirationTime(Math.floor(T0.getTime() / 1000) + 60)
+      .sign(new TextEncoder().encode(SECRET))
+    expect(await verifyCallToken(legacy, { kinds: ['action'] })).toMatchObject({ sub: 'user-1', ten: 'user-1' })
+  })
+
+  test.each([[''], [7], [null], [['owner-1']]])('a malformed tenant %j never verifies', async (ten) => {
+    const forged = await new SignJWT({ pid: 'skiller', ver: '1.2.0', perms: [], kind: 'action', ten })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject('user-1')
+      .setJti('11111111-2222-3333-4444-555555555555')
+      .setAudience(CALL_TOKEN_AUDIENCE)
+      .setIssuedAt(Math.floor(T0.getTime() / 1000))
+      .setExpirationTime(Math.floor(T0.getTime() / 1000) + 60)
+      .sign(new TextEncoder().encode(SECRET))
+    expect(await verifyCallToken(forged, { kinds: ['action'] })).toBeNull()
+  })
+})
+
 describe('the secret', () => {
   test.each([
     ['missing', ''],

@@ -24,10 +24,11 @@ export type SpendFeature =
   | 'agent_session'
   | 'codefix_session'
   | 'shell_session'
+  | 'plugin_llm'
 
 export const SPEND_FEATURES: readonly SpendFeature[] = Object.freeze([
   'report_narratives', 'roe_parse', 'command_whisperer', 'multi_mute', 'text_to_cypher', 'scan', 'triage_run',
-  'agent_session', 'codefix_session', 'shell_session',
+  'agent_session', 'codefix_session', 'shell_session', 'plugin_llm',
 ])
 
 export interface OwnerCredentialSpend {

@@ -3,7 +3,7 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { auditActor } from '@/lib/auditActor'
 import { getEffectiveUser } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
-import { bodyOwnerMatches, ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
+import { bodyOwnerMatches, scopeRefusal, scopeRefusalResponse, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
@@ -20,7 +20,8 @@ import { requirePermission } from '@/lib/authz/guards'
 
 /**
  * POST /api/plugins/overrides/change-sets/[id]/approve: make a proposed version active
- * (design §6; OQ-08). The scope owner (or an admin acting as them) only; a user scope carries
+ * (design §6; OQ-08). The scope owner (or an admin acting as them), or a co-owner with Manage on
+ * a project scope (step 5.10; 403 below it), only; a user scope carries
  * `scopeOwnerId`, which must equal the effective user (the act-as cookie is site-wide; RV-33),
  * and follows the account write rule: an admin acting as a member who can sign in is refused,
  * one acting as a passwordless managed account is not (HD-23, OQ-49).
@@ -57,7 +58,9 @@ export const POST = pluginRoute('override approve', 'The proposal could not be a
 
   const { id } = await params
   const set = await ov.getChangeSet(id)
-  if (!set || !(await ownsScope(set.scope, eff.userId))) return notFound()
+  if (!set) return notFound()
+  const refused = await scopeRefusal(set.scope, eff.userId, { actingAs: !!auth.actingAs })
+  if (refused) return scopeRefusalResponse(refused, 'plugins:approve_overrides')
   if (!bodyOwnerMatches(set.scope, eff.userId, parsed.body.scopeOwnerId)) {
     return refuse(403, 'wrong_owner', 'This version does not belong to the user you are acting as.')
   }

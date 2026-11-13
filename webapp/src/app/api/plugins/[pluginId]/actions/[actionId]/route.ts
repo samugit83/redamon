@@ -10,5 +10,5 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const auth = await requirePermission(request, 'plugins:use')
   if (auth instanceof NextResponse) return auth
   const { pluginId, actionId } = await params
-  return handleAction(request, pluginId, actionId)
+  return handleAction(request, pluginId, actionId, { actingAs: !!auth.actingAs })
 }

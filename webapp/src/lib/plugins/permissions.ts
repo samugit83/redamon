@@ -1,3 +1,5 @@
+import type { ProjectLevel } from '@/lib/authz/permissions'
+
 /**
  * What a plugin may ask for (README.PLUGINS.md §10). The admin grants these at install
  * from the consent text below; a capability missing from the manifest is one the
@@ -49,4 +51,28 @@ export const PERMISSION_TEXT: Record<PluginPermission, PermissionText> = {
 
 export function isPluginPermission(p: unknown): p is PluginPermission {
   return typeof p === 'string' && (PLUGIN_PERMISSIONS as readonly string[]).includes(p)
+}
+
+/**
+ * The project level each permission needs of the person a plugin runs for (step 5.10, SH-35). Every
+ * run on a project may write the project's plugin data and propose, so each permission needs Read +
+ * Write; calling a model spends the project owner's model and keys, so `llm:invoke` also needs Use
+ * AI agent (which counts only with the owner's consent). The owner reaches every level.
+ */
+export const PERMISSION_PROJECT_LEVEL: Readonly<Record<PluginPermission, ProjectLevel>> = {
+  'session:read': 'W',
+  'llm:invoke': 'W+A',
+  'override:skill.text': 'W',
+  'override:user_skill.text': 'W',
+}
+
+/**
+ * The levels a run of a plugin holding `permissions` (granted and declared) needs on a project, each
+ * one: those of its permissions, or the owner's alone for a plugin that declares none, whose reach on
+ * a project nothing here describes.
+ */
+export function pluginProjectLevels(permissions: readonly string[]): ProjectLevel[] {
+  const levels = new Set<ProjectLevel>()
+  for (const p of permissions) if (isPluginPermission(p)) levels.add(PERMISSION_PROJECT_LEVEL[p])
+  return levels.size > 0 ? [...levels] : ['O']
 }

@@ -74,7 +74,17 @@ export function seedWorld(db: FakePrisma, opts: { install?: Row | null } = {}): 
 
 export type TokenInput = Partial<MintCallTokenInput>
 
-/** A call token for Alice's session in Alice's project, unless overridden. */
+/** Who owns each seeded project: the tenant actions.ts names in a token for it. */
+export const PROJECT_OWNERS: Readonly<Record<string, string>> = {
+  [ALICE_PROJECT]: ALICE,
+  [ALICE_OTHER_PROJECT]: ALICE,
+  [BOB_PROJECT]: BOB,
+}
+
+/**
+ * A call token for Alice's session in Alice's project, unless overridden. Its tenant is the
+ * project's owner, as the action start mints it, unless `ten` is given.
+ */
 export async function token(over: TokenInput = {}): Promise<string> {
   const input: MintCallTokenInput = {
     pluginId: 'echo',
@@ -88,6 +98,7 @@ export async function token(over: TokenInput = {}): Promise<string> {
     timeoutSeconds: 30,
     ...over,
   }
+  if (!('ten' in over)) input.ten = (input.prj && PROJECT_OWNERS[input.prj]) || input.sub
   for (const k of Object.keys(input) as (keyof MintCallTokenInput)[]) {
     if (input[k] === undefined) delete input[k]
   }

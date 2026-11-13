@@ -20,7 +20,7 @@ export const GET = pluginRoute('override summary', 'The plugin skill versions co
   if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const projectId = new URL(request.url).searchParams.get('projectId')
   if (!projectId) return NextResponse.json({ error: 'projectId is required.', code: 'bad_request' }, { status: 400 })
-  const model = await buildSummaryModel(eff.userId, projectId)
+  const model = await buildSummaryModel(eff.userId, projectId, { actingAs: !!auth.actingAs })
   if (!model) return NextResponse.json({ error: 'Not found', code: 'not_found' }, { status: 404 })
   return NextResponse.json(model, { headers: { 'Cache-Control': 'no-store' } })
 })

@@ -143,8 +143,17 @@ for one call:
 | `job_id` | Set only inside an async action. |
 | `sdk` | The Gateway client (§5), bound to this call's token. |
 
-The webapp decided all of these before the runner saw the call: the project and session are the
-user's own, the permissions are both granted by the admin and declared in the manifest.
+The webapp decided all of these before the runner saw the call: the project is the user's own or
+shared with them at the levels your permissions need (below), the session is the user's own, the
+permissions are both granted by the admin and declared in the manifest.
+
+**Projects shared with the user.** With RBAC sharing on, `project_id` may name another person's
+project the user collaborates on. Your plugin then runs for that user at the levels its
+permissions ask: every permission needs a Read + Write share, `llm:invoke` also Use AI agent; a
+plugin that declares no permission runs only for the project's owner. `ctx.user_id` stays the person
+who started the action (your `owner="user"` rows, the daily model-call cap); `owner="project"` rows
+are the project's, shared by everyone who runs the plugin there. The webapp and the Gateway check
+it on every call, so a share revoked or narrowed while the action runs ends it with `not_found`.
 
 ### 4.3 What the UI does with a result
 
@@ -158,7 +167,9 @@ user's own, the permissions are both granted by the admin and declared in the ma
 | A button or row action | any object | Its `message`, or "Done". |
 
 An action with `llm: true` first passes the **model gate**: if the user has not chosen a model for
-the plugin in Models by feature, a core window asks for one before the action is sent.
+the plugin in Models by feature, a core window asks for one before the action is sent. On a shared
+project the owner's choice counts, never the user's: without one the start answers `409
+owner_model_required`.
 
 ### 4.4 Async actions and jobs
 
@@ -219,7 +230,7 @@ order:
 | `invalid_text` | 400 | U+0000 or an unpaired surrogate anywhere in the body (Postgres cannot store them). |
 | `plugin_unavailable` | 403 | The plugin is not enabled, not ready, revoked, or the token is for another version. |
 | `permission_denied` | 403 | The call needs a permission the admin did not grant or the manifest does not declare. |
-| `not_found` | 404 | The token's project or session no longer exists, or is not the user's. |
+| `not_found` | 404 | The token's project or session no longer exists, or is not the user's: on a shared project also a share revoked or below the levels the plugin needs (§4.2), or a project transferred since the action started. |
 | `plugin_not_allowed` | 403 | An admin limited the plugin to permission sets the token's user holds none of (only with `RBAC_GOVERNANCE_ENABLED` on). It applies from the next call, so an action already running can meet it. |
 
 ### 5.2 `sdk.session` (needs `session:read`)
@@ -260,10 +271,14 @@ answer = await ctx.sdk.llm.invoke(messages, max_tokens=4000, temperature=0.2)
 
 - The model is the one **the user** chose for this plugin in Global Settings → LLM Providers →
   Models by feature (`plugin:<id>`); a plugin never names a model or a provider. The agent makes
-  the call with the user's key, which never reaches the runner.
+  the call with the user's key, which never reaches the runner. On a project shared with the user
+  it is the **project owner's** choice and key, and each call is first recorded as the user's use
+  of the owner's credentials (`503 spend_not_recorded` when that record cannot be written: nothing
+  was spent).
 - `messages`: 1-50 of `{role: system|user|assistant, content: text}`, at most 1,000,000
   characters in all; `max_tokens` 1-16,000; `temperature` 0-2.
 - Refusals: `409 model_required` (no model chosen; the UI's model gate exists to prevent it),
+  `409 owner_model_required` (a shared project whose owner chose none),
   `429 plugin_llm_cap` (`PLUGIN_LLM_DAILY_CALL_CAP`, 100 calls per plugin, per user, per UTC day),
   `422 invalid_messages` / `invalid_options`, `413 too_many_messages` / `messages_too_large`, and
   the agent's own errors passed through with their codes.
@@ -348,7 +363,7 @@ await ctx.sdk.override.withdraw(proposal["changeSetId"])    # a pending proposal
   proposals per scope and skill); `404 not_found` (withdrawing someone else's).
 - Versions are numbered per scope by a counter that never goes back, so a deleted `v3` is never
   reused. Approval, rejection, deletion and reset are core actions of the scope's owner (or an
-  admin), never a plugin's.
+  admin; for a project scope also a co-owner with Manage), never a plugin's.
 - The platform records with every proposal the plugin version, conversation and job of the call
   (from its token); those keys, and the platform's other meta keys, are dropped from your `meta`.
 

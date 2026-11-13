@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { auditActor } from '@/lib/auditActor'
 import { getEffectiveUser } from '@/lib/session'
 import { auditPlugin } from '@/lib/plugins/audit'
-import { ownsScope, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
+import { ownsScope, scopeRefusal, scopeRefusalResponse, userScopeWriteRefusal } from '@/lib/plugins/changeSetAccess'
 import { pluginRoute } from '@/lib/plugins/lifecycleRoutes'
 import * as ov from '@/lib/plugins/overrides'
 import { buildReviewModel } from '@/lib/plugins/reviewModel'
@@ -12,8 +12,9 @@ import { requirePermission } from '@/lib/authz/guards'
 /**
  * GET /api/plugins/overrides/change-sets/[id]: the review model (lib/plugins/reviewModel.ts).
  * DELETE /api/plugins/overrides/change-sets/[id]: deletes a non-active version.
- * Only the scope owner (or an admin acting as them) may read or delete; another user's set is
- * a 404 (the strict owner check, X9).
+ * Only whoever decides the scope may read or delete: the scope owner (or an admin acting as them),
+ * or on a project scope a co-owner with Manage (step 5.10); another user's set is a 404 (X9), and
+ * a collaborator below Manage reads a 404 and is told the level when deleting.
  * Deleting a user-scope version also follows the account write rule (HD-23).
  */
 export const runtime = 'nodejs'
@@ -31,7 +32,7 @@ export const GET = pluginRoute('override review read', 'The proposal could not b
   if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { id } = await params
   const set = await ov.getChangeSet(id)
-  if (!set || !(await ownsScope(set.scope, eff.userId))) return notFound()
+  if (!set || !(await ownsScope(set.scope, eff.userId, { actingAs: !!auth.actingAs }))) return notFound()
   // A project the scope owner owns only (the model reads it with that owner): the review of
   // a user-skill proposal opened from a project shows that project's toggles.
   const model = await buildReviewModel(id, { projectId: new URL(request.url).searchParams.get('projectId') })
@@ -50,7 +51,9 @@ export const DELETE = pluginRoute('override delete', 'The version could not be d
   if (!eff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const { id } = await params
   const set = await ov.getChangeSet(id)
-  if (!set || !(await ownsScope(set.scope, eff.userId))) return notFound()
+  if (!set) return notFound()
+  const refused = await scopeRefusal(set.scope, eff.userId, { actingAs: !!auth.actingAs })
+  if (refused) return scopeRefusalResponse(refused, 'plugins:approve_overrides')
   const notAccountWriter = await userScopeWriteRefusal(set.scope)
   if (notAccountWriter) return notAccountWriter
   try {

@@ -4,6 +4,11 @@ import { readFeatureModel } from '@/lib/featureModels'
 import { pluginFeatureId } from '@/lib/llmFeatures'
 import { GATEWAY_BODY_MAX_BYTES, GatewayError, gatewayError, withGateway, type GatewayContext } from '@/lib/plugins/gateway'
 import { chargeLlmCall, recordLlmUsage } from '@/lib/plugins/llmBudget'
+import { OWNER_MODEL_REQUIRED, OWNER_MODEL_TEXT } from '@/lib/plugins/actions'
+import { auditActorOf } from '@/lib/auditActor'
+import { meetsLevel } from '@/lib/authz/projectAccess'
+import { recordOwnerCredentialSpend } from '@/lib/authz/ownerSpend'
+import { safeErrorCode } from '@/lib/routeErrors'
 
 /**
  * POST /api/plugin-gateway/v1/llm/invoke (`sdk.llm.invoke`, needs `llm:invoke`): one call
@@ -11,6 +16,11 @@ import { chargeLlmCall, recordLlmUsage } from '@/lib/plugins/llmBudget'
  * `/plugins/llm/invoke` (master key), so a provider key never reaches the runner. The
  * request names messages and two options, never a model or a user. Each call is charged
  * to the plugin's own daily cap before it is made (lib/plugins/llmBudget.ts).
+ *
+ * On a project shared with the token's user (step 5.10, C1) the call spends the project owner's
+ * model choice and keys (`user_id` is the tenant), only while the person's access holds Use AI
+ * agent (which counts only with the owner's consent; the Gateway frame already asked it), and each
+ * call writes its `credits.used` row first (no row, no call). The cap and the usage stay the person's.
  */
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -66,8 +76,12 @@ async function invoke(ctx: GatewayContext) {
   const started = Date.now()
   const { messages, options } = checkedCall(ctx.body)
   const featureId = pluginFeatureId(ctx.pluginId)
-  const model = await readFeatureModel(ctx.userId, featureId)
+  const spendsOwners = ctx.tenantId !== ctx.userId
+  // The frame checked the plugin's levels; asked again here because this call is the spend.
+  if (spendsOwners && (!ctx.access || !meetsLevel(ctx.access, 'W+A'))) throw new GatewayError(404, 'not_found', 'Not found')
+  const model = await readFeatureModel(ctx.tenantId, featureId)
   if (!model) {
+    if (spendsOwners) throw new GatewayError(409, OWNER_MODEL_REQUIRED, OWNER_MODEL_TEXT, { featureId })
     throw new GatewayError(409, 'model_required', 'Choose a model for this plugin in Models by feature.', { featureId })
   }
   const charge = await chargeLlmCall(ctx.pluginId, ctx.userId)
@@ -75,12 +89,27 @@ async function invoke(ctx: GatewayContext) {
     console.warn(`[plugins] llm plugin=${ctx.pluginId} user=${ctx.userId} refused: daily cap ${charge.cap} reached`)
     throw new GatewayError(429, 'plugin_llm_cap', 'This plugin reached its daily model-call limit.')
   }
+  if (spendsOwners) {
+    try {
+      await recordOwnerCredentialSpend({
+        projectId: ctx.projectId!,
+        ownerId: ctx.tenantId,
+        userId: ctx.userId,
+        actor: auditActorOf({ id: ctx.actorId ?? ctx.userId }, ctx.userId),
+        feature: 'plugin_llm',
+        permission: 'plugins:use',
+      })
+    } catch (err) {
+      console.error(`[rbac] credits.used not recorded project=${ctx.projectId} user=${ctx.userId} feature=plugin_llm: ${safeErrorCode(err)}`)
+      throw new GatewayError(503, 'spend_not_recorded', "This use of the project owner's credentials could not be recorded, so nothing was spent. Try again.")
+    }
+  }
 
   const result = await callFeatureAgent({
     featureId,
     path: '/plugins/llm/invoke',
     model,
-    body: { user_id: ctx.userId, plugin_id: ctx.pluginId, model, messages, ...options },
+    body: { user_id: ctx.tenantId, plugin_id: ctx.pluginId, model, messages, ...options },
     timeoutMs: AGENT_TIMEOUT_MS,
     notFoundIsOutdated: true,
   })
