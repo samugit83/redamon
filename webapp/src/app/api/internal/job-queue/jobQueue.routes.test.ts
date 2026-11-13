@@ -32,6 +32,7 @@ const h = vi.hoisted(() => ({
   orchFetch: vi.fn(),
   userFindMany: vi.fn(),
   audit: vi.fn(),
+  actorRefusal: vi.fn(),
 }))
 
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => h.isInternal(...a) }))
@@ -54,6 +55,13 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
+// The actor's project access (step 5.5) runs the real can(); its own tests are
+// scanActor.access.test.ts and internal/deferredActor.shares.test.ts. Here it answers "allowed"
+// unless a test says otherwise.
+vi.mock('@/lib/authz/scanActor', async (orig) => ({
+  ...(await orig<typeof import('@/lib/authz/scanActor')>()),
+  actorScanRefusal: (...a: unknown[]) => h.actorRefusal(...a),
+}))
 vi.mock('@/lib/startScan', () => ({
   dispatchStart: (...a: unknown[]) => h.dispatchStart(...a),
   stopScan: (...a: unknown[]) => h.stopScan(...a),
@@ -126,6 +134,7 @@ beforeEach(() => {
   h.agentState.mockResolvedValue('idle')
   h.dispatchStart.mockResolvedValue({ ok: true, runId: 'r1', scanJobId: 'sj1' })
   h.stopScan.mockResolvedValue(undefined)
+  h.actorRefusal.mockResolvedValue(null)
 })
 
 describe('dispatch route auth', () => {
@@ -834,5 +843,78 @@ describe('dispatch: a job of an account that is not active (step 2.3, DV-39)', (
     expect((await (await go()).json()).ok).toBe(true)
     expect(h.dispatchStart).toHaveBeenCalled()
     expect(h.userFindMany).not.toHaveBeenCalled()
+  })
+})
+
+describe('dispatch: a job whose actor lost access to the project (step 5.5, DV-38)', () => {
+  const go = () => dispatch(post('http://x/api/internal/job-queue/j1/dispatch'), sp('j1'))
+  const LOST = { userId: 'collab-1', permission: 'scan:gvm', reason: 'project_not_visible' }
+
+  beforeEach(() => {
+    h.jqFindUnique.mockResolvedValue(baseRow({ userId: 'collab-1', kind: 'gvm' }))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  test('dispatch cancels a job whose actor lost access: audited, logged, nothing starts', async () => {
+    h.actorRefusal.mockResolvedValue(LOST)
+    const body = await (await go()).json()
+    expect(body).toEqual({
+      ok: false, canceled: true, blocked: 'actor_no_access',
+      error: 'the account that queued it no longer has access to this project',
+    })
+    expect(h.dispatchStart).not.toHaveBeenCalled()
+    expect(h.actorRefusal).toHaveBeenCalledWith('collab-1', 'p1', ['scan:gvm'])
+    const cancel = h.jqUpdateMany.mock.calls.find((c) => c[0].data.status === 'canceled')
+    expect(cancel?.[0]).toEqual({
+      where: { id: 'j1', status: 'dispatching' },
+      data: {
+        status: 'canceled', blockedCode: 'actor_no_access',
+        blockedReason: 'the account that queued it no longer has access to this project', finishedAt: expect.any(Date),
+      },
+    })
+    expect(h.audit).toHaveBeenCalledWith({
+      actorId: null, projectId: 'p1', action: 'job_queue.cancelled', targetType: 'jobQueue', targetId: 'j1',
+      after: {
+        reason: 'actor_no_access', projectId: 'p1', kind: 'gvm',
+        userId: 'collab-1', permission: 'scan:gvm', refusal: 'project_not_visible',
+      },
+      source: 'system',
+    })
+    expect(console.warn).toHaveBeenCalledWith('[rbac] job j1 cancelled: actor collab-1 lost scan:gvm on project p1 (project_not_visible)')
+  })
+
+  test('the check asks the permissions of the job, overwrite included', async () => {
+    h.jqFindUnique.mockResolvedValue(baseRow({ userId: 'collab-1', kind: 'full_recon', payload: { mode: 'overwrite' } }))
+    await go()
+    expect(h.actorRefusal).toHaveBeenCalledWith('collab-1', 'p1', ['recon:scan', 'recon:overwrite'])
+    h.jqFindUnique.mockResolvedValue(baseRow({ userId: 'collab-1', kind: 'partial_recon', payload: {} }))
+    h.actorRefusal.mockClear()
+    await go()
+    expect(h.actorRefusal).toHaveBeenCalledWith('collab-1', 'p1', ['recon:partial'])
+  })
+
+  test("an owner's job passes and starts as before (owner unchanged)", async () => {
+    h.jqFindUnique.mockResolvedValue(baseRow())
+    expect((await (await go()).json()).ok).toBe(true)
+    expect(h.actorRefusal).toHaveBeenCalledWith('u1', 'p1', ['recon:scan'])
+    expect(h.dispatchStart).toHaveBeenCalledWith('full_recon', 'p1', { actorUserId: 'u1', payload: {} })
+    expect(h.audit).not.toHaveBeenCalled()
+  })
+
+  test('an access check that cannot be read starts nothing and spends an attempt (never)', async () => {
+    h.actorRefusal.mockRejectedValue(Object.assign(new Error('db down'), { code: 'P1001' }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await go()
+    expect(res.status).toBe(500)
+    expect(h.dispatchStart).not.toHaveBeenCalled()
+    const retry = h.jqUpdateMany.mock.calls.find((c) => c[0].data.status === 'queued')
+    expect(retry?.[0].data).toMatchObject({ status: 'queued', attempts: 1, blockedCode: 'transient' })
+  })
+
+  test('a deleted project fails before any access check', async () => {
+    h.projectFindUnique.mockResolvedValue(null)
+    expect((await (await go()).json()).error).toBe('project no longer exists')
+    expect(h.actorRefusal).not.toHaveBeenCalled()
   })
 })

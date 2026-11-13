@@ -17,6 +17,13 @@
  * runs BEFORE startFullScan (which would freeze a version first) and fails
  * closed on an unverified session; the occurrence becomes a queue row, never
  * a second one while a full recon is already queued or running.
+ *
+ * The schedule starts its scans as the person who created it (or last confirmed it), so
+ * that person must still be allowed to start a full recon here when it fires (step 5.5,
+ * DV-38, D-13): a collaborator whose share was revoked, expired or narrowed since. A
+ * schedule whose actor lost access is paused (`enabled: false`), audited
+ * `scan_schedule.paused`, never re-attributed: the owner or a co-owner confirms it
+ * (`POST /api/projects/[id]/schedules/[scheduleId]/confirm`) and becomes its actor.
  */
 
 /** A full recon of this project already waiting or running in the queue. */
@@ -54,7 +61,8 @@ import { classifyStartFailure } from '@/lib/scanStartOutcome'
 import { enqueueJob } from '@/lib/enqueueJob'
 import { writeAudit } from '@/lib/audit'
 import { checkAgentSessions, describeAgentSessionState } from '@/lib/agentSessions'
-import { inactiveScanAccount, inactiveScanReason } from '@/lib/authz/scanActor'
+import { actorScanRefusal, actorScanRefusalReason, inactiveScanAccount, inactiveScanReason } from '@/lib/authz/scanActor'
+import { queuedJobPermissions } from '@/lib/authz/queuedJobPermissions'
 
 export const runtime = 'nodejs'
 
@@ -113,6 +121,37 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       })
       return NextResponse.json(
         { ok: false, skipped: 'actor_inactive', error: `skipped: ${reason}`, nextRunAt },
+        { status: 200 },
+      )
+    }
+
+    const refusal = await actorScanRefusal(
+      schedule.userId, schedule.projectId, queuedJobPermissions('full_recon', { mode: schedule.scanMode }),
+    )
+    if (refusal) {
+      await prisma.scanSchedule.update({
+        where: { id: scheduleId },
+        data: { lastRunAt: now, nextRunAt, enabled: false },
+      })
+      const reason = actorScanRefusalReason(refusal, 'scheduled')
+      console.warn(
+        `[rbac] schedule ${scheduleId} paused: actor ${refusal.userId} lost ${refusal.permission} ` +
+        `on project ${schedule.projectId} (${refusal.reason})`,
+      )
+      await writeAudit({
+        actorId: null,
+        projectId: schedule.projectId,
+        action: 'scan_schedule.paused',
+        targetType: 'scanSchedule',
+        targetId: schedule.id,
+        after: {
+          reason: 'actor_no_access', projectId: schedule.projectId,
+          userId: refusal.userId, permission: refusal.permission, refusal: refusal.reason,
+        },
+        source: 'system',
+      })
+      return NextResponse.json(
+        { ok: false, paused: true, code: 'actor_no_access', error: `paused: ${reason}`, nextRunAt },
         { status: 200 },
       )
     }

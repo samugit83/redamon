@@ -27,6 +27,7 @@ const h = vi.hoisted(() => ({
   jqFindFirst: vi.fn(),
   projectFindUnique: vi.fn(),
   userFindMany: vi.fn(),
+  actorRefusal: vi.fn(),
 }))
 
 vi.mock('@/lib/session', () => ({ isInternalRequest: (...a: unknown[]) => h.isInternal(...a) }))
@@ -53,6 +54,13 @@ vi.mock('@/lib/agentSessions', async importOriginal => ({
 vi.mock('@/lib/startFullScan', () => ({ startFullScan: (...a: unknown[]) => h.start(...a) }))
 vi.mock('@/lib/enqueueJob', () => ({ enqueueJob: (...a: unknown[]) => h.enqueue(...a) }))
 vi.mock('@/lib/audit', () => ({ writeAudit: (...a: unknown[]) => h.audit(...a) }))
+// The actor's project access (step 5.5) runs the real can(); its own tests are
+// scanActor.access.test.ts and internal/deferredActor.shares.test.ts. Here it answers "allowed"
+// unless a test says otherwise.
+vi.mock('@/lib/authz/scanActor', async (orig) => ({
+  ...(await orig<typeof import('@/lib/authz/scanActor')>()),
+  actorScanRefusal: (...a: unknown[]) => h.actorRefusal(...a),
+}))
 vi.mock('@/lib/scanTimeline', async orig => ({
   ...(await orig<typeof import('@/lib/scanTimeline')>()),
   createScanJob: (...a: unknown[]) => h.createJob(...a),
@@ -85,6 +93,7 @@ beforeEach(() => {
   h.enqueue.mockResolvedValue({ ok: true, status: 201, id: 'jq1' })
   h.agent.mockResolvedValue('idle')
   h.jqFindFirst.mockResolvedValue(null)
+  h.actorRefusal.mockResolvedValue(null)
 })
 
 describe('authentication', () => {
@@ -449,5 +458,73 @@ describe('a schedule of an account that is not active (step 2.3, DV-39)', () => 
     expect(h.start).toHaveBeenCalled()
     expect(h.userFindMany).not.toHaveBeenCalled()
     expect(h.projectFindUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /run: a schedule whose actor lost access to the project (step 5.5, DV-38, D-13)', () => {
+  const runIt = async () => (await run(req('http://x/api/internal/scan-schedules/s1/run', {}), sp('s1')))
+  const LOST = { userId: 'collab-1', permission: 'recon:scan', reason: 'project_level' }
+
+  beforeEach(() => {
+    h.findSchedule.mockResolvedValue({ ...SCHEDULE, userId: 'collab-1' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  test('schedule paused with a reason: audited, logged, nothing starts, never re-attributed', async () => {
+    h.actorRefusal.mockResolvedValue(LOST)
+    const res = await runIt()
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toMatchObject({
+      ok: false, paused: true, code: 'actor_no_access',
+      error: 'paused: the account that scheduled it no longer has the access to this project that recon:scan needs',
+    })
+    expect(h.start).not.toHaveBeenCalled()
+    expect(h.enqueue).not.toHaveBeenCalled()
+    expect(h.actorRefusal).toHaveBeenCalledWith('collab-1', 'p1', ['recon:scan'])
+    expect(h.updateSchedule).toHaveBeenCalledTimes(1)
+    const update = h.updateSchedule.mock.calls[0][0]
+    expect(update.where).toEqual({ id: 's1' })
+    expect(update.data).toMatchObject({ enabled: false, lastRunAt: expect.any(Date), nextRunAt: expect.any(Date) })
+    // D-13: the schedule keeps its actor until a person confirms it.
+    expect(update.data).not.toHaveProperty('userId')
+    expect(h.audit).toHaveBeenCalledWith({
+      actorId: null, projectId: 'p1', action: 'scan_schedule.paused', targetType: 'scanSchedule', targetId: 's1',
+      after: { reason: 'actor_no_access', projectId: 'p1', userId: 'collab-1', permission: 'recon:scan', refusal: 'project_level' },
+      source: 'system',
+    })
+    expect(console.warn).toHaveBeenCalledWith(
+      '[rbac] schedule s1 paused: actor collab-1 lost recon:scan on project p1 (project_level)')
+  })
+
+  test('an overwrite schedule needs recon:overwrite of its actor too', async () => {
+    h.findSchedule.mockResolvedValue({ ...SCHEDULE, userId: 'collab-1', scanMode: 'overwrite' })
+    await runIt()
+    expect(h.actorRefusal).toHaveBeenCalledWith('collab-1', 'p1', ['recon:scan', 'recon:overwrite'])
+  })
+
+  test('owner schedules unchanged: the check passes and the scan starts as its actor', async () => {
+    h.findSchedule.mockResolvedValue(SCHEDULE)
+    const body = await (await runIt()).json()
+    expect(body.ok).toBe(true)
+    expect(h.actorRefusal).toHaveBeenCalledWith('u1', 'p1', ['recon:scan'])
+    expect(h.start.mock.calls[0][0]).toMatchObject({ actorUserId: 'u1', scheduleId: 's1', trigger: 'scheduled' })
+    expect(h.audit).not.toHaveBeenCalled()
+  })
+
+  test('an access check that cannot be read starts nothing and keeps the occurrence due (never)', async () => {
+    h.actorRefusal.mockRejectedValue(Object.assign(new Error('db down'), { code: 'P1001' }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await runIt()
+    expect(res.status).toBe(500)
+    expect(h.start).not.toHaveBeenCalled()
+    expect(h.updateSchedule).not.toHaveBeenCalled()
+  })
+
+  test('a schedule a person already turned off is refused before any access check', async () => {
+    h.findSchedule.mockResolvedValue({ ...SCHEDULE, userId: 'collab-1', enabled: false })
+    expect((await runIt()).status).toBe(409)
+    expect(h.actorRefusal).not.toHaveBeenCalled()
   })
 })

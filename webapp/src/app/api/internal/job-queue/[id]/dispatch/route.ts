@@ -10,6 +10,10 @@
  *   2. project still exists (C-7): gone -> status=failed, never proceed.
  *   2b. with the identity switch on, the job's account and the project's owner are
  *      active (DV-39): otherwise status=canceled, blockedCode=actor_inactive.
+ *   2c. the job's account still holds the permission that starts its kind on this project,
+ *      at the scan's level (step 5.5, DV-38): a collaborator whose share was revoked,
+ *      expired or narrowed since queueing is refused: status=canceled,
+ *      blockedCode=actor_no_access. The owner always passes.
  *   3. no OTHER non-terminal job for this project (C-12): one job per project.
  *   4. settings fingerprint matches (C-4): changed -> status=needs_review, no run.
  *   5. no agent running when kind=full_recon (C-5): defer, blockedCode=agent_running.
@@ -32,7 +36,8 @@ import { classifyStartFailure, isCapacityWait } from '@/lib/scanStartOutcome'
 import { dispatchStart, stopScan } from '@/lib/startScan'
 import { checkAgentSessions, describeAgentSessionState } from '@/lib/agentSessions'
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { inactiveScanAccount, inactiveScanReason } from '@/lib/authz/scanActor'
+import { actorScanRefusal, actorScanRefusalReason, inactiveScanAccount, inactiveScanReason } from '@/lib/authz/scanActor'
+import { queuedJobPermissions } from '@/lib/authz/queuedJobPermissions'
 import { writeAudit } from '@/lib/audit'
 
 export const runtime = 'nodejs'
@@ -232,6 +237,32 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         source: 'system',
       })
       return NextResponse.json({ ok: false, canceled: true, blocked: 'actor_inactive', error: reason })
+    }
+
+    // 2c. The job starts as the person who queued it, so they must still be allowed to start it
+    // here (late: a share revoked or expired while it waited). Cancelled with the reason, never
+    // re-attributed to the owner: the owner can queue it again as themselves.
+    const refusal = await actorScanRefusal(row.userId, row.projectId, queuedJobPermissions(row.kind, row.payload))
+    if (refusal) {
+      const reason = actorScanRefusalReason(refusal, 'queued')
+      await prisma.jobQueue.updateMany({
+        where: { id, status: 'dispatching' },
+        data: { status: 'canceled', blockedCode: 'actor_no_access', blockedReason: reason, finishedAt: new Date() },
+      })
+      console.warn(`[rbac] job ${id} cancelled: actor ${refusal.userId} lost ${refusal.permission} on project ${row.projectId} (${refusal.reason})`)
+      await writeAudit({
+        actorId: null,
+        projectId: row.projectId,
+        action: 'job_queue.cancelled',
+        targetType: 'jobQueue',
+        targetId: id,
+        after: {
+          reason: 'actor_no_access', projectId: row.projectId, kind: row.kind,
+          userId: refusal.userId, permission: refusal.permission, refusal: refusal.reason,
+        },
+        source: 'system',
+      })
+      return NextResponse.json({ ok: false, canceled: true, blocked: 'actor_no_access', error: reason })
     }
 
     // 4. Settings fingerprint (C-4). A change between enqueue and dispatch means the

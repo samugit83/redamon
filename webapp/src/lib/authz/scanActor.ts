@@ -6,9 +6,18 @@
  * they start anything.
  *
  * With the identity switch off nothing is read and nothing is refused (Phase 1 behaviour).
+ *
+ * `actorScanRefusal` is the second question (step 5.5, DV-38, SH-12): does the actor still reach
+ * the project at the level the scan needs? It runs whatever the switches: an owner always passes,
+ * so with sharing off it changes nothing, and a collaborator whose share was revoked, expired or
+ * narrowed (or whose permissions were taken away) is refused when the work fires, not when it was
+ * queued.
  */
 import prisma from '@/lib/prisma'
+import { can } from './can'
 import { rbacFlags } from './flags'
+import type { PermissionId } from './permissions'
+import { loadPrincipal } from './principal'
 
 export interface InactiveScanAccount {
   userId: string
@@ -51,4 +60,51 @@ export async function inactiveScanAccount(accounts: ScanAccounts): Promise<Inact
 export function inactiveScanReason(inactive: InactiveScanAccount, done: 'scheduled' | 'queued'): string {
   const whose = inactive.as === 'actor' ? `the account that ${done} it` : "the project owner's account"
   return `${whose} is ${inactive.status}`
+}
+
+export interface ActorScanRefusal {
+  userId: string
+  /** The first permission the actor no longer holds on the project. */
+  permission: PermissionId
+  /**
+   * `project_not_visible`: no share, owner or oversight reaches the project any more (revoked,
+   * expired, sharing off); `capability`: the person lacks the permission; `project_level`: their
+   * access to the project is below the scan's level (a Read share, or Write without Run scans);
+   * `deleted`: the account is gone.
+   */
+  reason: 'project_not_visible' | 'capability' | 'project_level' | 'deleted'
+}
+
+/**
+ * Whether the actor of a deferred scan may still start it: each of `permissions` (the scan kind's,
+ * `queuedJobPermissions`) on `projectId`, as can() decides it for that person now, read fresh
+ * (a revocation must not wait out the cache). Null when every one holds, else the first refused.
+ * A failed read throws: the caller's catch keeps the work from starting.
+ */
+export async function actorScanRefusal(
+  actorUserId: string,
+  projectId: string,
+  permissions: readonly PermissionId[],
+): Promise<ActorScanRefusal | null> {
+  if (permissions.length === 0) return null
+  const principal = await loadPrincipal(actorUserId, { fresh: true })
+  if (!principal) return { userId: actorUserId, permission: permissions[0], reason: 'deleted' }
+  for (const permission of permissions) {
+    const decision = await can(principal, permission, { projectId, fresh: true })
+    if (decision.allowed) continue
+    if (decision.status === 400) throw new Error(`[rbac] actorScanRefusal needs a project (${permission})`)
+    return { userId: actorUserId, permission, reason: decision.reason }
+  }
+  return null
+}
+
+/** The reason a cancelled job or a paused schedule records, in words for the run history. */
+export function actorScanRefusalReason(refusal: ActorScanRefusal, done: 'scheduled' | 'queued'): string {
+  const why = {
+    project_not_visible: 'no longer has access to this project',
+    capability: `no longer holds ${refusal.permission}`,
+    project_level: `no longer has the access to this project that ${refusal.permission} needs`,
+    deleted: 'no longer exists',
+  }[refusal.reason]
+  return `the account that ${done} it ${why}`
 }
