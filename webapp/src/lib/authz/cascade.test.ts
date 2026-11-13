@@ -179,3 +179,15 @@ describe('deleting a conversation or an account: conversation shares (step 5.8)'
       .toEqual(['project', 'user'])
   })
 })
+
+// Step 5.12 (SH-15): deleting a project ends its transfer offers; both people are plain ids, so deleting
+// either account neither blocks on nor cascades into the record (who gave the project to whom stays).
+describe('deleting a project or an account: ownership transfers (step 5.12)', () => {
+  test('ProjectTransfer rows cascade with the project; the giver and the recipient are no foreign keys', () => {
+    const transfer = now.ProjectTransfer
+    expect(transfer, 'model ProjectTransfer').toBeDefined()
+    expect(transfer.fields.project.line).toMatch(/@relation\(\s*fields:\s*\[projectId\],\s*references:\s*\[id\],\s*onDelete:\s*Cascade\s*\)/)
+    expect(now.Project.fields.transfers?.type).toBe('ProjectTransfer[]')
+    expect(Object.entries(transfer.fields).filter(([, f]) => f.line.includes('@relation')).map(([name]) => name)).toEqual(['project'])
+  })
+})

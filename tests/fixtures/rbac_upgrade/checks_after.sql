@@ -153,3 +153,9 @@ SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'conve
              WHERE table_name = 'conversations' AND column_name IN ('former_author_id', 'former_author_label'))
   || '|' || (SELECT count(*) FROM conversation_shares)
   || '|' || (SELECT count(*) FROM conversations WHERE former_author_id IS NOT NULL);
+
+-- Ownership transfer offers (step 5.12): the table arrives empty, so no project has an offer waiting or a
+-- transfer behind it, and every project keeps the owner it had.
+\echo == project transfers, offers or transfers of any status [step 5.12]
+SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'project_transfers')
+  || '|' || (SELECT count(*) FROM project_transfers);

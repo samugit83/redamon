@@ -578,3 +578,48 @@ describe('conversation sharing and the former author (step 5.8)', () => {
     expect(pointing).toEqual(['Conversation'])
   })
 })
+
+// Step 5.12 (phase_05, SH-15, DV-15): an offer to give a project to one of its collaborators and what came
+// of it; the settings the move cleared wait for the new owner to re-pick them.
+describe('the ownership transfer (step 5.12)', () => {
+  test('ProjectTransfer maps to project_transfers, looked up by project and by recipient with the status', () => {
+    expect(now.ProjectTransfer?.table).toBe('project_transfers')
+    expect(field('ProjectTransfer', 'id').line).toMatch(/@id\b/)
+    expect(now.ProjectTransfer.blockAttributes).toEqual(expect.arrayContaining(['@@index([projectId, status])', '@@index([toUserId, status])']))
+  })
+
+  test.each([
+    ['id', 'String', 'id'],
+    ['projectId', 'String', 'project_id'],
+    ['fromUserId', 'String', 'from_user_id'],
+    ['toUserId', 'String', 'to_user_id'],
+    ['oldOwnerRole', 'String', 'old_owner_role'],
+    ['status', 'String', 'status'],
+    ['forced', 'Boolean', 'forced'],
+    ['error', 'String?', 'error'],
+    ['clearedSettings', 'Json?', 'cleared_settings'],
+    ['clearedSeenAt', 'DateTime?', 'cleared_seen_at'],
+    ['createdAt', 'DateTime', 'created_at'],
+    ['decidedAt', 'DateTime?', 'decided_at'],
+  ])('ProjectTransfer.%s is %s in column %s', (name, type, column) => {
+    expect(field('ProjectTransfer', name)).toMatchObject({ type, column })
+  })
+
+  test('a transfer is never forced unless asked, and has no error, decision or cleared list until one happens', () => {
+    expect(field('ProjectTransfer', 'forced').line).toContain('@default(false)')
+    for (const name of ['error', 'clearedSettings', 'clearedSeenAt', 'decidedAt']) {
+      expect(field('ProjectTransfer', name).line).not.toContain('@default')
+    }
+  })
+
+  test('the relations: the transfer with its project only; Project.transfers is a relation field; both people are plain ids', () => {
+    expect(Object.values(now.ProjectTransfer.fields).filter((f) => isRelation(f.type)).map((f) => f.type)).toEqual(['Project'])
+    expect(field('Project', 'transfers').type).toBe('ProjectTransfer[]')
+    expect(field('ProjectTransfer', 'fromUserId').line).not.toContain('@relation')
+    expect(field('ProjectTransfer', 'toUserId').line).not.toContain('@relation')
+    const pointing = Object.entries(now)
+      .filter(([, m]) => Object.values(m.fields).some((f) => baseType(f.type) === 'ProjectTransfer'))
+      .map(([name]) => name)
+    expect(pointing).toEqual(['Project'])
+  })
+})

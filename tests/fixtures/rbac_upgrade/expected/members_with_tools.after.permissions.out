@@ -79,3 +79,5 @@ project_allowlist|ARRAY[]::text[]|YES
 1|0
 == conversation shares, former author columns, conversations shared or reassigned [step 5.8]
 1|2|0|0
+== project transfers, offers or transfers of any status [step 5.12]
+1|0

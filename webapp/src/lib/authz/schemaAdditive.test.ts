@@ -194,3 +194,20 @@ describe('conversation sharing and the former author are additive (step 5.8)', (
     }
   })
 })
+
+// Step 5.12: a new table; Project gains a relation field only, never a column (DV-16).
+describe('the ownership transfer is additive (step 5.12)', () => {
+  test('ProjectTransfer is new: no 7.7.2 table is reused (project_transfers)', () => {
+    expect(old.ProjectTransfer).toBeUndefined()
+    expect(Object.values(old).map((m) => m.table)).not.toContain('project_transfers')
+  })
+
+  test('Project gains the transfers relation field only; its 7.7.2 columns are untouched', () => {
+    expect(old.Project.fields.transfers).toBeUndefined()
+    expect(now[baseType(now.Project.fields.transfers.type)]).toBeDefined()
+    for (const [name, was] of Object.entries(old.Project.fields)) {
+      expect({ name, type: now.Project.fields[name]?.type, column: now.Project.fields[name]?.column })
+        .toEqual({ name, type: was.type, column: was.column })
+    }
+  })
+})

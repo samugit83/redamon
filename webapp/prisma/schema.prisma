@@ -1820,6 +1820,8 @@ model Project {
   breakGlass                        ProjectBreakGlass[]
   // The owner's consent that collaborators may spend the project's credentials (RBAC Phase 5).
   accessPolicy                      ProjectAccessPolicy?
+  // Offers to give the project to one of its collaborators, and what came of them (RBAC Phase 5).
+  transfers                         ProjectTransfer[]
 
   @@index([jevProviderId])
   @@map("projects")
@@ -1883,6 +1885,33 @@ model ProjectAccessPolicy {
   updatedAt                   DateTime  @updatedAt @map("updated_at")
 
   @@map("project_access_policies")
+}
+
+/// An offer to give a project to one of its collaborators, and what came of it (RBAC Phase 5, SH-15).
+/// The recipient accepts with their own password, or declines; the owner may cancel; an offer lapses
+/// after 7 days. Accepting re-tenants the project's graph, then moves the project in Postgres in one
+/// transaction with the status (lib/authz/projectTransfer.ts). Read only with write sharing in force.
+/// It goes with the project; both people are plain ids, so the record outlives either account.
+model ProjectTransfer {
+  id            String    @id @default(cuid())
+  projectId     String    @map("project_id")
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fromUserId    String    @map("from_user_id")
+  toUserId      String    @map("to_user_id")
+  oldOwnerRole  String    @map("old_owner_role")            // co-owner | leave
+  status        String                                      // pending | in_progress | completed | declined | cancelled | expired | failed
+  forced        Boolean   @default(false)                   // by projects:administer, without acceptance (step 5.13)
+  error         String?                                     // a failed attempt's code; the offer can be accepted again
+  // The settings the move cleared because they named the old owner's own providers, templates or
+  // token, shown to the new owner to re-pick until they dismiss it (clearedSeenAt).
+  clearedSettings Json?   @map("cleared_settings")
+  clearedSeenAt DateTime? @map("cleared_seen_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  decidedAt     DateTime? @map("decided_at")
+
+  @@index([projectId, status])
+  @@index([toUserId, status])
+  @@map("project_transfers")
 }
 
 /// A Rules of Engagement document that a replace or a remove superseded.

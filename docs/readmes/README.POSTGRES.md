@@ -162,6 +162,10 @@ Three tables back the LLM providers Root adds for the whole instance (Instance p
 
 A conversation (`conversations`) is private to its author (`user_id`). `conversation_shares` (`ConversationShare`) holds at most one row per conversation: its author shared it, read-only, with every collaborator of the project (`shared_by_id` is a plain id). The row goes with the conversation and is read only while Read + Write sharing is in force. When a collaborator's account is deleted, their conversations in other people's projects are reassigned to the project's owner instead of being deleted with the account: `user_id` becomes the owner, `former_author_id` keeps the deleted account's id (no foreign key) and `former_author_label` its name or email as it was then. Such a conversation opens read-only, since its agent checkpoints belong to the former author. Existing conversations have no share row and no former author.
 
+### Project Ownership Transfers
+
+`project_transfers` (`ProjectTransfer`) records each offer to give a project to one of its collaborators and what came of it, read only while Read + Write sharing is in force. `from_user_id` and `to_user_id` are plain ids (no foreign key), so the record outlives either account; the row goes with its project. `old_owner_role` is `co-owner` (the old owner keeps a Manage share) or `leave`. `status` is `pending` (waiting for the recipient, 7 days at most), `in_progress` (the project's activation state reads `transferring` meanwhile, so new scans, agent tickets and settings saves wait), `completed`, `declined`, `cancelled`, `expired` or `failed` (`error` holds the code; the recipient may accept again). On completion `projects.user_id` is the recipient in the same transaction as the status, and `cleared_settings` lists the settings that named the old owner's own LLM providers, Nuclei templates or GitHub token and were cleared, which the new owner sees until `cleared_seen_at`.
+
 ## Docker Configuration
 
 ### docker-compose.yml
