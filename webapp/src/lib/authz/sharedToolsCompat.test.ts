@@ -175,10 +175,14 @@ describe('F-02/F-04/F-14/F-18/F-19/F-20 paths never consult compat', () => {
   test('only flags.ts, sharedTools.ts, the admin banner and the terminal tab read the switch in the webapp source', () => {
     const src = path.resolve(__dirname, '..', '..')
     const readers: string[] = []
+    // Test code is out of scope, as the .test.ts(x) files are: a `__testing__/` double (such as
+    // providers/__testing__/fakeAuth.ts, which fakes an RbacFlags value) never ships, because
+    // lib/plugins/__testing__/noProductionImports.test.ts keeps every production module from
+    // importing one, and Next does not route a `_` folder.
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
         const full = path.join(dir, name)
-        if (statSync(full).isDirectory()) { walk(full); continue }
+        if (statSync(full).isDirectory()) { if (name !== '__testing__') walk(full); continue }
         if (!/\.(ts|tsx|mjs|js)$/.test(name) || /\.test\.(ts|tsx)$/.test(name)) continue
         const text = readFileSync(full, 'utf8')
         if (text.includes('sharedToolsCompat') || text.includes('REDAMON_SHARED_TOOLS_COMPAT')) readers.push(path.relative(src, full))
