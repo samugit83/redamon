@@ -31,7 +31,9 @@ import { sameValue } from '@/lib/reconSettings/roeParse'
 import { validateValue } from '@/lib/reconSettings/validators'
 import { formatProblem, wideningReason } from '@/lib/roe/roeWidening'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
-import { meetsLevel, type ProjectAccess } from './projectAccess'
+// Nothing here reads the database (levelTable, not projectAccess): the project form imports it in the browser.
+import { meetsLevel } from './levelTable'
+import type { ProjectAccess } from './projectAccess'
 import type { ProjectLevel } from './permissions'
 
 /** The least a change needs: Write, Manage, Manage with Exploitation & shells, the owner. */
@@ -150,7 +152,8 @@ export const NEED_LEVELS: Readonly<Record<SettingsNeed, readonly ProjectLevel[]>
   owner: ['O'],
 }
 
-const NEED_LABEL: Readonly<Record<SettingsNeed, string>> = {
+/** How a refusal names each need: the 403 body and the project form say it alike. */
+export const NEED_LABEL: Readonly<Record<SettingsNeed, string>> = {
   write: 'Read + Write',
   manage: 'Manage',
   'manage+exploit': 'Manage and Exploitation & shells',

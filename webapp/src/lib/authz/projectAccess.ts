@@ -39,7 +39,7 @@ import { loadPrincipal } from './principal'
 import { resolveCapabilities, type Capabilities, type CapabilityPrincipal } from './capabilities'
 import { maxShareLevel, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
 import { readOwnerConsent, SPEND_TOGGLES } from './ownerConsent'
-import type { ProjectLevel } from './permissions'
+import { meetsLevel } from './levelTable'
 
 /** Whose data the request touches: the account acted as, else the signed-in account (EffectiveUser). */
 export interface ProjectAccessSubject {
@@ -211,31 +211,8 @@ async function capabilitiesOf(userId: string, opts: ProjectAccessOptions): Promi
   return principal ? resolveCapabilities(principal, { fresh }) : null
 }
 
-/** The toggle each toggled write level needs (§6.2). */
-const LEVEL_TOGGLE: Readonly<Partial<Record<ProjectLevel, keyof WriteToggles>>> = {
-  'W+S': 'runScans',
-  'W+A': 'useAgent',
-  'W+X': 'exploit',
-  M: 'manage',
-}
-
-/**
- * Whether the access reaches the level a permission needs (§5 legend, §6.2): the owner every
- * level; `write` reaches `R`, `R*` (write includes Raw data & files) and `W`, `W+S` / `W+A` / `W+X`
- * with their toggle and `M` with Manage, never `O`; `read` reaches `R`, and `R*` with Raw data &
- * files. A kind of access without its own row here (or a missing toggle) fails closed.
- */
-export function meetsLevel(access: ProjectAccess, needed: ProjectLevel): boolean {
-  if (access.level === 'owner') return true
-  if (access.level === 'write') {
-    if (needed === 'R' || needed === 'R*' || needed === 'W') return true
-    const toggle = LEVEL_TOGGLE[needed]
-    return toggle !== undefined && access.toggles?.[toggle] === true
-  }
-  if (access.level !== 'read') return false
-  if (needed === 'R') return true
-  return needed === 'R*' && access.toggles?.rawData === true
-}
+// The table is in levelTable.ts, which reads no database, so the browser can judge settings changes too.
+export { meetsLevel }
 
 /** What a person is told of their own access to a project: the project GET's `myAccess` and /my-access. */
 export interface MyAccess {
