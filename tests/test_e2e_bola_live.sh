@@ -13,7 +13,9 @@
 # and every case of the hardening phase (RBAC Phase 1, TS-04), once for a new member
 # (A and B: created by the seed, after the upgrade, holding no grant) and once for a
 # legacy holder (L: the kali_terminal, shell_sessions and tunnels grants an upgrade
-# records for a member who had the shared tools):
+# records for a member who had the shared tools; with RBAC_PERMISSIONS_ENABLED on, also the
+# override grants of platform:kali_terminal, platform:shell_sessions and platform:tunnels that
+# the first permissions-on boot converts them to, since from then on the column no longer counts):
 #   - shell sessions (F-01): a new member's list holds nothing of anyone else's and a
 #     session or job outside it is 404 before the console; L sees what an admin sees
 #   - tunnel read (F-04): the credentials answer the internal key only, L included
@@ -81,6 +83,14 @@ case "$(printf '%s' "$env_line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
   *) IDENTITY=off ;;
 esac
 echo "== Identity switch: $IDENTITY =="
+env_line="$(cd "$ROOT" && docker compose exec -T webapp sh -c 'printf "%s" "${RBAC_PERMISSIONS_ENABLED:-}"' 2>/dev/null)"
+case "$(printf '%s' "$env_line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes) PERMISSIONS=on ;;
+  *) PERMISSIONS=off ;;
+esac
+# flags.ts: the permissions switch requires the identity switch and reads off without it.
+[ "$IDENTITY" = on ] || PERMISSIONS=off
+echo "== Permissions switch: $PERMISSIONS =="
 
 echo "== Removing an earlier run's fixtures =="
 # A fresh account every run: the escape hatch covers only accounts older than the upgrade.
@@ -93,6 +103,19 @@ echo "$SEED"
 eval "$SEED"
 [ -n "${PA_ID:-}" ] && [ -n "${PB_ID:-}" ] && [ -n "${PL_ID:-}" ] && [ -n "${L_ID:-}" ] && [ -n "${MCP_BEARER:-}" ] \
   || { echo "seed did not yield the project and account ids"; exit 1; }
+if [ "$PERMISSIONS" = on ]; then
+  # From the first boot with the permissions switch on (step 3.15) the legacy_grants column no
+  # longer counts: L holds what that conversion writes for each kept grant, an override grant of
+  # its platform permission ending in 90 days. Written before L signs in, so no cache holds L.
+  LEGACY_OVERRIDES="$(cd "$ROOT" && docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
+    "INSERT INTO user_permission_overrides (user_id, permission, effect, expires_at, reason, granted_by_id)
+       SELECT '$L_ID', p, 'grant', (now() AT TIME ZONE 'UTC') + interval '90 days', 'kept from 7.7.x', 'system'
+       FROM unnest(ARRAY['platform:kali_terminal', 'platform:shell_sessions', 'platform:tunnels']) AS p
+       ON CONFLICT (user_id, permission) DO NOTHING;
+     SELECT count(*) FROM user_permission_overrides WHERE user_id = '$L_ID' AND effect = 'grant' AND expires_at > (now() AT TIME ZONE 'UTC');" \
+    2>/dev/null | tail -1 | tr -d '[:space:]')"
+  check "legacy holder L holds the converted overrides (kali_terminal, shell_sessions, tunnels)" 3 "$LEGACY_OVERRIDES"
+fi
 
 echo "== Logging in =="
 login bola-a@e2e.local     "$TMP/a.jar"

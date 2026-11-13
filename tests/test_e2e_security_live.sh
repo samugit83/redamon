@@ -94,14 +94,23 @@ if echo "$body" | grep -q '"configured":false'; then chk 1 1 "boot sync (tunnel 
 
 # HD-06: only an admin, the member holding the `tunnels` legacy grant, or a pre-upgrade
 # account under the escape hatch changes the shared tunnel. The activation checks run as a
-# legacy holder (the grant set by SQL, as the upgrade backfill records it); a plain member
-# is refused before anything is written.
+# legacy holder (the grant set by SQL, as the upgrade backfill records it, and with
+# RBAC_PERMISSIONS_ENABLED on the override the permissions-on conversion turns it into); a
+# plain member is refused before anything is written.
 env_line="$(docker compose exec -T webapp sh -c 'printf "%s" "${RBAC_IDENTITY_ENABLED:-}"' 2>/dev/null)"
 case "$(printf '%s' "$env_line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
   true|1|yes) IDENTITY=on ;;
   *) IDENTITY=off ;;
 esac
 echo "(identity switch $IDENTITY)"
+env_line="$(docker compose exec -T webapp sh -c 'printf "%s" "${RBAC_PERMISSIONS_ENABLED:-}"' 2>/dev/null)"
+case "$(printf '%s' "$env_line" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes) PERMISSIONS=on ;;
+  *) PERMISSIONS=off ;;
+esac
+# flags.ts: the permissions switch requires the identity switch and reads off without it.
+[ "$IDENTITY" = on ] || PERMISSIONS=off
+echo "(permissions switch $PERMISSIONS)"
 BODY=$(mktemp)
 put_json() { # jar url json -> "<http code> <the answer's code field>"
   local c
@@ -113,6 +122,17 @@ instance_row() { docker compose exec -T postgres psql -U redamon -d redamon -tA 
 EMAIL="e2e_i19_$(openssl rand -hex 4)@redamon.local"
 USERID="$(seed_user "$EMAIL" standard)"
 docker compose exec -T postgres psql -U redamon -d redamon -tA -c "UPDATE users SET legacy_grants = ARRAY['tunnels'] WHERE id='$USERID';" >/dev/null
+if [ "$PERMISSIONS" = on ]; then
+  # From the first boot with the permissions switch on (step 3.15) the column no longer counts:
+  # the holder gets what that conversion writes for a kept grant, an override grant of
+  # platform:tunnels ending in 90 days. Written before it signs in, so no cache holds it.
+  n=$(docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
+    "INSERT INTO user_permission_overrides (user_id, permission, effect, expires_at, reason, granted_by_id)
+       VALUES ('$USERID', 'platform:tunnels', 'grant', (now() AT TIME ZONE 'UTC') + interval '90 days', 'kept from 7.7.x', 'system');
+     SELECT count(*) FROM user_permission_overrides WHERE user_id = '$USERID' AND permission = 'platform:tunnels' AND effect = 'grant';" \
+    2>/dev/null | tail -1 | tr -d '[:space:]')
+  chk "$n" 1 "the legacy tunnels holder holds the converted override (permissions on)"
+fi
 JAR=$(mktemp)
 curl -s -c "$JAR" -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' -d "{\"email\":\"$EMAIL\",\"password\":\"$PW\"}" >/dev/null
 if [ "$IDENTITY" = on ]; then
