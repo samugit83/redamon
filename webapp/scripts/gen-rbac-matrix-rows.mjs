@@ -1,9 +1,10 @@
 /**
- * Live route-matrix rows for the permissions the routes ask (steps 3.8, 3.9):
- * tests/fixtures/rbac_matrix/p3_generated.tsv, run by tests/rbac_matrix_live.sh like any other file.
+ * Live route-matrix rows for the permissions the routes ask (steps 3.8, 3.9, 4.7):
+ * tests/fixtures/rbac_matrix/p3_generated.tsv and p4_generated.tsv, run by tests/rbac_matrix_live.sh
+ * like any other file.
  *
- *   node scripts/gen-rbac-matrix-rows.mjs           write the file, print how many rows
- *   node scripts/gen-rbac-matrix-rows.mjs --check   change nothing, exit 1 if the file is stale
+ *   node scripts/gen-rbac-matrix-rows.mjs           write both files, print how many rows
+ *   node scripts/gen-rbac-matrix-rows.mjs --check   change nothing, exit 1 if either file is stale
  *
  * Run from webapp/ (only Node is needed). For each permission the rows come from one
  * representative route, checked against the route manifest (routeManifest.json, the JSON copy
@@ -26,6 +27,14 @@
  * Permissions a route asks only after its own (requireAlso: recon:overwrite, project:rescope,
  * engagement:authorize on an import) are proved by the route tests: a built-in set that holds the
  * route's own permission and lacks the second does not exist, and the allowed request would act.
+ *
+ * p4_generated.tsv (step 4.7, SH-07): the same representatives, called by an account that reaches
+ * another member's project at the Read level without Raw data & files (READERS: a collaborator on a
+ * Read share, an admin by oversight), with sharing in force. A permission at `R` answers as its
+ * holder's row; every other project level (`R*` and each write level) is refused, 403 naming the
+ * permission, because the level decides, not the set: the reader's set holds it. Only the
+ * representatives that call the reader's project are used (not a throwaway: a refusal that failed
+ * would delete the shared project).
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -33,6 +42,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const WEBAPP = join(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = join('..', 'tests', 'fixtures', 'rbac_matrix', 'p3_generated.tsv')
+const OUT_SHARED = join('..', 'tests', 'fixtures', 'rbac_matrix', 'p4_generated.tsv')
 
 /**
  * The seeded accounts, in the order an allowed or a refused row picks them, with their set, how the
@@ -47,6 +57,17 @@ export const ACTORS = [
   { actor: 'member_a', kind: 'member', set: 'builtin:default-member', seeded: 'default', user: 'MEMBER_A_ID', project: 'PA_ID', tmp: null },
   { actor: 'admin_a', kind: 'admin', set: 'builtin:full-admin', seeded: 'default', user: 'ADMIN_A_ID', project: 'PADM_ID', tmp: null },
   { actor: 'usermgr', kind: 'admin', set: 'builtin:user-manager', seeded: 'profile', user: 'USERMGR_ID', project: null, tmp: null },
+]
+
+/**
+ * The readers of p4_generated.tsv: who reaches whose project at Read without Raw data & files, with
+ * sharing in force. `set` is the member set that decides their member permissions (an admin's member
+ * side is *Default member* when never assigned), `project` the seed key of the project they read
+ * (the viewer's Read share on member_c's PSHARED, step 4.4's seed; admin_a's oversight of member_a's PA).
+ */
+export const READERS = [
+  { actor: 'viewer', id: 'viewer', via: 'share', set: 'builtin:default-member', seeded: 'default', user: 'VIEWER_ID', project: 'PSHARED_ID', tags: 'req:SH-07 req:SH-02' },
+  { actor: 'admin_a', id: 'oversee', via: 'oversight', set: 'builtin:default-member', seeded: 'default', user: 'ADMIN_A_ID', project: 'PA_ID', tags: 'req:SH-07 req:SH-47' },
 ]
 
 const NOT_REFUSED = ';lacks="code":"forbidden"'
@@ -164,6 +185,46 @@ export function generateRows(manifest, catalog) {
   return rows
 }
 
+/** The p4_generated rows, or throws naming the first representative the manifest cannot back. */
+export function generateSharedRows(manifest, catalog) {
+  const byPath = new Map(manifest.map(e => [e.path, e]))
+  const sets = new Map(catalog.sets.map(s => [s.id, new Set(s.permissions)]))
+  const rows = []
+  for (const reader of READERS) {
+    for (const [permission, r] of Object.entries(REPRESENTATIVES)) {
+      const entry = catalog.permissions[permission]
+      if (!entry) throw new Error(`${permission}: not in the permission registry`)
+      if (entry.kind !== 'member' || entry.scope !== 'project' || entry.level === null) continue
+      const text = r.path + r.body
+      if (!text.includes('{P}') || text.includes('{TMP}') || text.includes('{U}')) continue
+      if (manifestPermission(byPath.get(r.route), r.method) !== permission) {
+        throw new Error(`${permission}: the manifest gives ${r.method} ${r.route} another permission`)
+      }
+      if (sets.get(reader.set)?.has(permission) !== true) continue
+      const fill = t => t.replace('{P}', `\${${reader.project}}`)
+      const expect = entry.level === 'R' ? r.allow : `403;has=${permission}`
+      rows.push([`p4g-${reader.id}-${permission}`, '4.7', reader.actor, r.method, fill(r.path), fill(r.body), expect,
+        `${reader.tags} probe:generated sharing:on`])
+    }
+  }
+  return rows
+}
+
+export function renderSharedRows(rows) {
+  const header = [
+    '# Live RBAC route matrix: Phase 4, generated by webapp/scripts/gen-rbac-matrix-rows.mjs (step 4.7). Do not edit:',
+    '# change the representative or reader table there and run `node scripts/gen-rbac-matrix-rows.mjs` from webapp/.',
+    "# Each project permission's representative request, called by a reader of another member's project at the",
+    '# Read level without Raw data & files: viewer = a Read share on PSHARED (member_c\'s; step 4.4\'s seed),',
+    '# admin_a = oversight of PA (member_a\'s). A permission at R answers as for its holder; R* and every write',
+    '# level answer 403 naming the permission (the level refuses: the reader\'s set holds it). Every row needs',
+    '# sharing in force: RBAC_SHARING_ENABLED on and the instance policy enabled (sharing:on).',
+    '#',
+    '# id\tsince\tactor\tmethod\tpath\tbody\texpect\ttags',
+  ]
+  return [...header, ...rows.map(r => r.join('\t'))].join('\n') + '\n'
+}
+
 export function renderRows(rows) {
   const header = [
     '# Live RBAC route matrix: Phase 3, generated by webapp/scripts/gen-rbac-matrix-rows.mjs (steps 3.8, 3.9). Do not edit:',
@@ -181,29 +242,30 @@ export function renderRows(rows) {
 
 /** The command line, on the webapp at `webappDir`; answers the exit code. */
 export function run(argv, webappDir = WEBAPP, log = console.log) {
-  const out = join(webappDir, OUT)
-  let text
+  const files = []
   try {
-    text = renderRows(generateRows(
-      readJson(webappDir, 'src/lib/authz/routeManifest.json'),
-      readJson(webappDir, 'src/lib/authz/permissionCatalog.json'),
-    ))
+    const manifest = readJson(webappDir, 'src/lib/authz/routeManifest.json')
+    const catalog = readJson(webappDir, 'src/lib/authz/permissionCatalog.json')
+    files.push({ out: OUT, text: renderRows(generateRows(manifest, catalog)) })
+    files.push({ out: OUT_SHARED, text: renderSharedRows(generateSharedRows(manifest, catalog)) })
   } catch (err) {
     log(`problem  ${err.message}. Nothing was written.`)
     return 1
   }
-  let current = null
-  try { current = readFileSync(out, 'utf8') } catch { /* not written yet */ }
+  const count = text => text.split('\n').filter(l => l && !l.startsWith('#')).length
+  const name = out => out.replace(/^\.\.[\\/]/, '').split(/[\\/]/).join('/')
+  const current = out => { try { return readFileSync(join(webappDir, out), 'utf8') } catch { return null } }
   if (argv.includes('--check')) {
-    if (current !== text) {
-      log('tests/fixtures/rbac_matrix/p3_generated.tsv is out of date: run `node scripts/gen-rbac-matrix-rows.mjs` from webapp/.')
-      return 1
-    }
-    log(`rbac matrix rows up to date: ${text.split('\n').filter(l => l && !l.startsWith('#')).length} rows`)
+    const stale = files.filter(f => current(f.out) !== f.text)
+    for (const f of stale) log(`${name(f.out)} is out of date: run \`node scripts/gen-rbac-matrix-rows.mjs\` from webapp/.`)
+    if (stale.length) return 1
+    log(`rbac matrix rows up to date: ${files.map(f => `${count(f.text)} rows`).join(', ')}`)
     return 0
   }
-  if (current !== text) writeFileSync(out, text)
-  log(`rbac matrix rows: ${text.split('\n').filter(l => l && !l.startsWith('#')).length} rows written to tests/fixtures/rbac_matrix/p3_generated.tsv`)
+  for (const f of files) {
+    if (current(f.out) !== f.text) writeFileSync(join(webappDir, f.out), f.text)
+    log(`rbac matrix rows: ${count(f.text)} rows written to ${name(f.out)}`)
+  }
   return 0
 }
 

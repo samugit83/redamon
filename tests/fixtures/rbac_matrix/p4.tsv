@@ -106,3 +106,37 @@ p4-oversee-triage-verdict	4.8	admin_a	POST	/api/triage/verdict	{"projectId":"${P
 p4-oversee-rem-list	4.8	admin_a	GET	/api/remediations?projectId=${PA_ID}	-	200;has=rbac-remediation	req:SH-18 sharing:on
 p4-oversee-rem-read	4.8	admin_a	GET	/api/remediations/${REM_PA_ID}	-	200;has=rbac-remediation	req:SH-18 sharing:on
 p4-oversee-rem-write	4.8	admin_a	PUT	/api/remediations/${REM_PA_ID}	{"status":"rbac-not-a-status"}	403;has=remediation:write	req:SH-18 sharing:on
+
+# ---- step 4.7: collaborator reads, wave B: recon, reports, versions, RoE, auth profile, schedules ----
+# A read share reads recon status (the logs are an event stream: unit-tested only), the RoE read view (OQ-53:
+# metadata and the enforced scope, never the contacts, text or document), the auth profile's metadata, the recording
+# status, the schedules and the run history.
+# The six scan-result downloads and the AI attack-surface transcript are raw outputs: recon:read plus Raw data & files
+# (requireLevel R*), so the viewer gets 403 naming recon:read and R*, viewer_raw reaches the route (nothing was
+# scanned on PSHARED: the lookup's 404), the owner likewise. One row per permission and write level for the viewer
+# and the overseer is generated: p4_generated.tsv. The oversight rows of the reports, schedules and recon status
+# routes (admin_a on rbac-PA) answer baseline's sharing:off admin_a rows.
+p4-viewer-recon-status	4.7	viewer	GET	/api/recon/${PSHARED_ID}/status	-	200|404|502|503;lacks="code":"forbidden"	req:SH-07 sharing:on
+p4-recon-download-owner	4.7	member_c	GET	/api/recon/${PSHARED_ID}/download	-	404;has=Recon data not found	req:SH-07 sharing:on
+p4-viewer-recon-download	4.7	viewer	GET	/api/recon/${PSHARED_ID}/download	-	403;has=recon:read;has="level":"R*"	req:SH-07 req:SH-03 sharing:on
+p4-viewer-raw-recon-download	4.7	viewer_raw	GET	/api/recon/${PSHARED_ID}/download	-	404;has=Recon data not found	req:SH-07 req:SH-03 sharing:on
+p4-viewer-github-hunt-download	4.7	viewer	GET	/api/github-hunt/${PSHARED_ID}/download	-	403;has=recon:read;has="level":"R*"	req:SH-07 req:SH-03 sharing:on
+p4-viewer-trufflehog-download	4.7	viewer	GET	/api/trufflehog/${PSHARED_ID}/download	-	403;has=recon:read;has="level":"R*"	req:SH-07 req:SH-03 sharing:on
+p4-viewer-gvm-download	4.7	viewer	GET	/api/gvm/${PSHARED_ID}/download	-	403;has=recon:read;has="level":"R*"	req:SH-07 req:SH-03 sharing:on
+p4-viewer-supply-chain-download	4.7	viewer	GET	/api/supply-chain/${PSHARED_ID}/download	-	403;has=recon:read;has="level":"R*"	req:SH-07 req:SH-03 sharing:on
+p4-viewer-js-recon-download	4.7	viewer	GET	/api/js-recon/${PSHARED_ID}/download	-	403;has=recon:read;has="level":"R*"	req:SH-07 req:SH-03 sharing:on
+p4-viewer-ai-transcript	4.7	viewer	GET	/api/ai-attack-surface/${PSHARED_ID}/transcript?ref=rbac-no-such-ref	-	403;has=recon:read;has="level":"R*"	req:SH-07 req:SH-03 sharing:on
+p4-viewer-raw-ai-transcript	4.7	viewer_raw	GET	/api/ai-attack-surface/${PSHARED_ID}/transcript?ref=rbac-no-such-ref	-	400|404|500|503;lacks="code":"forbidden"	req:SH-07 req:SH-03 sharing:on
+p4-viewer-roe-read	4.7	viewer	GET	/api/projects/${PSHARED_ID}/roe	-	200;has="limits";has="enforced";lacks=roeRawText;lacks=roeClientContactEmail	req:SH-28 sharing:on
+p4-viewer-auth-profile	4.7	viewer	GET	/api/projects/${PSHARED_ID}/auth-profile	-	200;has="authProfile";lacks="authValue"	req:SH-29 sharing:on
+p4-viewer-recording-status	4.7	viewer	GET	/api/projects/${PSHARED_ID}/recording/status	-	200;has="otherProjectRecording"	req:SH-29 sharing:on
+p4-viewer-schedules	4.7	viewer	GET	/api/projects/${PSHARED_ID}/schedules	-	200;has="schedules";has="jobs"	req:SH-07 req:SH-24 sharing:on
+p4-viewer-reports	4.7	viewer	GET	/api/projects/${PSHARED_ID}/reports	-	200	req:SH-07 sharing:on
+p4-viewer-reports-all	4.7	viewer	GET	/api/reports	-	200;lacks="code":"forbidden"	req:SH-07 req:SH-39 sharing:on
+p4-viewer-versions	4.7	viewer	GET	/api/projects/${PSHARED_ID}/versions	-	200;has="versions"	req:SH-07 sharing:on
+p4-viewer-delta	4.7	viewer	GET	/api/projects/${PSHARED_ID}/delta	-	200|400|404|409;lacks="code":"forbidden"	req:SH-07 sharing:on
+p4-viewer-schedule-create	4.7	viewer	POST	/api/projects/${PSHARED_ID}/schedules	{"mode":"rbac-bogus"}	403;has=recon:schedule	req:SH-07 sharing:on
+p4-oversee-reports	4.7	admin_a	GET	/api/projects/${PA_ID}/reports	-	200	req:SH-18 sharing:on
+p4-oversee-schedules	4.7	admin_a	GET	/api/projects/${PA_ID}/schedules	-	200;has="schedules"	req:SH-18 sharing:on
+p4-oversee-recon-status	4.7	admin_a	GET	/api/recon/${PA_ID}/status	-	200|404|502|503;lacks="code":"forbidden"	req:SH-18 sharing:on
+p4-oversee-recon-download	4.7	admin_a	GET	/api/recon/${PA_ID}/download	-	403;has=recon:read;has="level":"R*"	req:SH-18 req:SH-47 sharing:on
