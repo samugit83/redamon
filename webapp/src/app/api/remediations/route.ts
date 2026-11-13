@@ -7,8 +7,8 @@ import { requirePermission } from '@/lib/authz/guards'
 const SORTABLE_FIELDS = new Set(['priority', 'severity', 'createdAt', 'updatedAt'])
 
 // GET /api/remediations?projectId=X - List remediations for project.
-// Cypherfix reads/writes remediations with X-Internal-Key (carve-out); browser
-// callers may only reach a project they (effectively) own.
+// Cypherfix reads/writes remediations with X-Internal-Key (carve-out); a browser
+// caller needs remediation:read on the project, which a share at Read reaches.
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)

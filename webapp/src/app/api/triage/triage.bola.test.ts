@@ -15,6 +15,11 @@
  *     graph, so a check that only logged would still blind the agent; that is
  *     the regression this file exists for.
  *
+ * These cases run with sharing off, where only the owner sees a project. With
+ * sharing in force a collaborator at Read, or an admin by oversight, reads the
+ * board from the owner's graph and is refused every write (403):
+ * triage.shares.test.ts, with the real guard (this file doubles it).
+ *
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'

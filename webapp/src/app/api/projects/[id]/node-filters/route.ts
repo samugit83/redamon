@@ -1,8 +1,10 @@
 /**
  * GET / PUT /api/projects/[id]/node-filters — the project's node-filter rules.
  *
- * Owner only, strictly (404 otherwise): these rules decide what the AI agent
- * can see. PUT refuses any document the engine
+ * GET is `triage:read`, so a person the project is shared with at Read sees the
+ * rules; PUT is `node_filters:manage`, at the write level, because these rules
+ * decide what the AI agent can see. Anyone the project is not visible to gets
+ * 404. PUT refuses any document the engine
  * would not run as written, and a stale `revision` (409: someone saved in
  * between; resend with `force: true` to overwrite, which is audited as such).
  * PUT never arms or disarms: that is Apply's and Disarm's job.

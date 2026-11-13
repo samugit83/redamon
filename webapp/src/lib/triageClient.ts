@@ -5,13 +5,14 @@
  *
  * 1. **Authorisation is hard-enforced.** Muting changes what the AGENT can see,
  *    project-wide, so a mis-scoped mute is a correctness failure and not just an
- *    information leak. These routes check ownership themselves and 404 on a
- *    mismatch.
+ *    information leak. Each route asks its permission on the project
+ *    (`requirePermission`): a mute or a verdict needs a write level, which a share
+ *    at Read never reaches, and a project the caller cannot see answers 404.
  *
  * 2. **The tenant is never taken from the request body.** The caller sends a
- *    `projectId` and a `nodeId`; the user id is resolved server-side from the
- *    session, and the node is scoped by that pair inside the graph mixin. A
- *    guessed nodeId from another project matches nothing.
+ *    `projectId` and a `nodeId`; the user id is the project's owner, resolved
+ *    server-side (`triageCaller`), and the node is scoped by that pair inside the
+ *    graph mixin. A guessed nodeId from another project matches nothing.
  */
 import { NextResponse } from 'next/server'
 import { requireEffectiveUser } from '@/lib/access'
@@ -27,11 +28,13 @@ export interface TriageCaller {
 }
 
 /**
- * Resolve the caller and prove they may reach the project (`projectAccess()`: today its owner).
+ * Resolve the caller and prove they can see the project (`projectAccess()`). It asks no level, so
+ * a share, oversight or break-glass at Read passes as the owner does: no route calls it (a write
+ * needs its route permission's level); the route tests' guard double does.
  *
  * Returns the resolved tenant (the project's owner, whose graph holds its nodes), or the
- * NextResponse to send back. A project that does not exist and a project owned by somebody else
- * both return 404, so this cannot be used to enumerate project ids.
+ * NextResponse to send back. A project that does not exist and one the caller cannot see both
+ * return 404, so this cannot be used to enumerate project ids.
  */
 export async function requireProjectOwner(
   projectId: string | null | undefined,
