@@ -3,7 +3,8 @@
  * transaction is read-only, it leaves every row as it found it, it reads no secret, it runs
  * on the 7.7.x schema (no `users.legacy_grants`, no `instance_settings`), the grants it lists
  * are the ones the legacy-grants backfill then writes, and it names Root from the instance
- * settings row (step 2.13).
+ * settings row (step 2.13). Its `--downgrade` report (step 7.2) reads the full schema read-only,
+ * counts every table and column a downgrade to 7.7.2 drops, and its `instance/` model reset runs.
  *
  * Needs a DISPOSABLE database holding the webapp schema (`prisma db push`); it empties
  * `audit_log`, `user_settings`, `users` (CASCADE) and `instance_settings` between tests, drops and
@@ -18,7 +19,9 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { PrismaClient } from '@prisma/client'
 import { backfillRbacLegacyGrants } from './backfill-rbac-legacy-grants.mjs'
-import { previewRbacUpgrade, readUpgradeState } from './rbac-upgrade-preview.mjs'
+import {
+  instanceModelResetSql, previewRbacDowngrade, previewRbacUpgrade, readDowngradeState, readUpgradeState,
+} from './rbac-upgrade-preview.mjs'
 
 const URL = process.env.PLUGINS_PG_TEST_URL
 const MARKER = 'plugins_pg_integration_test_marker'
@@ -155,5 +158,67 @@ describe.skipIf(!URL)('the RBAC upgrade preview on a real Postgres (PLUGINS_PG_T
     } finally {
       await db.$executeRawUnsafe('ALTER TABLE instance_settings_hidden RENAME TO instance_settings')
     }
+  })
+
+  test('the downgrade report: read-only, every dropped table and column counted, the instance models; the reset leaves none', async () => {
+    const MODEL = 'instance/prov-pg/gpt-x'
+    await db.$executeRawUnsafe(
+      `INSERT INTO instance_settings (id, root_user_id, default_member_set_id, updated_at) VALUES ('instance', 'admin', 'builtin:recon-operator', now())`,
+    )
+    await db.$executeRawUnsafe(`UPDATE users SET status = 'disabled', password_on_hold = $1, session_version = 1 WHERE id = 'managed'`, PW)
+    await db.$executeRawUnsafe(`INSERT INTO user_permission_sets (user_id, set_id) VALUES ('alice', 'builtin:read-only-analyst')`)
+    await db.$executeRawUnsafe(
+      `INSERT INTO user_sessions (id, user_id, session_version, expires_at, revoked_at) VALUES ('pg-s1', 'alice', 0, now() + interval '1 day', now())`,
+    )
+    await db.project.create({ data: { id: 'pg-p1', name: 'Instance project', userId: 'alice', agentOpenaiModel: MODEL } })
+    await db.userProjectPreset.create({ data: { userId: 'alice', name: 'Fast', settings: { agentOpenaiModel: MODEL, naabuThreads: 10 } } })
+    await db.userTradecraftResource.create({ data: { userId: 'alice', name: 'blog', slug: 'blog', url: 'https://blog.example.invalid', llmModel: MODEL } })
+    const rows = async () => db.$queryRawUnsafe<{ t: string }[]>(
+      `SELECT 'p' || row_to_json(p)::text AS t FROM projects p
+       UNION ALL SELECT 'r' || row_to_json(r)::text FROM user_project_presets r
+       UNION ALL SELECT 'c' || row_to_json(c)::text FROM user_tradecraft_resources c
+       UNION ALL SELECT 's' || row_to_json(s)::text FROM user_sessions s ORDER BY 1`,
+    )
+    const before = [await snapshot(), await rows()]
+
+    let refusal: unknown = null
+    const probe = {
+      $transaction: (fn: (tx: unknown) => Promise<unknown>, opts: unknown) => db.$transaction(async (tx) => {
+        const state = await fn(tx)
+        refusal = await tx.$executeRawUnsafe(`UPDATE users SET name = name`).then(() => null, (e: Error) => e.message)
+        return state
+      }, opts as { timeout: number }),
+    }
+    await readDowngradeState(probe)
+    expect(String(refusal)).toMatch(/read-only transaction/)
+
+    const r = await previewRbacDowngrade(db, { env: { RBAC_IDENTITY_ENABLED: 'true', RBAC_PERMISSIONS_ENABLED: 'true' } })
+    expect([await snapshot(), await rows()]).toEqual(before)
+    for (const s of SECRETS) expect(r.text).not.toContain(s)
+    expect(r.review).toBe(true)
+    expect(r.text).not.toMatch(/not in this database/)
+    expect(r.text).toMatch(/instance_settings\s+1 row\s/)
+    expect(r.text).toMatch(/user_sessions\s+1 row\s/)
+    expect(r.text).toMatch(/quota_usage\s+0 rows\s/)
+    expect(r.text).toMatch(/users\.status\s+1 row\s/)
+    expect(r.text).toMatch(/users\.password_on_hold\s+1 row\s/)
+    expect(r.text).toMatch(/projects\.naabu_run_timeout\s+0 rows\s/)
+    expect(r.text).toMatch(/alice@example\.invalid\s+permission set Read-only analyst/)
+    expect(r.text).toMatch(/tunnel@example\.invalid\s+the instance default set Recon operator/)
+    expect(r.text).toMatch(/managed@example\.invalid\s+disabled/)
+    expect(r.text).toMatch(/1 device session revoked/)
+    expect(r.text).toMatch(/Instance project \(alice@example\.invalid\)\s+agent model/)
+    expect(r.text).toMatch(/1 tradecraft resource/)
+    expect(r.text).toMatch(/1 saved preset: Fast/)
+
+    for (const sql of instanceModelResetSql()) await db.$executeRawUnsafe(sql)
+    const fresh = await db.project.create({ data: { id: 'pg-p2', name: 'Fresh', userId: 'alice' } })
+    const reset = await db.project.findUniqueOrThrow({ where: { id: 'pg-p1' } })
+    expect(reset.agentOpenaiModel).toBe(fresh.agentOpenaiModel)
+    const [preset] = await db.userProjectPreset.findMany({ where: { userId: 'alice' } })
+    expect(preset.settings).toEqual({ naabuThreads: 10 })
+    const [resource] = await db.userTradecraftResource.findMany({ where: { userId: 'alice' } })
+    expect(resource.llmModel).toBe('')
+    expect((await previewRbacDowngrade(db, { env: {} })).sections.map((s: { id: string }) => s.id)).not.toContain('instance_models')
   })
 })

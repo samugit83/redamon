@@ -167,6 +167,9 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
     const SHARING_STORAGE_READERS = [
       // Step 4.4: the live matrix's fixtures (Read shares on a synthetic project), run by hand only.
       'scripts/e2e-rbac-seed.mjs',
+      // Step 7.2: the `--downgrade` report counts the share rows and token columns a downgrade drops,
+      // read-only, whatever the switch; it opens no project to anyone.
+      'scripts/rbac-upgrade-preview.mjs',
       // Step 6.1: the admin console reads `sharingPolicy.adminsSeeAllShares` (GET /api/admin/instance-settings)
       // only while /api/auth/me reports sharing in force; with the switch off auth/me has no `sharing` key, the
       // policy is never asked and the Shares item stays hidden (test at the end; AdminConsole.test.tsx).

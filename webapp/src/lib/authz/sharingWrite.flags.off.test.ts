@@ -227,6 +227,9 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
     // (ProjectTransfer) add each reader with how it stays silent with the switch off. ScanSchedule's
     // `pausedReason` (5.5) is not here: 5.5 runs whatever the switch says.
     const PHASE5_TABLE_READERS: string[] = [
+      // Step 7.2: the `--downgrade` report counts the Phase 5 rows and columns a downgrade drops, read-only,
+      // whatever the switch; it reads no share or consent for an access decision.
+      'scripts/rbac-upgrade-preview.mjs',
       // Step 5.8: the one reader and writer of ConversationShare, of the managers flag on ProjectAccessPolicy and of
       // Conversation.formerAuthor*, each read only with the switch on (and the shares with write in force; block below).
       'src/lib/authz/conversationAccess.ts',

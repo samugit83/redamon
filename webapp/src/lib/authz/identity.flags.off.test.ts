@@ -153,7 +153,8 @@ const IDENTITY_READERS: string[] = [
   'scripts/lib/passwordRules.mjs',
   // Step 2.13: the upgrade preview reads the Root and whether an admin saved the instance row,
   // read-only, for its report alone; the switch changes only the lines printed, never the exit
-  // status (both sections are `affects: false`).
+  // status (both sections are `affects: false`). Step 7.2: its `--downgrade` report counts the identity
+  // rows and columns a downgrade drops and lists disabled and invited accounts, read-only, whatever the switch.
   'scripts/rbac-upgrade-preview.mjs',
   'scripts/reset-password.mjs',
   'scripts/set-root.mjs',

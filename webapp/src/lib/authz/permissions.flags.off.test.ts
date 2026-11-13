@@ -238,6 +238,9 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
       // Step 3.8: the live-matrix fixture seed puts its synthetic rbac-* accounts on their built-in
       // sets (and clears their overrides) whatever the switch; the sets count only with it on.
       'scripts/e2e-rbac-seed.mjs',
+      // Step 7.2: the `--downgrade` report counts the rows a downgrade drops and names who holds a set,
+      // read-only, whatever the switch (it reports what the switch would have done); it grants nothing.
+      'scripts/rbac-upgrade-preview.mjs',
       // Step 3.4: the resolution reads the sets and the instance default set only with the switch on.
       'src/lib/authz/capabilities.ts',
       // Step 4.15: the expiry sweep audits and removes expired overrides only with the switch on.
