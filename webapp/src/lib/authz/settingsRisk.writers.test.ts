@@ -87,6 +87,8 @@ const OWNER_OR_SYSTEM: Record<string, string> = {
   'src/app/api/projects/route.ts': 'the create: the creator owns the new project',
   'src/app/api/users/[id]/llm-providers/[providerId]/route.ts': "clears a deleted provider from the account's own projects",
   'src/lib/activationLock.ts': 'the version-activation lock columns, written by the activation itself',
+  'src/lib/authz/ownershipTransfer.ts':
+    "the ownership move (owner's offer at O + recipient's acceptance, both step-up, or Root's forced transfer): the new owner, the lock, and server-computed clears of the old owner's own providers, skills, templates and token, no body value",
   'src/lib/plugins/userSkillAdoption.ts': 'system: a plugin skill adopted into its author\'s own projects',
   'src/lib/plugins/userSkillRevocation.ts': 'system: a revoked skill switched off where it was on',
   'src/lib/reconPresets/badges.ts': "the preset owner's own projects' badge",
