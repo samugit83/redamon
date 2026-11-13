@@ -19,6 +19,7 @@ import prisma from '@/lib/prisma'
 import { rbacFlags } from './flags'
 import { now } from './clock'
 import { maxShareLevel, sharingPolicyInForce } from './sharingPolicy'
+import { ConsentStoreMissing, holdsSpendToggle, readOwnerConsents } from './ownerConsent'
 import {
   SHARE_ACCESS, effectiveToggles, myAccessView, type MyAccess, type ProjectAccess, type ProjectAccessSubject, type WriteToggles,
 } from './projectAccess'
@@ -121,33 +122,62 @@ export interface WithMyAccessOptions {
   actingAs?: boolean
 }
 
+/** The person's share of a row when it lists as `write`: its level read (write sharing in force), not under act-as. */
+function listedWriteShare(userId: string | null, row: ListedProjectRow, opts: WithMyAccessOptions): ListedShare | null {
+  if (userId === null || row.userId === userId || opts.actingAs === true) return null
+  const share = row.collaborators?.[0]
+  return share?.access === 'write' ? share : null
+}
+
+/**
+ * The listed projects whose owner consents to collaborators spending its credentials, read once for
+ * the list and only for a write share holding a run toggle, as projectAccess() reads it for one. A
+ * table this database lacks yet lists the toggles off (the list is a view; every gate asks again).
+ */
+async function listedConsents(userId: string | null, rows: ReadonlyArray<ListedProjectRow>, opts: WithMyAccessOptions): Promise<ReadonlySet<string>> {
+  const ids = rows.filter(row => {
+    const share = listedWriteShare(userId, row, opts)
+    return share !== null && holdsSpendToggle(share)
+  }).map(row => row.id)
+  if (ids.length === 0) return new Set()
+  try {
+    return await readOwnerConsents(ids)
+  } catch (err) {
+    if (err instanceof ConsentStoreMissing) return new Set()
+    throw err
+  }
+}
+
 /**
  * Each listed row with the person's own access (`myAccess`, the project GET's view: the owner, or a
  * share at `read` with its Raw data; a share at `write` lists as `write` with its toggles, through
- * `effectiveToggles`, only when myShareSelect read its level, i.e. with write sharing in force, and
- * not under act-as), the share itself removed. With RBAC_SHARING_ENABLED off the rows come back as
- * they are, without the key, as the project GET does (DV-30). A row neither owned nor shared with
- * the person is left out. The list shows the share: a break-glass row that would raise it
- * (projectAccess) opens the project by its id, as oversight does, and the detail's `myAccess` says so.
+ * `effectiveToggles` with the owner's consent as projectAccess() answers them, only when myShareSelect
+ * read its level, i.e. with write sharing in force, and not under act-as), the share itself removed.
+ * The consent is one read for the whole list (`readOwnerConsents`). With RBAC_SHARING_ENABLED off the
+ * rows come back as they are, without the key, as the project GET does (DV-30). A row neither owned
+ * nor shared with the person is left out. The list shows the share: a break-glass row that would raise
+ * it (projectAccess) opens the project by its id, as oversight does, and the detail's `myAccess` says so.
  */
-export function withMyAccess<T extends ListedProjectRow>(
+export async function withMyAccess<T extends ListedProjectRow>(
   subject: ProjectAccessSubject,
   rows: T[],
   opts: WithMyAccessOptions = {},
-): Array<Omit<T, 'collaborators'> & { myAccess?: MyAccess }> {
+): Promise<Array<Omit<T, 'collaborators'> & { myAccess?: MyAccess }>> {
   if (!rbacFlags().sharing) return rows
   const userId = subjectId(subject)
+  const consented = await listedConsents(userId, rows, opts)
   const out: Array<Omit<T, 'collaborators'> & { myAccess: MyAccess }> = []
-  for (const { collaborators, ...row } of rows) {
+  for (const listed of rows) {
+    const { collaborators, ...row } = listed
     const project = { id: row.id, userId: row.userId }
+    const writeShare = listedWriteShare(userId, listed, opts)
     let access: ProjectAccess | null = null
     if (userId !== null && row.userId === userId) {
       access = { project, level: 'owner', toggles: { rawData: true }, via: 'owner' }
+    } else if (writeShare) {
+      access = { project, level: 'write', toggles: { rawData: true, ...effectiveToggles(writeShare, consented.has(row.id)) }, via: 'share' }
     } else if (userId !== null && collaborators && collaborators.length > 0) {
-      const share = collaborators[0]
-      access = share.access === 'write' && opts.actingAs !== true
-        ? { project, level: 'write', toggles: { rawData: true, ...effectiveToggles(share) }, via: 'share' }
-        : { project, level: 'read', toggles: { rawData: share.rawData === true }, via: 'share' }
+      access = { project, level: 'read', toggles: { rawData: collaborators[0].rawData === true }, via: 'share' }
     }
     if (access) out.push({ ...row, myAccess: myAccessView(access, row.user) })
   }

@@ -5,7 +5,8 @@
  * `collaborators: {some}` with its account and expiry, a `project` relation filter) and shapes the
  * `select` they ask for (scalars, a to-one relation's `select`, the person's own share of a row),
  * so a test asserts which rows come back, not which arguments were passed. The instance row holds
- * the sharing policy; every other model is absent.
+ * the sharing policy, `consents` the owner-consent rows (`projectAccessPolicy`); every other model is
+ * absent.
  *
  *   const h = vi.hoisted(() => ({ db: null as unknown }))
  *   vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db as Record<string, unknown>)[k as string] }) }))
@@ -23,15 +24,17 @@ export interface ProjectListState {
   reports: Row[]
   jobQueue: Row[]
   scanJobs: Row[]
+  /** `{projectId, ownerCredentialConsentAt, ownerCredentialConsentById}`: the projectAccessPolicy rows. */
+  consents?: Row[]
   /** The stored sharing policy (the instance row's JSON). */
   policy: unknown
 }
 
 export function emptyProjectListState(): ProjectListState {
-  return { projects: [], users: [], shares: [], reports: [], jobQueue: [], scanJobs: [], policy: { enabled: true } }
+  return { projects: [], users: [], shares: [], reports: [], jobQueue: [], scanJobs: [], consents: [], policy: { enabled: true } }
 }
 
-type Table = 'project' | 'user' | 'share' | 'report' | 'jobQueue' | 'scanJob'
+type Table = 'project' | 'user' | 'share' | 'report' | 'jobQueue' | 'scanJob' | 'accessPolicy'
 
 interface Relation {
   table: Table
@@ -160,6 +163,7 @@ export function projectListPrisma(state: ProjectListState) {
     report: model('report', (s) => s.reports, state),
     jobQueue: model('jobQueue', (s) => s.jobQueue, state),
     scanJob: model('scanJob', (s) => s.scanJobs, state),
+    projectAccessPolicy: model('accessPolicy', (s) => s.consents ?? [], state),
     instanceSettings: { findUnique: async () => ({ id: 'instance', sharingPolicy: state.policy }) },
   }
 }

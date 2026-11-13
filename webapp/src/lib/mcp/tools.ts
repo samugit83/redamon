@@ -167,7 +167,7 @@ export async function listProjects(ctx: McpContext) {
     orderBy: { updatedAt: 'desc' },
   })
   // With the sharing switch off the rows come back without `myAccess`, as before (DV-30).
-  const projects = withMyAccess(subject, rows).map(({ userId: _owner, user: _user, ...row }) => row)
+  const projects = (await withMyAccess(subject, rows)).map(({ userId: _owner, user: _user, ...row }) => row)
   return {
     projects: projects.map(({ domainBatchHosts, subdomainList, ...p }) => {
       const { groups } = resolveScopeGroups({ ...p, domainBatchHosts, subdomainList })

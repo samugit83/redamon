@@ -156,8 +156,8 @@ describe('the lists: a write share lists as write only when projectAccess() woul
         select: { rawData: true, access: true, runScans: true, useAgent: true, exploit: true, manage: true },
       },
     })
-    const [row] = withMyAccess({ userId: 'bob' }, [ROW(WRITE_SHARE)])
-    // The run toggles read off until step 5.6, as projectAccess() answers (effectiveToggles).
+    const [row] = await withMyAccess({ userId: 'bob' }, [ROW(WRITE_SHARE)])
+    // No owner consent stored: the run toggles read off, as projectAccess() answers (effectiveToggles).
     expect(row.myAccess).toEqual({
       level: 'write', via: 'share', owner: { name: 'Alice', email: 'alice@e2e.local' },
       toggles: { rawData: true, runScans: false, useAgent: false, exploit: false, manage: true },
@@ -165,9 +165,9 @@ describe('the lists: a write share lists as write only when projectAccess() woul
     expect('collaborators' in row).toBe(false)
   })
 
-  test('under act-as a write share lists as read with its own Raw data (D-22)', () => {
+  test('under act-as a write share lists as read with its own Raw data (D-22)', async () => {
     setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
-    const [row] = withMyAccess({ userId: 'bob' }, [ROW(WRITE_SHARE)], { actingAs: true })
+    const [row] = await withMyAccess({ userId: 'bob' }, [ROW(WRITE_SHARE)], { actingAs: true })
     expect(row.myAccess).toEqual({ level: 'read', via: 'share', owner: { name: 'Alice', email: 'alice@e2e.local' }, toggles: { rawData: false } })
   })
 
@@ -181,7 +181,7 @@ describe('the lists: a write share lists as write only when projectAccess() woul
     expect(visible).toEqual({ where: expect.anything(), withShares: true })
     expect(myShareSelect({ userId: 'bob' }, visible)).toEqual({ collaborators: { where: { userId: 'bob' }, select: { rawData: true } } })
     // A row read with Phase 4's select carries no level: it lists as read.
-    const [row] = withMyAccess({ userId: 'bob' }, [ROW({ rawData: true })])
+    const [row] = await withMyAccess({ userId: 'bob' }, [ROW({ rawData: true })])
     expect(row.myAccess?.level).toBe('read')
   })
 })

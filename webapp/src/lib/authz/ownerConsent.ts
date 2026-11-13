@@ -24,6 +24,10 @@ import { maxShareLevel, type SharingPolicy } from './sharingPolicy'
  */
 export const SPEND_TOGGLES = ['runScans', 'useAgent', 'exploit'] as const
 
+/** A share holding one of them: only then can the consent open anything, so only then is it read. */
+export const holdsSpendToggle = (row: Partial<Record<(typeof SPEND_TOGGLES)[number], unknown>>): boolean =>
+  SPEND_TOGGLES.some(t => row[t] === true)
+
 export interface OwnerConsent {
   at: Date
   /** Who consented: the owner (null once that account is gone). */
@@ -63,6 +67,21 @@ export async function readOwnerConsent(projectId: string, db: ConsentDb = prisma
   const table = policyTable(db)
   if (!table || !projectId) return null
   return consentOf(await table.findUnique({ where: { projectId }, select: CONSENT_SELECT }).catch(missingTable))
+}
+
+/**
+ * Of `projectIds`, the projects whose owner consents now: a project list's one read for all its write
+ * shares, never one per row. Read as readOwnerConsent reads (never cached; no delegate, no consent).
+ */
+export async function readOwnerConsents(projectIds: readonly string[], db: ConsentDb = prisma): Promise<ReadonlySet<string>> {
+  const table = policyTable(db)
+  const ids = [...new Set(projectIds.filter(id => typeof id === 'string' && id !== ''))]
+  if (!table || ids.length === 0) return new Set()
+  const rows = await table.findMany({
+    where: { projectId: { in: ids }, ownerCredentialConsentAt: { not: null } },
+    select: { projectId: true },
+  }).catch(missingTable)
+  return new Set(rows.map(r => r.projectId))
 }
 
 /**

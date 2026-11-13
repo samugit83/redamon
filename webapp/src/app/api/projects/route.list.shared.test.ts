@@ -12,10 +12,14 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { emptyProjectListState, projectListPrisma, type ProjectListState } from '@/lib/authz/__testing__/projectListDb'
 
-const h = vi.hoisted(() => ({ db: null as unknown, eff: { userId: 'bob' } as { userId: string } }))
+const h = vi.hoisted(() => ({ db: null as unknown, eff: { userId: 'bob' } as { userId: string }, actingAs: false }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db as Record<string, unknown>)[k as string] }) }))
 vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: () => ({ run: vi.fn(), close: vi.fn() }) }))
 vi.mock('@/lib/access', () => ({ requireEffectiveUser: vi.fn(async () => h.eff) }))
+vi.mock('@/lib/session', async (orig) => ({
+  ...(await orig<typeof import('@/lib/session')>()),
+  getAuthzIdentity: vi.fn(async () => (h.actingAs ? { actingAs: { userId: h.eff.userId } } : { actingAs: null })),
+}))
 
 import { GET } from './route'
 import { setFlagsForTests } from '@/lib/authz/flags'
@@ -57,6 +61,7 @@ beforeEach(() => {
   ]
   h.db = projectListPrisma(state)
   h.eff = { userId: 'bob' }
+  h.actingAs = false
   setFlagsForTests(ON)
   setNowForTests(() => NOW)
   clearSharingPolicyCacheForTests()
@@ -113,6 +118,60 @@ describe('sharing in force', () => {
     const rows = await list()
     expect(rows.map((r) => r.id)).toEqual(['p-alice-raw', 'p-alice'])
     expect(rows.every((r) => r.myAccess?.level === 'owner')).toBe(true)
+  })
+})
+
+// The S4 finding: the list answered a consented collaborator's Run scans / Use AI agent / Exploitation as off while
+// the project GET and /my-access (projectAccess) answered them on, so a project picked from the header showed its
+// controls off until the access poll. The list now asks the owner's consent as projectAccess() does, one read per list.
+describe('write sharing in force: the run toggles follow the owner consent, as the project GET', () => {
+  const OPERATOR = { access: 'write', runScans: true, useAgent: true, exploit: false, manage: false }
+  const consent = (projectId: string) => ({ projectId, ownerCredentialConsentAt: new Date(NOW.getTime() - 60_000), ownerCredentialConsentById: 'alice' })
+
+  beforeEach(() => {
+    setFlagsForTests({ ...ON, sharingWrite: true })
+    state.policy = { enabled: true, maxLevel: 'write' }
+    Object.assign(state.shares[0], OPERATOR)
+    Object.assign(state.shares[1], { ...OPERATOR, useAgent: false, exploit: true })
+  })
+
+  test('with the consent the run toggles are on; without it off; Manage needs none', async () => {
+    state.consents = [consent('p-alice')]
+    const byId = new Map((await list()).map((r) => [r.id, r]))
+    expect(byId.get('p-alice')?.myAccess).toEqual({
+      level: 'write', via: 'share', owner: { name: 'Alice', email: 'alice@example.test' },
+      toggles: { rawData: true, runScans: true, useAgent: true, exploit: false, manage: false },
+    })
+    expect(byId.get('p-alice-raw')?.myAccess).toMatchObject({
+      level: 'write', toggles: { rawData: true, runScans: false, useAgent: false, exploit: false, manage: false },
+    })
+    expect(byId.get('p-bob')?.myAccess).toMatchObject({ level: 'owner' })
+  })
+
+  test('a withdrawn consent (the row kept, its date null) reads as none', async () => {
+    state.consents = [{ ...consent('p-alice'), ownerCredentialConsentAt: null, ownerCredentialConsentById: null }]
+    const row = (await list()).find((r) => r.id === 'p-alice')
+    expect(row?.myAccess).toMatchObject({ level: 'write', toggles: { runScans: false, useAgent: false, exploit: false } })
+  })
+
+  test('one consent read for every listed write share (never one per row), none when no share holds a run toggle', async () => {
+    state.consents = [consent('p-alice'), consent('p-alice-raw')]
+    const reads = vi.spyOn((h.db as { projectAccessPolicy: { findMany: () => unknown } }).projectAccessPolicy, 'findMany')
+    const byId = new Map((await list()).map((r) => [r.id, r]))
+    expect(byId.get('p-alice-raw')?.myAccess).toMatchObject({ toggles: { runScans: true, exploit: true } })
+    expect(reads).toHaveBeenCalledTimes(1)
+    reads.mockClear()
+    for (const share of state.shares) Object.assign(share, { runScans: false, useAgent: false, exploit: false, manage: true })
+    expect((await list()).find((r) => r.id === 'p-alice')?.myAccess).toMatchObject({ toggles: { manage: true, runScans: false } })
+    expect(reads).not.toHaveBeenCalled()
+  })
+
+  test('an admin acting as the collaborator lists the share as read and reads no consent (D-22)', async () => {
+    state.consents = [consent('p-alice')]
+    h.actingAs = true
+    const reads = vi.spyOn((h.db as { projectAccessPolicy: { findMany: () => unknown } }).projectAccessPolicy, 'findMany')
+    expect((await list()).find((r) => r.id === 'p-alice')?.myAccess).toMatchObject({ level: 'read', toggles: { rawData: false } })
+    expect(reads).not.toHaveBeenCalled()
   })
 })
 

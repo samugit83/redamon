@@ -77,7 +77,7 @@ export async function GET() {
     // Only a list that can show a write share asks whether an admin acts as the person: then
     // every share lists as read, as the project GET answers it (D-22).
     const actingAs = visible.writeShares === true && !!(await getAuthzIdentity())?.actingAs
-    return NextResponse.json(withMyAccess(eff, projects, { actingAs }))
+    return NextResponse.json(await withMyAccess(eff, projects, { actingAs }))
   } catch (error) {
     return internalError(error, 'Failed to fetch projects')
   }

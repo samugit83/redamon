@@ -38,7 +38,7 @@ import { now } from './clock'
 import { loadPrincipal } from './principal'
 import { resolveCapabilities, type Capabilities, type CapabilityPrincipal } from './capabilities'
 import { maxShareLevel, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
-import { readOwnerConsent, SPEND_TOGGLES } from './ownerConsent'
+import { holdsSpendToggle, readOwnerConsent } from './ownerConsent'
 import { meetsLevel } from './levelTable'
 
 /** Whose data the request touches: the account acted as, else the signed-in account (EffectiveUser). */
@@ -122,8 +122,6 @@ export function effectiveToggles(row: Partial<Record<keyof WriteToggles, unknown
     manage: row.manage === true,
   }
 }
-
-const holdsSpendToggle = (row: Partial<Record<keyof WriteToggles, unknown>>): boolean => SPEND_TOGGLES.some(t => row[t] === true)
 
 /** Phase 4's share read; the toggle columns are read only when a share can be `write`. */
 const SHARE_SELECT = { access: true, rawData: true, expiresAt: true, user: { select: { status: true } } } as const

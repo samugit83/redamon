@@ -682,3 +682,52 @@ describe('the user-deletion wizard with write sharing switched off (step 5.13)',
     expect(deletionWizardOff()).toBe(false)
   })
 })
+
+// The S4 consent fix (combined window): the project lists (GET /api/projects, MCP list_projects) read the owner's
+// consent for a listed write share's run toggles, one read per list (visibleProjects.ts `withMyAccess` through
+// ownerConsent.ts `readOwnerConsents`). With write sharing not in force myShareSelect reads no share level, so no row
+// lists as write and the consent is never read: the list answers as Phase 4 did (with the sharing switch off, the rows
+// as they were, no myAccess). The contrast proves the read is reached once write sharing is in force.
+describe('the project lists with write sharing not in force (S4 consent fix)', () => {
+  const STATES: Array<[string, Partial<RbacFlags>, Record<string, unknown>]> = [
+    ['every switch off', {}, { enabled: true, maxLevel: 'write' }],
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }, { enabled: true, maxLevel: 'write' }],
+    ["the write switch on, Root's policy at read", ALL_ON, { enabled: true, maxLevel: 'read' }],
+  ]
+  const consentList = vi.fn(async () => [{ projectId: 'P-owner' }])
+
+  async function listed() {
+    const { visibleProjects, myShareSelect, withMyAccess } = await import('./visibleProjects')
+    const visible = await visibleProjects({ userId: 'collab' })
+    const select: Record<string, unknown> = myShareSelect({ userId: 'collab' }, visible).collaborators?.select ?? {}
+    const share = Object.fromEntries(Object.keys(select).map((k) => [k, db.share[k]])) as { rawData: boolean }
+    const rows = [{ id: 'P-owner', userId: 'owner', user: { name: 'Owner', email: 'owner@example.test' }, collaborators: [share] }]
+    return { rows, out: await withMyAccess({ userId: 'collab' }, rows) }
+  }
+
+  beforeEach(async () => {
+    const prisma = (await import('@/lib/prisma')).default as unknown as Record<string, unknown>
+    prisma.projectAccessPolicy = { findMany: consentList }
+    consentList.mockClear()
+  })
+  afterEach(async () => {
+    const prisma = (await import('@/lib/prisma')).default as unknown as Record<string, unknown>
+    delete prisma.projectAccessPolicy
+  })
+
+  test.each(STATES)('%s: a write share with every run toggle lists as Phase 4 did; the consent is never read', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    const { rows, out } = await listed()
+    if (flags.sharing) expect(out[0].myAccess).toEqual(myAccessView({ project: { id: 'P-owner', userId: 'owner' }, level: 'read', toggles: { rawData: false }, via: 'share' }, rows[0].user))
+    else expect(out).toBe(rows)
+    expect(consentList).not.toHaveBeenCalled()
+  })
+
+  test('contrast, write sharing in force: the share lists as write and the consent opens its run toggles (one read)', async () => {
+    setFlagsForTests(ALL_ON)
+    const { out } = await listed()
+    expect(out[0].myAccess).toMatchObject({ level: 'write', toggles: { rawData: true, runScans: true, useAgent: true, exploit: true, manage: true } })
+    expect(consentList).toHaveBeenCalledTimes(1)
+  })
+})

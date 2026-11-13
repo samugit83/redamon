@@ -73,35 +73,35 @@ describe('withMyAccess', () => {
   const sharedRead = { id: 'p-alice', userId: 'alice', name: 'theirs', user: ALICE, collaborators: [{ rawData: false }] }
   const sharedRaw = { id: 'p-alice-2', userId: 'alice', name: 'raw', user: ALICE, collaborators: [{ rawData: true }] }
 
-  test('RBAC_SHARING_ENABLED off: the rows as they were, no myAccess key (DV-30)', () => {
+  test('RBAC_SHARING_ENABLED off: the rows as they were, no myAccess key (DV-30)', async () => {
     const rows = [owned]
-    const out = withMyAccess({ userId: 'bob' }, rows)
+    const out = await withMyAccess({ userId: 'bob' }, rows)
     expect(out).toBe(rows)
     expect(out[0]).not.toHaveProperty('myAccess')
   })
 
-  test('the owner reads its own row as the owner, with its own identity', () => {
+  test('the owner reads its own row as the owner, with its own identity', async () => {
     setFlagsForTests(ON)
-    expect(withMyAccess({ userId: 'bob' }, [owned])).toEqual([{
+    expect(await withMyAccess({ userId: 'bob' }, [owned])).toEqual([{
       ...owned,
       myAccess: { level: 'owner', toggles: { rawData: true }, via: 'owner', owner: { name: 'Bob', email: 'bob@example.test' } },
     }])
   })
 
-  test('a shared row reads as read, with Raw data as the share says and the owner who shared it', () => {
+  test('a shared row reads as read, with Raw data as the share says and the owner who shared it', async () => {
     setFlagsForTests(ON)
-    const [read, raw] = withMyAccess({ userId: 'bob' }, [sharedRead, sharedRaw])
+    const [read, raw] = await withMyAccess({ userId: 'bob' }, [sharedRead, sharedRaw])
     expect(read.myAccess).toEqual({ level: 'read', toggles: { rawData: false }, via: 'share', owner: { name: 'Alice', email: 'alice@example.test' } })
     expect(raw.myAccess).toEqual({ level: 'read', toggles: { rawData: true }, via: 'share', owner: { name: 'Alice', email: 'alice@example.test' } })
     expect(read).not.toHaveProperty('collaborators')
     expect(raw).not.toHaveProperty('collaborators')
   })
 
-  test('a row neither owned nor shared with the person is left out (fail closed)', () => {
+  test('a row neither owned nor shared with the person is left out (fail closed)', async () => {
     setFlagsForTests(ON)
     const stray = { id: 'p-carol', userId: 'carol', name: 'stray', user: null, collaborators: [] }
-    expect(withMyAccess({ userId: 'bob' }, [stray, owned]).map((r) => r.id)).toEqual(['p-bob'])
-    expect(withMyAccess({ userId: 'bob' }, [{ id: 'p-x', userId: 'carol', name: 'x', user: null }])).toEqual([])
+    expect((await withMyAccess({ userId: 'bob' }, [stray, owned])).map((r) => r.id)).toEqual(['p-bob'])
+    expect(await withMyAccess({ userId: 'bob' }, [{ id: 'p-x', userId: 'carol', name: 'x', user: null }])).toEqual([])
   })
 
   test('with the switch on but the policy disabled every listed row is owned: the owner view only', async () => {
@@ -109,7 +109,78 @@ describe('withMyAccess', () => {
     state.policy = {}
     const scope = await visibleProjects({ userId: 'bob' })
     expect(myShareSelect({ userId: 'bob' }, scope)).toEqual({})
-    expect(withMyAccess({ userId: 'bob' }, [owned])[0].myAccess?.level).toBe('owner')
+    expect((await withMyAccess({ userId: 'bob' }, [owned]))[0].myAccess?.level).toBe('owner')
+  })
+})
+
+// The list's write toggles are projectAccess()'s: `effectiveToggles` with the owner's consent, which the list reads in
+// one query for every write share holding a run toggle (the S4 finding: it passed no consent, so the run toggles of a
+// consented collaborator listed off while the project GET answered them on).
+describe("withMyAccess: a write share's run toggles follow the owner's consent", () => {
+  const WRITE_ON = { identity: true, permissions: true, sharing: true, sharingWrite: true }
+  const share = (toggles: Record<string, boolean>) => [{ rawData: false, access: 'write', runScans: false, useAgent: false, exploit: false, manage: false, ...toggles }]
+  const row = (id: string, toggles: Record<string, boolean>) => ({ id, userId: 'alice', name: id, user: ALICE, collaborators: share(toggles) })
+  const consent = (projectId: string, at: Date | null = NOW) => ({ projectId, ownerCredentialConsentAt: at, ownerCredentialConsentById: at ? 'alice' : null })
+  const reads = () => vi.spyOn((h.db as { projectAccessPolicy: { findMany: (a: unknown) => Promise<unknown> } }).projectAccessPolicy, 'findMany')
+
+  beforeEach(() => setFlagsForTests(WRITE_ON))
+
+  test('the consent opens the run toggles a share holds; no consent or a withdrawn one keeps them off; Manage needs none', async () => {
+    state.consents = [consent('p-1'), consent('p-2', null)]
+    const [one, two, three] = await withMyAccess({ userId: 'bob' }, [
+      row('p-1', { runScans: true, exploit: true }), row('p-2', { useAgent: true, manage: true }), row('p-3', { runScans: true }),
+    ])
+    expect(one.myAccess?.toggles).toEqual({ rawData: true, runScans: true, useAgent: false, exploit: true, manage: false })
+    expect(two.myAccess?.toggles).toEqual({ rawData: true, runScans: false, useAgent: false, exploit: false, manage: true })
+    expect(three.myAccess?.toggles).toEqual({ rawData: true, runScans: false, useAgent: false, exploit: false, manage: false })
+  })
+
+  test('the same answer as projectAccess() gives for the same share and consent (effectiveToggles)', async () => {
+    const { effectiveToggles } = await import('./projectAccess')
+    const toggles = { runScans: true, useAgent: true, exploit: true, manage: true }
+    state.consents = [consent('p-1')]
+    const [withConsent, without] = await withMyAccess({ userId: 'bob' }, [row('p-1', toggles), row('p-2', toggles)])
+    expect(withConsent.myAccess?.toggles).toEqual({ rawData: true, ...effectiveToggles(toggles, true) })
+    expect(without.myAccess?.toggles).toEqual({ rawData: true, ...effectiveToggles(toggles, false) })
+  })
+
+  test('one read for the whole list, naming only the write shares that hold a run toggle; none when no share holds one', async () => {
+    state.consents = [consent('p-1'), consent('p-2')]
+    const spy = reads()
+    await withMyAccess({ userId: 'bob' }, [
+      row('p-1', { runScans: true }), row('p-2', { exploit: true }), row('p-3', { manage: true }),
+      { id: 'p-read', userId: 'alice', name: 'r', user: ALICE, collaborators: [{ rawData: true }] },
+      { id: 'p-bob', userId: 'bob', name: 'mine', user: null },
+    ])
+    expect(spy).toHaveBeenCalledTimes(1)
+    const asked = (spy.mock.calls[0][0] as { where: { projectId: { in: string[] } } }).where.projectId.in
+    expect([...asked].sort()).toEqual(['p-1', 'p-2'])
+    spy.mockClear()
+    await withMyAccess({ userId: 'bob' }, [row('p-3', { manage: true }), { id: 'p-bob', userId: 'bob', name: 'mine', user: null }])
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  test('under act-as a write share lists as read and no consent is read (D-22)', async () => {
+    state.consents = [consent('p-1')]
+    const spy = reads()
+    const [one] = await withMyAccess({ userId: 'bob' }, [row('p-1', { runScans: true })], { actingAs: true })
+    expect(one.myAccess).toMatchObject({ level: 'read', toggles: { rawData: false } })
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  test('a consent table this database lacks (P2021) lists the run toggles off; any other failed read throws', async () => {
+    const db = h.db as { projectAccessPolicy: { findMany: (a: unknown) => Promise<unknown> } }
+    db.projectAccessPolicy.findMany = async () => { throw Object.assign(new Error('table missing'), { code: 'P2021' }) }
+    const [one] = await withMyAccess({ userId: 'bob' }, [row('p-1', { runScans: true, manage: true })])
+    expect(one.myAccess?.toggles).toEqual({ rawData: true, runScans: false, useAgent: false, exploit: false, manage: true })
+    db.projectAccessPolicy.findMany = async () => { throw new Error('connection reset') }
+    await expect(withMyAccess({ userId: 'bob' }, [row('p-1', { runScans: true })])).rejects.toThrow('connection reset')
+  })
+
+  test('a client without the consent model (generated before the table) lists the run toggles off', async () => {
+    delete (h.db as Record<string, unknown>).projectAccessPolicy
+    const [one] = await withMyAccess({ userId: 'bob' }, [row('p-1', { runScans: true })])
+    expect(one.myAccess?.toggles).toMatchObject({ runScans: false })
   })
 })
 

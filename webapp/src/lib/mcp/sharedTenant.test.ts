@@ -373,6 +373,35 @@ describe('list_projects', () => {
     expect(JSON.stringify(where.OR[1])).toContain('collaborators')
   })
 
+  // The S4 finding: list_projects answered a consented collaborator's run toggles off while projectAccess() (every
+  // gate, kali_exec included) answered them on. The row now reads the owner's consent, one read for the whole list.
+  test("write sharing in force: a write share's run toggles follow the owner's consent, read once for the list", async () => {
+    setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
+    h.db.policy = { enabled: true, maxLevel: 'write' }
+    const seen: Array<Record<string, unknown>> = []
+    const redTeamer = { rawData: false, access: 'write', runScans: false, useAgent: true, exploit: true, manage: false }
+    rowsAnswer([OWN_ROW, { ...SHARED_ROW, collaborators: [redTeamer] }], seen)
+    const consentReads: unknown[] = []
+    let consented = true
+    h.db.models.projectAccessPolicy = {
+      findMany: (args: unknown) => {
+        consentReads.push(args)
+        return consented ? [{ projectId: SHARED_PROJECT }] : []
+      },
+    }
+    const sharedRow = async () => (await listProjects(ctxOf(COLLABORATOR))).projects.find(p => p.id === SHARED_PROJECT) as Record<string, unknown>
+
+    expect((await sharedRow()).myAccess).toEqual({
+      level: 'write', via: 'share', owner: { name: 'Alice', email: 'alice@example.test' },
+      toggles: { rawData: true, runScans: false, useAgent: true, exploit: true, manage: false },
+    })
+    expect(consentReads).toHaveLength(1)
+    expect(JSON.stringify(consentReads[0])).toContain(SHARED_PROJECT)
+
+    consented = false
+    expect((await sharedRow()).myAccess).toMatchObject({ level: 'write', toggles: { runScans: false, useAgent: false, exploit: false } })
+  })
+
   test('with the sharing switch off the rows come back as before: own projects, no myAccess (DV-30)', async () => {
     setFlagsForTests({ identity: true, permissions: true, sharing: false })
     const seen: Array<Record<string, unknown>> = []
