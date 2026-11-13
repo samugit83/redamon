@@ -602,3 +602,31 @@ describe('MCP tokens with sharing not in force (step 4.10)', () => {
     expect(src).toMatch(/const visible = reach\s*\n\s*\? await visibleProjects\(subject\)\s*\n\s*: \{ where: ownedProjectsWhere\(subject\), withShares: false \}/)
   })
 })
+
+// Step 4.11: the read-only project screens and the stale-access poll. With the switch off no project read
+// carries `myAccess` (the project GET and the list rows: the 4.3 and 4.5 blocks above), so the browser's
+// level table refuses nothing, a project summary carries none, and ProjectProvider never asks /my-access
+// (readOnlyProject.test.tsx, "switch off: no poll, owner unchanged", renders it).
+describe('the read-only project screens with sharing off (step 4.11)', () => {
+  test('without myAccess the level table refuses nothing, at any level and for any permission', async () => {
+    const { myAccessMeets, levelRefusalText } = await import('@/lib/readOnlyProject')
+    const { PERMISSIONS } = await import('./permissions')
+    for (const level of ['R', 'R*', 'W', 'W+S', 'W+A', 'W+X', 'M', 'O'] as const) {
+      expect(myAccessMeets(undefined, level)).toBe(true)
+      expect(myAccessMeets(null, level)).toBe(true)
+    }
+    for (const id of Object.keys(PERMISSIONS)) expect(levelRefusalText(undefined, id as never)).toBeNull()
+  })
+
+  test('a project read without myAccess makes a summary without it', async () => {
+    const { toProjectSummary } = await import('@/lib/projectSummary')
+    expect(toProjectSummary({ id: 'P', name: 'N', targetDomain: 'example.test' })).not.toHaveProperty('myAccess')
+  })
+
+  test('ProjectProvider polls only while the open project carries myAccess, and confirms a 404 with the project read', () => {
+    const src = readFileSync(path.join(WEBAPP, 'src/providers/ProjectProvider.tsx'), 'utf8')
+    expect(src).toMatch(/const pollProjectId = currentProject\?\.myAccess \? currentProject\.id : null/)
+    expect(src).toMatch(/if \(!pollProjectId\) return\n/)
+    expect(src).toMatch(/if \(res\.status !== 404\) return \{ kind: 'retry' \}\n\s*const project = await fetch\(`\/api\/projects\/\$\{id\}`/)
+  })
+})
