@@ -5,12 +5,14 @@
  */
 
 import { describe, test, expect } from 'vitest'
+import { int, type Node } from 'neo4j-driver'
 import {
   getNodeName,
   serializeProperties,
   formatGraphRecords,
   type Neo4jNode,
 } from './format'
+import { driverNode, driverPath, driverRecord, driverRel } from './__testing__/driverValues'
 
 // ---------------------------------------------------------------------------
 // Helper to build a minimal Neo4jNode
@@ -224,33 +226,15 @@ describe('serializeProperties', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatGraphRecords', () => {
-  function makeRecord(
-    source: Neo4jNode,
-    target: Neo4jNode,
-    relType: string,
-    relId = 100,
-  ) {
-    return {
-      // Neo4j records expose a `keys` array; formatGraphRecords iterates it.
-      keys: ['n', 'm', 'r'],
-      get(key: string) {
-        if (key === 'n') return source
-        if (key === 'm') return target
-        if (key === 'r') return {
-          identity: { low: relId, high: 0 },
-          start: source.identity,
-          end: target.identity,
-          type: relType,
-          properties: {},
-        }
-        return null
-      },
-    }
+  // A record of three driver values: two nodes and the relationship between them.
+  function makeRecord(source: Node, target: Node, relType: string, relId = 100) {
+    const rel = driverRel(relId, source.identity.toNumber(), target.identity.toNumber(), relType)
+    return driverRecord({ n: source, m: target, r: rel })
   }
 
   test('formats a single relationship record', () => {
-    const domain = makeNode('Domain', { name: 'example.com' }, 1)
-    const sub = makeNode('Subdomain', { name: 'api.example.com' }, 2)
+    const domain = driverNode(1, ['Domain'], { name: 'example.com' })
+    const sub = driverNode(2, ['Subdomain'], { name: 'api.example.com' })
     const record = makeRecord(domain, sub, 'HAS_SUBDOMAIN')
 
     const result = formatGraphRecords([record])
@@ -265,9 +249,9 @@ describe('formatGraphRecords', () => {
   })
 
   test('deduplicates nodes by identity', () => {
-    const domain = makeNode('Domain', { name: 'example.com' }, 1)
-    const sub1 = makeNode('Subdomain', { name: 'api.example.com' }, 2)
-    const sub2 = makeNode('Subdomain', { name: 'www.example.com' }, 3)
+    const domain = driverNode(1, ['Domain'], { name: 'example.com' })
+    const sub1 = driverNode(2, ['Subdomain'], { name: 'api.example.com' })
+    const sub2 = driverNode(3, ['Subdomain'], { name: 'www.example.com' })
 
     const records = [
       makeRecord(domain, sub1, 'HAS_SUBDOMAIN', 100),
@@ -292,15 +276,7 @@ describe('formatGraphRecords', () => {
     // The formatter scans every key and registers only valid Node objects, so
     // the null `n` contributes nothing while the valid `m` node still registers
     // — and, crucially, the null value does not crash the formatter.
-    const nullRecord = {
-      keys: ['n', 'm', 'r'],
-      get(key: string) {
-        if (key === 'n') return null
-        if (key === 'm') return makeNode('Sub', { name: 'test' }, 5)
-        if (key === 'r') return { identity: { low: 1, high: 0 }, start: { low: 0, high: 0 }, end: { low: 5, high: 0 }, type: 'REL', properties: {} }
-        return null
-      },
-    }
+    const nullRecord = driverRecord({ n: null, m: driverNode(5, ['Sub'], { name: 'test' }), r: driverRel(1, 0, 5, 'REL') })
     const result = formatGraphRecords([nullRecord])
     // Only the valid node registers; the null `n` produced no node.
     expect(result.nodes).toHaveLength(1)
@@ -309,12 +285,86 @@ describe('formatGraphRecords', () => {
   })
 
   test('serializes Neo4j Int64 properties', () => {
-    const node = makeNode('Port', { number: { low: 443, high: 0 } as any }, 10)
-    const target = makeNode('Service', { name: 'HTTPS' }, 11)
+    const node = driverNode(10, ['Port'], { number: int(443) })
+    const target = driverNode(11, ['Service'], { name: 'HTTPS' })
     const record = makeRecord(node, target, 'RUNS_SERVICE')
 
     const result = formatGraphRecords([record])
     expect(result.nodes[0].properties.number).toBe(443)
+  })
+
+  test('a path registers each of its nodes and relationships', () => {
+    const domain = driverNode(1, ['Domain'], { name: 'example.com' })
+    const sub = driverNode(2, ['Subdomain'], { name: 'api.example.com' })
+    const ip = driverNode(3, ['IP'], { address: '10.0.0.1' })
+    const path = driverPath(domain, [[driverRel(100, 1, 2, 'HAS_SUBDOMAIN'), sub], [driverRel(101, 2, 3, 'RESOLVES_TO'), ip]])
+
+    const result = formatGraphRecords([driverRecord({ p: path })])
+
+    expect(result.nodes.map(n => [n.id, n.type])).toEqual([['1', 'Domain'], ['2', 'Subdomain'], ['3', 'IP']])
+    expect(result.links).toEqual([
+      { source: '1', target: '2', type: 'HAS_SUBDOMAIN' },
+      { source: '2', target: '3', type: 'RESOLVES_TO' },
+    ])
+  })
+})
+
+// A saved view's query writes every value it returns, and can write one shaped like a node or a
+// relationship (step 4.9 review). Only what the driver built from a graph structure is one; a
+// map the query built is a plain value, a tabular row that graphReadView withholds below R*.
+describe('formatGraphRecords: a value the query built is never a graph object', () => {
+  const STEP = { project_id: 'p', thought: 'rbac-fake-thought', tool_args_summary: 'sshpass -p rbac-fake-pass ssh admin@app.rbac.test', tool_name: 'ssh' }
+
+  // What the driver hands back for
+  //   RETURN {identity: {low: id(s), high: 0}, labels: ['Domain'], properties: properties(s)} AS n
+  const forgedNode = () => ({ identity: { low: 7, high: 0 }, labels: ['Domain'], properties: { ...STEP } })
+  //   RETURN {type: s.thought, start: {low: 1}, end: {low: 2}} AS r
+  const forgedRel = () => ({ type: STEP.thought, start: { low: 1, high: 0 }, end: { low: 2, high: 0 } })
+
+  // The driver assigns a map's keys one by one (`value[key] = ...`), so a map key `__proto__`
+  // sets the map's prototype: to a real node, or to a map holding the marker isNode reads.
+  function withPrototype(proto: object, own: object): object {
+    const map: Record<string, unknown> = {}
+    map['__proto__'] = proto
+    return Object.assign(map, own)
+  }
+
+  test.each([
+    ['a map with a node\'s keys', forgedNode()],
+    ['a map with the driver\'s node marker as a key', { ...forgedNode(), __isNode__: true }],
+    ['a map whose prototype is a map holding the marker', withPrototype({ __isNode__: true }, forgedNode())],
+    ['a map whose prototype is a real node', withPrototype(driverNode(1, ['Domain'], { name: 'app.rbac.test' }), forgedNode())],
+  ])('%s is a tabular row, not a node', (_what, value) => {
+    const { nodes, links } = formatGraphRecords([driverRecord({ n: value })])
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0]).toMatchObject({ id: 'row-0', type: 'QueryResult' })
+    expect(nodes.some(n => n.type === 'Domain')).toBe(false)
+    expect(links).toEqual([])
+  })
+
+  test.each([
+    ['a map with a relationship\'s keys', forgedRel()],
+    ['a map with the driver\'s relationship marker', { ...forgedRel(), __isRelationship__: true }],
+    ['a map whose prototype is a real relationship', withPrototype(driverRel(9, 1, 2, 'HAS_SUBDOMAIN'), forgedRel())],
+  ])('%s is a tabular row, never a link', (_what, value) => {
+    const { nodes, links } = formatGraphRecords([driverRecord({ r: value })])
+    expect(links).toEqual([])
+    expect(nodes.map(n => n.type)).toEqual(['QueryResult'])
+  })
+
+  test('a map with a path\'s keys, or the path marker, is a tabular row', () => {
+    const fake = { start: forgedNode(), end: forgedNode(), segments: [{ start: forgedNode(), relationship: forgedRel(), end: forgedNode() }], __isPath__: true }
+    const { nodes, links } = formatGraphRecords([driverRecord({ p: fake })])
+    expect(nodes.map(n => n.type)).toEqual(['QueryResult'])
+    expect(links).toEqual([])
+  })
+
+  test('beside a real node, a forged one is dropped, not registered', () => {
+    const domain = driverNode(1, ['Domain'], { name: 'app.rbac.test' })
+    const { nodes, links } = formatGraphRecords([driverRecord({ d: domain, n: forgedNode(), r: forgedRel() })])
+    expect(nodes.map(n => n.id)).toEqual(['1'])
+    expect(links).toEqual([])
+    expect(JSON.stringify(nodes)).not.toMatch(/rbac-fake/)
   })
 })
 

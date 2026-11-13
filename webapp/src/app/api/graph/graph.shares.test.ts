@@ -12,6 +12,7 @@
  * @vitest-environment node
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+import { driverNode, driverRecord, driverRel } from './__testing__/driverValues'
 import { NextRequest } from 'next/server'
 
 const h = vi.hoisted(() => ({
@@ -33,12 +34,9 @@ vi.mock('@/lib/session', () => ({
 vi.mock('@/lib/prisma', async () => ({ default: (await import('@/lib/authz/__testing__/sharedReads')).sharedReadPrisma(h as never) }))
 
 // The owner's subgraph as Neo4j answers it: two Domains, each with a Subdomain that BELONGS_TO it.
-const ids = { low: 0, high: 0 }
-const node = (id: number, label: string, name: string) =>
-  ({ identity: { ...ids, low: id }, labels: [label], properties: { name, user_id: 'alice', project_id: 'P-alice' } })
-const rel = (id: number, start: number, end: number) =>
-  ({ identity: { ...ids, low: id }, start: { ...ids, low: start }, end: { ...ids, low: end }, type: 'BELONGS_TO', properties: {} })
-const record = (fields: Record<string, unknown>) => ({ keys: Object.keys(fields), get: (k: string) => fields[k] })
+const node = (id: number, label: string, name: string) => driverNode(id, [label], { name, user_id: 'alice', project_id: 'P-alice' })
+const rel = (id: number, start: number, end: number) => driverRel(id, start, end, 'BELONGS_TO')
+const record = driverRecord
 const SUBGRAPH = [
   record({ n: node(11, 'Subdomain', 'a.one.rbac.test'), r: rel(101, 11, 1), m: node(1, 'Domain', 'one.rbac.test') }),
   record({ n: node(12, 'Subdomain', 'b.two.rbac.test'), r: rel(102, 12, 2), m: node(2, 'Domain', 'two.rbac.test') }),

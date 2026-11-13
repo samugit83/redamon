@@ -15,8 +15,11 @@
  *
  * The MCP query tools reach only a token owner's projects until step 4.10 opens them to shares.
  *
+ * A saved view's query can also return a map it shaped like a node or a relationship (4.9 review);
+ * the formatter reads only the driver's own graph objects, so such a map is a tabular row.
+ *
  * Real guard, can(), projectAccess(), readLiveGraph, the formatter and the cache; the session,
- * Prisma and the graph session are doubles (sharedReads.ts).
+ * Prisma and the graph session are doubles (sharedReads.ts). Graph values are real driver objects.
  *
  * @vitest-environment node
  */
@@ -47,20 +50,17 @@ const FAILURE_CONTENT = { error_message: 'rbac-fake-error', lesson_learned: 'rba
 const DECISION_CONTENT = { reason: 'rbac-fake-decision-reason' }
 const FAKE = /rbac-fake-(thought|reasoning|output|pass|error|decision)/
 
-const ids = { low: 0, high: 0 }
 const tenant = { user_id: 'alice', project_id: 'P-alice', chain_id: 'chain-1' }
-const node = (id: number, label: string, properties: Record<string, unknown>) =>
-  ({ identity: { ...ids, low: id }, labels: [label], properties: { ...tenant, ...properties } })
-const rel = (id: number, start: number, end: number, type: string) =>
-  ({ identity: { ...ids, low: id }, start: { ...ids, low: start }, end: { ...ids, low: end }, type, properties: {} })
-const record = (fields: Record<string, unknown>) => ({ keys: Object.keys(fields), get: (k: string) => fields[k] })
+const node = (id: number, label: string, properties: Record<string, unknown>) => driverNode(id, [label], { ...tenant, ...properties })
+const rel = (id: number, start: number, end: number, type: string) => driverRel(id, start, end, type)
+const record = driverRecord
 
 const CHAIN = node(20, 'AttackChain', { title: 'rbac chain', status: 'active', objective: 'reach the admin panel' })
 const STEP = node(21, 'ChainStep', { step_id: 'step-1', iteration: 1, phase: 'exploitation', tool_name: 'curl', success: false, duration_ms: 12, ...CONTENT })
 const FAILURE = node(22, 'ChainFailure', { failure_id: 'f-1', failure_type: 'tool_error', tool_name: 'curl', iteration: 1, ...FAILURE_CONTENT })
 const DECISION = node(23, 'ChainDecision', { decision_id: 'd-1', decision_type: 'phase_transition', from_state: 'informational', to_state: 'exploitation', made_by: 'user', approved: true, ...DECISION_CONTENT })
 const FINDING = node(24, 'ChainFinding', { finding_id: 'cf-1', title: 'admin panel exposed', severity: 'high', evidence: 'HTTP 200 on /admin' })
-const DOMAIN = { identity: { ...ids, low: 1 }, labels: ['Domain'], properties: { name: 'app.rbac.test', user_id: 'alice', project_id: 'P-alice' } }
+const DOMAIN = driverNode(1, ['Domain'], { name: 'app.rbac.test', user_id: 'alice', project_id: 'P-alice' })
 
 const LIVE = [
   record({ n: CHAIN, r: rel(201, 20, 21, 'HAS_STEP'), m: STEP }),
@@ -74,6 +74,13 @@ const TABULAR = [
   record({ 's.thought': 'rbac-fake-thought', tool: 'curl' }),
   record({ args: 'curl -u admin:rbac-fake-pass http://app.rbac.test', 'collect(fl)': [FAILURE] }),
 ]
+// The two forged views of the 4.9 review: a map the query builds with a node's keys over a step's
+// properties, and one with a relationship's keys whose type is the thought. The driver answers a
+// map as a plain object; these are those objects.
+const FORGED_NODE_QUERY = "MATCH (s:ChainStep) RETURN {identity: {low: id(s), high: 0}, labels: ['Domain'], properties: properties(s)} AS n"
+const FORGED_REL_QUERY = 'MATCH (s:ChainStep) RETURN {type: s.thought, start: {low: 1}, end: {low: 2}} AS r'
+const FORGED_NODE = [record({ n: { identity: { low: 21, high: 0 }, labels: ['Domain'], properties: { ...STEP.properties } } })]
+const FORGED_REL = [record({ r: { type: CONTENT.thought, start: { low: 1, high: 0 }, end: { low: 2, high: 0 } } })]
 vi.mock('@/app/api/graph/neo4j', () => ({
   neo4j: { int: (n: number) => n },
   getGraphSession: () => ({
@@ -81,6 +88,8 @@ vi.mock('@/app/api/graph/neo4j', () => ({
       h.queries.push({ query, params })
       if (/DETACH DELETE/.test(query)) return { records: [] }
       if (/RETURN s\.thought/.test(query)) return { records: TABULAR }
+      if (/labels: \['Domain'\], properties: properties\(s\)/.test(query)) return { records: FORGED_NODE }
+      if (/RETURN \{type: s\.thought/.test(query)) return { records: FORGED_REL }
       return { records: LIVE }
     },
     close: async () => undefined,
@@ -90,6 +99,7 @@ vi.mock('@/app/api/graph/neo4j', () => ({
 import {
   COLLABORATOR, OVERSEER, OWNER, RAW_COLLABORATOR, SHARED_PROJECT, endSharedReads, resetSharedReads, signInAs,
 } from '@/lib/authz/__testing__/sharedReads'
+import { driverNode, driverRecord, driverRel } from './graph/__testing__/driverValues'
 import { STEP_CONTENT_PROPS } from '@/lib/authz/stepContent'
 import { READ_VIEW_ETAG_SUFFIX } from '@/lib/authz/graphReadView'
 import { invalidateCache } from './graph/cache'
@@ -223,6 +233,40 @@ describe('POST /api/graph-views/execute', () => {
     const body = await res.json()
     expect(body.nodes.map((n: GraphNode) => n.type)).toEqual(['QueryResult', 'QueryResult'])
     expect(body.nodes[0].properties['s.thought']).toBe('rbac-fake-thought')
+  })
+})
+
+describe('POST /api/graph-views/execute: a value the query shaped like a graph object (4.9 review)', () => {
+  test.each(BELOW_RAW)('a map with a node\'s keys over a step\'s properties is no Domain node at R (%s)', async (who) => {
+    const res = await as(who, () => execute(FORGED_NODE_QUERY))
+    const body = await res.json()
+    expect(JSON.stringify(body)).not.toMatch(FAKE)
+    if (res.status === 200) {
+      expect(h.queries.some(q => /labels: \['Domain'\]/.test(q.query))).toBe(true)
+      expect(body.nodes).toEqual([])
+      expect(body.links).toEqual([])
+    }
+  })
+
+  test.each(BELOW_RAW)('a map with a relationship\'s keys is no link at R (%s): the thought never travels as a link type', async (who) => {
+    const res = await as(who, () => execute(FORGED_REL_QUERY))
+    const body = await res.json()
+    expect(JSON.stringify(body)).not.toMatch(FAKE)
+    if (res.status === 200) {
+      expect(h.queries.some(q => /\{type: s\.thought/.test(q.query))).toBe(true)
+      expect(body.nodes).toEqual([])
+      expect(body.links).toEqual([])
+    }
+  })
+
+  test('the owner gets each as a tabular row, never as a node or a link', async () => {
+    for (const query of [FORGED_NODE_QUERY, FORGED_REL_QUERY]) {
+      const res = await as(OWNER, () => execute(query))
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.nodes.map((n: GraphNode) => n.type)).toEqual(['QueryResult'])
+      expect(body.links).toEqual([])
+    }
   })
 })
 

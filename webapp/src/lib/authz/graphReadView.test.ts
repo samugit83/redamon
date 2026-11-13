@@ -8,6 +8,8 @@
  *     recon-found secret values stay (OQ-R7, open: option b as written, RAW_DATA_GRAPH_PROPS empty);
  *   - such a view gets its own etag when it changed something, so a browser holding the full
  *     graph's etag is not answered 304; when nothing changed the body and the etag are the same.
+ * The 4.9 review added the links: below R* a link reaches the reader only between two nodes of the
+ * view, with a string type (a relationship format.ts read off the driver, never a value).
  *
  * @vitest-environment node
  */
@@ -94,6 +96,40 @@ describe('graphReadView: below R* (step 4.9)', () => {
   test('a tabular-only answer reads as empty, never as the rows', () => {
     const view = graphReadView({ nodes: [tabular(), { ...tabular(), id: 'row-1' }], links: [] }, access('read', false, 'oversight'))
     expect(view.nodes).toEqual([])
+  })
+
+  test('a link reaches the reader only between two nodes of the view (step 4.9 review)', () => {
+    const preview = {
+      nodes: [tabular(), graph().nodes[0], graph().nodes[1]],
+      links: [
+        { source: '2', target: '1', type: 'STEP_TARGETED' },
+        { source: '1', target: '9', type: 'next I try the login' },
+        { source: 'row-0', target: '1', type: 'HAS' },
+        { source: '1', target: '2', type: { low: 1 } },
+        { source: '1', target: '2' },
+        null,
+      ],
+      etag: 'abc123',
+    }
+    const view = graphReadView(preview, access('read', false, 'oversight'))
+    expect(view.links).toEqual([{ source: '2', target: '1', type: 'STEP_TARGETED' }])
+    expect(JSON.stringify(view)).not.toContain('next I try the login')
+    expect(view.etag).toBe(`abc123${READ_VIEW_ETAG_SUFFIX}`)
+  })
+
+  test('a graph whose only change is a dropped link is a changed view: its own etag, the input untouched', () => {
+    const g = { nodes: [graph().nodes[0]], links: [{ source: '1', target: '404', type: 'HAS_SECRET' }], etag: 'abc123' }
+    const view = graphReadView(g, access('read', false, 'share'))
+    expect(view.links).toEqual([])
+    expect(view.nodes).toEqual(g.nodes)
+    expect(view.nodes[0]).toBe(g.nodes[0])
+    expect(view.etag).toBe(`abc123${READ_VIEW_ETAG_SUFFIX}`)
+    expect(g.links).toHaveLength(1)
+  })
+
+  test.each(WHOLE)('%s gets every link as it is', (_who, a) => {
+    const g = { nodes: [graph().nodes[0]], links: [{ source: '1', target: '404', type: 'HAS_SECRET' }] }
+    expect(graphReadView(g, a)).toBe(g)
   })
 
   test('the suffix names what the view leaves out: a short stable tag', () => {

@@ -5,6 +5,7 @@
  *   - GET /api/graph (main graph data endpoint)
  *   - POST /api/graph-views/execute (graph view preview)
  */
+import { Node, Path, Relationship, isNode, isPath, isRelationship } from 'neo4j-driver'
 
 export interface Neo4jNode {
   identity: { low: number; high: number }
@@ -41,10 +42,15 @@ export interface FormattedGraphData {
  *   2. Tabular / aggregation - records contain scalar values
  *      (e.g. RETURN s.name, count(i) AS ip_count)
  *
- * For shape 1 we extract nodes and links from every Node and Relationship
+ * For shape 1 we extract nodes and links from every Node, Relationship and Path
  * found in the record, regardless of the variable names used in the Cypher.
  * For shape 2 we synthesise a virtual node per row so the graph canvas has
  * something to render.
+ *
+ * A graph object is only one the driver built from a graph structure
+ * (`isDriverNode`): a map the query wrote with a node's or a relationship's keys
+ * is a plain value, so it lands in shape 2, which graphReadView withholds from a
+ * reader without Raw data & files.
  */
 export function formatGraphRecords(records: any[]): FormattedGraphData {
   const nodesMap = new Map<string, FormattedNode>()
@@ -54,23 +60,15 @@ export function formatGraphRecords(records: any[]): FormattedGraphData {
     const keys = record.keys as string[]
     const nodes: Neo4jNode[] = []
     const rels: Neo4jRelationship[] = []
-    let hasGraphObjects = false
 
-    // Scan every field in the record for Node / Relationship objects
     for (const key of keys) {
-      const val = record.get(key)
-      if (val && typeof val === 'object' && 'labels' in val && 'identity' in val) {
-        // Neo4j Node
-        nodes.push(val as Neo4jNode)
-        hasGraphObjects = true
-      } else if (val && typeof val === 'object' && 'type' in val && 'start' in val && 'end' in val) {
-        // Neo4j Relationship
-        rels.push(val as Neo4jRelationship)
-        hasGraphObjects = true
-      }
+      const val: unknown = record.get(key)
+      if (isDriverNode(val)) nodes.push(val as unknown as Neo4jNode)
+      else if (isDriverRelationship(val)) rels.push(val as unknown as Neo4jRelationship)
+      else if (isDriverPath(val)) addPath(val, nodes, rels)
     }
 
-    if (hasGraphObjects) {
+    if (nodes.length > 0 || rels.length > 0) {
       // Shape 1: graph pattern - register all nodes and relationships
       for (const node of nodes) {
         const id = `${node.identity.low}`
@@ -114,6 +112,36 @@ export function formatGraphRecords(records: any[]): FormattedGraphData {
   })
 
   return { nodes: Array.from(nodesMap.values()), links }
+}
+
+/**
+ * Whether the driver built `val` from a node structure. The query writes every other value it
+ * returns, and can write one that passes a test of its shape: a map with a node's keys
+ * (`RETURN {identity: ..., labels: ['Domain'], properties: properties(s)}`), with the marker
+ * `isNode` reads (a key `__isNode__`), or with a real node as its prototype (the driver assigns a
+ * map's keys one by one, so a key `__proto__` sets it). Only `new Node`, which the driver calls,
+ * gives an object Node.prototype as its own prototype.
+ */
+function isDriverNode(val: unknown): val is Node {
+  return isNode(val) && Object.getPrototypeOf(val) === Node.prototype
+}
+
+function isDriverRelationship(val: unknown): val is Relationship {
+  return isRelationship(val) && Object.getPrototypeOf(val) === Relationship.prototype
+}
+
+function isDriverPath(val: unknown): val is Path {
+  return isPath(val) && Object.getPrototypeOf(val) === Path.prototype
+}
+
+function addPath(path: Path, nodes: Neo4jNode[], rels: Neo4jRelationship[]): void {
+  const add = (node: unknown) => { if (isDriverNode(node)) nodes.push(node as unknown as Neo4jNode) }
+  add(path.start)
+  for (const segment of Array.isArray(path.segments) ? path.segments : []) {
+    add(segment?.start)
+    if (isDriverRelationship(segment?.relationship)) rels.push(segment.relationship as unknown as Neo4jRelationship)
+    add(segment?.end)
+  }
 }
 
 export function getNodeName(node: Neo4jNode): string {

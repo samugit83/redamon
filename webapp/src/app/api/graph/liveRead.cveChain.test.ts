@@ -13,6 +13,8 @@
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
+import type { Node } from 'neo4j-driver'
+import { driverNode, driverRel } from './__testing__/driverValues'
 
 const h = vi.hoisted(() => ({ run: vi.fn(), close: vi.fn() }))
 
@@ -44,10 +46,8 @@ function vulnBranches(rel: string, via: string): string[] {
 }
 
 let id = 0
-const node = (label: string, props: Record<string, unknown>) =>
-  ({ identity: { low: ++id, high: 0 }, labels: [label], properties: props })
-const rel = (type: string, start: { identity: { low: number } }, end: { identity: { low: number } }) =>
-  ({ identity: { low: ++id, high: 0 }, type, start: start.identity, end: end.identity, properties: {} })
+const node = (label: string, props: Record<string, unknown>) => driverNode(++id, [label], props)
+const rel = (type: string, start: Node, end: Node) => driverRel(++id, start.identity.toNumber(), end.identity.toNumber(), type)
 const record = (n: unknown, r: unknown, m: unknown) => {
   const row: Record<string, unknown> = { n, r, m }
   return { keys: ['n', 'r', 'm'], get: (k: string) => row[k] }
