@@ -23,8 +23,8 @@
 # With sharing in force (RBAC_SHARING_ENABLED on, which needs identity and permissions on, AND
 # instance_settings.sharing_policy enabled) the owner and rbac-viewer-raw get every fake value, and
 # rbac-viewer and an overseer (rbac-admin-a, Full admin) the ChainStep node without any of them
-# (the tabular view: no row). With sharing not in force the owner still gets the content and both
-# readers 404.
+# (the tabular view, which names the thought, is refused with 400). With sharing not in force the
+# owner still gets the content and both readers 404.
 #
 # The trap deletes the project's graph and runs e2e-rbac-cleanup.mjs (which removes the project, its
 # shares and conversation with the fixture accounts), even on a failure or Ctrl-C. Response bodies,
@@ -220,8 +220,12 @@ reads_structure() { # who label
   check "$2: /api/graph holds the ChainStep without any step content" "$ok" "got $code, steps $(steps_in_body)"
   code="$(call "$jar" POST /api/graph-views/execute "$VIEW")"; ok=0; [ "$code" = 200 ] && stripped && [ "$(steps_in_body)" = 1 ] && ok=1
   check "$2: a graph-shaped view holds the ChainStep without any step content" "$ok" "got $code"
-  code="$(call "$jar" POST /api/graph-views/execute "$TABLE")"; ok=0; [ "$code" = 200 ] && stripped && ok=1
-  check "$2: a tabular view answers no row of step content" "$ok" "got $code"
+  # Below Raw data & files the route refuses a view that names a step-content key before Neo4j runs it
+  # (graph-views/execute/route.ts, findStepContentReference).
+  code="$(call "$jar" POST /api/graph-views/execute "$TABLE")"; ok=0
+  [ "$code" = 400 ] && grep -qF 'This view reads attack-chain step content (thought), which needs the Raw data & files access.' "$TMP/body" \
+    && stripped && ok=1
+  check "$2: a tabular view naming the thought is refused (400, it needs Raw data & files)" "$ok" "got $code"
   code="$(call "$jar" GET "$VERSION")"; ok=0; [ "$code" = 200 ] && stripped && [ "$(steps_in_body)" = 1 ] && ok=1
   check "$2: the current version holds the ChainStep without any step content" "$ok" "got $code"
   # A refusal of the query (400) is as good as an answer without it: no fake value either way.
