@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   db: null as unknown as { client: Record<string | symbol, unknown> },
   identity: null as null | { session: { userId: string; role: string }; principal: unknown; actingAs: unknown },
   agentFetch: null as unknown as Mock<(...args: unknown[]) => Promise<Response>>,
+  stopTriage: null as unknown as Mock<(...args: unknown[]) => Promise<{ stopped: boolean }>>,
 }))
 vi.mock('@/lib/prisma', () => {
   const client = new Proxy({}, { get: (_t, k) => h.db.client[k] })
@@ -34,6 +35,8 @@ vi.mock('@/lib/agentFetch', async (orig) => ({
   ...(await orig<typeof import('@/lib/agentFetch')>()),
   agentFetch: (...args: unknown[]) => h.agentFetch(...args),
 }))
+// The agent's triage stop (step 5.9 stops a live triage run the person started).
+vi.mock('@/lib/triage/actions', () => ({ stopRun: (...args: unknown[]) => h.stopTriage(...args) }))
 
 import { PATCH, DELETE } from './route'
 import { GET as myAccess } from '../../my-access/route'
@@ -70,13 +73,16 @@ const pollAs = async (id: string) => {
   return myAccess(new NextRequest('http://localhost/api/projects/P1/my-access'), { params: Promise.resolve({ id: 'P1' }) })
 }
 
-const agentClosed = () => new Response(JSON.stringify({ closed: 1, stopped_runs: 0 }), { status: 200 })
+const agentClosed = () => new Response(JSON.stringify({ closed: 1, stopped_runs: 0, stopped: 1 }), { status: 200 })
+const KINDS = ['agent', 'kali-terminal', 'cypherfix-triage', 'cypherfix-codefix']
+const agentCalls = () => h.agentFetch.mock.calls.map(([path, init]) => [path, JSON.parse((init as { body: string }).body)])
 
 beforeEach(() => {
   setNowForTests(() => T0)
   db = createShareDb(() => T0)
   h.db = db as never
   h.agentFetch = vi.fn(async () => agentClosed())
+  h.stopTriage = vi.fn(async () => ({ stopped: true }))
   for (const k of Object.keys(accounts)) delete accounts[k]
   add(shareAccount('alice', { name: 'Alice Owner' }))
   add(shareAccount('bob'))
@@ -114,6 +120,29 @@ describe('PATCH: change a share (step 4.4, SH-10)', () => {
       after: expect.objectContaining({ rawData: true, expiresAt: '2026-12-31T00:00:00.000Z', noteChanged: true }),
     })])
     expect(JSON.stringify(db.audit())).not.toContain('second note')
+    // A wider share stops nothing (step 5.9).
+    expect(h.agentFetch).not.toHaveBeenCalled()
+  })
+
+  test("narrowing a share stops the person's live work on the project (step 5.9, SH-12)", async () => {
+    db.addShare({ projectId: 'P1', userId: 'carol', rawData: true })
+    signIn('alice')
+    expect((await change('carol', { rawData: false })).status).toBe(200)
+    expect(db.share('P1', 'carol')?.rawData).toBe(false)
+    expect(agentCalls()).toEqual([
+      ['/agent-sessions/stop-for', { user_id: 'carol', project_ids: ['P1'] }],
+      ['/ws/close', { user_id: 'carol', project_id: 'P1', kinds: KINDS, scope: 'access' }],
+    ])
+  })
+
+  test('a narrowing whose audit row fails changes nothing and stops nothing', async () => {
+    db.addShare({ projectId: 'P1', userId: 'carol', rawData: true })
+    db.failAudit('project.share.update')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    signIn('alice')
+    expect((await change('carol', { rawData: false })).status).toBe(500)
+    expect(db.share('P1', 'carol')?.rawData).toBe(true)
+    expect(h.agentFetch).not.toHaveBeenCalled()
   })
 
   test('the answer names the person\'s account type and who granted the share (step 4.12, ID-31)', async () => {
@@ -221,15 +250,33 @@ describe('DELETE: revoke (step 4.4, SH-11)', () => {
     expect((await pollAs('bob')).status).toBe(404)
   })
 
-  test('revoke calls ws close: every socket kind of that person on that project, scope access', async () => {
+  test("revoke stops the person's runs on that project and closes every socket kind of theirs there, scope access (step 5.9)", async () => {
     signIn('alice')
     await revoke('bob')
-    expect(h.agentFetch).toHaveBeenCalledTimes(1)
-    const [path, init] = h.agentFetch.mock.calls[0] as [string, { body: string }]
-    expect(path).toBe('/ws/close')
-    expect(JSON.parse(init.body)).toEqual({
-      user_id: 'bob', project_id: 'P1', kinds: ['agent', 'kali-terminal', 'cypherfix-triage', 'cypherfix-codefix'], scope: 'access',
-    })
+    expect(agentCalls()).toEqual([
+      ['/agent-sessions/stop-for', { user_id: 'bob', project_ids: ['P1'] }],
+      ['/ws/close', { user_id: 'bob', project_id: 'P1', kinds: KINDS, scope: 'access' }],
+    ])
+  })
+
+  test("revoke cancels the person's queued scans, pauses their schedules and stops their triage run; a running scan and the owner's work untouched (step 5.9)", async () => {
+    db.addJob({ id: 'j-bob', projectId: 'P1', userId: 'bob' })
+    db.addJob({ id: 'j-bob-running', projectId: 'P1', userId: 'bob', status: 'running' })
+    db.addJob({ id: 'j-alice', projectId: 'P1', userId: 'alice' })
+    db.addSchedule({ id: 's-bob', projectId: 'P1', userId: 'bob' })
+    db.addSchedule({ id: 's-alice', projectId: 'P1', userId: 'alice' })
+    db.addTriageRun({ id: 'run-bob', projectId: 'P1', actorUserId: 'bob' })
+    signIn('alice')
+    expect((await revoke('bob')).status).toBe(200)
+    expect(db.job('j-bob')).toMatchObject({ status: 'canceled', blockedCode: 'actor_no_access' })
+    expect(db.job('j-bob-running')?.status).toBe('running')
+    expect(db.job('j-alice')?.status).toBe('queued')
+    expect(db.schedule('s-bob')).toMatchObject({ enabled: false, pausedReason: 'actor_no_access' })
+    expect(db.schedule('s-alice')).toMatchObject({ enabled: true, pausedReason: null })
+    expect(h.stopTriage).toHaveBeenCalledWith({ userId: 'alice', projectId: 'P1' }, 'app')
+    expect(db.audit().map((r) => [r.action, r.targetId])).toEqual([
+      ['project.share.revoke', 'bob'], ['job_queue.cancelled', 'j-bob'], ['scan_schedule.paused', 's-bob'],
+    ])
   })
 
   test('the agent unreachable: the revoke still succeeds and logs [rbac] socket-close failed', async () => {
@@ -241,16 +288,17 @@ describe('DELETE: revoke (step 4.4, SH-11)', () => {
     expect(await res.json()).toMatchObject({ socketsClosed: false })
     expect(db.share('P1', 'bob')).toBeUndefined()
     expect(error.mock.calls.map(c => String(c[0])).some(l => l.startsWith('[rbac] socket-close failed user=bob') && l.includes('project=P1') && l.endsWith('agent_unreachable'))).toBe(true)
+    expect(error.mock.calls.map(c => String(c[0]))).toContain('[rbac] revocation step failed step=close_sockets reason=share_revoked user=bob project=P1: agent_unreachable')
   })
 
-  test('double revoke: the second is 404 no_such_share, one audit row, one close', async () => {
+  test('double revoke: the second is 404 no_such_share, one audit row, one stop and one close', async () => {
     signIn('alice')
     expect((await revoke('bob')).status).toBe(200)
     const again = await revoke('bob')
     expect(again.status).toBe(404)
     expect(await again.json()).toMatchObject({ code: 'no_such_share' })
     expect(db.audit()).toHaveLength(1)
-    expect(h.agentFetch).toHaveBeenCalledTimes(1)
+    expect(h.agentFetch.mock.calls.map((c) => c[0])).toEqual(['/agent-sessions/stop-for', '/ws/close'])
   })
 
   test('two revokes at once: one 200, one 404, one audit row', async () => {

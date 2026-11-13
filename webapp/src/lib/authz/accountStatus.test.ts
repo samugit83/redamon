@@ -24,7 +24,8 @@ vi.mock('@/lib/prisma', async () => {
 })
 
 import type { AccountDb } from './__testing__/accountDb'
-import { disableAccount, enableAccount, endAgentWork, revokeSessions } from './accountStatus'
+import { disableAccount, enableAccount, revokeSessions } from './accountStatus'
+import { agentWorkOf, onAccessReduced } from './revocation'
 
 const db = () => h.db as AccountDb
 const fetchMock = vi.fn()
@@ -135,18 +136,25 @@ describe('a row that moved under the write', () => {
   })
 })
 
-describe('endAgentWork never throws', () => {
+// The agent work a disable ends goes through step 5.9's onAccessReduced (`account_disabled`).
+describe('ending the agent work never throws', () => {
   test('an answer that is not JSON reads as nothing closed', async () => {
     fetchMock.mockImplementation(async () => new Response('not json', { status: 200 }))
-    expect(await endAgentWork('member-1', { stopRuns: true })).toEqual({ runs: { stopped: 0 }, sockets: { closed: 0 } })
+    expect(agentWorkOf(await onAccessReduced(null, 'member-1', 'account_disabled'))).toEqual({ runs: { stopped: 0 }, sockets: { closed: 0 } })
   })
 
   test('a timeout is reported, never raised', async () => {
     fetchMock.mockImplementation(async () => { throw Object.assign(new Error('timed out'), { name: 'TimeoutError' }) })
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
-    expect(await endAgentWork('member-1', { stopRuns: true })).toEqual({
+    expect(agentWorkOf(await onAccessReduced(null, 'member-1', 'account_disabled'))).toEqual({
       runs: { error: 'agent_unreachable' }, sockets: { error: 'agent_unreachable' },
     })
-    expect(err).toHaveBeenCalledTimes(2)
+    // Each failed call: the helper's own line and the revocation step's.
+    expect(err.mock.calls.map((c) => String(c[0]).split(':')[0])).toEqual([
+      '[rbac] agent-stop failed user=member-1',
+      '[rbac] revocation step failed step=stop_runs reason=account_disabled user=member-1 project=-',
+      '[rbac] socket-close failed user=member-1 project=- kinds=agent,kali-terminal,cypherfix-triage,cypherfix-codefix',
+      '[rbac] revocation step failed step=close_sockets reason=account_disabled user=member-1 project=-',
+    ])
   })
 })

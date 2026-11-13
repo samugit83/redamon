@@ -10,7 +10,11 @@
  * Step 2.10: accepting a reset link is the first sign-in after a credentials reset, so it records
  * its address and browser (`auth.login.after_reset`) and answers the reset's notice once.
  *
- * The database is the in-memory accountDb (transactions roll back); the clock is injected.
+ * Step 5.9: the reset link's accept raised the session version, so the account's sockets close
+ * (`onAccessReduced`, `reset_link_used`); an invite's accept raises nothing and asks the agent nothing.
+ *
+ * The database is the in-memory accountDb (transactions roll back); the clock is injected; the
+ * agent is a fetch double.
  *
  * @vitest-environment node
  */
@@ -18,6 +22,9 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { NextRequest } from 'next/server'
 
 vi.stubEnv('AUTH_SECRET', 'f'.repeat(64))
+vi.stubEnv('INTERNAL_API_KEY', 'ik-test-master-0001')
+vi.stubEnv('AGENT_API_URL', 'http://agent.test:8080')
+const fetchMock = vi.fn()
 
 const h = vi.hoisted(() => ({ db: null as unknown, jar: {} as { auth?: string } }))
 vi.mock('next/headers', () => ({
@@ -87,10 +94,14 @@ beforeEach(() => {
   clearPrincipalCacheForTests()
   resetInviteLimitsForTests()
   h.jar = {}
+  fetchMock.mockReset()
+  fetchMock.mockImplementation(async () => new Response('{"closed":1,"stopped_runs":0}', { status: 200 }))
+  vi.stubGlobal('fetch', fetchMock)
 })
 afterEach(() => {
   setFlagsForTests(null)
   setNowForTests(null)
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -121,6 +132,8 @@ describe('accepting an invite', () => {
     // The new cookie opens a session: the account is active now.
     h.jar.auth = login
     expect(await getSession({ fresh: true })).toEqual({ userId: 'invited-1', role: 'standard' })
+    // No session version was raised: nothing to close (step 5.9).
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test('accept enforces the policy: the instance minimum, the deny list, the repeated character', async () => {
@@ -246,6 +259,28 @@ describe('accepting a reset link', () => {
     expect(db().audit().filter((r) => r.action === 'user.reset_link_used')).toEqual([expect.objectContaining({
       action: 'user.reset_link_used', targetId: 'member-1', actorId: 'member-1', after: { kind: 'reset', sessionVersion: 4 },
     })])
+  })
+
+  test("the raised session version closes the account's sockets, an admin's acting as it included (step 5.9)", async () => {
+    const reset = await openLink('member-1', 'reset')
+    expect((await accept(reset.linkId)).status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toBe('http://agent.test:8080/ws/close')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      user_id: 'member-1', kinds: ['agent', 'kali-terminal', 'cypherfix-triage', 'cypherfix-codefix'], scope: 'account',
+    })
+  })
+
+  test('the agent unreachable: the sign-in still lands and the failure is logged', async () => {
+    fetchMock.mockImplementation(async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }) })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const reset = await openLink('member-1', 'reset')
+    const res = await accept(reset.linkId)
+    expect(res.status).toBe(200)
+    expect(cookieValue(res, 'redamon-auth')).toBeTruthy()
+    const lines = err.mock.calls.map((c) => String(c[0]))
+    expect(lines.some((l) => l.startsWith('[rbac] socket-close failed user=member-1 '))).toBe(true)
+    expect(lines.some((l) => l.startsWith('[rbac] revocation step failed step=close_sockets reason=reset_link_used user=member-1'))).toBe(true)
   })
 
   const NOTICE = {

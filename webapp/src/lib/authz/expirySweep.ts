@@ -5,9 +5,9 @@
  * break-glass row or link already counts for nothing and correctness never waits on this sweep: it
  * writes the `.expired` audit rows and removes the dead rows.
  *
- * - expired shares: `project.share.expired`, removed; then, as a revoke does, the agent closes the
- *   collaborator's sockets on that project (best effort: a close the agent does not confirm logs
- *   `[rbac] socket-close failed` and the expiry stands);
+ * - expired shares: `project.share.expired`, removed; then, as after a revoke, the collaborator's
+ *   live work on that project stops (`onAccessReduced`, step 5.9; best effort: a close the agent
+ *   does not confirm logs `[rbac] socket-close failed` and the expiry stands);
  * - expired overrides: `user.override_expired`, removed (capabilities.ts already ignores them);
  * - expired break-glass rows, and expired unused invite and reset links: removed (their creation
  *   is audited and names the expiry). A used link is kept, the record of how an account was set up.
@@ -33,13 +33,12 @@
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
 import { auditedTransaction } from '@/lib/auditForward'
-import { closeAgentSockets } from '@/lib/agentSockets'
-import { WS_SOCKETS } from '@/lib/wsTicket'
 import { now } from './clock'
 import { rbacFlags } from './flags'
 import { sharingInForce } from './sharingPolicy'
 import { sweepDeviceSessions } from './deviceSessions'
 import { sweepAuditRetention, type RetentionSweep } from './auditRetention'
+import { onAccessReduced } from './revocation'
 
 /** Audited rows of one kind handled per sweep; the rest wait for the next sweep. */
 export const SWEEP_BATCH = 500
@@ -147,14 +146,13 @@ async function sweepLinks(at: Date): Promise<number> {
   return count
 }
 
-/** Closes the sockets of each ended share; the number the agent did not confirm. Never throws. */
+/** Stops the live work of each ended share; the number whose sockets the agent did not confirm closed. Never throws. */
 async function closeEndedShares(ended: readonly ShareEnded[]): Promise<number> {
   let failed = 0
   for (let i = 0; i < ended.length; i += SOCKET_CLOSE_BATCH) {
     const batch = ended.slice(i, i + SOCKET_CLOSE_BATCH)
-    const results = await Promise.all(batch.map(({ userId, projectId }) =>
-      closeAgentSockets({ userId, projectId, kinds: [...WS_SOCKETS], scope: 'access' })))
-    const refused = results.filter((r) => !r.ok).length
+    const results = await Promise.all(batch.map(({ userId, projectId }) => onAccessReduced(projectId, userId, 'share_expired')))
+    const refused = results.filter((r) => 'error' in r.sockets).length
     failed += refused
     const rest = ended.length - i - batch.length
     // A whole batch refused: the agent is down, and each further call would wait out its timeout.

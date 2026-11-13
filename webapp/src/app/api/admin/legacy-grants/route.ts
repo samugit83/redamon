@@ -6,7 +6,7 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { actingAsUserId } from '@/lib/userAudit'
 import { sessionActor } from '@/lib/auditActor'
-import { closeAgentSockets } from '@/lib/agentSockets'
+import { onAccessReduced } from '@/lib/authz/revocation'
 import {
   decideAllLegacyGrants, decideLegacyGrant, isLegacyGrant, listLegacyHolders, type DecisionActor,
 } from '@/lib/authz/updateReview'
@@ -89,9 +89,9 @@ export const POST = withRouteErrors('Could not record the legacy access decision
     let closed = 0
     let failed = 0
     for (const id of result.terminalLost) {
-      const close = await closeAgentSockets({ userId: id, kinds: ['kali-terminal'], scope: 'access' })
-      if (close.ok) closed += close.closed
-      else failed++
+      const { sockets } = await onAccessReduced(null, id, 'terminal_grant_removed')
+      if ('error' in sockets) failed++
+      else closed += sockets.closed
     }
     return NextResponse.json({ action, changed: result.changed, terminals: { closed, failed } })
   }
@@ -110,8 +110,7 @@ export const POST = withRouteErrors('Could not record the legacy access decision
   if (!result.ok) return NextResponse.json({ error: result.error, code: result.code }, { status: result.status })
   const answer: Record<string, unknown> = { action, userId, grant, changed: result.changed }
   if (action === 'remove' && result.changed && grant === 'kali_terminal') {
-    const close = await closeAgentSockets({ userId, kinds: ['kali-terminal'], scope: 'access' })
-    answer.terminal = close.ok ? { closed: close.closed } : { error: close.reason }
+    answer.terminal = (await onAccessReduced(null, userId, 'terminal_grant_removed')).sockets
   }
   return NextResponse.json(answer)
 })

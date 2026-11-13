@@ -90,7 +90,7 @@ afterEach(() => {
 })
 
 describe('POST .../leave (step 4.4, SH-13)', () => {
-  test('leave: the share goes, audited as the collaborator\'s own act; sockets closed; the next GET is 404', async () => {
+  test('leave: the share goes, audited as the collaborator\'s own act; runs stopped and sockets closed there (step 5.9); the next GET is 404', async () => {
     signIn('bob')
     expect((await poll()).status).toBe(200)
     const res = await leave()
@@ -101,9 +101,11 @@ describe('POST .../leave (step 4.4, SH-13)', () => {
       action: 'project.share.leave', actorId: 'bob', projectId: 'P1', targetType: 'user', targetId: 'bob',
       before: expect.objectContaining({ access: 'read', rawData: true }),
     })])
-    const [path, init] = h.agentFetch.mock.calls[0] as [string, { body: string }]
-    expect(path).toBe('/ws/close')
-    expect(JSON.parse(init.body)).toMatchObject({ user_id: 'bob', project_id: 'P1', scope: 'access' })
+    const calls = h.agentFetch.mock.calls.map(([path, init]) => [path, JSON.parse((init as { body: string }).body)])
+    expect(calls).toEqual([
+      ['/agent-sessions/stop-for', { user_id: 'bob', project_ids: ['P1'] }],
+      ['/ws/close', expect.objectContaining({ user_id: 'bob', project_id: 'P1', scope: 'access' })],
+    ])
     expect((await poll()).status).toBe(404)
   })
 

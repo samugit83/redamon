@@ -5,8 +5,10 @@
  * consent opens both at the next check; a co-owner and the collaborator cannot consent; the owner's
  * withdrawal closes them again at once and asks the agent to end the collaborators' work there.
  *
- * Prisma is the share routes' in-memory store (shareDb.ts) plus the policy table, the job queue and
- * the triage runs; the session, the step-up check and the agent are doubles.
+ * Prisma is the share routes' in-memory store (shareDb.ts, with its job queue, schedules and triage
+ * runs) plus the policy table; the session, the step-up check and the agent are doubles. The
+ * withdrawal ends the collaborators' work through step 5.9's onAccessReduced, whose deferred-scan
+ * check is the real one.
  *
  * @vitest-environment node
  */
@@ -56,7 +58,6 @@ import type { PermissionId } from '@/lib/authz/permissions'
 const T0 = new Date('2026-11-13T12:00:00Z')
 let db: ShareDb
 let policies: Map<string, PolicyRow>
-let jobUpdates: unknown[]
 const accounts: Record<string, ShareAccount> = {}
 
 function signIn(id: string) {
@@ -80,7 +81,6 @@ beforeEach(() => {
   setNowForTests(() => T0)
   db = createShareDb(() => T0)
   policies = new Map()
-  jobUpdates = []
   const policyTable = {
     findUnique: async ({ where }: { where: { projectId: string } }) => {
       const row = policies.get(where.projectId)
@@ -94,8 +94,6 @@ beforeEach(() => {
   const client: Record<string | symbol, unknown> = {
     ...db.client,
     projectAccessPolicy: policyTable,
-    jobQueue: { updateMany: async (args: unknown) => { jobUpdates.push(args); return { count: 1 } } },
-    triageRun: { findMany: async () => [] },
   }
   // One transaction over both stores: the share store's (which undoes its audit rows) and the policy table.
   client.$transaction = (fn: (tx: unknown) => Promise<unknown>) => (db.client.$transaction as (f: () => Promise<unknown>) => Promise<unknown>)(async () => {
@@ -163,13 +161,17 @@ describe('the consent path with the switches on (step 5.6)', () => {
     expect(await reaches('carol')).toEqual([])
 
     // The owner withdraws (no password): closed again at once, the agent asked to end both collaborators' work.
+    db.addJob({ id: 'j-bob', projectId: 'P1', userId: 'bob' })
+    db.addJob({ id: 'j-alice', projectId: 'P1', userId: 'alice' })
     const withdrawn = await post({ ownerCredentialConsent: false })
     expect(withdrawn.status).toBe(200)
     expect(await withdrawn.json()).toMatchObject({ ownerCredentialConsent: false, changed: true, ended: { collaborators: 2, failed: [] } })
     expect(await reaches('bob')).toEqual([])
     const asked = h.agentFetch.mock.calls.map(([path, init]) => [path, JSON.parse((init as RequestInit).body as string).user_id])
     expect(asked).toEqual([['/agent-sessions/stop-for', 'bob'], ['/ws/close', 'bob'], ['/agent-sessions/stop-for', 'carol'], ['/ws/close', 'carol']])
-    expect(jobUpdates).toHaveLength(1)
+    // Bob's queued scan needed the Run scans the withdrawal took (step 5.9's check); the owner's stays.
+    expect(db.job('j-bob')).toMatchObject({ status: 'canceled', blockedCode: 'owner_consent_withdrawn' })
+    expect(db.job('j-alice')?.status).toBe('queued')
     expect(db.audit().map(r => r.action).filter(a => a.startsWith('project.owner_consent'))).toEqual([
       'project.owner_consent.grant', 'project.owner_consent.withdraw',
     ])

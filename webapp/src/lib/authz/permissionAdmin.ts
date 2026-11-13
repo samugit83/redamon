@@ -14,13 +14,13 @@ import type { AuditEntry } from '@/lib/audit'
 import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { actingAsUserId } from '@/lib/userAudit'
 import type { Session } from '@/lib/session'
-import { endAgentWork } from './accountStatus'
 import { builtinSet, FULL_ADMIN_PROFILE_ID } from './builtinSets'
 import { resolveCapabilities, type Capabilities } from './capabilities'
 import { forbiddenResponse } from './guards'
 import type { Managed, Manager } from './hierarchy'
 import { PERMISSIONS, isPermissionId, type PermissionId } from './permissions'
 import { invalidatePrincipal, loadPrincipal, type Principal } from './principal'
+import { onAccessReduced } from './revocation'
 import { accountTypeOf, loadInstanceRoot } from './root'
 import { sessionPrincipal } from './sessionPrincipal'
 
@@ -149,9 +149,9 @@ const SOCKET_CLOSE_BATCH = 8
 
 /**
  * Ends what the accounts that lost a permission still hold (ID-21): their session version was
- * raised in the change's transaction; here, after the commit, this process forgets them and the
- * agent closes their sockets. Never throws; a refused agent call is logged by `endAgentWork`
- * (`[rbac] socket-close failed`) and counted.
+ * raised in the change's transaction; here, after the commit, this process forgets them and their
+ * live work stops on every project (`onAccessReduced`, `capability_removed`, step 5.9). Never
+ * throws; a refused agent call is logged (`[rbac] socket-close failed`) and counted.
  */
 export async function endSessionsOf(userIds: readonly string[]): Promise<{ closed: number; failed: number }> {
   let closed = 0
@@ -159,7 +159,7 @@ export async function endSessionsOf(userIds: readonly string[]): Promise<{ close
   for (const id of userIds) invalidatePrincipal(id)
   for (let i = 0; i < userIds.length; i += SOCKET_CLOSE_BATCH) {
     const batch = userIds.slice(i, i + SOCKET_CLOSE_BATCH)
-    const ended = await Promise.all(batch.map((id) => endAgentWork(id, { stopRuns: false })))
+    const ended = await Promise.all(batch.map((id) => onAccessReduced(null, id, 'capability_removed')))
     for (const e of ended) {
       if ('closed' in e.sockets) closed += e.sockets.closed
       else failed += 1

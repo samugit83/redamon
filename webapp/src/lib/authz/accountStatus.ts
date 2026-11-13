@@ -2,7 +2,8 @@
  * Account status (step 2.3: ID-13, ID-21, UP-05): disabling an account, enabling it again,
  * and signing it out everywhere. Each change and its audit row commit together
  * (`writeAuditTx`, fail closed); the agent work the account still holds is ended after the
- * commit, best effort, because a refused agent call must never undo a revoke.
+ * commit (`onAccessReduced`, step 5.9), best effort, because a refused agent call must never undo a
+ * revoke.
  *
  * Disabling keeps the account and its projects: the password moves to `passwordOnHold` and
  * the column is emptied, so the login's passwordless path refuses it even on a release that
@@ -21,17 +22,13 @@ import type { Prisma } from '@prisma/client'
 import { writeAuditTx } from '@/lib/audit'
 import { auditedTransaction } from '@/lib/auditForward'
 import { userAuditEntry, type UserAuditFields } from '@/lib/userAudit'
-import { closeAgentSockets } from '@/lib/agentSockets'
-import { AgentUnreachableError, agentFetch } from '@/lib/agentFetch'
-import { safeErrorCode } from '@/lib/routeErrors'
-import { WS_SOCKETS } from '@/lib/wsTicket'
 import type { Session } from '@/lib/session'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard } from './adminSet'
 import { invalidatePrincipal } from './principal'
 import { now } from './clock'
 import { rbacFlags } from './flags'
 import { rootProtectedAnswer } from './rootProtection'
-import { endOpenImpersonationsQuietly } from './actAs'
+import { agentWorkOf, onAccessReduced } from './revocation'
 
 export type StatusPermission = 'users:disable' | 'users:revoke_sessions'
 
@@ -45,15 +42,7 @@ export interface StatusOptions {
   needsRoot?: boolean
 }
 
-/** What the agent did for an account that lost its sessions; each part is an error when it did not answer. */
-export interface AgentWorkEnded {
-  runs?: { stopped: number } | { error: string }
-  sockets: { closed: number } | { error: string }
-}
-
 type Tx = Prisma.TransactionClient
-
-const AGENT_TIMEOUT_MS = 10_000
 
 /** The routes of this step do not exist while the identity switch is off (DV-30): the answer before them. */
 export function routeNotFound(): NextResponse {
@@ -131,56 +120,6 @@ async function changedAware<T>(write: () => Promise<T>): Promise<T | NextRespons
   }
 }
 
-async function stopAgentRuns(userId: string, projectIds?: readonly string[]): Promise<{ stopped: number } | { error: string }> {
-  const failed = (reason: string) => {
-    console.error(`[rbac] agent-stop failed user=${userId}${projectIds ? ` projects=${projectIds.join(',')}` : ''}: ${reason}`)
-    return { error: reason }
-  }
-  let res: Response
-  try {
-    res = await agentFetch('/agent-sessions/stop-for', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(projectIds ? { user_id: userId, project_ids: projectIds } : { user_id: userId }),
-    }, { timeoutMs: AGENT_TIMEOUT_MS })
-  } catch (err) {
-    return failed(err instanceof AgentUnreachableError ? 'agent_unreachable' : safeErrorCode(err))
-  }
-  if (!res.ok) return failed(`agent_http_${res.status}`)
-  const body = await res.json().catch(() => null) as { stopped?: unknown } | null
-  return { stopped: typeof body?.stopped === 'number' ? body.stopped : 0 }
-}
-
-/**
- * Stops the account's agent runs on these projects only (the agent's `stop-for` with `project_ids`),
- * leaving its runs elsewhere alone: for access lost on one project (step 5.6's consent withdrawal;
- * step 5.9's revocation). Never throws; a failure is logged (`[rbac] agent-stop failed`) and answered.
- * No project names nothing to stop, so nothing is asked.
- */
-export async function stopAgentRunsOnProjects(userId: string, projectIds: readonly string[]): Promise<{ stopped: number } | { error: string }> {
-  if (!userId || projectIds.length === 0) return { stopped: 0 }
-  return stopAgentRuns(userId, projectIds)
-}
-
-/**
- * Ends what the agent still runs for the account: its agent runs (`stopRuns`), then every
- * socket of the four kinds that names it, an admin's act-as sockets as the account included
- * (`scope: 'account'`). Never throws; a failure is logged (`[rbac] agent-stop failed`,
- * `[rbac] socket-close failed user=<id>`) and reported in the answer.
- *
- * Every caller ends the account's sessions, so with the permissions switch on the impersonations
- * it holds as an admin end here too, each with its `invalidated` end row (step 3.14): nothing
- * else would write it (`[rbac] act-as end not recorded` when it cannot be).
- */
-export async function endAgentWork(userId: string, { stopRuns }: { stopRuns: boolean }): Promise<AgentWorkEnded> {
-  if (rbacFlags().permissions) await endOpenImpersonationsQuietly(userId, 'invalidated', { closeSockets: false })
-  const out: AgentWorkEnded = { sockets: { closed: 0 } }
-  if (stopRuns) out.runs = await stopAgentRuns(userId)
-  const close = await closeAgentSockets({ userId, kinds: [...WS_SOCKETS], scope: 'account' })
-  out.sockets = close.ok ? { closed: close.closed } : { error: close.reason }
-  return out
-}
-
 /**
  * Disable `targetId`: status `disabled`, the password on hold, the session version raised and
  * every MCP token revoked, with the `user.disable` row, in the last-admin guard's transaction;
@@ -234,7 +173,7 @@ export async function disableAccount(
       )
   }
   invalidatePrincipal(targetId)
-  const agent = await endAgentWork(targetId, { stopRuns: true })
+  const agent = agentWorkOf(await onAccessReduced(null, targetId, 'account_disabled'))
   return NextResponse.json({ id: targetId, status: 'disabled', changed: true, tokensRevoked: outcome.tokensRevoked, agent })
 }
 
@@ -313,6 +252,6 @@ export async function revokeSessions(
   })
   if (outcome.kind !== 'revoked') return outcome.kind === 'missing' ? USER_NOT_FOUND() : ROOT_ONLY()
   invalidatePrincipal(targetId)
-  const agent = await endAgentWork(targetId, { stopRuns: false })
+  const agent = agentWorkOf(await onAccessReduced(null, targetId, 'sessions_revoked'))
   return NextResponse.json({ id: targetId, revoked: true, tokensRevoked: outcome.tokensRevoked, agent })
 }

@@ -25,7 +25,7 @@ import { INSTANCE_SETTINGS_ROW, invalidateInstanceRoot, loadInstanceRoot, locked
 import { invalidatePrincipal } from './principal'
 import { rootOnlyRefusal, rootStanding } from './rootPowers'
 import { requireStepUp } from './stepUp'
-import { endAgentWork, type AgentWorkEnded } from './accountStatus'
+import { agentWorkOf, onAccessReduced, type AgentWorkEnded } from './revocation'
 
 /** `requireAdmin`'s 403, coded with the permission a transfer needs (master §9.8); any other answer as is. */
 export function transferForbidden(res: NextResponse): NextResponse {
@@ -189,8 +189,8 @@ export async function acceptRootTransfer(
   invalidatePrincipal(session.userId)
   invalidatePrincipal(previousRootUserId)
   const agent = {
-    recipient: await endAgentWork(session.userId, { stopRuns: false }),
-    previousRoot: await endAgentWork(previousRootUserId, { stopRuns: false }),
+    recipient: agentWorkOf(await onAccessReduced(null, session.userId, 'root_transferred')),
+    previousRoot: agentWorkOf(await onAccessReduced(null, previousRootUserId, 'root_transferred')),
   }
   return { rootUserId: session.userId, previousRootUserId, agent }
 }

@@ -6,8 +6,8 @@
  * A revoke marks the row and writes its `user.session_revoked` row in one transaction (fail closed:
  * no audit row, no revoke), then drops the row from this process's cache, so the browser is refused
  * at its next request here and within RBAC_AUTHZ_CACHE_MS on the other copies; then the agent closes
- * the sockets the account opened itself (`scope: 'access'`: its own and its act-as ones, not an
- * admin's acting as it). A WebSocket ticket names no device session, so every such socket of the
+ * the sockets the account opened itself (`onAccessReduced`, `device_session_revoked`, step 5.9:
+ * `scope: 'access'`, its own and its act-as ones, not an admin's acting as it). A WebSocket ticket names no device session, so every such socket of the
  * account closes, and its other browsers reconnect with a new ticket; a close the agent does not
  * confirm logs `[rbac] socket-close failed` and the revoke stands. Revoking a row that is already
  * revoked, signed out, ended by a version bump or expired changes nothing and writes no row: a second
@@ -20,11 +20,10 @@ import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
 import { auditedTransaction } from '@/lib/auditForward'
 import { userAuditEntry } from '@/lib/userAudit'
-import { closeAgentSockets } from '@/lib/agentSockets'
-import { WS_SOCKETS } from '@/lib/wsTicket'
 import type { Session } from '@/lib/session'
 import { now } from './clock'
 import { deviceSessionState, invalidateDeviceSession, type DeviceSessionState, type EndedBy } from './deviceSessions'
+import { onAccessReduced } from './revocation'
 
 export const SESSION_REVOKED_ACTION = 'user.session_revoked'
 /** Rows listed per account, newest activity first; older ones are still swept. */
@@ -127,8 +126,8 @@ export async function revokeDeviceSession(
   // Also when nothing changed here: another copy's revoke may still sit in this process's cache.
   invalidateDeviceSession(sid)
   if (written.kind !== 'revoked') return written
-  const close = await closeAgentSockets({ userId: targetId, kinds: [...WS_SOCKETS], scope: 'access' })
-  return { kind: 'revoked', agent: { sockets: close.ok ? { closed: close.closed } : { error: close.reason } } }
+  const { sockets } = await onAccessReduced(null, targetId, 'device_session_revoked')
+  return { kind: 'revoked', agent: { sockets } }
 }
 
 export function sessionNotFound(): NextResponse {

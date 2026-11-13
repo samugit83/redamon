@@ -249,7 +249,9 @@ describe('PUT', () => {
     err.mockRestore()
     expect(r).toMatchObject({ status: 200, body: { signedOut: 22, agent: { closed: 0, failed: 22 } } })
     expect(many.every((id) => db().account(id)!.sessionVersion === 1)).toBe(true)
-    expect(fetchMock.mock.calls.length).toBe(8)
+    // One batch of 8 accounts, each a run stop and a socket close (step 5.9's capability removal).
+    expect(fetchMock.mock.calls.length).toBe(16)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/agent-sessions/stop-for'))).toHaveLength(8)
     expect(lines).toContain('[rbac] socket-close failed for 14 more account(s): the agent did not answer')
   })
 

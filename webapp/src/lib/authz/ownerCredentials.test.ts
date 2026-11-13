@@ -7,8 +7,9 @@
  *
  * The real projectAccess(), can() and capability code over a Prisma double (the project, its share,
  * the instance row with write sharing allowed, the accounts, the consent row, the audit table, the
- * job queue); the agent is `agentFetch` doubled, the triage run reader and stopper and the share list
- * are doubled.
+ * job queue, the schedules); the agent is `agentFetch` doubled, the triage run reader and stopper and
+ * the share list are doubled. A withdrawal ends the collaborators' work through step 5.9's
+ * onAccessReduced (real), whose deferred-scan check is the real one over this double.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/ownerCredentials.test.ts
  * @vitest-environment node
@@ -27,6 +28,7 @@ const db = vi.hoisted(() => ({
   projects: [{ id: 'P-owner', name: 'Owned', userId: 'owner' }, { id: 'P-two', name: 'Second', userId: 'owner' }],
   users: [] as Array<{ id: string; name: string | null; email: string | null }>,
   jobUpdates: [] as unknown[],
+  jobs: [] as Array<{ id: string; projectId: string; userId: string; kind: string; payload: unknown; status: string; blockedCode?: string }>,
 }))
 
 const table = vi.hoisted(() => ({
@@ -49,7 +51,9 @@ function resetTable() {
 
 vi.mock('@/lib/prisma', () => ({
   default: new Proxy({}, {
-    get: (_t, name) => {
+    get: (_t, name, client) => {
+      // The revocation's job cancel and its audit row commit together (step 5.9).
+      if (name === '$transaction') return async (fn: (tx: unknown) => Promise<unknown>) => fn(client)
       if (name === 'projectAccessPolicy') {
         return db.withTable ? { findUnique: (a: unknown) => table.findUnique(a), upsert: (a: unknown) => table.upsert(a) } : undefined
       }
@@ -87,11 +91,16 @@ vi.mock('@/lib/prisma', () => ({
           },
         },
         jobQueue: {
-          updateMany: async (args: unknown) => {
+          findMany: async ({ where }: { where: { projectId?: string; userId: string; status: { in: string[] } } }) =>
+            db.jobs.filter((j) => j.userId === where.userId && (!where.projectId || j.projectId === where.projectId) && where.status.in.includes(j.status)),
+          updateMany: async (args: { where: { id: string; status: { in: string[] } }; data: { status: string; blockedCode: string } }) => {
             db.jobUpdates.push(args)
-            return { count: 2 }
+            const job = db.jobs.find((j) => j.id === args.where.id && args.where.status.in.includes(j.status))
+            if (job) Object.assign(job, args.data)
+            return { count: job ? 1 : 0 }
           },
         },
+        scanSchedule: { findMany: async () => [] },
       }
       return models[name as string]
     },
@@ -121,7 +130,7 @@ import { agentTicketCap } from './agentCap'
 import { ConsentStoreMissing, readOwnerConsent, spendToggleConsentRefusal, writeOwnerConsent } from './ownerConsent'
 import { ownerCredentialRefusal, recordFeatureSpend, recordOwnerCredentialSpend } from './ownerSpend'
 import { collaboratorSpends, endCollaboratorSpending } from './ownerCredentials'
-import { stopAgentRunsOnProjects } from './accountStatus'
+import { stopAgentRuns } from './revocation'
 import { AgentUnreachableError } from '@/lib/agentFetch'
 import type { PermissionContext } from './guards'
 import type { PermissionId } from './permissions'
@@ -148,6 +157,10 @@ beforeEach(() => {
   db.auditRows = []
   db.users = []
   db.jobUpdates = []
+  db.jobs = [
+    { id: 'j-collab', projectId: 'P-owner', userId: 'collab', kind: 'full_recon', payload: { mode: 'new' }, status: 'queued' },
+    { id: 'j-coowner', projectId: 'P-owner', userId: 'coowner', kind: 'gvm', payload: {}, status: 'needs_review' },
+  ]
   resetTable()
   agentFetch.mockReset()
   agentFetch.mockImplementation(async (path: string) => okJson(path === '/ws/close' ? { closed: 2, stopped_runs: 1 } : { stopped: 1 }))
@@ -335,11 +348,13 @@ describe('withdrawing the consent ends what collaborators spend on the project',
       ['/agent-sessions/stop-for', { user_id: 'coowner', project_ids: ['P-owner'] }],
       ['/ws/close', { user_id: 'coowner', project_id: 'P-owner', kinds: KINDS, scope: 'access' }],
     ])
-    expect(ended).toMatchObject({ collaborators: 2, runsStopped: 2, socketsClosed: 4, scansCancelled: 2, failed: [] })
-    expect(db.jobUpdates).toEqual([{
-      where: { projectId: 'P-owner', userId: { in: ['collab', 'coowner'] }, status: { in: ['queued', 'needs_review'] } },
+    expect(ended).toMatchObject({ collaborators: 2, runsStopped: 2, socketsClosed: 4, scansCancelled: 2, schedulesPaused: 0, failed: [] })
+    // Each job by its own conditional update, with its audit row (step 5.9).
+    expect(db.jobUpdates).toEqual(['j-collab', 'j-coowner'].map((id) => ({
+      where: { id, userId: id.slice(2), status: { in: ['queued', 'needs_review'] } },
       data: expect.objectContaining({ status: 'canceled', blockedCode: 'owner_consent_withdrawn' }),
-    }])
+    })))
+    expect(db.audit.filter((r) => r.action === 'job_queue.cancelled').map((r) => r.targetId)).toEqual(['j-collab', 'j-coowner'])
   })
 
   test("a live triage run a collaborator started is stopped; the owner's own run is not", async () => {
@@ -359,7 +374,7 @@ describe('withdrawing the consent ends what collaborators spend on the project',
     expect(ended.failed).toEqual(['stop_runs', 'close_sockets', 'stop_triage_run'])
     expect(ended.scansCancelled).toBe(2)
     const lines = vi.mocked(console.error).mock.calls.map((c) => String(c[0]))
-    expect(lines.some((l) => l.includes('[rbac] consent-withdrawal step failed step=stop_runs project=P-owner user=collab'))).toBe(true)
+    expect(lines.some((l) => l.includes('[rbac] revocation step failed step=stop_runs reason=consent_withdrawn user=collab project=P-owner'))).toBe(true)
     expect(lines.some((l) => l.includes('[rbac] socket-close failed user=collab'))).toBe(true)
   })
 
@@ -377,10 +392,10 @@ describe('withdrawing the consent ends what collaborators spend on the project',
   })
 
   test('the per-project stop sends only that project; no project asks nothing', async () => {
-    expect(await stopAgentRunsOnProjects('collab', ['P-owner'])).toEqual({ stopped: 1 })
+    expect(await stopAgentRuns('collab', ['P-owner'])).toEqual({ stopped: 1 })
     expect(JSON.parse((agentFetch.mock.calls[0][1] as RequestInit).body as string)).toEqual({ user_id: 'collab', project_ids: ['P-owner'] })
     agentFetch.mockClear()
-    expect(await stopAgentRunsOnProjects('collab', [])).toEqual({ stopped: 0 })
+    expect(await stopAgentRuns('collab', [])).toEqual({ stopped: 0 })
     expect(agentFetch).not.toHaveBeenCalled()
   })
 })

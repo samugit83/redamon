@@ -8,21 +8,19 @@
  * Root's force-revoke (projects:administer, §6.3) removes one share whatever its level, a co-owner's
  * included (OQ-34 binds the project's people, not Root). The row and its audit row go in one
  * transaction (`project.share.revoke` with `after.forced`, in the project's activity feed); then the
- * collaborator's sockets on the project close as an owner's revoke closes them (4.4), best effort:
- * the revoke stands when the agent is down (`[rbac] socket-close failed`). Step 5.9's
- * `onAccessReduced()` takes this place once it exists.
+ * collaborator's live work on the project stops as after an owner's revoke (`onAccessReduced`, step
+ * 5.9), best effort: the revoke stands when the agent is down (`[rbac] socket-close failed`).
  */
 import type { Prisma } from '@prisma/client'
 import { NextResponse, type NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
 import { writeAuditTx } from '@/lib/audit'
 import { auditedTransaction } from '@/lib/auditForward'
-import { closeAgentSockets } from '@/lib/agentSockets'
 import type { Session } from '@/lib/session'
-import { WS_SOCKETS } from '@/lib/wsTicket'
 import { ADMINISTER_PERMISSION } from './adminProjects'
 import { now } from './clock'
 import { personAuditEntry } from './permissionAdmin'
+import { onAccessReduced } from './revocation'
 import { rootStanding } from './rootPowers'
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type FilterProblem } from './userDirectory'
 
@@ -233,6 +231,6 @@ export async function forceRevokeShare(request: NextRequest, session: Session, p
     return true
   })
   if (!removed) return NextResponse.json({ error: 'This person holds no share of the project.', code: 'no_such_share' }, { status: 404 })
-  const closed = await closeAgentSockets({ userId, projectId, kinds: [...WS_SOCKETS], scope: 'access' })
-  return NextResponse.json({ revoked: { projectId, userId }, forced: true, socketsClosed: closed.ok })
+  const stopped = await onAccessReduced(projectId, userId, 'share_force_revoked')
+  return NextResponse.json({ revoked: { projectId, userId }, forced: true, socketsClosed: !('error' in stopped.sockets) })
 }

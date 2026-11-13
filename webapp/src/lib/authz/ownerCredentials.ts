@@ -13,20 +13,17 @@
  *   spend and fail closed (`ownerSpend.ts`): no row, no spend. The owner's own use writes nothing,
  *   so with write sharing off nothing here writes or reads (DV-30).
  * - Withdrawing the consent ends what collaborators still spend on the project
- *   (`endCollaboratorSpending`): their agent runs and sockets there, their queued scans, a live
- *   triage run one of them started. Best effort, each step logged when it fails.
+ *   (`endCollaboratorSpending`, through `onAccessReduced`, step 5.9): their agent runs and sockets
+ *   there, their queued scans and schedules, a live triage run one of them started. Best effort,
+ *   each step logged when it fails.
  * - The owner's API usage report lists the last 30 days of those rows by collaborator
  *   (`collaboratorSpends`).
  */
 import prisma from '@/lib/prisma'
-import { closeAgentSockets } from '@/lib/agentSockets'
-import { findLiveTriageRun } from '@/lib/triageRun'
-import { stopRun } from '@/lib/triage/actions'
 import { safeErrorCode } from '@/lib/routeErrors'
-import { WS_SOCKETS } from '@/lib/wsTicket'
-import { stopAgentRunsOnProjects } from './accountStatus'
 import { rbacFlags } from './flags'
 import { listShares } from './projectShares'
+import { onAccessReduced, type RevocationStep } from './revocation'
 import { SPEND_FEATURES, type SpendFeature } from './ownerSpend'
 import { ownedProjectsWhere } from './visibleProjects'
 
@@ -35,63 +32,42 @@ export interface SpendingEnded {
   runsStopped: number
   socketsClosed: number
   scansCancelled: number
+  schedulesPaused: number
   triageStopped: boolean
-  /** The steps that failed (each logged `[rbac] consent-withdrawal step failed`). */
-  failed: string[]
+  /** The steps that failed (each logged `[rbac] revocation step failed`, or `consent-withdrawal` for the list). */
+  failed: Array<RevocationStep | 'list_collaborators'>
 }
 
-const NOT_STARTED = ['queued', 'needs_review']
+const count = <K extends string>(c: { [P in K]: number } | { error: string } | undefined, key: K): number =>
+  (c && !('error' in c) ? (c as { [P in K]: number })[key] : 0)
 
 /**
- * After the owner withdrew the consent: stops every collaborator's agent runs on the project, closes
- * their sockets there (the agent also stops each closed socket's run), cancels their queued scans and
- * stops a live triage run one of them started. Scans already running finish (OQ-13). The owner's work
- * is untouched. Never throws: the withdrawal stands whatever the agent answers.
+ * After the owner withdrew the consent: every collaborator's live work on the project stops
+ * (`onAccessReduced`, `consent_withdrawn`): their agent runs and sockets there, their queued scans
+ * and schedules, a live triage run one of them started. Scans already running finish (OQ-13). The
+ * owner's work is untouched. Never throws: the withdrawal stands whatever the agent answers.
  */
 export async function endCollaboratorSpending(projectId: string, ownerId: string): Promise<SpendingEnded> {
-  const out: SpendingEnded = { collaborators: 0, runsStopped: 0, socketsClosed: 0, scansCancelled: 0, triageStopped: false, failed: [] }
-  const fail = (step: string, reason: string, userId?: string) => {
-    console.error(`[rbac] consent-withdrawal step failed step=${step} project=${projectId}${userId ? ` user=${userId}` : ''}: ${reason}`)
-    if (!out.failed.includes(step)) out.failed.push(step)
+  const out: SpendingEnded = {
+    collaborators: 0, runsStopped: 0, socketsClosed: 0, scansCancelled: 0, schedulesPaused: 0, triageStopped: false, failed: [],
   }
   let people: string[]
   try {
     people = [...new Set((await listShares(projectId)).map(s => s.user.id))].filter(id => id && id !== ownerId)
   } catch (err) {
-    fail('list_collaborators', safeErrorCode(err))
+    console.error(`[rbac] consent-withdrawal step failed step=list_collaborators project=${projectId}: ${safeErrorCode(err)}`)
+    out.failed.push('list_collaborators')
     return out
   }
   out.collaborators = people.length
   for (const userId of people) {
-    const runs = await stopAgentRunsOnProjects(userId, [projectId])
-    if ('error' in runs) fail('stop_runs', runs.error, userId)
-    else out.runsStopped += runs.stopped
-    const close = await closeAgentSockets({ userId, projectId, kinds: [...WS_SOCKETS], scope: 'access' })
-    if (close.ok) out.socketsClosed += close.closed
-    else fail('close_sockets', close.reason, userId)
-  }
-  if (people.length === 0) return out
-  try {
-    const cancelled = await prisma.jobQueue.updateMany({
-      where: { projectId, userId: { in: people }, status: { in: NOT_STARTED } },
-      data: {
-        status: 'canceled',
-        blockedCode: 'owner_consent_withdrawn',
-        blockedReason: "The project's owner withdrew the consent to spend their credentials.",
-        finishedAt: new Date(),
-      },
-    })
-    out.scansCancelled = cancelled.count
-  } catch (err) {
-    fail('cancel_queued_scans', safeErrorCode(err))
-  }
-  try {
-    const live = await findLiveTriageRun(projectId)
-    if (live && people.includes(live.actorUserId)) {
-      out.triageStopped = (await stopRun({ userId: ownerId, projectId }, 'app')).stopped
-    }
-  } catch (err) {
-    fail('stop_triage_run', safeErrorCode(err))
+    const stopped = await onAccessReduced(projectId, userId, 'consent_withdrawn', { ownerId })
+    out.runsStopped += count(stopped.runs, 'stopped')
+    out.socketsClosed += count(stopped.sockets, 'closed')
+    out.scansCancelled += count(stopped.scans, 'cancelled')
+    out.schedulesPaused += count(stopped.schedules, 'paused')
+    if (count(stopped.triage, 'stopped') > 0) out.triageStopped = true
+    for (const step of stopped.failed) if (!out.failed.includes(step)) out.failed.push(step)
   }
   return out
 }

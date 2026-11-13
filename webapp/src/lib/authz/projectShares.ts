@@ -17,8 +17,9 @@
  *   in force a toggle that spends the owner's credentials is refused first while the owner has not
  *   consented (409 `owner_consent_required`, step 5.6).
  * - Every change is written with its audit row in one transaction (`writeAuditTx`): no row, no
- *   change. A revoke or a leave then asks the agent to close the person's sockets on the project,
- *   best effort: the change stands when the agent is down (`[rbac] socket-close failed`).
+ *   change. A revoke, a leave or a change that narrows the share then stops the person's live work
+ *   on the project (`onAccessReduced`, step 5.9), best effort: the change stands when the agent is
+ *   down (`[rbac] socket-close failed`).
  */
 import { createHash } from 'crypto'
 import { NextResponse } from 'next/server'
@@ -26,10 +27,8 @@ import prisma from '@/lib/prisma'
 import { writeAuditTx, type AuditTx } from '@/lib/audit'
 import { auditedTransaction } from '@/lib/auditForward'
 import { auditActor, auditActorOf, sessionActor, type AuditActor } from '@/lib/auditActor'
-import { closeAgentSockets } from '@/lib/agentSockets'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { getAuthzIdentity, type EffectiveUser } from '@/lib/session'
-import { WS_SOCKETS } from '@/lib/wsTicket'
 import { normalizeEmail } from './accountEmail'
 import { can } from './can'
 import { now } from './clock'
@@ -39,6 +38,7 @@ import { takeShareLookup } from './inviteLimits'
 import { auditOversightRead } from './oversight'
 import { projectAccess, type ProjectAccess } from './projectAccess'
 import { spendToggleConsentRefusal } from './ownerConsent'
+import { isAccessReduction, onAccessReduced, type ProjectReduction } from './revocation'
 import { accountTypeOf, loadInstanceRoot, type AccountType } from './root'
 import { DEFAULT_EXPIRY_DAYS_BOUNDS, sharingPolicyInForce, type SharingPolicy } from './sharingPolicy'
 
@@ -466,17 +466,18 @@ export async function updateShare(
       after: { ...auditView(after), ...(changed.includes('note') ? { noteChanged: true } : {}) },
       source: 'api',
     })
-    return { kind: 'done' as const, row: after }
+    return { kind: 'done' as const, row: after, narrowed: isAccessReduction(before, after) }
   })
   if (outcome.kind === 'missing') return noSuchShare()
   if (outcome.kind === 'refused') return outcome.response
+  if ('narrowed' in outcome && outcome.narrowed) await stopLiveWork(projectId, userId, 'share_reduced', access.project.userId)
   return NextResponse.json({ collaborator: await withPeopleAfterCommit(shareView(outcome.row, at)) })
 }
 
-/** Asks the agent to close the person's sockets on the project; false when it did not confirm (logged). */
-async function closeSocketsOf(userId: string, projectId: string): Promise<boolean> {
-  const result = await closeAgentSockets({ userId, projectId, kinds: [...WS_SOCKETS], scope: 'access' })
-  return result.ok
+/** Stops the person's live work on the project; false when the agent did not confirm the sockets closed (logged). */
+async function stopLiveWork(projectId: string, userId: string, reason: ProjectReduction, ownerId?: string): Promise<boolean> {
+  const stopped = await onAccessReduced(projectId, userId, reason, { ownerId })
+  return !('error' in stopped.sockets)
 }
 
 /** Removes the share in one transaction with its audit row; false when there was none to remove. */
@@ -520,7 +521,9 @@ export async function revokeShare(auth: PermissionContext, userId: string): Prom
     (row) => coOwnerRefusal(access, row))
   if (outcome === 'missing') return noSuchShare()
   if (outcome instanceof NextResponse) return outcome
-  return NextResponse.json({ revoked: { projectId, userId }, socketsClosed: await closeSocketsOf(userId, projectId) })
+  return NextResponse.json({
+    revoked: { projectId, userId }, socketsClosed: await stopLiveWork(projectId, userId, 'share_revoked', access.project.userId),
+  })
 }
 
 /** POST .../leave: the person signed in gives up their own share of the project. */
@@ -528,5 +531,5 @@ export async function leaveShare(eff: EffectiveUser, projectId: string): Promise
   const outcome = await removeShare(projectId, eff.userId, { action: 'project.share.leave', actor: await auditActor(eff) })
   if (outcome === 'missing') return noSuchShare()
   if (outcome instanceof NextResponse) return outcome
-  return NextResponse.json({ left: { projectId }, socketsClosed: await closeSocketsOf(eff.userId, projectId) })
+  return NextResponse.json({ left: { projectId }, socketsClosed: await stopLiveWork(projectId, eff.userId, 'share_left') })
 }

@@ -14,6 +14,8 @@
  * - `user.findMany` matches `{id: {in}}` (the share answers' account types, step 4.12);
  * - break-glass rows can be created, listed and deleted (step 4.14); an audit row gets its
  *   `createdAt` from the clock, and `auditLog.findFirst` matches equality and `{gte, lt}` dates;
+ * - queued jobs, scan schedules and triage runs (step 5.9: what a revocation cancels, pauses or
+ *   stops) are listed by equality / `{in}` and changed by `updateMany`, rolled back with the rest;
  * - `failAudit(action)` makes the audit insert of that action throw, as a lost database would;
  *   `failRead()` makes the next share read throw; `raceCreate()` makes the next share insert raise
  *   P2002, as another copy's insert between the read and the write would.
@@ -94,6 +96,37 @@ function matches(row: Record<string, unknown>, where: Where): boolean {
   })
 }
 
+export interface QueuedJobRow {
+  id: string
+  projectId: string
+  userId: string
+  kind: string
+  payload: unknown
+  status: string
+  blockedCode?: string | null
+  blockedReason?: string | null
+  finishedAt?: Date | null
+}
+
+export interface ScheduleRow {
+  id: string
+  projectId: string
+  userId: string
+  label: string
+  scanMode: string
+  enabled: boolean
+  pausedReason: string | null
+}
+
+export interface TriageRunRow {
+  id: string
+  projectId: string
+  actorUserId: string
+  status: string
+  startedAt: Date
+  heartbeatAt: Date | null
+}
+
 export interface BreakGlassRow {
   id: string
   projectId: string
@@ -112,6 +145,9 @@ export function createShareDb(clock: () => Date = () => new Date()) {
   let projects = new Map<string, { id: string; userId: string; name: string }>()
   let shares = new Map<string, ShareRow>()
   let breakGlass: BreakGlassRow[] = []
+  let jobs: QueuedJobRow[] = []
+  let schedules: ScheduleRow[] = []
+  const triageRuns: TriageRunRow[] = []
   let glassSeq = 0
   const locks: string[] = []
   let audit: AuditRow[] = []
@@ -201,6 +237,26 @@ export function createShareDb(clock: () => Date = () => new Date()) {
         return { count: before - breakGlass.length }
       },
     },
+    jobQueue: {
+      findMany: async ({ where }: { where: Where }) => jobs.filter(j => matches(j as never, where)).map(j => ({ ...j })),
+      updateMany: async ({ where, data }: { where: Where; data: Partial<QueuedJobRow> }) => {
+        const hit = jobs.filter(j => matches(j as never, where))
+        jobs = jobs.map(j => (hit.includes(j) ? { ...j, ...data } : j))
+        return { count: hit.length }
+      },
+    },
+    scanSchedule: {
+      findMany: async ({ where }: { where: Where }) => schedules.filter(r => matches(r as never, where)).map(r => ({ ...r })),
+      updateMany: async ({ where, data }: { where: Where; data: Partial<ScheduleRow> }) => {
+        const hit = schedules.filter(r => matches(r as never, where))
+        schedules = schedules.map(r => (hit.includes(r) ? { ...r, ...data } : r))
+        return { count: hit.length }
+      },
+    },
+    triageRun: {
+      findMany: async ({ where }: { where: Where }) => triageRuns.filter(r => matches(r as never, where)).map(r => ({ ...r })),
+      updateMany: async () => ({ count: 0 }),
+    },
     instanceSettings: {
       findUnique: async () => ({
         id: 'instance', sharingPolicy: policy, rootUserId: root.userId, rootConfirmedAt: root.confirmedAt,
@@ -228,11 +284,14 @@ export function createShareDb(clock: () => Date = () => new Date()) {
     },
     $transaction: <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => {
       const run = async () => {
-        const snapshot = { users: new Map(users), projects: new Map(projects), shares: new Map(shares), breakGlass: [...breakGlass], audit: [...audit] }
+        const snapshot = {
+          users: new Map(users), projects: new Map(projects), shares: new Map(shares), breakGlass: [...breakGlass], audit: [...audit],
+          jobs: [...jobs], schedules: [...schedules],
+        }
         try {
           return await fn(client)
         } catch (err) {
-          ;({ users, projects, shares, breakGlass, audit } = snapshot)
+          ;({ users, projects, shares, breakGlass, audit, jobs, schedules } = snapshot)
           throw err
         }
       }
@@ -258,6 +317,18 @@ export function createShareDb(clock: () => Date = () => new Date()) {
       breakGlass.push({ id: `bg${glassSeq}`, projectId, userId, expiresAt, reason: 'seeded', createdAt: clock() })
     },
     breakGlassRows: () => breakGlass,
+    addJob(row: Partial<QueuedJobRow> & { id: string; projectId: string; userId: string }) {
+      jobs.push({ kind: 'full_recon', payload: { mode: 'new' }, status: 'queued', ...row })
+    },
+    job: (id: string) => jobs.find(j => j.id === id),
+    addSchedule(row: Partial<ScheduleRow> & { id: string; projectId: string; userId: string }) {
+      schedules.push({ label: row.id, scanMode: 'new', enabled: true, pausedReason: null, ...row })
+    },
+    schedule: (id: string) => schedules.find(r => r.id === id),
+    /** A live triage run that `actorUserId` started; its heartbeat is fresh by the real clock, which triageRun.ts reads. */
+    addTriageRun(row: Partial<TriageRunRow> & { id: string; projectId: string; actorUserId: string }) {
+      triageRuns.push({ status: 'running', startedAt: clock(), heartbeatAt: new Date(), ...row })
+    },
     locks: () => locks,
     share(projectId: string, userId: string): ShareRow | undefined { return shares.get(key(projectId, userId)) },
     shareCount: () => shares.size,

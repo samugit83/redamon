@@ -24,7 +24,7 @@ import { writeAuditTx } from '@/lib/audit'
 import { userAuditEntry } from '@/lib/userAudit'
 import type { Session } from '@/lib/session'
 import { LAST_ADMIN_REFUSAL, withLastAdminGuard, type RootGuardRefusal } from './adminSet'
-import { endAgentWork, type AgentWorkEnded } from './accountStatus'
+import { agentWorkOf, onAccessReduced, type AgentWorkEnded } from './revocation'
 import { credentialsResetNotice, withNotice, type ResetMode } from './accountNotices'
 import { createLink, type CreatedLink } from './invites'
 import { invalidatePrincipal } from './principal'
@@ -225,7 +225,7 @@ export async function resetCredentials(
     case 'refused': return outcome.answer
   }
   invalidatePrincipal(targetId)
-  const agent = await endAgentWork(targetId, { stopRuns: false })
+  const agent = agentWorkOf(await onAccessReduced(null, targetId, 'credentials_reset'))
   return {
     sessionVersion: outcome.sessionVersion,
     tokensRevoked: outcome.tokensRevoked,

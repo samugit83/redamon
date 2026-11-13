@@ -1,8 +1,8 @@
 /**
  * POST /api/internal/rbac/sweep (step 4.15; SH-14, DV-09, T19): the RBAC expiry sweep. Expiry is
  * judged lazily wherever access is read; the sweep writes the `.expired` audit rows and removes
- * what is dead: expired shares (`project.share.expired`, then the agent closes the collaborator's
- * sockets on that project), expired overrides (`user.override_expired`), expired break-glass rows
+ * what is dead: expired shares (`project.share.expired`, then the collaborator's live work on that
+ * project stops: step 5.9's onAccessReduced, its runs and sockets through the agent), expired overrides (`user.override_expired`), expired break-glass rows
  * and expired unused invite and reset links. The orchestrator's reaper loop calls it.
  *
  * The internal key is the only way in (the real isInternalRequest and middleware). Prisma is an
@@ -81,6 +81,10 @@ const h = vi.hoisted(() => {
     userPermissionOverride: table('userPermissionOverride', () => s.overrides, (r) => { s.overrides = r }),
     userInvite: table('userInvite', () => s.invites, (r) => { s.invites = r }),
     userSession: table('userSession', () => s.sessions, (r) => { s.sessions = r }),
+    // What an ended share's revocation reads (step 5.9): nothing queued, scheduled or running here.
+    jobQueue: table('jobQueue', () => [], () => {}),
+    scanSchedule: table('scanSchedule', () => [], () => {}),
+    triageRun: table('triageRun', () => [], () => {}),
     auditLog: {
       create: async ({ data }: { data: Row }) => {
         s.touched.add('auditLog')
@@ -234,10 +238,10 @@ describe('expired rows audited and removed', () => {
       },
       source: 'system',
     }])
-    expect(closeCalls()).toEqual([{
-      path: '/ws/close',
-      body: { user_id: 'viewer-1', project_id: 'proj-1', kinds: [...WS_SOCKETS], scope: 'access' },
-    }])
+    expect(closeCalls()).toEqual([
+      { path: '/agent-sessions/stop-for', body: { user_id: 'viewer-1', project_ids: ['proj-1'] } },
+      { path: '/ws/close', body: { user_id: 'viewer-1', project_id: 'proj-1', kinds: [...WS_SOCKETS], scope: 'access' } },
+    ])
     expect(body).toMatchObject({ at: T0.toISOString(), removed: { shares: 1 }, socketCloseFailed: 0, failed: [] })
   })
 
@@ -334,7 +338,7 @@ describe('live rows kept', () => {
 })
 
 describe('idempotent', () => {
-  test('the same expiry swept twice: one audit row, one socket close; the second sweep finds nothing', async () => {
+  test('the same expiry swept twice: one audit row, one stop and one socket close; the second sweep finds nothing', async () => {
     h.s.collaborators = [share('proj-1', 'viewer-1', ago(5))]
     h.s.overrides = [override('member-1', 'recon:run', ago(5))]
     h.s.invites = [link('inv-1', 'invite', ago(5))]
@@ -343,7 +347,7 @@ describe('idempotent', () => {
     expect(second.status).toBe(200)
     expect(second.body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0 })
     expect(h.s.audit.map((r) => r.action)).toEqual(['user.override_expired', 'project.share.expired'])
-    expect(h.agentFetch).toHaveBeenCalledTimes(1)
+    expect(closeCalls().map((c) => c.path)).toEqual(['/agent-sessions/stop-for', '/ws/close'])
   })
 
   test('two sweeps at once (two webapp copies): both read the same rows, each expiry is audited and closed once', async () => {
@@ -355,7 +359,7 @@ describe('idempotent', () => {
     expect(a.body.removed.overrides + b.body.removed.overrides).toBe(1)
     expect(h.s.audit.filter((r) => r.action === 'project.share.expired').map((r) => r.projectId).sort()).toEqual(['proj-1', 'proj-2'])
     expect(h.s.audit.filter((r) => r.action === 'user.override_expired')).toHaveLength(1)
-    expect(closeCalls().map((c) => c.body.project_id).sort()).toEqual(['proj-1', 'proj-2'])
+    expect(closeCalls().filter((c) => c.path === '/ws/close').map((c) => c.body.project_id).sort()).toEqual(['proj-1', 'proj-2'])
   })
 
   test('a share renewed between the read and the delete is kept and not audited', async () => {
@@ -422,8 +426,10 @@ describe('the agent unreachable when a socket must close', () => {
     expect(status).toBe(200)
     expect(h.s.collaborators).toEqual([])
     expect(h.s.audit).toHaveLength(20)
-    expect(h.agentFetch).toHaveBeenCalledTimes(8)
+    // One batch of 8 expiries, each a stop and a close (step 5.9); the other 12 are not tried.
+    expect(h.agentFetch).toHaveBeenCalledTimes(16)
     expect(body.socketCloseFailed).toBe(20)
+    expect(errors.mock.calls.map((c) => String(c[0])).filter((l) => /^\[rbac\] revocation step failed step=close_sockets reason=share_expired user=viewer-1 project=proj-\d+: agent_unreachable$/.test(l))).toHaveLength(8)
     expect(errors.mock.calls.map((c) => String(c[0]))).toContainEqual('[rbac] socket-close failed for 12 more expired share(s): the agent did not answer')
   })
 })

@@ -10,6 +10,7 @@ import { afterResetEntry } from '@/lib/authz/accountNotices'
 import { writeAudit } from '@/lib/audit'
 import { getClientMeta } from '@/lib/requestMeta'
 import { invalidatePrincipal } from '@/lib/authz/principal'
+import { onAccessReduced } from '@/lib/authz/revocation'
 import { validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { passwordPolicyInForce } from '@/lib/authz/passwordPolicyInForce'
 import { FAILED_ACCEPT_LIMIT, forgetFailedAccepts, recordFailedAccept } from '@/lib/authz/inviteLimits'
@@ -56,9 +57,13 @@ export const POST = withInviteErrors('invite accept', 'Could not set the passwor
   forgetFailedAccepts(link.tokenHash)
   if (!account) return invalidLinkResponse(request)
   invalidatePrincipal(account.id)
-  // A reset link's accept is the first sign-in after the reset (the reset emptied the password):
-  // the one sign-in whose address and browser are recorded (step 2.10, DV-11).
-  if (link.kind === 'reset') await writeAudit(afterResetEntry(account.id, getClientMeta(request), account.storedNotices))
+  if (link.kind === 'reset') {
+    // A reset link's accept is the first sign-in after the reset (the reset emptied the password):
+    // the one sign-in whose address and browser are recorded (step 2.10, DV-11).
+    await writeAudit(afterResetEntry(account.id, getClientMeta(request), account.storedNotices))
+    // It raised the session version: what an admin opened acting as the account since the reset closes.
+    await onAccessReduced(null, account.id, 'reset_link_used')
+  }
 
   const res = privateJson({
     id: account.id, name: account.name, email: account.email, role: account.role,
