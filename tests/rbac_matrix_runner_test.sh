@@ -18,6 +18,9 @@
 #     reads off while sharing is not in force, and also while Root's policy does
 #     not allow write (`maxLevel` "write", maxShareLevel); both policy reads happen
 #     once, only when a selected row needs them;
+#   - governance:on|off the same for RBAC_GOVERNANCE_ENABLED (step 6.13), which
+#     reads off while the permissions switch is off (flags.ts: governance requires
+#     permissions, not sharing) and reads no policy;
 #   - on/true/1/yes in any case and with spaces are on, anything else is off;
 #   - the switches are read from the webapp container once per run, and not at
 #     all when no selected row needs them.
@@ -68,6 +71,12 @@ printf '%s\n' \
   $'w-write-off\t5.2\tanon\tGET\t/api/w/write-off\t-\t200\tsharing:on sharingwrite:off' \
   $'w-write-only\t5.2\tanon\tGET\t/api/w/write-only\t-\t200\tsharingwrite:on' \
   > "$T/tests/fixtures/rbac_matrix/w.tsv"
+printf '%s\n' \
+  $'g-plain\t6.13\tanon\tGET\t/api/g/plain\t-\t200\treq:GV-01' \
+  $'g-gov-on\t6.13\tanon\tGET\t/api/g/gov-on\t-\t200\treq:GV-01 governance:on' \
+  $'g-gov-off\t6.13\tanon\tGET\t/api/g/gov-off\t-\t200\tgovernance:off' \
+  $'g-gov-share-on\t6.13\tanon\tGET\t/api/g/gov-share-on\t-\t200\tgovernance:on sharing:on' \
+  > "$T/tests/fixtures/rbac_matrix/g.tsv"
 
 # docker: the webapp's switches come from FAKE_* through the runner's own in-container
 # command (run here by sh), the seed prints the keys the runner requires, every call is logged.
@@ -96,7 +105,7 @@ case "$*" in
     echo "switches-read" >> "$STUB_LOG"
     env -i PATH="$PATH" RBAC_IDENTITY_ENABLED="${FAKE_IDENTITY-}" RBAC_PERMISSIONS_ENABLED="${FAKE_PERMISSIONS-}" \
       RBAC_SHARING_ENABLED="${FAKE_SHARING-}" RBAC_SHARING_WRITE_ENABLED="${FAKE_SHARING_WRITE-}" \
-      RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
+      RBAC_GOVERNANCE_ENABLED="${FAKE_GOVERNANCE-}" RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
   *" node "*)
     if grep -q SEED; then
       printf 'PA_ID=pa\nPB_ID=pb\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
@@ -121,13 +130,13 @@ STUB
 printf '#!/usr/bin/env bash\necho "sleep $*" >> "$STUB_LOG"\n' > "$W/bin/sleep"
 chmod +x "$W/bin/docker" "$W/bin/curl" "$W/bin/sleep"
 
-# run <identity> <permissions> [row filter] [matrix file] [cache ms] [sharing] [policy] [write] [write policy]:
+# run <identity> <permissions> [row filter] [matrix file] [cache ms] [sharing] [policy] [write] [write policy] [governance]:
 # OUT holds the output, RC the status, LOG the stub calls.
 run() {
   : > "$W/calls.log"
   OUT="$(cd "$W" && PATH="$W/bin:$PATH" STUB_LOG="$W/calls.log" BASE_URL=http://rbac-runner-test.invalid \
     FAKE_IDENTITY="$1" FAKE_PERMISSIONS="$2" FAKE_CACHE_MS="${5:-5000}" FAKE_SHARING="${6:-}" RBAC_MATRIX_ROWS="${3:-}" \
-    FAKE_POLICY="${7-on}" FAKE_SHARING_WRITE="${8:-}" FAKE_WRITE_POLICY="${9-on}" \
+    FAKE_POLICY="${7-on}" FAKE_SHARING_WRITE="${8:-}" FAKE_WRITE_POLICY="${9-on}" FAKE_GOVERNANCE="${10:-}" \
     bash "$T/tests/rbac_matrix_live.sh" "${4:-t}" 2>&1)"; RC=$?
   LOG="$(cat "$W/calls.log")"
 }
@@ -278,6 +287,46 @@ eq "write policy unreadable: the untagged row runs" "$(verdict w-plain)" "PASS"
 run true true '' u 1500 true on true on
 eq "the cache bound still parses after the write value" "$(grep '^sleep ' <<<"$LOG" | tr '\n' ' ')" "sleep 3 sleep 3 "
 
+section "the governance switch (step 6.13): governance:on|off follows RBAC_GOVERNANCE_ENABLED"
+run true true '' g 5000 '' on '' on true
+eq "governance on: exit 0" "$RC" "0"
+eq "governance on: untagged row runs" "$(verdict g-plain)" "PASS"
+eq "governance on: governance:on runs" "$(verdict g-gov-on)" "PASS"
+eq "governance on: governance:off skips" "$(verdict g-gov-off)" "SKIP"
+has "the skip names the governance switch" "(governance switch on)" "$(line g-gov-off)"
+eq "governance on, sharing unset: a row that also needs sharing skips on it" "$(verdict g-gov-share-on)" "SKIP"
+has "named as the sharing switch" "(sharing switch off)" "$(line g-gov-share-on)"
+eq "only the selected rows reach the webapp" "$(requests)" "api/g/plain api/g/gov-on "
+eq "the switches are read once" "$(reads)" "1"
+eq "no policy is read for governance" "$(policy_reads) $(write_policy_reads)" "0 0"
+has "result line" "== RESULT: 2 passed, 0 failed, 2 skipped ==" "$OUT"
+run true true '' g 5000 '' on '' on ''
+eq "governance unset: governance:on skips" "$(verdict g-gov-on)" "SKIP"
+has "named off" "(governance switch off)" "$(line g-gov-on)"
+eq "governance unset: governance:off runs" "$(verdict g-gov-off)" "PASS"
+run true '' '' g 5000 '' on '' on true
+eq "permissions off: governance reads off, whatever it says" "$(verdict g-gov-on)" "SKIP"
+has "named off" "(governance switch off)" "$(line g-gov-on)"
+eq "permissions off: governance:off runs" "$(verdict g-gov-off)" "PASS"
+run false true '' g 5000 '' on '' on true
+eq "identity off: permissions and governance read off" "$(verdict g-gov-off)" "PASS"
+eq "identity off: governance:on skips" "$(verdict g-gov-on)" "SKIP"
+run true true '' g 5000 true on '' on true
+eq "governance and sharing on, policy on: the combined row runs" "$(verdict g-gov-share-on)" "PASS"
+eq "read once" "$(policy_reads)" "1"
+run true true '' g 5000 true off '' on true
+eq "Root's sharing policy off: the combined row skips on sharing" "$(verdict g-gov-share-on)" "SKIP"
+has "named as the policy" "(sharing switch on, Root's policy off)" "$(line g-gov-share-on)"
+eq "Root's sharing policy off: governance:on still runs (governance reads no policy)" "$(verdict g-gov-on)" "PASS"
+run true true '' g 5000 '' on '' on ' Yes '
+eq "' Yes ' is on" "$(verdict g-gov-on)" "PASS"
+run true true '' g 5000 '' on '' on 'On'
+eq "On is not a value the webapp knows: governance reads off" "$(verdict g-gov-off)" "PASS"
+run true true '^g-plain$' g 5000 '' on '' on true
+eq "no tagged row selected: no switch read" "$(reads)" "0"
+run true true '' u 1500 true on true on true
+eq "the cache bound still parses after the governance value" "$(grep '^sleep ' <<<"$LOG" | tr '\n' ' ')" "sleep 3 sleep 3 "
+
 section "the runner documents the tag"
 HEADER="$(sed -n '1,/^set -uo pipefail/p' "$RUNNER")"
 has "permissions:on | permissions:off in the row format" "permissions:on | permissions:off" "$HEADER"
@@ -287,6 +336,8 @@ has "and its chain" "RBAC_SHARING_ENABLED" "$HEADER"
 has "and Root's policy" "instance_settings.sharing_policy" "$HEADER"
 has "sharingwrite:on | sharingwrite:off in the row format" "sharingwrite:on | sharingwrite:off" "$HEADER"
 has "and its switch" "RBAC_SHARING_WRITE_ENABLED" "$HEADER"
+has "governance:on | governance:off in the row format" "governance:on | governance:off" "$HEADER"
+has "and its switch" "RBAC_GOVERNANCE_ENABLED" "$HEADER"
 
 echo
 echo "-----------------------------------------"

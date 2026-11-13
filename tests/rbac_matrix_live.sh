@@ -46,6 +46,9 @@
 #           in force, step 5.2: sharing in force AND RBAC_SHARING_WRITE_ENABLED on, which
 #           reads off while the sharing switch is off, AND Root's policy `maxLevel` "write",
 #           as maxShareLevel reads it; read and failed the same way),
+#           governance:on | governance:off (the same for RBAC_GOVERNANCE_ENABLED, step 6.13,
+#           which reads off while the permissions switch is off, as flags.ts chains it; it
+#           needs neither sharing nor a policy, so nothing more is read),
 #           origin:<url> (the Origin header
 #           the row sends instead of the webapp's own, e.g. a page of another site)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
@@ -246,23 +249,26 @@ shift_session_version() { # user-id +1|-1 -> 0 when exactly that account's versi
   [ "$(printf "update users set session_version = session_version %s 1 where id = '%s' and session_version %s returning id;\n" \
     "${2:0:1}" "$1" "$([ "$2" = -1 ] && echo '> 0' || echo '>= 0')" | db_sql)" = "$1" ] && cache_settle
 }
-IDENTITY=""; PERMISSIONS=""; SHARING=""; SHARINGWRITE=""; CACHE_MS=""
+IDENTITY=""; PERMISSIONS=""; SHARING=""; SHARINGWRITE=""; GOVERNANCE=""; CACHE_MS=""
 switch_value() { # raw env value -> on|off, parsed as webapp/src/lib/authz/flags.ts does
   case "$(printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in true|1|yes) echo on ;; *) echo off ;; esac
 }
-read_switches() { # the webapp's switches (IDENTITY, PERMISSIONS, SHARING, SHARINGWRITE = on|off) and cache bound, read once
+read_switches() { # the webapp's switches (IDENTITY, PERMISSIONS, SHARING, SHARINGWRITE, GOVERNANCE = on|off) and cache bound, read once
   [ -n "$IDENTITY" ] && return
   local env rest
   env="$(cd "$ROOT" && docker compose exec -T webapp sh -c \
-    'printf "%s|%s|%s|%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_PERMISSIONS_ENABLED:-}" "${RBAC_SHARING_ENABLED:-}" "${RBAC_SHARING_WRITE_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
+    'printf "%s|%s|%s|%s|%s|%s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_PERMISSIONS_ENABLED:-}" "${RBAC_SHARING_ENABLED:-}" "${RBAC_SHARING_WRITE_ENABLED:-}" "${RBAC_GOVERNANCE_ENABLED:-}" "${RBAC_AUTHZ_CACHE_MS:-}"' 2>/dev/null)"
   IDENTITY="$(switch_value "${env%%|*}")"; rest="${env#*|}"
   PERMISSIONS="$(switch_value "${rest%%|*}")"; rest="${rest#*|}"
   SHARING="$(switch_value "${rest%%|*}")"; rest="${rest#*|}"
-  SHARINGWRITE="$(switch_value "${rest%%|*}")"
-  # flags.ts: each switch requires the one before it and reads off without it.
+  SHARINGWRITE="$(switch_value "${rest%%|*}")"; rest="${rest#*|}"
+  GOVERNANCE="$(switch_value "${rest%%|*}")"
+  # flags.ts: each switch requires the one before it and reads off without it; governance
+  # requires permissions, not sharing.
   [ "$IDENTITY" = on ] || PERMISSIONS=off
   [ "$PERMISSIONS" = on ] || SHARING=off
   [ "$SHARING" = on ] || SHARINGWRITE=off
+  [ "$PERMISSIONS" = on ] || GOVERNANCE=off
   CACHE_MS="${rest#*|}"; CACHE_MS="${CACHE_MS//[[:space:]]/}"
 }
 # parseSharingPolicy (webapp/src/lib/authz/sharingPolicy.ts) in SQL: `enabled` true and every
@@ -356,7 +362,7 @@ for line in "${ROWS[@]}"; do
     echo "SKIP  $label  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
   fi
   off_switch=""; policy_unread=""
-  for sw in identity permissions sharing sharingwrite; do
+  for sw in identity permissions sharing sharingwrite governance; do
     [[ " $tags " =~ \ $sw:(on|off)\  ]] || continue
     want="${BASH_REMATCH[1]}"
     read_switches
@@ -364,6 +370,7 @@ for line in "${ROWS[@]}"; do
     case "$sw" in
       identity) state="$IDENTITY" ;;
       permissions) state="$PERMISSIONS" ;;
+      governance) state="$GOVERNANCE" ;;
       sharingwrite) state="$SHARINGWRITE"
          # In force only with sharing in force and Root's policy at write (maxShareLevel).
          if [ "$state" = on ]; then

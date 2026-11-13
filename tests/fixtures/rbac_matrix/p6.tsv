@@ -1,0 +1,186 @@
+# Live RBAC route matrix: Phase 6 (governance, RBAC_GOVERNANCE_ENABLED). Each step adds the rows of the behaviour it
+# changes; a row of an earlier file whose answer a step changes is tagged superseded-by:p6 there.
+# Columns: id, since, actor, method, path, body, expect, tags (see tests/rbac_matrix_live.sh).
+#
+# A governance:on row runs only while the webapp reads RBAC_GOVERNANCE_ENABLED on (it reads off while the permissions
+# switch is off: flags.ts); a governance:off row only while it reads off. Off, every console route answers 404 before it
+# reads the session or the database, so an admin's 404 there proves the route is absent, not refused. A request without a
+# cookie never reaches a route (the middleware answers 401, in either state), so the anon rows carry no switch tag.
+# Actors as seeded (webapp/scripts/e2e-rbac-seed.mjs): admin_a and admin_b are Full admins (no profile: no Root power,
+# no admins:manage, no admin_profiles:manage, no instance:settings) and never Root; usermgr is the User manager
+# (builtin:user-manager: users:* only); member_c holds no set (Default member). Every Root-only answer here is therefore
+# 403 root_only, given before any password is checked; the confirmed Root's own writes run on the disposable instance
+# (run_artifacts/combined_window/phase6_live.md section 8). "Allowed" is proved without a write: the request carries what
+# the route refuses after its checks (a bad filter, a set id list that is not a list, a quota for an account that does not
+# exist, a session id that cannot exist), so a refused caller still gets 401, 403 or 404. No row exports the audit log (an
+# export writes an audit.exported row): its "allowed" rows send a format or a paging field the export refuses.
+#
+# id	since	actor	method	path	body	expect	tags
+#
+# ---- step 6.1: the console shell; /api/auth/me carries the switch every screen reads ----
+# /admin and every page under it are Next's 404 with the switch off, decided in the server layout; on, the shell renders
+# for any signed-in account (the sections it lists are decided in the browser from the same capabilities).
+p6-me-flag-on	6.1	member_a	GET	/api/auth/me	-	200;has="governance":true	req:UI-10 governance:on
+p6-me-flag-off	6.1	member_a	GET	/api/auth/me	-	200;has="governance":false	req:UI-10 req:DV-30 governance:off
+p6-page-admin-on	6.1	admin_a	GET	/admin	-	200	req:UI-10 governance:on
+p6-page-admin-off	6.1	admin_a	GET	/admin	-	404	req:UI-10 req:DV-30 governance:off
+p6-page-admin-users-off	6.2	admin_a	GET	/admin/users	-	404	req:GV-01 req:DV-30 governance:off
+p6-page-admin-instance-on	6.7	admin_a	GET	/admin/instance	-	200	req:GV-08 governance:on
+p6-page-admin-instance-off	6.7	admin_a	GET	/admin/instance	-	404	req:GV-08 req:DV-30 governance:off
+p6-page-admin-anon	6.1	anon	GET	/admin	-	307;hdr=/login	req:UI-10
+
+# ---- step 6.2: the users directory and one account's detail (users:read) ----
+# The User manager reads both; a member and a Read-only analyst are refused naming users:read. The detail's Recent
+# activity needs audit:read: the User manager gets the section's notice instead of rows.
+p6-users-list-admin	6.2	admin_a	GET	/api/admin/users?q=rbac-member	-	200;has="users":;has=rbac-member-a@e2e.local	req:GV-01 governance:on
+p6-users-list-usermgr	6.2	usermgr	GET	/api/admin/users?type=member	-	200;has="users":;has="setOptions"	req:GV-01 governance:on
+p6-users-list-bad-filter	6.2	admin_a	GET	/api/admin/users?status=rbac-bogus	-	400;has=invalid_filter;has="field":"status"	req:GV-01 governance:on
+p6-users-list-member	6.2	member_a	GET	/api/admin/users	-	403;has="permission":"users:read"	req:GV-01 governance:on
+p6-users-list-analyst	6.2	analyst	GET	/api/admin/users	-	403;has="permission":"users:read"	req:GV-01 governance:on
+p6-users-list-anon	6.2	anon	GET	/api/admin/users	-	401	req:GV-01
+p6-users-list-off	6.2	admin_a	GET	/api/admin/users	-	404;has=Not found;lacks="users"	req:GV-01 req:DV-30 governance:off
+p6-user-detail-admin	6.2	admin_a	GET	/api/admin/users/${MEMBER_A_ID}	-	200;has=rbac-member-a@e2e.local;has="audit":{"rows":	req:ID-27 governance:on
+p6-user-detail-usermgr	6.2	usermgr	GET	/api/admin/users/${MEMBER_A_ID}	-	200;has=rbac-member-a@e2e.local;has="denied":"audit:read"	req:ID-27 req:GV-01 governance:on
+p6-user-detail-missing	6.2	admin_a	GET	/api/admin/users/rbac-no-such-user	-	404;has=user_not_found	req:ID-27 governance:on
+p6-user-detail-member	6.2	member_a	GET	/api/admin/users/${MEMBER_B_ID}	-	403;has="permission":"users:read"	req:ID-27 governance:on
+p6-user-detail-off	6.2	admin_a	GET	/api/admin/users/${MEMBER_A_ID}	-	404;has=Not found;lacks=rbac-member-a@e2e.local	req:ID-27 req:DV-30 governance:off
+
+# ---- step 6.3: the permission sets and admin profiles pages ----
+# The pages sit under /admin; the APIs they call are Phase 3's and answer behind the permissions switch alone, whatever
+# this one says (p3.tsv covers admin_a). The User manager lists the sets (users:assign_permissions: the directory's set
+# filter and the Permissions dialog need them) but not the profiles; a Full admin is refused the profiles too.
+p6-sets-list-usermgr	6.3	usermgr	GET	/api/admin/permission-sets	-	200;has=builtin:default-member;has=builtin:recon-operator	req:GV-02 permissions:on
+p6-profiles-list-usermgr	6.3	usermgr	GET	/api/admin/admin-profiles	-	403;has=admin_profiles:manage	req:GV-03 permissions:on
+p6-profiles-list-full-admin	6.3	admin_b	GET	/api/admin/admin-profiles	-	403;has=admin_profiles:manage	req:GV-03 permissions:on
+
+# ---- step 6.4: projects and shares overviews (projects:oversee, users:read); Root's forced delete and revoke ----
+# The shares list exists only while sharing is in force (404 otherwise, having read no share) and, with the default policy,
+# lets admins see every share. Forced delete and force-revoke are the confirmed Root's: 403 root_only for a Full admin and
+# for a member alike, before any password; the revoke checks sharing in force first (404 without it).
+p6-projects-list-admin	6.4	admin_a	GET	/api/admin/projects?owner=${MEMBER_A_ID}	-	200;has="projects":;has=${PA_ID}	req:GV-04 req:GV-20 governance:on
+p6-projects-list-bad-filter	6.4	admin_a	GET	/api/admin/projects?limit=0	-	400;has=invalid_filter;has="field":"limit"	req:GV-04 governance:on
+p6-projects-list-usermgr	6.4	usermgr	GET	/api/admin/projects	-	403;has="permission":"projects:oversee"	req:GV-04 governance:on
+p6-projects-list-member	6.4	member_a	GET	/api/admin/projects	-	403;has="permission":"projects:oversee"	req:GV-04 governance:on
+p6-projects-list-off	6.4	admin_a	GET	/api/admin/projects	-	404;has=Not found;lacks="projects"	req:GV-04 req:DV-30 governance:off
+p6-project-forced-delete-admin	6.4	admin_a	DELETE	/api/admin/projects/${PA_TMP2_ID}	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:GV-04 req:SH-18 governance:on
+p6-project-forced-delete-member	6.4	member_a	DELETE	/api/admin/projects/${PA_TMP2_ID}	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:GV-04 governance:on
+p6-project-forced-delete-xo	6.4	admin_a	DELETE	/api/admin/projects/${PA_TMP2_ID}	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=cross_origin	req:GV-04 req:ID-26 governance:on origin:https://rbac-other-site.example
+p6-project-forced-delete-off	6.4	admin_a	DELETE	/api/admin/projects/${PA_TMP2_ID}	{"stepUpPassword":"${RBAC_PASSWORD}"}	404;lacks=root_only	req:GV-04 req:DV-30 governance:off
+p6-shares-list-admin	6.4	admin_a	GET	/api/admin/shares?project=${PSHARED_ID}	-	200;has=rbac-viewer@e2e.local;has="revoke":false	req:GV-05 req:GV-20 governance:on sharing:on
+p6-shares-list-usermgr	6.4	usermgr	GET	/api/admin/shares?project=${PSHARED_ID}	-	200;has=rbac-viewer@e2e.local	req:GV-05 governance:on sharing:on
+p6-shares-list-bad-filter	6.4	admin_a	GET	/api/admin/shares?limit=0	-	400;has=invalid_filter;has="field":"limit"	req:GV-05 governance:on sharing:on
+p6-shares-list-member	6.4	member_c	GET	/api/admin/shares	-	403;has="permission":"users:read"	req:GV-05 governance:on
+p6-shares-list-not-in-force	6.4	admin_a	GET	/api/admin/shares	-	404;has=Not found;lacks="shares"	req:GV-05 req:DV-30 governance:on sharing:off
+p6-shares-list-off	6.4	admin_a	GET	/api/admin/shares	-	404;lacks="shares"	req:GV-05 req:DV-30 governance:off
+p6-share-force-revoke-admin	6.4	admin_a	DELETE	/api/admin/shares/${PSHARED_ID}/${VIEWER_TMP_ID}	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:SH-18 req:GV-05 governance:on sharing:on
+p6-share-force-revoke-not-in-force	6.4	admin_a	DELETE	/api/admin/shares/${PSHARED_ID}/${VIEWER_TMP_ID}	{"stepUpPassword":"${RBAC_PASSWORD}"}	404;lacks=root_only	req:SH-18 governance:on sharing:off
+p6-share-force-revoke-xo	6.4	admin_a	DELETE	/api/admin/shares/${PSHARED_ID}/${VIEWER_TMP_ID}	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=cross_origin	req:SH-18 req:ID-26 governance:on origin:https://rbac-other-site.example
+
+# ---- step 6.5: the operations view (platform:operations) and stopping one run ----
+# A source that does not answer is named by its code and the view still answers 200. The stop asks platform:operations
+# after the origin and the JSON body; a body that names no run is refused after it (400 invalid_target).
+p6-ops-admin	6.5	admin_a	GET	/api/admin/operations	-	200;has="agentRuns";has="scans"	req:GV-06 req:GV-18 governance:on
+p6-ops-full-admin-b	6.5	admin_b	GET	/api/admin/operations	-	200;has="agentRuns"	req:GV-06 governance:on
+p6-ops-usermgr	6.5	usermgr	GET	/api/admin/operations	-	403;has="permission":"platform:operations"	req:GV-06 governance:on
+p6-ops-member	6.5	member_a	GET	/api/admin/operations	-	403;has="permission":"platform:operations"	req:GV-06 governance:on
+p6-ops-off	6.5	admin_a	GET	/api/admin/operations	-	404;lacks="agentRuns"	req:GV-06 req:DV-30 governance:off
+p6-ops-stop-admin	6.5	admin_a	POST	/api/admin/operations/agent-runs/stop	{}	400;has=invalid_target	req:GV-06 governance:on
+p6-ops-stop-usermgr	6.5	usermgr	POST	/api/admin/operations/agent-runs/stop	{}	403;has="permission":"platform:operations"	req:GV-06 governance:on
+p6-ops-stop-xo	6.5	admin_a	POST	/api/admin/operations/agent-runs/stop	{}	403;has=cross_origin	req:GV-06 req:ID-26 governance:on origin:https://rbac-other-site.example
+p6-ops-stop-off	6.5	admin_a	POST	/api/admin/operations/agent-runs/stop	{}	404;lacks=invalid_target	req:GV-06 req:DV-30 governance:off
+
+# ---- step 6.6: the audit viewer (audit:read), one row's details and the export (audit:export) ----
+p6-audit-list-admin	6.6	admin_a	GET	/api/admin/audit?limit=1	-	200;has="entries"	req:GV-07 req:AU-07 governance:on
+p6-audit-list-full-admin-b	6.6	admin_b	GET	/api/admin/audit?limit=1	-	200;has="entries"	req:GV-07 governance:on
+p6-audit-list-bad-filter	6.6	admin_a	GET	/api/admin/audit?from=rbac-not-a-date	-	400;has=invalid_filter;has="field":"from"	req:AU-07 governance:on
+p6-audit-list-usermgr	6.6	usermgr	GET	/api/admin/audit	-	403;has="permission":"audit:read"	req:GV-07 governance:on
+p6-audit-list-member	6.6	member_a	GET	/api/admin/audit	-	403;has="permission":"audit:read"	req:GV-07 governance:on
+p6-audit-list-off	6.6	admin_a	GET	/api/admin/audit	-	404;lacks="entries"	req:GV-07 req:DV-30 governance:off
+p6-audit-row-missing	6.6	admin_a	GET	/api/admin/audit/rbac-no-such-row	-	404;lacks="code":"forbidden"	req:AU-07 governance:on
+p6-audit-row-usermgr	6.6	usermgr	GET	/api/admin/audit/rbac-no-such-row	-	403;has="permission":"audit:read"	req:AU-07 governance:on
+p6-audit-row-off	6.6	usermgr	GET	/api/admin/audit/rbac-no-such-row	-	404;lacks=audit:read	req:AU-07 req:DV-30 governance:off
+p6-audit-export-bad-format	6.6	admin_a	GET	/api/admin/audit/export?format=rbac-xml	-	400;has=invalid_filter;has="field":"format"	req:AU-04 governance:on
+p6-audit-export-paging	6.6	admin_a	GET	/api/admin/audit/export?limit=5	-	400;has=invalid_filter;has="field":"limit"	req:AU-04 governance:on
+p6-audit-export-usermgr	6.6	usermgr	GET	/api/admin/audit/export?format=csv	-	403;has="permission":"audit:export"	req:AU-04 governance:on
+p6-audit-export-member	6.6	member_a	GET	/api/admin/audit/export?format=csv	-	403;has="permission":"audit:export"	req:AU-04 governance:on
+p6-audit-export-off	6.6	admin_a	GET	/api/admin/audit/export?format=rbac-xml	-	404;lacks=invalid_filter	req:AU-04 req:DV-30 governance:off
+
+# ---- steps 6.6, 6.7, 6.8: the instance settings groups the switch adds ----
+# With it on every administrator account reads the audit retention, which only the confirmed Root changes (403 root_only;
+# a value under the floor is 400 first), and the instance:quotas holder (Full admin) reads and patches the quotas: a patch
+# naming an account that does not exist is refused after the permission (400 unknown_quota_target, nothing written), the
+# User manager is refused naming instance:quotas. With it off (identity on) neither group is shown or read from a body: the
+# same PUTs change nothing and answer the settings. 36499 days is a valid value no fixture stores.
+p6-instance-admin	6.8	admin_a	GET	/api/admin/instance-settings	-	200;has="canManageQuotas":true;has="auditRetention";has="canManageAuditRetention":false	req:GV-08 req:GV-09 req:AU-04 governance:on
+p6-instance-usermgr	6.8	usermgr	GET	/api/admin/instance-settings	-	200;has="auditRetention";lacks="canManageQuotas"	req:GV-08 req:GV-09 governance:on
+p6-instance-admin-off	6.8	admin_a	GET	/api/admin/instance-settings	-	200;has="canManageCapture";lacks="auditRetention";lacks="canManageQuotas"	req:GV-08 req:DV-30 identity:on governance:off
+p6-quotas-put-admin	6.8	admin_a	PUT	/api/admin/instance-settings	{"quotas":{"perUser":{"rbac-no-such-account":{"maxProjects":7}}}}	400;has=unknown_quota_target;has=rbac-no-such-account	req:GV-09 governance:on
+p6-quotas-put-invalid	6.8	admin_a	PUT	/api/admin/instance-settings	{"quotas":{"defaults":{"maxProjects":-1}}}	400;has=invalid_field	req:GV-09 governance:on
+p6-quotas-put-usermgr	6.8	usermgr	PUT	/api/admin/instance-settings	{"quotas":{"perUser":{"rbac-no-such-account":{"maxProjects":7}}}}	403;has="permission":"instance:quotas"	req:GV-09 governance:on
+p6-quotas-put-off	6.8	admin_a	PUT	/api/admin/instance-settings	{"quotas":{"perUser":{"rbac-no-such-account":{"maxProjects":7}}}}	200;has="canManageCapture";lacks=unknown_quota_target;lacks="canManageQuotas"	req:GV-09 req:DV-30 identity:on governance:off
+p6-retention-put-floor	6.6	admin_a	PUT	/api/admin/instance-settings	{"auditRetentionDays":30}	400;has=invalid_field;has=auditRetentionDays	req:AU-04 governance:on
+p6-retention-put-admin	6.6	admin_a	PUT	/api/admin/instance-settings	{"auditRetentionDays":36499,"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:AU-04 governance:on
+p6-retention-put-usermgr	6.6	usermgr	PUT	/api/admin/instance-settings	{"auditRetentionDays":36499,"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:AU-04 governance:on
+p6-retention-put-off	6.6	admin_a	PUT	/api/admin/instance-settings	{"auditRetentionDays":30}	200;lacks=invalid_field;lacks="auditRetention"	req:AU-04 req:DV-30 identity:on governance:off
+
+# ---- step 6.8: one account's quota and use ----
+# My account reads its own, the admin detail another's under users:read (the User manager too); another member 403.
+p6-quota-own	6.8	member_a	GET	/api/users/${MEMBER_A_ID}/quota	-	200;has="enforced";has="use"	req:GV-13 governance:on
+p6-quota-admin	6.8	admin_a	GET	/api/users/${MEMBER_A_ID}/quota	-	200;has="enforced"	req:GV-13 governance:on
+p6-quota-usermgr	6.8	usermgr	GET	/api/users/${MEMBER_A_ID}/quota	-	200;has="enforced"	req:GV-13 governance:on
+p6-quota-other-member	6.8	member_a	GET	/api/users/${MEMBER_B_ID}/quota	-	403;has="permission":"users:read"	req:GV-13 governance:on
+p6-quota-missing	6.8	admin_a	GET	/api/users/rbac-no-such-user/quota	-	404	req:GV-13 governance:on
+p6-quota-off	6.8	member_a	GET	/api/users/${MEMBER_A_ID}/quota	-	404;lacks="enforced"	req:GV-13 req:DV-30 governance:off
+
+# ---- step 6.9: who may use a plugin (platform:plugins, the account read again) ----
+# rbac-no-such-plugin is a valid id no plugin has: its rules read empty, with every member set a rule may name.
+p6-access-rules-admin	6.9	admin_a	GET	/api/plugins/rbac-no-such-plugin/access-rules	-	200;has="pluginId":"rbac-no-such-plugin";has=builtin:red-team-operator	req:GV-16 governance:on
+p6-access-rules-usermgr	6.9	usermgr	GET	/api/plugins/rbac-no-such-plugin/access-rules	-	403;has=platform:plugins	req:GV-16 governance:on
+p6-access-rules-member	6.9	member_c	GET	/api/plugins/rbac-no-such-plugin/access-rules	-	403;has=platform:plugins	req:GV-16 governance:on
+p6-access-rules-put-admin	6.9	admin_a	PUT	/api/plugins/rbac-no-such-plugin/access-rules	{"setIds":"rbac-not-a-list"}	400;has=invalid_set_ids	req:GV-16 governance:on
+p6-access-rules-put-usermgr	6.9	usermgr	PUT	/api/plugins/rbac-no-such-plugin/access-rules	{"setIds":[]}	403;has=platform:plugins	req:GV-16 governance:on
+p6-access-rules-put-xo	6.9	admin_a	PUT	/api/plugins/rbac-no-such-plugin/access-rules	{"setIds":[]}	403;has=cross_origin	req:GV-16 req:ID-26 governance:on origin:https://rbac-other-site.example
+p6-access-rules-off	6.9	admin_a	GET	/api/plugins/rbac-no-such-plugin/access-rules	-	404;has=not_found;lacks="pluginId"	req:GV-16 req:DV-30 governance:off
+
+# ---- step 6.10: device sessions ----
+# The own list is the real signed-in account's; another account's takes users:revoke_sessions and the hierarchy (a Full
+# admin or the User manager over a member; another admin only by the confirmed Root: 403 root_only); the own account is
+# 400 own_account on the admin routes. rbac.no.such.session cannot be a session id, so a revoke ends after its checks
+# (404 session_not_found) and signs nobody out.
+p6-sessions-own	6.10	member_a	GET	/api/account/sessions	-	200;has="sessions"	req:GV-17 req:UI-09 governance:on
+p6-sessions-own-off	6.10	member_a	GET	/api/account/sessions	-	404;lacks="sessions"	req:GV-17 req:DV-30 governance:off
+p6-sessions-own-revoke	6.10	member_a	DELETE	/api/account/sessions/rbac.no.such.session	-	404;has=session_not_found	req:GV-17 governance:on
+p6-sessions-own-revoke-xo	6.10	member_a	DELETE	/api/account/sessions/rbac.no.such.session	-	403;has=cross_origin	req:GV-17 req:ID-26 governance:on origin:https://rbac-other-site.example
+p6-sessions-user-admin	6.10	admin_a	GET	/api/users/${MEMBER_A_ID}/sessions	-	200;has="sessions"	req:GV-17 governance:on
+p6-sessions-user-usermgr	6.10	usermgr	GET	/api/users/${MEMBER_A_ID}/sessions	-	200;has="sessions"	req:GV-17 governance:on
+p6-sessions-user-usermgr-on-admin	6.10	usermgr	GET	/api/users/${ADMIN_A_ID}/sessions	-	403;has=root_only	req:GV-17 governance:on
+p6-sessions-user-own	6.10	admin_a	GET	/api/users/${ADMIN_A_ID}/sessions	-	400;has=own_account	req:GV-17 governance:on
+p6-sessions-user-member	6.10	member_a	GET	/api/users/${MEMBER_B_ID}/sessions	-	403;has="permission":"users:revoke_sessions"	req:GV-17 governance:on
+p6-sessions-user-missing	6.10	admin_a	GET	/api/users/rbac-no-such-user/sessions	-	404;has=user_not_found	req:GV-17 governance:on
+p6-sessions-user-off	6.10	admin_a	GET	/api/users/${MEMBER_A_ID}/sessions	-	404;lacks="sessions"	req:GV-17 req:DV-30 governance:off
+p6-sessions-user-revoke	6.10	admin_a	DELETE	/api/users/${MEMBER_A_ID}/sessions/rbac.no.such.session	-	404;has=session_not_found	req:GV-17 governance:on
+p6-sessions-user-revoke-member	6.10	member_a	DELETE	/api/users/${MEMBER_B_ID}/sessions/rbac.no.such.session	-	403;has="permission":"users:revoke_sessions"	req:GV-17 governance:on
+p6-sessions-user-revoke-xo	6.10	admin_a	DELETE	/api/users/${MEMBER_A_ID}/sessions/rbac.no.such.session	-	403;has=cross_origin	req:GV-17 req:ID-26 governance:on origin:https://rbac-other-site.example
+
+# ---- step 6.11: instance LLM providers; the agent's daily budget (internal key only) ----
+# Root's routes are the confirmed Root's: 403 root_only for a Full admin and a member, before any password; the account's
+# list is any signed-in account's (names and kinds only). With the switch off the budget answers unlimited and records
+# nothing; on, it answers the person's limit and use. The scanner key and a browser session never reach the budget.
+p6-llm-providers-admin	6.11	admin_a	GET	/api/admin/llm-providers	-	403;has=root_only	req:GV-15 governance:on
+p6-llm-providers-member	6.11	member_c	GET	/api/admin/llm-providers	-	403;has=root_only	req:GV-15 governance:on
+p6-llm-providers-off	6.11	admin_a	GET	/api/admin/llm-providers	-	404;lacks=root_only	req:GV-15 req:DV-30 governance:off
+p6-llm-providers-add-admin	6.11	admin_a	POST	/api/admin/llm-providers	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:GV-15 governance:on
+p6-llm-providers-add-xo	6.11	admin_a	POST	/api/admin/llm-providers	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=cross_origin	req:GV-15 req:ID-26 governance:on origin:https://rbac-other-site.example
+p6-llm-providers-policy-admin	6.11	admin_a	PUT	/api/admin/llm-providers/policy	{"byoLlmForbidden":true,"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:GV-15 governance:on
+p6-llm-providers-edit-admin	6.11	admin_a	PUT	/api/admin/llm-providers/rbac-no-such-provider	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:GV-15 governance:on
+p6-llm-providers-delete-admin	6.11	admin_a	DELETE	/api/admin/llm-providers/rbac-no-such-provider	{"stepUpPassword":"${RBAC_PASSWORD}"}	403;has=root_only	req:GV-15 governance:on
+p6-account-llm-providers	6.11	member_c	GET	/api/account/llm-providers	-	200;has="providers"	req:GV-15 governance:on
+p6-account-llm-providers-off	6.11	member_c	GET	/api/account/llm-providers	-	404;lacks="providers"	req:GV-15 req:DV-30 governance:off
+p6-llm-usage-internal	6.11	internal	GET	/api/internal/llm-usage?userId=${MEMBER_C_ID}	-	200;has="limit";has="used"	req:GV-12
+p6-llm-usage-internal-off	6.11	internal	GET	/api/internal/llm-usage?userId=${MEMBER_C_ID}	-	200;has="limit":null;has="used":0	req:GV-12 req:DV-30 governance:off
+p6-llm-usage-no-user	6.11	internal	GET	/api/internal/llm-usage	-	400;has=invalid_user	req:GV-12
+p6-llm-usage-record-invalid	6.11	internal	POST	/api/internal/llm-usage	{"counts":"rbac-not-a-list"}	400;has=invalid_usage	req:GV-12
+p6-llm-usage-record-empty	6.11	internal	POST	/api/internal/llm-usage	{"counts":[]}	200;has="recorded":0	req:GV-12
+p6-llm-usage-scanner	6.11	scanner	GET	/api/internal/llm-usage?userId=${MEMBER_C_ID}	-	401;lacks="limit"	req:GV-12
+p6-llm-usage-member	6.11	member_c	GET	/api/internal/llm-usage?userId=${MEMBER_C_ID}	-	401;lacks="limit"	req:GV-12
+p6-llm-usage-anon	6.11	anon	GET	/api/internal/llm-usage?userId=${MEMBER_C_ID}	-	401	req:GV-12
