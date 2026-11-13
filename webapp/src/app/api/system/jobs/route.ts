@@ -15,12 +15,14 @@
  * With sharing in force (step 4.5) "own rows" are also every job and scan of a project the
  * caller sees, a shared one included, each naming who started it (`initiator`: id and name,
  * null when no person did: a schedule, the agent, a live entry); the anonymous count is their
- * complement. Not in force, the rows and their shape are the ones before.
+ * complement, and `sharedProjectIds` names the listed projects the caller does not own, so the
+ * view counts them apart from the caller's own (step 4.11). Not in force, the rows and their shape
+ * are the ones before.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser } from '@/lib/access'
-import { jobQueueScope, visibleProjects } from '@/lib/authz/visibleProjects'
+import { jobQueueScope, sharedProjectIds, visibleProjects } from '@/lib/authz/visibleProjects'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { internalError, withRouteErrors } from '@/lib/routeErrors'
 
@@ -251,7 +253,7 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
       // round trip per row.
       prisma.project.findMany({
         where: mineWhere,
-        select: { id: true, name: true },
+        select: visible.withShares ? { id: true, name: true, userId: true } : { id: true, name: true },
       }),
       // Every kind the orchestrator is holding right now. Best effort: if it is
       // unreachable the DB sources still answer.
@@ -374,6 +376,7 @@ export const GET = withRouteErrors('Could not load scan activity', async (_reque
       mine: { running, queued, needsReview, recent: recent.map(r => serialize(r, people)) },
       others: othersAgg,
       ledger,
+      ...(visible.withShares ? { sharedProjectIds: sharedProjectIds(eff, visible, myProjects) } : {}),
     })
   } catch (error) {
     return internalError(error, 'Could not load scan activity', { log: '[jobQueue] system/jobs failed' })

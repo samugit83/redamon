@@ -158,3 +158,22 @@ describe('sharing not in force: the view before step 4.5 (DV-30)', () => {
     expect(others).toEqual({ queued: 2, running: 3, needsReview: 1 })
   })
 })
+
+describe('the projects shared with the caller, counted apart (step 4.11)', () => {
+  test('in force: sharedProjectIds names the listed projects the caller does not own, never their own', async () => {
+    const body = await activity() as Activity & { sharedProjectIds?: string[] }
+    expect(body.sharedProjectIds).toEqual(['p-alice'])
+    h.eff = { userId: 'alice' }
+    const owner = await activity() as Activity & { sharedProjectIds?: string[] }
+    expect(owner.sharedProjectIds).toEqual([])
+  })
+
+  test.each([
+    ['the switch off', { identity: true, permissions: true }, { enabled: true }],
+    ['the policy disabled', ON, {}],
+  ])('%s: no sharedProjectIds key (DV-30)', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    state.policy = policy
+    expect(await activity()).not.toHaveProperty('sharedProjectIds')
+  })
+})

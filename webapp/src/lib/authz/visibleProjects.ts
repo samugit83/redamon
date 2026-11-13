@@ -152,6 +152,21 @@ export function jobQueueScope(subject: ProjectAccessSubject, visible: VisiblePro
   }
 }
 
+/**
+ * Of the project rows a read with `visible` listed (their `userId` selected), the ids `subject` does
+ * not own: the projects shared with them, which the scan activity view counts apart from their own
+ * (step 4.11). Empty without shares listed; a row without its owner is never called shared.
+ */
+export function sharedProjectIds(
+  subject: ProjectAccessSubject,
+  visible: VisibleProjects,
+  rows: ReadonlyArray<{ id: string; userId?: string | null }>,
+): string[] {
+  const userId = subjectId(subject)
+  if (!visible.withShares || userId === null) return []
+  return rows.filter((row) => typeof row.userId === 'string' && row.userId !== userId).map((row) => row.id)
+}
+
 /** The ids of the projects `subject` sees, oldest first. One read (and the policy); a failed read throws. */
 export async function visibleProjectIds(subject: ProjectAccessSubject): Promise<string[]> {
   const rows = await prisma.project.findMany({

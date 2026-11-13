@@ -9,13 +9,16 @@
  * `source` so the UI knows which ones it can act on - only a queue row can be
  * canceled or re-confirmed; the rest are stopped from the toolbar.
  *
- * Scope: this project in full, the operator's other projects as a count only.
+ * Scope: this project in full, the operator's other projects as a count only. With sharing in force
+ * the projects shared with the operator are counted apart (`sharedProjectIds`), and a queued job is
+ * cancelled or re-confirmed only by someone whose access reaches recon:schedule (step 4.11).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, Activity } from 'lucide-react'
 import { useAlertModal } from '@/components/ui'
 import { usePaged, Pager } from './pagination'
 import { readApiError, toApiError, type ApiError } from '@/lib/apiError'
+import { useRefusal } from '@/hooks/useRefusal'
 import styles from './ScanScheduleTable.module.css'
 
 export interface QueueJob {
@@ -39,6 +42,8 @@ export interface QueueJob {
 interface ActivityPayload {
   mine: { running: QueueJob[]; queued: QueueJob[]; needsReview: QueueJob[]; recent: QueueJob[] }
   others: { queued: number; running: number; needsReview: number }
+  /** With sharing in force: the listed projects shared with the operator, not theirs. */
+  sharedProjectIds?: string[]
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -80,6 +85,8 @@ export function ScanQueuePanel({ projectId }: { projectId: string | null }) {
   const [data, setData] = useState<ActivityPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  // Both queue actions ask recon:schedule on the job's project (route manifest).
+  const queueRefusal = useRefusal('recon:schedule', projectId)?.text ?? null
 
   const refresh = useCallback(async () => {
     try {
@@ -136,20 +143,25 @@ export function ScanQueuePanel({ projectId }: { projectId: string | null }) {
     }
   }, [refresh, confirm])
 
-  const { here, elsewhere } = useMemo(() => {
+  const { here, elsewhere, shared } = useMemo(() => {
     const mine = data?.mine
     const all = [...(mine?.running ?? []), ...(mine?.needsReview ?? []), ...(mine?.queued ?? [])]
     // Newest created on top: sort by enqueue/start time descending.
     const byNewest = (a: QueueJob, b: QueueJob) =>
       new Date(b.enqueuedAt).getTime() - new Date(a.enqueuedAt).getTime()
+    const sharedIds = new Set(data?.sharedProjectIds ?? [])
+    const notHere = all.filter(j => j.projectId !== projectId)
     return {
       here: all.filter(j => j.projectId === projectId).sort(byNewest),
-      elsewhere: all.filter(j => j.projectId !== projectId),
+      elsewhere: notHere.filter(j => !sharedIds.has(j.projectId)),
+      shared: notHere.filter(j => sharedIds.has(j.projectId)),
     }
   }, [data, projectId])
 
   const elsewhereRunning = elsewhere.filter(j => isRunning(j.status)).length
   const elsewhereQueued = elsewhere.length - elsewhereRunning
+  const sharedRunning = shared.filter(j => isRunning(j.status)).length
+  const sharedQueued = shared.length - sharedRunning
   const others = data?.others
 
   // At most 30 rows (fixed); a big org batch pages through the rest.
@@ -185,9 +197,9 @@ export function ScanQueuePanel({ projectId }: { projectId: string | null }) {
                 {j.source === 'queue' && j.status === 'needs_review' && (
                   <button
                     className={`${styles.iconBtn} ${styles.textBtn}`}
-                    disabled={busyId === j.id}
+                    disabled={busyId === j.id || !!queueRefusal}
                     onClick={() => act(j.id, 'reconfirm')}
-                    title={'Run it again. A job is held when the project settings changed after it was ' +
+                    title={queueRefusal ?? 'Run it again. A job is held when the project settings changed after it was ' +
                       'queued (it then runs with the current settings), or when its start got no ' +
                       'answer (check first that the scan did not start).'}
                   >
@@ -197,9 +209,9 @@ export function ScanQueuePanel({ projectId }: { projectId: string | null }) {
                 {j.source === 'queue' && !isRunning(j.status) && (
                   <button
                     className={`${styles.iconBtn} ${styles.textBtn} ${styles.dangerBtn}`}
-                    disabled={busyId === j.id}
+                    disabled={busyId === j.id || !!queueRefusal}
                     onClick={() => act(j.id, 'cancel')}
-                    title="Cancel this queued job"
+                    title={queueRefusal ?? 'Cancel this queued job'}
                   >
                     Cancel
                   </button>
@@ -212,10 +224,13 @@ export function ScanQueuePanel({ projectId }: { projectId: string | null }) {
       </table>
       <Pager page={herePage.page} pageCount={herePage.pageCount} total={herePage.total} onPage={herePage.setPage} />
 
-      {(elsewhere.length > 0 || (others && others.running + others.queued + others.needsReview > 0)) && (
+      {(elsewhere.length > 0 || shared.length > 0 || (others && others.running + others.queued + others.needsReview > 0)) && (
         <p className={styles.hint}>
           {elsewhere.length > 0 && (
             <>Your other projects: {elsewhereRunning} running, {elsewhereQueued} queued. </>
+          )}
+          {shared.length > 0 && (
+            <>Projects shared with you: {sharedRunning} running, {sharedQueued} queued. </>
           )}
           {others && others.running + others.queued + others.needsReview > 0 && (
             <>Other users: {others.running} running, {others.queued} queued
