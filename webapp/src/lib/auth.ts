@@ -133,27 +133,26 @@ export async function createWsTicket(
   socket: WsSocket,
   // The person actually signed in, when an admin is simulating `userId`. The
   // agent records it on the runs it starts, so an audit row names who really
-  // pressed the button. Omitted when it is `userId` itself.
-  realActorUserId?: string,
+  // pressed the button. Left out when it is `userId` itself.
+  realActorUserId: string | undefined,
   // An `agent` ticket's agent permissions (authz/agentCap.ts). The agent refuses the
   // approvals they do not cover; an empty list holds none, while no claim at all is
   // a ticket from before step 3.9b, which the agent treats as today's behaviour.
-  cap?: readonly AgentTicketCap[],
+  cap: readonly AgentTicketCap[] | undefined,
   // The project's owner (`ten`, step 5.3): the graph tenant whose graph, traffic and
   // credentials the socket's work uses, while `userId` (`sub`) stays the person, who
-  // keys the session, the chat and the loop. The ticket route always passes it; the
-  // agent reads a ticket without it as `sub`, which only an owner's ticket ever was.
-  tenantUserId?: string
+  // keys the session, the chat and the loop. Required and always written, so a new
+  // caller cannot mint a ticket the agent would read as the person's own graph.
+  tenantUserId: string
 ): Promise<string | null> {
   const key = getWsTicketSecret()
   if (!key) return null
   // An empty tenant would run the socket's work on nobody's graph: refused, never omitted.
-  if (tenantUserId !== undefined && !tenantUserId) throw new Error('A ticket tenant is a non-empty user id')
+  if (!tenantUserId) throw new Error('A ticket tenant is a non-empty user id')
   // A plain string claim, not setAudience(), which may write a list: the agent
   // compares `aud` with its socket name and accepts exactly one string.
   return new SignJWT({
-    sub: userId, pid: projectId, sid: sessionId, aud: socket,
-    ...(tenantUserId ? { ten: tenantUserId } : {}),
+    sub: userId, pid: projectId, sid: sessionId, aud: socket, ten: tenantUserId,
     ...(realActorUserId && realActorUserId !== userId ? { act: realActorUserId } : {}),
     ...(cap ? { cap: [...cap] } : {}),
   })
