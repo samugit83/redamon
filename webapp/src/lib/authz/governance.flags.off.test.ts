@@ -21,6 +21,11 @@
  * readers in GOVERNANCE_READERS; pluginAllowlist.test.ts and pluginAllowlist.routes.test.ts pin the
  * Gateway, the action start and the plugin screens in both states).
  *
+ * Step 6.2 adds the users directory and one account's detail. With the switch off GET /api/admin/users
+ * and GET /api/admin/users/[id] answer 404 before they read the session or the database (both route
+ * files are readers in GOVERNANCE_READERS; the test at the end, and api/admin/users/route.test.ts), and
+ * their pages sit under /admin, which does not exist.
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -119,6 +124,8 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
   test('no production code reads the governance switch outside the named readers', () => {
     const GOVERNANCE_READERS = [
       'src/app/admin/layout.tsx',
+      'src/app/api/admin/users/[id]/route.ts',
+      'src/app/api/admin/users/route.ts',
       'src/app/plugins/[pluginId]/[[...screen]]/page.tsx',
       'src/app/settings/users/layout.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
@@ -156,5 +163,29 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.9): plugin allowlists are ignored'
     expect(await pluginAllowedFor('user-1', 'other')).toBe(true)
     expect(readAccessRules).toHaveBeenCalledWith('other')
     vi.doUnmock('@/lib/plugins/accessRuleStore')
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.2): the users directory routes do not exist', () => {
+  test('GET /api/admin/users and /api/admin/users/[id] answer 404 and read neither the session nor the database', async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    vi.doMock('@/lib/session', () => ({ requireSession: vi.fn(async () => { touched('session'); return { userId: 'adm-a', role: 'admin' } }) }))
+    const { GET: list } = await import('@/app/api/admin/users/route')
+    const { GET: detail } = await import('@/app/api/admin/users/[id]/route')
+    for (const [identity, permissions] of [['', ''], ['true', 'true']]) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', identity)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', permissions)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect((await list(new Request('http://redamon.test/api/admin/users') as never)).status).toBe(404)
+      expect((await detail(new Request('http://redamon.test/api/admin/users/m-1') as never, { params: Promise.resolve({ id: 'm-1' }) })).status).toBe(404)
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/session')
   })
 })

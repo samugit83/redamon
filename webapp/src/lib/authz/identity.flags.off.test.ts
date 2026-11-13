@@ -227,6 +227,10 @@ const IDENTITY_READERS: string[] = [
   // Step 4.2: the instance sharing policy, read only with the sharing switch on, which needs this
   // switch (sharing.flags.off.test.ts).
   'src/lib/authz/sharingPolicy.ts',
+  // Step 6.2: the admin users directory reads each account's status, must-change flag, last sign-in
+  // and profile, reached only through routes that answer 404 with the governance switch off, which
+  // needs this switch (governance.flags.off.test.ts).
+  'src/lib/authz/userDirectory.ts',
   // Step 3.11: an admin's profile and the session version a removal raises, reached only through
   // a route that answers 404 with the permissions switch off.
   'src/lib/authz/userPermissionAdmin.ts',

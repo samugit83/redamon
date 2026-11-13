@@ -258,6 +258,9 @@ describe('RBAC_PERMISSIONS_ENABLED off (step 3.4)', () => {
       'src/lib/authz/sharedTools.ts',
       // Step 3.15: the review reads the holders' overrides only with the switch on.
       'src/lib/authz/updateReview.ts',
+      // Step 6.2: the admin users directory lists each member's sets (and filters by one), reached
+      // only through routes that answer 404 with the governance switch off, which needs this switch.
+      'src/lib/authz/userDirectory.ts',
       // Step 3.11: an account's sets and overrides, read and written only through a route that
       // answers 404 with the switch off.
       'src/lib/authz/userPermissionAdmin.ts',

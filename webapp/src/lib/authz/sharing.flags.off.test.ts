@@ -24,6 +24,11 @@
  * the switch off, so every share route answers 404 having read no share (each route test pins the
  * 404 in the three states, and that no share is read or written).
  *
+ * Step 6.2 adds the admin users directory (lib/authz/userDirectory.ts): with sharing not in force it
+ * selects no collaborator count (shared counts read null) and lists no user's shares; with it in force
+ * a user's shares are listed only while Root's policy lets admins see every share
+ * (api/admin/users/route.test.ts, with the real policy reader for the switch off).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/sharing.flags.off.test.ts
  * @vitest-environment node
  */
@@ -153,6 +158,9 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/lib/authz/projectShares.ts',
       // Step 4.2: the policy's shape and reader; the reader reads only with the switch on.
       'src/lib/authz/sharingPolicy.ts',
+      // Step 6.2: the admin users directory counts and lists a person's shares only with sharing in
+      // force (the policy read through sharingPolicyInForce; api/admin/users/route.test.ts pins both).
+      'src/lib/authz/userDirectory.ts',
     ]
     const NAMES = new RegExp(
       '\\b(projectCollaborators?|projectBreakGlass|project_collaborators|project_break_glass|includeSharedProjects|' +
@@ -175,6 +183,8 @@ describe('RBAC_SHARING_ENABLED off (step 4.2)', () => {
       'src/lib/authz/projectAccess.ts',
       // Step 4.4: the share writers, reached only past the share routes' gate (below).
       'src/lib/authz/projectShares.ts',
+      // Step 6.2: the users directory's shared counts and a user's shares, only with sharing in force (above).
+      'src/lib/authz/userDirectory.ts',
       'src/lib/authz/visibleProjects.ts',
     ]
     const ACCESSORS = /\.(projectCollaborator|projectBreakGlass)\.|\b(collaborators|collaborations|breakGlass)\s*:\s*\{/
