@@ -1,20 +1,29 @@
 /**
  * What the drawer hid when the person answered one of the agent's requests, and how to put it
- * back when the agent refuses the answer for a missing permission (step 3.9b review, finding 3).
+ * back when the agent refuses the answer (step 3.9b review, finding 3; step 5.4 review).
  *
- * The drawer hides the card and shows the decision at once. A `permission_required` refusal
- * leaves the request open on the agent, and no request frame comes again (unlike an
- * `mcp_toolset_busy` refusal), so the card is restored from here, the optimistic decision line
- * goes, and the chat says which permission the answer needed. Each answer replaces its kind's
- * entry; the agent's frame names the refused answer (`answer`, and the Fireteam wave and member).
+ * The drawer hides the card and shows the decision at once. A refusal leaves the request open on
+ * the agent, and no request frame comes again (unlike an `mcp_toolset_busy` refusal), so the card
+ * is restored from here, the optimistic decision line goes, and the chat says why: the permission
+ * the answer needed (`permission_required`), a decision-time check that did not answer
+ * (`decision_check_unavailable`, which refuses the owner too), or the agent's own sentence for a
+ * code this drawer does not know. Each answer replaces its kind's entry; the agent's frame names
+ * the refused answer (`answer`, and the Fireteam wave and member).
  */
 import { PERMISSIONS, isPermissionId } from '@/lib/authz/permissions'
-import type { ApprovalRequestPayload, ToolConfirmationRequestPayload } from '@/lib/websocket-types'
+import type {
+  ApprovalRequestPayload, QuestionRequestPayload, ToolConfirmationRequestPayload,
+} from '@/lib/websocket-types'
+import { agentErrorText, reopensPendingRequest } from './agentErrorText'
 import type { ChatItem, FireteamItem } from '../types'
 import type { PlanWaveItem } from '../AgentTimeline'
 
 export interface AnswerUndo {
   approval: { request: ApprovalRequestPayload; messageId: string } | null
+  /** With what the person entered, so a refused answer need not be typed again. */
+  question: {
+    request: QuestionRequestPayload; messageId: string; answerText: string; selectedOptions: string[]
+  } | null
   toolConfirmation: {
     request: ToolConfirmationRequestPayload | null
     /** The card as it was before a reject marked it; null when the answer left it as it was. */
@@ -26,15 +35,26 @@ export interface AnswerUndo {
   fireteam: Record<string, { wave: PlanWaveItem; waveIdx: number }>
 }
 
-export const emptyAnswerUndo = (): AnswerUndo => ({ approval: null, toolConfirmation: null, fireteam: {} })
+export const emptyAnswerUndo = (): AnswerUndo => ({ approval: null, question: null, toolConfirmation: null, fireteam: {} })
 
 export const fireteamUndoKey = (waveId: string, memberId: string) => `${waveId}\u0000${memberId}`
 
+export const DECISION_CHECK_UNAVAILABLE_TEXT = 'RedAmon could not confirm your permission to take this decision, '
+  + 'so your answer was not applied. The request is open again: try again in a moment.'
+
+interface RefusalBase {
+  kind: 'permission' | 'unavailable' | 'other'
+  permission: string
+  /** The chat's sentence for it. */
+  text: string
+}
+
 export type RefusedAnswer =
-  | { answer: 'approval' | 'tool_confirmation'; permission: string }
-  | { answer: 'fireteam_member_confirmation'; permission: string; waveId: string; memberId: string }
+  | RefusalBase & { answer: 'approval' | 'tool_confirmation' | 'question' }
+  | RefusalBase & { answer: 'fireteam_member_confirmation'; waveId: string; memberId: string }
 
 interface RefusalPayload {
+  message?: unknown
   code?: unknown
   recoverable?: unknown
   permission?: unknown
@@ -43,16 +63,24 @@ interface RefusalPayload {
   member_id?: unknown
 }
 
-/** The answer a recoverable `permission_required` frame refused; null for any other frame. */
+/**
+ * The answer a recoverable frame naming one refused, whatever the code; null for any other
+ * frame, and for `mcp_toolset_busy`, whose request the agent sends again itself.
+ */
 export function refusedAnswer(payload: RefusalPayload | null | undefined): RefusedAnswer | null {
-  if (!payload || payload.code !== 'permission_required' || payload.recoverable !== true) return null
+  if (!payload || payload.recoverable !== true || reopensPendingRequest(payload)) return null
   const permission = typeof payload.permission === 'string' ? payload.permission : ''
-  if (payload.answer === 'approval' || payload.answer === 'tool_confirmation') {
-    return { answer: payload.answer, permission }
+  const why: RefusalBase = payload.code === 'permission_required'
+    ? { kind: 'permission', permission, text: permissionRefusalText(permission) }
+    : payload.code === 'decision_check_unavailable'
+      ? { kind: 'unavailable', permission, text: DECISION_CHECK_UNAVAILABLE_TEXT }
+      : { kind: 'other', permission, text: agentErrorText(payload) }
+  if (payload.answer === 'approval' || payload.answer === 'tool_confirmation' || payload.answer === 'question') {
+    return { answer: payload.answer, ...why }
   }
   if (payload.answer === 'fireteam_member_confirmation'
       && typeof payload.wave_id === 'string' && typeof payload.member_id === 'string') {
-    return { answer: payload.answer, permission, waveId: payload.wave_id, memberId: payload.member_id }
+    return { answer: payload.answer, ...why, waveId: payload.wave_id, memberId: payload.member_id }
   }
   return null
 }

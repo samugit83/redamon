@@ -287,7 +287,7 @@ export function AIAssistantDrawer({
     awaitingApprovalRef, isProcessingApproval,
     awaitingQuestionRef, isProcessingQuestion,
     awaitingToolConfirmationRef, isProcessingToolConfirmation,
-    pendingApprovalToolId, pendingApprovalWaveId, answerUndo,
+    pendingApprovalToolId, pendingApprovalWaveId, answerUndo, setAnswerText, setSelectedOptions,
     onGraphMutation: onRefetchGraph,
     setLoopStatus,
     setRateLimitWait,

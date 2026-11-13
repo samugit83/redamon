@@ -147,3 +147,48 @@ describe('a failure before the first event is shown (G-4)', () => {
     expect(screen.getByRole('button', { name: 'Choose a model and start' })).toBeInTheDocument()
   })
 })
+
+describe('a push the agent refused (step 5.4 review)', () => {
+  const unavailable = 'Nothing was pushed: RedAmon could not check that you may push to this project\'s repository. '
+    + 'The changes are saved on the remediation; start the fix again in a moment. (decision_check_unavailable)'
+
+  for (const status of ['error', 'completed'] as const) {
+    test(`a check that did not answer offers to start the fix again (status ${status})`, async () => {
+      codefix.state = {
+        ...codefix.state, status, errorCode: 'decision_check_unavailable', error: unavailable,
+        activityLog: [
+          { id: 'log-1', type: 'error', message: unavailable, ts: 0 },
+          ...(status === 'completed' ? [{ id: 'log-2', type: 'complete', completionStatus: 'error', ts: 0 }] : []),
+        ],
+      }
+      gateSpies.ensureFeatureModel.mockResolvedValue('m')
+      renderViewer()
+      expect(screen.getByRole('alert')).toHaveTextContent(/could not confirm your permission to push this fix/)
+      fireEvent.click(screen.getByRole('button', { name: 'Start the fix again' }))
+      await waitFor(() => expect(codefix.startFix).toHaveBeenCalledWith('rem-1'))
+      expect(gateSpies.ensureFeatureModel).toHaveBeenCalledWith('codefix')
+    })
+  }
+
+  test('a refusal for the permission keeps the notice in the log and offers no retry', () => {
+    const notice = 'Nothing was pushed: pushing the fix with the project\'s GitHub token needs Manage on this project.'
+    codefix.state = {
+      ...codefix.state, status: 'completed', errorCode: 'permission_required', error: notice,
+      activityLog: [{ id: 'log-1', type: 'error', message: notice, ts: 0 },
+        { id: 'log-2', type: 'complete', completionStatus: 'error', ts: 0 }],
+    }
+    renderViewer()
+    expect(screen.queryByRole('button', { name: 'Start the fix again' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+  })
+
+  test('a push the check admitted shows nothing extra (DV-30)', () => {
+    codefix.state = {
+      ...codefix.state, status: 'completed', errorCode: null, error: null,
+      activityLog: [{ id: 'log-1', type: 'complete', completionStatus: 'pr_created', ts: 0 }],
+    }
+    renderViewer()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Start the fix again' })).toBeNull()
+  })
+})

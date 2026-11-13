@@ -71,6 +71,11 @@ export function DiffViewer({
   const lastEntry = codefix.activityLog[codefix.activityLog.length - 1]
   const showConnectionError = codefix.status === 'error' && codefix.errorCode !== 'model_required'
     && !!codefix.error && !(lastEntry?.type === 'error' && lastEntry.message === codefix.error)
+  // The agent asks the webapp at push time whether the person may still push, and refuses when
+  // the check does not answer (the owner too): the session has ended, the approved changes are
+  // on the remediation, so the way to push them is a new run.
+  const pushCheckUnavailable = codefix.errorCode === 'decision_check_unavailable'
+    && (codefix.status === 'error' || codefix.status === 'completed')
 
   return (
     <div className={styles.viewer}>
@@ -140,6 +145,18 @@ export function DiffViewer({
             <p role="alert">{codefix.error}</p>
             <button className={styles.startBtn} onClick={() => void handleStart()}>
               Try again
+            </button>
+          </div>
+        )}
+
+        {pushCheckUnavailable && (
+          <div className={styles.idleState}>
+            <p role="alert">
+              RedAmon could not confirm your permission to push this fix, so nothing was pushed. The approved
+              changes are saved on the remediation: try again in a moment.
+            </p>
+            <button className={styles.startBtn} onClick={() => void handleStart()}>
+              Start the fix again
             </button>
           </div>
         )}

@@ -639,6 +639,7 @@ export function useSendHandlers(deps: SendHandlersDeps) {
       content: `Answer: ${answer}`,
       timestamp: new Date(),
     }
+    answerUndo.current.question = { request: questionRequest, messageId: answerMessage.id, answerText, selectedOptions }
     setChatItems(prev => [...prev, answerMessage])
 
     try {
@@ -652,7 +653,7 @@ export function useSendHandlers(deps: SendHandlersDeps) {
     } finally {
       setTimeout(() => { isProcessingQuestion.current = false }, 1000)
     }
-  }, [questionRequest, answerText, selectedOptions, sendAnswer, awaitingQuestion,
+  }, [questionRequest, answerText, selectedOptions, sendAnswer, awaitingQuestion, answerUndo,
       setAwaitingQuestion, setQuestionRequest, setIsLoading, setChatItems, setAnswerText, setSelectedOptions])
 
   const handleStop = useCallback(() => {
