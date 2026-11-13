@@ -7,6 +7,7 @@ Includes phase-aware tool management.
 
 import os
 import re
+import json
 import asyncio
 import hashlib
 import logging
@@ -130,6 +131,25 @@ _CAPTURE_ROUTED_TOOLS = frozenset({
 })
 
 _HTTP_STATUS_RE = re.compile(r"HTTP/\d(?:\.\d)?\s+(\d{3})")
+
+# The sandbox's one msfconsole serves one project at a time (GHSA-w454-6hwp-fm58) and
+# admits a call only when it knows the project: these tools carry `_redamon_owner`.
+_MSF_CONSOLE_TOOLS = frozenset({"metasploit_console", "msf_restart"})
+
+
+def _msf_console_owner() -> str:
+    """The run's project and chat, as the Metasploit server reads them; "" without a project."""
+    from agent_context import current_log_session_id
+    project_id = current_project_id.get()
+    if not project_id:
+        return ""
+    return json.dumps({
+        "project_id": project_id,
+        "user_id": current_user_id.get(),
+        # A plan wave resets current_session_id to "" (set_tenant_context without a
+        # session); the per-turn log session id is the same chat.
+        "chat_session_id": current_session_id.get() or current_log_session_id.get(),
+    })
 
 
 def _first_http_status(text: str) -> str:
@@ -2725,6 +2745,18 @@ class PhaseAwareToolExecutor:
                     "error": "proxy_brain: cannot mint the run credential (is INTERNAL_API_KEY configured?).",
                 }
             tool_args = {**tool_args, "_redamon_ctx": _pb_ctx, "_redamon_run": _pb_run}
+
+        # Which project a Metasploit call is for is the server's whole admission rule,
+        # so it is stamped here over whatever the model put in the args, and a call
+        # without a project never leaves the agent.
+        if tool_name in _MSF_CONSOLE_TOOLS:
+            _msf_owner = _msf_console_owner()
+            if not _msf_owner:
+                return {
+                    "success": False, "output": None,
+                    "error": f"{tool_name}: no project in this run's context, so the Metasploit console cannot admit it.",
+                }
+            tool_args = {**tool_args, "_redamon_owner": _msf_owner}
 
         # Dispatch logic pulled into a closure so we can re-invoke with a
         # fresh tool reference after an MCP reconnect.

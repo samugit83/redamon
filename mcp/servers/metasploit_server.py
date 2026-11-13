@@ -53,7 +53,65 @@ MSF_DEFAULT_QUIET_PERIOD = float(os.getenv("MSF_DEFAULT_QUIET_PERIOD", "3"))
 # the console itself. Tab is the one control byte a command legitimately carries.
 _SESSION_CMD_CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
+# One msfconsole serves every project of the instance, so its sessions, jobs, module
+# context and global datastore are shared: a project at the console could list, type
+# into or kill another project's sessions (`sessions -i`, `set SESSION`, `route`, `irb`,
+# `sessions -K`, msf_restart), and a `setg RHOSTS` left by one engagement would aim the
+# next one's exploit at the wrong target. So the console is held by one project at a
+# time (GHSA-w454-6hwp-fm58): the holder keeps it while it runs a command, while it has
+# a live session or job, and for this long after its last command, so that a `use` /
+# `set` / `exploit` sequence is not cut in the middle. Every session and job in the
+# console is the holder's; the next project gets a restarted msfconsole.
+MSF_PROJECT_LEASE_IDLE_S = float(os.getenv("MSF_PROJECT_LEASE_IDLE_S", "600"))
+# The refresh loop rewrites the session/job cache every few seconds while the console
+# is idle; an older cache cannot prove the holder has nothing left to lose.
+_LEASE_CACHE_MAX_AGE_S = 30.0
+
 mcp = FastMCP(SERVER_NAME)
+
+
+def parse_console_owner(raw) -> Optional[dict]:
+    """The project and chat the agent stamped on a console call, or None.
+
+    The agent's executor overwrites `_redamon_owner` on every metasploit_console and
+    msf_restart call, so the model cannot choose it. Only the project is required: the
+    chat only decides which conversation a new session is listed under."""
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    project_id = data.get("project_id")
+    if not isinstance(project_id, str) or not project_id.strip():
+        return None
+    user_id = data.get("user_id")
+    chat_session_id = data.get("chat_session_id")
+    return {
+        "project_id": project_id,
+        "user_id": user_id if isinstance(user_id, str) else "",
+        "chat_session_id": chat_session_id if isinstance(chat_session_id, str) else "",
+    }
+
+
+NO_OWNER_REFUSAL = (
+    "[REFUSED] This Metasploit call names no project, so nothing was sent to the console. "
+    "The sandbox's msfconsole serves one project at a time and admits only calls the "
+    "agent has stamped with their project; rebuild the agent and restart the Kali "
+    "sandbox together so both run the same release."
+)
+
+
+def _busy_refusal(reason: str) -> str:
+    return (
+        f"[REFUSED] Metasploit is held by another project on this RedAmon instance ({reason}), "
+        "so nothing was sent to the console. The sandbox runs one msfconsole for every "
+        "project: it serves one project at a time and never shows or drives another "
+        "project's sessions. Try again later or continue without Metasploit; an "
+        "administrator can end that project's sessions and jobs in the Reverse Shell tab."
+    )
 
 
 class PersistentMsfConsole:
@@ -88,6 +146,17 @@ class PersistentMsfConsole:
         self._chat_session_map: Dict[int, str] = {}
         self._non_msf_sessions: Dict[str, dict] = {}
         self._detail_thread_started = False
+
+        # The project holding the console (see MSF_PROJECT_LEASE_IDLE_S). _detail_lock
+        # may be taken under _lease_lock, never the reverse; self.lock never under it.
+        self._lease_lock = threading.Lock()
+        self._holder: Optional[dict] = None
+        # Chats that ran a command under the current holder: the only ones the agent may
+        # link a session to.
+        self._lease_chats: Set[str] = set()
+        # An "opened" line read after the last cache refresh: a session the cache has not
+        # caught up with yet.
+        self._last_session_open_at: float = 0.0
 
     def start(self) -> bool:
         """Start the persistent msfconsole process."""
@@ -166,8 +235,15 @@ class PersistentMsfConsole:
                 if parts and parts[0].isdigit():
                     session_id = int(parts[0])
                     self.session_ids.add(session_id)
+                    self._last_session_open_at = time.time()
                     # A close line that was missed must not hand this id the old chat.
                     self._unlink_chat_session(session_id)
+                    # Every session in the console is the holder's, a handler's late
+                    # catch included. Read without _lease_lock: this thread feeds the
+                    # output queue a running command waits on, so it never blocks.
+                    holder = self._holder
+                    if holder and holder.get("chat_session_id"):
+                        self.link_chat_session(session_id, holder["chat_session_id"])
                     print(f"[MSF] Session {session_id} opened")
             except (ValueError, IndexError):
                 pass
@@ -344,6 +420,102 @@ class PersistentMsfConsole:
     def _forget_chat_links(self) -> None:
         with self._detail_lock:
             self._chat_session_map.clear()
+
+    # ─── One project at a time (GHSA-w454-6hwp-fm58) ───
+
+    def claim(self, owner: dict) -> Optional[str]:
+        """Admit a console call for `owner`'s project, or say why not (nothing is sent).
+
+        The holder's own calls are always admitted. Another project takes the console
+        only once the holder runs nothing, has no session or job and has been idle for
+        MSF_PROJECT_LEASE_IDLE_S; it then gets a restarted msfconsole, so no module
+        context, global option or route of the previous project reaches it. Each
+        admitted call must be paired with release()."""
+        now = time.time()
+        handover = False
+        with self._lease_lock:
+            holder = self._holder
+            if holder and holder["project_id"] != owner["project_id"]:
+                reason = self._lease_busy_reason(holder, now)
+                if reason:
+                    print(f"[MSF] Refused a console call of project {owner['project_id']}: "
+                          f"held by project {holder['project_id']} ({reason})")
+                    return _busy_refusal(reason)
+                handover = True
+            if holder is None or handover:
+                self._holder = {"project_id": owner["project_id"], "active": 0}
+                self._lease_chats = set()
+            holder = self._holder
+            holder["user_id"] = owner["user_id"]
+            if owner["chat_session_id"]:
+                holder["chat_session_id"] = owner["chat_session_id"]
+                self._lease_chats.add(owner["chat_session_id"])
+            holder["active"] += 1
+            holder["last_used"] = now
+        if handover:
+            # Outside _lease_lock: the restart waits on self.lock. Meanwhile the new
+            # holder's "active" already refuses everyone else.
+            self._reset_for_next_project(owner["project_id"])
+        return None
+
+    def release(self, owner: dict) -> None:
+        """End a call claim() admitted; the idle time counts from here."""
+        with self._lease_lock:
+            holder = self._holder
+            if holder and holder["project_id"] == owner["project_id"]:
+                holder["active"] = max(0, holder["active"] - 1)
+                holder["last_used"] = time.time()
+
+    def _lease_busy_reason(self, holder: dict, now: float) -> Optional[str]:
+        """Why the holder keeps the console, or None once another project may take it."""
+        if holder["active"] > 0:
+            return "it is running a command"
+        with self._detail_lock:
+            cache_age = now - self._detail_cache_time
+            live = bool(self._session_details or self._job_details)
+            opened_since_refresh = self._last_session_open_at > self._detail_cache_time
+        if live or opened_since_refresh:
+            return "it has live sessions or jobs"
+        idle = now - holder.get("last_used", 0.0)
+        if idle < MSF_PROJECT_LEASE_IDLE_S:
+            left = int(MSF_PROJECT_LEASE_IDLE_S - idle) + 1
+            return f"it used the console recently; free in about {left} s if it stays idle"
+        if cache_age > _LEASE_CACHE_MAX_AGE_S:
+            # A restart would kill whatever the stale cache does not show.
+            return "its sessions cannot be checked right now"
+        return None
+
+    def _reset_for_next_project(self, project_id: str) -> None:
+        print(f"[MSF] Console passes to project {project_id}: restarting msfconsole")
+        try:
+            with self.lock:
+                self.restart()
+                self.start()
+        except Exception as e:
+            # execute() starts a missing process itself; the call carries on.
+            print(f"[MSF] Restart for the next project failed: {e}")
+        with self._detail_lock:
+            self._session_details = []
+            self._job_details = []
+            self._detail_cache_time = time.time()
+
+    def claim_chat_link(self, msf_session_id: int, chat_session_id: str) -> Optional[str]:
+        """Take the agent's link of a session to a chat, or say why not (a code).
+
+        The console links a session itself when its "opened" line is read. The agent's
+        link comes from a regex over tool output, which a target's or a printed line can
+        forge, so it never moves a session another chat already has and it names only a
+        chat that ran a command under the current holder."""
+        with self._lease_lock:
+            known_chat = chat_session_id in self._lease_chats
+        if not known_chat:
+            return "chat_not_holder"
+        with self._detail_lock:
+            current = self._chat_session_map.get(msf_session_id)
+            if current and current != chat_session_id:
+                return "already_linked"
+            self._chat_session_map[msf_session_id] = chat_session_id
+        return None
 
     def restart(self):
         """Restart msfconsole for a completely clean state."""
@@ -972,7 +1144,7 @@ def _clean_ansi_for_progress(text: str) -> str:
 # =============================================================================
 
 @mcp.tool()
-def metasploit_console(command: str) -> str:
+def metasploit_console(command: str, _redamon_owner: str = "") -> str:
     """
     Execute Metasploit Framework console commands with PERSISTENT state.
 
@@ -1042,17 +1214,27 @@ def metasploit_console(command: str) -> str:
     Returns:
         The output from msfconsole (check prompt to know your context)
     """
+    owner = parse_console_owner(_redamon_owner)
+    if owner is None:
+        return NO_OWNER_REFUSAL
+
     if DEBUG:
         print(f"[MSF] Executing: {command[:100]}...")
 
     msf = get_msf_console()
-    timeout, quiet_period = _get_timing_for_command(command)
+    refusal = msf.claim(owner)
+    if refusal:
+        return refusal
+    try:
+        timeout, quiet_period = _get_timing_for_command(command)
 
-    if DEBUG:
-        print(f"[MSF] timeout={timeout}s, quiet_period={quiet_period}s")
+        if DEBUG:
+            print(f"[MSF] timeout={timeout}s, quiet_period={quiet_period}s")
 
-    result = msf.execute(command, timeout=timeout, quiet_period=quiet_period)
-    result = _clean_ansi_output(result)
+        result = msf.execute(command, timeout=timeout, quiet_period=quiet_period)
+        result = _clean_ansi_output(result)
+    finally:
+        msf.release(owner)
 
     if DEBUG:
         print(f"[MSF] Result ({len(result)} chars)")
@@ -1061,7 +1243,7 @@ def metasploit_console(command: str) -> str:
 
 
 @mcp.tool()
-def msf_restart() -> str:
+def msf_restart(_redamon_owner: str = "") -> str:
     """
     Restart msfconsole completely for a clean state.
 
@@ -1080,16 +1262,25 @@ def msf_restart() -> str:
     Returns:
         Confirmation message with restart status
     """
-    print("[MSF] Restarting msfconsole (full reset)...")
+    owner = parse_console_owner(_redamon_owner)
+    if owner is None:
+        return NO_OWNER_REFUSAL
 
     msf = get_msf_console()
-    msf.restart()
+    # A restart ends every session in the console, so only the holder may ask for it.
+    refusal = msf.claim(owner)
+    if refusal:
+        return refusal
+    try:
+        print("[MSF] Restarting msfconsole (full reset)...")
+        msf.restart()
+        started = msf.start()
+    finally:
+        msf.release(owner)
 
-    # Start fresh process
-    if msf.start():
+    if started:
         return "Metasploit console restarted successfully. All sessions cleared, all module settings reset. Ready for new commands."
-    else:
-        return "[ERROR] Failed to restart msfconsole. Check container logs."
+    return "[ERROR] Failed to restart msfconsole. Check container logs."
 
 
 # =============================================================================
@@ -1228,8 +1419,11 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
                 msf_sid = body.get("msf_session_id")
                 chat_sid = body.get("chat_session_id")
                 if msf_sid is not None and chat_sid:
-                    msf.link_chat_session(int(msf_sid), str(chat_sid))
-                    self._send_json(200, {"ok": True})
+                    refused = msf.claim_chat_link(int(msf_sid), str(chat_sid))
+                    if refused:
+                        self._send_json(409, {"error": "Link refused", "code": refused})
+                    else:
+                        self._send_json(200, {"ok": True})
                 else:
                     self._send_json(400, {"error": "Missing msf_session_id or chat_session_id"})
 

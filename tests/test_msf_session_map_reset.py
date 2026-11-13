@@ -69,7 +69,8 @@ class RestartClearsTheMap(unittest.TestCase):
         console = _linked_console()
         with mock.patch.object(metasploit_server, "get_msf_console", return_value=console), \
                 mock.patch.object(console, "start", return_value=True):
-            msg = metasploit_server.msf_restart()
+            msg = metasploit_server.msf_restart(
+                _redamon_owner='{"project_id": "project-a", "chat_session_id": "chat-of-project-a"}')
         self.assertIn("restarted successfully", msg)
         self.assertEqual(console._chat_session_map, {})
 

@@ -824,6 +824,9 @@ services:
       MSF_PROGRESS_PORT: "8013"
       HYDRA_PROGRESS_PORT: "8014"
       MSF_AUTO_UPDATE: "${MSF_AUTO_UPDATE:-true}"
+      # Seconds an idle project keeps the shared msfconsole before another project
+      # may take it (GHSA-w454-6hwp-fm58; mcp/servers/metasploit_server.py).
+      MSF_PROJECT_LEASE_IDLE_S: "${MSF_PROJECT_LEASE_IDLE_S:-600}"
       NUCLEI_AUTO_UPDATE: "${NUCLEI_AUTO_UPDATE:-true}"
       TERMINAL_WS_PORT: "8016"
       TERMINAL_MAX_SESSIONS: ${TERMINAL_MAX_SESSIONS:-}

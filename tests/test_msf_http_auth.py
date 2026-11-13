@@ -113,9 +113,10 @@ class _RecordingConsole:
         self.calls.append(("kill_job", jid))
         return {"busy": False, "output": ""}
 
-    def link_chat_session(self, msf_session_id, chat_session_id):
+    def claim_chat_link(self, msf_session_id, chat_session_id):
         self.calls.append(("link", msf_session_id, chat_session_id))
         self._chat_session_map[msf_session_id] = chat_session_id
+        return None
 
 
 class _Served:
