@@ -392,9 +392,11 @@ def fixture_accounts(path):
             emails.append(line.split('|', 1)[0])
     return emails
 
-def selftest(fixtures, catalog_path):
+def selftest(fixtures, catalog_path, added_sample):
     results = []
     check = lambda label, ok: results.append((label, bool(ok)))
+    check('the NOTE lines name only the tables a run added, whatever the host collation',
+          added_sample == 'conversation_shares user_sessions')
     catalog = json.load(open(catalog_path))
     scenarios = sorted(f[:-4] for f in os.listdir(os.path.join(fixtures, 'seed')) if f.endswith('.sql'))
     for scn in scenarios:
@@ -447,6 +449,11 @@ elif cmd == 'selftest':
     sys.exit(selftest(*args))
 PY
 py() { python3 -c "$PY_HELPER" "$@"; }
+# comm needs both inputs in its own collation; Postgres lists in byte order, which an en_US host
+# disagrees with ('_' sorts after letters there), and comm then reports tables that were already there.
+added_lines() { # before now -> the lines of now that before lacks
+  LC_ALL=C comm -13 <(printf '%s\n' "$1" | LC_ALL=C sort) <(printf '%s\n' "$2" | LC_ALL=C sort)
+}
 
 PFX="rbac-upg-$$"
 NET="$PFX-net"
@@ -502,7 +509,11 @@ done < <(find "$FIX/seed" -maxdepth 1 -name '*.sql' | LC_ALL=C sort)
 
 if [ "${MODES[0]}" = selftest ]; then
   echo "== selftest (offline)"
-  py selftest "$FIX" "$ROOT/webapp/src/lib/authz/permissionCatalog.json"
+  # Postgres lists names in byte order, where conversation_shares precedes conversations; an
+  # en_US host sorts them the other way round.
+  added_sample="$(LC_ALL=en_US.UTF-8 added_lines $'conversations\nprojects\nusers' \
+    $'conversation_shares\nconversations\nprojects\nuser_sessions\nusers' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+  py selftest "$FIX" "$ROOT/webapp/src/lib/authz/permissionCatalog.json" "$added_sample"
   exit $?
 fi
 
@@ -646,10 +657,10 @@ note_additions() {
     WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1")"
   now_cols="$(psql_db -c "SELECT column_name FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'users' ORDER BY column_name")"
-  for x in $(comm -13 <(printf '%s\n' "$TABLES") <(printf '%s\n' "$now_tables")); do
+  for x in $(added_lines "$TABLES" "$now_tables"); do
     echo "  NOTE table added: $x"
   done
-  for x in $(comm -13 <(printf '%s\n' "$USER_COLS") <(printf '%s\n' "$now_cols")); do
+  for x in $(added_lines "$USER_COLS" "$now_cols"); do
     echo "  NOTE users column added: $x"
   done
 }
