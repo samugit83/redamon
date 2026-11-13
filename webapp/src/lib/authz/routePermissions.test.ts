@@ -126,6 +126,8 @@ const NO_ROWS: Readonly<Record<string, string>> = {
   'roles:manage': 'no seeded admin lacks it and a member is refused by the switch-off 404 as well; the route tests cover it',
   'admin_profiles:manage': 'Root\'s own (rootOnly); the route tests cover it',
   'instance:settings': 'Root\'s own (rootOnly): no seeded account other than the confirmed Root holds it, and the instance provider routes are 404 unless RBAC_GOVERNANCE_ENABLED is on; the route tests cover them (step 6.11)',
+  'projects:oversee': 'the oversight list answers 404 unless sharing is in force, which the generated rows do not set up; p4.tsv covers it by hand (step 4.14)',
+  'projects:administer': "Root's own (rootOnly): no seeded account but Root holds it, and the shared instance's Root is unconfirmed; tests/rbac_breakglass_live.sh covers break-glass on a disposable instance, p4.tsv the refusals (step 4.14)",
   'project:share': 'every holder request that passes the route\'s own checks looks up an account (counted against a per-person ceiling and audited) or changes a share, and the activity feed (a read) answers 404 unless sharing is in force, which the generated rows do not set up; p4.tsv covers the share routes and the feed by hand (steps 4.4, 4.13)',
   'audit:read': 'the console routes answer 404 with RBAC_GOVERNANCE_ENABLED off, which the generated rows do not turn on; Security auditor holds it and User manager lacks it: api/admin/audit/route.test.ts covers both, and the governance rows of step 6.13 run them live',
   'audit:export': 'as audit:read: 404 with RBAC_GOVERNANCE_ENABLED off, which the generated rows do not turn on; api/admin/audit/route.test.ts covers the holder, the refusal and the audit row',
@@ -293,7 +295,7 @@ describe('route permissions: every route (steps 3.8, 3.9; PE-19, PE-22)', () => 
     }
     // A later phase's feature is that phase's to wire (each later manifest test requires its own); the
     // ones a step has wired are listed here.
-    const WIRED_NEW_FEATURES = new Set<string>(['project:share', 'audit:read', 'audit:export'])
+    const WIRED_NEW_FEATURES = new Set<string>(['project:share', 'audit:read', 'audit:export', 'projects:oversee', 'projects:administer'])
     expect(PERMISSION_IDS.filter(p => !PERMISSIONS[p].gatesExisting && named().includes(p) && !WIRED_NEW_FEATURES.has(p))).toEqual([])
   })
 

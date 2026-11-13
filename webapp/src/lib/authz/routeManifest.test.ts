@@ -220,6 +220,7 @@ const SAME_ORIGIN_ROUTES = [
   '/api/account/sessions/[sid]',
   '/api/auth/sessions/revoke-all',
   '/api/invite/accept',
+  '/api/projects/[id]/breakglass',
   '/api/projects/[id]/collaborators',
   '/api/projects/[id]/collaborators/[userId]',
   '/api/projects/[id]/leave',
@@ -254,7 +255,7 @@ const SAME_ORIGIN_FAMILIES = [
   /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?|llm-providers(\/\[providerId\]|\/policy)?)$/,
   /^\/api\/invite\//,
   /^\/api\/account\//,
-  /^\/api\/projects\/\[id\]\/(collaborators(\/\[userId\])?|leave)$/,
+  /^\/api\/projects\/\[id\]\/(collaborators(\/\[userId\])?|leave|breakglass)$/,
 ]
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
