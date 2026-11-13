@@ -45,7 +45,8 @@
 #           fails those rows), sharingwrite:on | sharingwrite:off (whether write sharing is
 #           in force, step 5.2: sharing in force AND RBAC_SHARING_WRITE_ENABLED on, which
 #           reads off while the sharing switch is off, AND Root's policy `maxLevel` "write",
-#           as maxShareLevel reads it; read and failed the same way),
+#           as maxShareLevel reads it: a policy without `maxLevel` allows write, its default
+#           in SHARING_POLICY_DEFAULTS; read and failed the same way),
 #           governance:on | governance:off (the same for RBAC_GOVERNANCE_ENABLED, step 6.13,
 #           which reads off while the permissions switch is off, as flags.ts chains it; it
 #           needs neither sharing nor a policy, so nothing more is read),
@@ -274,7 +275,7 @@ read_switches() { # the webapp's switches (IDENTITY, PERMISSIONS, SHARING, SHARI
 # parseSharingPolicy (webapp/src/lib/authz/sharingPolicy.ts) in SQL: `enabled` true and every
 # known setting valid, or the whole policy reads as the defaults (off); no row reads as the
 # defaults too. Always one row, so an empty answer means the read failed.
-SHARING_POLICY_SQL="select coalesce((select case when jsonb_typeof(p) = 'object'
+SHARING_POLICY_ENABLED="jsonb_typeof(p) = 'object'
     and p->'enabled' = 'true'::jsonb
     and (not p ? 'maxLevel' or p->'maxLevel' in ('\"read\"'::jsonb, '\"write\"'::jsonb))
     and (not p ? 'membersMayGrantExploit' or jsonb_typeof(p->'membersMayGrantExploit') = 'boolean')
@@ -282,18 +283,15 @@ SHARING_POLICY_SQL="select coalesce((select case when jsonb_typeof(p) = 'object'
     and (not p ? 'defaultExpiryDays' or jsonb_typeof(p->'defaultExpiryDays') = 'null'
          or coalesce(case when jsonb_typeof(p->'defaultExpiryDays') = 'number'
               then (p->>'defaultExpiryDays')::numeric between 1 and 3650
-                   and (p->>'defaultExpiryDays')::numeric % 1 = 0 end, false))
+                   and (p->>'defaultExpiryDays')::numeric % 1 = 0 end, false))"
+SHARING_POLICY_SQL="select coalesce((select case when $SHARING_POLICY_ENABLED
   then 'on' else 'off' end
   from (select sharing_policy::jsonb as p from instance_settings where id = 'instance') s), 'off');"
-# maxShareLevel (sharingPolicy.ts) in SQL: the policy as above, valid and enabled, with `maxLevel` "write".
-SHARING_WRITE_POLICY_SQL="select /* rbac-write-policy */ coalesce((select case when jsonb_typeof(p) = 'object'
-    and p->'enabled' = 'true'::jsonb and p->'maxLevel' = '\"write\"'::jsonb
-    and (not p ? 'membersMayGrantExploit' or jsonb_typeof(p->'membersMayGrantExploit') = 'boolean')
-    and (not p ? 'adminsSeeAllShares' or jsonb_typeof(p->'adminsSeeAllShares') = 'boolean')
-    and (not p ? 'defaultExpiryDays' or jsonb_typeof(p->'defaultExpiryDays') = 'null'
-         or coalesce(case when jsonb_typeof(p->'defaultExpiryDays') = 'number'
-              then (p->>'defaultExpiryDays')::numeric between 1 and 3650
-                   and (p->>'defaultExpiryDays')::numeric % 1 = 0 end, false))
+# maxShareLevel (sharingPolicy.ts) in SQL: the policy as above, with `maxLevel` "write" or
+# missing (SHARING_POLICY_DEFAULTS.maxLevel is write). The marker comment lets
+# rbac_matrix_runner_test.sh tell the two reads apart.
+SHARING_WRITE_POLICY_SQL="select /* rbac-write-policy */ coalesce((select case when $SHARING_POLICY_ENABLED
+    and coalesce(p->'maxLevel', '\"write\"'::jsonb) = '\"write\"'::jsonb
   then 'on' else 'off' end
   from (select sharing_policy::jsonb as p from instance_settings where id = 'instance') s), 'off');"
 SHARING_WRITE_POLICY=""

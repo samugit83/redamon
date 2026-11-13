@@ -18,6 +18,10 @@
 #     reads off while sharing is not in force, and also while Root's policy does
 #     not allow write (`maxLevel` "write", maxShareLevel); both policy reads happen
 #     once, only when a selected row needs them;
+#   - the runner's own policy SQL, run in the stack's postgres image (a throwaway
+#     container, skipped without Docker or the image), reads each stored policy as
+#     parseSharingPolicy does: a missing `maxLevel` is write (SHARING_POLICY_DEFAULTS),
+#     so `{"enabled":true}` with the write switch on is write sharing in force;
 #   - governance:on|off the same for RBAC_GOVERNANCE_ENABLED (step 6.13), which
 #     reads off while the permissions switch is off (flags.ts: governance requires
 #     permissions, not sharing) and reads no policy;
@@ -39,7 +43,8 @@ eq()    { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 has()   { if grep -qF -- "$2" <<<"$3"; then ok "$1"; else bad "$1" "absent" "$2"; fi; }
 section() { printf '\n== %s ==\n' "$1"; }
 
-W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+W="$(mktemp -d)"; PG=""
+trap 'rm -rf "$W"; [ -z "$PG" ] || docker rm -f "$PG" >/dev/null 2>&1' EXIT
 T="$W/root"
 mkdir -p "$T/tests/fixtures/rbac_matrix" "$T/webapp/scripts" "$T/testing/e2e" "$W/bin"
 cp "$RUNNER" "$T/tests/rbac_matrix_live.sh"
@@ -80,7 +85,8 @@ printf '%s\n' \
 
 # docker: the webapp's switches come from FAKE_* through the runner's own in-container
 # command (run here by sh), the seed prints the keys the runner requires, every call is logged.
-# Root's sharing policy is FAKE_POLICY (on by default; FAIL makes psql fail).
+# Root's sharing policy is FAKE_POLICY (on by default; FAIL makes psql fail), or, with
+# REAL_PG set, the runner's SQL runs in that throwaway postgres container.
 cat > "$W/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >> "$STUB_LOG"
@@ -88,7 +94,10 @@ case "$*" in
   *"ps --status running"*) echo fake-webapp ;;
   *" postgres "*)
     sql="$(cat)"
-    if grep -q rbac-write-policy <<<"$sql"; then
+    if [ -n "${REAL_PG:-}" ] && grep -q sharing_policy <<<"$sql"; then
+      if grep -q rbac-write-policy <<<"$sql"; then echo "write-policy-read" >> "$STUB_LOG"; else echo "policy-read" >> "$STUB_LOG"; fi
+      printf '%s\n' "$sql" | "$REAL_DOCKER" exec -i "$REAL_PG" psql -X -q -t -A -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres
+    elif grep -q rbac-write-policy <<<"$sql"; then
       echo "write-policy-read" >> "$STUB_LOG"
       [ "${FAKE_WRITE_POLICY-on}" = FAIL ] && exit 1
       printf '%s\n' "${FAKE_WRITE_POLICY-on}"
@@ -137,6 +146,7 @@ run() {
   OUT="$(cd "$W" && PATH="$W/bin:$PATH" STUB_LOG="$W/calls.log" BASE_URL=http://rbac-runner-test.invalid \
     FAKE_IDENTITY="$1" FAKE_PERMISSIONS="$2" FAKE_CACHE_MS="${5:-5000}" FAKE_SHARING="${6:-}" RBAC_MATRIX_ROWS="${3:-}" \
     FAKE_POLICY="${7-on}" FAKE_SHARING_WRITE="${8:-}" FAKE_WRITE_POLICY="${9-on}" FAKE_GOVERNANCE="${10:-}" \
+    REAL_PG="${REAL_PG:-}" REAL_DOCKER="${REAL_DOCKER:-}" \
     bash "$T/tests/rbac_matrix_live.sh" "${4:-t}" 2>&1)"; RC=$?
   LOG="$(cat "$W/calls.log")"
 }
@@ -327,6 +337,73 @@ eq "no tagged row selected: no switch read" "$(reads)" "0"
 run true true '' u 1500 true on true on true
 eq "the cache bound still parses after the governance value" "$(grep '^sleep ' <<<"$LOG" | tr '\n' ' ')" "sleep 3 sleep 3 "
 
+section "Root's stored policy through the runner's own SQL (Phase 7 kickoff: no maxLevel means write)"
+# The stubbed answers above cannot catch a wrong query. Here each policy is stored in a
+# throwaway container of the stack's own postgres image (never pulled, no network) and the
+# runner's SQL reads it, so every case is parseSharingPolicy + maxShareLevel on that value.
+if command -v docker >/dev/null 2>&1 && docker image inspect postgres:16-alpine >/dev/null 2>&1; then
+  PG="rbac-runner-test-pg-$$"
+  docker run -d --rm --network none --name "$PG" -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16-alpine >/dev/null 2>&1 || PG=""
+fi
+pg_ready=""
+if [ -n "$PG" ]; then
+  # The image's init server listens on no TCP port, so a TCP answer is the final server.
+  for _ in $(seq 1 120); do
+    docker exec "$PG" pg_isready -q -h 127.0.0.1 -U postgres 2>/dev/null && { pg_ready=1; break; }
+    sleep 0.5
+  done
+fi
+pg() { docker exec -i "$PG" psql -X -q -t -A -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres; }
+if [ -n "$pg_ready" ] && echo "create table instance_settings (id text primary key, sharing_policy jsonb not null default '{}');" | pg; then
+  REAL_PG="$PG"; REAL_DOCKER="$(command -v docker)"
+  store() { # the stored policy as JSON, or NOROW for no instance row
+    { echo "delete from instance_settings;"
+      [ "$1" = NOROW ] || printf "insert into instance_settings (id, sharing_policy) values ('instance', '%s'::jsonb);\n" "$1"
+    } | pg
+  }
+  # policy_case <stored policy> <write switch> <want w-write-on> <want w-write-off> <want w-write-only> [what]
+  policy_case() {
+    store "$1"
+    run true true '' w 5000 true '' "$2" ''
+    eq "${6:-$1}, write switch '${2:-unset}': sharing:on sharingwrite:on / sharing:on sharingwrite:off / sharingwrite:on" \
+      "$(verdict w-write-on) $(verdict w-write-off) $(verdict w-write-only)" "$3 $4 $5"
+  }
+  policy_case '{"enabled":true}' true PASS SKIP PASS "no maxLevel (the 5.2b form)"
+  has "the sharingwrite:off row is skipped as write in force" "(sharingwrite switch on)" "$(line w-write-off)"
+  eq "each policy query read once" "$(policy_reads) $(write_policy_reads)" "1 1"
+  policy_case '{"enabled":true,"maxLevel":"write"}' true PASS SKIP PASS
+  policy_case '{"enabled":true,"maxLevel":"read"}' true SKIP PASS SKIP
+  has "capped at read: the skip names the policy" "(sharingwrite switch on, Root's policy off)" "$(line w-write-on)"
+  policy_case '{"enabled":true}' '' SKIP PASS SKIP "no maxLevel"
+  has "write switch off: the skip names the switch" "(sharingwrite switch off)" "$(line w-write-on)"
+  eq "write switch off: the write policy is not read" "$(write_policy_reads)" "0"
+  policy_case '{"enabled":true,"maxLevel":"write"}' false SKIP PASS SKIP
+  policy_case '{"enabled":true,"maxLevel":"read"}' '' SKIP PASS SKIP
+  policy_case '{"enabled":true,"defaultExpiryDays":30,"membersMayGrantExploit":true,"adminsSeeAllShares":false}' true PASS SKIP PASS \
+    "every other setting valid, no maxLevel"
+  policy_case '{"enabled":true,"defaultExpiryDays":null}' true PASS SKIP PASS
+  policy_case '{"enabled":true,"aFutureSetting":"x"}' true PASS SKIP PASS "an unknown setting is ignored, no maxLevel"
+  policy_case '{"maxLevel":"write"}' true SKIP SKIP SKIP "enabled missing (default false)"
+  policy_case '{"enabled":false}' true SKIP SKIP SKIP
+  policy_case '{}' true SKIP SKIP SKIP
+  policy_case NOROW true SKIP SKIP SKIP "no instance row (the defaults)"
+  policy_case '{"enabled":true,"maxLevel":"admin"}' true SKIP SKIP SKIP "an invalid maxLevel: the whole policy reads as the defaults"
+  policy_case '{"enabled":true,"maxLevel":null}' true SKIP SKIP SKIP
+  policy_case '{"enabled":true,"defaultExpiryDays":0}' true SKIP SKIP SKIP "another setting invalid, no maxLevel"
+  policy_case '{"enabled":true,"defaultExpiryDays":1.5}' true SKIP SKIP SKIP
+  policy_case '{"enabled":true,"membersMayGrantExploit":"yes"}' true SKIP SKIP SKIP
+  policy_case '{"enabled":"true"}' true SKIP SKIP SKIP "enabled as a string"
+  policy_case '[{"enabled":true}]' true SKIP SKIP SKIP "not an object"
+  store '{"enabled":true,"maxLevel":"read"}'
+  run true true '' v 5000 true '' true ''
+  eq "capped at read is still sharing in force: sharing:on runs, sharing:off skips" \
+    "$(verdict v-share-on) $(verdict v-share-off)" "PASS SKIP"
+  unset REAL_PG REAL_DOCKER
+else
+  printf '  skip %s (%s)\n' "the runner's policy SQL against stored policies" \
+    "needs Docker and the local postgres:16-alpine image (the stack's own); never pulled here"
+fi
+
 section "the runner documents the tag"
 HEADER="$(sed -n '1,/^set -uo pipefail/p' "$RUNNER")"
 has "permissions:on | permissions:off in the row format" "permissions:on | permissions:off" "$HEADER"
@@ -336,6 +413,7 @@ has "and its chain" "RBAC_SHARING_ENABLED" "$HEADER"
 has "and Root's policy" "instance_settings.sharing_policy" "$HEADER"
 has "sharingwrite:on | sharingwrite:off in the row format" "sharingwrite:on | sharingwrite:off" "$HEADER"
 has "and its switch" "RBAC_SHARING_WRITE_ENABLED" "$HEADER"
+has "and the maxLevel default" "a policy without \`maxLevel\` allows write" "$HEADER"
 has "governance:on | governance:off in the row format" "governance:on | governance:off" "$HEADER"
 has "and its switch" "RBAC_GOVERNANCE_ENABLED" "$HEADER"
 
