@@ -46,15 +46,13 @@ run "Unit: deploy.env cleanup (I7)"               bash tests/deploy_env_cleanup_
 
 # --- Agent-image-bound suites (need the baked deps; skip if image absent) ---
 if docker image inspect redamon-agent >/dev/null 2>&1; then
-    agent_test() {
-        docker run --rm -v "$REPO_ROOT/agentic:/app" -v "$REPO_ROOT/graph_db:/app/graph_db" \
-            -w /app redamon-agent python3 "$@"
-    }
+    # The gate's runner, not a mount of agentic/ over /app: that hides every folder the
+    # image bakes in beside it (recon_settings/, knowledge_base/), and `import api` fails.
+    agent_test() { "$REPO_ROOT/agentic/run_tests.sh" "$@"; }
     run "Agent: /graph/exec auth + apoc.atomic (S8)" agent_test tests/test_graph_exec.py
     run "Agent: fs_extract zip caps (D10)"           agent_test tests/test_fs_extract_caps.py
     run "Agent: log redaction + generic error (I5)"  agent_test tests/test_log_redaction.py
-    run "Agent: stdio child holds no credential (GHSA-j3r5)" \
-        "$REPO_ROOT/agentic/run_tests.sh" tests/test_ghsa_j3r5_member_stdio_mcp.py
+    run "Agent: stdio child holds no credential (GHSA-j3r5)" agent_test tests/test_ghsa_j3r5_member_stdio_mcp.py
 else
     echo ">> SKIP agent-image suites (redamon-agent image not built)"
 fi
