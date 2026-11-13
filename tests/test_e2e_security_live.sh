@@ -64,12 +64,17 @@ echo
 echo "#### S3/S4 (/ws/kali-terminal + /ws/cypherfix-* ticket + same-origin gate) ####"
 # Runs inside the agent container (has websockets + AGENT_WS_TICKET_SECRET); mints
 # a valid ticket locally and asserts unticketed/cross-origin are rejected and a
-# valid ticket is accepted, for all three endpoints.
-if docker compose exec -T agent python3 - < agentic/tests/live_ws_endpoints_probe.py; then
+# valid ticket is accepted, for all three endpoints. Each socket checks at connect
+# that the ticket's tenant owns its project, so the valid ticket names a throwaway
+# user and a project it owns.
+WS_UID="$(seed_user "e2e_$(openssl rand -hex 6)@redamon.local" standard)"
+WS_PID="$(seed_project "$WS_UID")"
+if docker compose exec -T -e E2E_UID="$WS_UID" -e E2E_PID="$WS_PID" agent python3 - < agentic/tests/live_ws_endpoints_probe.py; then
   echo ">> S3/S4 WS gate: OK"
 else
   echo ">> S3/S4 WS gate: FAILURES ABOVE"; FAIL=1
 fi
+del_user "$WS_UID"
 
 echo
 echo "#### I19/S14 (:8015 bearer auth, boot force-down, settings activation gate) ####"
