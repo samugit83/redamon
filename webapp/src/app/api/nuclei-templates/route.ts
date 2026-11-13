@@ -11,6 +11,7 @@ import { getEffectiveUser, requireSession, type Session } from '@/lib/session'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { SHARED_TOOL_PERMISSIONS, sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools'
 import { requirePermission } from '@/lib/authz/guards'
+import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { writeAudit } from '@/lib/audit'
 import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { ownershipOf, templatesRoot, type TemplateOwnership } from '@/lib/nucleiTemplateOwnership'
@@ -112,6 +113,18 @@ async function readCaller(): Promise<Caller | NextResponse> {
 }
 
 /**
+ * A write's caller, refusing a page of another site (403 cross_origin) before anything else is
+ * read. The session cookie is SameSite=lax and the upload is multipart, which a plain HTML form
+ * can send, so the `Origin` the browser attaches is the check here, as on the other writes.
+ */
+async function readWriteCaller(request: NextRequest): Promise<Caller | NextResponse> {
+  const caller = await readCaller()
+  if (caller instanceof NextResponse) return caller
+  if (!sameOrigin(request)) return crossOriginResponse(request)
+  return caller
+}
+
+/**
  * Whether the signed-in account (never the acted-as one) may change every template:
  * platform:nuclei_templates (every admin with RBAC_PERMISSIONS_ENABLED off), or a
  * pre-upgrade account under the escape hatch (sharedTools.ts). `record: false` asks
@@ -189,7 +202,7 @@ export async function GET() {
 // ---------------------------------------------------------------------------
 export async function POST(request: NextRequest) {
   try {
-    const caller = await readCaller()
+    const caller = await readWriteCaller(request)
     if (caller instanceof NextResponse) return caller
     const auth = await requirePermission(request, 'scan:custom_templates')
     if (auth instanceof NextResponse) return auth
@@ -341,7 +354,7 @@ export async function POST(request: NextRequest) {
 // ---------------------------------------------------------------------------
 export async function DELETE(request: NextRequest) {
   try {
-    const caller = await readCaller()
+    const caller = await readWriteCaller(request)
     if (caller instanceof NextResponse) return caller
     const auth = await requirePermission(request, 'scan:custom_templates')
     if (auth instanceof NextResponse) return auth
@@ -410,7 +423,7 @@ export async function DELETE(request: NextRequest) {
 // ---------------------------------------------------------------------------
 export async function PATCH(request: NextRequest) {
   try {
-    const caller = await readCaller()
+    const caller = await readWriteCaller(request)
     if (caller instanceof NextResponse) return caller
     if (!(await managesAll(caller.session, true)).allowed) {
       return forbidden('Only an administrator can make a template an instance template.')

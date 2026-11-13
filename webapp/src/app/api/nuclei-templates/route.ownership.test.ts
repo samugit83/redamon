@@ -6,6 +6,9 @@
  * row with no owner, or a file with no row), answers 409 template_owned_by_other unless
  * an account that manages every template (an admin) asks to overwrite; only the owner
  * or such an account deletes; only such an account promotes a file to the instance.
+ * Each of the three writes refuses a page of another site (403 cross_origin) before it
+ * reads anything else, the multipart upload included: SameSite=lax alone lets a
+ * same-site page post a form here.
  *
  * The route, the ownership helpers, sharedTools and the filesystem are real (a
  * throwaway folder); Prisma is an in-memory table, the session and the principal are
@@ -459,5 +462,84 @@ describe('promote', () => {
     signIn('admin-1')
     expect((await promote({ path: 'a.yaml' })).status).toBe(400)
     expect((await promote({ path: '../etc/x.yaml', promote: true })).status).toBe(400)
+  })
+})
+
+describe('same origin: a page of another site cannot drive a write', () => {
+  const OTHER_SITE = { Origin: 'https://rbac-other-site.example' }
+  const SAME_SITE = { Origin: 'http://localhost' }
+  const uploadFrom = (headers: Record<string, string>, name: string, content: string) => {
+    const form = new FormData()
+    form.append('file', new File([content], name))
+    return POST(new NextRequest('http://localhost/api/nuclei-templates', { method: 'POST', body: form, headers }))
+  }
+  const deleteFrom = (headers: Record<string, string>, p: string) =>
+    DELETE(new NextRequest(`http://localhost/api/nuclei-templates?path=${encodeURIComponent(p)}`, { method: 'DELETE', headers }))
+  const promoteFrom = (headers: Record<string, string>, body: unknown) =>
+    PATCH(new NextRequest('http://localhost/api/nuclei-templates', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+    }))
+  const refusedCrossOrigin = async (res: Response) => {
+    expect(res.status).toBe(403)
+    expect((await res.json()).code).toBe('cross_origin')
+  }
+
+  test('a cross-origin multipart upload is 403 cross_origin: no file, no row, no audit', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    signIn('member-a')
+    await refusedCrossOrigin(await uploadFrom(OTHER_SITE, 'evil.yaml', template('evil')))
+    expect(existsSync(path.join(h.root, 'evil.yaml'))).toBe(false)
+    expect(h.rows).toEqual([])
+    expect(h.audit).toEqual([])
+  })
+
+  test('a cross-origin delete is 403 cross_origin, even by the owner: the file and the row stay', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    signIn('member-a')
+    await upload('mine.yaml', template('mine'))
+    h.audit = []
+    await refusedCrossOrigin(await deleteFrom(OTHER_SITE, 'mine.yaml'))
+    expect(await onDisk('mine.yaml')).toContain('id: mine')
+    expect(rowOf('mine.yaml')?.ownerUserId).toBe('member-a')
+    expect(h.audit).toEqual([])
+  })
+
+  test('a cross-origin promote is 403 cross_origin, even by an admin: the owner stays', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    signIn('member-a')
+    await upload('a.yaml', template('a'))
+    h.audit = []
+    signIn('admin-1')
+    await refusedCrossOrigin(await promoteFrom(OTHER_SITE, { path: 'a.yaml', promote: true }))
+    expect(rowOf('a.yaml')?.ownerUserId).toBe('member-a')
+    expect(h.audit).toEqual([])
+  })
+
+  test('an Origin that is not an origin is refused like another site', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    signIn('member-a')
+    await refusedCrossOrigin(await uploadFrom({ Origin: 'null' }, 'x.yaml', template('x')))
+    expect(h.rows).toEqual([])
+  })
+
+  test('the same origin is allowed for all three, the multipart upload included', async () => {
+    signIn('member-a')
+    const uploaded = await uploadFrom(SAME_SITE, 'mine.yaml', template('mine'))
+    expect(uploaded.status).toBe(200)
+    expect(rowOf('mine.yaml')?.ownerUserId).toBe('member-a')
+    signIn('admin-1')
+    const promoted = await promoteFrom(SAME_SITE, { path: 'mine.yaml', promote: true })
+    expect(promoted.status).toBe(200)
+    expect((await promoted.json()).promoted).toBe(true)
+    const deleted = await deleteFrom(SAME_SITE, 'mine.yaml')
+    expect(deleted.status).toBe(200)
+    expect(rowOf('mine.yaml')).toBeUndefined()
+    expect(actions()).toEqual(['nuclei_template.upload', 'nuclei_template.promote', 'nuclei_template.delete'])
+  })
+
+  test('without a session the answer stays 401, whatever the origin', async () => {
+    expect((await uploadFrom(OTHER_SITE, 'x.yaml', template('x'))).status).toBe(401)
+    expect((await deleteFrom(OTHER_SITE, 'x.yaml')).status).toBe(401)
+    expect((await promoteFrom(OTHER_SITE, { path: 'x.yaml', promote: true })).status).toBe(401)
   })
 })
