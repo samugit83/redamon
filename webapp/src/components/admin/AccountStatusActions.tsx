@@ -26,6 +26,12 @@ interface Props {
   identity: boolean
   /** The viewer is the confirmed Root (switch on): another admin's row is its to act on, with its password. */
   manageAdmins?: boolean
+  /**
+   * The actions the server says the viewer may take on this account (the admin console's directory,
+   * step 6.2): a button shows only when its action is listed too. Absent: every action the rules
+   * above offer, as on the Users page.
+   */
+  allowed?: { disable: boolean; enable: boolean; revoke: boolean }
   buttonClassName: string
   dangerClassName: string
   /** The list must be read again: a status changed. */
@@ -70,7 +76,7 @@ const STEP_UP: Record<Exclude<Action, 'revoke-all'>, { title: string; label: str
   revoke: { title: 'Sign an admin out everywhere', label: 'Sign out everywhere' },
 }
 
-export function AccountStatusActions({ user, selfId, identity, manageAdmins = false, buttonClassName, dangerClassName, onChanged }: Props) {
+export function AccountStatusActions({ user, selfId, identity, manageAdmins = false, allowed, buttonClassName, dangerClassName, onChanged }: Props) {
   const alerts = useOptionalAlertModal()
   const [busy, setBusy] = useState(false)
   const [stepUp, setStepUp] = useState<Exclude<Action, 'revoke-all'> | null>(null)
@@ -137,9 +143,9 @@ export function AccountStatusActions({ user, selfId, identity, manageAdmins = fa
   // Another admin: Root's with the switch on; with it off only Enable exists, under Phase 1's step-up.
   const rootRow = identity && admin && !self
   const actsOnRow = !rootRow || manageAdmins
-  const showEnable = status === 'disabled' && !self && actsOnRow
-  const showRevoke = identity && status === 'active' && (self || actsOnRow)
-  const showDisable = identity && status === 'active' && !self && actsOnRow
+  const showEnable = status === 'disabled' && !self && actsOnRow && (allowed?.enable ?? true)
+  const showRevoke = identity && status === 'active' && (self || actsOnRow) && (allowed?.revoke ?? true)
+  const showDisable = identity && status === 'active' && !self && actsOnRow && (allowed?.disable ?? true)
   const needsStepUp = (action: Exclude<Action, 'revoke-all'>) => (rootRow ? manageAdmins : !identity && admin && action === 'enable')
 
   return (
