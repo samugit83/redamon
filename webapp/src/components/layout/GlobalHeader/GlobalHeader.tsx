@@ -6,21 +6,25 @@ import Image from 'next/image'
 // navigating, so header links prompt when a dirty form would lose edits.
 import { GuardedLink as Link } from '@/components/GuardedLink'
 import { usePathname } from 'next/navigation'
-import { Crosshair, FolderOpen, Shield, BookOpen, TrendingUp, FileText, Settings, Users, GitBranch, Network, Puzzle } from 'lucide-react'
+import { Crosshair, FolderOpen, Shield, BookOpen, TrendingUp, FileText, Settings, Users, GitBranch, Network, Puzzle, LayoutDashboard } from 'lucide-react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { ProjectSelector } from './ProjectSelector'
 import { UserSelector } from './UserSelector'
 import { AdminBanners } from '@/components/admin/CompatBanner'
 import { ActAsBannerSlot } from '@/components/auth/ActAsBanner'
 import { useAuth } from '@/providers/AuthProvider'
-import { useCan } from '@/hooks/useCan'
+import { useCan, useRbacFlags } from '@/hooks/useCan'
+import { holdsConsolePermission } from '@/app/admin/consoleSections'
 import { useProject } from '@/providers/ProjectProvider'
 import styles from './GlobalHeader.module.css'
 
 export function GlobalHeader() {
   const pathname = usePathname()
-  const { user } = useAuth()
+  const { user, capabilities } = useAuth()
   const canReadUsers = useCan('users:read')
+  // Governance switch on (step 6.1): "Admin" to the console replaces "Users", for any console permission.
+  const governance = useRbacFlags()?.governance === true
+  const showAdmin = governance && holdsConsolePermission((p) => capabilities.has(p))
   const { projectId } = useProject()
 
   const coreNav: Array<{ label: string; href: string; icon: ReactNode; isNew?: boolean }> = [
@@ -76,7 +80,17 @@ export function GlobalHeader() {
           <span>Projects</span>
         </Link>
 
-        {canReadUsers && (
+        {showAdmin && (
+          <Link
+            href="/admin"
+            className={`${styles.navItem} ${pathname === '/admin' || pathname.startsWith('/admin/') ? styles.navItemActive : ''}`}
+          >
+            <LayoutDashboard size={14} />
+            <span>Admin</span>
+          </Link>
+        )}
+
+        {!governance && canReadUsers && (
           <Link
             href="/settings/users"
             className={`${styles.navItem} ${pathname === '/settings/users' ? styles.navItemActive : ''}`}

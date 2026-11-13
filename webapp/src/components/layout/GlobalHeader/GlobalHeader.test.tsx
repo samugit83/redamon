@@ -16,6 +16,8 @@ let mockPathname = '/graph'
 let mockAdmin = true
 // What an admin holds here (hooks/useCan.ts); a member holds none of these.
 let mockGranted = new Set<string>(['users:read'])
+// What /api/auth/me answered for the switches; null until read (the header then shows Phase 3's links).
+let mockFlags: Record<string, boolean> | null = null
 
 vi.mock('next/navigation', () => ({
   usePathname: () => mockPathname,
@@ -52,6 +54,8 @@ vi.mock('@/providers/AuthProvider', () => ({
   useAuth: () => ({
     user: { id: 'test-user', name: 'Test Admin', email: 'admin@test.com', role: mockAdmin ? 'admin' : 'standard' },
     isLoading: false,
+    capabilities: new Set(mockAdmin ? mockGranted : []),
+    flags: mockFlags,
     login: vi.fn(),
     logout: vi.fn(),
   }),
@@ -59,7 +63,7 @@ vi.mock('@/providers/AuthProvider', () => ({
 
 vi.mock('@/hooks/useCan', () => ({
   useCan: (permission: string) => mockAdmin && mockGranted.has(permission),
-  useRbacFlags: () => null,
+  useRbacFlags: () => mockFlags,
 }))
 
 vi.mock('@/providers/ProjectProvider', () => ({
@@ -95,6 +99,7 @@ beforeEach(() => {
   mockPathname = '/graph'
   mockAdmin = true
   mockGranted = new Set(['users:read'])
+  mockFlags = null
 })
 
 afterEach(() => {
@@ -259,5 +264,59 @@ describe('GlobalHeader – Users link', () => {
     mockAdmin = false
     render(<GlobalHeader />)
     expect(usersLink()).toBeNull()
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  The Admin link replaces Users with the governance switch on (6.1)  */
+/* ------------------------------------------------------------------ */
+
+describe('GlobalHeader – Admin link (step 6.1, UI-10, OQ-44)', () => {
+  const PERMISSIONS_ON = { sharedToolsCompat: false, identity: true, permissions: true, sharing: false, sharingWrite: false, governance: false }
+  const GOVERNANCE_ON = { ...PERMISSIONS_ON, governance: true }
+  const adminLink = () => screen.queryByRole('link', { name: /^admin$/i })
+  const usersLink = () => screen.queryByRole('link', { name: /^users$/i })
+
+  test('on: "Admin" to the console replaces "Users"', () => {
+    mockFlags = GOVERNANCE_ON
+    render(<GlobalHeader />)
+    expect(adminLink()?.getAttribute('href')).toBe('/admin')
+    expect(usersLink()).toBeNull()
+  })
+
+  test('on: any console permission shows it, users:read or not', () => {
+    mockFlags = GOVERNANCE_ON
+    for (const held of [['audit:read'], ['platform:tunnels'], ['instance:quotas'], ['roles:manage']]) {
+      mockGranted = new Set(held)
+      render(<GlobalHeader />)
+      expect(adminLink()).not.toBeNull()
+      cleanup()
+    }
+  })
+
+  test('on: nobody holding a console permission gets neither link', () => {
+    mockFlags = GOVERNANCE_ON
+    mockGranted = new Set(['recon:scan', 'self:mcp_tokens'])
+    render(<GlobalHeader />)
+    expect(adminLink()).toBeNull()
+    expect(usersLink()).toBeNull()
+  })
+
+  test.each(['/admin', '/admin/users', '/admin/audit'])('on: active on %s', (route) => {
+    mockFlags = GOVERNANCE_ON
+    mockPathname = route
+    render(<GlobalHeader />)
+    expect(adminLink()!.className).toContain('navItemActive')
+  })
+
+  test('off: "Users" stays, linking to the Users page, and no "Admin" whatever is held', () => {
+    for (const flags of [null, PERMISSIONS_ON]) {
+      mockFlags = flags
+      mockGranted = new Set(['users:read', 'audit:read', 'platform:tunnels'])
+      render(<GlobalHeader />)
+      expect(usersLink()?.getAttribute('href')).toBe('/settings/users')
+      expect(adminLink()).toBeNull()
+      cleanup()
+    }
   })
 })
