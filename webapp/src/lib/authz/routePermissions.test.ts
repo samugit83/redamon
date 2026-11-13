@@ -73,6 +73,7 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'POST /api/agent/emergency-stop-all': 'every account stops its own runs (a safety stop is never refused); platform:emergency_stop decides the global scope inside (sharedToolAccess)',
   'GET /api/users/[id]/settings': "the account's own settings, secrets masked, which every screen reads (feature models, which keys are set); the tunnel hint inside is not a gate; storing them is self:api_keys",
   'GET /api/users/[id]/mcp-tokens': "the account's own MCP tokens (another's under users:read, requireUserAccess read): seeing which credentials exist is never refused, so a person who lost self:mcp_tokens still finds and revokes theirs; minting is self:mcp_tokens",
+  'GET /api/users/[id]/quota': "the account's own quota and use (another's under users:read, requireUserAccess read; step 6.8): a person always learns the limits that refuse them; changing a quota is instance:quotas on the instance settings",
   'DELETE /api/users/[id]/mcp-tokens/[tokenId]': 'revoking a token: the account itself, or users:revoke_sessions on another (requireUserAccess revoke); taking access away is never refused',
 }
 
