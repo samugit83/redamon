@@ -53,6 +53,8 @@ if docker image inspect redamon-agent >/dev/null 2>&1; then
     run "Agent: /graph/exec auth + apoc.atomic (S8)" agent_test tests/test_graph_exec.py
     run "Agent: fs_extract zip caps (D10)"           agent_test tests/test_fs_extract_caps.py
     run "Agent: log redaction + generic error (I5)"  agent_test tests/test_log_redaction.py
+    run "Agent: stdio child holds no credential (GHSA-j3r5)" \
+        "$REPO_ROOT/agentic/run_tests.sh" tests/test_ghsa_j3r5_member_stdio_mcp.py
 else
     echo ">> SKIP agent-image suites (redamon-agent image not built)"
 fi
@@ -64,6 +66,8 @@ if [[ -x "$REPO_ROOT/webapp/node_modules/.bin/vitest" ]]; then
         src/lib/audit.test.ts src/lib/loginThrottle.test.ts \
         src/app/api/auth/login/route.test.ts src/app/api/auth/logout/route.test.ts \
         src/app/api/auth/act-as/route.test.ts src/app/api/projects/import/route.test.ts
+    run "Webapp: a member's stdio MCP draft is refused (GHSA-j3r5)" webapp_vitest \
+        src/app/api/mcp/test/ghsa-j3r5-x2gg-2hgv.test.ts
 else
     echo ">> SKIP webapp vitest suites (webapp/node_modules absent)"
 fi
@@ -71,6 +75,7 @@ fi
 # Security (skips if stack down)
 run "Security: reported exploit is blocked"      bash tests/test_exploit_blocked.sh
 run "Live E2E: S6 WS hijack + I1 + I19 tunnel"   bash tests/test_e2e_security_live.sh
+run "Live E2E: member stdio MCP draft (GHSA-j3r5)" bash tests/test_ghsa_j3r5_live.sh
 
 echo
 echo "============================================================"
