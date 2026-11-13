@@ -53,7 +53,9 @@
  * (a reader in GOVERNANCE_READERS, and the only one of the step) answers every account unlimited
  * before it reads the instance row or an account, so a project create, an import and a scan start
  * go on as before, and GET /api/users/[id]/quota answers 404 before it reads the session (the test at
- * the end); the instance settings show and take no quotas (instance-settings/route.quotas.test.ts).
+ * the end); the instance settings show and take no quotas (instance-settings/route.quotas.test.ts); My
+ * account shows no Quota section and reads none (app/account/page.tsx, a reader; page.quota.test.tsx);
+ * the token screen offers every expiry (no `tokenQuota` in the list; McpTokensTab.quota.test.tsx).
  *
  * Step 6.11 adds instance LLM providers. With the switch off none is offered or resolved and nothing
  * of them is read: the agent's provider list (GET /api/users/[id]/llm-providers?internal=true) is the
@@ -176,6 +178,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
   test('no production code reads the governance switch outside the named readers', () => {
     const GOVERNANCE_READERS = [
       'src/app/account/AccountSections.tsx',
+      'src/app/account/page.tsx',
       'src/app/admin/layout.tsx',
       'src/app/api/account/sessions/[sid]/route.ts',
       'src/app/api/account/sessions/route.ts',

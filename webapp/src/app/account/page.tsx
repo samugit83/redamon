@@ -9,6 +9,7 @@ import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { readApiError, toApiError } from '@/lib/apiError'
 import { ActivitySection, MyPermissionsSection, ProfileSection, SessionsSection } from './AccountSections'
+import { QuotaUsage } from '@/components/quotas/QuotaUsage'
 import styles from './page.module.css'
 
 /**
@@ -163,6 +164,9 @@ export default function AccountPage() {
       </section>
       {full && <SessionsSection account={account} />}
       {full && account.flags?.permissions === true && <MyPermissionsSection account={account} />}
+      {full && account.flags?.governance === true && (
+        <QuotaUsage userId={account.id} own classes={{ section: styles.section, title: styles.sectionTitle }} />
+      )}
       {full && <ActivitySection />}
     </main>
   )

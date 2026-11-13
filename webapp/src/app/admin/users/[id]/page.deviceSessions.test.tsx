@@ -51,6 +51,8 @@ beforeEach(() => {
     if (init?.method === 'DELETE') return json({ id: 'sess-9', changed: true, state: 'revoked', agent: { sockets: { closed: 0 } } })
     if (url.startsWith('/api/admin/users/')) return json({ user, owned: [], shared: { state: 'off' }, audit: { rows: [] } } satisfies UserDetail)
     if (url.endsWith('/sessions')) return json({ sessions: [SESSION] })
+    // Step 6.8's quota section (its own test: components/quotas/QuotaUsage.test.tsx) stays hidden here.
+    if (url.endsWith('/quota')) return json({ error: 'Not found' }, 404)
     return json({ tokens: [], features: { agentInTheLoop: false } })
   })
   vi.stubGlobal('fetch', fetchMock)

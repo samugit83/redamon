@@ -11,6 +11,7 @@ import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/Forbidde
 import { UserPermissionsPanel } from '@/components/admin/UserPermissionsPanel'
 import { RoleControl } from '@/components/admin/RoleControl'
 import { DeviceSessions } from '@/components/admin/DeviceSessions'
+import { QuotaUsage } from '@/components/quotas/QuotaUsage'
 import { fetchJson, fetchOk, toApiError } from '@/lib/apiError'
 import type { DirectoryRow, UserDetail } from '@/lib/authz/userDirectory'
 import type { AuditRowView } from '@/lib/authz/auditReader'
@@ -186,6 +187,8 @@ export default function AdminUserDetailPage() {
         <h2 id="user-tokens" className={styles.sectionTitle}>MCP tokens</h2>
         <McpTokensSection user={user} canRevoke={user.self || user.actions.includes('revoke_sessions')} />
       </section>
+
+      <QuotaUsage userId={user.id} own={user.self} classes={{ section: styles.section, title: styles.sectionTitle }} />
 
       <section className={styles.section} aria-labelledby="user-devices">
         <h2 id="user-devices" className={styles.sectionTitle}>Device sessions</h2>

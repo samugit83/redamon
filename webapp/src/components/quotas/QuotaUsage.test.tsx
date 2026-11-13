@@ -67,6 +67,12 @@ describe('QuotaUsage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('users:read')
   })
 
+  test('an answer without the quota is an error, never a blank section', async () => {
+    answer = { status: 200, body: {} }
+    render(<QuotaUsage userId="mem-c" own />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('unexpected_answer')
+  })
+
   test('error with Retry', async () => {
     answer = { status: 500, body: { error: 'boom', code: 'P1001' } }
     render(<QuotaUsage userId="mem-c" own />)

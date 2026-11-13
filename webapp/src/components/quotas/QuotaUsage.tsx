@@ -38,7 +38,12 @@ function fromWords(s: Source, own: boolean): string {
  * detail another account's. Reads GET /api/users/[id]/quota; with RBAC_GOVERNANCE_ENABLED off that
  * route answers 404 and nothing is shown.
  */
-export function QuotaUsage({ userId, own }: { userId: string; own: boolean }) {
+export function QuotaUsage({ userId, own, classes = {} }: {
+  userId: string
+  own: boolean
+  /** The host page's section and heading classes, so the section looks like its neighbours. */
+  classes?: { section?: string; title?: string }
+}) {
   const [view, setView] = useState<View>({ kind: 'loading' })
 
   const load = useCallback(async () => {
@@ -55,7 +60,12 @@ export function QuotaUsage({ userId, own }: { userId: string; own: boolean }) {
         setView(permission ? { kind: 'denied', permission } : { kind: 'error', message: err.message })
         return
       }
-      setView({ kind: 'ready', report: await res.json() as QuotaReportView })
+      const report = await res.json() as Partial<QuotaReportView> | null
+      if (!report || typeof report.quota !== 'object' || typeof report.sources !== 'object' || !report.quota || !report.sources) {
+        setView({ kind: 'error', message: `${LOAD_FAILED} (unexpected_answer)` })
+        return
+      }
+      setView({ kind: 'ready', report: { enforced: report.enforced === true, quota: report.quota, sources: report.sources, use: report.use ?? {} } })
     } catch (err) {
       setView({ kind: 'error', message: failureText(LOAD_FAILED, err) })
     }
@@ -65,8 +75,8 @@ export function QuotaUsage({ userId, own }: { userId: string; own: boolean }) {
 
   if (view.kind === 'hidden') return null
   return (
-    <section aria-labelledby={`quota-${userId}-title`}>
-      <h2 id={`quota-${userId}-title`}>Quota</h2>
+    <section className={classes.section} aria-labelledby={`quota-${userId}-title`}>
+      <h2 id={`quota-${userId}-title`} className={classes.title}>Quota</h2>
       {view.kind === 'loading' && <p role="status">Loading the quota…</p>}
       {view.kind === 'denied' && <ForbiddenNotice permission={view.permission} />}
       {view.kind === 'error' && (

@@ -75,6 +75,8 @@ beforeEach(() => {
     if (init?.method === 'DELETE' || init?.method === 'PUT' || init?.method === 'POST') return json({ ok: true })
     if (url.startsWith('/api/admin/users/')) return answerDetail()
     if (url.endsWith('/mcp-tokens')) return answerTokens()
+    // Step 6.8's quota section (its own test: components/quotas/QuotaUsage.test.tsx) stays hidden here.
+    if (url.endsWith('/quota')) return json({ error: 'Not found' }, 404)
     return json({})
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -283,5 +285,23 @@ describe('states', () => {
     expect(screen.getAllByRole('heading', { level: 2 }).map((x) => x.textContent)).toEqual(
       ['Profile', 'Permissions', 'Projects', 'MCP tokens', 'Device sessions', 'Recent activity'])
     for (const el of [...screen.getAllByRole('button'), ...screen.getAllByRole('link')]) expect(el).not.toHaveAttribute('tabindex', '-1')
+  })
+})
+
+describe('quota (step 6.8)', () => {
+  test("the account's quota and use, read for this account", async () => {
+    const base = fetchMock.getMockImplementation() as (input: string, init?: RequestInit) => Promise<Response>
+    const sources = Object.fromEntries(['maxProjects', 'maxConcurrentScans', 'maxConcurrentAgentRuns', 'maxMcpTokens', 'maxMcpTokenExpiryDays', 'llmDailyCalls']
+      .map((f) => [f, f === 'maxProjects' ? { kind: 'user' } : { kind: 'default' }]))
+    const report = {
+      enforced: true, sources, use: { maxProjects: 3, maxMcpTokens: 1 },
+      quota: { maxProjects: 3, maxConcurrentScans: null, maxConcurrentAgentRuns: null, maxMcpTokens: null, maxMcpTokenExpiryDays: null, llmDailyCalls: null },
+    }
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) =>
+      (String(input).endsWith('/quota') ? json(report) : base(input, init)))
+    renderPage()
+    const row = (await screen.findByRole('rowheader', { name: 'Projects owned' })).closest('tr')!
+    expect(within(row).getAllByRole('cell').map((c) => c.textContent)).toEqual(['3 projects', '3', 'Set for this account'])
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === '/api/users/m-1/quota')).toBe(true)
   })
 })
