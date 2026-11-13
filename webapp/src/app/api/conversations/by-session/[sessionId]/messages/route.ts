@@ -5,6 +5,7 @@ import { isInternalRequest } from '@/lib/session'
 import { requireEffectiveUser, requireConversationAccessBySession } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
 import { conversationRunRefusal } from '@/lib/authz/conversationRun'
+import { readOnlyConversationRefusal } from '@/lib/authz/conversationAccess'
 import { conversationTitleFromUserMessage } from '@/lib/agentQueryEnvelope'
 
 // POST /api/conversations/by-session/[sessionId]/messages
@@ -26,6 +27,8 @@ export async function POST(
       if (guard instanceof NextResponse) return guard
       const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
       if (auth instanceof NextResponse) return auth
+      const readOnly = await readOnlyConversationRefusal(guard.conversation.id)
+      if (readOnly) return readOnly
     }
 
     const body = await request.json()

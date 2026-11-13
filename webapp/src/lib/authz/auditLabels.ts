@@ -50,6 +50,11 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'project.owner_consent.grant': "Allowed collaborators to spend the owner's credentials",
     'project.owner_consent.withdraw': "Stopped collaborators spending the owner's credentials",
     'credits.used': "A collaborator spent the owner's credentials",
+    // Step 5.8: an author's read-only share of a conversation, and the owner's "co-owners see every
+    // conversation".
+    'conversation.share': 'Shared a conversation with the project',
+    'conversation.unshare': 'Stopped sharing a conversation',
+    'project.conversations_policy': 'Changed whether co-owners read every conversation',
   }),
   // Step 4.14: one row per admin, project and day of oversight reads; Root's break-glass, opened and
   // closed early (its expiry is named by the opening row).

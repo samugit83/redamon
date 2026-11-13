@@ -3,6 +3,7 @@ import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser, requireConversationAccess } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
+import { readOnlyConversationRefusal } from '@/lib/authz/conversationAccess'
 
 // POST /api/conversations/[id]/messages - Append messages
 export async function POST(
@@ -18,6 +19,8 @@ export async function POST(
     if (guard instanceof NextResponse) return guard
     const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
     if (auth instanceof NextResponse) return auth
+    const readOnly = await readOnlyConversationRefusal(conversationId)
+    if (readOnly) return readOnly
 
     const body = await request.json()
 

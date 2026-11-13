@@ -197,6 +197,9 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
       // Step 4.12: the share dialog offers the Read + Write presets disabled whatever the switch says;
       // off, their note reads "Coming when write sharing is on" (sharePresets.test.ts, ShareDialog.test.tsx).
       'src/components/sharing/sharePresets.ts',
+      // Step 5.8: conversation sharing, the managers policy and the reassignment of a deleted collaborator's
+      // conversations read anything only with the switch on (the conversations block below).
+      'src/lib/authz/conversationAccess.ts',
       // The switch itself and its chain (sharingWrite requires sharing).
       'src/lib/authz/flags.ts',
       // Step 5.6: a share route reads the consent only with write in force (maxShareLevel); the usage report's
@@ -221,6 +224,9 @@ describe('RBAC_SHARING_WRITE_ENABLED off (step 5.2a)', () => {
     // (ProjectTransfer) add each reader with how it stays silent with the switch off. ScanSchedule's
     // `pausedReason` (5.5) is not here: 5.5 runs whatever the switch says.
     const PHASE5_TABLE_READERS: string[] = [
+      // Step 5.8: the one reader and writer of ConversationShare, of the managers flag on ProjectAccessPolicy and of
+      // Conversation.formerAuthor*, each read only with the switch on (and the shares with write in force; block below).
+      'src/lib/authz/conversationAccess.ts',
       // Step 5.6: the one reader and writer of ProjectAccessPolicy, asked by projectAccess() only for a write answer
       // (write in force), by the share routes only with write in force, by the access-policy route only past its 404.
       'src/lib/authz/ownerConsent.ts',
@@ -469,5 +475,53 @@ describe('MCP write tools with write sharing not in force (step 5.2b)', () => {
     for (const level of ['W', 'W+S', 'M', 'O'] as const) {
       await expect(mcpProjectAccess({ userId: 'owner' }, 'P-owner', level)).resolves.toMatchObject({ access: { level: 'owner' } })
     }
+  })
+})
+
+// Step 5.8 (SH-22, DV-23, T24): conversation privacy, sharing and retention (conversationAccess.ts). With write
+// sharing not in force a conversation is its author's alone, as after Phase 4: no other person reads one (shared,
+// the owner's co-owner policy, Root's break-glass), the share and policy routes answer 404, the list holds the
+// person's own and nothing new, and no write route judges a reassignment. With the switch off a deleted
+// collaborator's conversations go with the account as before and no Phase 5 table or column is read (this file's
+// Prisma double has no conversation, share or policy table: any read would throw).
+describe('conversations with write sharing not in force (step 5.8)', () => {
+  const STATES: Array<[string, Partial<RbacFlags>, Record<string, unknown>]> = [
+    ['every switch off', {}, { enabled: true, maxLevel: 'write' }],
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }, { enabled: true, maxLevel: 'write' }],
+    ["the write switch on, Root's policy at read", ALL_ON, { enabled: true, maxLevel: 'read' }],
+  ]
+
+  test.each(STATES)('%s: conversation sharing is not in force; another person reads nothing and the list is the own', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    const { conversationSharingInForce, readableConversationsWhere } = await import('./conversationAccess')
+    expect(await conversationSharingInForce()).toBe(false)
+    expect(await conversationSharingInForce({ fresh: true })).toBe(false)
+    const owner = { project: { id: 'P-owner', userId: 'owner' }, level: 'owner', toggles: { rawData: true }, via: 'owner' } as const
+    expect(await readableConversationsWhere(owner, 'P-owner', 'owner')).toEqual({ projectId: 'P-owner', userId: 'owner' })
+  })
+
+  test.each(STATES.slice(0, 2))('%s: no reassignment and no read-only refusal, nothing read', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    const { readOnlyConversationRefusal, reassignConversationsOfDeletedAuthor } = await import('./conversationAccess')
+    const tx = { conversation: { findMany: vi.fn(), updateMany: vi.fn() } }
+    expect(await reassignConversationsOfDeletedAuthor(tx as never, 'collab', 'Collab')).toBeNull()
+    expect(tx.conversation.findMany).not.toHaveBeenCalled()
+    expect(await readOnlyConversationRefusal('c1')).toBeNull()
+  })
+
+  test.each(STATES)('%s: the share and policy routes answer 404, before any session or table is read', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    catalogDoubles.identity.mockClear()
+    const { NextRequest } = await import('next/server')
+    const { POST: SHARE } = await import('@/app/api/conversations/[id]/share/route')
+    const { GET, POST } = await import('@/app/api/conversations/policy/route')
+    const json = (url: string, body: unknown) => new NextRequest(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    expect((await SHARE(json('http://x/api/conversations/c1/share', { shared: true }), { params: Promise.resolve({ id: 'c1' }) })).status).toBe(404)
+    expect((await GET(new NextRequest('http://x/api/conversations/policy?projectId=P-owner'))).status).toBe(404)
+    expect((await POST(json('http://x/api/conversations/policy?projectId=P-owner', { managersSeeAllConversations: true }))).status).toBe(404)
+    expect(catalogDoubles.identity).not.toHaveBeenCalled()
   })
 })

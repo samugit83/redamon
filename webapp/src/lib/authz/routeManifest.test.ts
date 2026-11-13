@@ -222,6 +222,9 @@ const SAME_ORIGIN_ROUTES = [
   // Stopping another person's agent run from the operations view (step 6.5): an admin action, same-origin like the others.
   '/api/admin/operations/agent-runs/stop',
   '/api/auth/act-as',
+  // A conversation shared with the project, and the owner's co-owner policy (step 5.8): who reads what.
+  '/api/conversations/[id]/share',
+  '/api/conversations/policy',
   '/api/account/sessions/[sid]',
   '/api/auth/sessions/revoke-all',
   '/api/invite/accept',

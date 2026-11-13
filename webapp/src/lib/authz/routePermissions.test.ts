@@ -98,6 +98,11 @@ const ASKED_IN_LIB: Readonly<Record<string, string>> = {
   'PUT /api/admin/llm-providers/[providerId]': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
   'DELETE /api/admin/llm-providers/[providerId]': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
   'PUT /api/admin/llm-providers/policy': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
+  // Step 5.8: the author's read at agent:chat as before; another person's conversation, read-only, at
+  // graph:read + R* with write sharing in force (shared, the owner's co-owner policy, Root's break-glass).
+  'GET /api/conversations/[id]': 'conversationAccess.requireConversationRead asks agent:chat of the author, else graph:read at R* when a sharing rule lets the person read it',
+  'GET /api/conversations/by-session/[sessionId]': 'conversationAccess.requireConversationRead asks agent:chat of the author, else graph:read at R* when a sharing rule lets the person read it',
+  'GET /api/conversations/by-session/[sessionId]/fireteams': 'conversationAccess.requireConversationRead asks agent:chat of the author, else graph:read at R* when a sharing rule lets the person read it',
   'GET /api/projects/[id]/collaborators': "projectShares.requireShareListAccess asks project:share on the project (the owner, at Manage), and lets an overseer (projects:oversee, Read) or Root's break-glass list the shares too, which can() at Manage would refuse (step 4.4)",
   'GET /api/users/[id]/permissions': 'userPermissionAdmin.readUserPermissions asks users:assign_permissions (admins:manage for an admin)',
   'PUT /api/users/[id]/permissions': 'userPermissionAdmin.changeUserPermissions asks users:assign_permissions (admins:manage for an admin)',
@@ -134,6 +139,7 @@ const NO_ROWS: Readonly<Record<string, string>> = {
   'project:share': 'every holder request that passes the route\'s own checks looks up an account (counted against a per-person ceiling and audited) or changes a share, and the activity feed (a read) answers 404 unless sharing is in force, which the generated rows do not set up; p4.tsv covers the share routes and the feed by hand (steps 4.4, 4.13)',
   'audit:read': 'the console routes answer 404 with RBAC_GOVERNANCE_ENABLED off, which the generated rows do not turn on; Security auditor holds it and User manager lacks it: api/admin/audit/route.test.ts covers both, and the governance rows of step 6.13 run them live',
   'audit:export': 'as audit:read: 404 with RBAC_GOVERNANCE_ENABLED off, which the generated rows do not turn on; api/admin/audit/route.test.ts covers the holder, the refusal and the audit row',
+  'agent:conversations_share': 'every holder request that passes the route\'s own checks shares a conversation or changes the owner\'s policy, and both routes answer 404 unless write sharing is in force, which the generated rows do not set up; conversations.access.test.ts covers holders and refusals (step 5.8)',
   'platform:operations': 'the operations view answers 404 with RBAC_GOVERNANCE_ENABLED off, which the generated rows do not turn on, and its stop acts on a running agent run; Platform operator holds it and User manager lacks it: api/admin/operations/route.test.ts covers both, and the governance rows of step 6.13 run them live (step 6.5)',
 }
 
@@ -299,7 +305,7 @@ describe('route permissions: every route (steps 3.8, 3.9; PE-19, PE-22)', () => 
     }
     // A later phase's feature is that phase's to wire (each later manifest test requires its own); the
     // ones a step has wired are listed here.
-    const WIRED_NEW_FEATURES = new Set<string>(['project:share', 'audit:read', 'audit:export', 'projects:oversee', 'projects:administer', 'platform:operations'])
+    const WIRED_NEW_FEATURES = new Set<string>(['project:share', 'audit:read', 'audit:export', 'projects:oversee', 'projects:administer', 'platform:operations', 'agent:conversations_share'])
     expect(PERMISSION_IDS.filter(p => !PERMISSIONS[p].gatesExisting && named().includes(p) && !WIRED_NEW_FEATURES.has(p))).toEqual([])
   })
 

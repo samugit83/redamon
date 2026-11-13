@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireLevel, requirePermission } from '@/lib/authz/guards'
+import { readableConversationsWhere } from '@/lib/authz/conversationAccess'
 import { stripStepContent } from '@/lib/authz/stepContent'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
@@ -39,8 +40,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (raw) return raw
     // A co-owner's export (step 5.2, SH-31) is the project as they may read it: the row without the
     // owner's secret columns (projectReadView: credentials, header lists, the RoE document and what
-    // was parsed from it), RoE revisions without their bodies, only the conversations they wrote
-    // (step 5.8 widens it to the shared ones), none of the owner's presets, and a line in the
+    // was parsed from it), RoE revisions without their bodies, only the conversations they may read
+    // (their own and, with write sharing in force, the shared ones, or every one with the owner's
+    // "co-owners see every conversation": step 5.8), none of the owner's presets, and a line in the
     // project's activity feed. The owner's export is unchanged.
     const ownerExport = auth.access?.level === 'owner'
     const exporterId = auth.effective.userId
@@ -54,7 +56,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     // 2. Fetch conversations and messages
     const conversations = await prisma.conversation.findMany({
-      where: ownerExport ? { projectId: id } : { projectId: id, userId: exporterId },
+      where: ownerExport ? { projectId: id } : await readableConversationsWhere(auth.access!, id, exporterId),
       orderBy: { createdAt: 'asc' },
     })
 

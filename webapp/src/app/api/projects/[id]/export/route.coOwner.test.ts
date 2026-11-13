@@ -2,7 +2,8 @@
  * A co-owner's export (step 5.2; SH-31, PE-25): `project:export` is Manage, so a Read + Write share
  * with Manage reaches it, and gets the project as they may read it: the row without the owner's secret
  * columns (projectReadView: credentials, header lists, the RoE document and what was parsed from it),
- * RoE revisions without their bodies, only their own conversations (step 5.8 widens it), none of the
+ * RoE revisions without their bodies, only the conversations they may read (their own; with write sharing
+ * in force also the shared ones, or every one under the owner's co-owner policy: step 5.8), none of the
  * owner's presets, and an audit row the project's activity feed shows. The owner's export is the one
  * built before: every column, the document, the revision bodies, every conversation, the presets, and
  * no feed line.
@@ -12,7 +13,7 @@
  *
  * @vitest-environment node
  */
-import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import JSZip from 'jszip'
 
 const h = vi.hoisted(() => ({
@@ -20,6 +21,9 @@ const h = vi.hoisted(() => ({
   effective: 'alice',
   queries: [] as Array<{ model: string; args: unknown }>,
   audits: [] as Array<Record<string, unknown>>,
+  // Step 5.8: the instance sharing policy and the owner's co-owner flag, read only with write sharing on.
+  sharingPolicy: null as null | Record<string, unknown>,
+  managersSeeAll: false,
 }))
 
 const PROJECT = {
@@ -46,6 +50,8 @@ vi.mock('@/lib/prisma', () => {
     get: (_t, method: string) => async (args: unknown) => {
       h.queries.push({ model: `${name}.${method}`, args })
       if (name === 'project' && method === 'findUnique') return { ...PROJECT }
+      if (name === 'instanceSettings' && method === 'findUnique') return h.sharingPolicy ? { id: 'instance', sharingPolicy: h.sharingPolicy } : null
+      if (name === 'projectAccessPolicy' && method === 'findUnique') return { managersSeeAllConversations: h.managersSeeAll }
       if (name === 'roeDocumentRevision' && method === 'findMany') return [{ ...REVISION }]
       if (name === 'userProjectPreset' && method === 'findMany') return [{ name: 'owner-preset', description: '', settings: {}, createdAt: new Date(0) }]
       if (name === 'userMuteRulesPreset' && method === 'findMany') return [{ name: 'owner-rules', description: '', mode: 'off', rules: [] }]
@@ -65,6 +71,8 @@ vi.mock('@/lib/reconPresets/server', () => ({ projectPresetForRead: () => ({ set
 vi.mock('fs', async (orig) => ({ ...(await orig<typeof import('fs')>()), existsSync: () => false, readdirSync: () => [] }))
 
 import { GET } from './route'
+import { setFlagsForTests } from '@/lib/authz/flags'
+import { clearSharingPolicyCacheForTests } from '@/lib/authz/sharingPolicy'
 import { SHARE_SECRET_FIELDS } from '@/lib/authz/projectReadView'
 import { REVISIONS_BUNDLE_PATH } from '@/lib/roe/revisionBundle'
 
@@ -136,5 +144,38 @@ describe('owner unchanged', () => {
     expect(zip.file('presets/user_project_presets.json')).not.toBeNull()
     expect(zip.file('presets/user_mute_rules_presets.json')).not.toBeNull()
     expect(h.audits).toEqual([])
+  })
+})
+
+// Step 5.8: with write sharing in force the co-owner's bundle holds the conversations step 5.8 lets them
+// read: their own and the shared ones, or every one while the owner lets co-owners read every conversation.
+describe("a co-owner's export with write sharing in force (step 5.8)", () => {
+  beforeEach(() => {
+    h.access = COOWNER
+    h.effective = 'bob'
+    h.sharingPolicy = { enabled: true, maxLevel: 'write' }
+    setFlagsForTests({ identity: true, permissions: true, sharing: true, sharingWrite: true })
+    clearSharingPolicyCacheForTests()
+  })
+  afterEach(() => {
+    h.sharingPolicy = null
+    h.managersSeeAll = false
+    setFlagsForTests(null)
+    clearSharingPolicyCacheForTests()
+  })
+
+  test('their own and the shared ones', async () => {
+    await bundle()
+    expect(h.queries.find(q => q.model === 'conversation.findMany')?.args).toMatchObject({
+      where: { OR: [{ projectId: 'p1', userId: 'bob' }, { projectId: 'p1', share: { isNot: null } }] },
+    })
+  })
+
+  test("every one under the owner's co-owner policy", async () => {
+    h.managersSeeAll = true
+    await bundle()
+    expect(h.queries.find(q => q.model === 'conversation.findMany')?.args).toMatchObject({
+      where: { OR: [{ projectId: 'p1', userId: 'bob' }, { projectId: 'p1' }] },
+    })
   })
 })

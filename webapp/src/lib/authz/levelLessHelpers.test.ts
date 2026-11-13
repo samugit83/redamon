@@ -320,7 +320,11 @@ describe('the routes (step 4.3)', () => {
     expect(lib.filter((f) => f.startsWith('src/app/api/')).length).toBeGreaterThan(10)
     const callers = libraryCallers(lib.map((file) => ({ file, source: readFileSync(path.join(WEBAPP, file), 'utf8') })))
     // access.ts: guardProject and requireProjectScopedResource are built on requireProjectAccess.
-    expect(callers).toEqual(['src/lib/access.ts'])
+    // conversationAccess.ts (step 5.8): requireConversationRead, the conversation read routes' guard, runs the
+    // author guard and then asks agent:chat (W+A) of the author, or graph:read at R* of anyone else, on every
+    // path that answers a conversation; it is a read, never a write (conversations.access.test.ts, "every read
+    // path asks a permission with a project level").
+    expect(callers).toEqual(['src/lib/access.ts', 'src/lib/authz/conversationAccess.ts'])
   })
 })
 

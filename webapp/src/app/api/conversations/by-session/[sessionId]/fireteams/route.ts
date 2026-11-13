@@ -5,6 +5,7 @@ import { isInternalRequest } from '@/lib/session'
 import { requireEffectiveUser, requireConversationAccessBySession } from '@/lib/access'
 import { requirePermission } from '@/lib/authz/guards'
 import { conversationRunRefusal } from '@/lib/authz/conversationRun'
+import { requireConversationRead } from '@/lib/authz/conversationAccess'
 
 // POST /api/conversations/by-session/[sessionId]/fireteams
 // Create a new Fireteam row and its FireteamMember rows. Called by the agent with
@@ -95,7 +96,8 @@ export async function POST(
 }
 
 // GET /api/conversations/by-session/[sessionId]/fireteams
-// List all fireteams for a session. Used by frontend session resume.
+// List all fireteams for a session. Used by frontend session resume, and by a read-only view of another
+// person's conversation (step 5.8's rules, as the conversation's own GET).
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
@@ -106,10 +108,8 @@ export async function GET(
     if (!isInternalRequest(request)) {
       const eff = await requireEffectiveUser()
       if (eff instanceof NextResponse) return eff
-      const guard = await requireConversationAccessBySession(eff, sessionId)
-      if (guard instanceof NextResponse) return guard
-      const auth = await requirePermission(request, 'agent:chat', { projectId: guard.conversation.projectId })
-      if (auth instanceof NextResponse) return auth
+      const read = await requireConversationRead(request, eff, { sessionId })
+      if (read instanceof NextResponse) return read
     }
 
     const conversation = await prisma.conversation.findUnique({ where: { sessionId } })

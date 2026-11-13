@@ -28,6 +28,7 @@ import { requireSessionPermission, sessionHolds } from '@/lib/authz/adminPermiss
 import { forbiddenResponse } from '@/lib/authz/guards'
 import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
 import { endOpenImpersonationsQuietly } from '@/lib/authz/actAs'
+import { reassignConversationsOfDeletedAuthor } from '@/lib/authz/conversationAccess'
 import type { Session } from '@/lib/session'
 
 interface RouteParams {
@@ -495,7 +496,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     if (actingAs) return actingAs
 
     // Self-deletion is refused above, so an admin target is another admin.
-    const target = await prisma.user.findUnique({ where: { id }, select: { email: true, role: true } })
+    const target = await prisma.user.findUnique({ where: { id }, select: { email: true, role: true, name: true } })
     // Before the step-up and the teardown: a refused deletion tears nothing down.
     const rootRefusal = await rootProtectedRefusal(request, session, id, 'delete')
     if (rootRefusal) return rootRefusal
@@ -570,12 +571,16 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     }
 
     // The account's own Nuclei templates go to the admin deleting it (DV-33, OQ-50): no
-    // member gains them and no file is lost. In the delete's transaction, so a deletion
-    // that fails leaves them with their owner.
+    // member gains them and no file is lost. Its conversations in other people's projects go to
+    // each project's owner with the former author kept (T24, step 5.8; write switch on), before the
+    // account row whose cascade would delete them. In the delete's transaction, so a deletion
+    // that fails leaves both with their owner.
+    let conversationsReassigned: number | null = null
     const deleteAccount = async (tx: Prisma.TransactionClient) => {
       const { count } = await tx.nucleiTemplate.updateMany({
         where: { ownerUserId: id }, data: { ownerUserId: session.userId },
       })
+      conversationsReassigned = await reassignConversationsOfDeletedAuthor(tx, id, target?.name?.trim() || target?.email || id)
       await tx.user.delete({ where: { id } })
       return count
     }
@@ -601,7 +606,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       action: 'user.delete',
       targetId: id,
       before: auditBefore,
-      after: { projectsDeleted, templatesReassigned },
+      after: { projectsDeleted, templatesReassigned, ...(conversationsReassigned === null ? {} : { conversationsReassigned }) },
     })
 
     return NextResponse.json({ success: true })
