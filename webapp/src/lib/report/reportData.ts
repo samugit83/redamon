@@ -1513,10 +1513,12 @@ export async function queryCveIntelligence(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryAttackChains(session: any, pid: string) {
+export async function queryAttackChains(session: any, pid: string) {
+  // A chain id is the agent's session id: the tenant and the project keep another project's step
+  // written under the same id out of this chain's counts.
   const chainsRes = await session.run(
     `MATCH (ac:AttackChain {project_id: $pid})
-     OPTIONAL MATCH (step:ChainStep {chain_id: ac.chain_id})
+     OPTIONAL MATCH (step:ChainStep {chain_id: ac.chain_id, user_id: ac.user_id, project_id: $pid})
      WITH ac, collect(step) AS allSteps
      UNWIND CASE WHEN size(allSteps) = 0 THEN [null] ELSE allSteps END AS step
      OPTIONAL MATCH (step)-[:PRODUCED]->(f:ChainFinding)
