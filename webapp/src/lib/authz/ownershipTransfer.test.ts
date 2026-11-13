@@ -40,6 +40,7 @@ const h = vi.hoisted(() => {
     acting: vi.fn(async (): Promise<Response | null> => null),
     notice: vi.fn(async () => undefined),
     invalidate: vi.fn(),
+    reduced: vi.fn(async () => ({ sockets: { closed: 0 }, failed: [] })),
   }
 })
 
@@ -164,6 +165,7 @@ vi.mock('@/lib/activationLock', () => ({
   graphHold: async (projectId: string) => h.state.lock.get(projectId) ?? null,
 }))
 vi.mock('./stepUp', () => ({ requireStepUp: () => h.stepUp() }))
+vi.mock('./revocation', () => ({ onAccessReduced: (...a: unknown[]) => h.reduced(...(a as [])) }))
 vi.mock('./actAsRefusals', () => ({ refuseWhileActingAs: () => h.acting() }))
 vi.mock('./accountNotices', async (orig) => ({
   ...(await orig<typeof import('./accountNotices')>()),
@@ -278,7 +280,7 @@ const accept = (who = NEW) => acceptTransfer(req(), identity(who), P, 'pw')
 
 beforeEach(() => {
   seed()
-  for (const f of [h.writers, h.closeSockets, h.stepUp, h.acting, h.notice, h.invalidate]) f.mockClear()
+  for (const f of [h.writers, h.closeSockets, h.stepUp, h.acting, h.notice, h.invalidate, h.reduced]) f.mockClear()
   h.writers.mockResolvedValue(null)
   h.closeSockets.mockResolvedValue({ ok: true, closed: 2, stoppedRuns: 0 })
   h.stepUp.mockResolvedValue(null)
@@ -442,6 +444,27 @@ describe('accept moves Postgres and graph', () => {
       const line = schema.split('\n').find((l) => new RegExp(`^\\s+${column.field}\\s`).test(l))!
       expect([column.field, line.match(/@default\("([^"]*)"\)/)?.[1]]).toEqual([column.field, column.reset])
     }
+  })
+
+  test('the access the move reduced goes through the revocation path once it committed', async () => {
+    await offer()
+    await accept()
+    // The old owner stays as a co-owner whose run toggles wait for the new owner's consent; the other
+    // collaborator lost the consent their toggles spent; the new owner is never named.
+    expect(h.reduced.mock.calls).toEqual([
+      [P, OLD, 'share_reduced', { ownerId: NEW }],
+      [P, OTHER, 'consent_withdrawn', { ownerId: NEW }],
+    ])
+  })
+
+  test('a leaving owner: share_left; no consent to clear: nobody else is touched; a failed move calls nothing', async () => {
+    rows('projectAccessPolicy')[0].ownerCredentialConsentAt = null
+    await offer({ toUserId: NEW, oldOwnerRole: 'leave', stepUpPassword: 'pw' })
+    h.state.failNextWrite = 'conversation'
+    await accept()
+    expect(h.reduced).not.toHaveBeenCalled()
+    await accept()
+    expect(h.reduced.mock.calls).toEqual([[P, OLD, 'share_left', { ownerId: NEW }]])
   })
 
   test('notices to both people; a notice that cannot be written leaves the transfer standing', async () => {

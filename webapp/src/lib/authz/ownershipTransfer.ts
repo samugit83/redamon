@@ -18,7 +18,9 @@
  *   left the graph split (the agent's answer lost, a run back that failed) is put right by accepting
  *   again, or undone by a cancel or decline, which runs the graph back first.
  * - Every change writes its audit row in its own transaction (no row, no change); an operator reads
- *   `[rbac] transfer <code> project=<id>` lines for every failure. Both people get a notice.
+ *   `[rbac] transfer <code> project=<id>` lines for every failure. Both people get a notice. The access
+ *   the move reduced (the old owner's, and the collaborators' who lost the consent) then goes through
+ *   the revocation path (onAccessReduced).
  */
 import { NextResponse } from 'next/server'
 import type { Prisma } from '@prisma/client'
@@ -43,6 +45,7 @@ import { now } from './clock'
 import { rbacFlags } from './flags'
 import type { PermissionContext } from './guards'
 import { projectAccess } from './projectAccess'
+import { onAccessReduced } from './revocation'
 import { maxShareLevel, sharingPolicyInForce } from './sharingPolicy'
 import { requireStepUp } from './stepUp'
 
@@ -725,7 +728,7 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor): Promise<N
     }
     await refreshTransferLock(projectId)
 
-    let completed: { cleared: ClearedSetting[]; projectName: string }
+    let completed: MoveResult
     try {
       completed = await auditedTransaction(prisma, (tx) => moveInPostgres(tx, offer, actor, moved))
     } catch (err) {
@@ -742,6 +745,7 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor): Promise<N
     }
 
     invalidateCache(projectId)
+    await endReducedAccess(offer, completed)
     await tellBoth(offer, completed.projectName, completed.cleared.length)
     return NextResponse.json({
       transferred: { projectId, from: offer.fromUserId, to: offer.toUserId, oldOwnerRole: offer.oldOwnerRole },
@@ -751,6 +755,22 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor): Promise<N
   } finally {
     clearInterval(beat)
     await releaseTransferLock(projectId)
+  }
+}
+
+/**
+ * The access the move reduced, through the revocation path (step 5.9) once it committed: the old owner
+ * left the project, or stays as a co-owner whose run toggles now wait for the new owner's consent; every
+ * other collaborator lost the consent their run toggles spent. The busy check found nothing live and
+ * every socket was closed before the move, so this mostly pauses schedules and cancels queued scans the
+ * people may no longer start. Never throws (onAccessReduced logs each failed step).
+ */
+async function endReducedAccess(offer: TransferRow, moved: MoveResult): Promise<void> {
+  const { projectId, fromUserId, toUserId } = offer
+  await onAccessReduced(projectId, fromUserId, offer.oldOwnerRole === 'leave' ? 'share_left' : 'share_reduced', { ownerId: toUserId })
+  if (!moved.consentCleared) return
+  for (const userId of moved.collaborators) {
+    if (userId !== fromUserId) await onAccessReduced(projectId, userId, 'consent_withdrawn', { ownerId: toUserId })
   }
 }
 
@@ -783,6 +803,15 @@ const PROJECT_SELECT = {
 } as const
 
 type MovingProject = { userId: string; name: string } & Record<string, unknown>
+
+interface MoveResult {
+  cleared: ClearedSetting[]
+  projectName: string
+  /** The old owner's consent existed and was cleared. */
+  consentCleared: boolean
+  /** Who holds a share of the project after the move (the old owner when they stay). */
+  collaborators: string[]
+}
 
 /**
  * The project columns that name something of the old owner's own, which the new owner cannot use: a
@@ -872,7 +901,7 @@ async function moveInPostgres(
   offer: TransferRow,
   actor: AuditActor,
   graph: { totalNodes: number; relationships: number },
-): Promise<{ cleared: ClearedSetting[]; projectName: string }> {
+): Promise<MoveResult> {
   const { projectId, fromUserId: from, toUserId: to } = offer
   const project = await tx.project.findUnique({ where: { id: projectId }, select: PROJECT_SELECT }) as MovingProject | null
   if (!project || project.userId !== from) throw new MoveAborted('owner_changed')
@@ -900,8 +929,8 @@ async function moveInPostgres(
     data: { enabled: false, pausedReason: 'ownership_transferred' },
   })
   // The consent named the old owner's keys; the new owner's are spent only once they consent.
-  await tx.projectAccessPolicy.updateMany({
-    where: { projectId },
+  const consent = await tx.projectAccessPolicy.updateMany({
+    where: { projectId, ownerCredentialConsentAt: { not: null } },
     data: { ownerCredentialConsentAt: null, ownerCredentialConsentById: null },
   })
   await tx.projectAuthProfile.updateMany({ where: { projectId, userId: from }, data: { userId: to } })
@@ -949,5 +978,6 @@ async function moveInPostgres(
     },
     source: 'api',
   })
-  return { cleared, projectName: project.name }
+  const shares = await tx.projectCollaborator.findMany({ where: { projectId }, select: { userId: true } })
+  return { cleared, projectName: project.name, consentCleared: consent.count > 0, collaborators: shares.map((c) => c.userId) }
 }
