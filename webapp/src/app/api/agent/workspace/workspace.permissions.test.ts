@@ -82,7 +82,6 @@ describeRoutePermissions('agent workspace and file download', [
     { projectId: OWNED_PROJECT, url: 'https://example.test/a.zip' }),
   at('POST /api/agent/workspace/import-url/resync', () => import('./import-url/resync/route'), 'workspace:import', {},
     { projectId: OWNED_PROJECT, path: 'uploads/a' }),
-  { ...at('GET /api/agent/files?path=[path]', () => import('../files/route'), 'agent:chat', { path: '/tmp/out.txt' }), projectId: null },
 ], h, { setFlags: setFlagsForTests, clearCaches })
 
 /** A multipart upload: the harness sends JSON bodies, so this route is driven by hand. */

@@ -129,8 +129,8 @@ export function overConversation(): Promise<Guards> {
 }
 
 /**
- * For a test that doubles `guardProject` of a route that also asks a permission with no project
- * (`/api/agent/files` without a projectId, step 3.9): a project check is `guardProject(projectId)`,
+ * For a test that doubles `guardProject` of a route family that also asks a permission with no
+ * project (the agent proxy routes, step 3.9): a project check is `guardProject(projectId)`,
  * a capability alone passes holding every permission, as an owner on *Default member* does.
  */
 export function overGuardProjectOrCapability(): Promise<Guards> {

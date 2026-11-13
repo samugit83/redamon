@@ -200,9 +200,10 @@ check "A lists OWN conversations"                   200 "$(code "$TMP/a.jar" GET
 check "A lists OWN graph-views"                     200 "$(code "$TMP/a.jar" GET "/api/graph-views?projectId=$PA_ID")"
 check "A reads OWN api-usage report"                200 "$(code "$TMP/a.jar" GET "/api/users/$A_ID/settings/api-usage")"
 check "A runs OWN api-usage check (no keys saved)"  400 "$(code "$TMP/a.jar" POST "/api/users/$A_ID/settings/api-usage" '{}')"
-# legacy agent/files download (no projectId) must NOT be blocked by the project guard
-FILES_CODE="$(code "$TMP/a.jar" GET "/api/agent/files?path=/tmp/nonexistent")"
-if [ "$FILES_CODE" = "400" ]; then bad "legacy agent/files (no projectId) wrongly 400-blocked"; else ok "legacy agent/files (no projectId) not project-guard-blocked -> $FILES_CODE"; fi
+# agent/files reads one project's workspace only (4.9 review): the legacy /tmp read of the shared
+# sandbox, with no project or user scope, is refused with or without a projectId.
+check "agent/files without a projectId -> 400"            400 "$(code "$TMP/a.jar" GET "/api/agent/files?path=/tmp/nonexistent")"
+check "agent/files on A's project, a /tmp path -> 400"    400 "$(code "$TMP/a.jar" GET "/api/agent/files?projectId=$PA_ID&path=/tmp/nonexistent")"
 
 echo "== ws-ticket is scoped to the effective user's project =="
 check "A mints a ws-ticket for OWN project"        200 "$(code "$TMP/a.jar" POST /api/agent/ws-ticket "{\"projectId\":\"$PA_ID\",\"sessionId\":\"s1\"}")"

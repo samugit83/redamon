@@ -179,7 +179,6 @@ describe('the manifest and the route tree', () => {
  * call `session`, and the route checks no project.
  */
 const CAPABILITY_ONLY: Record<string, string> = {
-  '/api/agent/files agent:chat': 'the in-chat download of a file the agent wrote under /tmp, which names no project (older messages): the chat capability alone; with a projectId the route asks workspace:read on it (step 3.9)',
   '/api/plugins/overrides/change-sets/[id] plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked strictly by changeSetAccess (ownsScope, bodyOwnerMatches): the capability alone here; plugin levels on a shared project are Phase 5\'s (step 3.9)',
   '/api/plugins/overrides/change-sets/[id]/approve plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked strictly by changeSetAccess (ownsScope, bodyOwnerMatches): the capability alone here; plugin levels on a shared project are Phase 5\'s (step 3.9)',
   '/api/plugins/overrides/change-sets/[id]/reject plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked strictly by changeSetAccess (ownsScope, bodyOwnerMatches): the capability alone here; plugin levels on a shared project are Phase 5\'s (step 3.9)',

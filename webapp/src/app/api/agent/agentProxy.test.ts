@@ -179,9 +179,9 @@ describe('agent answered with an error', () => {
     expect(await res.json()).toEqual({ error: 'not found: gone.txt', code: 'agent_error', upstreamStatus: 400 })
   })
 
-  test('the chat file download no longer double-wraps the agent body', async () => {
-    answer = async () => new Response('Forbidden: only /tmp/ paths allowed', { status: 403 })
-    const res = await files.GET(new NextRequest('http://x/api/agent/files?path=/etc/passwd'))
+  test('the file download no longer double-wraps the agent body', async () => {
+    answer = async () => new Response('path escapes workspace: a.txt', { status: 403 })
+    const res = await files.GET(new NextRequest('http://x/api/agent/files?projectId=p1&path=a.txt'))
     expect(res.status).toBe(403)
     expect(await res.json()).toEqual({ error: 'Failed to download file', code: 'agent_error', upstreamStatus: 403 })
   })
