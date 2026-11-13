@@ -147,7 +147,7 @@ function sqlDb(opts: { legacyColumn?: boolean; instanceTable?: boolean } = {}) {
         .filter((r) => params.includes(r.action))
         .sort((a, b) => (a.createdAt as Date).getTime() - (b.createdAt as Date).getTime() || String(a.id).localeCompare(String(b.id)))
         .map((r) => ({
-          action: r.action, target_type: r.targetType ?? null, target_id: r.targetId ?? null, actor_id: r.actorId ?? null,
+          action: r.action, on_user: r.targetType === 'user', target_id: r.targetId ?? null, actor_id: r.actorId ?? null,
           after: r.after ?? null, created_at: r.createdAt,
         }))
     }

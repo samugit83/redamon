@@ -127,13 +127,14 @@ export async function readUpgradeState(prisma) {
       enabled: m.enabled !== false, tokenEnvVar: m.token_env_var ?? '', hasToken: m.has_token === true,
     }))
 
-    const actions = [CUTOFF_ACTION, MARKER_ACTION, REMOVE_ACTION, INSTANCE_MARKER_ACTION, KEEP_ACTION, CHANGED_ACTION, OVERRIDES_MARKER_ACTION]
+    // The actions are named here, not spread: auditRetention.test.ts resolves each reader's constants
+    // to check that retention keeps those rows.
     const audit = (await tx.$queryRawUnsafe(
-      `SELECT action, target_type, target_id, actor_id, after, created_at FROM audit_log
-        WHERE action IN (${actions.map((_, i) => `$${i + 1}`).join(', ')}) ORDER BY created_at, id`,
-      ...actions,
+      `SELECT action, target_type = 'user' AS on_user, target_id, actor_id, after, created_at FROM audit_log
+        WHERE action IN ($1, $2, $3, $4, $5, $6, $7) ORDER BY created_at, id`,
+      CUTOFF_ACTION, MARKER_ACTION, REMOVE_ACTION, INSTANCE_MARKER_ACTION, KEEP_ACTION, CHANGED_ACTION, OVERRIDES_MARKER_ACTION,
     )).map((a) => ({
-      action: a.action, targetType: a.target_type, targetId: a.target_id, actorId: a.actor_id, after: a.after, createdAt: a.created_at,
+      action: a.action, onUser: a.on_user === true, targetId: a.target_id, actorId: a.actor_id, after: a.after, createdAt: a.created_at,
     }))
 
     // The overrides standing on the platform tools: the conversion skips a grant one covers.
@@ -233,7 +234,7 @@ function conversionPlan(state, env, plan) {
     .map((u) => ({ id: u.id, legacyGrants: after.get(u.id) }))
   const ids = new Set(members.map((m) => m.id))
   const decisions = latestDecisions(state.audit.filter((a) =>
-    (a.action === KEEP_ACTION || a.action === REMOVE_ACTION) && a.targetType === 'user' && ids.has(a.targetId)))
+    (a.action === KEEP_ACTION || a.action === REMOVE_ACTION) && a.onUser && ids.has(a.targetId)))
   const pair = (id, permission) => `${id}\u0000${permission}`
   const standing = new Set(state.overrides.filter((o) => ids.has(o.userId)).map((o) => pair(o.userId, o.permission)))
   const changedAt = new Map()
