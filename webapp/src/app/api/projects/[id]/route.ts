@@ -29,6 +29,7 @@ import { scannerJobRefusal } from '@/lib/authz/jobCredential'
 import { projectReadView } from '@/lib/authz/projectReadView'
 import { myAccessView, type ProjectAccess } from '@/lib/authz/projectAccess'
 import { rbacFlags } from '@/lib/authz/flags'
+import { classifyChange, riskSelect, settingsRefusal } from '@/lib/authz/settingsRisk'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -274,6 +275,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // check and its audit row.
     const updateData: Record<string, any> = pickProjectColumns(rawUpdate)
     for (const key of NOT_WRITABLE_BY_SAVE) delete updateData[key]
+    // Columns the server writes as a consequence of the save, not as the caller asked: they are
+    // left out when a collaborator's change is judged (the mode or list that caused them is not).
+    const serverDerived = new Set<string>()
     if ('openapiSources' in updateData) updateData.openapiSources = cleanOpenApiSources(updateData.openapiSources)
     const openapiError = validateOpenApiSettings(updateData)
     if (openapiError) {
@@ -371,6 +375,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       )
       updateData.domainBatchHosts = batch.entries
       updateData.domainBatchGroups = batch.legacy
+      serverDerived.add('domainBatchGroups')
       batchSeedDomains = seedDomainNames(batch.groups)
     }
 
@@ -381,6 +386,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         || (existing?.domainBatchHosts?.length ?? 0) > 0 || 'domainBatchHosts' in updateData)) {
       updateData.domainBatchGroups = Prisma.DbNull
       updateData.domainBatchHosts = []
+      serverDerived.add('domainBatchGroups').add('domainBatchHosts')
     }
 
     // A project that is not in IP mode keeps no hostname policy, as a non-batch
@@ -395,6 +401,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       for (const key of IP_HOSTNAME_FIELDS) {
         const value = IP_HOSTNAME_DEFAULTS[key]
         updateData[key] = Array.isArray(value) ? [] : value
+        serverDerived.add(key)
       }
     }
 
@@ -461,6 +468,22 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (!scopeChanged && !nextScope.domainBatchMode && !nextScope.ipMode
         && typeof updateData.targetDomain === 'string' && existing?.targetDomain) {
       delete updateData.targetDomain
+    }
+
+    // A collaborator's save is judged column by column against their level (SH-08, OQ-23):
+    // before anything is written or the soft guardrail spends the owner's model on a scope the
+    // caller may not set. The owner's never is: every change is theirs.
+    if (auth.access?.level !== 'owner') {
+      const requested = Object.fromEntries(Object.entries(updateData).filter(([k]) => !serverDerived.has(k)))
+      const stored = (await prisma.project.findUnique({
+        where: { id },
+        select: riskSelect(Object.keys(requested)) as any,
+      }) ?? {}) as Record<string, unknown>
+      const refusal = settingsRefusal(classifyChange(stored, requested, auth.access), auth.permission)
+      if (refusal) {
+        console.warn(`[rbac] settings_refused project=${id} user=${eff.userId} keys=${refusal.refused.map(r => r.key).join(',')}`)
+        return NextResponse.json(refusal, { status: 403 })
+      }
     }
 
     if (scopeChanged) {

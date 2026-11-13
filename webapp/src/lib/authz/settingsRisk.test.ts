@@ -11,7 +11,11 @@ import { fieldKeys, fieldsWhere, loadRegistry } from '@/lib/reconSettings/regist
 import { directionOf } from '@/lib/roe/roeWidening'
 import { RECON_PRESETS } from '@/lib/recon-presets'
 import { effectiveToggles, type ProjectAccess } from './projectAccess'
-import { EXPLOIT_GATES, OWN_DIRECTIONS, classifyChange, classifyField } from './settingsRisk'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import {
+  EXPLOIT_GATES, NEED_LEVELS, OWN_DIRECTIONS, RISK_CONTEXT_KEYS, classifyChange, classifyField, riskSelect, settingsRefusal,
+} from './settingsRisk'
 
 // The level decision is the real meetsLevel table (write rows from step 5.2a): write reaches R, R*
 // and W; W+S, W+A and W+X also need their toggle; M needs manage; O stays the owner's. These
@@ -308,5 +312,90 @@ describe('the tables cover the registry', () => {
         expect(() => classifyField(key, b, a), key).not.toThrow()
       }
     }
+  })
+})
+
+// Step 5.1b: what the writers answer with, and the columns they read beside the change.
+describe('the refusal every writer answers (step 5.1b)', () => {
+  test('nothing refused: no refusal', () => {
+    expect(settingsRefusal(verdictOf({ naabuRateLimit: 100 }, { naabuRateLimit: 50 }, EDITOR), 'project:settings')).toBeNull()
+  })
+
+  test('names each refused key with the level it needs, in the §9.8 body', () => {
+    const v = verdictOf(
+      { subdomainList: ['a.example.test'], agentRequireToolConfirmation: true },
+      { subdomainList: ['a.example.test', 'b.example.test'], agentRequireToolConfirmation: false, naabuRateLimit: 3 },
+      CO_OWNER,
+    )
+    const r = settingsRefusal(v, 'project:settings')!
+    expect(r).toMatchObject({ code: 'forbidden', permission: 'project:settings', level: 'O', needs: 'owner' })
+    expect(r.refused).toEqual([
+      { key: 'agentRequireToolConfirmation', needs: 'manage+exploit', levels: ['M', 'W+X'], reason: expect.stringMatching(/safety gate/) },
+      { key: 'subdomainList', needs: 'owner', levels: ['O'], reason: expect.stringContaining('b.example.test') },
+    ])
+    expect(r.error).toMatch(/agentRequireToolConfirmation needs Manage and Exploitation & shells/)
+    expect(r.error).toMatch(/subdomainList needs the project's owner/)
+    expect(r.error).toMatch(/\(project:settings\)/)
+    expect(r.error).toMatch(/Nothing was saved\.$/)
+    // The allowed change is not named.
+    expect(r.error).not.toMatch(/naabuRateLimit/)
+  })
+
+  test('the strictest need decides the level: Manage alone answers M, Write alone W', () => {
+    expect(settingsRefusal(verdictOf({ jsReconValidateKeys: false }, { jsReconValidateKeys: true }, EDITOR), 'preset:apply'))
+      .toMatchObject({ level: 'M', needs: 'manage', permission: 'preset:apply' })
+    expect(settingsRefusal(verdictOf({ naabuRateLimit: 1 }, { naabuRateLimit: 2 }, READ), 'project:settings'))
+      .toMatchObject({ level: 'W', needs: 'write' })
+    for (const need of Object.keys(NEED_LEVELS) as Array<keyof typeof NEED_LEVELS>) expect(NEED_LEVELS[need].length).toBeGreaterThan(0)
+  })
+
+  test('a long reason (a whole added target list) is cut, never the key', () => {
+    const hosts = Array.from({ length: 200 }, (_, i) => `h${i}.example.test`)
+    const r = settingsRefusal(verdictOf({ subdomainList: [] }, { subdomainList: hosts }, CO_OWNER), 'project:settings')!
+    expect(r.refused[0].key).toBe('subdomainList')
+    expect(r.refused[0].reason!.length).toBeLessThanOrEqual(160)
+    expect(r.error.length).toBeLessThan(400)
+  })
+})
+
+describe('ordinary columns that stay the owner\'s (step 5.1b)', () => {
+  test('who owns and wrote the row, and who the target belongs to, need the owner', () => {
+    for (const key of ['userId', 'createdById', 'updatedById', 'engagementKind']) {
+      const v = verdictOf({ [key]: 'internal' }, { [key]: 'third_party' }, RED_TEAM_CO_OWNER)
+      expect(v.refused, key).toEqual([expect.objectContaining({ key, share: 'ordinary', needs: 'owner' })])
+      expect(verdictOf({ [key]: 'internal' }, { [key]: 'third_party' }, OWNER).ok, key).toBe(true)
+    }
+  })
+
+  test('every identity column is one of them; the internal ones a preset writes stay Write', () => {
+    for (const f of fieldsWhere(x => x.deny_reason === 'identity')) expect(classifyField(f.key, 'a', 'b').needs, f.key).toBe('owner')
+    for (const key of ['loadedPreset', 'reconPresetId', 'name']) expect(classifyField(key, 'a', 'b').needs, key).toBe('write')
+  })
+})
+
+describe('the stored columns a writer reads (step 5.1b)', () => {
+  test('riskSelect: the changed keys and the window switch', () => {
+    expect(riskSelect(['naabuRateLimit', 'roeTimeWindowDays'])).toEqual({ naabuRateLimit: true, roeTimeWindowDays: true, roeTimeWindowEnabled: true })
+    expect(riskSelect([])).toEqual({ roeTimeWindowEnabled: true })
+  })
+
+  test('a window edit judged without the switch reads as narrowing: the switch must be read', () => {
+    const on = { roeTimeWindowEnabled: true, roeTimeWindowDays: ['mon'] }
+    expect(classifyChange({ roeTimeWindowDays: ['mon'] }, { roeTimeWindowDays: ['mon', 'sun'] }, CO_OWNER).ok).toBe(true)
+    expect(classifyChange(on, { roeTimeWindowDays: ['mon', 'sun'] }, CO_OWNER).refused).toEqual([
+      expect.objectContaining({ key: 'roeTimeWindowDays', needs: 'owner' }),
+    ])
+  })
+
+  test('the context keys are every row field a rule reads', () => {
+    // The rules read other columns only through beforeRow / afterRow; each such column is a context key.
+    const read = new Set<string>()
+    for (const file of ['../roe/roeWidening.ts', './settingsRisk.ts']) {
+      const src = readFileSync(path.join(__dirname, file), 'utf8')
+      for (const m of src.matchAll(/(?:beforeRow|afterRow)\[([A-Za-z_]+)\]/g)) read.add(m[1])
+    }
+    expect([...read]).toEqual(['WINDOW_SWITCH'])
+    expect(RISK_CONTEXT_KEYS).toEqual(['roeTimeWindowEnabled'])
+    expect(readFileSync(path.join(__dirname, '../roe/roeWidening.ts'), 'utf8')).toMatch(/const WINDOW_SWITCH = 'roeTimeWindowEnabled'/)
   })
 })

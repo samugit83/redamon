@@ -13,7 +13,8 @@
  *     owner (OQ-23 default);
  *   - secret, the owner's credentials and records: the owner.
  * A key the registry does not know needs the owner, so a column added without a class is never
- * an editor's by accident.
+ * an editor's by accident. Two kinds of ordinary column are the owner's too (OWNER_COLUMNS): who
+ * owns and wrote the row, and `engagementKind`, who the target belongs to.
  *
  * "Looser" and "wider" are the RoE review's judgment (`wideningReason`): a tighten_only switch
  * against its `roe_safe_value`, the engagement limits by ENGAGEMENT_DIRECTIONS, `roeAllow*` and
@@ -25,7 +26,7 @@
  * Pure: the caller hands the row before the write and the values it will write; the decision per
  * level is `meetsLevel`, so the toggles mean the same here as on every route.
  */
-import { field, type ShareClass } from '@/lib/reconSettings/registry'
+import { field, type RegistryField, type ShareClass } from '@/lib/reconSettings/registry'
 import { sameValue } from '@/lib/reconSettings/roeParse'
 import { wideningReason } from '@/lib/roe/roeWidening'
 import { meetsLevel, type ProjectAccess } from './projectAccess'
@@ -122,11 +123,45 @@ export const OWN_DIRECTIONS: Readonly<Record<string, OwnDirection>> = {
   mcpKaliExecEnabled: 'enable',
 }
 
-const NEED_LEVELS: Readonly<Record<SettingsNeed, readonly ProjectLevel[]>> = {
+/** The levels each need asks, every one of them (`meetsLevel`). */
+export const NEED_LEVELS: Readonly<Record<SettingsNeed, readonly ProjectLevel[]>> = {
   write: ['W'],
   manage: ['M'],
   'manage+exploit': ['M', 'W+X'],
   owner: ['O'],
+}
+
+const NEED_LABEL: Readonly<Record<SettingsNeed, string>> = {
+  write: 'Read + Write',
+  manage: 'Manage',
+  'manage+exploit': 'Manage and Exploitation & shells',
+  owner: "the project's owner",
+}
+
+const NEED_ORDER: readonly SettingsNeed[] = ['write', 'manage', 'manage+exploit', 'owner']
+
+/**
+ * Columns the registry calls ordinary that only the owner changes: who owns and wrote the row
+ * (`deny_reason: identity`), and `engagementKind`, fixed at creation because converting a project
+ * would claim an authority nobody granted or drop a ceiling a person put there (registry meaning).
+ * Every writer strips or stamps these itself; the class is the backstop for one that does not.
+ */
+function ownerColumn(key: string, spec: RegistryField): boolean {
+  return spec.deny_reason === 'identity' || key === 'engagementKind'
+}
+
+/**
+ * The stored columns classifyChange reads beside the changed ones: the RoE window's switch, since
+ * a window part widens only while the window is on (`wideningReason`). A writer that reads only the
+ * changed columns would judge a window edit as narrowing.
+ */
+export const RISK_CONTEXT_KEYS: readonly string[] = Object.freeze(['roeTimeWindowEnabled'])
+
+/** The select of the stored values classifyChange needs to judge a change to `keys`. */
+export function riskSelect(keys: Iterable<string>): Record<string, true> {
+  const select: Record<string, true> = {}
+  for (const key of [...keys, ...RISK_CONTEXT_KEYS]) select[key] = true
+  return select
 }
 
 /** A list column, or a comma-separated one (the Kali package lists, the GitHub repos). */
@@ -188,7 +223,11 @@ export function classifyField(
   const spec = field(key)
   if (!spec) return { key, share: 'unknown', needs: 'owner', reason: 'not a project setting' }
   const share: ShareClass = spec.share ?? 'ordinary'
-  if (share === 'ordinary') return { key, share, needs: 'write', reason: null }
+  if (share === 'ordinary') {
+    return ownerColumn(key, spec)
+      ? { key, share, needs: 'owner', reason: 'set by the owner or the server' }
+      : { key, share, needs: 'write', reason: null }
+  }
   if (share === 'secret') return { key, share, needs: 'owner', reason: "the owner's secret" }
   const reason = widens(key, before, after, beforeRow, afterRow)
   if (share === 'gate') {
@@ -223,4 +262,39 @@ export function classifyChange(
   }
   const refused = changes.filter(c => !c.ok)
   return { ok: refused.length === 0, changes, refused }
+}
+
+/** The 403 body of a refused settings change: the §9.8 body plus each refused key and its levels. */
+export interface SettingsRefusal {
+  error: string
+  code: 'forbidden'
+  /** The permission of the route or tool that was asked. */
+  permission: string
+  /** The strictest level the refused changes need: its first level (`O`, `M` or `W`). */
+  level: ProjectLevel
+  needs: SettingsNeed
+  refused: Array<{ key: string; needs: SettingsNeed; levels: readonly ProjectLevel[]; reason: string | null }>
+}
+
+/** A reason lists the entries a change adds, which can be a whole target list. */
+const brief = (reason: string): string => (reason.length > 160 ? `${reason.slice(0, 159)}…` : reason)
+
+/**
+ * The refusal of a verdict, naming each refused key and the level it needs, or null when every
+ * change is allowed. Every writer answers it as is: a 403 body, or an MCP tool error's text.
+ */
+export function settingsRefusal(verdict: SettingsVerdict, permission: string): SettingsRefusal | null {
+  if (verdict.ok || verdict.refused.length === 0) return null
+  const needs = verdict.refused.reduce<SettingsNeed>(
+    (top, c) => (NEED_ORDER.indexOf(c.needs) > NEED_ORDER.indexOf(top) ? c.needs : top), 'write')
+  const parts = verdict.refused.map(c => `${c.key} needs ${NEED_LABEL[c.needs]}${c.reason ? ` (${brief(c.reason)})` : ''}`)
+  return {
+    error: `Your access to this project does not reach ${verdict.refused.length === 1 ? 'this change' : 'these changes'} ` +
+      `(${permission}): ${parts.join('; ')}. Nothing was saved.`,
+    code: 'forbidden',
+    permission,
+    level: NEED_LEVELS[needs][0],
+    needs,
+    refused: verdict.refused.map(c => ({ key: c.key, needs: c.needs, levels: NEED_LEVELS[c.needs], reason: c.reason && brief(c.reason) })),
+  }
 }

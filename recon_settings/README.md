@@ -162,6 +162,12 @@ is pinned to it by a shared fixture table.
   `roe_parse: tighten_only` switch a `gate` and every field of the `scope` and
   `engagement_limits` groups `scope` (the ownership token stays `secret`), so a
   safety switch or target column added later is not an editor's by default.
+  Two kinds of ordinary column stay the owner's anyway: the identity columns
+  (`deny_reason: identity`) and `engagementKind`. A refused change answers 403
+  naming each column and the level it needs, and writes nothing; the owner's
+  saves are never judged. A RoE replace or removal by a co-owner is judged by
+  the review instead: none of its rows may widen (`wideningReason`), and a
+  project's first RoE is the owner's.
 
 ## Bounds are not decoration
 

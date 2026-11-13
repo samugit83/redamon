@@ -2,9 +2,11 @@
  * Apply a confirmed RoE replace or remove to an existing project.
  *
  * Every step fails closed, in this order: the row (404, or 409 `roe_stale` when
- * it moved since the review), running scan work (409 `roe_busy`, 503 when it
+ * it moved since the review), a project's first RoE set by anyone but its
+ * owner (403), running scan work (409 `roe_busy`, 503 when it
  * cannot be checked), the confirmed keys (400), the values and the shared
- * project-write guards (400), the third-party rules (400 / 403), the schedules
+ * project-write guards (400), a collaborator's widening or a change beyond
+ * their level (403, OQ-23), the third-party rules (400 / 403), the schedules
  * to pause (503 when they cannot be computed), then ONE transaction: the
  * outgoing document into the revision history, a compare-and-swap update of
  * the row, and the schedule pause.
@@ -27,6 +29,8 @@ import { parseValueProblem } from '@/lib/reconSettings/roeParse'
 import { validateValue } from '@/lib/reconSettings/validators'
 import { describeAffectedSchedules, countQueuedJobsNeedingReview } from '@/lib/mcp/writeTools'
 import type { EffectiveUser } from '@/lib/session'
+import type { ProjectAccess } from '@/lib/authz/projectAccess'
+import { classifyChange, settingsRefusal, type SettingsChange } from '@/lib/authz/settingsRisk'
 import { actingAdminId } from './actor'
 import { cleanRoeFileName as cleanFileName } from './createRoe'
 import { agentEnforcementWarning } from './agentWarning'
@@ -58,6 +62,8 @@ export type ApplyRoeInput =
       mode: 'replace'
       projectId: string
       eff: EffectiveUser
+      /** The caller's access (the route's requirePermission): anyone but the owner is judged (OQ-23). */
+      access: ProjectAccess | null
       rowVersion: string
       changes: Record<string, unknown>
       parsedFields: Record<string, unknown>
@@ -70,6 +76,7 @@ export type ApplyRoeInput =
       mode: 'remove'
       projectId: string
       eff: EffectiveUser
+      access: ProjectAccess | null
       rowVersion: string
       changes: Record<string, unknown>
     }
@@ -81,6 +88,37 @@ export const STALE_ROE_MESSAGE =
   'The project changed while you were reviewing this RoE. Nothing was written; the review has been rebuilt against the current project.'
 
 class StaleRow extends Error {}
+
+/**
+ * The document's own record: the client and contacts it names (`share: secret`, written by the
+ * parse). A collaborator who may replace the document replaces these with it, as the document's
+ * text and parse; every other column it changes is judged as a settings change.
+ */
+const documentRecord = (key: string): boolean => {
+  const spec = field(key)
+  return spec?.share === 'secret' && spec.roe_parse === 'allow'
+}
+
+/**
+ * Who else but the owner may apply this RoE (OQ-23 default): a replace or removal the review finds
+ * no widening row in, whose changes their level reaches. A wider one is the owner's; the review's
+ * judgment is `wideningReason`, as the schedules and the third-party rules read it.
+ */
+function collaboratorRefusal(
+  access: ProjectAccess | null,
+  row: Record<string, unknown>,
+  proposal: ReplaceProposal,
+  updateData: Record<string, unknown>,
+): NextResponse | null {
+  const widening: SettingsChange[] = proposal.changes.filter(c => c.widening).map(c => ({
+    key: c.key, share: field(c.key)?.share ?? 'ordinary', needs: 'owner', reason: `widens the engagement: ${c.widening}`, ok: false,
+  }))
+  const verdict = widening.length > 0
+    ? { ok: false, changes: widening, refused: widening }
+    : classifyChange(row, Object.fromEntries(Object.entries(updateData).filter(([k]) => !documentRecord(k))), access)
+  const refusal = settingsRefusal(verdict, 'roe:manage')
+  return refusal ? NextResponse.json(refusal, { status: 403 }) : null
+}
 
 export async function applyRoe(input: ApplyRoeInput): Promise<NextResponse> {
   const started = Date.now()
@@ -110,6 +148,14 @@ export async function applyRoe(input: ApplyRoeInput): Promise<NextResponse> {
   if (input.mode === 'remove' && !hasDocument) {
     log('no_roe')
     return err(404, 'no_roe', 'This project has no Rules of Engagement document to remove.')
+  }
+  const byOwner = input.access?.level === 'owner'
+  if (!byOwner && !hasDocument) {
+    log('roe_owner_only', { reason: 'first' })
+    return NextResponse.json({
+      error: "Only the project's owner can set its first Rules of Engagement document.",
+      code: 'forbidden', permission: 'roe:manage', level: 'O',
+    }, { status: 403 })
   }
 
   // 4. Running work keeps its spawn-time settings, so it would not see the new RoE.
@@ -169,6 +215,15 @@ export async function applyRoe(input: ApplyRoeInput): Promise<NextResponse> {
   if (!sameChanges(updateData, input.changes)) {
     log('roe_stale', { reason: 'proposal_changed' })
     return err(409, 'roe_stale', STALE_ROE_MESSAGE)
+  }
+
+  if (!byOwner) {
+    const refused = collaboratorRefusal(input.access, row, proposal, updateData)
+    if (refused) {
+      log('roe_level_refused')
+      console.warn(`[rbac] settings_refused project=${projectId} user=${eff.userId} via=roe`)
+      return refused
+    }
   }
 
   // The guards every project write runs.

@@ -89,6 +89,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       mode: 'replace',
       projectId: id,
       eff,
+      access: auth.access,
       rowVersion,
       changes,
       parsedFields,
@@ -116,7 +117,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     if (!isObject(body) || typeof body.rowVersion !== 'string' || !isObject(body.changes)) {
       return NextResponse.json({ error: 'rowVersion and changes are required.', code: 'bad_request' }, { status: 400 })
     }
-    return await applyRoe({ mode: 'remove', projectId: id, eff, rowVersion: body.rowVersion, changes: body.changes })
+    return await applyRoe({ mode: 'remove', projectId: id, eff, access: auth.access, rowVersion: body.rowVersion, changes: body.changes })
   } catch (error) {
     return internalError(error, 'Failed to remove the Rules of Engagement.', { log: 'RoE remove error' })
   }

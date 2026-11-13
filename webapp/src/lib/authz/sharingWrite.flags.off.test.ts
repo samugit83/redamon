@@ -292,3 +292,29 @@ describe('GET /api/projects/[id]/owner-catalog with write sharing not in force (
     expect(catalogDoubles.ownerModelOptions).toHaveBeenCalledTimes(1)
   })
 })
+
+// Step 5.1b: every settings writer (the project PUT, the RoE replace and remove, the MCP settings, preset and scope
+// tools) judges a collaborator's change with classifyChange, and the owner's not at all. With write sharing not in
+// force no collaborator holds a level any of them asks, and the owner's change of every class passes in every state,
+// so no save answers differently.
+describe('the settings writers with write sharing not in force (step 5.1b)', () => {
+  const STATES: Array<[string, Partial<RbacFlags>, Record<string, unknown>]> = [
+    ['every switch off', {}, { enabled: true, maxLevel: 'write' }],
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }, { enabled: true, maxLevel: 'write' }],
+    ["the write switch on, Root's policy at read", ALL_ON, { enabled: true, maxLevel: 'read' }],
+  ]
+  // An ordinary column, a gate loosened, the scope widened, an owner's secret and who the target belongs to.
+  const STORED = { naabuRateLimit: 10, agentRequireToolConfirmation: true, targetDomain: 'example.test', httpxCustomHeaders: ['X-Fake: 1'], engagementKind: 'internal' }
+  const EVERY_CLASS = { naabuRateLimit: 7, agentRequireToolConfirmation: false, targetDomain: 'other.example.test', httpxCustomHeaders: [], engagementKind: 'third_party' }
+
+  test.each(STATES)("%s: the owner's change of every class passes; a write share reaches no writer", async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    expect(classifyChange(STORED, EVERY_CLASS, await projectAccess({ userId: 'owner' }, 'P-owner'))).toMatchObject({ ok: true, refused: [] })
+    for (const p of ['project:settings', 'preset:apply', 'project:rescope', 'roe:manage', 'engagement:authorize'] as PermissionId[]) {
+      expect([p, (await can(member('collab'), p, { projectId: 'P-owner' })).allowed]).toEqual([p, false])
+    }
+    const collab = await projectAccess({ userId: 'collab' }, 'P-owner')
+    expect(classifyChange(STORED, EVERY_CLASS, collab).refused.map(c => c.key)).toEqual(Object.keys(EVERY_CLASS).sort())
+  })
+})
