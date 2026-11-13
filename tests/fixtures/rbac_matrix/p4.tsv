@@ -184,3 +184,17 @@ p4-list-not-shared	4.5	member_b	GET	/api/projects	-	200;lacks=${PSHARED_ID}	req:
 p4-list-off-owner	4.5	member_c	GET	/api/projects	-	200;has=${PSHARED_ID};lacks="myAccess"	req:SH-39 req:DV-30 sharing:off
 p4-list-off-viewer	4.5	viewer	GET	/api/projects	-	200;lacks=${PSHARED_ID}	req:SH-39 req:DV-30 sharing:off
 p4-jobs-viewer	4.5	viewer	GET	/api/system/jobs	-	200;has="mine";has="others"	req:SH-39 sharing:on
+
+# ---- step 4.13: the project activity feed ----
+# After the 4.4 block's grant, revoke and leave of viewer_tmp on PSHARED, the owner's feed names those rows and the
+# collaborator (IdentityLabel: email and account type), never a lookup's email hash nor a row's before/after. The
+# viewer (Read share) is refused, a stranger gets 404, admin_a (projects:oversee; adminsSeeAllShares defaults to true)
+# reads it by oversight, admin_a acting as member_c reads it as the owner. With sharing off the route does not exist.
+p4-activity-owner	4.13	member_c	GET	/api/projects/${PSHARED_ID}/activity	-	200;has="action":"project.share.grant";has="action":"project.share.revoke";has="action":"project.share.leave";has=${VIEWER_TMP_EMAIL};has="accountType":"member";lacks=emailSha256;lacks="before"	req:UI-08 req:AU-07 req:AU-09 sharing:on
+p4-activity-group	4.13	member_c	GET	/api/projects/${PSHARED_ID}/activity?group=sharing	-	200;has="group":"sharing";lacks="group":"project"	req:UI-08 sharing:on
+p4-activity-bad-group	4.13	member_c	GET	/api/projects/${PSHARED_ID}/activity?group=rbac-nope	-	400;has=invalid_field	req:UI-08 sharing:on
+p4-activity-viewer	4.13	viewer	GET	/api/projects/${PSHARED_ID}/activity	-	403;has=project:share;lacks=project.share.grant	req:AU-09 sharing:on
+p4-activity-other	4.13	member_b	GET	/api/projects/${PSHARED_ID}/activity	-	404;lacks=project.share	req:AU-09 sharing:on
+p4-activity-oversee	4.13	admin_a	GET	/api/projects/${PSHARED_ID}/activity	-	200;has="action":"project.share.grant"	req:AU-09 req:SH-18 sharing:on
+p4-activity-acting	4.13	admin_a_as_member_c	GET	/api/projects/${PSHARED_ID}/activity	-	200;has="events";lacks="code":"forbidden"	req:IM-07 sharing:on
+p4-activity-off	4.13	member_c	GET	/api/projects/${PSHARED_ID}/activity	-	404;lacks="events"	req:UI-08 req:DV-30 sharing:off
