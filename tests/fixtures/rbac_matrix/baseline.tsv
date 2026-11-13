@@ -196,8 +196,12 @@ bl-skillcontent-actas	0.5	admin_a_as_member_a	GET	/api/projects/${PA_ID}?include
 bl-skillcontent-other	0.5	member_b	GET	/api/projects/${PA_ID}?includeSkillContent=true	-	404	-
 #
 # ---- project delete (last: it removes the two throwaway projects) ----
+# admin_a's delete is sharing:off like the admin_a rows on rbac-PA; with sharing in force it oversees
+# PA_TMP1 at Read, so the delete names project:delete. That twin stays here, not in p4.tsv, because it
+# must run before bl-proj-delete-owner removes PA_TMP1. A stranger gets 404 in every state.
 bl-proj-delete-other	0.5	member_b	DELETE	/api/projects/${PA_TMP1_ID}	-	404	-
-bl-proj-delete-admin	0.5	admin_a	DELETE	/api/projects/${PA_TMP1_ID}	-	404	-
+bl-proj-delete-admin	0.5	admin_a	DELETE	/api/projects/${PA_TMP1_ID}	-	404	sharing:off
+bl-proj-delete-admin-oversee	4.3	admin_a	DELETE	/api/projects/${PA_TMP1_ID}	-	403;has="code":"forbidden";has=project:delete	req:SH-18 sharing:on
 bl-proj-delete-anon	0.5	anon	DELETE	/api/projects/${PA_TMP1_ID}	-	401	-
 bl-proj-delete-owner	0.5	member_a	DELETE	/api/projects/${PA_TMP1_ID}	-	200	-
 bl-proj-delete-actas	0.5	admin_a_as_member_a	DELETE	/api/projects/${PA_TMP2_ID}	-	200	-

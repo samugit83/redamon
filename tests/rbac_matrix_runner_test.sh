@@ -30,6 +30,9 @@
 #   - governance:on|off the same for RBAC_GOVERNANCE_ENABLED (step 6.13), which
 #     reads off while the permissions switch is off (flags.ts: governance requires
 #     permissions, not sharing) and reads no policy;
+#   - the committed rows of the S3 red (the terminal ticket's level refusal, the
+#     overseeing admin's delete and its sharing:off 404 twin) pass the hand-checked
+#     answers and fail the answer of each regression;
 #   - on/true/1/yes in any case and with spaces are on, anything else is off;
 #   - the switches are read from the webapp container once per run, and not at
 #     all when no selected row needs them.
@@ -130,7 +133,7 @@ case "$*" in
       RBAC_GOVERNANCE_ENABLED="${FAKE_GOVERNANCE-}" RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
   *" node "*)
     if grep -q SEED; then
-      printf 'PA_ID=pa\nPB_ID=pb\nPSHARED_ID=ps\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
+      printf 'PA_ID=pa\nPB_ID=pb\nPSHARED_ID=ps\nPA_TMP1_ID=pt1\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
     fi ;;
   *) echo "unexpected docker call" >&2; exit 1 ;;
 esac
@@ -522,6 +525,60 @@ has "switch off: the four policy-off rows skip" "== RESULT: 0 passed, 0 failed, 
 has "on the switch" "(sharing switch off)" "$(line p4-breakglass-policy-off)"
 run true true "^p4-(myaccess-owner-off|proj-read-no-myaccess-off|list-off-owner|breakglass-off|myaccess-owner-policy-off|proj-read-myaccess-policy-off|list-policy-off-owner|breakglass-policy-off|viewer-read-off)\$" p4 5000 true on
 has "sharing in force: all nine skip" "== RESULT: 0 passed, 0 failed, 9 skipped ==" "$OUT"
+
+section "the S3 rows as committed: the terminal ticket below Exploitation & shells, the overseeing admin's delete"
+# The answers hand-checked in S3 (sharing in force): a Read share and oversight get the terminal's level refusal
+# and no ticket (72877043); admin_a's delete of PA_TMP1, which it oversees at Read, names project:delete; a
+# stranger's is 404. Each answer a regression would give instead must fail its row.
+cp "$REPO_ROOT/tests/fixtures/rbac_matrix/baseline.tsv" "$T/tests/fixtures/rbac_matrix/"
+cat > "$W/body.terminal_level" <<'BODY'
+{"error":"Opening the Kali terminal on this project needs Exploitation & shells on it: the project's owner, or a collaborator whose share includes it.","code":"forbidden","permission":"platform:kali_terminal","level":"W+X"}
+BODY
+cat > "$W/body.terminal_level_ticket" <<'BODY'
+{"error":"Opening the Kali terminal on this project needs Exploitation & shells on it.","code":"forbidden","permission":"platform:kali_terminal","level":"W+X","ticket":"rbac-fake-ticket"}
+BODY
+printf '%s' '{"ticket":"rbac-fake-ticket"}' > "$W/body.ticket"
+printf '%s' '{"error":"The Kali terminal is open to whoever holds platform:kali_terminal, and to accounts that kept it at the upgrade.","code":"forbidden","permission":"platform:kali_terminal"}' > "$W/body.terminal_refused"
+printf '%s' '{"error":"Only the project owner can open the Kali terminal.","code":"owner_only","permission":"platform:kali_terminal"}' > "$W/body.terminal_owner_only"
+printf '%s' '{"error":"You do not hold the permission this action needs (project:delete).","code":"forbidden","permission":"project:delete"}' > "$W/body.forbidden_delete"
+for r in p4-viewer-ws-ticket-terminal p4-oversee-ws-ticket-terminal; do
+  one_row "$r" p4 403 terminal_level true on
+  eq "sharing in force: $r passes on the level refusal" "$(verdict "$r")" "PASS"
+  one_row "$r" p4 200 ticket true on
+  eq "mutation: $r with a ticket minted: fail" "$(verdict "$r")" "FAIL"
+  one_row "$r" p4 403 terminal_level_ticket true on
+  eq "mutation: $r refused with a ticket in the body: fail" "$(verdict "$r")" "FAIL"
+  one_row "$r" p4 403 terminal_refused true on
+  eq "mutation: $r refused for the platform tool, not the level: fail" "$(verdict "$r")" "FAIL"
+  one_row "$r" p4 403 terminal_owner_only true on
+  eq "the answer before 72877043 (owner_only) fails $r" "$(verdict "$r")" "FAIL"
+done
+run true true '^p4-(viewer|oversee)-ws-ticket-terminal$' p4 5000 true off
+has "policy {}: both terminal rows skip" "== RESULT: 0 passed, 0 failed, 2 skipped ==" "$OUT"
+one_row bl-proj-delete-admin-oversee baseline 403 forbidden_delete true on
+eq "sharing in force: the overseeing admin's delete names project:delete" "$(verdict bl-proj-delete-admin-oversee)" "PASS"
+one_row bl-proj-delete-admin-oversee baseline 404 notfound true on
+eq "mutation: the overseeing admin's delete 404: fail" "$(verdict bl-proj-delete-admin-oversee)" "FAIL"
+one_row bl-proj-delete-admin-oversee baseline 403 forbidden true on
+eq "mutation: a 403 naming another permission: fail" "$(verdict bl-proj-delete-admin-oversee)" "FAIL"
+one_row bl-proj-delete-admin-oversee baseline 200 notfound true on
+eq "mutation: the delete allowed: fail" "$(verdict bl-proj-delete-admin-oversee)" "FAIL"
+one_row bl-proj-delete-admin baseline 403 forbidden_delete true on
+eq "sharing in force: the 404 admin row skips instead of failing (the S3 red)" "$(verdict bl-proj-delete-admin)" "SKIP"
+has "on sharing in force" "(sharing switch on)" "$(line bl-proj-delete-admin)"
+one_row bl-proj-delete-other baseline 404 notfound true on
+eq "sharing in force: a stranger's delete is still 404" "$(verdict bl-proj-delete-other)" "PASS"
+one_row bl-proj-delete-other baseline 403 forbidden_delete true on
+eq "mutation: a stranger told the project exists: fail" "$(verdict bl-proj-delete-other)" "FAIL"
+for sw in true ''; do # the switch on with the policy {}, then the switch off
+  one_row bl-proj-delete-admin baseline 404 notfound "$sw" off
+  eq "sharing switch '${sw:-off}', not in force: the admin's delete 404" "$(verdict bl-proj-delete-admin)" "PASS"
+  one_row bl-proj-delete-admin-oversee baseline 404 notfound "$sw" off
+  eq "sharing switch '${sw:-off}', not in force: the oversight twin skips" "$(verdict bl-proj-delete-admin-oversee)" "SKIP"
+done
+twin_n="$(grep -n $'^bl-proj-delete-admin-oversee\t' "$REPO_ROOT/tests/fixtures/rbac_matrix/baseline.tsv" | cut -d: -f1)"
+owner_n="$(grep -n $'^bl-proj-delete-owner\t' "$REPO_ROOT/tests/fixtures/rbac_matrix/baseline.tsv" | cut -d: -f1)"
+eq "the twin runs before bl-proj-delete-owner removes PA_TMP1" "$([ -n "$twin_n" ] && [ "$twin_n" -lt "${owner_n:-0}" ] && echo yes)" "yes"
 
 section "Root's stored policy through the runner's own SQL (Phase 7 kickoff: no maxLevel means write)"
 # The stubbed answers above cannot catch a wrong query. Here each policy is stored in a
