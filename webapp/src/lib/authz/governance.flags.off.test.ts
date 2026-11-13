@@ -91,6 +91,10 @@
  * exist. The members' memory meter (/api/system/stats), their scan activity (/api/system/jobs) and the
  * emergency stop (/api/agent/emergency-stop-all) read no switch and stay as they were.
  *
+ * The traffic page links its Settings to the Instance page's TrafficMind panel with the switch on (UI-04,
+ * after 6.7). Off, the button opens the TrafficMind dialog in place, as before (app/traffic/page.tsx, a
+ * reader in GOVERNANCE_READERS; app/traffic/page.test.tsx).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -209,6 +213,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/api/users/[id]/sessions/route.ts',
       'src/app/plugins/[pluginId]/[[...screen]]/page.tsx',
       'src/app/settings/users/layout.tsx',
+      'src/app/traffic/page.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/components/settings/InstanceLlmProviders.tsx',

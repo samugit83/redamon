@@ -19,9 +19,15 @@ const h = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
   // What the signed-in person holds (hooks/useCan.ts); empty = a member.
   granted: new Set<string>(),
+  // The switches /api/auth/me answered (hooks/useCan.ts useRbacFlags); null until read.
+  flags: null as Record<string, boolean> | null,
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
+vi.mock('next/link', () => ({
+  __esModule: true,
+  default: ({ href, children, ...rest }: { href: string; children: ReactNode }) => <a href={href} {...rest}>{children}</a>,
+}))
 vi.mock('@/providers/ProjectProvider', () => ({
   useProject: () => ({ projectId: 'p1', userId: 'u1', currentProject: { name: 'P' }, isLoading: false }),
 }))
@@ -29,7 +35,7 @@ vi.mock('@/components/traffic/TrafficCaptureStatus', () => ({ TrafficCaptureStat
 vi.mock('@/components/traffic/TrafficMindSettingsModal', () => ({
   TrafficMindSettingsModal: ({ isOpen }: { isOpen: boolean }) => <div data-testid="capture-settings" data-open={String(isOpen)} />,
 }))
-vi.mock('@/hooks/useCan', () => ({ useCan: (p: string) => h.granted.has(p), useRbacFlags: () => null }))
+vi.mock('@/hooks/useCan', () => ({ useCan: (p: string) => h.granted.has(p), useRbacFlags: () => h.flags }))
 vi.mock('@/components/ui', () => ({
   Drawer: ({ isOpen, children }: { isOpen: boolean; children: ReactNode }) => (isOpen ? <div>{children}</div> : null),
   useToast: () => h.toast,
@@ -48,6 +54,8 @@ vi.mock('./hooks/useTrafficData', async () => {
 })
 
 import TrafficPage from './page'
+import { CONSOLE_SECTIONS, sectionAccess } from '@/app/admin/consoleSections'
+import { visiblePanels } from '@/app/admin/instance/instanceView'
 
 const row = {
   id: 't1', startedAt: '2026-10-29T10:00:00Z', source: 'recon', runId: null, sessionId: null, tool: 'httpx',
@@ -63,6 +71,7 @@ beforeEach(() => {
   h.facets = { data: { tools: [], hosts: [], runs: [], sessions: [] }, isError: false, error: null }
   h.detail = { data: undefined, isLoading: false, isError: false, error: null }
   h.granted = new Set()
+  h.flags = null
 })
 afterEach(cleanup)
 
@@ -115,6 +124,49 @@ describe('TrafficPage settings', () => {
     h.granted = new Set(['platform:traffic_capture'])
     render(<TrafficPage />)
     expect(screen.getByTestId('capture-settings').getAttribute('data-open')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: /Settings/ }))
+    expect(screen.getByTestId('capture-settings').getAttribute('data-open')).toBe('true')
+  })
+})
+
+/**
+ * With RBAC_GOVERNANCE_ENABLED on the TrafficMind settings live on the admin console's Instance page
+ * (step 6.7, UI-04): Settings becomes a link to its TrafficMind panel, and the dialog is not mounted
+ * here. Off (or before /api/auth/me answered) the button opens the dialog in place, as above.
+ */
+describe('TrafficPage settings with the admin console', () => {
+  const GOVERNANCE_ON = { identity: true, permissions: true, sharing: false, sharingWrite: false, governance: true }
+
+  test('governance on with platform:traffic_capture: Settings links to the Instance page\'s TrafficMind panel', () => {
+    h.flags = GOVERNANCE_ON
+    h.granted = new Set(['platform:traffic_capture'])
+    render(<TrafficPage />)
+    const link = screen.getByRole('link', { name: /Settings/ })
+    expect(link.getAttribute('href')).toBe('/admin/instance#traffic')
+    expect(screen.queryByRole('button', { name: /Settings/ })).toBeNull()
+    expect(screen.queryByTestId('capture-settings')).toBeNull()
+  })
+
+  test('the link lands where the console lets the same person in: the Instance section and its traffic panel', () => {
+    const holds = (p: string) => p === 'platform:traffic_capture'
+    const instance = CONSOLE_SECTIONS.find((s) => s.id === 'instance')!
+    expect(sectionAccess(instance, holds, 'no')).toEqual({ state: 'open' })
+    expect(visiblePanels({ holds, settings: { canManageCapture: true }, sharingPolicyShown: false })).toContain('traffic')
+  })
+
+  test('governance on without platform:traffic_capture: neither link nor button', () => {
+    h.flags = GOVERNANCE_ON
+    render(<TrafficPage />)
+    expect(screen.queryByRole('link', { name: /Settings/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Settings/ })).toBeNull()
+    expect(screen.queryByTestId('capture-settings')).toBeNull()
+  })
+
+  test('governance off: the button opens the dialog in place, no link', () => {
+    h.flags = { ...GOVERNANCE_ON, governance: false }
+    h.granted = new Set(['platform:traffic_capture'])
+    render(<TrafficPage />)
+    expect(screen.queryByRole('link', { name: /Settings/ })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Settings/ }))
     expect(screen.getByTestId('capture-settings').getAttribute('data-open')).toBe('true')
   })

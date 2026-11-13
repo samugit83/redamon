@@ -224,6 +224,7 @@
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .settingsBtn:hover { background: var(--bg-hover); }
+a.settingsBtn { text-decoration: none; }
 
 /* States */
 .empty, .loading {
