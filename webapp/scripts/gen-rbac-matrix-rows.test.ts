@@ -12,6 +12,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, test, expect } from 'vitest'
 import { ACTORS, REPRESENTATIVES, generateRows, renderRows, run } from './gen-rbac-matrix-rows.mjs'
+import { parseAuthProfileInput } from '../src/lib/authProfile'
+import { isValidPluginId } from '../src/lib/plugins/ids'
 
 const WEBAPP = join(__dirname, '..')
 const manifest = JSON.parse(readFileSync(join(WEBAPP, 'src/lib/authz/routeManifest.json'), 'utf8'))
@@ -112,6 +114,19 @@ describe('gen-rbac-matrix-rows', () => {
       }
       expect(userKeys, `the runner signs ${a.actor} in`).toContain(a.actor)
     }
+  })
+
+  // A representative whose allowed request the route accepts would write (a PUT of `{}` upserts an
+  // empty auth profile) or answer whatever the plugin runner says: the refusal must be the route's own.
+  test("an allowed request is refused by the route's own validation, after the permission check", () => {
+    const authProfile = REPRESENTATIVES['auth_profile:manage']
+    expect(authProfile.allow).toBe('400;has=authType must be one of')
+    expect(parseAuthProfileInput(JSON.parse(authProfile.body)).error).toMatch(/^authType must be one of /)
+
+    const pluginLogs = REPRESENTATIVES['platform:plugins']
+    const pluginId = /^\/api\/plugins\/([^/]+)\/logs$/.exec(pluginLogs.path)![1]
+    expect(isValidPluginId(pluginId)).toBe(false)
+    expect(pluginLogs.allow).toBe('400;has="code":"invalid_plugin_id"')
   })
 
   test('every row has the runner\'s eight columns', () => {

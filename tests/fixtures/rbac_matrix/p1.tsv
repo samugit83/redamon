@@ -137,8 +137,8 @@ p1-stepup-repoint-mcp-server	1.6	member_a	PUT	/api/users/${MEMBER_A_ID}/mcp/rbac
 # ships in mcp/nuclei-templates, so it is an instance template (the upgrade backfill).
 p1-nuclei-list-member	1.12	member_c	GET	/api/nuclei-templates	-	200;has="canManageAll":false;has="ownership":"instance"	req:HD-08
 p1-nuclei-list-admin	1.12	admin_a	GET	/api/nuclei-templates	-	200;has="canManageAll":true	req:HD-08
-p1-nuclei-delete-instance-member	1.12	member_c	DELETE	/api/nuclei-templates?path=aem-json-exposure.yaml	-	403;has=platform:nuclei_templates_all	req:HD-08
-p1-nuclei-promote-member	1.12	member_a	PATCH	/api/nuclei-templates	{"path":"rbac-e2e-none.yaml","promote":true}	403;has=platform:nuclei_templates_all	req:HD-08
+p1-nuclei-delete-instance-member	1.12	member_c	DELETE	/api/nuclei-templates?path=aem-json-exposure.yaml	-	403;has="permission":"platform:nuclei_templates"	req:HD-08
+p1-nuclei-promote-member	1.12	member_a	PATCH	/api/nuclei-templates	{"path":"rbac-e2e-none.yaml","promote":true}	403;has="permission":"platform:nuclei_templates"	req:HD-08
 p1-nuclei-promote-admin-missing	1.12	admin_a	PATCH	/api/nuclei-templates	{"path":"rbac-e2e-none.yaml","promote":true}	404;has=template_not_found	req:HD-08
 p1-nuclei-select-mount-refused	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiTemplates":["/custom-templates/"]}	400;has=template_not_selectable	req:HD-08
 p1-nuclei-select-root-refused	1.12	member_a	PUT	/api/projects/${PA_ID}	{"nucleiCustomTemplates":["."]}	400;has=template_not_selectable	req:HD-08

@@ -68,7 +68,7 @@ export const REPRESENTATIVES = {
   'roe:read': { method: 'GET', path: '/api/projects/{P}/roe/revisions', route: '/api/projects/[id]/roe/revisions', body: '-', allow: '200' },
   'roe:manage': { method: 'DELETE', path: '/api/projects/{P}/roe', route: '/api/projects/[id]/roe', body: '{}', allow: `400${NOT_REFUSED}` },
   'auth_profile:read': { method: 'GET', path: '/api/projects/{P}/auth-profile', route: '/api/projects/[id]/auth-profile', body: '-', allow: '200' },
-  'auth_profile:manage': { method: 'PUT', path: '/api/projects/{P}/auth-profile', route: '/api/projects/[id]/auth-profile', body: '{}', allow: `400${NOT_REFUSED}` },
+  'auth_profile:manage': { method: 'PUT', path: '/api/projects/{P}/auth-profile', route: '/api/projects/[id]/auth-profile', body: '{"authType":"rbac-bogus"}', allow: '400;has=authType must be one of' },
   'recon:read': { method: 'GET', path: '/api/projects/{P}/versions', route: '/api/projects/[id]/versions', body: '-', allow: '200' },
   'recon:scan': { method: 'POST', path: '/api/recon/{P}/start', route: '/api/recon/[projectId]/start', body: '{"mode":"rbac-bogus"}', allow: '400;has=Invalid mode' },
   'recon:partial': { method: 'POST', path: '/api/recon/{P}/partial', route: '/api/recon/[projectId]/partial', body: '{}', allow: `400|409${NOT_REFUSED}` },
@@ -109,7 +109,9 @@ export const REPRESENTATIVES = {
   'plugins:use': { method: 'GET', path: '/api/plugins/status', route: '/api/plugins/status', body: '-', allow: `200|503${NOT_REFUSED}` },
   'plugins:approve_overrides': { method: 'POST', path: '/api/plugins/overrides/change-sets/rbac-no-such-change-set/reject', route: '/api/plugins/overrides/change-sets/[id]/reject', body: '{}', allow: `400|404${NOT_REFUSED}` },
   'platform:nuclei_templates': { method: 'PATCH', path: '/api/nuclei-templates', route: '/api/nuclei-templates', body: '{"path":"rbac-no-such-template.yaml","promote":true}', allow: `400|404${NOT_REFUSED}` },
-  'platform:plugins': { method: 'GET', path: '/api/plugins/rbac-no-such-plugin/logs', route: '/api/plugins/[pluginId]/logs', body: '-', allow: `400|404${NOT_REFUSED}` },
+  // An id the route's own pattern refuses (an underscore): an unknown but valid id reaches the runner,
+  // whose ring buffer answers 200 with no lines.
+  'platform:plugins': { method: 'GET', path: '/api/plugins/rbac_no_such_plugin/logs', route: '/api/plugins/[pluginId]/logs', body: '-', allow: '400;has="code":"invalid_plugin_id"' },
   'users:delete': { method: 'DELETE', path: '/api/users/rbac-no-such-user', route: '/api/users/[id]', body: '{}', allow: `400|404${NOT_REFUSED}` },
   'users:impersonate': { method: 'POST', path: '/api/auth/act-as', route: '/api/auth/act-as', body: '{}', allow: `400${NOT_REFUSED}` },
 }

@@ -292,8 +292,8 @@ check_body "new member A uploads $TPL"                                         2
 check_body "new member B overwrites A's template -> 409"                       409 "$(upload "$TMP/b.jar" bola-x-by-b overwrite)" 'has:"code":"template_owned_by_other"'
 check_body "legacy holder L overwrites A's template -> 409 (no grant opens every template)" 409 \
   "$(upload "$TMP/l.jar" bola-x-by-l overwrite)" 'has:"code":"template_owned_by_other"'
-check_body "new member B deletes A's template -> 403"                          403 "$(req "$TMP/b.jar" DELETE "/api/nuclei-templates?path=$TPL")" has:platform:nuclei_templates_all
-check_body "legacy holder L deletes A's template -> 403"                       403 "$(req "$TMP/l.jar" DELETE "/api/nuclei-templates?path=$TPL")" has:platform:nuclei_templates_all
+check_body "new member B deletes A's template -> 403"                          403 "$(req "$TMP/b.jar" DELETE "/api/nuclei-templates?path=$TPL")" 'has:"permission":"platform:nuclei_templates"'
+check_body "legacy holder L deletes A's template -> 403"                       403 "$(req "$TMP/l.jar" DELETE "/api/nuclei-templates?path=$TPL")" 'has:"permission":"platform:nuclei_templates"'
 check_body "B's template list leaves A's out"                                  200 "$(req "$TMP/b.jar" GET /api/nuclei-templates)" "lacks:\"$TPL\""
 check_body "L's template list leaves A's out"                                  200 "$(req "$TMP/l.jar" GET /api/nuclei-templates)" "lacks:\"$TPL\""
 c="$(req "$TMP/a.jar" GET /api/nuclei-templates)"

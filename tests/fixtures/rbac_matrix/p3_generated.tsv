@@ -34,9 +34,9 @@ p3g-roe:manage-off	3.8	analyst	DELETE	/api/projects/${PANALYST_ID}/roe	{}	400;la
 p3g-auth_profile:read-allow	3.8	operator	GET	/api/projects/${POPERATOR_ID}/auth-profile	-	200	req:PE-19 req:PE-22 probe:generated
 p3g-auth_profile:read-deny	3.8	noaccess	GET	/api/projects/${PNOACCESS_ID}/auth-profile	-	403;has=auth_profile:read	req:PE-19 req:PE-22 probe:generated permissions:on
 p3g-auth_profile:read-off	3.8	noaccess	GET	/api/projects/${PNOACCESS_ID}/auth-profile	-	200	req:PE-19 req:PE-22 probe:generated permissions:off
-p3g-auth_profile:manage-allow	3.8	operator	PUT	/api/projects/${POPERATOR_ID}/auth-profile	{}	400;lacks="code":"forbidden"	req:PE-19 req:PE-22 probe:generated
-p3g-auth_profile:manage-deny	3.8	analyst	PUT	/api/projects/${PANALYST_ID}/auth-profile	{}	403;has=auth_profile:manage	req:PE-19 req:PE-22 probe:generated permissions:on
-p3g-auth_profile:manage-off	3.8	analyst	PUT	/api/projects/${PANALYST_ID}/auth-profile	{}	400;lacks="code":"forbidden"	req:PE-19 req:PE-22 probe:generated permissions:off
+p3g-auth_profile:manage-allow	3.8	operator	PUT	/api/projects/${POPERATOR_ID}/auth-profile	{"authType":"rbac-bogus"}	400;has=authType must be one of	req:PE-19 req:PE-22 probe:generated
+p3g-auth_profile:manage-deny	3.8	analyst	PUT	/api/projects/${PANALYST_ID}/auth-profile	{"authType":"rbac-bogus"}	403;has=auth_profile:manage	req:PE-19 req:PE-22 probe:generated permissions:on
+p3g-auth_profile:manage-off	3.8	analyst	PUT	/api/projects/${PANALYST_ID}/auth-profile	{"authType":"rbac-bogus"}	400;has=authType must be one of	req:PE-19 req:PE-22 probe:generated permissions:off
 p3g-recon:read-allow	3.8	operator	GET	/api/projects/${POPERATOR_ID}/versions	-	200	req:PE-19 req:PE-22 probe:generated
 p3g-recon:read-deny	3.8	noaccess	GET	/api/projects/${PNOACCESS_ID}/versions	-	403;has=recon:read	req:PE-19 req:PE-22 probe:generated permissions:on
 p3g-recon:read-off	3.8	noaccess	GET	/api/projects/${PNOACCESS_ID}/versions	-	200	req:PE-19 req:PE-22 probe:generated permissions:off
@@ -154,9 +154,9 @@ p3g-plugins:approve_overrides-off	3.9	analyst	POST	/api/plugins/overrides/change
 p3g-platform:nuclei_templates-allow	3.9	admin_a	PATCH	/api/nuclei-templates	{"path":"rbac-no-such-template.yaml","promote":true}	400|404;lacks="code":"forbidden"	req:PE-19 req:PE-22 probe:generated
 p3g-platform:nuclei_templates-deny	3.9	usermgr	PATCH	/api/nuclei-templates	{"path":"rbac-no-such-template.yaml","promote":true}	403;has=platform:nuclei_templates	req:PE-19 req:PE-22 probe:generated permissions:on
 p3g-platform:nuclei_templates-off	3.9	usermgr	PATCH	/api/nuclei-templates	{"path":"rbac-no-such-template.yaml","promote":true}	400|404;lacks="code":"forbidden"	req:PE-19 req:PE-22 probe:generated permissions:off
-p3g-platform:plugins-allow	3.9	admin_a	GET	/api/plugins/rbac-no-such-plugin/logs	-	400|404;lacks="code":"forbidden"	req:PE-19 req:PE-22 probe:generated
-p3g-platform:plugins-deny	3.9	usermgr	GET	/api/plugins/rbac-no-such-plugin/logs	-	403;has=platform:plugins	req:PE-19 req:PE-22 probe:generated permissions:on
-p3g-platform:plugins-off	3.9	usermgr	GET	/api/plugins/rbac-no-such-plugin/logs	-	400|404;lacks="code":"forbidden"	req:PE-19 req:PE-22 probe:generated permissions:off
+p3g-platform:plugins-allow	3.9	admin_a	GET	/api/plugins/rbac_no_such_plugin/logs	-	400;has="code":"invalid_plugin_id"	req:PE-19 req:PE-22 probe:generated
+p3g-platform:plugins-deny	3.9	usermgr	GET	/api/plugins/rbac_no_such_plugin/logs	-	403;has=platform:plugins	req:PE-19 req:PE-22 probe:generated permissions:on
+p3g-platform:plugins-off	3.9	usermgr	GET	/api/plugins/rbac_no_such_plugin/logs	-	400;has="code":"invalid_plugin_id"	req:PE-19 req:PE-22 probe:generated permissions:off
 p3g-users:delete-allow	3.9	admin_a	DELETE	/api/users/rbac-no-such-user	{}	400|404;lacks="code":"forbidden"	req:PE-19 req:PE-22 probe:generated
 p3g-users:delete-deny	3.9	usermgr	DELETE	/api/users/rbac-no-such-user	{}	403;has=users:delete	req:PE-19 req:PE-22 probe:generated permissions:on
 p3g-users:delete-off	3.9	usermgr	DELETE	/api/users/rbac-no-such-user	{}	400|404;lacks="code":"forbidden"	req:PE-19 req:PE-22 probe:generated permissions:off

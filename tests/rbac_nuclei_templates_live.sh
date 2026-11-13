@@ -149,7 +149,7 @@ ok=0; [ "$code" = 200 ] && [ "$(json_field "[t['ownership'] for t in b['template
 check "member A sees it as theirs" "$ok" "got $code"
 
 code="$(call "$B_JAR" DELETE "/api/nuclei-templates?path=$X")"
-ok=0; [ "$code" = 403 ] && body_has 'platform:nuclei_templates_all' && [ "$(owner_of "$X")" = "${SEED[MEMBER_A_ID]}" ] && ok=1
+ok=0; [ "$code" = 403 ] && body_has '"permission":"platform:nuclei_templates"' && [ "$(owner_of "$X")" = "${SEED[MEMBER_A_ID]}" ] && ok=1
 check "member B deletes A's template: 403, the template stays" "$ok" "got $code"
 
 code="$(call "$B_JAR" PUT "/api/projects/${SEED[PB_ID]}" "{\"nucleiSelectedCustomTemplates\":[\"$X\"]}")"
