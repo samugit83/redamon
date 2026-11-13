@@ -13,6 +13,8 @@
  *    recon reads its settings ONCE at container spawn. A mid-scan write is
  *    inert, and silently accepting it would report success for a change that
  *    does nothing.
+ *  - update_recon_settings judges a collaborator's change per column, as the
+ *    project form's save does (refuseSettingsChange, step 5.1b).
  *  - mode:"overwrite" needs its own scope. Discarding the current graph is the
  *    only irreversible action on this surface, and an agent can be talked into
  *    it by data it reads (the graph is full of attacker-controlled text), so
@@ -26,7 +28,7 @@ import { reconcileScanJobStatus } from '@/lib/scanTimeline'
 import { writeAudit } from '@/lib/audit'
 import { FINGERPRINT_FIELDS } from '@/lib/jobQueue'
 import { currentFingerprintFor } from '@/lib/jobFingerprint'
-import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
+import { assertMcpProjectAccess, mcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { McpToolError } from '@/lib/mcp/errors'
 import {
   auditableKey,
@@ -37,6 +39,9 @@ import {
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
 import { validateCrossFieldRules, writeFireteamAudit } from '@/lib/reconSettings/crossField'
 import { validateJevEngineChange } from '@/lib/reconSettings/jevEngine'
+import { classifyChange, settingsRefusal } from '@/lib/authz/settingsRisk'
+import type { ProjectAccess } from '@/lib/authz/projectAccess'
+import type { PermissionId } from '@/lib/authz/permissions'
 
 const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
 
@@ -260,7 +265,7 @@ export async function updateReconSettings(
   expectedUpdatedAt?: string
 ): Promise<UpdateSettingsResult> {
   requireScope(ctx.token, 'recon:settings')
-  await assertMcpProjectAccess(ctx.token, projectId)
+  const { access } = await mcpProjectAccess(ctx.token, projectId)
   enforceRate(ctx, 'write')
 
   // Recon reads its settings ONCE, at container spawn. A write after a start
@@ -299,6 +304,8 @@ export async function updateReconSettings(
   if (crossField) throw new McpToolError(crossField, 'setting_rejected')
   // The cross-field check normalized the user-skill toggles in nextRow (foreign ids dropped).
   if ('attackSkillConfig' in filtered.data) filtered.data.attackSkillConfig = nextRow.attackSkillConfig
+  // The stored row holds every settable column, the RoE window's switch among them.
+  refuseSettingsChange(before as Record<string, unknown>, filtered.data, access, 'project:settings')
 
   // A switch onto the Jev engine needs a selected Jev provider on the project OWNER's
   // account (not the token's user): the agent resolves the key from the owner.
@@ -358,6 +365,27 @@ export async function updateReconSettings(
     queuedJobsNeedingReview,
     affectedSchedules,
     note: 'Settings apply to the NEXT scan. A scan already running read its settings when it started.',
+  }
+}
+
+/**
+ * A collaborator's change through an MCP tool, judged as the project form's save judges it
+ * (`classifyChange`, SH-08, OQ-23): each changed column against the token user's access, with the
+ * save's refusal text. The owner passes every change. Nothing is written after a refusal; the audit
+ * row names the refused keys (registry keys only) and the level they need.
+ */
+export function refuseSettingsChange(
+  stored: Record<string, unknown>,
+  change: Record<string, unknown>,
+  access: ProjectAccess,
+  permission: PermissionId,
+): void {
+  if (access.level === 'owner') return
+  const refusal = settingsRefusal(classifyChange(stored, change, access), permission)
+  if (refusal) {
+    throw new McpToolError(refusal.error, 'level_denied', {
+      refusedKeys: refusal.refused.map(r => auditableKey(r.key)), needs: refusal.needs,
+    })
   }
 }
 

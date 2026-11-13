@@ -529,7 +529,8 @@ export async function attachEngagementAuthorization(
   auth: AuthorizationArgs
 ) {
   requireScope(ctx.token, 'engagement:authorize')
-  await assertMcpProjectAccess(ctx.token, projectId)
+  // The owner's alone (OQ-23), whatever level later opens the other write tools to a collaborator.
+  await assertMcpProjectAccess(ctx.token, projectId, 'O')
   enforceRate(ctx, 'write')
 
   const record = normaliseAuthorization(auth)

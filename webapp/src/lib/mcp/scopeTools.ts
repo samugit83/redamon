@@ -41,7 +41,7 @@ import { activationBusy } from '@/lib/activationLock'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { seedDomainNames, seedProjectDomains } from '@/lib/graphSeedDomains'
 import { LEGACY_GRAPH_MESSAGE, legacyGraphDomains } from '@/lib/legacyGraph'
-import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
+import { McpLevelDenied, mcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
 import { auditableKey, filterReconSettings } from '@/lib/reconSettings/filter'
 import { rescopableFields } from '@/lib/reconSettings/registry'
@@ -51,7 +51,9 @@ import { enforceRate, type McpContext } from '@/lib/mcp/tools'
 import {
   normaliseAuthorization, refuseHardBlocked, softGuardrailRefusal, type AuthorizationArgs,
 } from '@/lib/mcp/engagementTools'
-import { busyHint, casVersion, countQueuedJobsNeedingReview, describeAffectedSchedules } from '@/lib/mcp/writeTools'
+import {
+  busyHint, casVersion, countQueuedJobsNeedingReview, describeAffectedSchedules, refuseSettingsChange,
+} from '@/lib/mcp/writeTools'
 
 export interface UpdateProjectScopeArgs {
   projectId: string
@@ -138,7 +140,11 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
   requireScope(ctx.token, 'project:rescope')
   // Recording what authorized a widening is its own durable claim.
   if (args.authorization !== undefined) requireScope(ctx.token, 'engagement:authorize')
-  const { userId: owner } = await assertMcpProjectAccess(ctx.token, args.projectId)
+  const { project: { userId: owner }, access } = await mcpProjectAccess(ctx.token, args.projectId)
+  // What authorized a wider scope is the owner's to record (OQ-23), whatever level reaches the rest.
+  if (args.authorization !== undefined && access.level !== 'owner') {
+    throw new McpLevelDenied("Recording an engagement authorization is the project owner's. Nothing was written.")
+  }
   enforceRate(ctx, 'write')
 
   const busy = await describeLiveGraphWriters(args.projectId)
@@ -212,6 +218,10 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
       data[key] = effective[key]
     }
   }
+
+  // A collaborator's change judged as the project form's save judges it; the derived grouping and
+  // the normalized policy columns follow the list and mode the caller changed, which decide.
+  refuseSettingsChange(row, data, access, 'project:rescope')
 
   const widenings = wideningsOf(row, data)
   if (widenings.length > 0 && row.engagementKind === 'third_party' && args.authorization === undefined) {
@@ -315,7 +325,7 @@ export async function updateProjectScope(ctx: McpContext, args: UpdateProjectSco
 
   // After the commit, and best-effort: the partial-recon picker lists Domain
   // nodes, so a new root without one could not be scanned on its own.
-  // The graph's tenant is the project's owner as assertMcpProjectAccess
+  // The graph's tenant is the project's owner as mcpProjectAccess
   // answered it; the row's own userId is not an MCP-readable column.
   // Seeding attaches to Domain nodes too, so on a graph built under the old
   // scope model (§4.11.6) it waits for the full recon that rebuilds it.

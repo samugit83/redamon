@@ -24,7 +24,7 @@ import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { canonicalJson } from '@/lib/fingerprint'
 import { RECON_PRESETS, getPresetById, type ReconPreset } from '@/lib/recon-presets'
-import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
+import { assertMcpProjectAccess, mcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { assertReadableSelect } from '@/lib/mcpReadableFields'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { PRESET_FIELD_KEYS, extractPresetSettings } from '@/lib/project-preset-utils'
@@ -53,7 +53,9 @@ import {
 import { clearPresetBadges, renamePresetBadges } from '@/lib/reconPresets/badges'
 import { McpToolError } from '@/lib/mcp/errors'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
-import { busyHint, casVersion, countQueuedJobsNeedingReview, describeAffectedSchedules } from '@/lib/mcp/writeTools'
+import {
+  busyHint, casVersion, countQueuedJobsNeedingReview, describeAffectedSchedules, refuseSettingsChange,
+} from '@/lib/mcp/writeTools'
 
 /** How many changed keys a response lists before it only counts them. */
 const UPDATE_DIFF_CAP = 50
@@ -523,7 +525,7 @@ export async function applyReconPreset(
   args: { projectId: string; presetId: string; dryRun?: boolean; expectedUpdatedAt?: string }
 ) {
   requireScope(ctx.token, 'preset:apply')
-  await assertMcpProjectAccess(ctx.token, args.projectId)
+  const { access } = await mcpProjectAccess(ctx.token, args.projectId)
   enforceRate(ctx, 'write')
 
   // The LIVE writers, not only the scans: the in-app agent re-reads project
@@ -581,6 +583,9 @@ export async function applyReconPreset(
       { rejectedKey: auditableKey(problem.key) }
     )
   }
+
+  // Judged before the dry run answers, so a dry run tells a collaborator what applying would be refused.
+  refuseSettingsChange(row, { ...application.data, loadedPreset: application.loadedPreset }, access, 'preset:apply')
 
   const mismatch = targetMismatch(preset, row)
   const hostnameNote = hostnameModeNote(preset, row)
