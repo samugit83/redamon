@@ -445,3 +445,29 @@ describe('owner credentials with write sharing not in force (step 5.6)', () => {
     expect(auditWrite).not.toHaveBeenCalled()
   })
 })
+
+// Step 5.2b: the MCP write tools ask their permissions' levels of a shared project (W, W+S, M; lib/mcp/
+// writeLevels.shares.test.ts) and the Kali terminal ticket asks W+X. With write sharing not in force a share
+// stored as write with every toggle reads as Read, so every one of those levels is refused to an opted-in
+// token, naming Read access as before step 5.2; the owner's token reaches every level. Real mcpProjectAccess
+// and projectAccess over this file's Prisma double.
+describe('MCP write tools with write sharing not in force (step 5.2b)', () => {
+  const COLLAB_TOKEN = { userId: 'collab', sharedProjects: { allowlist: [] } }
+  test.each([
+    ['sharing on, the write switch off', { identity: true, permissions: true, sharing: true }, { enabled: true, maxLevel: 'write' }],
+    ["the write switch on, Root's policy at read", ALL_ON, { enabled: true, maxLevel: 'read' }],
+  ] as Array<[string, Partial<RbacFlags>, Record<string, unknown>]>)('%s: every write level refused as Read; the owner unchanged', async (_what, flags, policy) => {
+    setFlagsForTests(flags)
+    db.policy = policy
+    const { mcpProjectAccess, McpLevelDenied } = await import('@/lib/mcpAuth')
+    for (const level of ['W', 'W+S', 'W+X', 'M'] as const) {
+      const refused = mcpProjectAccess(COLLAB_TOKEN, 'P-owner', level)
+      await expect(refused, level).rejects.toBeInstanceOf(McpLevelDenied)
+      await expect(refused, level).rejects.toThrow(/at Read access/)
+    }
+    await expect(mcpProjectAccess(COLLAB_TOKEN, 'P-owner', 'R')).resolves.toMatchObject({ access: { level: 'read' } })
+    for (const level of ['W', 'W+S', 'M', 'O'] as const) {
+      await expect(mcpProjectAccess({ userId: 'owner' }, 'P-owner', level)).resolves.toMatchObject({ access: { level: 'owner' } })
+    }
+  })
+})

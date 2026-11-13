@@ -73,7 +73,7 @@ const PROJECTS = [
 
 // Read shares on PSHARED (step 4.4). They count only with sharing in force (RBAC_SHARING_ENABLED and
 // the instance policy enabled); with it off each row is inert and the viewers see nothing. The write
-// shares (step 5.2) are Read + Write only with write sharing in force too (RBAC_SHARING_WRITE_ENABLED
+// shares (step 5.2) are Read + Write only with write sharing in force too (the write-sharing switch
 // and the policy's maxLevel "write"); their Raw data column is off, so read as Read they lack it. No
 // owner consent is seeded: Run scans, Use AI agent and Exploitation count only with it (step 5.6).
 const SHARES = [

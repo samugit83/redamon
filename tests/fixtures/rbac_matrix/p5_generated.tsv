@@ -2,7 +2,7 @@
 # Do not edit: change the representative or writer table there and run `node scripts/gen-rbac-matrix-rows.mjs`
 # from webapp/. Each project permission's representative request, called by member_c's Read + Write
 # collaborators on PSHARED: editor (no toggle), woperator (Run scans), redteamer (Exploitation & shells),
-# coowner (Manage). With write sharing in force (sharingwrite:on: RBAC_SHARING_WRITE_ENABLED and the policy
+# coowner (Manage). With write sharing in force (sharingwrite:on: the write-sharing switch and the policy
 # maxLevel "write") R, R* and W answer as for the owner, M for the co-owner, and every run level (W+S, W+A,
 # W+X) is refused: it also needs the owner's consent, which the seed does not give (step 5.6). With it not
 # in force (sharingwrite:off) the editor reads as Read without Raw data: R answers, the rest 403.
