@@ -79,7 +79,7 @@ Host-published port bindings (`docker-compose.yml`, and the `tooling/deploy/sing
 | 8000/8002/8003/8004/8005 | Kali MCP servers | `127.0.0.1` | `127.0.0.1` |
 | 8013 / 8014 | MSF / Hydra progress | `127.0.0.1` | `127.0.0.1` |
 | 8015 | tunnel manager | `127.0.0.1` | `127.0.0.1` |
-| 8016 | terminal PTY | `127.0.0.1` | `127.0.0.1` |
+| 8016 | terminal PTY | not published | not published |
 | 4040 | ngrok API | `127.0.0.1` | `127.0.0.1` |
 | 7071 / 7072 | plugin-gateway proxy | not published | not published |
 | 7080 | plugin runner supervisor | not published | not published |

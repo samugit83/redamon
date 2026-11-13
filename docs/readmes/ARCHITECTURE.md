@@ -272,7 +272,7 @@ flowchart TB
 | MCP Nmap | http://127.0.0.1:8004/sse | Loopback + token | Nmap network scanner |
 | Metasploit Progress | http://127.0.0.1:8013 | Loopback | Live progress streaming for long-running exploits |
 | Tunnel Manager | http://127.0.0.1:8015 | Loopback | ngrok/chisel tunnel configuration API |
-| RedAmon Terminal | ws://127.0.0.1:8016 | Loopback | Kali sandbox PTY shell access (xterm.js; browser reaches it via the agent proxy) |
+| RedAmon Terminal | ws://kali-sandbox:8016 | Docker network + token (not published on the host) | Kali sandbox PTY shell access (xterm.js; browser reaches it via the agent proxy, the only caller holding the token) |
 | Metasploit Listener | 0.0.0.0:4444 | LAN (by design) | Reverse shell listener — a target connects back here in direct/no-tunnel mode |
 
 The plugin services (`plugin-runner`, `plugin-gateway`) publish no host port; see

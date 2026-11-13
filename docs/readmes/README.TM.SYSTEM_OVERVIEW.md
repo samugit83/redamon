@@ -622,7 +622,7 @@ Host-published listeners (from `docker-compose.yml`), shown for the **local** po
 | MCP playwright | kali-sandbox | SSE/HTTP | `127.0.0.1:8005` | Bearer `MCP_AUTH_TOKEN` | **Loopback only** |
 | MSF / Hydra progress | kali-sandbox | HTTP | `127.0.0.1:8013` / `8014` | None (loopback + agent-internal) | **Loopback only** (2026-07-05) |
 | Tunnel manager | kali-sandbox | HTTP | `127.0.0.1:8015` | Push-config trigger (loopback) | **Loopback only** (2026-07-05) |
-| Interactive terminal WS | kali-sandbox | WS | `127.0.0.1:8016` | Init-frame tenant ctx | **Loopback only** |
+| Interactive terminal WS | kali-sandbox | WS | `kali-sandbox:8016` | Bearer `MCP_AUTH_TOKEN` (the agent's proxy only) + the proxy's ticket identity | **Not published** (GHSA-3cjg-8cp8-j269) |
 | Reverse-shell / ngrok | kali-sandbox | TCP/HTTP | `4444` / `127.0.0.1:4040` | None | 4444 LAN (direct reverse shells) local; **public: `127.0.0.1`, `ufw`-opened to target CIDRs per engagement**; 4040 loopback |
 | Ollama judge (on-demand) | local-llm | HTTP | `11434` | None | Spawned per scan |
 | GVM (gvmd/ospd) | GVM stack | Unix socket | n/a | Socket + GVM `admin/admin` | Internal only (no host port) |
@@ -752,7 +752,7 @@ Per-listener reachability in each posture (host publish → who can connect):
 | `8000/8002/8003/8004/8005` | Kali MCP servers | `127.0.0.1` | `127.0.0.1` |
 | `8013` / `8014` | MSF / Hydra progress | `127.0.0.1` | `127.0.0.1` |
 | `8015` | tunnel manager | `127.0.0.1` | `127.0.0.1` |
-| `8016` | terminal PTY | `127.0.0.1` | `127.0.0.1` |
+| `8016` | terminal PTY | not published | not published |
 | `4040` | ngrok API | `127.0.0.1` | `127.0.0.1` |
 | `7071` / `7072` | plugin-gateway proxy | not published (internal plugin networks) | not published |
 | `7080` | plugin runner supervisor | not published (`redamon-plugins-net`) | not published |

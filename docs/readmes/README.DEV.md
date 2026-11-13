@@ -229,7 +229,7 @@ Every service in `docker-compose.yml`; host ports are the defaults of their `${.
 | `kb-refresh` | redamon-kb-refresh | — | Opt-in knowledge-base refresher on the agent image (profile: kb-refresh) |
 | `recon-orchestrator` | redamon-recon-orchestrator | 8010 (127.0.0.1) | Spawns the recon, GVM, GitHub-hunt, TruffleHog, supply-chain and AI-surface containers via Docker SDK |
 | `docker-broker` | redamon-docker-broker | internal | Filtering Docker socket proxy the spawned recon containers get instead of the raw socket |
-| `kali-sandbox` | redamon-kali | 8000, 8002–8005 (127.0.0.1) | The five MCP tool servers (network-recon, nuclei, metasploit, nmap, playwright; `SERVERS` in `mcp/servers/run_servers.py`); also the progress streams (8013, 8014), ngrok API (4040), tunnel manager (8015) and terminal (8016) on 127.0.0.1, and 4444 open for direct reverse shells |
+| `kali-sandbox` | redamon-kali | 8000, 8002–8005 (127.0.0.1) | The five MCP tool servers (network-recon, nuclei, metasploit, nmap, playwright; `SERVERS` in `mcp/servers/run_servers.py`); also the progress streams (8013, 8014), ngrok API (4040) and tunnel manager (8015) on 127.0.0.1, the terminal (8016) on the Docker network only, and 4444 open for direct reverse shells |
 | `postgres` | redamon-postgres | 5432 (127.0.0.1) | PostgreSQL database |
 | `neo4j` | redamon-neo4j | 7474, 7687 (127.0.0.1) | Neo4j graph database |
 | `gvmd` | redamon-gvm-gvmd | internal | GVM daemon (vulnerability scanner) |

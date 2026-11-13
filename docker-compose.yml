@@ -787,7 +787,9 @@ services:
       - "4444:4444"
       - "127.0.0.1:${NGROK_API_HOST_PORT:-4040}:4040"   # ngrok local API (agent-internal)
       - "127.0.0.1:8015:8015"   # tunnel-manager config (webapp-internal)
-      - "127.0.0.1:8016:8016"   # terminal PTY WS (browser reaches via agent:8090)
+      # 8016 (the terminal PTY) is deliberately NOT published: it hands out a root
+      # shell, and only the agent's /ws/kali-terminal proxy reaches it, over the
+      # bridge (GHSA-3cjg-8cp8-j269; tests/test_ghsa_3cjg_terminal_unauth_pty.py).
     volumes:
       # V7: read-only so a compromised worker cannot trojanize its own MCP server
       # source for restart-surviving persistence. The worker only READS these

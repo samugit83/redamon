@@ -4,7 +4,9 @@
 #
 # Debug-only ports (MCP 8000-8005, progress 8013/8014, tunnel 8015, ngrok 4040,
 # DB 5432/7474/7687) MUST be published on 127.0.0.1 only. Genuinely external
-# ports (webapp 3000, agent 8090, reverse-shell 4444) MUST stay routable.
+# ports (webapp 3000, agent 8090, reverse-shell 4444) MUST stay routable. The
+# Kali terminal (8016) hands out a root shell and MUST NOT be published at all:
+# only the agent's proxy reaches it, over the bridge (GHSA-3cjg-8cp8-j269).
 #
 # Runs against `docker compose config` (the fully-resolved model) so it needs no
 # running stack and works in CI. Run:  bash tests/test_port_bindings.sh
@@ -78,9 +80,15 @@ check_routable() {
 }
 
 echo "== Debug-only ports must be loopback-only =="
-for p in 8000 8002 8003 8004 8005 8013 8014 8015 4040 8016 5432 7474 7687; do
+for p in 8000 8002 8003 8004 8005 8013 8014 8015 4040 5432 7474 7687; do
     check_loopback "kali/db" "$p"
 done
+
+echo "== Ports that must not be published at all =="
+case "$(is_loopback_only 8016; echo $?)" in
+    *2) pass "kali terminal (8016) not published on the host" ;;
+    *)  fail "kali terminal (8016) is published on the host (a root shell)" ;;
+esac
 
 echo "== Genuinely external ports must stay routable =="
 check_routable "webapp" 3000

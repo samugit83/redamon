@@ -69,4 +69,4 @@ services:
       - "127.0.0.1:4444:4444"                          # loopback by default; ufw-open per engagement
       - "127.0.0.1:${NGROK_API_HOST_PORT:-4040}:4040"
       - "127.0.0.1:8015:8015"
-      - "127.0.0.1:8016:8016"
+      # 8016 (terminal PTY) stays unpublished, as in the base file (GHSA-3cjg-8cp8-j269).
