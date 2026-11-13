@@ -59,6 +59,7 @@ import { POST as approve } from './[id]/approve/route'
 import { POST as reject } from './[id]/reject/route'
 import { GET as read, DELETE as remove } from './[id]/route'
 import { POST as reset } from '../reset/route'
+import { GET as summary } from '../summary/route'
 
 const policy = vi.mocked(projectAccess)
 const access = (level: ProjectAccess['level'], toggles: Partial<ProjectAccessToggles> = {}, via: ProjectAccess['via'] = 'share'): ProjectAccess =>
@@ -149,6 +150,15 @@ describe('override approval needs Manage: a collaborator below it', () => {
     const cs = await seedProposal(projectScope('p-alice'), { workflow: 'W2' })
     expect((await read(new Request('http://localhost:3000/x') as never, params(cs))).status).toBe(404)
     expect(await buildSummaryModel('bob', 'p-alice')).toBeNull()
+  })
+
+  test("the summary route names plugins:use and level M, which the Agent Skills section reads as no plugin facts", async () => {
+    const r = await json(await summary(new Request('http://localhost:3000/api/plugins/overrides/summary?projectId=p-alice') as never))
+    expect(r).toEqual({ status: 403, body: { error: expect.stringMatching(/needs Manage/), code: 'forbidden', permission: 'plugins:use', level: 'M' } })
+    policy.mockResolvedValue(coOwner())
+    expect((await summary(new Request('http://localhost:3000/api/plugins/overrides/summary?projectId=p-alice') as never)).status).toBe(200)
+    policy.mockResolvedValue(access('read', {}, 'oversight'))
+    expect((await summary(new Request('http://localhost:3000/api/plugins/overrides/summary?projectId=p-alice') as never)).status).toBe(404)
   })
 })
 

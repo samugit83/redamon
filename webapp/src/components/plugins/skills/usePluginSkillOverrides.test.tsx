@@ -54,6 +54,18 @@ describe('usePluginSkillOverrides', () => {
     await waitFor(() => expect(result.current.error).toMatch(/project:settings/))
   })
 
+  test("a collaborator below Manage on a shared project (step 5.10): the summary's level refusal shows nothing and no error, the row actions stay", async () => {
+    stub(
+      () => json(403, { error: "Deciding this project's plugin proposals needs Manage on the project (plugins:use, level M).", code: 'forbidden', permission: 'plugins:use', level: 'M' }),
+      () => json(200, [{ pluginId: 'skiller', displayName: 'Skiller', projectSkillsRow: [{ action: 'improve', label: 'Improve' }] }]),
+    )
+    const { result } = renderHook(() => usePluginSkillOverrides('p1'))
+    await waitFor(() => expect(result.current.ready).toBe(true))
+    expect(result.current.error).toBeNull()
+    expect(result.current.bySkill.size).toBe(0)
+    expect(result.current.rowActions).toHaveLength(1)
+  })
+
   test('the contributions failing with no answer at all is named too', async () => {
     stub(() => json(200, { skills: [] }), () => {
       throw new TypeError('Failed to fetch')
