@@ -30,7 +30,10 @@ import { auditedTransaction } from '@/lib/auditForward'
 import { auditActorOf, sessionActor, type AuditActor } from '@/lib/auditActor'
 import { agentFetch } from '@/lib/agentFetch'
 import { closeAgentSockets } from '@/lib/agentSockets'
-import { acquireTransferLock, graphHold, refreshTransferLock, releaseTransferLock } from '@/lib/activationLock'
+import {
+  acquireTransferLock, clearTransferSplit, graphHold, markTransferSplit, parkTransferSplit, refreshTransferLock, releaseTransferLock,
+} from '@/lib/activationLock'
+import { ACTIVATION_STATE_IDLE, ACTIVATION_STATE_TRANSFER_SPLIT } from '@/lib/graphHold'
 import { describeLiveGraphWriters } from '@/lib/graphWriters'
 import { GRAPH_LOCK_HOLDER_PHRASE, tryWithGraphLock } from '@/lib/projectGraphLock'
 import { withoutUnselectableTemplates, NUCLEI_TEMPLATE_FIELDS, type NucleiTemplateField } from '@/lib/nucleiTemplateOwnership'
@@ -65,11 +68,13 @@ const LOCK_HEARTBEAT_MS = 60_000
 const ACTIVE_JOB_STATUSES = ['queued', 'dispatching', 'running']
 
 /**
- * Failures after which the graph may sit partly under each owner: the agent's answer was lost, or a
- * run back failed. Such an offer never lapses on its own; accepting again completes the move, and a
- * cancel or decline runs it back first.
+ * The agent's answers that prove a first move wrote nothing, or put back everything it wrote: refused
+ * before the first write, or run back by the mixin. Any other failure (the answer lost, a failed run back)
+ * may leave the graph split, and so does every failure of a retry of a transfer that already split it.
  */
-const GRAPH_MAY_HAVE_MOVED = new Set(['agent_unreachable', 'agent_bad_answer', 'retenant_rollback_failed', 'rollback_failed'])
+const CLEAN_RETENANT_FAILURES = new Set([
+  'retenant_failed', 'retenant_conflict', 'retenant_invalid', 'project_busy', 'graph_unavailable', 'agent_not_ready',
+])
 
 /**
  * The columns a project stores a `custom/<providerId>` model id in, with the value each is set back to
@@ -110,6 +115,11 @@ export interface TransferView {
   oldOwnerRole: OldOwnerRole
   status: TransferStatus
   error: string | null
+  /**
+   * The project's graph may sit partly under each owner (the project stays held until this transfer
+   * completes or is run back): the offer never lapses; accepting completes it, a cancel or decline runs it back.
+   */
+  graphMayBeSplit: boolean
   createdAt: string
   expiresAt: string
   decidedAt: string | null
@@ -138,6 +148,8 @@ interface TransferRow {
   clearedSeenAt: Date | null
   createdAt: Date
   decidedAt: Date | null
+  /** Read with the row: the project holds this transfer's split hold. */
+  graphMayBeSplit?: boolean
 }
 
 const refusal = (status: number, code: string, error: string, extra: Record<string, unknown> = {}) =>
@@ -152,8 +164,12 @@ const IN_PROGRESS = () => refusal(409, 'project_transfer_in_progress',
 
 const expiresAt = (row: Pick<TransferRow, 'createdAt'>) => new Date(row.createdAt.getTime() + TRANSFER_OFFER_DAYS * DAY_MS)
 const lapsed = (row: TransferRow) =>
-  (row.status === 'pending' || (row.status === 'failed' && !GRAPH_MAY_HAVE_MOVED.has(row.error ?? '')))
+  (row.status === 'pending' || row.status === 'failed') && !row.graphMayBeSplit
   && expiresAt(row).getTime() <= now().getTime()
+
+/** Whether a project row (activationState, activationVersionId) holds `transferId`'s split hold. */
+const holdsSplit = (project: { activationState?: string | null; activationVersionId?: string | null } | null | undefined, transferId: string) =>
+  project?.activationState === ACTIVATION_STATE_TRANSFER_SPLIT && project.activationVersionId === `transfer:${transferId}`
 
 /** The transfer routes exist only with the write switch on; nothing is read to answer 404 otherwise. */
 export function transfersSwitchedOff(): boolean {
@@ -170,13 +186,16 @@ export async function writeSharingInForce({ fresh = false }: { fresh?: boolean }
 // ---------------------------------------------------------------------------------------------------
 // Reading offers
 
-/** The project's open offer (expiring a lapsed one first, audited), or null. */
+/** The project's open offer, with whether it holds the project split (expiring a lapsed one first, audited), or null. */
 async function openOffer(projectId: string): Promise<TransferRow | null> {
-  const row = await prisma.projectTransfer.findFirst({
+  const found = await prisma.projectTransfer.findFirst({
     where: { projectId, status: { in: OPEN } },
     orderBy: { createdAt: 'desc' },
   }) as TransferRow | null
-  if (!row || !lapsed(row)) return row
+  if (!found) return null
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { activationState: true, activationVersionId: true } })
+  const row = { ...found, graphMayBeSplit: holdsSplit(project, found.id) }
+  if (!lapsed(row)) return row
   await expire(row)
   return null
 }
@@ -223,6 +242,7 @@ function viewOf(row: TransferRow, project: { id: string; name: string }, byId: M
     oldOwnerRole: row.oldOwnerRole as OldOwnerRole,
     status: row.status as TransferStatus,
     error: row.error,
+    graphMayBeSplit: row.graphMayBeSplit === true,
     createdAt: row.createdAt.toISOString(),
     expiresAt: expiresAt(row).toISOString(),
     decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
@@ -301,15 +321,17 @@ export async function transfersForAccount(userId: string): Promise<{
     orderBy: { createdAt: 'desc' },
     take: 50,
   }) as TransferRow[]
+  const projects = await prisma.project.findMany({
+    where: { id: { in: [...new Set(rows.map((r) => r.projectId))] } },
+    select: { id: true, name: true, userId: true, activationState: true, activationVersionId: true },
+  })
+  const holds = new Map(projects.map((p) => [p.id, p]))
   const live: TransferRow[] = []
-  for (const row of rows) {
+  for (const found of rows) {
+    const row = { ...found, graphMayBeSplit: holdsSplit(holds.get(found.projectId), found.id) }
     if (OPEN.includes(row.status as TransferStatus) && lapsed(row)) await expire(row)
     else live.push(row)
   }
-  const projects = await prisma.project.findMany({
-    where: { id: { in: [...new Set(live.map((r) => r.projectId))] } },
-    select: { id: true, name: true, userId: true },
-  })
   const byProject = new Map(projects.map((p) => [p.id, p]))
   const byId = await people(live.flatMap((r) => [r.fromUserId, r.toUserId]))
   const incoming: TransferView[] = []
@@ -439,8 +461,10 @@ export async function offerTransfer(request: Request, auth: PermissionContext, b
 }
 
 /**
- * Ends an open offer without a transfer: the owner's cancel or the recipient's decline. An attempt that
- * may have left the graph split is first run back, under the same locks an accept takes.
+ * Ends an open offer without a transfer: the owner's cancel or the recipient's decline. Held like an accept
+ * (the in-process graph lock, then the project lock), so it never races one: while an accept runs it answers
+ * project_transfer_in_progress. A transfer that may have split the graph is run back first, once nothing
+ * runs on the project; until that succeeds the offer stays open and the project held.
  */
 async function withdraw(
   identity: Pick<AuthzIdentity, 'session'>,
@@ -448,58 +472,60 @@ async function withdraw(
   projectId: string,
   by: 'owner' | 'recipient',
 ): Promise<NextResponse> {
-  const offer = await openOffer(projectId)
-  if (!offer || (by === 'recipient' && offer.toUserId !== effectiveUserId)) return NO_OFFER()
-  if (offer.status === 'in_progress' && (await graphHold(projectId)) === 'transferring') return IN_PROGRESS()
-  // A failed attempt that may have moved part of the graph, or one a crashed copy left in progress.
-  if ((offer.status === 'failed' && GRAPH_MAY_HAVE_MOVED.has(offer.error ?? '')) || offer.status === 'in_progress') {
-    const back = await runBackUnderLocks(offer)
-    if (back) return back
-  }
-  const status = by === 'owner' ? 'cancelled' : 'declined'
-  const done = await auditedTransaction(prisma, async (tx) => {
-    await lockOffers(tx, projectId)
-    const { count } = await tx.projectTransfer.updateMany({
-      where: { id: offer.id, status: { in: ['pending', 'failed', 'in_progress'] } },
-      data: { status, decidedAt: now() },
-    })
-    if (count !== 1) return false
-    await writeAuditTx(tx, {
-      ...actorOf(identity, effectiveUserId),
-      projectId,
-      permission: TRANSFER_PERMISSION,
-      action: by === 'owner' ? 'project.transfer.cancel' : 'project.transfer.decline',
-      targetType: 'user',
-      targetId: offer.toUserId,
-      before: { transferId: offer.id, status: offer.status },
-      source: 'api',
-    })
-    return true
-  })
-  if (!done) return NO_OFFER()
-  return NextResponse.json({ withdrawn: true, status })
+  const held = await tryWithGraphLock(projectId, 'transfer', () => withdrawUnderLock(identity, effectiveUserId, projectId, by))
+  if (held.acquired) return held.value
+  return held.heldBy === 'transfer' ? IN_PROGRESS() : busyResponse(GRAPH_LOCK_HOLDER_PHRASE[held.heldBy])
 }
 
-/**
- * The reverse re-tenant of an attempt that may have moved part of the graph (an answer lost, a failed
- * run back), held like an accept: a scan writing meanwhile would write under the old owner too, but a
- * key both owners hold would refuse the move. Null when done, else the answer to return.
- */
-async function runBackUnderLocks(offer: TransferRow): Promise<NextResponse | null> {
-  const held = await tryWithGraphLock(offer.projectId, 'transfer', async () => {
-    if (!(await acquireTransferLock(offer.projectId, offer.id, offer.fromUserId))) return lockRefusal(offer.projectId)
-    try {
-      const back = await retenant(offer.projectId, offer.toUserId, offer.fromUserId)
-      if (back.ok) return null
-      console.error(`[rbac] transfer run_back_failed project=${offer.projectId} transfer=${offer.id} code=${back.code}`)
-      return refusal(502, 'run_back_failed',
-        "The project's graph could not be moved back to its owner, so the offer stays open. Try again, or accept it to complete the transfer.",
-        { cause: back.code })
-    } finally {
-      await releaseTransferLock(offer.projectId)
+async function withdrawUnderLock(
+  identity: Pick<AuthzIdentity, 'session'>,
+  effectiveUserId: string,
+  projectId: string,
+  by: 'owner' | 'recipient',
+): Promise<NextResponse> {
+  const offer = await openOffer(projectId)
+  if (!offer || (by === 'recipient' && offer.toUserId !== effectiveUserId)) return NO_OFFER()
+  const lock = await acquireTransferLock(projectId, offer.id, offer.fromUserId)
+  if (!lock.acquired) return lockRefusal(projectId)
+  try {
+    if (lock.split) {
+      const busy = await transferBusy(projectId)
+      if (busy) return busyResponse(busy)
+      const back = await retenant(projectId, offer.toUserId, offer.fromUserId)
+      if (!back.ok) {
+        console.error(`[rbac] transfer run_back_failed project=${projectId} transfer=${offer.id} code=${back.code}`)
+        return refusal(502, 'run_back_failed',
+          "The project's graph could not be moved back to its owner, so the offer stays open and the project held. Try again, or accept it to complete the transfer.",
+          { cause: back.code })
+      }
+      await clearTransferSplit(projectId, offer.id)
     }
-  })
-  return held.acquired ? held.value : busyResponse(GRAPH_LOCK_HOLDER_PHRASE[held.heldBy])
+    const status = by === 'owner' ? 'cancelled' : 'declined'
+    const done = await auditedTransaction(prisma, async (tx) => {
+      await lockOffers(tx, projectId)
+      const { count } = await tx.projectTransfer.updateMany({
+        where: { id: offer.id, status: offer.status },
+        data: { status, decidedAt: now() },
+      })
+      if (count !== 1) return false
+      await writeAuditTx(tx, {
+        ...actorOf(identity, effectiveUserId),
+        projectId,
+        permission: TRANSFER_PERMISSION,
+        action: by === 'owner' ? 'project.transfer.cancel' : 'project.transfer.decline',
+        targetType: 'user',
+        targetId: offer.toUserId,
+        before: { transferId: offer.id, status: offer.status, ...(lock.split ? { graphRunBack: true } : {}) },
+        source: 'api',
+      })
+      return true
+    })
+    if (!done) return NO_OFFER()
+    return NextResponse.json({ withdrawn: true, status })
+  } finally {
+    await parkTransferSplit(projectId, offer.id)
+    await releaseTransferLock(projectId)
+  }
 }
 
 /** POST /api/projects/[id]/transfer/cancel: the owner withdraws the open offer. */
@@ -646,14 +672,17 @@ const FAILURE_ANSWERS: Record<string, [number, string]> = {
   recipient_not_collaborator: [409, 'You no longer hold a share of this project, so it cannot be given to you. Its graph was put back.'],
   account_not_active: [409, 'Your account is not active, so the project cannot be given to you. Its graph was put back.'],
   owner_changed: [409, "The project's owner changed meanwhile. Its graph was put back."],
+  project_changed: [409, 'The project changed during the transfer. Its graph was put back; accept again.'],
 }
 
-function failureResponse(code: string, status?: number): NextResponse {
+/** The answer to a failed attempt; `split`: the graph may sit partly under each owner and the project stays held. */
+function failureResponse(code: string, status: number | undefined, split: boolean): NextResponse {
   const known = FAILURE_ANSWERS[code]
-  if (known) return refusal(known[0], code, known[1])
-  // The graph may sit partly under each owner: accepting again completes the move.
+  if (known && !split) return refusal(known[0], code, known[1])
   return refusal(status && status >= 500 ? status : 502, code,
-    "The transfer did not complete and the project's graph may be partly moved. Accept again to complete it, or decline to put it back.")
+    "The transfer did not complete and the project's graph may be partly moved; the project stays held, so nothing can scan or " +
+    'run on it. Accept again to complete the transfer, or decline (the owner: cancel) to put the graph back.',
+    { graphMayBeSplit: true })
 }
 
 /** Thrown inside the Postgres move to roll it back with a code. */
@@ -674,7 +703,8 @@ export async function acceptTransfer(request: Request, identity: AuthzIdentity, 
   if (me instanceof Response) return me as NextResponse
   const offer = await openOffer(projectId)
   if (!offer || offer.toUserId !== me.userId) return NO_OFFER()
-  if (offer.status === 'in_progress' && (await graphHold(projectId)) === 'transferring') return IN_PROGRESS()
+  // An attempt still live answers project_transfer_in_progress at the locks; one a crashed copy left
+  // behind (its hold parked or a TTL old) is resumed there.
   const eligible = await recipientProblem(prisma, projectId, me.userId)
   if (eligible) return recipientRefusal(eligible)
   const stepUp = await requireStepUp(request, stepUpPassword)
@@ -689,8 +719,12 @@ export async function acceptTransfer(request: Request, identity: AuthzIdentity, 
 /** `forced`: an admin's transfer without the recipient's acceptance (step 5.13), audited as such. */
 async function acceptUnderLock(offer: TransferRow, actor: AuditActor, { forced = false }: { forced?: boolean } = {}): Promise<NextResponse> {
   const { projectId } = offer
-  if (!(await acquireTransferLock(projectId, offer.id, offer.fromUserId))) return lockRefusal(projectId)
-  const beat = setInterval(() => { void refreshTransferLock(projectId).catch(() => undefined) }, LOCK_HEARTBEAT_MS)
+  const lock = await acquireTransferLock(projectId, offer.id, offer.fromUserId)
+  if (!lock.acquired) return lockRefusal(projectId)
+  // Whether the graph may already sit partly under each owner (an earlier attempt of this transfer): every
+  // failure of this attempt then leaves it so, and only a completed move or a run back ends the hold.
+  let split = lock.split
+  const beat = setInterval(() => { void refreshTransferLock(projectId, offer.id).catch(() => undefined) }, LOCK_HEARTBEAT_MS)
   try {
     const busy = await transferBusy(projectId)
     if (busy) return busyResponse(busy)
@@ -709,7 +743,7 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor, { forced =
         action: forced ? 'project.transfer.forced' : 'project.transfer.accept',
         targetType: 'user',
         targetId: offer.toUserId,
-        before: { transferId: offer.id, status: offer.status },
+        before: { transferId: offer.id, status: offer.status, ...(split ? { graphMayBeSplit: true } : {}) },
         after: { status: 'in_progress', ...(forced ? { forced: true } : {}) },
         source: 'api',
       })
@@ -721,15 +755,22 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor, { forced =
     const closed = await closeAgentSockets({ projectId, kinds: [...WS_SOCKETS] })
     if (!closed.ok) {
       await failAttempt(offer, actor, 'socket_close_failed')
-      return failureResponse('socket_close_failed')
+      return failureResponse('socket_close_failed', 503, split)
     }
 
+    // From here until the move completes or is run back the project stays held whatever the clock says.
+    await markTransferSplit(projectId, offer.id)
+    const graphWasWhole = !split
+    split = true
     const moved = await retenant(projectId, offer.fromUserId, offer.toUserId)
     if (!moved.ok) {
+      if (graphWasWhole && CLEAN_RETENANT_FAILURES.has(moved.code)) {
+        await clearTransferSplit(projectId, offer.id)
+        split = false
+      }
       await failAttempt(offer, actor, moved.code)
-      return failureResponse(moved.code, moved.status)
+      return failureResponse(moved.code, moved.status, split)
     }
-    await refreshTransferLock(projectId)
 
     let completed: MoveResult
     try {
@@ -741,11 +782,15 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor, { forced =
       if (!back.ok) {
         console.error(`[rbac] transfer rollback_failed project=${projectId} transfer=${offer.id} code=${back.code}`)
         await failAttempt(offer, actor, 'rollback_failed')
-        return failureResponse('rollback_failed', 500)
+        return failureResponse('rollback_failed', 500, true)
       }
+      await clearTransferSplit(projectId, offer.id)
+      split = false
       await failAttempt(offer, actor, code)
-      return failureResponse(code)
+      return failureResponse(code, 500, false)
     }
+    // The move ended the hold in its own transaction.
+    split = false
 
     invalidateCache(projectId)
     await endReducedAccess(offer, completed)
@@ -757,6 +802,7 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor, { forced =
     })
   } finally {
     clearInterval(beat)
+    if (split) await parkTransferSplit(projectId, offer.id)
     await releaseTransferLock(projectId)
   }
 }
@@ -906,14 +952,27 @@ async function moveInPostgres(
   graph: { totalNodes: number; relationships: number },
 ): Promise<MoveResult> {
   const { projectId, fromUserId: from, toUserId: to } = offer
-  const project = await tx.project.findUnique({ where: { id: projectId }, select: PROJECT_SELECT }) as MovingProject | null
+  const project = await tx.project.findUnique({
+    where: { id: projectId },
+    select: { ...PROJECT_SELECT, updatedAt: true, activationState: true, activationVersionId: true },
+  }) as (MovingProject & { updatedAt: Date; activationState: string; activationVersionId: string | null }) | null
   if (!project || project.userId !== from) throw new MoveAborted('owner_changed')
+  // Only the attempt holding this transfer's split hold moves the project.
+  if (!holdsSplit(project, offer.id)) throw new MoveAborted('owner_changed')
   const recipient = await recipientProblem(tx, projectId, to)
   if (recipient) throw new MoveAborted(recipient)
 
   const { data, cleared } = await clearedForNewOwner(tx, project, to)
-  const { count } = await tx.project.updateMany({ where: { id: projectId, userId: from }, data: { ...data, userId: to, updatedById: to } as Prisma.ProjectUncheckedUpdateManyInput })
-  if (count !== 1) throw new MoveAborted('owner_changed')
+  // Compare-and-swap on the row as read: a settings write landing between the read and this update would
+  // otherwise be overwritten with values cleared from what it replaced. The hold ends with the move.
+  const { count } = await tx.project.updateMany({
+    where: { id: projectId, userId: from, updatedAt: project.updatedAt },
+    data: {
+      ...data, userId: to, updatedById: to,
+      activationState: ACTIVATION_STATE_IDLE, activationStartedAt: null, activationVersionId: null,
+    } as Prisma.ProjectUncheckedUpdateManyInput,
+  })
+  if (count !== 1) throw new MoveAborted('project_changed')
 
   await tx.projectCollaborator.deleteMany({ where: { projectId, userId: { in: [to, from] } } })
   if (offer.oldOwnerRole === 'co-owner') {
@@ -1072,7 +1131,6 @@ export async function forceTransferForDeletion(
   let offer = await openOffer(projectId)
   if (offer) {
     if (offer.toUserId !== toUserId) return alreadyOffered()
-    if (offer.status === 'in_progress' && (await graphHold(projectId)) === 'transferring') return IN_PROGRESS()
     const eligible = await recipientProblem(prisma, projectId, toUserId)
     if (eligible) return recipientRefusal(eligible)
   } else {

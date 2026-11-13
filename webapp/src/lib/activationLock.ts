@@ -26,10 +26,9 @@ import {
   ACTIVATION_STATE_ACTIVATING,
   ACTIVATION_STATE_IDLE,
   ACTIVATION_STATE_TRANSFERRING,
-  HOLDS,
+  ACTIVATION_STATE_TRANSFER_SPLIT,
   activationLockTtlMs,
   holdOf,
-  isStale,
   transferInProgressResponse,
   type GraphHold,
 } from './graphHold'
@@ -38,6 +37,7 @@ export {
   ACTIVATION_STATE_ACTIVATING,
   ACTIVATION_STATE_IDLE,
   ACTIVATION_STATE_TRANSFERRING,
+  ACTIVATION_STATE_TRANSFER_SPLIT,
   activationLockTtlMs,
   holdOf,
   transferInProgressResponse,
@@ -69,10 +69,7 @@ export async function activationStates(projectIds: string[]): Promise<Map<string
     where: { id: { in: projectIds } },
     select: { id: true, activationState: true, activationStartedAt: true },
   })
-  const now = Date.now()
-  for (const row of rows) {
-    states.set(row.id, HOLDS.has(row.activationState) && !isStale(row.activationStartedAt, now))
-  }
+  for (const row of rows) states.set(row.id, holdOf(row) !== null)
   return states
 }
 
@@ -153,6 +150,8 @@ export async function acquireActivationLock(
   const res = await prisma.project.updateMany({
     where: {
       id: projectId,
+      // A transfer that may have split the graph keeps the project until it completes or is run back.
+      activationState: { not: ACTIVATION_STATE_TRANSFER_SPLIT },
       OR: [
         { activationState: ACTIVATION_STATE_IDLE },
         { activationStartedAt: null },
@@ -191,39 +190,95 @@ export async function releaseActivationLock(projectId: string): Promise<void> {
 
 /**
  * The ownership transfer's take of the lock (step 5.12): only while the project is still owned by
- * `ownerId` (the offer's giver) and idle or stale, so two accepts, an activation and a transfer
- * whose project changed owner meanwhile cannot both win.
+ * `ownerId` (the offer's giver). A retry of a transfer that may have split the graph resumes its own
+ * split hold and keeps it split (`split: true`); otherwise only an idle or stale project that no split
+ * transfer holds, so two accepts, an activation and a transfer whose project changed owner cannot both win.
  */
-export async function acquireTransferLock(projectId: string, transferId: string, ownerId: string): Promise<boolean> {
+export async function acquireTransferLock(projectId: string, transferId: string, ownerId: string): Promise<{ acquired: boolean; split: boolean }> {
   const now = new Date()
+  const own = `transfer:${transferId}`
+  const staleBefore = new Date(now.getTime() - activationLockTtlMs())
+  // Its own split hold, when no attempt is live on it: parked at the end of an attempt (null), or left
+  // by a copy that died mid-move (no heartbeat for a TTL).
+  const resumed = await prisma.project.updateMany({
+    where: {
+      id: projectId, userId: ownerId, activationState: ACTIVATION_STATE_TRANSFER_SPLIT, activationVersionId: own,
+      OR: [{ activationStartedAt: null }, { activationStartedAt: { lt: staleBefore } }],
+    },
+    data: { activationStartedAt: now },
+  })
+  if (resumed.count === 1) return { acquired: true, split: true }
   const res = await prisma.project.updateMany({
     where: {
       id: projectId,
       userId: ownerId,
+      activationState: { not: ACTIVATION_STATE_TRANSFER_SPLIT },
       OR: [
         { activationState: ACTIVATION_STATE_IDLE },
         { activationStartedAt: null },
-        { activationStartedAt: { lt: new Date(now.getTime() - activationLockTtlMs()) } },
+        { activationStartedAt: { lt: staleBefore } },
       ],
     },
     data: {
       activationState: ACTIVATION_STATE_TRANSFERRING,
       activationStartedAt: now,
-      activationVersionId: `transfer:${transferId}`,
+      activationVersionId: own,
     },
   })
-  return res.count === 1
+  return { acquired: res.count === 1, split: false }
 }
 
-/** Restarts the TTL of a transfer still holding the lock: the graph move of a large project takes a while. */
-export async function refreshTransferLock(projectId: string): Promise<void> {
+/** The graph move is about to start: from here the hold never goes stale until cleared. */
+export async function markTransferSplit(projectId: string, transferId: string): Promise<void> {
   await prisma.project.updateMany({
-    where: { id: projectId, activationState: ACTIVATION_STATE_TRANSFERRING },
-    data: { activationStartedAt: new Date() },
+    where: { id: projectId, activationState: ACTIVATION_STATE_TRANSFERRING, activationVersionId: `transfer:${transferId}` },
+    data: { activationState: ACTIVATION_STATE_TRANSFER_SPLIT },
   })
 }
 
-/** Releases a transfer's lock and nothing else (an activation that took a stale one keeps it). Never throws. */
+/**
+ * The graph is verified whole again under the project's owner (the move was refused before writing, run
+ * back by the agent, or run back by this transfer): the split hold of `transferId` ends. A completed
+ * transfer ends it inside the Postgres move instead.
+ */
+export async function clearTransferSplit(projectId: string, transferId: string): Promise<void> {
+  await prisma.project.updateMany({
+    where: { id: projectId, activationState: ACTIVATION_STATE_TRANSFER_SPLIT, activationVersionId: `transfer:${transferId}` },
+    data: { activationState: ACTIVATION_STATE_IDLE, activationStartedAt: null, activationVersionId: null },
+  })
+}
+
+/**
+ * The live attempt's heartbeat on its own hold, split or not. Raw SQL so the project's updatedAt does not
+ * move: the Postgres move compares it, and a heartbeat is no change to the project.
+ */
+export async function refreshTransferLock(projectId: string, transferId: string): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE projects SET activation_started_at = ${new Date()}
+    WHERE id = ${projectId} AND activation_version_id = ${`transfer:${transferId}`}
+      AND activation_state IN (${ACTIVATION_STATE_TRANSFERRING}, ${ACTIVATION_STATE_TRANSFER_SPLIT})`
+}
+
+/**
+ * An attempt ended with the graph possibly split: the split hold stays (every writer keeps refusing) but no
+ * attempt is live on it any more, so the next accept or withdrawal of the same transfer resumes it at once.
+ * Never throws: an unparked hold is resumed once its heartbeat is a TTL old.
+ */
+export async function parkTransferSplit(projectId: string, transferId: string): Promise<void> {
+  try {
+    await prisma.$executeRaw`
+      UPDATE projects SET activation_started_at = NULL
+      WHERE id = ${projectId} AND activation_state = ${ACTIVATION_STATE_TRANSFER_SPLIT}
+        AND activation_version_id = ${`transfer:${transferId}`}`
+  } catch (err) {
+    console.error('[rbac] transfer split park failed (resumable once its heartbeat is a TTL old):', err)
+  }
+}
+
+/**
+ * Releases a transfer's lock and nothing else (an activation that took a stale one keeps it, and a split
+ * hold stays until clearTransferSplit or the completed move). Never throws.
+ */
 export async function releaseTransferLock(projectId: string): Promise<void> {
   try {
     await prisma.project.updateMany({

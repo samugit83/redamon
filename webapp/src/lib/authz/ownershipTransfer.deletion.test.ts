@@ -47,18 +47,49 @@ vi.mock('@/lib/agentFetch', () => ({
 vi.mock('@/lib/agentSockets', () => ({ closeAgentSockets: () => h.closeSockets() }))
 vi.mock('@/lib/graphWriters', () => ({ describeLiveGraphWriters: () => h.writers() }))
 vi.mock('@/app/api/graph/cache', () => ({ invalidateCache: () => undefined }))
-vi.mock('@/lib/activationLock', () => ({
-  acquireTransferLock: async (projectId: string, _transferId: string, ownerId: string) => {
-    const db = h.db as import('./__testing__/deletionDb').DeletionDb
-    const project = db.rows('project').find((p) => p.id === projectId)
-    if (!project || project.userId !== ownerId || h.lock.has(projectId)) return false
-    h.lock.set(projectId, 'transferring')
-    return true
-  },
-  refreshTransferLock: async () => undefined,
-  releaseTransferLock: async (projectId: string) => { h.lock.delete(projectId) },
-  graphHold: async (projectId: string) => h.lock.get(projectId) ?? null,
-}))
+vi.mock('@/lib/activationLock', () => {
+  // The project lock lives on the project row (activationState, activationVersionId), as the transfer reads it;
+  // `h.lock` mirrors who holds it.
+  const row = (projectId: string) => (h.db as import('./__testing__/deletionDb').DeletionDb).rows('project').find((p) => p.id === projectId)
+  return {
+    acquireTransferLock: async (projectId: string, transferId: string, ownerId: string) => {
+      const project = row(projectId)
+      if (!project || project.userId !== ownerId) return { acquired: false, split: false }
+      if (project.activationState === 'transfer_split') {
+        const own = project.activationVersionId === `transfer:${transferId}` && project.activationStartedAt === null
+        if (own) project.activationStartedAt = new Date()
+        return { acquired: own, split: own }
+      }
+      if (h.lock.has(projectId)) return { acquired: false, split: false }
+      h.lock.set(projectId, 'transferring')
+      Object.assign(project, { activationState: 'transferring', activationVersionId: `transfer:${transferId}`, activationStartedAt: new Date() })
+      return { acquired: true, split: false }
+    },
+    markTransferSplit: async (projectId: string) => {
+      const project = row(projectId)
+      if (project?.activationState === 'transferring') project.activationState = 'transfer_split'
+    },
+    clearTransferSplit: async (projectId: string) => {
+      const project = row(projectId)
+      if (project?.activationState === 'transfer_split') Object.assign(project, { activationState: 'idle', activationVersionId: null, activationStartedAt: null })
+    },
+    parkTransferSplit: async (projectId: string) => {
+      const project = row(projectId)
+      if (project?.activationState === 'transfer_split') project.activationStartedAt = null
+    },
+    refreshTransferLock: async () => undefined,
+    releaseTransferLock: async (projectId: string) => {
+      const project = row(projectId)
+      if (project?.activationState === 'transfer_split') return
+      h.lock.delete(projectId)
+      if (project?.activationState === 'transferring') Object.assign(project, { activationState: 'idle', activationVersionId: null, activationStartedAt: null })
+    },
+    graphHold: async (projectId: string) => {
+      const state = row(projectId)?.activationState
+      return state === 'transferring' || state === 'transfer_split' ? 'transferring' : (h.lock.get(projectId) ?? null)
+    },
+  }
+})
 vi.mock('./revocation', () => ({ onAccessReduced: (...a: unknown[]) => h.reduced(...(a as [])) }))
 vi.mock('./accountNotices', async (orig) => ({
   ...(await orig<typeof import('./accountNotices')>()),

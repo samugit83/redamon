@@ -22,12 +22,16 @@ type Row = Record<string, unknown>
 const h = vi.hoisted(() => {
   const state = {
     tables: {} as Record<string, Row[]>,
-    graphOwner: new Map<string, string>(),
-    lock: new Map<string, string>(),
+    // Each project's graph as nodes (a uniqueness key and the tenant holding it), so a move can stop halfway.
+    graph: new Map<string, Array<{ key: string; owner: string }>>(),
     liveWork: { session_ids: [] as string[], codefix_sockets: 0, triage_run: false } as Record<string, unknown> | null,
-    // Per re-tenant call, in order: 'ok' (or nothing left) moves the graph, 'network' loses the answer.
-    retenantFail: [] as Array<{ status: number; body: Record<string, unknown> } | 'network' | 'ok'>,
-    retenantCalls: [] as Array<{ project_id: string; from_user_id: string; to_user_id: string; lockHeld: string | undefined }>,
+    // Per re-tenant call, in order: 'ok' (or nothing left) moves every node; 'network' loses the answer before
+    // anything moved; 'moved-network' after everything moved; 'partial-network' halfway (the agent restarted
+    // mid-move); 'rollback-failed' halfway with the mixin's retenant_rollback_failed; an object answers that code.
+    retenantFail: [] as Array<{ status: number; body: Record<string, unknown> } | 'network' | 'moved-network' | 'partial-network' | 'rollback-failed' | 'ok'>,
+    retenantCalls: [] as Array<{ project_id: string; from_user_id: string; to_user_id: string; lockHeld: unknown }>,
+    // Called inside the Postgres move's transaction, between its read and its update (a concurrent writer).
+    beforeProjectUpdate: null as null | (() => void),
     failNextWrite: null as null | string,
     seq: 0,
   }
@@ -61,6 +65,7 @@ const db = vi.hoisted(() => {
         if ('equals' in c) return JSON.stringify(value) === JSON.stringify(c.equals)
         return false
       }
+      if (cond instanceof Date) return value instanceof Date && value.getTime() === cond.getTime()
       return (value ?? null) === (cond ?? null)
     })
   }
@@ -96,8 +101,18 @@ const db = vi.hoisted(() => {
       },
       updateMany: async ({ where, data }: { where: Row; data: Row }) => {
         guard()
+        if (name === 'project' && h.state.beforeProjectUpdate && 'userId' in data) {
+          const hook = h.state.beforeProjectUpdate
+          h.state.beforeProjectUpdate = null
+          hook()
+        }
         let count = 0
-        for (const r of rows()) if (matches(r, where)) { Object.assign(r, data); count++ }
+        for (const r of rows()) {
+          if (!matches(r, where)) continue
+          // Prisma moves @updatedAt on every update.
+          Object.assign(r, data, name === 'project' ? { updatedAt: new Date(Date.now() + ++h.state.seq) } : {})
+          count++
+        }
         return { count }
       },
       deleteMany: async ({ where }: { where: Row }) => {
@@ -138,12 +153,22 @@ vi.mock('@/lib/agentFetch', () => ({
     }
     if (url === '/graph/retenant') {
       const body = JSON.parse(init.body ?? '{}')
-      h.state.retenantCalls.push({ ...body, lockHeld: h.state.lock.get(body.project_id) })
+      const project = h.state.tables.project?.find((p) => p.id === body.project_id)
+      h.state.retenantCalls.push({ ...body, lockHeld: project?.activationState })
+      const nodes = h.state.graph.get(body.project_id) ?? []
       const failure = h.state.retenantFail.shift()
       if (failure === 'network') throw new Error('socket hang up')
-      if (failure && failure !== 'ok') return new Response(JSON.stringify(failure.body), { status: failure.status })
-      if (h.state.graphOwner.get(body.project_id) === body.from_user_id) h.state.graphOwner.set(body.project_id, body.to_user_id)
-      return new Response(JSON.stringify({ total_nodes: 41, relationships: 0, nodes: {} }), { status: 200 })
+      if (failure && typeof failure === 'object') return new Response(JSON.stringify(failure.body), { status: failure.status })
+      // The mixin's preflight: a node already under the new owner with a key of one about to move.
+      const target = new Set(nodes.filter((n) => n.owner === body.to_user_id).map((n) => n.key))
+      const moving = nodes.filter((n) => n.owner === body.from_user_id)
+      const twins = moving.filter((n) => target.has(n.key))
+      if (twins.length) return new Response(JSON.stringify({ code: 'retenant_conflict', conflicts: { Domain: twins.length } }), { status: 409 })
+      const half = failure === 'partial-network' || failure === 'rollback-failed'
+      for (const n of half ? moving.slice(0, Math.ceil(moving.length / 2)) : moving) n.owner = body.to_user_id
+      if (failure === 'partial-network' || failure === 'moved-network') throw new Error('socket hang up')
+      if (failure === 'rollback-failed') return new Response(JSON.stringify({ code: 'retenant_rollback_failed', moved: {} }), { status: 500 })
+      return new Response(JSON.stringify({ total_nodes: moving.length, relationships: 0, nodes: {} }), { status: 200 })
     }
     throw new Error(`unexpected agent call ${url}`)
   },
@@ -151,19 +176,52 @@ vi.mock('@/lib/agentFetch', () => ({
 vi.mock('@/lib/agentSockets', () => ({ closeAgentSockets: (...a: unknown[]) => h.closeSockets(...(a as [])) }))
 vi.mock('@/lib/graphWriters', () => ({ describeLiveGraphWriters: () => h.writers() }))
 vi.mock('@/app/api/graph/cache', () => ({ invalidateCache: (...a: unknown[]) => h.invalidate(...a) }))
-vi.mock('@/lib/activationLock', () => ({
-  acquireTransferLock: async (projectId: string, transferId: string, ownerId: string) => {
-    const project = h.state.tables.project?.find((p) => p.id === projectId)
-    if (!project || project.userId !== ownerId || h.state.lock.has(projectId)) return false
-    h.state.lock.set(projectId, 'transferring')
-    return true
-  },
-  refreshTransferLock: async () => undefined,
-  releaseTransferLock: async (projectId: string) => {
-    if (h.state.lock.get(projectId) === 'transferring') h.state.lock.delete(projectId)
-  },
-  graphHold: async (projectId: string) => h.state.lock.get(projectId) ?? null,
-}))
+vi.mock('@/lib/activationLock', () => {
+  const row = (projectId: string) => h.state.tables.project?.find((p) => p.id === projectId)
+  const TTL = 15 * 60 * 1000
+  const stale = (r: Row) => !(r.activationStartedAt instanceof Date) || Date.now() - r.activationStartedAt.getTime() > TTL
+  return {
+    acquireTransferLock: async (projectId: string, transferId: string, ownerId: string) => {
+      const r = row(projectId)
+      if (!r || r.userId !== ownerId) return { acquired: false, split: false }
+      const own = `transfer:${transferId}`
+      if (r.activationState === 'transfer_split') {
+        if (r.activationVersionId !== own || !stale(r)) return { acquired: false, split: false }
+        r.activationStartedAt = new Date()
+        return { acquired: true, split: true }
+      }
+      if (r.activationState !== 'idle' && !stale(r)) return { acquired: false, split: false }
+      Object.assign(r, { activationState: 'transferring', activationVersionId: own, activationStartedAt: new Date() })
+      return { acquired: true, split: false }
+    },
+    markTransferSplit: async (projectId: string, transferId: string) => {
+      const r = row(projectId)
+      if (r?.activationState === 'transferring' && r.activationVersionId === `transfer:${transferId}`) r.activationState = 'transfer_split'
+    },
+    clearTransferSplit: async (projectId: string, transferId: string) => {
+      const r = row(projectId)
+      if (r?.activationState === 'transfer_split' && r.activationVersionId === `transfer:${transferId}`) {
+        Object.assign(r, { activationState: 'idle', activationVersionId: null, activationStartedAt: null })
+      }
+    },
+    parkTransferSplit: async (projectId: string, transferId: string) => {
+      const r = row(projectId)
+      if (r?.activationState === 'transfer_split' && r.activationVersionId === `transfer:${transferId}`) r.activationStartedAt = null
+    },
+    refreshTransferLock: async () => undefined,
+    releaseTransferLock: async (projectId: string) => {
+      const r = row(projectId)
+      if (r?.activationState === 'transferring') Object.assign(r, { activationState: 'idle', activationVersionId: null, activationStartedAt: null })
+    },
+    // As lib/graphHold.ts holdOf reads the row: a split transfer never goes stale.
+    graphHold: async (projectId: string) => {
+      const r = row(projectId)
+      if (!r || !r.activationState || r.activationState === 'idle') return null
+      if (r.activationState === 'transfer_split') return 'transferring'
+      return stale(r) ? null : r.activationState
+    },
+  }
+})
 vi.mock('./stepUp', () => ({ requireStepUp: () => h.stepUp() }))
 vi.mock('./revocation', () => ({ onAccessReduced: (...a: unknown[]) => h.reduced(...(a as [])) }))
 vi.mock('./actAsRefusals', () => ({ refuseWhileActingAs: () => h.acting() }))
@@ -213,7 +271,7 @@ function seed() {
         attackSkillConfig: { builtIn: { xss: true }, user: { 'skill-old-a': true, 'skill-old-b': false } },
         nucleiSelectedCustomTemplates: ['old/own.yaml', 'shared/instance.yaml'],
         nucleiTemplates: ['cves/', '/custom-templates/old/own.yaml'], nucleiCustomTemplates: [],
-        activationState: 'idle',
+        activationState: 'idle', activationVersionId: null, activationStartedAt: null, updatedAt: new Date('2026-11-13T08:00:00Z'),
       },
       { id: 'proj-2', userId: OLD, name: 'Other project', attackSkillConfig: { builtIn: {}, user: {} } },
     ],
@@ -251,8 +309,11 @@ function seed() {
     projectTransfer: [],
     auditLog: [],
   }
-  h.state.graphOwner = new Map([[P, OLD], ['proj-2', OLD]])
-  h.state.lock = new Map()
+  h.state.graph = new Map([
+    [P, Array.from({ length: 6 }, (_, i) => ({ key: `d${i}.example.test`, owner: OLD }))],
+    ['proj-2', [{ key: 'other.example.test', owner: OLD }]],
+  ])
+  h.state.beforeProjectUpdate = null
   h.state.liveWork = { session_ids: [], codefix_sockets: 0, triage_run: false }
   h.state.retenantFail = []
   h.state.retenantCalls = []
@@ -270,6 +331,8 @@ const ownerAuth = (userId = OLD): PermissionContext => ({
 const req = () => new Request('http://x/api/projects/proj-1/transfer', { method: 'POST' })
 const rows = (t: string) => h.state.tables[t] ?? []
 const project = () => rows('project').find((p) => p.id === P)!
+/** The tenants holding the project's graph nodes: one owner when whole, two when split. */
+const owners = (projectId = P) => [...new Set((h.state.graph.get(projectId) ?? []).map((n) => n.owner))].sort()
 const audits = (action?: string) => rows('auditLog').filter((r) => !action || (r as { action?: string }).action === action)
 const transfer = () => rows('projectTransfer').at(-1)!
 
@@ -350,10 +413,10 @@ describe('accept moves Postgres and graph', () => {
     const body = await res.json()
     expect(body.transferred).toEqual({ projectId: P, from: OLD, to: NEW, oldOwnerRole: 'co-owner' })
     // The graph moved, while the project lock was held.
-    expect(h.state.graphOwner.get(P)).toBe(NEW)
-    expect(h.state.graphOwner.get('proj-2')).toBe(OLD)
-    expect(h.state.retenantCalls).toEqual([{ project_id: P, from_user_id: OLD, to_user_id: NEW, lockHeld: 'transferring' }])
-    expect(h.state.lock.has(P)).toBe(false)
+    expect(owners()).toEqual([NEW])
+    expect(owners('proj-2')).toEqual([OLD])
+    expect(h.state.retenantCalls).toEqual([{ project_id: P, from_user_id: OLD, to_user_id: NEW, lockHeld: 'transfer_split' }])
+    expect(project().activationState).toBe('idle')
     // Every socket of the project closed before the move: each ticket names the old owner as tenant.
     expect(h.closeSockets).toHaveBeenCalledWith({ projectId: P, kinds: ['agent', 'kali-terminal', 'cypherfix-triage', 'cypherfix-codefix'] })
     // Postgres.
@@ -370,7 +433,7 @@ describe('accept moves Postgres and graph', () => {
     expect(audits('project.transfer.accept')).toHaveLength(1)
     expect(audits('project.transfer.completed')).toEqual([expect.objectContaining({
       actorId: NEW, projectId: P, before: { ownerId: OLD },
-      after: expect.objectContaining({ ownerId: NEW, oldOwnerRole: 'co-owner', moved: { graphNodes: 41, graphRelationships: 0, traffic: 2, schedulesPaused: 1, conversations: 1 } }),
+      after: expect.objectContaining({ ownerId: NEW, oldOwnerRole: 'co-owner', moved: { graphNodes: 6, graphRelationships: 0, traffic: 2, schedulesPaused: 1, conversations: 1 } }),
     })])
     expect(h.invalidate).toHaveBeenCalledWith(P)
   })
@@ -518,7 +581,7 @@ describe('accept refused with project_busy while live work runs (the offer stays
     expect(project().userId).toBe(OLD)
     expect(h.state.retenantCalls).toEqual([])
     expect(h.closeSockets).not.toHaveBeenCalled()
-    expect(h.state.lock.has(P)).toBe(false)
+    expect(project().activationState).toBe('idle')
   })
 
   test('transferBusy is null on an idle project (a finished job does not count)', async () => {
@@ -539,11 +602,11 @@ describe('failures: either everywhere or nothing', () => {
     expect(transfer()).toMatchObject({ status: 'failed', error: 'retenant_failed' })
     expect(audits('project.transfer.failed')).toEqual([expect.objectContaining({ after: { transferId: transfer().id, error: 'retenant_failed' } })])
     expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/^\[rbac\] transfer retenant_failed project=proj-1/))
-    expect(h.state.lock.has(P)).toBe(false)
+    expect(project().activationState).toBe('idle')
     // Retry.
     expect((await accept()).status).toBe(200)
     expect(project().userId).toBe(NEW)
-    expect(h.state.graphOwner.get(P)).toBe(NEW)
+    expect(owners()).toEqual([NEW])
   })
 
   test('a key collision under the new owner is refused with nothing moved', async () => {
@@ -562,7 +625,7 @@ describe('failures: either everywhere or nothing', () => {
     expect(res.status).toBe(500)
     expect((await res.json()).code).toBe('postgres_failed')
     expect(h.state.retenantCalls.map((c) => [c.from_user_id, c.to_user_id])).toEqual([[OLD, NEW], [NEW, OLD]])
-    expect(h.state.graphOwner.get(P)).toBe(OLD)
+    expect(owners()).toEqual([OLD])
     expect(project()).toMatchObject({ userId: OLD, agentOpenaiModel: 'custom/prov-old', cypherfixGithubToken: expect.stringMatching(/^ghp_/) })
     expect(rows('projectCollaborator').map((c) => c.userId)).toEqual([NEW, OTHER])
     expect(rows('conversation')[0].userId).toBe(OLD)
@@ -580,14 +643,14 @@ describe('failures: either everywhere or nothing', () => {
     expect(res.status).toBe(500)
     expect((await res.json()).code).toBe('rollback_failed')
     expect(transfer()).toMatchObject({ status: 'failed', error: 'rollback_failed' })
-    expect(h.state.graphOwner.get(P)).toBe(NEW)
+    expect(owners()).toEqual([NEW])
     expect(project().userId).toBe(OLD)
     expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/\[rbac\] transfer rollback_failed project=proj-1/))
     // Such an offer never lapses on its own, and accepting again completes it.
     vi.useFakeTimers({ now: Date.now() + 8 * DAY, toFake: ['Date'] })
     expect((await accept()).status).toBe(200)
     expect(project().userId).toBe(NEW)
-    expect(h.state.graphOwner.get(P)).toBe(NEW)
+    expect(owners()).toEqual([NEW])
   })
 
   test('the sockets not confirmed closed: nothing moves', async () => {
@@ -615,7 +678,7 @@ describe('failures: either everywhere or nothing', () => {
     expect(res.status).toBe(409)
     expect((await res.json()).code).toBe('recipient_not_collaborator')
     expect(project().userId).toBe(OLD)
-    expect(h.state.graphOwner.get(P)).toBe(OLD)
+    expect(owners()).toEqual([OLD])
   })
 })
 
@@ -634,7 +697,7 @@ describe('two accepts make one transfer; the lock refuses meanwhile', () => {
 
   test('another holder of the project lock (an activation) refuses the accept as busy', async () => {
     await offer()
-    h.state.lock.set(P, 'activating')
+    Object.assign(project(), { activationState: 'activating', activationStartedAt: new Date() })
     const res = await accept()
     expect(res.status).toBe(409)
     expect((await res.json()).code).toBe('project_busy')
@@ -673,17 +736,17 @@ describe('decline, cancel, expire', () => {
 
   test('cancelling an attempt whose graph may have moved runs it back first', async () => {
     await offer()
-    h.state.retenantFail.push('network')
+    // The lost answer: the agent did move the graph.
+    h.state.retenantFail.push('moved-network')
     await accept()
     expect(transfer()).toMatchObject({ status: 'failed', error: 'agent_unreachable' })
-    // The lost answer: the agent did move the graph.
-    h.state.graphOwner.set(P, NEW)
+    expect(owners()).toEqual([NEW])
     expect((await (await cancelTransfer(ownerAuth())).json()).status).toBe('cancelled')
-    expect(h.state.retenantCalls.at(-1)).toMatchObject({ from_user_id: NEW, to_user_id: OLD, lockHeld: 'transferring' })
-    expect(h.state.graphOwner.get(P)).toBe(OLD)
+    expect(h.state.retenantCalls.at(-1)).toMatchObject({ from_user_id: NEW, to_user_id: OLD, lockHeld: 'transfer_split' })
+    expect(owners()).toEqual([OLD])
   })
 
-  test('a run back that fails keeps the offer open and says so', async () => {
+  test('a run back that fails keeps the offer open and the project held, and says so', async () => {
     await offer()
     h.state.retenantFail.push('network')
     await accept()
@@ -692,6 +755,7 @@ describe('decline, cancel, expire', () => {
     expect(res.status).toBe(502)
     expect(await res.json()).toMatchObject({ code: 'run_back_failed', cause: 'graph_unavailable' })
     expect(transfer().status).toBe('failed')
+    expect(project().activationState).toBe('transfer_split')
   })
 })
 
@@ -712,5 +776,138 @@ describe('what each person is shown', () => {
     // The schema cascades the offer with its project (cascade.test.ts); a reader never shows a project that is gone.
     h.state.tables.project = rows('project').filter((p) => p.id !== P)
     expect(await transfersForAccount(NEW)).toEqual({ incoming: [], outgoing: [], cleared: [] })
+  })
+})
+
+// Review of 5.12 (findings 1, 2, 4, 5, 6): once the graph move started the project may sit partly under each owner.
+// The project then stays held (split hold) until the move completes (inside the Postgres move) or is run back; no TTL
+// frees it, so no writer resumes under the old owner and creates twins that would block both ways out.
+describe('a graph that may be split keeps the project held until completed or run back (review of 5.12)', () => {
+  const graphHold = async () => (await import('@/lib/activationLock')).graphHold(P)
+
+  test('the agent restarts mid-move: half the nodes moved, the project stays held days later, re-accept completes', async () => {
+    await offer()
+    h.state.retenantFail.push('partial-network')
+    const res = await accept()
+    expect(res.status).toBe(502)
+    expect(await res.json()).toMatchObject({ code: 'agent_unreachable', graphMayBeSplit: true })
+    expect(owners()).toEqual([OLD, NEW].sort())
+    expect(project()).toMatchObject({ userId: OLD, activationState: 'transfer_split', activationStartedAt: null })
+    vi.useFakeTimers({ now: Date.now() + 8 * DAY, toFake: ['Date'] })
+    // Every writer asks the lock: refused with project_transfer_in_progress, however old the hold.
+    expect(await graphHold()).toBe('transferring')
+    expect(transfer()).toMatchObject({ status: 'failed', error: 'agent_unreachable' })
+    expect((await transfersForAccount(NEW)).incoming).toEqual([expect.objectContaining({ status: 'failed', graphMayBeSplit: true })])
+    expect((await (await transferStateFor(OLD, P)).json()).offer).toMatchObject({ graphMayBeSplit: true })
+    const done = await accept()
+    expect(done.status).toBe(200)
+    expect(owners()).toEqual([NEW])
+    expect(project()).toMatchObject({ userId: NEW, activationState: 'idle', activationVersionId: null })
+    expect(audits('project.transfer.accept').at(-1)).toMatchObject({ before: expect.objectContaining({ graphMayBeSplit: true }) })
+  })
+
+  test('or the owner cancels: the run back waits for live work, then the graph is whole under the owner and the hold ends', async () => {
+    await offer()
+    h.state.retenantFail.push('partial-network')
+    await accept()
+    h.writers.mockResolvedValueOnce('a full recon scan is running')
+    const busy = await cancelTransfer(ownerAuth())
+    expect(busy.status).toBe(409)
+    expect((await busy.json()).code).toBe('project_busy')
+    expect(project().activationState).toBe('transfer_split')
+    expect(transfer().status).toBe('failed')
+    expect(await (await cancelTransfer(ownerAuth())).json()).toEqual({ withdrawn: true, status: 'cancelled' })
+    expect(owners()).toEqual([OLD])
+    expect(project()).toMatchObject({ userId: OLD, activationState: 'idle', activationVersionId: null })
+    expect(audits('project.transfer.cancel')[0]).toMatchObject({ before: expect.objectContaining({ graphRunBack: true }) })
+  })
+
+  test('the split marker survives retries that fail with a clean code; the offer never lapses; a decline runs it back', async () => {
+    await offer()
+    h.state.retenantFail.push('rollback-failed')
+    expect(await (await accept()).json()).toMatchObject({ code: 'retenant_rollback_failed', graphMayBeSplit: true })
+    for (const [code, status] of [['graph_unavailable', 503], ['retenant_conflict', 409], ['project_busy', 409], ['retenant_failed', 500]] as const) {
+      h.state.retenantFail.push({ status, body: { code } })
+      const res = await accept()
+      expect([code, await res.json()]).toEqual([code, expect.objectContaining({ code, graphMayBeSplit: true })])
+      expect(project().activationState).toBe('transfer_split')
+      expect(transfer()).toMatchObject({ status: 'failed', error: code })
+    }
+    h.closeSockets.mockResolvedValueOnce({ ok: false, reason: 'agent_unreachable' })
+    expect(await (await accept()).json()).toMatchObject({ code: 'socket_close_failed', graphMayBeSplit: true })
+    vi.useFakeTimers({ now: Date.now() + 8 * DAY, toFake: ['Date'] })
+    expect((await transfersForAccount(NEW)).incoming).toHaveLength(1)
+    expect(transfer().status).toBe('failed')
+    expect(await (await declineTransfer(identity(NEW), P)).json()).toEqual({ withdrawn: true, status: 'declined' })
+    expect(owners()).toEqual([OLD])
+    expect(project().activationState).toBe('idle')
+  })
+
+  test('a clean failure of a first attempt ends the hold at once (nothing moved)', async () => {
+    await offer()
+    h.state.retenantFail.push({ status: 503, body: { code: 'graph_unavailable' } })
+    expect(await (await accept()).json()).toMatchObject({ code: 'graph_unavailable' })
+    expect(project().activationState).toBe('idle')
+    expect((await (await transferStateFor(OLD, P)).json()).offer).toMatchObject({ status: 'failed', graphMayBeSplit: false })
+  })
+
+  test('an attempt a crashed copy left mid-move (heartbeat a TTL old, never parked) is resumed by the next accept', async () => {
+    await offer()
+    const t = transfer()
+    t.status = 'in_progress'
+    Object.assign(project(), { activationState: 'transfer_split', activationVersionId: `transfer:${t.id}`, activationStartedAt: new Date(Date.now() - 16 * 60 * 1000) })
+    for (const n of h.state.graph.get(P)!.slice(0, 3)) n.owner = NEW
+    expect((await accept()).status).toBe(200)
+    expect(owners()).toEqual([NEW])
+    expect(project()).toMatchObject({ userId: NEW, activationState: 'idle' })
+  })
+
+  test('a live attempt elsewhere (fresh heartbeat on the split hold) refuses a second accept and a cancel', async () => {
+    await offer()
+    const t = transfer()
+    t.status = 'in_progress'
+    Object.assign(project(), { activationState: 'transfer_split', activationVersionId: `transfer:${t.id}`, activationStartedAt: new Date() })
+    expect((await (await accept()).json()).code).toBe('project_transfer_in_progress')
+    expect((await (await cancelTransfer(ownerAuth())).json()).code).toBe('project_transfer_in_progress')
+    expect(h.state.retenantCalls).toEqual([])
+  })
+
+  test('an attempt a crashed copy left before the graph moved: once its lock is stale a cancel ends it, no run back', async () => {
+    await offer()
+    const t = transfer()
+    t.status = 'in_progress'
+    Object.assign(project(), { activationState: 'transferring', activationVersionId: `transfer:${t.id}`, activationStartedAt: new Date(Date.now() - 16 * 60 * 1000) })
+    expect(await (await cancelTransfer(ownerAuth())).json()).toEqual({ withdrawn: true, status: 'cancelled' })
+    expect(h.state.retenantCalls).toEqual([])
+    expect(project().activationState).toBe('idle')
+  })
+
+  test('a cancel or decline while an accept runs answers project_transfer_in_progress and changes nothing', async () => {
+    await offer()
+    let release!: () => void
+    const gate = new Promise<void>((r) => { release = r })
+    h.closeSockets.mockImplementationOnce(async () => { await gate; return { ok: true, closed: 0, stoppedRuns: 0 } })
+    const accepting = accept()
+    await vi.waitFor(() => expect(transfer().status).toBe('in_progress'))
+    for (const res of [await cancelTransfer(ownerAuth()), await declineTransfer(identity(NEW), P)]) {
+      expect(res.status).toBe(409)
+      expect((await res.json()).code).toBe('project_transfer_in_progress')
+    }
+    release()
+    expect((await accepting).status).toBe(200)
+    expect(transfer().status).toBe('completed')
+    expect(audits('project.transfer.cancel')).toEqual([])
+  })
+
+  test('a settings write landing inside the move aborts it (updatedAt compare-and-swap): run back, the retry completes', async () => {
+    await offer()
+    h.state.beforeProjectUpdate = () => { project().updatedAt = new Date(Date.now() + 99_999) }
+    const res = await accept()
+    expect(await res.json()).toMatchObject({ code: 'project_changed' })
+    expect(owners()).toEqual([OLD])
+    expect(project()).toMatchObject({ userId: OLD, activationState: 'idle' })
+    expect(transfer()).toMatchObject({ status: 'failed', error: 'project_changed' })
+    expect((await accept()).status).toBe(200)
+    expect(project().userId).toBe(NEW)
   })
 })
