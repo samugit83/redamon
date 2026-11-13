@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requirePermission } from '@/lib/authz/guards'
+import { stripStepContent } from '@/lib/authz/stepContent'
 import prisma from '@/lib/prisma'
 import { getGraphSession } from '@/app/api/graph/neo4j'
 import { existsSync, createReadStream, readdirSync } from 'fs'
@@ -127,7 +128,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     } finally {
       await session.close()
     }
-    const { nodes: neo4jNodes, relationships: neo4jRelationships, referenceLinks } = graph
+    const { relationships: neo4jRelationships, referenceLinks } = graph
+    // Chain-step content is raw data (SH-30): an exporter below R* (none in Phase 4: export is
+    // Manage, the owner's) gets each chain node without it.
+    const neo4jNodes = stripStepContent(graph.nodes, auth.access)
 
     // 4. Build manifest. 1.1.0 added neo4j/reference_links.json; an older
     // bundle without it imports as before.

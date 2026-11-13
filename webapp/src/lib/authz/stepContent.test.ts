@@ -3,10 +3,20 @@
  * content; the owner, a share with Raw data & files and break-glass get the nodes untouched; other
  * labels are never changed, and the input is never mutated (a cached graph serves the next reader).
  *
+ * Step 4.9: the copies of step content on ChainFailure (error_message, lesson_learned) and
+ * ChainDecision (reason) go with it; the export's and the MCP tools' `labels` shape is read like the
+ * render shape's `type`; a node with nothing to strip keeps its identity, and the array too when no
+ * node changed (graphReadView keeps the ETag then). RAW_DATA_GRAPH_PROPS pins today's answer to
+ * OQ-R7 (option b: the display-only secret properties stay visible at Read), and option (a)'s list
+ * run through withoutRawProps proves that switching is one line.
+ *
  * @vitest-environment node
  */
 import { describe, test, expect } from 'vitest'
-import { STEP_CONTENT_PROPS, readsStepContent, stripStepContent } from './stepContent'
+import {
+  RAW_DATA_GRAPH_PROPS, STEP_CONTENT_BY_LABEL, STEP_CONTENT_PROPS, readsStepContent, stripStepContent, withoutRawProps,
+} from './stepContent'
+import { DISPLAY_ONLY_PROPS } from '@/lib/secrets/secretProps'
 import type { ProjectAccess } from './projectAccess'
 
 const access = (level: string, rawData: boolean, via = 'share') =>
@@ -64,5 +74,105 @@ describe('stripStepContent', () => {
     const out = stripStepContent([step()], a)
     expect(out[0].properties).not.toHaveProperty('thought')
     expect(readsStepContent(a)).toBe(false)
+  })
+})
+
+const failure = () => ({
+  id: '9', name: 'Step 2\ntool_error', type: 'ChainFailure',
+  properties: {
+    failure_id: 'f-1', chain_id: 'c-1', failure_type: 'tool_error', tool_name: 'nmap', error_category: 'permission', iteration: 2,
+    retry_possible: true, phase: 'informational', error_message: 'stderr: denied', lesson_learned: 'ssh exposed, retry as root',
+  },
+})
+const decision = () => ({
+  id: '10', name: 'Step 3\nphase_transition', type: 'ChainDecision',
+  properties: {
+    decision_id: 'd-1', chain_id: 'c-1', decision_type: 'phase_transition', from_state: 'informational', to_state: 'exploitation',
+    made_by: 'user', approved: true, iteration: 3, reason: 'creds found in the banner: admin/hunter2',
+  },
+})
+const secret = () => ({
+  id: '11', name: 'key', type: 'Secret',
+  properties: { secret_value: 'rbac-fake-secret-value', paired_secret: 'rbac-fake-pair', raw_context: 'k=rbac-fake', sample: 'rbac…', value_length: 22 },
+})
+
+describe('stripStepContent: the copies of step content on the other chain nodes (step 4.9)', () => {
+  test('a failed step\'s ChainFailure loses the error and the lesson (the step\'s output analysis), keeps its type and tool', () => {
+    const [out] = stripStepContent([failure()], access('read', false))
+    expect(out.properties).toEqual({
+      failure_id: 'f-1', chain_id: 'c-1', failure_type: 'tool_error', tool_name: 'nmap', error_category: 'permission', iteration: 2,
+      retry_possible: true, phase: 'informational',
+    })
+  })
+
+  test('a ChainDecision loses the agent\'s reason, keeps the transition and who decided', () => {
+    const [out] = stripStepContent([decision()], access('read', false, 'oversight'))
+    expect(out.properties).toEqual({
+      decision_id: 'd-1', chain_id: 'c-1', decision_type: 'phase_transition', from_state: 'informational', to_state: 'exploitation',
+      made_by: 'user', approved: true, iteration: 3,
+    })
+  })
+
+  test('the content map names the three chain labels; ChainFinding and AttackChain are not in it', () => {
+    expect(Object.keys(STEP_CONTENT_BY_LABEL).sort()).toEqual(['ChainDecision', 'ChainFailure', 'ChainStep'])
+    expect(STEP_CONTENT_BY_LABEL.ChainStep).toBe(STEP_CONTENT_PROPS)
+    expect([...STEP_CONTENT_BY_LABEL.ChainFailure].sort()).toEqual(['error_message', 'lesson_learned'])
+    expect([...STEP_CONTENT_BY_LABEL.ChainDecision]).toEqual(['reason'])
+  })
+
+  test('the export\'s and the MCP tools\' shape (labels, no type) is stripped like the render shape', () => {
+    const exported = { labels: ['ChainStep'], properties: step().properties, _exportId: 'e-7' }
+    const mcp = { _kind: 'node', nodeId: 7, labels: ['ChainFailure'], properties: failure().properties }
+    const [e, m] = stripStepContent([exported, mcp], access('read', false))
+    for (const key of STEP_CONTENT_PROPS) expect(e.properties).not.toHaveProperty(key)
+    expect(e).toMatchObject({ labels: ['ChainStep'], _exportId: 'e-7', properties: { tool_name: 'nmap', iteration: 2 } })
+    expect(m.properties).not.toHaveProperty('error_message')
+    expect(m.properties).not.toHaveProperty('lesson_learned')
+    expect(m).toMatchObject({ _kind: 'node', nodeId: 7 })
+  })
+
+  test('a label that only looks like a chain label, or a prototype key, strips nothing', () => {
+    const nodes = [
+      { type: 'chainstep', properties: { thought: 'kept' } },
+      { type: 'constructor', properties: { reason: 'kept' } },
+      { labels: ['toString'], properties: { reason: 'kept' } },
+    ]
+    expect(stripStepContent(nodes, access('read', false))).toBe(nodes)
+  })
+
+  test('below R*: a node with nothing to strip keeps its identity; no node to strip answers the same array', () => {
+    const plain = [finding(), secret()]
+    expect(stripStepContent(plain, access('read', false))).toBe(plain)
+    const mixed = [step(), finding()]
+    const out = stripStepContent(mixed, access('read', false))
+    expect(out).not.toBe(mixed)
+    expect(out[1]).toBe(mixed[1])
+  })
+
+  test('a node without properties (a malformed row) passes through untouched', () => {
+    const odd = [{ type: 'ChainStep' }, null] as unknown as Array<{ type: string; properties: Record<string, unknown> }>
+    expect(stripStepContent(odd, access('read', false))).toBe(odd)
+  })
+})
+
+describe('OQ-R7: the recon-found secret values (open with the owner; built as written, option b)', () => {
+  test('today no node property beyond step content is raw data: RAW_DATA_GRAPH_PROPS is empty', () => {
+    expect(RAW_DATA_GRAPH_PROPS).toEqual([])
+    expect(Object.isFrozen(RAW_DATA_GRAPH_PROPS)).toBe(true)
+  })
+
+  test('so a reader without Raw data still reads a Secret node\'s display-only values (option b)', () => {
+    const nodes = [secret()]
+    expect(stripStepContent(nodes, access('read', false))).toBe(nodes)
+    expect(stripStepContent(nodes, access('read', false, 'oversight'))[0].properties.secret_value).toBe('rbac-fake-secret-value')
+  })
+
+  test('option (a) is the display-only list in RAW_DATA_GRAPH_PROPS: every display-only key goes, the masked fields stay', () => {
+    const optionA = [...DISPLAY_ONLY_PROPS]
+    const [out, chain] = withoutRawProps([secret(), step()], optionA)
+    expect(out.properties).toEqual({ sample: 'rbac…', value_length: 22 })
+    for (const key of STEP_CONTENT_PROPS) expect(chain.properties).not.toHaveProperty(key)
+    const unmasked = { type: 'Endpoint', properties: { masked_url: 'https://app.rbac.test/?k=***', unmasked_url: 'https://app.rbac.test/?k=rbac-fake' } }
+    expect(withoutRawProps([unmasked], optionA)[0].properties).toEqual({ masked_url: 'https://app.rbac.test/?k=***' })
   })
 })
