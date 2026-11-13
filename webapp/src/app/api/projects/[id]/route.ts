@@ -27,6 +27,7 @@ import { isStdioServer } from '@/lib/mcp/schema'
 import { ownerRunsStdio, serversForAgent } from '@/lib/mcp/userServerAccess'
 import { scannerJobRefusal } from '@/lib/authz/jobCredential'
 import { projectReadView } from '@/lib/authz/projectReadView'
+import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { myAccessView, type ProjectAccess } from '@/lib/authz/projectAccess'
 import { rbacFlags } from '@/lib/authz/flags'
 import { classifyChange, riskSelect, settingsRefusal } from '@/lib/authz/settingsRisk'
@@ -607,7 +608,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         data: updateData,
       })
       if (count === 0) {
-        return NextResponse.json({ error: STALE_SAVE_MESSAGE }, { status: 409 })
+        // `code` lets a single-field save tell a stale row from the PUT's other 409s (step 5.2).
+        return NextResponse.json({ error: STALE_SAVE_MESSAGE, code: 'stale_save' }, { status: 409 })
       }
       stage = 'after_write'
       project = await prisma.project.findUnique({ where: { id } })
@@ -632,7 +634,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (changed.length > 0) {
       const valued = changed.filter(auditsValue)
       void writeAudit({
-        actorId: eff.userId,
+        // The person signed in, and under act-as the account acted as (AU-01): a collaborator's
+        // change names the collaborator, the owner's names the owner, as before.
+        ...actorFields(auditActorOf(auth.principal, eff.userId)),
         action: 'project.update',
         targetType: 'project',
         targetId: id,
@@ -678,10 +682,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    // Exclude binary document data from response (same as GET)
+    // Exclude binary document data from response (same as GET), and the owner's secret columns
+    // from anyone else's (a collaborator's save answers the row as their GET reads it, step 5.2).
     const { roeDocumentData: _binary, ...projectWithoutBinary } = project
     return NextResponse.json({
-      ...projectWithoutBinary,
+      ...projectReadView(projectWithoutBinary, auth.access),
       scopeGroups: resolveScopeGroups(project).groups,
       ...(hostnamePolicyMarked === undefined ? {} : { hostnamePolicyMarked }),
     })

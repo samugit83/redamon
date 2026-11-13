@@ -80,7 +80,8 @@ export function projectTargetLabel(p: ScopeLabelFields): string {
   return String(p.targetDomain ?? '').trim()
 }
 
-type ProjectRead = ScopeLabelFields & {
+/** A project read (the GET, a list row, a saved row) as toProjectSummary takes it. */
+export type ProjectRead = ScopeLabelFields & {
   id: string
   name: string
   description?: string | null

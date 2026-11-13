@@ -1,9 +1,10 @@
 /**
  * The chat drawer's settings modals autosave (plan Phase 0.B.4): the debounced PUT sends ONLY
- * the fields changed since the modal opened (never the whole row, never updatedAt), so it
- * cannot overwrite a toggle another window switched meanwhile. A refused or failed PUT says
- * so in a toast and its keys are sent again with the next change; switching or closing the
- * modal flushes a pending save at once.
+ * the fields changed since the modal opened (never the whole row), so it cannot overwrite a
+ * toggle another window switched meanwhile. A refused or failed PUT says so in a toast and its
+ * keys are sent again with the next change; switching or closing the modal flushes a pending
+ * save at once. Step 5.2 (SH-40): each PUT also carries the row's `updatedAt` as the modal last
+ * read or saved it (recorded apart from the fields, `h.versions`), and a stale 409 reloads the row.
  */
 import { test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor, cleanup } from '@testing-library/react'
@@ -22,6 +23,8 @@ const ROW = {
 
 const h = vi.hoisted(() => ({
   puts: [] as { url: string; body: Record<string, unknown> }[],
+  /** The `updatedAt` each PUT carried (the fields are in `puts`). */
+  versions: [] as unknown[],
   gets: [] as string[],
   putAnswer: null as null | (() => Response | Promise<Response>),
   row: null as Record<string, unknown> | null,
@@ -32,7 +35,9 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === 'PUT') {
-      h.puts.push({ url, body: JSON.parse(String(init.body)) })
+      const { updatedAt, ...fields } = JSON.parse(String(init.body)) as Record<string, unknown>
+      h.puts.push({ url, body: fields })
+      h.versions.push(updatedAt)
       return h.putAnswer ? h.putAnswer() : json(200, { ok: true })
     }
     h.gets.push(url)
@@ -45,6 +50,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.clearAllMocks()
   h.puts = []
+  h.versions = []
   h.gets = []
   h.putAnswer = null
   h.row = null
@@ -68,14 +74,31 @@ test('opening a modal loads the project without its identity and timestamps', as
   for (const k of ['id', 'userId', 'createdAt', 'updatedAt', 'user']) expect(k in data).toBe(false)
 })
 
-test('a change PUTs only that field, after the debounce, without updatedAt', async () => {
+test('a change PUTs only that field, after the debounce, with the version the modal read (step 5.2)', async () => {
   const hook = await open()
   set(hook, 'agentMaxIterations' as keyof ProjectFormData, 50 as never)
   expect(h.puts).toHaveLength(0)
   await waitFor(() => expect(h.puts).toHaveLength(1))
   expect(h.puts[0].url).toBe('/api/projects/p1')
   expect(h.puts[0].body).toEqual({ agentMaxIterations: 50 })
-  expect('updatedAt' in h.puts[0].body).toBe(false)
+  expect(h.versions[0]).toBe(ROW.updatedAt)
+})
+
+test('auto-save stale -> 409 and reload: the modal says so and takes the row as it is now (step 5.2)', async () => {
+  const hook = await open()
+  h.putAnswer = () => json(409, { error: 'This project changed since you opened it.', code: 'stale_save' })
+  h.row = { ...ROW, agentMaxIterations: 70, updatedAt: '2026-10-12T11:00:00.000Z' }
+  set(hook, 'agentMaxIterations' as keyof ProjectFormData, 50 as never)
+  await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/Someone else changed this project/)))
+  await waitFor(() => expect((hook.result.current.projectFormData as unknown as Record<string, unknown>)?.agentMaxIterations).toBe(70))
+  expect(h.gets).toEqual(['/api/projects/p1', '/api/projects/p1'])
+  expect(toast.error).not.toHaveBeenCalled()
+  // The next change carries the reloaded row's version, and the refused field is not sent again.
+  h.putAnswer = null
+  set(hook, 'stealthMode' as keyof ProjectFormData, true as never)
+  await waitFor(() => expect(h.puts).toHaveLength(2))
+  expect(h.puts[1].body).toEqual({ stealthMode: true })
+  expect(h.versions[1]).toBe('2026-10-12T11:00:00.000Z')
 })
 
 test('changing a skill toggle sends attackSkillConfig alone', async () => {

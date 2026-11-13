@@ -15,6 +15,7 @@
  * on, never taken from the client: `changes` is what the person confirmed, and
  * it must equal what the server would write, or the write is refused as stale.
  */
+import { projectReadView } from '@/lib/authz/projectReadView'
 import { NextResponse } from 'next/server'
 import { Prisma } from '@prisma/client'
 
@@ -371,9 +372,10 @@ export async function applyRoe(input: ApplyRoeInput): Promise<NextResponse> {
   const enforcement = agentEnforcementWarning(Object.keys(proposal.applied), updated as Record<string, unknown>)
   log('ok', { changes: proposal.changes.length, kept: proposal.kept.length, paused: toPause.length })
 
+  // The row as the caller may read it: a co-owner's answer leaves out the owner's secret columns (step 5.2).
   const { roeDocumentData: _binary, ...project } = updated
   return NextResponse.json({
-    project,
+    project: projectReadView(project, input.access),
     appliesFrom: 'next-scan',
     changed: Object.keys(updateData),
     kept: proposal.kept,

@@ -3,6 +3,8 @@ import type { Project } from '@prisma/client'
 import { useToast } from '@/components/ui'
 import { readApiError, toApiError } from '@/lib/apiError'
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
+import { versionOf } from '@/lib/projectVersion'
+import { STALE_FIELD_NOTICE, isStaleSave } from '@/lib/projectFieldSave'
 
 export type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -24,9 +26,11 @@ export function mergeOwnToggles(base: unknown, local: unknown, fresh: unknown): 
 /**
  * The chat drawer's settings modals edit the project with a debounced auto-save that sends
  * ONLY the fields changed since the modal opened (or since the last save that landed).
- * A whole-row PUT carries no updatedAt, so it would overwrite whatever another writer
- * changed meanwhile, such as a new skill version switched on from a review window. A save
- * the server refuses says so in a toast instead of vanishing.
+ * A whole-row PUT would overwrite whatever another writer changed meanwhile, such as a new
+ * skill version switched on from a review window. Each save also sends the row's `updatedAt`
+ * as the modal last read it (step 5.2): a field someone else changed since is refused (409),
+ * and the modal then reloads the row and says so. A save the server refuses otherwise says so
+ * in a toast instead of vanishing.
  *
  * `attackSkillConfig` is one field holding every toggle, so a toggle sends the whole map. When a
  * skill version is saved elsewhere (it may switch toggles, and says so on the user-skills
@@ -50,6 +54,9 @@ export function useSettingsModal(projectId: string) {
   // The toggle map as the server last had it, so a change from elsewhere can be told from this
   // window's own unsaved toggles.
   const skillBaseRef = useRef<unknown>(null)
+  // The row's updatedAt as this modal last read or saved it; null sends no version (as before).
+  const versionRef = useRef<string | null>(null)
+  const [reloadToken, setReloadToken] = useState(0)
 
   // Close settings dropdown on outside click
   useEffect(() => {
@@ -74,10 +81,12 @@ export function useSettingsModal(projectId: string) {
     fetch(`/api/projects/${projectId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
+      body: JSON.stringify(versionRef.current ? { ...patch, updatedAt: versionRef.current } : patch),
     })
       .then(async res => {
         if (res.ok) {
+          const row = await res.json().catch(() => null)
+          versionRef.current = versionOf(row?.updatedAt) ?? versionRef.current
           if ('attackSkillConfig' in patch) {
             if (!dirtyRef.current.has('attackSkillConfig')) skillBaseRef.current = patch.attackSkillConfig
             // Other windows of this project (the project form, another drawer) take the toggles.
@@ -85,8 +94,15 @@ export function useSettingsModal(projectId: string) {
           }
           return
         }
-        for (const k of keys) dirtyRef.current.add(k)
         const body = await res.json().catch(() => null)
+        if (isStaleSave(res.status, body)) {
+          // Someone else changed the row: this window takes it as it is now (its unsaved fields go).
+          toastRef.current.warning(STALE_FIELD_NOTICE)
+          dirtyRef.current = new Set()
+          setReloadToken(t => t + 1)
+          return
+        }
+        for (const k of keys) dirtyRef.current.add(k)
         toastRef.current.error(
           typeof body?.error === 'string' ? `Settings not saved: ${body.error}` : `Settings not saved (HTTP ${res.status}).`,
         )
@@ -128,6 +144,7 @@ export function useSettingsModal(projectId: string) {
         if (!cancelled && data) {
           const { id, userId: _u, createdAt, updatedAt, user, ...formData } = data
           skillBaseRef.current = formData.attackSkillConfig
+          versionRef.current = versionOf(updatedAt)
           setProjectFormData(formData)
         }
       })
@@ -135,7 +152,7 @@ export function useSettingsModal(projectId: string) {
         if (!cancelled) setProjectLoadError(toApiError(err, failed).message)
       })
     return () => { cancelled = true }
-  }, [settingsModal, projectId, flushPendingSave])
+  }, [settingsModal, projectId, flushPendingSave, reloadToken])
 
   useUserSkillsChanged(async (change) => {
     if (!projectId || !latestFormDataRef.current || (change.projectId && change.projectId !== projectId)) return
@@ -145,6 +162,9 @@ export function useSettingsModal(projectId: string) {
       const row = await res.json()
       const next = mergeOwnToggles(skillBaseRef.current, latestFormDataRef.current.attackSkillConfig, row.attackSkillConfig)
       skillBaseRef.current = row.attackSkillConfig
+      // The merged map holds both sides' toggles, and the modal sends only the fields it changed, so
+      // it may take this row's version: its next save overwrites nothing it did not change.
+      versionRef.current = versionOf(row.updatedAt) ?? versionRef.current
       // The ref too: a save already debounced reads it, and must send the merged map.
       latestFormDataRef.current = { ...latestFormDataRef.current, attackSkillConfig: next as ProjectFormData['attackSkillConfig'] }
       setProjectFormData(prev => (prev ? { ...prev, attackSkillConfig: next as ProjectFormData['attackSkillConfig'] } : prev))

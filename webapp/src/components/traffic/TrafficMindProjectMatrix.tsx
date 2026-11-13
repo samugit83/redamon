@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { TrafficCaptureToggle } from './TrafficCaptureToggle'
 import { fetchJson, errorMessage } from '@/lib/apiError'
 
-type ProjectRow = { id: string; name: string; captureProxyEnabled: boolean }
+type ProjectRow = { id: string; name: string; captureProxyEnabled: boolean; updatedAt: string | null }
 
 /**
  * Per-project routing matrix shown in user settings under the (enabled) global
@@ -18,10 +18,10 @@ export function TrafficMindProjectMatrix() {
 
   useEffect(() => {
     let cancelled = false
-    fetchJson<Array<{ id: string; name: string; captureProxyEnabled?: boolean }>>('/api/projects', undefined, 'Could not load projects')
+    fetchJson<Array<{ id: string; name: string; captureProxyEnabled?: boolean; updatedAt?: string }>>('/api/projects', undefined, 'Could not load projects')
       .then((list) => {
         if (cancelled) return
-        setRows(list.map((p) => ({ id: p.id, name: p.name, captureProxyEnabled: !!p.captureProxyEnabled })))
+        setRows(list.map((p) => ({ id: p.id, name: p.name, captureProxyEnabled: !!p.captureProxyEnabled, updatedAt: p.updatedAt ?? null })))
       })
       .catch((err) => { if (!cancelled) setLoadError(errorMessage(err, 'Could not load projects')) })
     return () => { cancelled = true }
@@ -59,6 +59,7 @@ export function TrafficMindProjectMatrix() {
                 projectId={p.id}
                 projectName={p.name}
                 initialEnabled={p.captureProxyEnabled}
+                initialVersion={p.updatedAt}
                 showName={false}
                 size="small"
               />

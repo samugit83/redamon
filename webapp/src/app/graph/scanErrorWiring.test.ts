@@ -122,14 +122,21 @@ describe('Emergency "Pause all" (S-21, G-29, P-12)', () => {
 })
 
 describe('project setting changes from the toolbar and drawer (P-21, G-19)', () => {
+  // Step 5.2 moved both saves into useProjectFieldSave (one field, sent with the row's version): the
+  // server's refusal is read by saveProjectFields (readApiError) and shown, as is a network failure,
+  // with each handler's own fallback (behaviour: src/hooks/useProjectFieldSave.test.tsx).
+  const hookSrc = readFileSync(join(process.cwd(), 'src/hooks/useProjectFieldSave.ts'), 'utf8')
+  const saveSrc = readFileSync(join(process.cwd(), 'src/lib/projectFieldSave.ts'), 'utf8')
   test.each([
-    ['handleToggleStealth', 'Could not change Stealth Mode'],
-    ['handleModelChange', 'Could not change the agent model'],
-  ])('%s shows the server\'s refusal and a network failure', (name, fallback) => {
+    ['handleToggleStealth', 'stealthMode', 'Could not change Stealth Mode'],
+    ['handleModelChange', 'agentOpenaiModel', 'Could not change the agent model'],
+  ])('%s shows the server\'s refusal and a network failure', (name, field, fallback) => {
     const body = handler(name)
-    expect(body).toContain(`toast.error((await readApiError(res, '${fallback}')).message)`)
-    expect(body).toContain(`toast.error(toApiError(error, '${fallback}').message)`)
-    expect(body).not.toContain('if (res.ok && currentProject)')
+    expect(body).toContain(`saveProjectField('${field}',`)
+    expect(body).toContain(`'${fallback}')`)
+    expect(saveSrc).toContain('throw await readApiError(res, failure)')
+    expect(hookSrc).toContain('toast.error(toApiError(error, failure).message)')
+    expect(hookSrc).not.toContain('if (res.ok && currentProject)')
   })
 })
 

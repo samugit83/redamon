@@ -1,8 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Toggle, useToast } from '@/components/ui'
-import { errorMessage, readApiError } from '@/lib/apiError'
+import { errorMessage } from '@/lib/apiError'
+import { versionOf } from '@/lib/projectVersion'
+import { STALE_FIELD_NOTICE, reloadProjectRow, saveProjectFields } from '@/lib/projectFieldSave'
 
 /**
  * Per-project TrafficMind capture-routing toggle.
@@ -14,17 +16,23 @@ import { errorMessage, readApiError } from '@/lib/apiError'
  *
  * `initialEnabled` lets a parent that already knows the value (e.g. the settings
  * matrix) skip the self-fetch; when omitted the component fetches it once.
+ * The save sends the row's `updatedAt` as it was read (`initialVersion`, or the
+ * self-fetch's): a value someone else changed since is refused, and the toggle
+ * then shows the row as it is now (step 5.2).
  */
 export function TrafficCaptureToggle({
   projectId,
   projectName,
   initialEnabled,
+  initialVersion,
   showName = true,
   size = 'default',
 }: {
   projectId: string
   projectName?: string | null
   initialEnabled?: boolean
+  /** The row's `updatedAt` when `initialEnabled` was read with it. */
+  initialVersion?: string | null
   showName?: boolean
   size?: 'small' | 'default' | 'large'
 }) {
@@ -32,19 +40,28 @@ export function TrafficCaptureToggle({
     initialEnabled === undefined ? null : initialEnabled
   )
   const [saving, setSaving] = useState(false)
+  const versionRef = useRef<string | null>(versionOf(initialVersion))
   const toast = useToast()
 
   useEffect(() => {
-    if (initialEnabled !== undefined) { setEnabled(initialEnabled); return }
+    if (initialEnabled !== undefined) {
+      setEnabled(initialEnabled)
+      versionRef.current = versionOf(initialVersion)
+      return
+    }
     let cancelled = false
     setEnabled(null)
     if (!projectId) return
     fetch(`/api/projects/${projectId}`)
       .then((r) => (r.ok ? r.json() : null))
-      .then((p) => { if (!cancelled && p) setEnabled(!!p.captureProxyEnabled) })
+      .then((p) => {
+        if (cancelled || !p) return
+        setEnabled(!!p.captureProxyEnabled)
+        versionRef.current = versionOf(p.updatedAt)
+      })
       .catch(() => { if (!cancelled) setEnabled(false) })
     return () => { cancelled = true }
-  }, [projectId, initialEnabled])
+  }, [projectId, initialEnabled, initialVersion])
 
   async function onToggle(next: boolean) {
     if (saving || !projectId) return
@@ -52,12 +69,15 @@ export function TrafficCaptureToggle({
     setEnabled(next)
     setSaving(true)
     try {
-      const res = await fetch(`/api/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ captureProxyEnabled: next }),
-      })
-      if (!res.ok) throw await readApiError(res, 'Failed to update traffic capture setting')
+      const saved = await saveProjectFields(projectId, { captureProxyEnabled: next }, versionRef.current, 'Failed to update traffic capture setting')
+      if (!saved.ok) {
+        toast.warning(STALE_FIELD_NOTICE)
+        const row = await reloadProjectRow(projectId)
+        setEnabled(row ? !!row.captureProxyEnabled : prev ?? false)
+        if (row) versionRef.current = versionOf(row.updatedAt)
+        return
+      }
+      versionRef.current = saved.version ?? versionRef.current
       toast.success(`Traffic capture ${next ? 'enabled' : 'disabled'}${projectName ? ` for ${projectName}` : ''}`)
     } catch (err) {
       setEnabled(prev ?? false)

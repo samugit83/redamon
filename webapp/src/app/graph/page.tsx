@@ -83,6 +83,7 @@ import { OtherScansModal } from './components/OtherScansModal/OtherScansModal'
 import { parseScanModal } from '@/lib/scanModalLink'
 import { useAlertModal, useToast } from '@/components/ui'
 import { readApiError, toApiError } from '@/lib/apiError'
+import { useProjectFieldSave } from '@/hooks/useProjectFieldSave'
 import {
   downloadScanFile, fetchGvmAvailability, probeScanData, scanFailureToast, type GvmAvailability,
 } from '@/components/scans/scanErrors'
@@ -1240,47 +1241,15 @@ export default function GraphPage() {
 
   const handlePendingNodeQueryConsumed = useCallback(() => setPendingNodeQuery(null), [])
 
-  const handleToggleStealth = useCallback(async (newValue: boolean) => {
-    if (!projectId) return
-    try {
-      const res = await fetch(`/api/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stealthMode: newValue }),
-      })
-      if (!res.ok) {
-        toast.error((await readApiError(res, 'Could not change Stealth Mode')).message)
-        return
-      }
-      if (currentProject) {
-        setCurrentProject({ ...currentProject, stealthMode: newValue })
-      }
-    } catch (error) {
-      console.error('Failed to toggle stealth mode:', error)
-      toast.error(toApiError(error, 'Could not change Stealth Mode').message)
-    }
-  }, [projectId, currentProject, setCurrentProject, toast])
+  const saveProjectField = useProjectFieldSave(projectId, currentProject, setCurrentProject)
 
-  const handleModelChange = useCallback(async (modelId: string) => {
-    if (!projectId) return
-    try {
-      const res = await fetch(`/api/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentOpenaiModel: modelId }),
-      })
-      if (!res.ok) {
-        toast.error((await readApiError(res, 'Could not change the agent model')).message)
-        return
-      }
-      if (currentProject) {
-        setCurrentProject({ ...currentProject, agentOpenaiModel: modelId })
-      }
-    } catch (error) {
-      console.error('Failed to change model:', error)
-      toast.error(toApiError(error, 'Could not change the agent model').message)
-    }
-  }, [projectId, currentProject, setCurrentProject, toast])
+  const handleToggleStealth = useCallback(
+    (newValue: boolean) => saveProjectField('stealthMode', newValue, 'Could not change Stealth Mode'),
+    [saveProjectField])
+
+  const handleModelChange = useCallback(
+    (modelId: string) => saveProjectField('agentOpenaiModel', modelId, 'Could not change the agent model'),
+    [saveProjectField])
 
   const handleStartRecon = useCallback(() => {
     setIsReconModalOpen(true)

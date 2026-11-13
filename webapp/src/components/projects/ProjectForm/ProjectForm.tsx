@@ -119,11 +119,16 @@ import {
 } from '@/lib/project-preset-utils'
 import { useUpdateProject } from '@/hooks/useProjects'
 import { onProjectWrite, versionOf } from '@/lib/projectVersion'
+import { STALE_FIELD_NOTICE, reloadProjectRow, saveProjectFields } from '@/lib/projectFieldSave'
+import { shareSecretFields } from '@/lib/reconSettings/registry'
 
 const WorkflowView = dynamic(
   () => import('./WorkflowView/WorkflowView').then(m => ({ default: m.WorkflowView })),
   { ssr: false, loading: () => <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>Loading workflow...</div> }
 )
+
+/** The `share: secret` columns (registry): the owner's alone, never in a collaborator's save. */
+const OWNER_SECRET_KEYS: readonly string[] = shareSecretFields().map(f => f.key)
 
 type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -504,6 +509,16 @@ export function ProjectForm({
       ?? null
   const readOnlyText = levelRefusalText(formAccess, 'project:settings')
   const readOnly = readOnlyText !== null
+  // A collaborator's form never holds the owner's secret columns (their read withholds them), so a
+  // save that sent the form's defaults for them would read as a change of the owner's secrets and be
+  // refused (step 5.1b). They are left out of a non-owner's saves and stay as stored (step 5.2).
+  const notOwner = !!formAccess && formAccess.level !== 'owner'
+  const withoutOwnerSecrets = useCallback(<T extends object>(data: T): T => {
+    if (!notOwner) return data
+    const kept = { ...data } as Record<string, unknown>
+    for (const key of OWNER_SECRET_KEYS) delete kept[key]
+    return kept as T
+  }, [notOwner])
   const presetRefusal = levelRefusalText(formAccess, 'preset:apply')
   const exportRefusal = levelRefusalText(formAccess, 'project:export')
   const reconStartRefusal = levelRefusalText(formAccess, 'recon:scan')
@@ -755,33 +770,32 @@ export function ProjectForm({
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
-  // Auto-save a single toggle field directly to DB (used in workflow mode)
+  // Auto-save a single toggle field directly to DB (used in workflow mode). It sends the row's
+  // version as the full save does (step 5.2): a value someone else changed since is refused (409),
+  // and the form then takes the row as it is now, keeping this person's other unsaved edits.
   const autoSaveField = useCallback(async <K extends keyof ProjectFormData>(
     field: K,
     value: ProjectFormData[K]
   ) => {
     if (!projectId || mode !== 'edit' || readOnly) return
     try {
-      const res = await fetch(`/api/projects/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: value }),
-      })
-      if (!res.ok) {
-        const failure = await readApiError(res, 'Failed to save')
-        if (await savedDespiteError(failure)) {
-          setBaseline(prev => ({ ...prev, [field]: value }))
-          toast.error(`Setting saved, but a step after the save failed: ${failure.message}`)
-          return
-        }
-        toast.error(failure.message)
+      const saved = await saveProjectFields(projectId, { [field]: value }, savedVersionRef.current, 'Failed to save')
+      if (!saved.ok) {
+        toast.warning(STALE_FIELD_NOTICE)
+        const row = await reloadProjectRow(projectId)
+        if (row) onServerRowMergedRef.current(row, [field as string])
         return
       }
-      adoptSavedVersion(await res.json().catch(() => null))
+      adoptSavedVersion(saved.row)
       // Workflow toggles persist immediately; adopt the saved field into the
       // baseline so the batched Update button + guard don't flag it as unsaved.
       setBaseline(prev => ({ ...prev, [field]: value }))
     } catch (err) {
+      if (await savedDespiteError(err)) {
+        setBaseline(prev => ({ ...prev, [field]: value }))
+        toast.error(`Setting saved, but a step after the save failed: ${toApiError(err, 'Failed to save').message}`)
+        return
+      }
       toast.error(toApiError(err, 'Failed to save setting').message)
     }
   }, [projectId, mode, readOnly, toast, setBaseline, adoptSavedVersion, savedDespiteError])
@@ -817,6 +831,9 @@ export function ProjectForm({
     setBaseline(merged.baseline as unknown as ProjectFormData)
     adoptSavedVersion(row)
   }, [setBaseline, adoptSavedVersion])
+  // autoSaveField is declared before this callback; it reaches it through the ref.
+  const onServerRowMergedRef = useRef(onServerRowMerged)
+  onServerRowMergedRef.current = onServerRowMerged
 
   /**
    * Load a preset: confirm, replace every preset-owned setting, and in edit mode
@@ -911,7 +928,7 @@ export function ProjectForm({
     }
     // A compare-and-swap like a whole-row save: a RoE replaced or an MCP write
     // made in another tab since this form loaded is refused (409), not reverted.
-    const versioned = savedVersionRef.current ? { ...saved, updatedAt: savedVersionRef.current } : saved
+    const versioned = withoutOwnerSecrets(savedVersionRef.current ? { ...saved, updatedAt: savedVersionRef.current } : saved)
     const invalid = validateProjectForm(next as unknown as Record<string, unknown>)
       .filter(e => e.field in saved)
     if (invalid.length > 0) {
@@ -998,13 +1015,13 @@ export function ProjectForm({
 
     try {
       // Attach roeFile and pre-generated ID to form data for submission
-      const submitData = {
+      const submitData = withoutOwnerSecrets({
         ...formData,
         reconPresetId: appliedPreset?.id ?? formData.reconPresetId ?? null,
         ...(roeFile ? { roeFile } : {}),
         ...(mode === 'create' && projectId ? { id: projectId } : {}),
         ...(mode === 'edit' && savedVersionRef.current ? { updatedAt: savedVersionRef.current } : {}),
-      }
+      })
       const togglesChanged = !deepEqual(formData.attackSkillConfig, baseline.attackSkillConfig)
       adoptSavedVersion(await onSubmit(submitData))
       // Other open windows of this project (the chat drawer) take the new toggles.
@@ -1077,13 +1094,13 @@ export function ProjectForm({
       return false
     }
     try {
-      const submitData = {
+      const submitData = withoutOwnerSecrets({
         ...formData,
         reconPresetId: appliedPreset?.id ?? formData.reconPresetId ?? null,
         ...(roeFile ? { roeFile } : {}),
         ...(mode === 'create' && projectId ? { id: projectId } : {}),
         ...(mode === 'edit' && savedVersionRef.current ? { updatedAt: savedVersionRef.current } : {}),
-      }
+      })
       const togglesChanged = !deepEqual(formData.attackSkillConfig, baseline.attackSkillConfig)
       adoptSavedVersion(await onSaveAndStay(submitData))
       if (togglesChanged) postUserSkillsChanged({ projectId })

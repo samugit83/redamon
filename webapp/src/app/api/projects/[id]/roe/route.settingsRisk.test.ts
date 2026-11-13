@@ -191,6 +191,20 @@ describe('a co-owner (roe:manage)', () => {
     expect((h.calls.updateMany[0] as { data: Record<string, unknown> }).data).toMatchObject({ roeGlobalMaxRps: 5, updatedById: 'collab' })
   })
 
+  test("a co-owner's replace answers the row without the owner's secret columns (step 5.2)", async () => {
+    as('co-owner')
+    h.row = withRoe({ cypherfixGithubToken: 'rbac-fake-token-0001', httpxCustomHeaders: ['X-Api-Key: rbac-fake-0001'] })
+    const res = await post({ roeGlobalMaxRps: 5 })
+    expect(res.status).toBe(200)
+    const { project } = await res.json()
+    expect(project).toMatchObject({ id: 'proj-1' })
+    for (const key of ['cypherfixGithubToken', 'httpxCustomHeaders', 'roeRawText', 'roeParsedJson']) expect([key, key in project]).toEqual([key, false])
+    // The owner's answer keeps them.
+    as('owner')
+    h.row = withRoe({ cypherfixGithubToken: 'rbac-fake-token-0001' })
+    expect((await (await post({ roeGlobalMaxRps: 5 })).json()).project.cypherfixGithubToken).toBe('rbac-fake-token-0001')
+  })
+
   test('a replace the review finds widening needs the owner, naming the row and why', async () => {
     as('co-owner')
     h.row = withRoe()
