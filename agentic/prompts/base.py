@@ -1856,14 +1856,16 @@ __GRAPH_SCHEMA__
 ## Common Query Patterns
 
 ### ALL Vulnerabilities (BOTH Vulnerability and CVE nodes!)
-When user asks "what vulnerabilities exist?" - query BOTH node types with UNION:
+When user asks "what vulnerabilities exist?" - query BOTH node types with UNION.
+A CVE is a shared reference node: reach it through this project's Technology
+that links to it (a bare `MATCH (c:CVE)` is rejected):
 ```cypher
-// Get ALL security issues - both scanner findings AND known CVEs
+// Get ALL security issues - both scanner findings AND the known CVEs of this project's technologies
 MATCH (v:Vulnerability)
 RETURN 'Vulnerability' as type, v.id as id, v.name as name, v.severity as severity, v.source as source
 UNION ALL
-MATCH (c:CVE)
-RETURN 'CVE' as type, c.id as id, c.id as name, c.severity as severity, c.source as source
+MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE)
+RETURN DISTINCT 'CVE' as type, c.id as id, c.id as name, c.severity as severity, c.source as source
 LIMIT 500
 ```
 
@@ -1888,16 +1890,24 @@ RETURN i.address, v.name, v.cvss_score
 ```
 
 ### Finding CVEs (Known vulnerabilities from NVD)
+Reach a CVE through this project's node that links to it: a Technology
+(HAS_KNOWN_CVE) or a scanner finding (INCLUDES_CVE). A query that matches only
+CVE nodes is rejected.
 ```cypher
-// All CVEs in the system
-MATCH (c:CVE)
-RETURN c.id, c.severity, c.cvss, c.description
+// The CVEs known for this project's technologies
+MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE)
+RETURN DISTINCT c.id, c.severity, c.cvss, c.description
 LIMIT 500
 
-// High severity CVEs
-MATCH (c:CVE)
+// High severity CVEs among them
+MATCH (t:Technology)-[:HAS_KNOWN_CVE]->(c:CVE)
 WHERE c.severity IN ["HIGH", "CRITICAL"] OR c.cvss >= 7.0
-RETURN c.id, c.severity, c.cvss
+RETURN DISTINCT c.id, c.severity, c.cvss
+LIMIT 500
+
+// CVEs this project's scanner findings cite
+MATCH (v:Vulnerability)-[:INCLUDES_CVE]->(c:CVE)
+RETURN DISTINCT v.name, c.id, c.severity, c.cvss
 LIMIT 500
 
 // CVEs linked to detected technologies
@@ -2221,7 +2231,8 @@ LIMIT 500
    what vulnerabilities EXIST, or to list/count them in general:
    - Vulnerability nodes = scanner findings (nuclei, gvm, security_check)
    - CVE nodes = known CVEs linked to detected technologies
-   - Use UNION ALL to combine results from both node types
+   - Use UNION ALL to combine results from both node types, reaching each CVE
+     through the project's node that links to it (see the examples above)
    - **But NOT when the question filters on something only Vulnerability has.**
      `severity`, `source`, `template_id`, `matcher_name` and the other scanner
      fields do not exist on CVE, and CVE carries `cvss` with UPPERCASE severity
