@@ -80,10 +80,9 @@ export function ownerScope(eff: EffectiveUser): RowOwnerFilter {
 }
 
 /**
- * One-call guard for project-scoped routes: resolve the effective user and verify
- * they own `projectId`. Returns a 401/404 NextResponse to return, or null when
- * access is allowed. Convenience wrapper over requireEffectiveUser +
- * requireProjectAccess for the many scan/analytics `[projectId]` routes.
+ * One-call guard for project-scoped routes: resolve the effective user and verify they can see
+ * `projectId` (requireProjectAccess). Returns a 401/404 NextResponse to return, or null when access
+ * is allowed. It asks no level, so a read share passes it as the owner does.
  */
 export async function guardProject(projectId: string): Promise<NextResponse | null> {
   const eff = await requireEffectiveUser()
@@ -94,8 +93,13 @@ export async function guardProject(projectId: string): Promise<NextResponse | nu
 }
 
 /**
- * Verify the effective user may reach a Project (`projectAccess()`: today its owner): 404 when
- * the project does not exist or is another user's. On success returns the project's id + owner.
+ * Verify the effective user can see a Project at any level (`projectAccess()`): the owner and,
+ * with sharing in force, a read share, oversight or break-glass. 404 when the project does not
+ * exist or the user cannot see it. On success returns the project's id + owner.
+ *
+ * It asks no level, nor do guardProject and requireProjectScopedResource built on it: a route
+ * that writes must also ask a permission at a write level (`requirePermission` /
+ * `withPermission`), or a read collaborator writes (levelLessHelpers.test.ts).
  */
 export async function requireProjectAccess(
   eff: EffectiveUser,
@@ -112,7 +116,8 @@ export async function requireProjectAccess(
 /**
  * Guard a resource that is owned via its parent Project (Report, Remediation,
  * GraphView, ...). `loadProjectId` returns the resource's projectId (or null when
- * the resource does not exist). Verifies the effective user owns that project.
+ * the resource does not exist). Verifies the effective user can see that project, at any level
+ * (requireProjectAccess).
  */
 export async function requireProjectScopedResource(
   eff: EffectiveUser,
