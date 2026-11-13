@@ -11,11 +11,14 @@
 # read purges chain nodes with no conversation), and one synthetic chain written with cypher-shell
 # in the neo4j container (the agent's graph proxy refuses writes): an AttackChain, a ChainStep whose
 # thought, reasoning, outputs, command line and error are fake text, its ChainFailure (error and
-# lesson) and the ChainDecision before it (reason). Every fake value starts rbac-fake-step-. Then:
+# lesson) and the ChainDecision before it (reason); the chain's final outcome and an exploit_success
+# ChainFinding's console commands and cracked password (4.9 review). Every fake value starts
+# rbac-fake-step-. Then:
 #   GET  /api/graph?fresh=1                                  the live graph
 #   GET  /api/graph with the owner's ETag                    a stripped view never answers 304
 #   POST /api/graph-views/execute  MATCH (s:ChainStep) RETURN s           a graph-shaped view
 #   POST /api/graph-views/execute  MATCH (s:ChainStep) RETURN s.thought   a tabular view
+#   POST /api/graph-views/execute  a map shaped like a node / a relationship over a step (4.9 review)
 #   GET  /api/projects/<id>/versions/<current>/graph         the current version
 # With sharing in force (RBAC_SHARING_ENABLED on, which needs identity and permissions on, AND
 # instance_settings.sharing_policy enabled) the owner and rbac-viewer-raw get every fake value, and
@@ -137,7 +140,8 @@ safe_id "$PROJECT_ID" || { echo "FAIL  could not create the project, its shares 
 
 T="user_id: '$OWNER_ID', project_id: '$PROJECT_ID', chain_id: '$CHAIN_ID'"
 cat <<CYPHER | cypher > /dev/null
-CREATE (ac:AttackChain {$T, title: 'rbac-step-content', status: 'active', objective: 'reach the admin panel'})
+CREATE (ac:AttackChain {$T, title: 'rbac-step-content', status: 'active', objective: 'reach the admin panel',
+  final_outcome: '${MARK}outcome-0001'})
 CREATE (s:ChainStep {$T, step_id: 'rbac-step-1', iteration: 1, phase: 'exploitation', tool_name: 'curl', success: false,
   thought: '$THOUGHT', reasoning: '${MARK}reasoning-0001', output_summary: '${MARK}summary-0001',
   output_analysis: '${MARK}analysis-0001', tool_args_summary: 'curl -u admin:${MARK}pass-0001 http://app.rbac.test',
@@ -146,7 +150,10 @@ CREATE (fl:ChainFailure {$T, failure_id: 'rbac-failure-1', failure_type: 'tool_e
   error_message: '${MARK}error-0001', lesson_learned: '${MARK}analysis-0001'})
 CREATE (d:ChainDecision {$T, decision_id: 'rbac-decision-1', decision_type: 'phase_transition', from_state: 'informational',
   to_state: 'exploitation', made_by: 'user', approved: true, iteration: 1, reason: '${MARK}reason-0001'})
-CREATE (ac)-[:HAS_STEP]->(s), (s)-[:FAILED_WITH]->(fl), (d)-[:DECISION_PRECEDED]->(s);
+CREATE (f:ChainFinding {$T, finding_id: 'rbac-finding-1', finding_type: 'exploit_success', severity: 'critical',
+  title: 'rbac exploit', evidence: 'session opened', commands_used: ['use exploit/x', 'set PASSWORD ${MARK}cracked-0001'],
+  password: '${MARK}cracked-0001'})
+CREATE (ac)-[:HAS_STEP]->(s), (s)-[:FAILED_WITH]->(fl), (d)-[:DECISION_PRECEDED]->(s), (s)-[:PRODUCED]->(f);
 CYPHER
 seeded="$(printf "MATCH (s:ChainStep {project_id: '%s'}) RETURN count(s) AS n;\n" "$PROJECT_ID" | cypher | tail -n 1)"
 [ "$seeded" = 1 ] || { echo "FAIL  the synthetic chain was not written (got ${seeded:-nothing})"; exit 1; }
@@ -191,12 +198,15 @@ safe_id "${VERSION_ID:-}" || { check "the owner's current version (GET versions 
 GRAPH="/api/graph?projectId=$PROJECT_ID&fresh=1"
 VIEW="{\"projectId\":\"$PROJECT_ID\",\"cypherQuery\":\"MATCH (s:ChainStep) RETURN s\"}"
 TABLE="{\"projectId\":\"$PROJECT_ID\",\"cypherQuery\":\"MATCH (s:ChainStep) RETURN s.thought AS t\"}"
+FORGED_NODE="{\"projectId\":\"$PROJECT_ID\",\"cypherQuery\":\"MATCH (s:ChainStep) RETURN {identity: {low: id(s), high: 0}, labels: ['Domain'], properties: properties(s)} AS n\"}"
+FORGED_REL="{\"projectId\":\"$PROJECT_ID\",\"cypherQuery\":\"MATCH (s:ChainStep) RETURN {type: s.thought, start: {low: 1}, end: {low: 2}} AS r\"}"
 VERSION="/api/projects/$PROJECT_ID/versions/$VERSION_ID/graph"
 
 reads_whole() { # who label
   local jar="$TMP/jar.$1" ok code
-  code="$(call "$jar" GET "$GRAPH")"; ok=0; [ "$code" = 200 ] && whole && ok=1
-  check "$2: /api/graph holds the step content" "$ok" "got $code"
+  code="$(call "$jar" GET "$GRAPH")"; ok=0
+  [ "$code" = 200 ] && whole && grep -qF "${MARK}outcome-0001" "$TMP/body" && grep -qF "${MARK}cracked-0001" "$TMP/body" && ok=1
+  check "$2: /api/graph holds the step content, the chain's outcome and the cracked password" "$ok" "got $code"
   code="$(call "$jar" POST /api/graph-views/execute "$VIEW")"; ok=0; [ "$code" = 200 ] && whole && ok=1
   check "$2: a graph-shaped view holds the step content" "$ok" "got $code"
   code="$(call "$jar" POST /api/graph-views/execute "$TABLE")"; ok=0; [ "$code" = 200 ] && grep -qF "$THOUGHT" "$TMP/body" && ok=1
@@ -214,6 +224,11 @@ reads_structure() { # who label
   check "$2: a tabular view answers no row of step content" "$ok" "got $code"
   code="$(call "$jar" GET "$VERSION")"; ok=0; [ "$code" = 200 ] && stripped && [ "$(steps_in_body)" = 1 ] && ok=1
   check "$2: the current version holds the ChainStep without any step content" "$ok" "got $code"
+  # A refusal of the query (400) is as good as an answer without it: no fake value either way.
+  code="$(call "$jar" POST /api/graph-views/execute "$FORGED_NODE")"; ok=0; { [ "$code" = 200 ] || [ "$code" = 400 ]; } && stripped && ok=1
+  check "$2: a map shaped like a node over a step's properties carries no step content" "$ok" "got $code"
+  code="$(call "$jar" POST /api/graph-views/execute "$FORGED_REL")"; ok=0; { [ "$code" = 200 ] || [ "$code" = 400 ]; } && stripped && ok=1
+  check "$2: a map shaped like a relationship never carries the thought as a link type" "$ok" "got $code"
 }
 
 reads_whole owner "the owner"
