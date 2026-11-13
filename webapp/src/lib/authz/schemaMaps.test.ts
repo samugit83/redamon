@@ -470,3 +470,19 @@ describe('the instance LLM providers schema (step 6.11)', () => {
     expect(pointing('QuotaUsage')).toEqual(['User'])
   })
 })
+
+// Step 5.5 (phase_05): a schedule whose actor lost access to the project pauses itself and says why.
+// Existing schedules read null: none is paused for access, each keeps its enabled state and actor.
+describe('the schedule pause reason (step 5.5)', () => {
+  test('ScanSchedule.pausedReason is a nullable String in column paused_reason, with no default', () => {
+    expect(field('ScanSchedule', 'pausedReason')).toMatchObject({ type: 'String?', column: 'paused_reason' })
+    expect(field('ScanSchedule', 'pausedReason').line).not.toContain('@default')
+  })
+
+  test('the actor stays ScanSchedule.userId, a plain id: no second creator field, no foreign key', () => {
+    const ids = Object.entries(now.ScanSchedule.fields).filter(([, f]) => !isRelation(f.type)).map(([name]) => name)
+    expect(ids.filter((name) => /user|actor|creat|confirm/i.test(name))).toEqual(['userId', 'createdAt'])
+    expect(Object.values(now.ScanSchedule.fields).filter((f) => isRelation(f.type)).map((f) => baseType(f.type)).sort())
+      .toEqual(['Project', 'ScanJob'])
+  })
+})

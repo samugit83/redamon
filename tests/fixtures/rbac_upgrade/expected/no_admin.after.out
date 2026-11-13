@@ -57,3 +57,5 @@ project_allowlist|ARRAY[]::text[]|YES
 0
 == instance llm providers, assignments, usage, byo policy [step 6.11]
 0|0|0|false
+== scan schedule pause reason column, schedules paused for access [step 5.5]
+1|0

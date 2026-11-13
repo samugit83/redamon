@@ -2263,6 +2263,10 @@ model ScanSchedule {
   // "new" | "overwrite"
   scanMode               String   @default("new") @map("scan_mode")
   enabled                Boolean  @default(true)
+  // Why the schedule stopped itself, null when it did not (step 5.5, D-13): "actor_no_access" when
+  // the person it runs as lost access to the project. Such a schedule is turned back on only by a
+  // confirmation, which makes the confirmer its actor; a plain re-enable is refused.
+  pausedReason           String?  @map("paused_reason")
   nextRunAt              DateTime? @map("next_run_at")
   lastRunAt              DateTime? @map("last_run_at")
   estimatedEnvelopeBytes BigInt?  @map("estimated_envelope_bytes")

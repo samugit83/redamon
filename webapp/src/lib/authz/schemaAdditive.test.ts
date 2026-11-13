@@ -133,3 +133,15 @@ describe('the instance LLM providers schema is additive (step 6.11)', () => {
     expect(now.InstanceSettings.fields.byoLlmForbidden.line).toContain('@default(false)')
   })
 })
+
+// Step 5.5: one nullable column on a 7.7.2 table.
+describe('the schedule pause reason is additive (step 5.5)', () => {
+  test('ScanSchedule.pausedReason is new and nullable; the 7.7.2 schedule columns are untouched', () => {
+    expect(old.ScanSchedule.fields.pausedReason).toBeUndefined()
+    expect(now.ScanSchedule.fields.pausedReason.type).toBe('String?')
+    for (const [name, was] of Object.entries(old.ScanSchedule.fields)) {
+      expect({ name, type: now.ScanSchedule.fields[name]?.type, column: now.ScanSchedule.fields[name]?.column })
+        .toEqual({ name, type: was.type, column: was.column })
+    }
+  })
+})

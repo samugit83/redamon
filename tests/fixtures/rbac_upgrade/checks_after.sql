@@ -123,3 +123,10 @@ SELECT count(*) FROM user_sessions;
 \echo == instance llm providers, assignments, usage, byo policy [step 6.11]
 SELECT (SELECT count(*) FROM instance_llm_providers) || '|' || (SELECT count(*) FROM permission_set_providers)
   || '|' || (SELECT count(*) FROM quota_usage) || '|' || coalesce((SELECT byo_llm_forbidden::text FROM instance_settings), 'no row');
+
+-- Schedules gain a nullable pause reason (step 5.5): every existing schedule reads null, so none
+-- counts as paused for lost access and each keeps its enabled state and its actor.
+\echo == scan schedule pause reason column, schedules paused for access [step 5.5]
+SELECT (SELECT count(*) FROM information_schema.columns
+        WHERE table_name = 'scan_schedules' AND column_name = 'paused_reason')
+  || '|' || (SELECT count(*) FROM scan_schedules WHERE paused_reason IS NOT NULL);
