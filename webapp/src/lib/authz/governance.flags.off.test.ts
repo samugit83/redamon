@@ -42,6 +42,11 @@
  * nothing (the test at the end); the Phase 3 APIs they call keep answering behind the permissions
  * switch alone, as before (permissions.flags.off.test.ts), and neither page reads this switch.
  *
+ * Step 6.8 adds quotas. With the switch off none is enforced and none is read: lib/authz/quotas.ts
+ * (a reader in GOVERNANCE_READERS, and the only one of the step) answers every account unlimited
+ * before it reads the instance row or an account, so a project create, an import and a scan start
+ * go on as before (the test at the end).
+ *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -147,6 +152,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/components/settings/InstanceTunnelSection.tsx',
+      'src/lib/authz/quotas.ts',
       'src/lib/plugins/accessRules.ts',
     ]
     // A property read (`flags.governance`, `rbacFlags().governance`, `useRbacFlags()?.governance`)
@@ -268,5 +274,29 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.3): the permission sets and admin 
     }
     expect(nav.notFound).toHaveBeenCalledTimes(2)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.8): no quota is enforced or read', () => {
+  test('every account is unlimited, and neither the instance row nor an account is read', async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    for (const [identity, permissions] of [['', ''], ['true', 'true']]) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', identity)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', permissions)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      const quotas = await import('@/lib/authz/quotas')
+      expect(await quotas.quotaFor('m-1')).toMatchObject({ enforced: false, quota: quotas.UNLIMITED })
+      expect(await quotas.projectQuotaRefusal('m-1')).toBeNull()
+      expect(await quotas.actorScanCap('m-1')).toEqual({})
+      expect(await quotas.quotaLimit('m-1', 'llmDailyCalls')).toBeNull()
+      expect(await quotas.readQuotaStore()).toBeNull()
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
   })
 })
