@@ -16,10 +16,21 @@
 # With sharing not in force (a switch off, or instance_settings.sharing_policy not enabled) the
 # ticket is minted with the run live and the writers route answers 404 (DV-30).
 #
+# The per-run check (step 5.11 follow-up): the ticket is checked once, at socket open, so the agent
+# asks POST /api/internal/agent/writer-check before each run starts. Sharing in force, from inside
+# the webapp container with its internal key (never printed): 401 without the key; the owner's run
+# refused (409, naming member-b) while member-b's run is live, allowed once it ended. Then inside the
+# agent container (tests/rbac_writers_live_ws.py) member-b, as the collaborator, opens the agent
+# socket while nobody writes; the owner starts a writer (a live TriageRun row of the owner); the
+# collaborator's next message and a resume are refused with project_writer_busy naming the owner,
+# and no run starts. The owner is unaffected (their own run beside their own writer: 200); the
+# collaborator's check answers 409 until the owner's run ends, then 200; the agent logged each
+# refusal. Sharing not in force: the check answers 200 for both, with member-b's run live.
+#
 # The trap deletes the run and runs e2e-rbac-cleanup.mjs (the project and every fixture account),
 # even on a failure or Ctrl-C. Response bodies and passwords are never printed.
 #
-# Needs the stack up (webapp on :3000, postgres); prints SKIP and exits 0 when it is not.
+# Needs the stack up (webapp on :3000, postgres, agent); prints SKIP and exits 0 when it is not.
 # As a *_live.sh it is never in the gate.
 #
 # Run:  bash tests/rbac_writers_live.sh       (BASE_URL overrides :3000)
@@ -33,7 +44,7 @@ if [ "$health" != 200 ]; then
   echo "SKIP: RedAmon webapp not answering at $BASE/api/health (got ${health:-nothing})"
   exit 0
 fi
-for svc in webapp postgres; do
+for svc in webapp postgres agent; do
   if ! (cd "$ROOT" && docker compose ps --status running -q "$svc" 2>/dev/null | grep -q .); then
     echo "SKIP: no running $svc container (docker compose ps $svc)"
     exit 0
@@ -140,6 +151,15 @@ call() { # jar method path [json-body] -> http code; the body lands in $TMP/body
   curl "${args[@]}" "$BASE$path"
 }
 has() { grep -qF -- "$1" "$TMP/body"; }
+writer_check() { # with-key|without-key person -> "<status> <body>" of the agent's per-run check, from the webapp container
+  local body
+  body="$(printf '{"userId":"%s","projectId":"%s","sessionId":"rbac-writers-check"}' "$2" "$PROJECT_ID")"
+  (cd "$ROOT" && docker compose exec -T -e MODE="$1" -e BODY="$body" webapp node -e '
+    const headers = { "Content-Type": "application/json" }
+    if (process.env.MODE === "with-key") headers["X-Internal-Key"] = process.env.INTERNAL_API_KEY || ""
+    fetch("http://localhost:3000/api/internal/agent/writer-check", { method: "POST", headers, body: process.env.BODY })
+      .then(async r => console.log(r.status + " " + JSON.stringify(await r.json().catch(() => null))), e => console.log("error " + e.name))')
+}
 
 JAR="$TMP/jar.owner"
 sign_in "${SEED[MEMBER_C_EMAIL]}" "$JAR" || { check "sign in as the owner" 0; exit 1; }
@@ -166,12 +186,44 @@ if [ "$IN_FORCE" = 1 ]; then
   ok=0; [ "$code" = 409 ] && has '"code":"project_writer_busy"' && ok=1
   check "the owner's GVM start: 409 project_writer_busy" "$ok" "got $code"
 
+  out="$(writer_check without-key "$OWNER_ID")"
+  check "the agent's per-run check without the internal key -> ${out%% *}" "$([ "${out%% *}" = 401 ] && echo 1 || echo 0)"
+  out="$(writer_check with-key "$OWNER_ID")"
+  ok=0; [[ "$out" == '409 '*'"code":"project_writer_busy"'* ]] && [[ "$out" == *"$OTHER_EMAIL"* ]] && ok=1
+  check "the agent's per-run check refuses the owner's run while member-b's run is live" "$ok" "got ${out%% *}"
+
   end_other_writer
   code="$(call "$JAR" POST /api/agent/ws-ticket "$TICKET")"
   check "once the other run ended the owner's ticket is minted" "$([ "$code" = 200 ] && echo 1 || echo 0)" "got $code"
   code="$(call "$JAR" GET "/api/projects/$PROJECT_ID/writers")"
   ok=0; [ "$code" = 200 ] && has '"writers":[]' && ok=1
   check "and the writers list is empty" "$ok" "got $code"
+  out="$(writer_check with-key "$OWNER_ID")"
+  check "and the per-run check allows the owner's run -> $out" "$([ "$out" = '200 {"allowed":true}' ] && echo 1 || echo 0)"
+
+  echo "== A socket opened before another person's writer: the agent asks again per run (agent container) =="
+  OWNER_RUN_ID="rbac-writers-owner-run"
+  since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  WS_OUT="$( { printf 'OWNER_ID = "%s"\nOWNER_EMAIL = "%s"\nCOLLAB_ID = "%s"\nPROJECT_ID = "%s"\nOWNER_RUN_ID = "%s"\n' \
+      "$OWNER_ID" "${SEED[MEMBER_C_EMAIL]}" "$OTHER_ID" "$PROJECT_ID" "$OWNER_RUN_ID"
+    cat "$ROOT/tests/rbac_writers_live_ws.py"
+  } | (cd "$ROOT" && docker compose exec -T agent python3 -) 2>&1)"
+  grep -E '^(PASS|FAIL)  ' <<< "$WS_OUT"
+  if read -r _ ws_pass ws_fail < <(grep '^RESULT_WS ' <<< "$WS_OUT"); then
+    PASS=$((PASS + ws_pass)); FAIL=$((FAIL + ws_fail))
+  else
+    check "the agent-side checks ran to the end" 0 "$(grep -oE '^[A-Za-z_.]*(Error|Exception)' <<< "$WS_OUT" | tail -1)"
+  fi
+  out="$(writer_check with-key "$OWNER_ID")"
+  check "the owner is unaffected: their own run beside their own writer -> $out" "$([ "$out" = '200 {"allowed":true}' ] && echo 1 || echo 0)"
+  out="$(writer_check with-key "$OTHER_ID")"
+  ok=0; [[ "$out" == '409 '*'"code":"project_writer_busy"'* ]] && [[ "$out" == *"${SEED[MEMBER_C_EMAIL]}"* ]] && ok=1
+  check "the collaborator's per-run check names the owner while the owner's run is live" "$ok" "got ${out%% *}"
+  printf "UPDATE triage_runs SET status = 'completed', finished_at = now() WHERE id = '%s';\n" "$OWNER_RUN_ID" | db_sql > /dev/null
+  out="$(writer_check with-key "$OTHER_ID")"
+  check "once the owner's run ended the collaborator's run may start -> $out" "$([ "$out" = '200 {"allowed":true}' ] && echo 1 || echo 0)"
+  refused="$(cd "$ROOT" && docker compose logs --since "$since" agent 2>/dev/null | grep -c '\[rbac\] agent run refused project_writer_busy')"
+  check "the agent logged each per-run refusal -> ${refused:-0}" "$([ "${refused:-0}" -ge 2 ] && echo 1 || echo 0)"
 else
   code="$(call "$JAR" POST /api/agent/ws-ticket "$TICKET")"
   check "sharing not in force: the owner's ticket is minted with the other run live" "$([ "$code" = 200 ] && echo 1 || echo 0)" "got $code"
@@ -180,6 +232,11 @@ else
   code="$(call "$JAR" POST "/api/recon/$PROJECT_ID/start" '{"mode":"new"}')"
   ok=0; [ "$code" != 409 ] && ! has 'project_writer_busy' && ok=1
   check "sharing not in force: the full recon start is not refused as a second writer" "$ok" "got $code"
+  for person in "$OWNER_ID" "$OTHER_ID"; do
+    out="$(writer_check with-key "$person")"
+    check "sharing not in force: the agent's per-run check allows a run with the other run live -> $out" \
+      "$([ "$out" = '200 {"allowed":true}' ] && echo 1 || echo 0)"
+  done
 fi
 
 echo "== $PASS passed, $FAIL failed =="
