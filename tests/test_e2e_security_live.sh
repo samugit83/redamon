@@ -175,11 +175,31 @@ else
 fi
 en=$(docker compose exec -T postgres psql -U redamon -d redamon -tA -c "SELECT count(*) FROM user_settings WHERE user_id='$M_USERID' AND tunnels_enabled;" 2>/dev/null | tr -d '[:space:]')
 chk "$en" "0" "refused enable wrote nothing"
-# HD-05: the unmasked tunnel credentials answer the internal key only (key read inline, never printed).
-c=$(curl -s -o /dev/null -w '%{http_code}' -b "$M_JAR" http://localhost:3000/api/global/tunnel-config)
+# HD-05, GHSA-wgxp-vq94-73h8: the reporter's proof of concept against the live stack. Account A
+# holds synthetic tunnel values, never enabled and with no chisel URL, so no tunnel starts and
+# the agent's chisel lookup finds no host; member M, unrelated to A, asks the global route with
+# their own cookie. Up to 7.7.2 M got A's values; now only the internal key reads them. No
+# answer body is printed: the internal key's could hold a real tunnel credential.
+A_EMAIL="e2e_ghsa_a_$(openssl rand -hex 4)@redamon.local"
+A_USERID="$(seed_user "$A_EMAIL" standard)"
+MARK="GHSA-WGXP-$(openssl rand -hex 6)"
+docker compose exec -T postgres psql -U redamon -d redamon -tA \
+  -c "INSERT INTO user_settings (id,user_id,updated_at,ngrok_authtoken,chisel_auth) VALUES ('us_e2e_$(openssl rand -hex 8)','$A_USERID',CURRENT_TIMESTAMP,'NGROK-TEST-$MARK','e2e:CHISEL-TEST-$MARK');" >/dev/null
+c=$(curl -s -o "$BODY" -w '%{http_code}' -b "$M_JAR" http://localhost:3000/api/global/tunnel-config)
 chk "$c" 404 "tunnel-config with a member's session -> 404"
-c=$(docker compose exec -T webapp printenv INTERNAL_API_KEY | tr -d '\r\n' | sed 's/^/header = "X-Internal-Key: /; s/$/"/' | curl -s -o /dev/null -w '%{http_code}' -K - http://localhost:3000/api/global/tunnel-config)
+leak=0; grep -q "$MARK" "$BODY" && leak=1
+chk "$leak" 0 "the member's answer holds none of account A's tunnel values"
+c=$(docker compose exec -T webapp printenv INTERNAL_API_KEY | tr -d '\r\n' | sed 's/^/header = "X-Internal-Key: /; s/$/"/' | curl -s -o "$BODY" -w '%{http_code}' -K - http://localhost:3000/api/global/tunnel-config)
 chk "$c" 200 "tunnel-config with the internal key -> 200"
+# Positive control: with the switch off and no enabled row, A's is the latest save and so the
+# row the route answers, which proves the member's 404 is the gate and not an empty table.
+others=$(docker compose exec -T postgres psql -U redamon -d redamon -tA -c "SELECT count(*) FROM user_settings WHERE tunnels_enabled AND user_id<>'$A_USERID';" 2>/dev/null | tr -d '[:space:]')
+if [ "$IDENTITY" = off ] && [ "$others" = 0 ]; then
+  seen=0; grep -q "NGROK-TEST-$MARK" "$BODY" && seen=1
+  chk "$seen" 1 "the internal key reads account A's values (the member's 404 is the gate)"
+fi
+: > "$BODY"
+del_user "$A_USERID"
 del_user "$M_USERID"
 rm -f "$M_JAR" "$BODY"
 
