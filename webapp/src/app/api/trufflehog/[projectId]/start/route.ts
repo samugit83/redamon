@@ -5,7 +5,7 @@ import { recordScanStart } from '@/lib/scanTimeline'
 import { currentRoeTextSha256 } from '@/lib/engagement'
 import { assertEngagementStartable } from '@/lib/engagementGate'
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { scanJobCredential } from '@/lib/scanJobCredential'
+import { scanStartFields } from '@/lib/scanJobCredential'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 import { assertGraphNotActivating } from '@/lib/activationLock'
@@ -67,6 +67,7 @@ async function startTrufflehogScan(request: NextRequest, projectId: string, acto
 
   // Read before the start, so a RoE replaced mid-start cannot misattribute the run.
   const roeTextSha256 = await currentRoeTextSha256(projectId)
+  const jobFields = await scanStartFields(projectId, resolved.body.user_id, actorUserId)
   let response: Response
   try {
     response = await orchestratorFetch(
@@ -74,7 +75,7 @@ async function startTrufflehogScan(request: NextRequest, projectId: string, acto
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...resolved.body, ...scanJobCredential(projectId, resolved.body.user_id, actorUserId) }),
+        body: JSON.stringify({ ...resolved.body, ...jobFields }),
       },
     )
   } catch (error) {

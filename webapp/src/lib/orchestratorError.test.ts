@@ -49,6 +49,14 @@ describe('normalizeOrchestratorStartError', () => {
     expect(r.limit).toEqual(GOVERNOR_HARD)
   })
 
+  it('a refusal by the actor\'s quota (step 6.8) names the quota, never a restart', () => {
+    const quota = { ...GOVERNOR_HARD, current: 2, ceiling: 2, settingName: 'maxConcurrentScans', detail: "2 of 2 concurrent scans allowed by this person's quota" }
+    const r = normalizeOrchestratorStartError({ detail: quota }, 'fallback')
+    expect(r.error).toBe("2 of 2 concurrent scans allowed by this person's quota. Wait for one of these scans to finish, or ask an administrator to raise your quota.")
+    expect(r.error).not.toContain('restart')
+    expect(r.limit).toEqual(quota)
+  })
+
   it('never returns an object as error, even for an unknown object shape', () => {
     const weird = { detail: { admitted: false, resource: 'scan', unexpected: true } }
     const r = normalizeOrchestratorStartError(weird, 'fallback message')

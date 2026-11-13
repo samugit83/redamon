@@ -15,10 +15,13 @@
  * either field and the orchestrator, which cannot verify one either, refuses it.
  */
 import { CredentialRefused, mintJobCredential } from '@/lib/authz/machineCredential'
+import { actorScanCap } from '@/lib/authz/quotas'
 
 export interface ScanJobFields {
   job_credential?: string
   actor_user_id?: string
+  /** The actor's maxConcurrentScans quota (step 6.8), present only when one is set. */
+  actor_max_concurrent?: number
 }
 
 export function scanJobCredential(
@@ -36,4 +39,21 @@ export function scanJobCredential(
     console.warn(`[rbac] job credential not minted reason=${err.code} project=${projectId}`)
     return {}
   }
+}
+
+/**
+ * Every start's fields (step 6.8): the credential and actor above, plus the actor's
+ * maxConcurrentScans quota, which the orchestrator's admission applies to that same
+ * actor as the smaller of it and RECON_MAX_CONCURRENT_PER_USER (one per-user cap, 5.5's).
+ * Read before the start's orchestrator call, outside its try: a failed quota read throws
+ * and starts nothing; it is never taken for an unreachable orchestrator. With the
+ * governance switch off nothing is read and the fields are scanJobCredential's.
+ */
+export async function scanStartFields(
+  projectId: string,
+  ownerId: string,
+  actorUserId: string | null | undefined,
+): Promise<ScanJobFields> {
+  const fields = scanJobCredential(projectId, ownerId, actorUserId)
+  return fields.actor_user_id ? { ...fields, ...(await actorScanCap(fields.actor_user_id)) } : fields
 }

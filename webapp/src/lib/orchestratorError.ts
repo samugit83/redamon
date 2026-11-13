@@ -36,6 +36,9 @@ export interface NormalizedStartError {
   code?: string
 }
 
+/** The setting name the orchestrator's admission gives a refusal by the actor's quota (admission_ledger.py). */
+const QUOTA_SETTING = 'maxConcurrentScans'
+
 export function normalizeOrchestratorStartError(
   errorData: unknown,
   fallback: string,
@@ -47,6 +50,13 @@ export function normalizeOrchestratorStartError(
 
   if (detail && typeof detail === 'object') {
     const d = detail as OrchestratorLimit
+    // The actor's maxConcurrentScans quota (step 6.8): an administrator's setting, not a restart knob.
+    if (d.limitType === 'hard' && d.settingName === QUOTA_SETTING) {
+      return {
+        error: `${d.detail || 'Scan quota reached'}. Wait for one of these scans to finish, or ask an administrator to raise your quota.`,
+        limit: d,
+      }
+    }
     if (d.limitType) {
       const msg =
         d.limitType === 'hard'

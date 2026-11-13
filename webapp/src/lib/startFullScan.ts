@@ -10,7 +10,7 @@
  */
 import prisma from '@/lib/prisma'
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { scanJobCredential } from '@/lib/scanJobCredential'
+import { scanStartFields } from '@/lib/scanJobCredential'
 import { isActivationInProgress } from '@/lib/activationLock'
 import {
   GRAPH_LOCK_HOLDER_PHRASE,
@@ -322,6 +322,9 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
     }
   }
 
+  // Before the versions rotate: a failed quota read must leave nothing half-prepared.
+  const jobFields = await scanStartFields(projectId, project.userId, input.actorUserId)
+
   // Freeze/rotate versions BEFORE starting. Fail closed: the graph is never
   // destroyed unsaved (Risk 4).
   let prepared
@@ -346,7 +349,7 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
-        ...scanJobCredential(projectId, project.userId, input.actorUserId),
+        ...jobFields,
         webapp_api_url: WEBAPP_URL,
         // Telemetry/history only - the pipeline behaves identically either way.
         mode,

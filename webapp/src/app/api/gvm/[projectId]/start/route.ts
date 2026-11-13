@@ -8,7 +8,7 @@ import prisma from '@/lib/prisma'
 import { existsSync } from 'fs'
 import path from 'path'
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { scanJobCredential } from '@/lib/scanJobCredential'
+import { scanStartFields } from '@/lib/scanJobCredential'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { internalError, readUpstreamBody, upstreamFailureResponse } from '@/lib/routeErrors'
 import { assertGraphNotActivating } from '@/lib/activationLock'
@@ -108,6 +108,7 @@ async function startGvmScan(projectId: string, actorUserId: string): Promise<Nex
   // Call recon orchestrator to start the GVM scan
   // Read before the start, so a RoE replaced mid-start cannot misattribute the run.
   const roeTextSha256 = await currentRoeTextSha256(projectId)
+  const jobFields = await scanStartFields(projectId, project.userId, actorUserId)
   let response: Response
   try {
     response = await orchestratorFetch(`${RECON_ORCHESTRATOR_URL}/gvm/${projectId}/start`, {
@@ -118,7 +119,7 @@ async function startGvmScan(projectId: string, actorUserId: string): Promise<Nex
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
-        ...scanJobCredential(projectId, project.userId, actorUserId),
+        ...jobFields,
         webapp_api_url: WEBAPP_URL,
       }),
     })

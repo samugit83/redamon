@@ -17,7 +17,7 @@ import { assertGraphNotActivating } from '@/lib/activationLock'
 import { describeNodeFilterWriter } from '@/lib/nodeFilterRun'
 import { resolveTrufflehogStart } from '@/lib/trufflehogStart'
 import { orchestratorFetch } from '@/lib/orchestrator'
-import { scanJobCredential } from '@/lib/scanJobCredential'
+import { scanStartFields } from '@/lib/scanJobCredential'
 import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
 import { classifyOrchestratorThrow, graphLockedStartRefusal, startFullScan } from '@/lib/startFullScan'
 import { withGraphStartLock } from '@/lib/projectGraphLock'
@@ -368,7 +368,7 @@ async function dispatchOtherStart(
     return { ok: false, status: 400, error: `Unknown scan kind: ${kind}` }
   }
 
-  body = { ...body, ...scanJobCredential(projectId, project.userId, opts.actorUserId) }
+  body = { ...body, ...(await scanStartFields(projectId, project.userId, opts.actorUserId)) }
 
   const historyRunId = HISTORY_RUN_ID[kind]
   // Read before the start, as the routes do, so a RoE replaced mid-start cannot
