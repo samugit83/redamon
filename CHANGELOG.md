@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade
+
+- **With sharing in force, every admin holding `projects:oversee` reads every project at Read, audited.** `projects:oversee` is in *Full admin* (every admin with no profile today) and *Security auditor*, so once `RBAC_SHARING_ENABLED` and Root's sharing policy are both on, those admins open any project read-only, without raw data, files or anyone's agent conversations, from the projects page's **All projects (oversight)** (`GET /api/projects/oversight`). An admin's first read of a project each day writes one `project.oversee` audit row, which the owner sees in the project's Activity. To keep an admin out of other people's projects, give it a profile without `projects:oversee`. Nothing of this applies while acting as someone.
+- **Root's break-glass** (`POST /api/projects/[id]/breakglass`: a reason, at most 240 minutes, Root's own password; `DELETE` closes it early) adds raw data and files for that time, tells the owner at their next sign-in and is audited (`project.breakglass`, `project.breakglass.end`). Only the confirmed Root has it.
+
 ## [7.8.0] - 2026-11-11
 
 ### Added
