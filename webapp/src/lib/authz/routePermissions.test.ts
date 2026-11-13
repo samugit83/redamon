@@ -51,6 +51,7 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'GET /api/projects/[id]/my-access': "the account's own access to the project (projectAccess) for the stale-access poll: any signed-in account asks about itself, a project it cannot see answers 404, nothing written (step 4.3)",
   'GET /api/nuclei-templates': 'the templates the account may select or manage, scoped by owner inside (own and instance ones; every one with platform:nuclei_templates): reading the library changes nothing',
   'GET /api/account/activity': "the signed-in account's own notices and the audit rows about it (404 with the identity switch off): an account reads its own history",
+  'GET /api/account/llm-providers': "the instance LLM providers an administrator made available to the account through a set it holds, by name and kind only (404 with RBAC_GOVERNANCE_ENABLED off): an account reads what it may already use (step 6.11)",
   'GET /api/agent/health': 'whether the agent answers: an instance fact the drawer shows, no project data',
   'GET /api/agent/host-ip': "the host's address the drawer offers as a callback address: an instance fact, nothing written",
   'GET /api/agent/tunnel-status': 'whether the instance tunnel is up, for the drawer: an instance fact; changing the tunnel is platform:tunnels',
@@ -87,6 +88,11 @@ const ASKED_IN_LIB: Readonly<Record<string, string>> = {
   'POST /api/admin/admin-profiles': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
   'PUT /api/admin/admin-profiles/[id]': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
   'DELETE /api/admin/admin-profiles/[id]': 'admin_profiles:manage is Root-only: requireRootPower (the confirmed Root with step-up)',
+  'GET /api/admin/llm-providers': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
+  'POST /api/admin/llm-providers': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
+  'PUT /api/admin/llm-providers/[providerId]': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
+  'DELETE /api/admin/llm-providers/[providerId]': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
+  'PUT /api/admin/llm-providers/policy': 'instance:settings is Root-only: the confirmed Root reads (rootStanding, routeGate.ts confirmedRootReader) and writes with step-up (requireRootPower, confirmedRootWriter) (step 6.11)',
   'GET /api/projects/[id]/collaborators': "projectShares.requireShareListAccess asks project:share on the project (the owner, at Manage), and lets an overseer (projects:oversee, Read) or Root's break-glass list the shares too, which can() at Manage would refuse (step 4.4)",
   'GET /api/users/[id]/permissions': 'userPermissionAdmin.readUserPermissions asks users:assign_permissions (admins:manage for an admin)',
   'PUT /api/users/[id]/permissions': 'userPermissionAdmin.changeUserPermissions asks users:assign_permissions (admins:manage for an admin)',
@@ -117,6 +123,7 @@ const NO_ROWS: Readonly<Record<string, string>> = {
   'root:transfer': 'Root\'s own (rootOnly): no seeded account other than Root holds it; p2.tsv covers the transfer',
   'roles:manage': 'no seeded admin lacks it and a member is refused by the switch-off 404 as well; the route tests cover it',
   'admin_profiles:manage': 'Root\'s own (rootOnly); the route tests cover it',
+  'instance:settings': 'Root\'s own (rootOnly): no seeded account other than the confirmed Root holds it, and the instance provider routes are 404 unless RBAC_GOVERNANCE_ENABLED is on; the route tests cover them (step 6.11)',
   'project:share': 'every holder request that passes the route\'s own checks looks up an account (counted against a per-person ceiling and audited) or changes a share, and the activity feed (a read) answers 404 unless sharing is in force, which the generated rows do not set up; p4.tsv covers the share routes and the feed by hand (steps 4.4, 4.13)',
 }
 
@@ -129,7 +136,6 @@ const ENFORCED_ELSEWHERE: Readonly<Record<string, string>> = {
   'agent:approve_dangerous': 'the agent refuses the answer through the ticket\'s cap (step 3.9b, websocket_api.py)',
   'agent:fireteam': 'the agent: a Fireteam member confirmation needs it in the ticket\'s cap (step 3.9b); starting a wave is the run\'s (OQ-R6 (b), step 5.3)',
   'admins:manage': 'asked of an admin target inside the user routes (hierarchy.ts canManage / canAssignProfile, rootPowers.ts adminTargetGate), after their users:* permission',
-  'instance:settings': 'Root\'s own (rootOnly): the security policy of the instance settings and the instance default set, through requireRootPower (the confirmed Root with step-up)',
   'platform:shell_sessions': 'the every-session scope of the shell-session routes, under agent:sessions: agentSessionsAccess.ts asks sharedToolAccess(shell_sessions_all)',
 }
 
