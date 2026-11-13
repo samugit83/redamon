@@ -1,0 +1,14 @@
+.page {
+  padding: var(--space-6);
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.back {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}

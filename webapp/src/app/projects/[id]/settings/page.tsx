@@ -1,9 +1,11 @@
 'use client'
 
+import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { ProjectForm } from '@/components/projects'
 import { useProjectById, useUpdateProject } from '@/hooks/useProjects'
 import { useProject } from '@/providers/ProjectProvider'
+import { useOptionalAuth } from '@/providers/AuthProvider'
 import { toProjectSummary } from '@/lib/projectSummary'
 import { errorMessage } from '@/lib/apiError'
 import styles from './page.module.css'
@@ -16,6 +18,7 @@ export default function ProjectSettingsPage() {
 
   const { data: project, isLoading, error } = useProjectById(projectId)
   const updateProjectMutation = useUpdateProject()
+  const sharingInForce = useOptionalAuth()?.user?.sharing?.enabled === true
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const saveProject = async (data: any) => {
@@ -70,8 +73,18 @@ export default function ProjectSettingsPage() {
     )
   }
 
+  // The feed answers the owner and an admin reading by oversight or break-glass, not a read
+  // collaborator (step 4.13); it exists only while sharing is in force.
+  const via = (project as { myAccess?: { via?: string } }).myAccess?.via
+  const showActivity = sharingInForce && via !== undefined && via !== 'share'
+
   return (
     <div className={styles.container}>
+      {showActivity && (
+        <nav className={styles.pageLinks} aria-label="Project pages">
+          <Link href={`/projects/${encodeURIComponent(projectId)}/activity`}>Activity</Link>
+        </nav>
+      )}
       <ProjectForm
         mode="edit"
         initialData={project}

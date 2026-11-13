@@ -23,3 +23,11 @@
   text-align: center;
   color: var(--text-secondary);
 }
+
+.pageLinks {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4) 0;
+  font-size: var(--text-sm);
+}
