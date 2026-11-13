@@ -18,6 +18,7 @@ import ast
 import asyncio
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -410,6 +411,12 @@ class _CodeFixCallback:
 class CodeFixPush(unittest.TestCase):
     """A CodeFix push with the owner's token needs Manage on top of codefix:run, asked when it happens."""
 
+    def _repo_with(self, files):
+        repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for name, content in files.items():
+            (repo / name).write_text(content, encoding="utf-8")
+        return repo
+
     def _finalize(self, check):
         from cypherfix_codefix import orchestrator as module
         from cypherfix_codefix.state import DiffBlock
@@ -419,6 +426,8 @@ class CodeFixPush(unittest.TestCase):
         orch.state.actor_user_id, orch.state.real_actor_user_id = "uB", "admin-1"
         orch.state.branch_name = "cypherfix/fix-1"
         orch.state.files_modified = {"app.py"}
+        orch.state.repo_path = self._repo_with({"app.py": "b"})
+        orch.state.committable = {"app.py": "b"}
         orch.state.diff_blocks = [DiffBlock(block_id="b1", file_path="app.py", language="python",
                                             old_code="a", new_code="b", context_before="", context_after="",
                                             start_line=1, end_line=1, description="d", status="accepted")]
@@ -466,6 +475,8 @@ class CodeFixPush(unittest.TestCase):
         orch = module.CodeFixOrchestrator(module.CodeFixState(), _CodeFixCallback())
         orch.state.user_id, orch.state.project_id, orch.state.session_id = "owner-A", "pB", "cf-1"
         orch.state.files_modified = {"x"}
+        orch.state.repo_path = self._repo_with({"x": "x"})
+        orch.state.committable = {"x": "x"}
         orch.repo_manager = mock.Mock()
         orch.repo_manager.create_pr.return_value = {"pr_url": "u"}
 

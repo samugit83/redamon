@@ -1,6 +1,6 @@
 """Read tool: file reading with line numbers."""
 
-from .repo_paths import RepoPathError, resolve_in_repo
+from .repo_paths import RepoPathError, repo_relative, resolve_in_repo
 
 
 async def github_read(state, file_path: str, offset: int = None, limit: int = None) -> str:
@@ -35,8 +35,8 @@ async def github_read(state, file_path: str, offset: int = None, limit: int = No
 
     output = '\n'.join(formatted)
 
-    # Track that this file has been read (for edit pre-check)
-    state.files_read.add(file_path)
+    # Keyed like the edit tools key a file, so `a/../b.py` and `b.py` are one file.
+    state.files_read.add(repo_relative(state.repo_path, full_path))
 
     if total_lines > len(selected):
         output = (

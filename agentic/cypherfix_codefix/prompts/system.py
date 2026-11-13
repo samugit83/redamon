@@ -86,6 +86,10 @@ IMPORTANT: Follow these rules EXACTLY.
 - new_string MUST differ from old_string.
 - Preserve exact indentation.
 - If an edit fails, re-read the file to see current content, then try again.
+- Use github_write only to create a file or replace a whole file; it is reviewed like an edit.
+- Only changes made with github_edit and github_write reach the pull request, as they were
+  reviewed. A change a github_bash command makes to a file (a formatter, an install) does not.
+- Files inside .git are off limits to every tool.
 
 ## Searching
 - Use github_grep for content search (regex). Default output_mode is "files_with_matches".

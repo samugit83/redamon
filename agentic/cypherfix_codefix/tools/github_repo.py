@@ -7,11 +7,16 @@ Security (T6/E10/T7):
     URL, so it never lands in `.git/config` (which the sandbox can read).
   * All git invocations disable hooks (`core.hooksPath=/dev/null`) so a malicious
     build cannot plant a hook that runs when the agent commits/pushes.
+  * `.git/config` must stay as the clone wrote it: commit and push refuse to run
+    once it changed, every git call overrides the config keys that run a command
+    or answer for the token, and the push names the GitHub URL instead of trusting
+    `origin` (GHSA-vhjw-gfmx-j3fx). CodeFix tools cannot reach `.git` at all.
   * Commits stage ONLY the LLM's approved files, not `git add -A`, so build
     artifacts or files a malicious build slipped into the worktree never reach the PR.
   * Pushes are refused to the default branch / main / master.
 """
 
+import hashlib
 import logging
 import os
 import shutil
@@ -52,6 +57,21 @@ def git_failure_cause(stderr: str) -> str:
     return ""
 
 
+#: Config that no repository may override for the agent's own git commands.
+#: fsmonitor: git runs a non-boolean value as a shell command when it refreshes
+#: the index. An empty credential.helper resets the list, so only GIT_ASKPASS
+#: answers for the token.
+_FIXED_GIT_CONFIG = (
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "credential.helper=",
+)
+
+
+class GitConfigChanged(RuntimeError):
+    """`.git/config` differs from what the clone wrote; git must not run with it."""
+
+
 class GitCommandError(RuntimeError):
     """A git command that exited non-zero. The message keeps the (token-free)
     stderr for the log; `returncode` and `cause` are the parts safe to show."""
@@ -73,6 +93,23 @@ class GitHubRepoManager:
         self.work_dir = WORK_BASE / (job_id or repo.replace("/", "_"))
         self.repo_path: Optional[Path] = None
         self._askpass_path: Optional[str] = None
+        self._config_sha: Optional[str] = None
+
+    def _remote_url(self) -> str:
+        # Username only in the URL (no secret); password comes from GIT_ASKPASS.
+        return f"https://x-access-token@github.com/{self.repo}.git"
+
+    def _config_digest(self) -> Optional[str]:
+        try:
+            return hashlib.sha256((self.repo_path / ".git" / "config").read_bytes()).hexdigest()
+        except (OSError, TypeError):
+            return None
+
+    def _assert_config_untouched(self) -> None:
+        if self._config_digest() != self._config_sha:
+            raise GitConfigChanged(
+                "The repository's .git/config changed during the run; refusing to run git with it."
+            )
 
     # -- token handling -----------------------------------------------------
 
@@ -97,7 +134,7 @@ class GitHubRepoManager:
 
     def _run_git(self, args: list[str], **kwargs):
         """Run git with hooks disabled and the askpass-based credential env."""
-        cmd = ["git", "-c", "core.hooksPath=/dev/null", *args]
+        cmd = ["git", *_FIXED_GIT_CONFIG, *args]
         kwargs.setdefault("env", self._git_env())
         kwargs.setdefault("capture_output", True)
         kwargs.setdefault("text", True)
@@ -118,8 +155,7 @@ class GitHubRepoManager:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         repo_dir = self.work_dir / "repo"
 
-        # Username only in the URL (no secret); password comes from GIT_ASKPASS.
-        clone_url = f"https://x-access-token@github.com/{self.repo}.git"
+        clone_url = self._remote_url()
         args = ["clone", "--depth", "50"]
         if branch:
             args.extend(["-b", branch])
@@ -141,6 +177,7 @@ class GitHubRepoManager:
             logger.warning(f"Could not relax worktree permissions: {e}")
 
         self.repo_path = repo_dir
+        self._config_sha = self._config_digest()
         return repo_dir
 
     def create_branch(self, branch_name: str):
@@ -149,6 +186,8 @@ class GitHubRepoManager:
         if result.returncode != 0:
             raise GitCommandError(f"Branch create failed: {self._sanitize(result.stderr)}",
                                   result.returncode, git_failure_cause(result.stderr))
+        # Still before the sandbox or the model exist: nothing untrusted ran yet.
+        self._config_sha = self._config_digest()
 
     def commit(self, message: str, files: Optional[list[str]] = None):
         """Stage ONLY the approved files and commit.
@@ -160,6 +199,7 @@ class GitHubRepoManager:
         files = [f for f in (files or []) if f]
         if not files:
             raise RuntimeError("commit called with no approved files")
+        self._assert_config_untouched()
 
         add_result = self._run_git(["add", "--", *files], cwd=self.repo_path)
         if add_result.returncode != 0:
@@ -189,7 +229,10 @@ class GitHubRepoManager:
                 f"Refusing to push to disallowed branch {branch_name!r} "
                 f"(must start with {self.branch_prefix!r} and not be {sorted(forbidden)})"
             )
-        result = self._run_git(["push", "--force", "origin", branch_name], cwd=self.repo_path)
+        self._assert_config_untouched()
+        ref = f"refs/heads/{branch_name}"
+        result = self._run_git(["push", "--force", self._remote_url(), f"{ref}:{ref}"],
+                               cwd=self.repo_path)
         if result.returncode != 0:
             stderr = self._sanitize(result.stderr)
             logger.error(f"Git push failed (exit {result.returncode}): {stderr}")

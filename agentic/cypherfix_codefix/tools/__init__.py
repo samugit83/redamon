@@ -61,7 +61,7 @@ CODEFIX_TOOLS = [
     },
     {
         "name": "github_write",
-        "description": "Create or overwrite a file. Use for new files only. Prefer github_edit for modifications.",
+        "description": "Create a new file, or replace a whole file. The whole file is shown to the user for review, like an edit. Prefer github_edit for modifications.",
         "input_schema": {
             "type": "object",
             "properties": {

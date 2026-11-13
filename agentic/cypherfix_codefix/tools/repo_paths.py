@@ -9,6 +9,13 @@ NEO4J_PASSWORD, INTERNAL_API_KEY and DATABASE_URL.
 Every tool that turns a model string into a filesystem path goes through
 `resolve_in_repo`. Symlinks are resolved before the containment check, so a
 link committed inside the repo cannot be used as the escape hatch.
+
+A `.git` directory is refused too, at any depth and however it is reached. The
+agent commits and pushes from this checkout itself, so a model that could write
+`.git/config` would choose what git runs there: `core.fsmonitor` is a shell
+command run on `git add`, and a rewritten `remote.origin.url` receives the
+GitHub token from GIT_ASKPASS (GHSA-vhjw-gfmx-j3fx). The build sandbox mounts
+`.git` read-only for the same reason.
 """
 
 from __future__ import annotations
@@ -48,6 +55,11 @@ def resolve_in_repo(repo_path, relative: str | None, *, allow_root: bool = True)
     if resolved != base and base not in resolved.parents:
         raise RepoPathError(
             f"Path '{text}' resolves outside the repository and was refused."
+        )
+    # Checked on the resolved path, so a committed symlink to `.git` is caught.
+    if any(part.casefold() == ".git" for part in resolved.relative_to(base).parts):
+        raise RepoPathError(
+            f"Path '{text}' is inside a .git directory, which CodeFix never reads or changes."
         )
     return resolved
 

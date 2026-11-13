@@ -587,7 +587,8 @@ class Smoke(unittest.TestCase):
         self.assertIn("sandbox_client.spawn", src)
         self.assertIn("sandbox_client.teardown", src)
         self.assertIn("[^a-zA-Z0-9_-]", src, "job_id sanitizer must forbid dots")
-        self.assertIn("list(self.state.files_modified)", src, "commit must be file-scoped")
+        self.assertIn("self.repo_manager.commit(title, staged)", src,
+                      "commit must stage only the reviewed files prepare_commit returns")
 
     def test_orchestrator_api_routes_present(self):
         src = (REPO_ROOT / "recon_orchestrator" / "api.py").read_text()
