@@ -322,3 +322,28 @@ describe('dispatchStart sends every kind a job credential for the project owner 
     },
   )
 })
+
+describe('dispatchStart names the job\'s actor beside the owner (step 5.5)', () => {
+  test.each(['gvm', 'github_hunt', 'supply_chain', 'supply_chain_repo', 'partial_recon', 'ai_attack', 'trufflehog'])(
+    '%s', async kind => {
+      const saved = process.env.INTERNAL_API_KEY
+      process.env.INTERNAL_API_KEY = 'dispatch-test-master'
+      h.legacy.mockResolvedValue([])
+      try {
+        const r = await dispatchStart(kind, 'p1', { actorUserId: 'collab-1', payload: { source: 'docker' } })
+        expect(r.ok).toBe(true)
+        const sent = JSON.parse(h.orchestratorFetch.mock.calls[0][1].body)
+        expect(sent.actor_user_id).toBe('collab-1')
+        expect(sent.user_id).toBe('u1')
+
+        h.orchestratorFetch.mockClear()
+        const owner = await dispatchStart(kind, 'p1', { actorUserId: null, payload: { source: 'docker' } })
+        expect(owner.ok).toBe(true)
+        expect(JSON.parse(h.orchestratorFetch.mock.calls[0][1].body).actor_user_id).toBe('u1')
+      } finally {
+        if (saved === undefined) delete process.env.INTERNAL_API_KEY
+        else process.env.INTERNAL_API_KEY = saved
+      }
+    },
+  )
+})

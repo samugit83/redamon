@@ -40,13 +40,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     // S-4: held from the activation check through the orchestrator's answer
     // (startUnderGraphLock), since the run writes the live graph.
-    return await startUnderGraphLock(projectId, () => startTrufflehogScan(request, projectId))
+    return await startUnderGraphLock(projectId, () => startTrufflehogScan(request, projectId, auth.effective.userId))
   } catch (error) {
     return internalError(error, 'Failed to start Secret Multiscanner scan', { log: 'Error starting TruffleHog scan' })
   }
 }
 
-async function startTrufflehogScan(request: NextRequest, projectId: string): Promise<NextResponse> {
+async function startTrufflehogScan(request: NextRequest, projectId: string, actorUserId: string): Promise<NextResponse> {
   // A TruffleHog scan writes finding nodes into the live graph, so it must not
   // start into an in-flight version swap.
   const __activating = await assertGraphNotActivating(projectId)
@@ -74,7 +74,7 @@ async function startTrufflehogScan(request: NextRequest, projectId: string): Pro
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...resolved.body, ...scanJobCredential(projectId, resolved.body.user_id) }),
+        body: JSON.stringify({ ...resolved.body, ...scanJobCredential(projectId, resolved.body.user_id, actorUserId) }),
       },
     )
   } catch (error) {

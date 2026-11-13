@@ -27,13 +27,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     // S-4: held from the activation check through the orchestrator's answer
     // (startUnderGraphLock), since the run writes the live graph.
-    return await startUnderGraphLock(projectId, () => startSupplyChainScan(projectId))
+    return await startUnderGraphLock(projectId, () => startSupplyChainScan(projectId, auth.effective.userId))
   } catch (error) {
     return internalError(error, 'Failed to start Supply-Chain scan', { log: 'Error starting Supply-Chain scan' })
   }
 }
 
-async function startSupplyChainScan(projectId: string): Promise<NextResponse> {
+async function startSupplyChainScan(projectId: string, actorUserId: string): Promise<NextResponse> {
   // A supply-chain scan writes Package/MalPackageFinding nodes into the live
   // graph, so it must not start into an in-flight version swap.
   const __activating = await assertGraphNotActivating(projectId)
@@ -88,7 +88,7 @@ async function startSupplyChainScan(projectId: string): Promise<NextResponse> {
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
-        ...scanJobCredential(projectId, project.userId),
+        ...scanJobCredential(projectId, project.userId, actorUserId),
         webapp_api_url: WEBAPP_URL,
       }),
     })

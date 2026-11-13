@@ -368,7 +368,7 @@ async function dispatchOtherStart(
     return { ok: false, status: 400, error: `Unknown scan kind: ${kind}` }
   }
 
-  body = { ...body, ...scanJobCredential(projectId, project.userId) }
+  body = { ...body, ...scanJobCredential(projectId, project.userId, opts.actorUserId) }
 
   const historyRunId = HISTORY_RUN_ID[kind]
   // Read before the start, as the routes do, so a RoE replaced mid-start cannot

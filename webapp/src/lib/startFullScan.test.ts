@@ -790,3 +790,26 @@ describe('the job credential (step 1.16)', () => {
     }
   })
 })
+
+describe('the actor (step 5.5)', () => {
+  test('the orchestrator call names the actor beside the owner, and the owner when nobody is named', async () => {
+    const { verifyJobCredential } = await import('@/lib/authz/machineCredential')
+    const saved = process.env.INTERNAL_API_KEY
+    process.env.INTERNAL_API_KEY = 'start-path-test-master'
+    try {
+      const cases: Array<[string | null | undefined, string]> = [['collab-1', 'collab-1'], ['owner', 'owner'], [null, 'owner'], [undefined, 'owner']]
+      for (const [actorUserId, expected] of cases) {
+        h.orchestratorFetch.mockClear()
+        const res = await startFullScan({ projectId: 'p1', mode: 'new', trigger: 'scheduled', actorUserId })
+        expect(res.ok).toBe(true)
+        const sent = orchestratorBody()
+        expect(sent.actor_user_id).toBe(expected)
+        expect(sent.user_id).toBe('owner')
+        expect(verifyJobCredential(sent.job_credential).ten).toBe('owner')
+      }
+    } finally {
+      if (saved === undefined) delete process.env.INTERNAL_API_KEY
+      else process.env.INTERNAL_API_KEY = saved
+    }
+  })
+})

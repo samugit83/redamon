@@ -346,7 +346,7 @@ async function startFullScanLocked(input: StartFullScanInput): Promise<StartFull
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
-        ...scanJobCredential(projectId, project.userId),
+        ...scanJobCredential(projectId, project.userId, input.actorUserId),
         webapp_api_url: WEBAPP_URL,
         // Telemetry/history only - the pipeline behaves identically either way.
         mode,

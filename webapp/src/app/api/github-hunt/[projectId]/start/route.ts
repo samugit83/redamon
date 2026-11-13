@@ -30,13 +30,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     // S-4: held from the activation check through the orchestrator's answer
     // (startUnderGraphLock), since the run writes the live graph.
-    return await startUnderGraphLock(projectId, () => startGithubHunt(projectId))
+    return await startUnderGraphLock(projectId, () => startGithubHunt(projectId, auth.effective.userId))
   } catch (error) {
     return internalError(error, 'Failed to start GitHub Secret Hunt', { log: 'Error starting GitHub Secret Hunt' })
   }
 }
 
-async function startGithubHunt(projectId: string): Promise<NextResponse> {
+async function startGithubHunt(projectId: string, actorUserId: string): Promise<NextResponse> {
   // Scan Timeline (Section 4A.3): a GitHub Secret Hunt writes finding nodes into
   // the live graph, so it must not start into an in-flight version swap.
   const __activating = await assertGraphNotActivating(projectId)
@@ -108,7 +108,7 @@ async function startGithubHunt(projectId: string): Promise<NextResponse> {
       body: JSON.stringify({
         project_id: projectId,
         user_id: project.userId,
-        ...scanJobCredential(projectId, project.userId),
+        ...scanJobCredential(projectId, project.userId, actorUserId),
         webapp_api_url: WEBAPP_URL,
       }),
     })
