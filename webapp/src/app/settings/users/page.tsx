@@ -18,6 +18,7 @@ import { DeleteUserWizard, deletionWizardInForce } from '@/components/admin/Dele
 import { UserPermissionsPanel } from '@/components/admin/UserPermissionsPanel'
 import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
 import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
+import { opensOwnPasswordDialog } from '@/components/auth/ownPasswordDialog'
 import { ACCOUNT_TYPE_LABEL, IdentityLabel, accountTypeFor, type AccountType } from '@/components/auth/IdentityLabel'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
@@ -43,6 +44,7 @@ export default function UsersPage() {
   const canReadUsers = useCan('users:read')
   const canCreateUsers = useCan('users:create')
   const canDeleteUsers = useCan('users:delete')
+  const canSwitchUser = useCan('users:impersonate')
   // Step 3.13: the permission panel, with the permissions switch on; an admin's is Root's or an
   // admins:manage holder's (the panel's API decides which admins).
   const permissionsOn = useRbacFlags()?.permissions === true
@@ -264,11 +266,11 @@ export default function UsersPage() {
     }
   }
 
-  // Show change password modal for anyone without the directory
-  if (!canReadUsers && modal.type === 'changeOwn') {
-    return (
-      <div className={styles.page}>
-        <Modal isOpen onClose={closeModal} title="Change Password" size="small">
+  // ?changePassword=true opens it by the rule the user menu's Change Password follows.
+  const ownPasswordOpen = modal.type === 'changeOwn'
+    && opensOwnPasswordDialog({ readUsers: canReadUsers, switchUser: canSwitchUser, permissionsOn })
+  const ownPasswordModal = (
+        <Modal isOpen={ownPasswordOpen} onClose={closeModal} title="Change Password" size="small">
           <div className={styles.form}>
             {formError && <div className={styles.error}>{formError}</div>}
             {formSuccess && <div className={styles.success}>{formSuccess}</div>}
@@ -320,9 +322,10 @@ export default function UsersPage() {
             </div>
           </div>
         </Modal>
-      </div>
-    )
-  }
+  )
+
+  // Without the directory the dialog is the whole page; with it, the dialog opens over the directory.
+  if (!canReadUsers && ownPasswordOpen) return <div className={styles.page}>{ownPasswordModal}</div>
 
   if (!canReadUsers) return null
 
@@ -514,6 +517,8 @@ export default function UsersPage() {
           </tbody>
         </table>
       )}
+
+      {ownPasswordModal}
 
       <InviteUserModal isOpen={modal.type === 'invite'} onClose={closeModal} onInvited={() => void refetchUsers?.()} selfId={authUser?.id} />
 

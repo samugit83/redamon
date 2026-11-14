@@ -10,6 +10,7 @@ import { useGuardedRouter, useNavigationGuard } from '@/context/NavigationGuardC
 import { useErrorToast } from '@/hooks/useErrorToast'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { IdentityLabel, accountTypeFor, identityText, ACCOUNT_TYPE_LABEL } from '@/components/auth/IdentityLabel'
+import { opensOwnPasswordDialog } from '@/components/auth/ownPasswordDialog'
 import styles from './UserSelector.module.css'
 
 export function UserSelector() {
@@ -26,6 +27,8 @@ export function UserSelector() {
   // Permissions switch on (step 3.14): every switch goes through the act-as dialog (reason,
   // duration, password), which the project provider opens; the step-up prompt below is Phase 2's.
   const viaDialog = useRbacFlags()?.permissions === true
+  // The Users page opens the dialog by this same rule, so the item never leads to nothing.
+  const offersChangePassword = opensOwnPasswordDialog({ readUsers: canReadUsers, switchUser: canSwitchUser, permissionsOn: viaDialog })
   const { data: users } = useUsers()
   // Both providers sit above the toast layer, so their failures are shown here.
   useErrorToast(userSwitchError, 'User not switched')
@@ -211,12 +214,14 @@ export function UserSelector() {
                     </div>
                   </button>
                 )}
-                <button className={styles.item} onClick={handleChangePassword}>
-                  <KeyRound size={14} />
-                  <div className={styles.itemContent}>
-                    <span className={styles.itemName}>Change Password</span>
-                  </div>
-                </button>
+                {offersChangePassword && (
+                  <button className={styles.item} onClick={handleChangePassword}>
+                    <KeyRound size={14} />
+                    <div className={styles.itemContent}>
+                      <span className={styles.itemName}>Change Password</span>
+                    </div>
+                  </button>
+                )}
               </div>
 
               <div className={styles.footer}>
