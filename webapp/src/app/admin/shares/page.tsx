@@ -8,6 +8,8 @@ import { fetchJson, toApiError } from '@/lib/apiError'
 import type { AdminShareRow, SharesOverview } from '@/lib/authz/adminShares'
 import { useConsoleSections } from '../AdminConsole'
 import { SharesTable } from './SharesTable'
+import { ConsoleHeader } from '../ConsoleHeader'
+import { SECTION_ICONS } from '../consoleIcons'
 import consoleStyles from '../admin.module.css'
 import pageStyles from '@/app/settings/users/page.module.css'
 import styles from '../projects/overview.module.css'
@@ -113,10 +115,11 @@ export default function AdminSharesPage() {
 
   return (
     <div className={consoleStyles.page}>
-      <div className={styles.headline}>
-        <h1 className={consoleStyles.title}>Shares</h1>
-      </div>
-      <p className={styles.intro}>Every share between accounts on this instance. Expired shares give nothing and are removed by the next sweep.</p>
+      <ConsoleHeader
+        icon={SECTION_ICONS.shares}
+        title="Shares"
+        lead="Every share between accounts on this instance. Expired shares give nothing and are removed by the next sweep."
+      />
 
       <form className={styles.filters} onSubmit={submitSearch} role="search" aria-label="Find shares">
         <div className={styles.filter}>

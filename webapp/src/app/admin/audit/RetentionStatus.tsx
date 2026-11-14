@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { History } from 'lucide-react'
 import { GuardedLink } from '@/components/GuardedLink'
 import { keptText, retentionOf, type RetentionView } from '../instance/AuditRetentionPanel'
 import type { InstanceSettingsView } from '../instance/instanceView'
-import consoleStyles from '../admin.module.css'
+import styles from './audit.module.css'
 
 const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' })
 
@@ -29,7 +30,8 @@ export function RetentionStatus() {
   if (!state) return null
   const { retention, canManage } = state
   return (
-    <p className={consoleStyles.lead} role="status">
+    <p className={styles.retention} role="status">
+      <History size={14} aria-hidden="true" className={styles.retentionIcon} />
       Audit rows: {keptText(retention.days).toLowerCase()}.
       {retention.pending && ` From ${day(retention.pending.effectiveAt)}: ${keptText(retention.pending.days).toLowerCase()}.`}
       {canManage && <> <GuardedLink href="/admin/instance#retention">Change the audit retention</GuardedLink></>}

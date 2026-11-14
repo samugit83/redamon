@@ -13,6 +13,8 @@ import { useConsoleSections } from '../AdminConsole'
 import { SharesTable } from '../shares/SharesTable'
 import { whenLabel } from '../shares/shareWords'
 import { ForcedAction } from './ForcedAction'
+import { ConsoleHeader } from '../ConsoleHeader'
+import { SECTION_ICONS } from '../consoleIcons'
 import consoleStyles from '../admin.module.css'
 import pageStyles from '@/app/settings/users/page.module.css'
 import styles from './overview.module.css'
@@ -140,10 +142,11 @@ export default function AdminProjectsPage() {
 
   return (
     <div className={consoleStyles.page}>
-      <div className={styles.headline}>
-        <h1 className={consoleStyles.title}>Projects</h1>
-      </div>
-      <p className={styles.intro}>Every project on this instance. Opening one you do not own is an oversight read: its owner sees it in the project&apos;s activity.</p>
+      <ConsoleHeader
+        icon={SECTION_ICONS.projects}
+        title="Projects"
+        lead={<>Every project on this instance. Opening one you do not own is an oversight read: its owner sees it in the project&apos;s activity.</>}
+      />
 
       <form className={styles.filters} onSubmit={submitSearch} role="search" aria-label="Find projects">
         <div className={styles.filter}>

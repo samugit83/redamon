@@ -1,33 +1,26 @@
-.headline {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.intro {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-}
-
+/* The search bar of the Projects and Shares pages: one card above the results. */
 .filters {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
 }
 
 .filter {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  flex: 1 1 220px;
+  flex: 1 1 280px;
 }
 
 .tableWrap {
   overflow-x: auto;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .count {
@@ -71,22 +64,31 @@
 
 .sharesRow td {
   padding: var(--space-3) var(--space-4);
-  background: var(--table-surface);
+  background: var(--bg-tertiary);
 }
 
 .notice {
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--table-border);
+  padding: var(--space-2-5) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--accent-secondary) 30%, var(--border-default));
+  border-left: 3px solid var(--accent-secondary);
   border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent-secondary) 7%, var(--bg-secondary));
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .filterTag {
-  display: flex;
+  align-self: flex-start;
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--text-sm);
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
 }

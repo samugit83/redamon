@@ -13,6 +13,8 @@ import { defaultSetId, type SetKind, type SetListAnswer, type SetRow } from './s
 import { SET_WORDS } from './setWords'
 import { SetEditor, type EditorMode } from './SetEditor'
 import { SetHolders } from './SetHolders'
+import { ConsoleHeader } from '../ConsoleHeader'
+import { SECTION_ICONS } from '../consoleIcons'
 import consoleStyles from '../admin.module.css'
 import pageStyles from '@/app/settings/users/page.module.css'
 import choiceStyles from '@/components/admin/UserPermissions.module.css'
@@ -142,15 +144,16 @@ export function SetsManager({ kind }: { kind: SetKind }) {
 
   return (
     <div className={consoleStyles.page}>
-      <div className={styles.headline}>
-        <h1 className={consoleStyles.title}>{words.title}</h1>
-        {canWrite && view.kind === 'ready' && (
+      <ConsoleHeader
+        icon={SECTION_ICONS[kind === 'admin' ? 'admin-profiles' : 'permission-sets']}
+        title={words.title}
+        lead={words.lead}
+        actions={canWrite && view.kind === 'ready' ? (
           <button type="button" className="primaryButton" onClick={() => { setNotice(''); setEditing({ kind: 'create' }) }}>
             {words.newLabel}
           </button>
-        )}
-      </div>
-      <p className={consoleStyles.lead}>{words.lead}</p>
+        ) : undefined}
+      />
       {notice && <div className={pageStyles.success} role="status">{notice}</div>}
 
       {view.kind === 'loading' && <p className={consoleStyles.state} role="status">Loading the {words.title.toLowerCase()}…</p>}

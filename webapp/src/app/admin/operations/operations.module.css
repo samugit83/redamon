@@ -1,26 +1,33 @@
-/* The operations tables carry more columns than the other console pages. */
-.wide {
-  max-width: 1200px;
-}
-
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  align-items: center;
+.updated {
+  margin: 0 var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 
 .section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
 }
 
 .sectionTitle {
   margin: 0;
-  font-size: var(--text-base);
+  padding: var(--space-3) var(--space-5);
+  font-size: var(--text-sm);
   font-weight: var(--font-semibold);
   color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.sectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
 }
 
 .count {
@@ -31,17 +38,19 @@
 .sourceDown {
   margin: 0;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--table-border);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
   color: var(--text-secondary);
+  background: var(--bg-tertiary);
 }
 
 .refreshError {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--status-error);
-  padding: var(--space-2);
-  background: rgba(239, 68, 68, 0.1);
-  border-radius: var(--radius-default);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-error) 30%, transparent);
+  border-radius: var(--radius-md);
 }

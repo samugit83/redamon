@@ -21,7 +21,13 @@ import { TrafficMindPanel } from './TrafficMindPanel'
 import { LlmProvidersPanel } from './LlmProvidersPanel'
 import { QuotasPanel } from './QuotasPanel'
 import { AuditRetentionPanel } from './AuditRetentionPanel'
+import { PANEL_ICONS } from './panelIcons'
+import { ConsoleHeader } from '../ConsoleHeader'
+import { SECTION_ICONS } from '../consoleIcons'
+import consoleStyles from '../admin.module.css'
 import styles from './instance.module.css'
+
+const LEAD = 'The settings the whole instance shares. Each section is shown to whoever may manage it.'
 
 type State =
   | { kind: 'loading' }
@@ -83,13 +89,14 @@ export default function InstancePage() {
     document.getElementById(decodeURIComponent(window.location.hash.slice(1)))?.scrollIntoView?.()
   }, [ready])
 
+  const header = <ConsoleHeader icon={SECTION_ICONS.instance} title="Instance" lead={LEAD} />
   if (state.kind === 'loading') {
-    return <div className={styles.page}><h1 className={styles.title}>Instance</h1><p className={styles.state} role="status">Loading the instance settings…</p></div>
+    return <div className={consoleStyles.page}>{header}<p className={styles.state} role="status">Loading the instance settings…</p></div>
   }
   if (state.kind === 'error') {
     return (
-      <div className={styles.page}>
-        <h1 className={styles.title}>Instance</h1>
+      <div className={consoleStyles.page}>
+        {header}
         <div className={styles.error} role="alert">{state.message}</div>
         <div><button type="button" className="primaryButton" onClick={() => load()}>Retry</button></div>
       </div>
@@ -158,21 +165,30 @@ export default function InstancePage() {
   }
 
   return (
-    <div className={styles.page}>
-      <h1 className={styles.title}>Instance</h1>
-      <p className={styles.lead}>The settings the whole instance shares. Each section is shown to whoever may manage it.</p>
+    <div className={consoleStyles.page}>
+      {header}
       {panels.length === 0 ? (
         <p className={styles.state}>No section of this page is open to you.</p>
       ) : (
         <>
           {panels.length > 1 && (
-            <nav aria-label="Instance sections">
-              <ul className={styles.actions} style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-                {panels.map((id) => <li key={id}><a href={`#${id}`}>{TITLES[id]}</a></li>)}
+            <nav aria-label="Instance sections" className={styles.jumpBar}>
+              <ul className={styles.jumpList}>
+                {panels.map((id) => {
+                  const Icon = PANEL_ICONS[id]
+                  return (
+                    <li key={id}>
+                      <a href={`#${id}`} className={styles.jumpLink}>
+                        <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
+                        {TITLES[id]}
+                      </a>
+                    </li>
+                  )
+                })}
               </ul>
             </nav>
           )}
-          {panels.map(render)}
+          <div className={styles.panels}>{panels.map(render)}</div>
         </>
       )}
     </div>

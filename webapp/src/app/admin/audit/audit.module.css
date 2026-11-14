@@ -1,46 +1,62 @@
-.headline {
-  display: flex;
+.retention {
+  align-self: flex-start;
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-1-5);
+  margin: 0;
+  padding: var(--space-1-5) var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
 }
 
+.retentionIcon {
+  color: var(--text-tertiary);
+}
+
+/* The same tab bar as Global Settings. */
 .tabs {
   display: flex;
-  gap: var(--space-1);
+  gap: 0;
   border-bottom: 1px solid var(--border-default);
+  overflow-x: auto;
 }
 
 .tab {
-  padding: var(--space-1-5) var(--space-3);
+  padding: var(--space-2-5) var(--space-4);
   border: none;
   border-bottom: 2px solid transparent;
   background: none;
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  font-weight: var(--font-medium);
+  color: var(--text-tertiary);
+  white-space: nowrap;
   cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 
 .tab:hover {
-  color: var(--text-primary);
+  color: var(--text-secondary);
 }
 
 .tab:focus-visible {
   outline: 2px solid var(--border-focus);
-  outline-offset: 1px;
+  outline-offset: -2px;
 }
 
-.tabActive {
+.tabActive,
+.tabActive:hover {
   border-bottom-color: var(--accent-primary);
   color: var(--text-primary);
-  font-weight: var(--font-medium);
 }
 
 .panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .personLink {

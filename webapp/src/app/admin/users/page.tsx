@@ -16,6 +16,8 @@ import { fetchJson, toApiError } from '@/lib/apiError'
 import type { DirectoryPage, DirectoryRow, SetOption } from '@/lib/authz/userDirectory'
 import { LastLogin, SetsCell, StatusCell, TypeBadge } from './UserFacts'
 import { UserRowActions } from './UserRowActions'
+import { ConsoleHeader } from '../ConsoleHeader'
+import { SECTION_ICONS } from '../consoleIcons'
 import consoleStyles from '../admin.module.css'
 import pageStyles from '@/app/settings/users/page.module.css'
 import styles from './users.module.css'
@@ -119,15 +121,19 @@ export default function AdminUsersPage() {
 
   return (
     <div className={consoleStyles.page}>
-      <div className={styles.headline}>
-        <h1 className={consoleStyles.title}>Users</h1>
-        <div className={pageStyles.actions}>
-          {confirmedRoot && me && <RootTransfer selfId={me.id} />}
-          {canInvite && (
-            <button type="button" className="primaryButton" onClick={() => setInviting(true)}>Invite user</button>
-          )}
-        </div>
-      </div>
+      <ConsoleHeader
+        icon={SECTION_ICONS.users}
+        title="Users"
+        lead="Every account on this instance: invitations, status, permission sets and sign-ins."
+        actions={(confirmedRoot && me) || canInvite ? (
+          <>
+            {confirmedRoot && me && <RootTransfer selfId={me.id} />}
+            {canInvite && (
+              <button type="button" className="primaryButton" onClick={() => setInviting(true)}>Invite user</button>
+            )}
+          </>
+        ) : undefined}
+      />
 
       <WhatChangedCard />
       <LegacyAccessCard />

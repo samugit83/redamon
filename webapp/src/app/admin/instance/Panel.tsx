@@ -1,18 +1,27 @@
 'use client'
 
 import type { ReactNode } from 'react'
+import type { PanelId } from './instanceView'
+import { PANEL_ICONS } from './panelIcons'
 import styles from './instance.module.css'
 
-/** One section of the Instance page: a labelled region whose id is the page anchor (`/admin/instance#tunnels`). */
-export function Panel({ id, title, lead, children }: { id: string; title: string; lead?: ReactNode; children: ReactNode }) {
+/**
+ * One section of the Instance page: a labelled region whose id is the page anchor (`/admin/instance#tunnels`).
+ * On a wide page the title and lead sit in a column beside the controls; narrower, above them.
+ */
+export function Panel({ id, title, lead, children }: { id: PanelId; title: string; lead?: ReactNode; children: ReactNode }) {
   const headingId = `${id}-title`
+  const Icon = PANEL_ICONS[id]
   return (
     <section id={id} aria-labelledby={headingId} className={styles.panel}>
       <div className={styles.panelHead}>
-        <h2 id={headingId} className={styles.panelTitle}>{title}</h2>
-        {lead && <p className={styles.note}>{lead}</p>}
+        <span className={styles.panelIcon} aria-hidden="true"><Icon size={18} strokeWidth={1.75} /></span>
+        <div className={styles.panelHeadText}>
+          <h2 id={headingId} className={styles.panelTitle}>{title}</h2>
+          {lead && <p className={styles.panelLead}>{lead}</p>}
+        </div>
       </div>
-      {children}
+      <div className={styles.panelBody}>{children}</div>
     </section>
   )
 }

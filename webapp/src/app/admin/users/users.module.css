@@ -1,23 +1,30 @@
+/* The search and filter bar, also used by the Audit page: one card above the results. */
 .filters {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
 }
 
 .filter {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  min-width: 140px;
+  min-width: 160px;
 }
 
 .search {
-  flex: 1 1 220px;
+  flex: 1 1 280px;
 }
 
 .tableWrap {
   overflow-x: auto;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .count {
@@ -61,18 +68,22 @@
   font-size: var(--text-xs);
 }
 
+/* A card on the account page (also handed to QuotaUsage as its section class). */
 .section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-4);
-  background: var(--table-surface);
-  border: 1px solid var(--table-border);
-  border-radius: var(--radius-lg);
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  scroll-margin-top: var(--space-4);
 }
 
 .sectionTitle {
-  margin: 0;
+  margin: 0 0 var(--space-1);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-default);
   font-size: var(--text-base);
   font-weight: var(--font-semibold);
   color: var(--text-primary);
@@ -80,14 +91,14 @@
 
 .facts {
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: var(--space-1-5) var(--space-4);
+  grid-template-columns: minmax(160px, max-content) 1fr;
+  gap: var(--space-2) var(--space-6);
   margin: 0;
   font-size: var(--text-sm);
 }
 
 .facts dt {
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
 }
 
 .facts dd {
@@ -96,6 +107,7 @@
 }
 
 .back {
+  align-self: flex-start;
   font-size: var(--text-sm);
   color: var(--text-secondary);
   text-decoration: none;
@@ -108,12 +120,4 @@
 .back:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 1px;
-}
-
-.headline {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
 }

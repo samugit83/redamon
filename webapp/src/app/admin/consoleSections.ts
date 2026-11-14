@@ -76,7 +76,7 @@ export function openSections(holds: Holds, allShares: AllSharesView): ConsoleSec
   return CONSOLE_SECTIONS.filter((s) => sectionAccess(s, holds, allShares).state === 'open')
 }
 
-/** The section a console path belongs to; null for the overview and for a path no section owns. */
+/** The section a console path belongs to; null for /admin itself and for a path no section owns. */
 export function sectionForPath(pathname: string): ConsoleSection | null {
   return CONSOLE_SECTIONS.find((s) => pathname === s.href || pathname.startsWith(`${s.href}/`)) ?? null
 }

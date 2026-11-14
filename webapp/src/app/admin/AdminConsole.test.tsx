@@ -18,10 +18,14 @@ import { BUILTIN_ADMIN_PROFILES } from '@/lib/authz/builtinSets'
 import { ApiError } from '@/lib/apiError'
 import { setFlagsForTests } from '@/lib/authz/flags'
 
-const nav = vi.hoisted(() => ({ pathname: '/admin', notFound: vi.fn(() => { throw new Error('NEXT_NOT_FOUND') }) }))
+const nav = vi.hoisted(() => ({
+  pathname: '/admin',
+  notFound: vi.fn(() => { throw new Error('NEXT_NOT_FOUND') }),
+  replace: vi.fn(),
+}))
 vi.mock('next/navigation', () => ({
   usePathname: () => nav.pathname,
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), replace: nav.replace }),
   notFound: nav.notFound,
 }))
 vi.mock('next/link', () => ({
@@ -42,6 +46,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 beforeEach(() => {
   nav.pathname = '/admin'
   nav.notFound.mockClear()
+  nav.replace.mockClear()
   fetchMock = vi.fn(async () => json({ sharingPolicy: { adminsSeeAllShares: true } }))
   vi.stubGlobal('fetch', fetchMock)
 })
@@ -85,13 +90,13 @@ describe('the layout', () => {
 describe('nav shows only permitted sections', () => {
   test('User manager: Users only, and the Shares policy is never read without sharing in force', () => {
     renderConsole(adminAuth(profile('user-manager')))
-    expect(navLinks()).toEqual(['Overview', 'Users'])
+    expect(navLinks()).toEqual(['Users'])
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test('Full admin: every section but Admin profiles', () => {
     renderConsole(adminAuth(profile('full-admin')))
-    expect(navLinks()).toEqual(['Overview', 'Users', 'Permission sets', 'Projects', 'Operations', 'Audit', 'Instance'])
+    expect(navLinks()).toEqual(['Users', 'Permission sets', 'Projects', 'Operations', 'Audit', 'Instance'])
   })
 
   test('Root, sharing in force and the policy letting admins see every share: all eight, Shares once the policy is read', async () => {
@@ -100,7 +105,7 @@ describe('nav shows only permitted sections', () => {
     expect(navLinks()).not.toContain('Shares')
     await waitFor(() => expect(navLinks()).toContain('Shares'))
     expect(navLinks()).toEqual([
-      'Overview', 'Users', 'Permission sets', 'Admin profiles', 'Projects', 'Shares', 'Operations', 'Audit', 'Instance',
+      'Users', 'Permission sets', 'Admin profiles', 'Projects', 'Shares', 'Operations', 'Audit', 'Instance',
     ])
     expect(fetchMock).toHaveBeenCalledWith('/api/admin/instance-settings', { cache: 'no-store' })
   })
@@ -111,7 +116,7 @@ describe('nav shows only permitted sections', () => {
     renderConsole({ ...base, user: { ...base.user!, sharing: { enabled: true, maxLevel: 'read' } } })
     await waitFor(() => expect(fetchMock).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 0))
-    expect(navLinks()).toEqual(['Overview', 'Users'])
+    expect(navLinks()).toEqual(['Users'])
   })
 
   test('the policy read fails: no Shares (fails closed)', async () => {
@@ -120,21 +125,26 @@ describe('nav shows only permitted sections', () => {
     renderConsole({ ...base, user: { ...base.user!, sharing: { enabled: true, maxLevel: 'read' } } })
     await waitFor(() => expect(fetchMock).toHaveBeenCalled())
     await new Promise((r) => setTimeout(r, 0))
-    expect(navLinks()).toEqual(['Overview', 'Users'])
+    expect(navLinks()).toEqual(['Users'])
   })
 
-  test('the index lists the open sections with what each holds, as links', () => {
+  test('/admin opens the first section the person may open, in place of the current history entry', async () => {
     render(
       <AuthContext.Provider value={adminAuth(profile('security-auditor'))}>
         <AdminConsole><AdminIndexPage /></AdminConsole>
       </AuthContext.Provider>,
     )
-    expect(screen.getByRole('heading', { level: 1, name: 'Admin console' })).toBeInTheDocument()
-    const list = screen.getByRole('list', { name: 'Sections' })
-    const cards = within(list).getAllByRole('link')
-    expect(cards.map((a) => a.getAttribute('href'))).toEqual(['/admin/users', '/admin/projects', '/admin/audit'])
-    expect(cards[2]).toHaveTextContent(/Audit/)
-    expect(cards[2]).toHaveTextContent(/export/)
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/admin/users'))
+    expect(screen.getByRole('status')).toHaveTextContent('Opening the admin console')
+  })
+
+  test('/admin with only an Audit permission opens Audit', async () => {
+    render(
+      <AuthContext.Provider value={adminAuth(['audit:read'])}>
+        <AdminConsole><AdminIndexPage /></AdminConsole>
+      </AuthContext.Provider>,
+    )
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/admin/audit'))
   })
 })
 
@@ -147,7 +157,7 @@ describe('denied state', () => {
     expect(alert).toHaveTextContent('audit:read')
     expect(screen.queryByText('section body')).toBeNull()
     // The navigation stays, so the person can go where they may.
-    expect(navLinks()).toEqual(['Overview', 'Users'])
+    expect(navLinks()).toEqual(['Users'])
   })
 
   test('Instance names every permission that would open it', () => {
@@ -226,7 +236,7 @@ describe('keyboard and labels', () => {
     renderConsole(adminAuth(profile('security-auditor')))
     const landmark = screen.getByRole('navigation', { name: 'Admin console' })
     const links = within(landmark).getAllByRole('link')
-    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/admin', '/admin/users', '/admin/projects', '/admin/audit'])
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/admin/users', '/admin/projects', '/admin/audit'])
     expect(links.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['Audit'])
     // Plain anchors with an href: reachable with Tab, opened with Enter; nothing removed from the tab order.
     for (const a of links) {
@@ -235,10 +245,9 @@ describe('keyboard and labels', () => {
     }
   })
 
-  test('the overview link is current on /admin only', () => {
+  test('/admin itself marks no section current (it opens one at once)', () => {
     renderConsole(adminAuth(['users:read']))
     const landmark = screen.getByRole('navigation', { name: 'Admin console' })
-    expect(within(landmark).getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page')
     expect(within(landmark).getByRole('link', { name: 'Users' })).not.toHaveAttribute('aria-current')
   })
 })

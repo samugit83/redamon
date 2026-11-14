@@ -11,6 +11,8 @@ import type {
 } from '@/lib/authz/adminOperations'
 import { useConsoleSections } from '../AdminConsole'
 import { whenLabel } from '../shares/shareWords'
+import { ConsoleHeader } from '../ConsoleHeader'
+import { SECTION_ICONS } from '../consoleIcons'
 import consoleStyles from '../admin.module.css'
 import pageStyles from '@/app/settings/users/page.module.css'
 import overviewStyles from '../projects/overview.module.css'
@@ -92,7 +94,7 @@ function Section({ id, title, count, children }: { id: string; title: string; co
       <h2 id={id} className={styles.sectionTitle}>
         {title}{count !== undefined && <span className={styles.count}> ({count})</span>}
       </h2>
-      {children}
+      <div className={styles.sectionBody}>{children}</div>
     </section>
   )
 }
@@ -218,31 +220,32 @@ export default function AdminOperationsPage() {
   const data = view.kind === 'ready' ? view.data : null
 
   return (
-    <div className={`${consoleStyles.page} ${styles.wide}`}>
-      <div className={overviewStyles.headline}>
-        <h1 className={consoleStyles.title}>Operations</h1>
-        <div className={styles.toolbar}>
-          {data?.actions.stopRuns && (
-            <button
-              type="button"
-              className={`${pageStyles.actionButton} ${pageStyles.deleteButton}`}
-              onClick={() => void stopAll()}
-              disabled={stopping !== null}
-            >
-              {stopping === 'all' ? 'Stopping…' : 'Stop every agent run'}
+    <div className={consoleStyles.page}>
+      <ConsoleHeader
+        icon={SECTION_ICONS.operations}
+        title="Operations"
+        lead={<>What runs on this instance now, whoever started it. The view reads it again every 10 seconds; it shows names only, never a project&apos;s content.</>}
+        actions={
+          <>
+            {data && (
+              <p className={styles.updated} aria-live="polite">Updated <time dateTime={data.generatedAt}>{whenLabel(data.generatedAt, '')}</time></p>
+            )}
+            {data?.actions.stopRuns && (
+              <button
+                type="button"
+                className={`${pageStyles.actionButton} ${pageStyles.deleteButton}`}
+                onClick={() => void stopAll()}
+                disabled={stopping !== null}
+              >
+                {stopping === 'all' ? 'Stopping…' : 'Stop every agent run'}
+              </button>
+            )}
+            <button type="button" className={pageStyles.actionButton} onClick={() => void load()} disabled={refreshing}>
+              {refreshing ? 'Refreshing…' : 'Refresh now'}
             </button>
-          )}
-          <button type="button" className={pageStyles.actionButton} onClick={() => void load()} disabled={refreshing}>
-            {refreshing ? 'Refreshing…' : 'Refresh now'}
-          </button>
-        </div>
-      </div>
-      <p className={overviewStyles.intro}>
-        What runs on this instance now, whoever started it. The view reads it again every 10 seconds; it shows names only, never a project&apos;s content.
-      </p>
-      {data && (
-        <p className={overviewStyles.count} aria-live="polite">Updated <time dateTime={data.generatedAt}>{whenLabel(data.generatedAt, '')}</time></p>
-      )}
+          </>
+        }
+      />
       {refreshError && (
         <p className={styles.refreshError} role="alert">Could not refresh: {refreshError}. The lists below are from the last successful read.</p>
       )}

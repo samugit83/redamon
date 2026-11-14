@@ -17,6 +17,8 @@ import type { DirectoryRow, UserDetail } from '@/lib/authz/userDirectory'
 import type { AuditRowView } from '@/lib/authz/auditReader'
 import { LastLogin, SetsCell, StatusCell, TypeBadge } from '../UserFacts'
 import { UserRowActions } from '../UserRowActions'
+import { ConsoleHeader } from '../../ConsoleHeader'
+import { SECTION_ICONS } from '../../consoleIcons'
 import consoleStyles from '../../admin.module.css'
 import pageStyles from '@/app/settings/users/page.module.css'
 import styles from '../users.module.css'
@@ -91,12 +93,14 @@ export default function AdminUserDetailPage() {
   return (
     <div className={consoleStyles.page}>
       {back}
-      <div className={styles.headline}>
-        <h1 className={consoleStyles.title}>
-          {user.name}{user.self && <span className={pageStyles.selfLabel}>(you)</span>}
-        </h1>
-        <UserRowActions row={user} policy={policy} permissionsLink={false} onChanged={reload} onDeleted={() => router.push('/admin/users')} />
-      </div>
+      <ConsoleHeader
+        icon={SECTION_ICONS.users}
+        title={<>{user.name}{user.self && <span className={pageStyles.selfLabel}>(you)</span>}</>}
+        lead="The account's profile, permissions, projects, tokens, quotas, sessions and recent activity."
+        actions={
+          <UserRowActions row={user} policy={policy} permissionsLink={false} onChanged={reload} onDeleted={() => router.push('/admin/users')} />
+        }
+      />
 
       <section className={styles.section} aria-labelledby="user-profile">
         <h2 id="user-profile" className={styles.sectionTitle}>Profile</h2>

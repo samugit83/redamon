@@ -1,3 +1,4 @@
+/* Loading, signed-out and no-permission states, drawn before the console shell exists. */
 .frame {
   padding: var(--space-6);
   max-width: 720px;
@@ -11,23 +12,29 @@
   display: flex;
   flex: 1;
   min-height: 0;
+  background: var(--bg-primary);
 }
 
+/* ---------------------------------------------------------------- navigation */
+
 .nav {
-  flex: 0 0 200px;
-  padding: var(--space-4) var(--space-3);
+  flex: 0 0 224px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-3);
   border-right: 1px solid var(--border-default);
   background: var(--bg-secondary);
   overflow-y: auto;
 }
 
 .navTitle {
-  margin: 0 0 var(--space-2);
-  padding: 0 var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-3);
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   color: var(--text-tertiary);
 }
 
@@ -37,16 +44,26 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-0-5);
+  gap: 2px;
 }
 
 .navLink {
-  display: block;
-  padding: var(--space-1-5) var(--space-2);
-  border-radius: var(--radius-default);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
   font-size: var(--text-sm);
   color: var(--text-secondary);
   text-decoration: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.navLink svg {
+  flex: none;
+  color: var(--text-tertiary);
+  transition: color 0.15s ease;
 }
 
 .navLink:hover {
@@ -54,18 +71,45 @@
   color: var(--text-primary);
 }
 
+.navLink:hover svg {
+  color: var(--text-secondary);
+}
+
 .navLink:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 1px;
 }
 
-.navLinkActive {
-  color: var(--accent-primary);
-  background: var(--accent-primary-subtle);
+.navLinkActive,
+.navLinkActive:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
   font-weight: var(--font-medium);
 }
 
+.navLinkActive svg,
+.navLinkActive:hover svg {
+  color: var(--accent-primary);
+}
+
+/* The bar that marks the open section, inside the nav's own padding. */
+.navLinkActive::before {
+  content: '';
+  position: absolute;
+  left: calc(-1 * var(--space-3));
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 var(--radius-full) var(--radius-full) 0;
+  background: var(--accent-primary);
+}
+
+/* ------------------------------------------------------------------- content */
+
+/* Tables and the older panels read --table-surface; inside the console it is the card colour, so
+   every sheet stands off the page background the way the rest of the app's cards do. */
 .content {
+  --table-surface: var(--bg-secondary);
   flex: 1;
   min-width: 0;
   padding: var(--space-6);
@@ -75,18 +119,85 @@
 .page {
   display: flex;
   flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+}
+
+/* ---------------------------------------------------------------- page header */
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-4);
-  max-width: 960px;
+  padding: var(--space-5) var(--space-6);
+  background:
+    linear-gradient(120deg, color-mix(in srgb, var(--accent-primary) 7%, transparent), transparent 45%),
+    var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+}
+
+.headerMain {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  min-width: 0;
+  flex: 1 1 420px;
+}
+
+.headerIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-lg);
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 28%, transparent);
+}
+
+.headerText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
 .title {
   margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
   font-size: var(--text-xl);
   font-weight: var(--font-bold);
+  line-height: 1.25;
   color: var(--text-primary);
 }
 
-.lead,
+/* Prose keeps a readable measure even though the page itself spans the full width. */
+.lead {
+  margin: 0;
+  max-width: 96ch;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
 .state {
   margin: 0;
   font-size: var(--text-sm);
@@ -96,55 +207,15 @@
 .error {
   font-size: var(--text-sm);
   color: var(--status-error);
-  padding: var(--space-2);
-  background: rgba(239, 68, 68, 0.1);
-  border-radius: var(--radius-default);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-error) 30%, transparent);
+  border-radius: var(--radius-md);
 }
 
 .missingList {
   margin: var(--space-1) 0;
   padding-left: var(--space-5);
-}
-
-.cards {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: var(--space-3);
-}
-
-.card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  height: 100%;
-  padding: var(--space-4);
-  background: var(--table-surface);
-  border: 1px solid var(--table-border);
-  border-radius: var(--radius-lg);
-  text-decoration: none;
-}
-
-.card:hover {
-  border-color: var(--accent-primary);
-}
-
-.card:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
-}
-
-.cardTitle {
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  color: var(--text-primary);
-}
-
-.cardText {
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
 }
 
 @media (max-width: 720px) {
@@ -161,5 +232,17 @@
   .navList {
     flex-direction: row;
     flex-wrap: wrap;
+  }
+
+  .navLinkActive::before {
+    display: none;
+  }
+
+  .content {
+    padding: var(--space-4);
+  }
+
+  .header {
+    padding: var(--space-4);
   }
 }

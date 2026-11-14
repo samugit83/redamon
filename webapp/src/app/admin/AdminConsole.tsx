@@ -1,6 +1,7 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import type { LucideIcon } from 'lucide-react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { GuardedLink } from '@/components/GuardedLink'
@@ -11,6 +12,7 @@ import { PERMISSIONS, type PermissionId } from '@/lib/authz/permissions'
 import {
   openSections, sectionAccess, sectionForPath, type AllSharesView, type ConsoleSection, type Holds,
 } from './consoleSections'
+import { SECTION_ICONS } from './consoleIcons'
 import styles from './admin.module.css'
 
 const SectionsContext = createContext<readonly ConsoleSection[]>([])
@@ -124,13 +126,14 @@ export function AdminConsole({ children }: { children: ReactNode }) {
     )
   }
 
-  const navItem = (href: string, label: string, isCurrent: boolean) => (
+  const navItem = (href: string, label: string, isCurrent: boolean, Icon: LucideIcon) => (
     <li key={href}>
       <GuardedLink
         href={href}
         className={`${styles.navLink} ${isCurrent ? styles.navLinkActive : ''}`}
         aria-current={isCurrent ? 'page' : undefined}
       >
+        <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
         {label}
       </GuardedLink>
     </li>
@@ -143,8 +146,7 @@ export function AdminConsole({ children }: { children: ReactNode }) {
           <nav className={styles.nav} aria-label="Admin console">
             <p className={styles.navTitle} aria-hidden="true">Admin console</p>
             <ul className={styles.navList}>
-              {navItem('/admin', 'Overview', pathname === '/admin')}
-              {sections.map((s) => navItem(s.href, s.label, current?.id === s.id))}
+              {sections.map((s) => navItem(s.href, s.label, current?.id === s.id, SECTION_ICONS[s.id]))}
             </ul>
           </nav>
         )}

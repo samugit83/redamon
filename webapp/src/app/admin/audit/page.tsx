@@ -13,6 +13,8 @@ import { RetentionStatus } from './RetentionStatus'
 import {
   GROUP_OPTIONS, TABS, TAB_FILTERS, downloadName, hasFilters, queryOf, viewFrom, type Filters, type ViewState,
 } from './auditView'
+import { ConsoleHeader } from '../ConsoleHeader'
+import { SECTION_ICONS } from '../consoleIcons'
 import consoleStyles from '../admin.module.css'
 import pageStyles from '@/app/settings/users/page.module.css'
 import usersStyles from '../users/users.module.css'
@@ -143,9 +145,11 @@ export default function AdminAuditPage() {
 
   return (
     <div className={consoleStyles.page}>
-      <div className={styles.headline}>
-        <h1 className={consoleStyles.title}>Audit</h1>
-        {canExport && (
+      <ConsoleHeader
+        icon={SECTION_ICONS.audit}
+        title="Audit"
+        lead={<>Who did what and when. Rows are never deleted from here; the instance&apos;s audit retention decides how long they are kept.</>}
+        actions={canExport ? (
           <div className={pageStyles.actions} role="group" aria-label="Export the rows these filters select">
             {(['csv', 'json'] as const).map((f) => (
               <button key={f} type="button" className={pageStyles.actionButton} onClick={() => void exportAs(f)} disabled={exporting !== null}>
@@ -153,11 +157,8 @@ export default function AdminAuditPage() {
               </button>
             ))}
           </div>
-        )}
-      </div>
-      <p className={consoleStyles.lead}>
-        Who did what and when. Rows are never deleted from here; the instance&apos;s audit retention decides how long they are kept.
-      </p>
+        ) : undefined}
+      />
       <RetentionStatus />
 
       <div role="tablist" aria-label="Audit tables" className={styles.tabs}>
