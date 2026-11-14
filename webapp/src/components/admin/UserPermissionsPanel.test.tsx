@@ -343,3 +343,81 @@ describe('labelled controls (DV-19)', () => {
     expect(screen.getByRole('checkbox', { name: 'Show the permissions not held' })).toBeTruthy()
   })
 })
+
+describe('seeing what a set holds, and what saving changes', () => {
+  test('each set opens its permissions, with how it overlaps the other sets', async () => {
+    renderPanel()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: '12 permissions in Read-only analyst' }))
+    const dialog = within(await screen.findByRole('dialog', { name: 'Read-only analyst: 12 permissions' }))
+    expect(dialog.getByText('graph:read')).toBeTruthy()
+    expect(dialog.queryByText('recon:scan')).toBeNull()
+    expect(dialog.getByRole('list', { name: 'How it overlaps the other sets' }).textContent).toContain('Fully inside Recon operator, Red-team operator')
+    fireEvent.click(dialog.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  test('a change: the review lists it and what it gains; "With your changes" tags it; Discard puts the form back', async () => {
+    renderPanel()
+    await ready()
+    expect(screen.queryByRole('region', { name: 'Review before saving' })).toBeNull()
+    fireEvent.click(setBox('Recon operator'))
+    const review = within(screen.getByRole('region', { name: 'Review before saving' }))
+    expect(review.getByText(/ticked$/).textContent).toBe('Set Recon operator ticked')
+    expect(review.getByRole('list', { name: 'Permissions gained' }).textContent).toContain('recon:scan')
+    expect(review.queryByRole('list', { name: 'Permissions lost' })).toBeNull()
+
+    expect(screen.queryByRole('listitem', { name: 'recon:scan held' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^With your changes/ }))
+    expect(screen.getByRole('listitem', { name: 'recon:scan held' }).textContent).toContain('added')
+    fireEvent.click(screen.getByRole('button', { name: 'Saved' }))
+    expect(screen.queryByRole('listitem', { name: 'recon:scan held' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(screen.queryByRole('region', { name: 'Review before saving' })).toBeNull()
+    expect((setBox('Recon operator') as HTMLInputElement).checked).toBe(false)
+    expect(puts()).toHaveLength(0)
+  })
+
+  test('removing a grant: the loss is listed and kept in view, with the sign-out warning', async () => {
+    renderPanel()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove the override of scan:gvm' }))
+    const review = within(screen.getByRole('region', { name: 'Review before saving' }))
+    expect(review.getByRole('list', { name: 'Permissions lost' }).textContent).toBe('scan:gvm')
+    expect(review.getByText('Taking a permission away signs the account out when you save.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^With your changes/ }))
+    expect(screen.getByRole('listitem', { name: 'scan:gvm not held' }).textContent).toContain('removed')
+  })
+})
+
+test('a disabled account: the review says the changes apply once it is active, not that nothing changes', async () => {
+  h.views['member-1'] = viewOf({
+    userId: 'member-1', assigned: ['builtin:read-only-analyst'],
+    extra: [{ permission: 'graph:read', reason: { effect: 'deny', kind: 'inactive', status: 'disabled' } }],
+  })
+  renderPanel()
+  await ready()
+  fireEvent.click(setBox('Recon operator'))
+  const review = within(screen.getByRole('region', { name: 'Review before saving' }))
+  expect(review.getByText(/the account is disabled and holds nothing until it is active/)).toBeTruthy()
+  expect(review.queryByRole('list', { name: 'Permissions gained' })).toBeNull()
+})
+
+test('Default member is not offered; an account that holds it still shows it, to untick', async () => {
+  renderPanel()
+  await ready()
+  const group = within(screen.getByRole('group', { name: 'Member permission sets' }))
+  expect(group.queryByRole('checkbox', { name: /^Default member/ })).toBeNull()
+  expect(group.getByRole('checkbox', { name: /^Red-team operator/ })).toBeTruthy()
+  cleanup()
+
+  h.views['member-1'] = viewOf({ userId: 'member-1', sets: [{ id: 'builtin:default-member' }] })
+  renderPanel()
+  await ready()
+  const box = setBox('Default member') as HTMLInputElement
+  expect(box.checked).toBe(true)
+  expect(box.closest('label')!.textContent).toContain('no longer offered')
+  fireEvent.click(box)
+  expect(setBox('Default member')).toBeTruthy()
+})

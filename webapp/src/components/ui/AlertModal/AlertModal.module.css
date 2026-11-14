@@ -13,19 +13,19 @@
 }
 
 .btnPrimary {
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-1-5) var(--space-3);
   font-size: var(--text-xs);
-  font-weight: var(--font-medium);
+  font-weight: var(--font-semibold);
   color: var(--text-on-accent);
   background: var(--accent-primary);
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-default);
   cursor: pointer;
   transition: var(--transition-all);
 }
 
 .btnPrimary:hover {
-  background: var(--accent-hover);
+  background: var(--accent-primary-hover);
 }
 
 .btnPrimary:focus-visible {
@@ -33,21 +33,22 @@
   outline-offset: 2px;
 }
 
+/* = .secondaryButton */
 .btnSecondary {
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-1-5) var(--space-3);
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  background: transparent;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-default);
   cursor: pointer;
   transition: var(--transition-all);
 }
 
 .btnSecondary:hover {
   background: var(--bg-hover);
-  color: var(--text-primary);
+  border-color: var(--text-tertiary);
 }
 
 .btnSecondary:focus-visible {
@@ -56,13 +57,13 @@
 }
 
 .btnDanger {
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-1-5) var(--space-3);
   font-size: var(--text-xs);
-  font-weight: var(--font-medium);
+  font-weight: var(--font-semibold);
   color: var(--text-on-accent);
   background: var(--status-error);
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-default);
   cursor: pointer;
   transition: var(--transition-all);
 }

@@ -1,8 +1,10 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
+import { MailX, Send } from 'lucide-react'
 import { CopyButton, Modal, useOptionalAlertModal } from '@/components/ui'
 import { fetchJson, toApiError } from '@/lib/apiError'
+import { ActionLabel } from './ActionLabel'
 import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from './InitialSetPicker'
 import styles from '@/app/settings/users/page.module.css'
 
@@ -220,7 +222,7 @@ export function InviteRowActions({ user, buttonClassName, dangerClassName, onCha
   return (
     <>
       <button type="button" className={buttonClassName} disabled={busy} aria-label={`Resend the invite to ${user.name}`} onClick={() => void resend()}>
-        Resend
+        <ActionLabel icon={Send}>Resend</ActionLabel>
       </button>
       <button
         type="button"
@@ -229,7 +231,7 @@ export function InviteRowActions({ user, buttonClassName, dangerClassName, onCha
         aria-label={`Cancel the invite of ${user.name}`}
         onClick={() => void cancel()}
       >
-        Cancel invite
+        <ActionLabel icon={MailX}>Cancel invite</ActionLabel>
       </button>
       <Modal isOpen={resent !== null} onClose={() => setResent(null)} title={`Invite link for ${user.name}`}>
         {resent && (

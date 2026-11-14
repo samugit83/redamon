@@ -1,10 +1,26 @@
+/*
+ * My account, in the /settings look: each part a section card (Settings.module.css .section) and
+ * every field the user-management form style (src/app/settings/users/page.module.css).
+ */
+
 .page {
-  padding: var(--space-6);
-  max-width: 560px;
+  width: 860px;
+  max-width: 100%;
   margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+.header {
+  margin-bottom: var(--space-1);
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .title {
@@ -13,21 +29,108 @@
   color: var(--text-primary);
 }
 
+.subtitle {
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* ---------------------------------------------------------------- Sections */
+
 .section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  background: var(--table-surface);
-  border: 1px solid var(--table-border);
-  border-radius: var(--radius-lg);
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.sectionHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
 .sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   font-size: var(--text-base);
   font-weight: var(--font-semibold);
   color: var(--text-primary);
 }
+
+.sectionTitle svg {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.sectionHint {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* A second form in the same section starts under a rule. */
+.form + .form {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-default);
+}
+
+.identity {
+  padding: var(--space-2) var(--space-2-5);
+  font-size: var(--text-sm);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+}
+
+/* A hint line with its action on the right, wrapping under it on a narrow screen. */
+.split {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.split > :first-child {
+  flex: 1 1 320px;
+}
+
+.footerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-default);
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--accent-secondary);
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------------------------------------------------------------- Forms */
 
 .form {
   display: flex;
@@ -35,68 +138,109 @@
   gap: var(--space-3);
 }
 
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
 .field {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  min-width: 0;
 }
 
 .label {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   font-weight: var(--font-medium);
   color: var(--text-secondary);
 }
 
 .input {
   width: 100%;
-  padding: var(--space-2) var(--space-2-5);
-  font-size: var(--text-sm);
+  padding: var(--space-1-5) var(--space-2);
+  font-family: inherit;
+  font-size: var(--text-xs);
   color: var(--text-primary);
-  background: var(--bg-input);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-default);
   outline: none;
-  font-family: var(--font-sans);
+  transition: var(--transition-all);
+}
+
+.input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.input:hover:not(:disabled):not(:focus) {
+  border-color: var(--text-tertiary);
 }
 
 .input:focus {
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+  border-color: var(--accent-secondary);
+  box-shadow: 0 0 0 2px var(--border-focus);
+}
+
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* A one-field form: the field and its button on one line. */
+.inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.inline .input {
+  flex: 1;
 }
 
 .hint {
   font-size: var(--text-xs);
+  line-height: 1.5;
   color: var(--text-tertiary);
 }
 
 .notice {
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  padding: var(--space-2-5);
-  background: rgba(234, 179, 8, 0.12);
-  border: 1px solid rgba(234, 179, 8, 0.4);
+  padding: var(--space-2-5) var(--space-3);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--status-warning-text);
+  background: color-mix(in srgb, var(--status-warning) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-warning) 35%, transparent);
+  border-radius: var(--radius-default);
+}
+
+.error,
+.success {
+  padding: var(--space-2) var(--space-2-5);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  border: 1px solid transparent;
   border-radius: var(--radius-default);
 }
 
 .error {
-  font-size: var(--text-sm);
-  color: var(--status-error);
-  padding: var(--space-2);
-  background: rgba(239, 68, 68, 0.1);
-  border-radius: var(--radius-default);
+  color: var(--status-error-text);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+  border-color: color-mix(in srgb, var(--status-error) 30%, transparent);
 }
 
 .success {
-  font-size: var(--text-sm);
-  color: var(--status-success);
-  padding: var(--space-2);
-  background: rgba(34, 197, 94, 0.1);
-  border-radius: var(--radius-default);
+  color: var(--status-success-text);
+  background: color-mix(in srgb, var(--status-success) 10%, transparent);
+  border-color: color-mix(in srgb, var(--status-success) 30%, transparent);
 }
 
 .actions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .state {
@@ -104,20 +248,33 @@
   color: var(--text-secondary);
 }
 
-/* Step 2.11: "Sign out everywhere" and My activity. */
+.state a {
+  color: var(--accent-secondary);
+}
+
+/* Outlined danger: "Sign out everywhere". */
 .dangerButton {
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5);
+  flex-shrink: 0;
+  padding: var(--space-1-5) var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-xs);
   font-weight: var(--font-medium);
-  color: var(--status-error);
+  color: var(--status-error-text);
+  white-space: nowrap;
   background: transparent;
-  border: 1px solid var(--status-error);
+  border: 1px solid color-mix(in srgb, var(--status-error) 45%, transparent);
   border-radius: var(--radius-default);
   cursor: pointer;
+  transition: var(--transition-all);
 }
 
 .dangerButton:hover:not(:disabled) {
-  background: rgba(239, 68, 68, 0.08);
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
+  border-color: var(--status-error);
 }
 
 .dangerButton:focus-visible {
@@ -126,9 +283,11 @@
 }
 
 .dangerButton:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ---------------------------------------------------------------- My activity */
 
 .activity {
   list-style: none;
@@ -136,17 +295,21 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
 }
 
 .activityItem {
   display: flex;
   flex-direction: column;
   gap: var(--space-0-5);
-  font-size: var(--text-sm);
+  padding: var(--space-2-5) 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
   color: var(--text-primary);
-  padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--table-border);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.activityItem:first-child {
+  padding-top: 0;
 }
 
 .activityItem:last-child {
@@ -155,11 +318,20 @@
 }
 
 .activityWhen {
-  font-size: var(--text-xs);
+  font-size: 11px;
   color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
 .activityTag {
-  font-size: var(--text-xs);
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1-5);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
   color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
 }

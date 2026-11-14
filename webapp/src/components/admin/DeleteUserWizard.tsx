@@ -274,12 +274,13 @@ export function DeleteUserWizard({ isOpen, userId, userName, targetIsAdmin, onCl
                 </ul>
               </section>
 
+              {!resolved && <p id="del-unresolved" className={styles.hint}>Resolve each shared project first.</p>}
               <div className={styles.actions}>
                 <button type="button" className={styles.button} onClick={() => void load()} disabled={deleting}>Refresh</button>
                 <button type="button" className={styles.button} onClick={onClose} disabled={deleting}>Cancel</button>
                 <button
                   type="button"
-                  className={`${styles.button} ${styles.danger}`}
+                  className={styles.danger}
                   onClick={() => void startDelete()}
                   disabled={!resolved || deleting}
                   aria-describedby={resolved ? undefined : 'del-unresolved'}
@@ -287,7 +288,6 @@ export function DeleteUserWizard({ isOpen, userId, userName, targetIsAdmin, onCl
                   {deleting ? 'Deleting…' : 'Delete the account'}
                 </button>
               </div>
-              {!resolved && <p id="del-unresolved" className={styles.hint}>Resolve each shared project first.</p>}
             </>
           )}
         </div>
@@ -356,8 +356,8 @@ function SharedProject({ project, choice, transfersAvailable, mayForce, onChoose
           </label>
           {(choice.mode === 'offer' || choice.mode === 'force') && (
             <div className={styles.send}>
-              <label htmlFor={selectId}>Collaborator</label>
-              <select id={selectId} value={choice.toUserId} onChange={(e) => onChoose({ toUserId: e.target.value })}>
+              <label htmlFor={selectId} className={styles.label}>Collaborator</label>
+              <select id={selectId} className={styles.select} value={choice.toUserId} onChange={(e) => onChoose({ toUserId: e.target.value })}>
                 <option value="">Choose…</option>
                 {active.map((c) => <option key={c.id} value={c.id}>{who(c)}</option>)}
               </select>

@@ -3,8 +3,9 @@
 import { useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import { KeyRound } from 'lucide-react'
 import { useAuth } from '@/providers/AuthProvider'
-import { useAlertModal } from '@/components/ui'
+import { useAlertModal, WikiInfoButton } from '@/components/ui'
 import { usePasswordPolicy } from '@/hooks/usePasswordPolicy'
 import { BASE_PASSWORD_POLICY, validateNewPassword } from '@/lib/authz/passwordPolicy'
 import { readApiError, toApiError } from '@/lib/apiError'
@@ -106,10 +107,21 @@ export default function AccountPage() {
 
   return (
     <main className={styles.page}>
-      <h1 className={styles.title}>My account</h1>
+      <div className={styles.header}>
+        <div className={styles.titleRow}>
+          <h1 className={styles.title}>My account</h1>
+          <WikiInfoButton target="settingsUsers" title="Open User Management wiki page" size={15} />
+        </div>
+        <p className={styles.subtitle}>
+          {full ? 'Your profile, password, sessions and what happened to your account.' : 'Change the password you sign in with.'}
+        </p>
+      </div>
       {full && <ProfileSection account={account} />}
       <section className={styles.section} aria-labelledby="account-password-title">
-        <h2 id="account-password-title" className={styles.sectionTitle}>Password</h2>
+        <div className={styles.sectionHead}>
+          <h2 id="account-password-title" className={styles.sectionTitle}><KeyRound size={16} /> Password</h2>
+          <p className={styles.sectionHint}>Changing it also revokes every MCP token of your account.</p>
+        </div>
         {forced && (
           <p className={styles.notice}>
             You must change your password before you continue: the one you signed in with was set by an
@@ -131,30 +143,32 @@ export default function AccountPage() {
               autoFocus={!full}
             />
           </div>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="account-new-password">New password</label>
-            <input
-              id="account-new-password"
-              type="password"
-              className={styles.input}
-              value={next}
-              onChange={e => setNext(e.target.value)}
-              autoComplete="new-password"
-              aria-describedby={policy ? 'account-password-policy' : undefined}
-            />
-            {policy && <span id="account-password-policy" className={styles.hint}>{policy.description}</span>}
+          <div className={styles.grid}>
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="account-new-password">New password</label>
+              <input
+                id="account-new-password"
+                type="password"
+                className={styles.input}
+                value={next}
+                onChange={e => setNext(e.target.value)}
+                autoComplete="new-password"
+                aria-describedby={policy ? 'account-password-policy' : undefined}
+              />
+            </div>
+            <div className={styles.field}>
+              <label className={styles.label} htmlFor="account-confirm-password">Confirm new password</label>
+              <input
+                id="account-confirm-password"
+                type="password"
+                className={styles.input}
+                value={confirm}
+                onChange={e => setConfirm(e.target.value)}
+                autoComplete="new-password"
+              />
+            </div>
           </div>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="account-confirm-password">Confirm new password</label>
-            <input
-              id="account-confirm-password"
-              type="password"
-              className={styles.input}
-              value={confirm}
-              onChange={e => setConfirm(e.target.value)}
-              autoComplete="new-password"
-            />
-          </div>
+          {policy && <span id="account-password-policy" className={styles.hint}>{policy.description}</span>}
           <div className={styles.actions}>
             <button type="submit" className="primaryButton" disabled={saving}>
               {saving ? 'Saving…' : 'Change password'}

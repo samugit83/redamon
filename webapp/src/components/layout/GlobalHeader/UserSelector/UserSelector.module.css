@@ -58,7 +58,8 @@
   position: absolute;
   top: calc(100% + var(--space-1));
   right: 0;
-  width: 240px;
+  width: 364px;
+  max-width: calc(100vw - var(--space-4));
   background: var(--bg-secondary);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-default);
@@ -140,6 +141,21 @@
   text-overflow: ellipsis;
 }
 
+/* The name inherits this size (the email and the badge set their own); unset it is the body's 16px. */
+.identityStacked {
+  font-size: var(--text-sm);
+}
+
+/* IdentityLabel's email is its last child; its own class is another module's hash. A row of its own
+   keeps every entry the same shape, whether the address fits beside the name or not. */
+.identityStacked > :last-child {
+  flex-basis: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .itemEmail {
   font-size: 10px;
   color: var(--text-tertiary);
@@ -155,57 +171,62 @@
   color: var(--text-tertiary);
 }
 
-.footer {
+.menu {
   display: flex;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  flex-direction: column;
+  padding: var(--space-1);
   border-top: 1px solid var(--border-default);
-  background: var(--bg-tertiary);
 }
 
-.footerButton {
+.menuItem {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  flex: 1;
-  padding: var(--space-1) var(--space-2);
+  gap: var(--space-2-5);
+  width: 100%;
+  padding: var(--space-2) var(--space-2-5);
   background: transparent;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
+  border: none;
+  border-radius: var(--radius-default);
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: var(--font-medium);
+  text-align: left;
   cursor: pointer;
   transition: var(--transition-all);
 }
 
-.footerButton:hover {
+.menuItem svg {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: var(--transition-all);
+}
+
+.menuItem:hover,
+.menuItem:focus-visible {
   background: var(--bg-hover);
   color: var(--text-primary);
-  border-color: var(--text-tertiary);
+  outline: none;
 }
 
-.logoutButton {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  flex: 1;
-  padding: var(--space-1) var(--space-2);
-  background: transparent;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
+.menuItem:hover svg,
+.menuItem:focus-visible svg {
+  color: var(--text-primary);
+}
+
+.menuItemDanger,
+.menuItemDanger svg {
   color: var(--status-error);
-  font-size: 10px;
-  font-weight: var(--font-medium);
-  cursor: pointer;
-  transition: var(--transition-all);
 }
 
-.logoutButton:hover {
+.menuItemDanger:hover,
+.menuItemDanger:focus-visible {
   background: rgba(239, 68, 68, 0.1);
-  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
+.menuItemDanger:hover svg,
+.menuItemDanger:focus-visible svg {
+  color: var(--status-error);
 }
 
 .roleBadge {

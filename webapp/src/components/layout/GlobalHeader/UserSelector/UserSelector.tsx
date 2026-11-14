@@ -138,7 +138,12 @@ export function UserSelector() {
 
       {isOpen && (
         <div className={styles.dropdown}>
-          {canSwitchUser ? (
+          {!canSwitchUser && (
+            <div className={styles.header}>
+              <span className={styles.headerTitle}>Account</span>
+            </div>
+          )}
+          {canSwitchUser && (
             <>
               <div className={styles.header}>
                 <span className={styles.headerTitle}>Users</span>
@@ -157,7 +162,7 @@ export function UserSelector() {
                       </div>
                       {identity ? (
                         <div className={styles.itemContent}>
-                          <IdentityLabel name={user.name} email={user.email} accountType={typeOf(user)} />
+                          <IdentityLabel name={user.name} email={user.email} accountType={typeOf(user)} className={styles.identityStacked} />
                         </div>
                       ) : (
                         <div className={styles.itemContent}>
@@ -179,65 +184,39 @@ export function UserSelector() {
                   </div>
                 )}
               </div>
-
-              <div className={styles.footer}>
-                {hasAccountPage && (
-                  <button className={styles.footerButton} onClick={handleMyAccount}>
-                    <UserRound size={12} />
-                    My account
-                  </button>
-                )}
-                {canReadUsers && (
-                  <button className={styles.footerButton} onClick={handleManageUsers}>
-                    <Users size={12} />
-                    Manage Users
-                  </button>
-                )}
-                <button className={styles.logoutButton} onClick={handleLogout}>
-                  <LogOut size={12} />
-                  Logout
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className={styles.header}>
-                <span className={styles.headerTitle}>Account</span>
-              </div>
-
-              <div className={styles.list}>
-                {hasAccountPage && (
-                  <button className={styles.item} onClick={handleMyAccount}>
-                    <UserRound size={14} />
-                    <div className={styles.itemContent}>
-                      <span className={styles.itemName}>My account</span>
-                    </div>
-                  </button>
-                )}
-                {offersChangePassword && (
-                  <button className={styles.item} onClick={handleChangePassword}>
-                    <KeyRound size={14} />
-                    <div className={styles.itemContent}>
-                      <span className={styles.itemName}>Change Password</span>
-                    </div>
-                  </button>
-                )}
-              </div>
-
-              <div className={styles.footer}>
-                {canReadUsers && (
-                  <button className={styles.footerButton} onClick={handleManageUsers}>
-                    <Users size={12} />
-                    Manage Users
-                  </button>
-                )}
-                <button className={styles.logoutButton} onClick={handleLogout}>
-                  <LogOut size={12} />
-                  Logout
-                </button>
-              </div>
             </>
           )}
+
+          {(hasAccountPage || canReadUsers || (!canSwitchUser && offersChangePassword)) && (
+            <div className={styles.menu}>
+              {hasAccountPage && (
+                <button className={styles.menuItem} onClick={handleMyAccount}>
+                  <UserRound size={16} />
+                  My account
+                </button>
+              )}
+              {/* The switcher never offered it (DV-30); opensOwnPasswordDialog keeps the rest in step with the Users page. */}
+              {!canSwitchUser && offersChangePassword && (
+                <button className={styles.menuItem} onClick={handleChangePassword}>
+                  <KeyRound size={16} />
+                  Change Password
+                </button>
+              )}
+              {canReadUsers && (
+                <button className={styles.menuItem} onClick={handleManageUsers}>
+                  <Users size={16} />
+                  Manage Users
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className={styles.menu}>
+            <button className={`${styles.menuItem} ${styles.menuItemDanger}`} onClick={handleLogout}>
+              <LogOut size={16} />
+              Logout
+            </button>
+          </div>
         </div>
       )}
 

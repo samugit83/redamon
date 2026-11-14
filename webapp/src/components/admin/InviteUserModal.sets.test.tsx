@@ -96,6 +96,14 @@ describe('set picker (ID-28)', () => {
     expect((within(select).getByRole('option', { name: 'Recon operator' }) as HTMLOptionElement).disabled).toBe(false)
   })
 
+  test('Default member is not offered on its own: the instance default and Red-team operator cover it', async () => {
+    renderModal()
+    const select = await picker()
+    const names = within(select).getAllByRole('option').map((o) => o.textContent ?? '')
+    expect(names.some((n) => n.startsWith('Default member'))).toBe(false)
+    expect(names.some((n) => n.startsWith('Red-team operator'))).toBe(true)
+  })
+
   test('a set giving Kali exec asks for the inviter\'s password, sent with the invite (ID-25)', async () => {
     me = FULL
     renderModal()

@@ -180,6 +180,7 @@ describe('columns', () => {
   })
 })
 
+// Row order: the safe actions first, the destructive ones (Cancel invite, Disable, Delete) last.
 describe('actions per hierarchy', () => {
   test('switch off: Phase 1, any admin manages every other row; Enable on a disabled one', () => {
     as('admin-off')
@@ -187,7 +188,7 @@ describe('actions per hierarchy', () => {
     expect(actionsOf('Pia')).toEqual(['Role of Pia', 'Set Password', 'Delete'])
     expect(actionsOf('Rita')).toEqual(['Role of Rita', 'Set Password', 'Delete'])
     expect(actionsOf('Marco')).toEqual(['Role of Marco', 'Set Password', 'Delete'])
-    expect(actionsOf('Anna')).toEqual(['Role of Anna', 'Set Password', 'Delete', 'Enable Anna'])
+    expect(actionsOf('Anna')).toEqual(['Role of Anna', 'Set Password', 'Enable Anna', 'Delete'])
     expect(actionsOf('Ada')).toEqual(['Set Password'])
   })
 
@@ -197,7 +198,7 @@ describe('actions per hierarchy', () => {
     expect(actionsOf('Rita')).toEqual([])
     expect(actionsOf('Pia')).toEqual([])
     expect(actionsOf('Marco')).toEqual([
-      'Set Password', 'Reset the credentials of Marco', 'Delete', 'Sign Marco out everywhere', 'Disable Marco',
+      'Set Password', 'Reset the credentials of Marco', 'Sign Marco out everywhere', 'Disable Marco', 'Delete',
     ])
     expect(actionsOf('Nina')).toEqual(['Resend the invite to Nina', 'Cancel the invite of Nina', 'Delete'])
     expect(actionsOf('Ada')).toEqual(['Set Password', 'Sign your account out everywhere'])
@@ -216,7 +217,7 @@ describe('actions per hierarchy', () => {
     h.list.data = rows().filter((r) => r.id !== 'root-1')
     renderPage()
     expect(actionsOf('Pia')).toEqual([
-      'Role of Pia', 'Set Password', 'Reset the credentials of Pia', 'Delete', 'Sign Pia out everywhere', 'Disable Pia',
+      'Role of Pia', 'Set Password', 'Reset the credentials of Pia', 'Sign Pia out everywhere', 'Disable Pia', 'Delete',
     ])
     expect(actionsOf('Ada')).toEqual(['Set Password', 'Transfer Root', 'Sign your account out everywhere'])
   })

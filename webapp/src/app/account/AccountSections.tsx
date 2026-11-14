@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import Link from 'next/link'
+import { ArrowRight, History, LogOut, MonitorSmartphone, ShieldCheck, UserRound } from 'lucide-react'
 import { useAlertModal } from '@/components/ui'
 import { IdentityLabel, type AccountType } from '@/components/auth/IdentityLabel'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
@@ -84,8 +85,11 @@ export function ProfileSection({ account }: { account: AuthUser }) {
 
   return (
     <section className={styles.section} aria-labelledby="account-profile-title">
-      <h2 id="account-profile-title" className={styles.sectionTitle}>Profile</h2>
-      <p className={styles.hint}>
+      <div className={styles.sectionHead}>
+        <h2 id="account-profile-title" className={styles.sectionTitle}><UserRound size={16} /> Profile</h2>
+        <p className={styles.sectionHint}>How you appear to others, and the address you sign in with.</p>
+      </div>
+      <p className={styles.identity}>
         <IdentityLabel name={account.name} email={account.email} accountType={account.accountType as AccountType} />
       </p>
       <form className={styles.form} onSubmit={saveName} noValidate>
@@ -93,42 +97,44 @@ export function ProfileSection({ account }: { account: AuthUser }) {
         {nameState.saved && <div className={styles.success} role="status">Your name was saved.</div>}
         <div className={styles.field}>
           <label className={styles.label} htmlFor="account-name">Name</label>
-          <input id="account-name" className={styles.input} value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
-        </div>
-        <div className={styles.actions}>
-          <button type="submit" className="primaryButton" disabled={nameState.saving}>
-            {nameState.saving ? 'Saving…' : 'Save name'}
-          </button>
+          <div className={styles.inline}>
+            <input id="account-name" className={styles.input} value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+            <button type="submit" className="primaryButton" disabled={nameState.saving}>
+              {nameState.saving ? 'Saving…' : 'Save name'}
+            </button>
+          </div>
         </div>
       </form>
       <form className={styles.form} onSubmit={changeEmail} noValidate>
         {emailState.error && <div className={styles.error} role="alert">{emailState.error}</div>}
-        <div className={styles.field}>
-          <label className={styles.label} htmlFor="account-new-email">New sign-in email</label>
-          <input
-            id="account-new-email"
-            type="email"
-            className={styles.input}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-            aria-describedby="account-email-hint"
-          />
-          <span id="account-email-hint" className={styles.hint}>
-            You sign in with this address. Changing it needs your current password and is shown to you at your next sign-in.
-          </span>
+        <div className={styles.grid}>
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor="account-new-email">New sign-in email</label>
+            <input
+              id="account-new-email"
+              type="email"
+              className={styles.input}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              aria-describedby="account-email-hint"
+            />
+          </div>
+          <div className={styles.field}>
+            <label className={styles.label} htmlFor="account-email-password">Current password for the email change</label>
+            <input
+              id="account-email-password"
+              type="password"
+              className={styles.input}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </div>
         </div>
-        <div className={styles.field}>
-          <label className={styles.label} htmlFor="account-email-password">Current password for the email change</label>
-          <input
-            id="account-email-password"
-            type="password"
-            className={styles.input}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
-        </div>
+        <span id="account-email-hint" className={styles.hint}>
+          You sign in with this address. Changing it needs your current password and is shown to you at your next sign-in.
+        </span>
         <div className={styles.actions}>
           <button type="submit" className="primaryButton" disabled={emailState.saving}>
             {emailState.saving ? 'Saving…' : 'Change email'}
@@ -170,14 +176,14 @@ export function SessionsSection({ account }: { account: AuthUser }) {
 
   return (
     <section className={styles.section} aria-labelledby="account-sessions-title">
-      <h2 id="account-sessions-title" className={styles.sectionTitle}>Sessions and tokens</h2>
+      <h2 id="account-sessions-title" className={styles.sectionTitle}><MonitorSmartphone size={16} /> Sessions and tokens</h2>
       {error && <div className={styles.error} role="alert">{error}</div>}
-      <p className={styles.hint}>
-        Signed in somewhere you no longer use, or think someone else is? End every session of this account at once.
-      </p>
-      <div className={styles.actions}>
+      <div className={styles.split}>
+        <p className={styles.sectionHint}>
+          Signed in somewhere you no longer use, or think someone else is? End every session of this account at once.
+        </p>
         <button type="button" className={styles.dangerButton} onClick={signOutEverywhere} disabled={busy}>
-          Sign out everywhere
+          <LogOut size={14} /> Sign out everywhere
         </button>
       </div>
       {account.flags?.governance === true && (
@@ -187,10 +193,12 @@ export function SessionsSection({ account }: { account: AuthUser }) {
           subject="self"
         />
       )}
-      <p className={styles.hint}>
-        <Link href="/settings?tab=mcp-tokens">Manage your MCP tokens</Link>
-      </p>
-      {confirmedRoot && <RootTransferRow selfId={account.id} />}
+      <div className={styles.footerRow}>
+        <Link href="/settings?tab=mcp-tokens" className={styles.link}>
+          Manage your MCP tokens <ArrowRight size={14} />
+        </Link>
+        {confirmedRoot && <RootTransferRow selfId={account.id} />}
+      </div>
     </section>
   )
 }
@@ -198,11 +206,7 @@ export function SessionsSection({ account }: { account: AuthUser }) {
 /** Root's transfer, as on its own Users page row (step 2.6); the candidates are the admins. */
 function RootTransferRow({ selfId }: { selfId: string }) {
   const { data: users } = useUsers()
-  return (
-    <div className={styles.actions}>
-      <RootTransferAction selfId={selfId} users={users ?? []} className="secondaryButton" />
-    </div>
-  )
+  return <RootTransferAction selfId={selfId} users={users ?? []} className="secondaryButton" />
 }
 
 interface NoticeItem {
@@ -326,7 +330,7 @@ export function ActivitySection() {
 
   return (
     <section className={styles.section} aria-labelledby="account-activity-title">
-      <h2 id="account-activity-title" className={styles.sectionTitle}>My activity</h2>
+      <h2 id="account-activity-title" className={styles.sectionTitle}><History size={16} /> My activity</h2>
       {state.kind === 'loading' && <p className={styles.state} role="status">Loading your activity…</p>}
       {state.kind === 'error' && (
         <>
@@ -392,7 +396,7 @@ export function MyPermissionsSection({ account }: { account: AuthUser }) {
 
   return (
     <section className={styles.section} aria-labelledby="account-permissions-title">
-      <h2 id="account-permissions-title" className={styles.sectionTitle}>My permissions</h2>
+      <h2 id="account-permissions-title" className={styles.sectionTitle}><ShieldCheck size={16} /> My permissions</h2>
       {state.kind === 'loading' && <p className={styles.state} role="status">Loading your permissions…</p>}
       {state.kind === 'error' && (state.permission ? <ForbiddenNotice permission={state.permission} /> : (
         <>
@@ -404,7 +408,7 @@ export function MyPermissionsSection({ account }: { account: AuthUser }) {
       ))}
       {state.kind === 'ready' && (
         <>
-          <p className={styles.hint}>
+          <p className={styles.sectionHint}>
             {state.view.accountType === 'root'
               ? 'You are Root: you hold every permission.'
               : `In force: ${state.view.sets.map(setInForceText).join('; ') || 'nothing'}.`}

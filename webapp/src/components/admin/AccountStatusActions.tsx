@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import { Ban, LogOut, UserCheck } from 'lucide-react'
 import { useOptionalAlertModal } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { fetchJson, toApiError } from '@/lib/apiError'
+import { ActionLabel } from './ActionLabel'
 
 export interface StatusRowUser {
   id: string
@@ -158,17 +160,17 @@ export function AccountStatusActions({ user, selfId, identity, manageAdmins = fa
           aria-label={`Enable ${user.name}`}
           onClick={() => (needsStepUp('enable') ? setStepUp('enable') : void enable())}
         >
-          Enable
+          <ActionLabel icon={UserCheck}>Enable</ActionLabel>
         </button>
       )}
       {showRevoke && (
         <button type="button" className={buttonClassName} disabled={busy} aria-label={`Sign ${self ? 'your account' : user.name} out everywhere`} onClick={() => (!self && needsStepUp('revoke') ? setStepUp('revoke') : void revoke())}>
-          Sign out everywhere
+          <ActionLabel icon={LogOut}>Sign out everywhere</ActionLabel>
         </button>
       )}
       {showDisable && (
         <button type="button" className={`${buttonClassName} ${dangerClassName}`} disabled={busy} aria-label={`Disable ${user.name}`} onClick={() => (needsStepUp('disable') ? setStepUp('disable') : void disable())}>
-          Disable
+          <ActionLabel icon={Ban}>Disable</ActionLabel>
         </button>
       )}
       {admin && !self && (

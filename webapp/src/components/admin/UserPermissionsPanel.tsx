@@ -1,16 +1,18 @@
 'use client'
 
 import { useCallback, useEffect, useId, useState } from 'react'
+import { ListChecks, Undo2 } from 'lucide-react'
 import { ApiError, fetchJson, toApiError } from '@/lib/apiError'
 import type { PermissionId } from '@/lib/authz/permissions'
 import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { EffectivePermissions } from './EffectivePermissions'
 import { PermissionPicker } from './PermissionPicker'
+import { SetPermissionsModal } from './SetPermissionsModal'
 import {
-  DEFAULT_MEMBER_SET, FULL_ADMIN_PROFILE, changeBody, draftOf, givableFrom, givingOf, notGivable, permissionsUrl,
-  profileAssignable, profileOf, setInForceText, stepUpNeeded,
-  type AccountPermissionsView, type Draft, type OverrideEffect, type OverrideView, type SetList, type SetOption,
+  DEFAULT_MEMBER_SET, FULL_ADMIN_PROFILE, changeBody, draftChanges, draftOf, givableFrom, givingOf, heldDiff, notGivable,
+  offeredMemberSets, permissionsUrl, previewOf, profileAssignable, profileOf, setInForceText, stepUpNeeded,
+  type AccountPermissionsView, type Draft, type DraftChanges, type OverrideEffect, type OverrideView, type SetList, type SetOption,
 } from './permissionModel'
 import pageStyles from '@/app/settings/users/page.module.css'
 import styles from './UserPermissions.module.css'
@@ -75,6 +77,9 @@ function ListError({ error }: { error: ApiError }) {
 }
 
 const localTime = (iso: string) => new Date(iso).toLocaleString()
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+const overrideText = (o: OverrideView) =>
+  `${o.effect === 'grant' ? 'Grant' : 'Deny'} ${o.permission}${o.expiresAt ? ` until ${localTime(o.expiresAt)}` : ', no expiry'}${o.reason ? ` (${o.reason})` : ''}`
 
 /**
  * One account's permissions on the Users page (step 3.13; PE-15, PE-16, UI-12): its member sets
@@ -93,6 +98,9 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
   const [notice, setNotice] = useState('')
   const [saveError, setSaveError] = useState('')
   const [stepUp, setStepUp] = useState<{ body: Record<string, unknown>; why: string } | null>(null)
+  const [viewing, setViewing] = useState<SetOption | null>(null)
+  /** Effective permissions as saved, or as the form would leave them. */
+  const [mode, setMode] = useState<'saved' | 'draft'>('saved')
 
   const [effect, setEffect] = useState<OverrideEffect>('grant')
   const [permission, setPermission] = useState<PermissionId | ''>('')
@@ -138,12 +146,36 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
 
   const { target, me, givable, sets, profiles } = state
   const setRows: SetOption[] = sets instanceof ApiError ? [] : sets.sets
+  // Kept on screen while it is saved on the account, so it can be unticked (or ticked back before saving).
+  const offered = offeredMemberSets(setRows, target.assignment.sets)
   const profileRows: SetOption[] = profiles && !(profiles instanceof ApiError) ? profiles.sets : []
   const defaultSet = sets instanceof ApiError ? null
     : setRows.find((s) => s.id === (sets.instanceDefaultSetId ?? DEFAULT_MEMBER_SET)) ?? null
   const gone = draft.sets.filter((id) => !setRows.some((s) => s.id === id))
   const expired = target.assignment.overrides.length - draftOf(target).overrides.length
   const liveDeny = (p: PermissionId) => draftOf(target).overrides.some((o) => o.permission === p && o.effect === 'deny')
+  const preview = previewOf(target, draft, {
+    sets: sets instanceof ApiError ? null : sets,
+    profiles: profiles instanceof ApiError ? null : profiles,
+  })
+  const diff = preview ? heldDiff(target.explain, preview.explain) : null
+  const edits = draftChanges(target, draft)
+  const dirty = edits.count > 0
+  /** A disabled or invited account holds nothing whatever its sets; they apply once it is active. */
+  const inactive = (() => {
+    for (const e of target.explain) for (const r of e.reasons) if (r.kind === 'inactive') return r.status
+    return null
+  })()
+  const setName = (id: string) => setRows.find((s) => s.id === id)?.name ?? id
+  const profileName = (id: string | null) => profileRows.find((p) => p.id === (id ?? FULL_ADMIN_PROFILE))?.name ?? id ?? 'Full admin'
+  const shownProfile = profileRows.find((p) => p.id === (draft.profile ?? FULL_ADMIN_PROFILE)) ?? null
+
+  function discard() {
+    setDraft(draftOf(target))
+    setNotice('')
+    setSaveError('')
+    setAddError('')
+  }
 
   function toggleSet(id: string, on: boolean) {
     setNotice('')
@@ -202,6 +234,7 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
     setNotice(!answer.changed ? 'Nothing changed.' : `Saved: ${added} permission${added === 1 ? '' : 's'} added, ${removed} removed.${
       answer.signedOut ? ' The account lost a permission, so it was signed out everywhere.' : ''}`)
     onChanged?.()
+    setMode('saved')
     try {
       const loaded = await load(user.id, selfId)
       setDraft(draftOf(loaded.target))
@@ -270,13 +303,14 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
                 ? `None ticked: the account holds the instance default set${defaultSet ? `, ${defaultSet.name}` : ''}, and follows it when it changes.`
                 : 'The account holds every set ticked, together.'}
             </span>
-            {setRows.map((s, i) => {
+            {offered.map((s, i) => {
               const assigned = target.assignment.sets.includes(s.id)
               const missing = assigned ? [] : notGivable(s.permissions, givable)
               const refused = missing.length > 0 && !draft.sets.includes(s.id)
               const hint = `${uid}-set-${i}`
               return (
-                <div key={s.id} className={styles.item}>
+                <div key={s.id} className={styles.setRow}>
+                <div className={styles.item}>
                   <label className={styles.choice}>
                     <input
                       type="checkbox"
@@ -289,12 +323,17 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
                       {s.name}
                       {s.instanceDefault && <span className={styles.tag}>instance default</span>}
                       {!s.builtin && <span className={styles.tag}>custom</span>}
+                      {s.id === DEFAULT_MEMBER_SET && <span className={styles.tag}>no longer offered</span>}
                     </span>
                   </label>
                   <span id={hint} className={styles.description}>
-                    {s.description ?? `${s.permissions.length} permissions.`}
+                    {s.id === DEFAULT_MEMBER_SET
+                      ? 'The same permissions as Red-team operator. Untick it to follow the instance default, or tick Red-team operator to keep these rights.'
+                      : s.description ?? `${s.permissions.length} permissions.`}
                     {refused && <span className={styles.refusal}> You do not hold {missing.join(', ')}: you can give only what you hold.</span>}
                   </span>
+                </div>
+                <ViewSetButton set={s} onView={setViewing} />
                 </div>
               )
             })}
@@ -380,6 +419,7 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
           {profiles instanceof ApiError ? <ListError error={profiles} /> : (
             <div className={pageStyles.field}>
               <label className={pageStyles.label} htmlFor={profileId}>Profile</label>
+              <div className={styles.inlineRow}>
               <select
                 id={profileId}
                 className={pageStyles.select}
@@ -402,6 +442,8 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
                   )
                 })}
               </select>
+              {shownProfile && <ViewSetButton set={shownProfile} onView={setViewing} />}
+              </div>
               <span id={`${profileId}-hint`} className={pageStyles.hint}>
                 Root gives any profile; an admin holding admins:manage gives only a profile strictly inside their own.
               </span>
@@ -410,19 +452,73 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
         </fieldset>
       )}
 
-      <div className={pageStyles.modalActions}>
-        <button type="button" className="primaryButton" onClick={() => void save()} disabled={saving}>
-          {saving ? 'Saving…' : 'Save the permissions'}
-        </button>
-      </div>
-
       <section className={styles.section} aria-labelledby={`${uid}-effective`}>
         <h3 id={`${uid}-effective`} className={styles.sectionTitle}>Effective permissions</h3>
-        <span className={pageStyles.hint}>
-          In force now: {target.sets.map(setInForceText).join('; ') || 'nothing'}. A saved change shows here once saved.
-        </span>
-        <EffectivePermissions explain={target.explain} />
+        <div className={styles.segmented} role="group" aria-label="Which permissions to show">
+          <button type="button" className={styles.segment} aria-pressed={mode === 'saved'} onClick={() => setMode('saved')}>
+            Saved
+          </button>
+          <button type="button" className={styles.segment} aria-pressed={mode === 'draft'} onClick={() => setMode('draft')}>
+            With your changes
+            {diff && diff.gained.length + diff.lost.length > 0 && (
+              <span className={styles.segmentBadge}>+{diff.gained.length} / −{diff.lost.length}</span>
+            )}
+          </button>
+        </div>
+        {mode === 'saved' ? (
+          <>
+            <span className={pageStyles.hint}>
+              In force now: {target.sets.map(setInForceText).join('; ') || 'nothing'}.
+            </span>
+            <EffectivePermissions explain={target.explain} />
+          </>
+        ) : preview && diff ? (
+          <>
+            <span className={pageStyles.hint}>
+              {inactive
+                ? `The account is ${inactive}: it holds nothing until it is active, whatever its sets. `
+                : ''}
+              {dirty
+                ? `After saving: ${preview.sets.map(setInForceText).join('; ') || 'nothing'}. Added and removed permissions are tagged.`
+                : 'No unsaved changes: this is what is saved.'}{' '}
+              A preview of the form as it is now; the server decides when you save.
+            </span>
+            <EffectivePermissions explain={preview.explain} changes={{ gained: new Set(diff.gained), lost: new Set(diff.lost) }} />
+          </>
+        ) : (
+          <p className={pageStyles.hint}>No preview: the list of permission sets could not be read. Saving still works.</p>
+        )}
       </section>
+
+      {dirty && <ReviewChanges uid={uid} edits={edits} diff={diff} inactive={inactive} setName={setName} profileName={profileName} />}
+
+      <div className={styles.saveBar}>
+        <span className={styles.saveSummary} aria-live="polite">
+          {dirty ? (
+            <>
+              <strong>{plural(edits.count, 'unsaved change')}</strong>
+              {diff && (
+                <>
+                  {' · '}
+                  <span className={styles.gainText}>+{diff.gained.length}</span>
+                  {' / '}
+                  <span className={styles.lossText}>−{diff.lost.length}</span> permissions
+                </>
+              )}
+            </>
+          ) : 'No unsaved changes'}
+        </span>
+        <div className={styles.saveActions}>
+          <button type="button" className={pageStyles.actionButton} onClick={discard} disabled={!dirty || saving}>
+            <Undo2 size={14} /> Discard changes
+          </button>
+          <button type="button" className="primaryButton" onClick={() => void save()} disabled={saving}>
+            {saving ? 'Saving…' : 'Save the permissions'}
+          </button>
+        </div>
+      </div>
+
+      <SetPermissionsModal set={viewing} all={viewing?.kind === 'admin' ? profileRows : offered} onClose={() => setViewing(null)} />
 
       <StepUpModal
         isOpen={stepUp !== null}
@@ -436,6 +532,87 @@ export function UserPermissionsPanel({ user, selfId, onChanged }: UserPermission
         onClose={() => setStepUp(null)}
       />
     </div>
+  )
+}
+
+/** "N permissions" on a set's row: opens the set's contents. */
+function ViewSetButton({ set, onView }: { set: SetOption; onView: (set: SetOption) => void }) {
+  const count = plural(set.permissions.length, 'permission')
+  return (
+    <button
+      type="button"
+      className={`${pageStyles.actionButton} ${styles.viewButton}`}
+      aria-label={`${count} in ${set.name}`}
+      onClick={() => onView(set)}
+    >
+      <ListChecks size={14} /> {count}
+    </button>
+  )
+}
+
+/** What the form changed, and what saving it does to the permissions held: shown before saving. */
+function ReviewChanges({ uid, edits, diff, inactive, setName, profileName }: {
+  uid: string
+  edits: DraftChanges
+  diff: { gained: PermissionId[]; lost: PermissionId[] } | null
+  /** The account's status when it is not active. */
+  inactive: string | null
+  setName: (id: string) => string
+  profileName: (id: string | null) => string
+}) {
+  return (
+    <section className={styles.review} aria-labelledby={`${uid}-review`}>
+      <h3 id={`${uid}-review`} className={styles.reviewTitle}>Review before saving</h3>
+      <div className={styles.reviewGrid}>
+        <div className={styles.reviewPart}>
+          <h4 className={styles.reviewHead}>What you changed</h4>
+          <ul className={styles.changeList}>
+            {edits.setsAdded.map((id) => <li key={`sa-${id}`} className={styles.changeAdd}>Set <strong>{setName(id)}</strong> ticked</li>)}
+            {edits.setsRemoved.map((id) => <li key={`sr-${id}`} className={styles.changeRemove}>Set <strong>{setName(id)}</strong> unticked</li>)}
+            {edits.overridesAdded.map((o) => <li key={`oa-${o.permission}`} className={styles.changeAdd}>Override added: {overrideText(o)}</li>)}
+            {edits.overridesChanged.map((o) => <li key={`oc-${o.permission}`} className={styles.changeEdit}>Override changed: {overrideText(o)}</li>)}
+            {edits.overridesRemoved.map((o) => <li key={`or-${o.permission}`} className={styles.changeRemove}>Override removed: {overrideText(o)}</li>)}
+            {edits.profile && (
+              <li className={styles.changeEdit}>Admin profile: {profileName(edits.profile.from)} → <strong>{profileName(edits.profile.to)}</strong></li>
+            )}
+          </ul>
+        </div>
+        <div className={styles.reviewPart}>
+          <h4 className={styles.reviewHead}>What the account gains and loses</h4>
+          {inactive ? (
+            <p className={pageStyles.hint}>
+              Nothing yet: the account is {inactive} and holds nothing until it is active. These changes apply from then.
+            </p>
+          ) : !diff ? (
+            <p className={pageStyles.hint}>No preview: the list of permission sets could not be read.</p>
+          ) : diff.gained.length + diff.lost.length === 0 ? (
+            <p className={pageStyles.hint}>Nothing: the account can do exactly what it can do now.</p>
+          ) : (
+            <div className={styles.diffColumns}>
+              <div>
+                <span className={styles.gainText}>+ {plural(diff.gained.length, 'permission')} gained</span>
+                {diff.gained.length > 0 && (
+                  <ul className={styles.codeList} aria-label="Permissions gained">
+                    {diff.gained.map((p) => <li key={p}><code className={styles.permission}>{p}</code></li>)}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <span className={styles.lossText}>− {plural(diff.lost.length, 'permission')} lost</span>
+                {diff.lost.length > 0 && (
+                  <ul className={styles.codeList} aria-label="Permissions lost">
+                    {diff.lost.map((p) => <li key={p}><code className={styles.permission}>{p}</code></li>)}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+          {!inactive && diff && diff.lost.length > 0 && (
+            <p className={pageStyles.hint}>Taking a permission away signs the account out when you save.</p>
+          )}
+        </div>
+      </div>
+    </section>
   )
 }
 

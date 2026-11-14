@@ -1,8 +1,11 @@
 'use client'
 
 import { useId, useState } from 'react'
+import { Crown } from 'lucide-react'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { fetchJson } from '@/lib/apiError'
+import pageStyles from '@/app/settings/users/page.module.css'
+import { ActionLabel } from './ActionLabel'
 import { ROOT_TRANSFER_CHANGED_EVENT } from './RootTransferBanner'
 
 export interface TransferCandidate {
@@ -39,19 +42,22 @@ export function RootTransferAction({ selfId, users, className }: Props) {
     : (
       <>
         Root goes to the admin you pick once they accept (the offer lasts 24 hours); you stay an admin with every
-        admin right, and you both sign in again.{' '}
-        <label htmlFor={pickId}>Transfer Root to</label>{' '}
-        <select id={pickId} value={target} onChange={(e) => setTarget(e.target.value)}>
-          <option value="">Pick an admin</option>
-          {candidates.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
-        </select>
+        admin right, and you both sign in again.
+        {/* Spans, not divs: StepUpModal renders the message inside a <p>. */}
+        <span className={pageStyles.inlineField}>
+          <label className={pageStyles.label} htmlFor={pickId}>Transfer Root to</label>
+          <select id={pickId} className={pageStyles.select} value={target} onChange={(e) => setTarget(e.target.value)}>
+            <option value="">Pick an admin</option>
+            {candidates.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
+          </select>
+        </span>
       </>
     )
 
   return (
     <>
       <button type="button" className={className} onClick={() => { setTarget(''); setOpen(true) }}>
-        Transfer Root
+        <ActionLabel icon={Crown}>Transfer Root</ActionLabel>
       </button>
       <StepUpModal
         isOpen={open}

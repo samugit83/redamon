@@ -13,12 +13,17 @@
   padding: 0;
 }
 
+/* A <legend> or an <h3>: full width, so the rule under it spans the dialog. */
 .sectionTitle {
-  font-size: var(--text-sm);
+  width: 100%;
+  margin: 0 0 var(--space-1);
+  padding: 0 0 var(--space-1-5);
+  font-size: var(--text-xs);
   font-weight: var(--font-semibold);
-  color: var(--text-primary);
-  margin: 0;
-  padding: 0;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-default);
 }
 
 .list {
@@ -34,17 +39,21 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-primary);
 }
 
 .row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-2-5);
+  font-size: var(--text-xs);
   color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
 }
 
 .permission {
@@ -55,7 +64,12 @@
 
 .description {
   font-size: var(--text-xs);
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
+}
+
+/* A set's description sits under its name, aligned with the text past the checkbox. */
+.choice + .description {
+  padding-left: calc(14px + var(--space-2));
 }
 
 .because {
@@ -89,12 +103,18 @@
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-primary);
+  cursor: pointer;
 }
 
 .choice input {
-  margin-top: 3px;
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+  flex-shrink: 0;
+  accent-color: var(--accent-secondary);
+  cursor: pointer;
 }
 
 .refusal {
@@ -104,12 +124,16 @@
 
 .tag {
   display: inline-block;
-  margin-left: var(--space-1);
-  padding: 0 var(--space-1);
-  font-size: var(--text-xs);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-default);
+  margin-left: var(--space-1-5);
+  padding: 0 var(--space-1-5);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
   color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
 }
 
 .grid {
@@ -122,4 +146,348 @@
   max-height: 320px;
   overflow-y: auto;
   padding-right: var(--space-1);
+}
+
+/* ---------------------------------------------------------------- Set rows and the set dialog */
+
+/* A set: its checkbox and description on the left, "N permissions" on the right. */
+.setRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2-5);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  background: var(--bg-primary);
+}
+
+.setRow > .item {
+  flex: 1;
+  min-width: 0;
+}
+
+.viewButton {
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.viewButton:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.inlineRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.inlineRow > select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Hosts a portal: no box of its own, so it adds no gap to the column it sits in. */
+.portalHost {
+  display: contents;
+}
+
+.setSummary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.tags .tag {
+  margin-left: 0;
+}
+
+.relations {
+  margin: 0;
+  padding: var(--space-2-5) var(--space-3) var(--space-2-5) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--status-info) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-info) 28%, transparent);
+  border-radius: var(--radius-default);
+}
+
+.relations strong {
+  color: var(--text-primary);
+  font-weight: var(--font-semibold);
+}
+
+.areas {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.areaCount {
+  margin-left: var(--space-1);
+  font-weight: var(--font-medium);
+  color: var(--text-tertiary);
+}
+
+.tagDanger {
+  color: var(--status-error-text);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+  border-color: color-mix(in srgb, var(--status-error) 30%, transparent);
+}
+
+/* ---------------------------------------------------------------- Saved / With your changes */
+
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.segment {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-default);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.segment:hover {
+  color: var(--text-primary);
+}
+
+.segment[aria-pressed='true'] {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border-color: var(--border-default);
+  box-shadow: var(--shadow-sm);
+}
+
+.segment:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+.segmentBadge {
+  padding: 0 var(--space-1-5);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--status-info-text);
+  background: color-mix(in srgb, var(--status-info) 14%, transparent);
+  border-radius: var(--radius-full);
+}
+
+.itemGained,
+.itemLost {
+  padding: var(--space-1-5) var(--space-2);
+  border-left: 3px solid transparent;
+  border-radius: var(--radius-default);
+}
+
+.itemGained {
+  background: color-mix(in srgb, var(--status-success) 8%, transparent);
+  border-left-color: var(--status-success);
+}
+
+.itemLost {
+  background: color-mix(in srgb, var(--status-error) 8%, transparent);
+  border-left-color: var(--status-error);
+}
+
+.tagGained {
+  color: var(--status-success-text);
+  background: color-mix(in srgb, var(--status-success) 12%, transparent);
+  border-color: color-mix(in srgb, var(--status-success) 35%, transparent);
+}
+
+.tagLost {
+  color: var(--status-error-text);
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--status-error) 35%, transparent);
+}
+
+/* ---------------------------------------------------------------- Review before saving */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: color-mix(in srgb, var(--status-warning) 6%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--status-warning) 40%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.reviewTitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--status-warning-text);
+}
+
+.reviewGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-4);
+}
+
+.reviewPart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.reviewHead {
+  margin: 0;
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  color: var(--text-tertiary);
+}
+
+.changeList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.changeList li {
+  position: relative;
+  padding-left: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+.changeList li::before {
+  position: absolute;
+  left: 0;
+  width: var(--space-3);
+  text-align: center;
+  font-weight: var(--font-bold);
+}
+
+.changeAdd::before {
+  content: '+';
+  color: var(--status-success-text);
+}
+
+.changeRemove::before {
+  content: '−';
+  color: var(--status-error-text);
+}
+
+.changeEdit::before {
+  content: '~';
+  color: var(--status-info-text);
+}
+
+.diffColumns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+}
+
+.codeList {
+  list-style: none;
+  margin: var(--space-1-5) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+/* A permission id never breaks inside a word here: the columns stack instead. */
+.codeList li {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codeList .permission {
+  overflow-wrap: normal;
+}
+
+.gainText,
+.lossText {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.gainText {
+  color: var(--status-success-text);
+}
+
+.lossText {
+  color: var(--status-error-text);
+}
+
+/* ---------------------------------------------------------------- Save bar */
+
+/* Stays at the bottom of whatever scrolls the panel (the dialog body, or the page) while edits are made above. */
+.saveBar {
+  position: sticky;
+  bottom: var(--space-2);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2-5) var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.saveSummary {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.saveSummary strong {
+  color: var(--text-primary);
+  font-weight: var(--font-semibold);
+}
+
+.saveActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }

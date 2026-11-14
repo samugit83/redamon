@@ -8,7 +8,7 @@ import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { AuthContext } from '@/providers/authContext'
 import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/ForbiddenNotice'
 import {
-  DEFAULT_MEMBER_SET, givableFrom, notGivable, permissionsUrl,
+  DEFAULT_MEMBER_SET, givableFrom, notGivable, offeredMemberSets, permissionsUrl,
   type AccountPermissionsView, type SetList, type SetOption,
 } from './permissionModel'
 import styles from '@/app/settings/users/page.module.css'
@@ -73,7 +73,8 @@ export function InitialSetPicker({ idPrefix, selfId: given, value, onChange }: I
       const defaultId = list.instanceDefaultSetId ?? DEFAULT_MEMBER_SET
       setState({
         kind: 'ready',
-        sets: list.sets.filter((s) => s.kind === 'member'),
+        // The first option already is the instance default; Default member is not offered on its own.
+        sets: offeredMemberSets(list.sets),
         defaultSet: list.sets.find((s) => s.id === defaultId) ?? null,
         givable: givableFrom(me.explain),
       })

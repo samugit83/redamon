@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { KeyRound, RotateCcwKey, Search, ShieldCheck, Trash2, UserPlus } from 'lucide-react'
 import { useAuth } from '@/providers/AuthProvider'
 import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { useUsers, useCreateUser, useDeleteUser, useChangePassword } from '@/hooks/useUsers'
-import { Modal } from '@/components/ui'
+import { Modal, WikiInfoButton } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { LegacyAccessCard } from '@/components/admin/LegacyAccessCard'
 import { WhatChangedCard } from '@/components/admin/WhatChangedCard'
@@ -14,6 +15,7 @@ import { RoleControl } from '@/components/admin/RoleControl'
 import { RootTransferAction } from '@/components/admin/RootTransferAction'
 import { InviteRowActions, InviteUserModal } from '@/components/admin/InviteUserModal'
 import { ResetCredentialsModal } from '@/components/admin/ResetCredentialsModal'
+import { ActionLabel } from '@/components/admin/ActionLabel'
 import { DeleteUserWizard, deletionWizardInForce } from '@/components/admin/DeleteUserWizard'
 import { UserPermissionsPanel } from '@/components/admin/UserPermissionsPanel'
 import { InitialSetPicker, NO_INITIAL_SET, initialSetFields, type InitialSetChoice } from '@/components/admin/InitialSetPicker'
@@ -61,6 +63,7 @@ export default function UsersPage() {
   const policyInForce = passwordPolicy ?? BASE_PASSWORD_POLICY
 
   const [modal, setModal] = useState<ModalState>({ type: 'none' })
+  const [query, setQuery] = useState('')
   const [formError, setFormError] = useState('')
   const [formSuccess, setFormSuccess] = useState('')
 
@@ -270,7 +273,7 @@ export default function UsersPage() {
   const ownPasswordOpen = modal.type === 'changeOwn'
     && opensOwnPasswordDialog({ readUsers: canReadUsers, switchUser: canSwitchUser, permissionsOn })
   const ownPasswordModal = (
-        <Modal isOpen={ownPasswordOpen} onClose={closeModal} title="Change Password" size="small">
+        <Modal isOpen={ownPasswordOpen} onClose={closeModal} title="Change Password">
           <div className={styles.form}>
             {formError && <div className={styles.error}>{formError}</div>}
             {formSuccess && <div className={styles.success}>{formSuccess}</div>}
@@ -346,7 +349,7 @@ export default function UsersPage() {
     return type === 'member' ? canAssignMembers : type === 'admin' && canManageAdmins
   }
   const targetLabel = modalTarget && (
-    <p className={styles.hint}>
+    <p className={styles.target}>
       <IdentityLabel
         name={modalTarget.name}
         email={modalTarget.email}
@@ -355,23 +358,32 @@ export default function UsersPage() {
     </p>
   )
 
+  const needle = query.trim().toLowerCase()
+  const shown = (users ?? []).filter(u => !needle || u.name.toLowerCase().includes(needle) || u.email.toLowerCase().includes(needle))
+
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1 className={styles.title}>User Management</h1>
+        <div>
+          <div className={styles.titleRow}>
+            <h1 className={styles.title}>User Management</h1>
+            <WikiInfoButton target="settingsUsers" title="Open User Management wiki page" size={15} />
+          </div>
+          <p className={styles.subtitle}>The accounts on this instance: their role, their status and what you can change for each.</p>
+        </div>
         {!canCreateUsers ? null : identity ? (
           // Step 2.9 (ID-36): a link is the default, so the admin never knows a working password.
-          <div className={styles.actions}>
+          <div className={styles.headerActions}>
             <button className="primaryButton" onClick={() => openModal({ type: 'invite' })}>
-              Invite user
+              <UserPlus size={14} /> Invite user
             </button>
-            <button className={styles.actionButton} onClick={() => openModal({ type: 'create' })}>
-              Create with a temporary password
+            <button className="secondaryButton" onClick={() => openModal({ type: 'create' })}>
+              <KeyRound size={14} /> Create with a temporary password
             </button>
           </div>
         ) : (
           <button className="primaryButton" onClick={() => openModal({ type: 'create' })}>
-            Create User
+            <UserPlus size={14} /> Create User
           </button>
         )}
       </div>
@@ -380,142 +392,182 @@ export default function UsersPage() {
       <LegacyAccessCard />
 
       {isLoading ? (
-        <div className={styles.empty} role="status">Loading users...</div>
+        <div className={styles.tableCard}><div className={styles.empty} role="status">Loading users...</div></div>
       ) : forbiddenPermission(usersError) ? (
         <ForbiddenNotice permission={forbiddenPermission(usersError)!} />
       ) : usersError ? (
-        <div className={styles.errorState}>
-          <div className={styles.error} role="alert">{usersError.message}</div>
-          <button type="button" className={styles.actionButton} onClick={() => void refetchUsers?.()}>Retry</button>
+        <div className={`${styles.tableCard} ${styles.cardPadded}`}>
+          <div className={styles.errorState}>
+            <div className={styles.error} role="alert">{usersError.message}</div>
+            <button type="button" className={styles.actionButton} onClick={() => void refetchUsers?.()}>Retry</button>
+          </div>
         </div>
       ) : !users || users.length === 0 ? (
-        <div className={styles.empty}>No users found</div>
+        <div className={styles.tableCard}><div className={styles.empty}>No users found</div></div>
       ) : (
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th className={styles.th}>Name</th>
-              <th className={styles.th}>Email</th>
-              {/* Identity switch on: Root, Admin or Member (ID-31); off, Phase 1's stored role. */}
-              <th className={styles.th}>{identity ? 'Type' : 'Role'}</th>
-              <th className={styles.th}>Status</th>
-              <th className={styles.th}>Password</th>
-              <th className={styles.th}>Projects</th>
-              <th className={styles.th}>Last login</th>
-              <th className={styles.th}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map(user => (
-              <tr key={user.id} className={styles.tr}>
-                <td className={styles.td}>
-                  {user.name}
-                  {user.id === authUser?.id && <span className={styles.selfLabel}>(you)</span>}
-                </td>
-                <td className={styles.td}>
-                  <span className={styles.email}>{user.email}</span>
-                </td>
-                <td className={styles.td}>
-                  {manageAdmins && user.id !== authUser?.id ? (
-                    <RoleControl
-                      user={user}
-                      identity={identity}
-                      className={styles.select}
-                      onChanged={() => void refetchUsers?.()}
-                    />
-                  ) : identity ? (
-                    <AccountTypeBadge
-                      type={accountTypeFor(user, authUser?.rbac?.root)}
-                      unconfirmed={authUser?.rbac?.root?.confirmed === false}
-                    />
-                  ) : (
-                    <span className={`${styles.badge} ${user.role === 'admin' ? styles.badgeAdmin : styles.badgeStandard}`}>
-                      {user.role}
-                    </span>
-                  )}
-                </td>
-                <td className={styles.td}>
-                  <AccountStatusCell status={user.status} mustChange={identity && user.mustChangePassword === true} />
-                </td>
-                <td className={styles.td}>
-                  {user.hasPassword ? (
-                    <span className={`${styles.badge} ${styles.badgeYes}`}>Set</span>
-                  ) : (
-                    <span className={styles.badgeNo}>Not set</span>
-                  )}
-                </td>
-                <td className={styles.td}>{user._count?.projects ?? 0}</td>
-                <td className={styles.td}><LastLogin at={user.lastLoginAt} /></td>
-                <td className={styles.td}>
-                  <div className={styles.actions}>
-                    {identity && user.status === 'invited' && (
-                      <InviteRowActions
-                        user={user}
-                        buttonClassName={styles.actionButton}
-                        dangerClassName={styles.deleteButton}
-                        onChanged={() => void refetchUsers?.()}
-                      />
-                    )}
-                    {(user.id === authUser?.id || user.role !== 'admin' || manageAdmins) && !(identity && user.status === 'invited') && (
-                      <button
-                        className={styles.actionButton}
-                        onClick={() => openModal({
-                          type: 'password', userId: user.id, userName: user.name, userEmail: user.email,
-                          targetIsAdmin: user.role === 'admin',
-                        })}
-                      >
-                        Set Password
-                      </button>
-                    )}
-                    {identity && user.id !== authUser?.id && user.status !== 'invited' && (user.role !== 'admin' || confirmedRoot) && (
-                      <button
-                        className={styles.actionButton}
-                        aria-label={`Reset the credentials of ${user.name}`}
-                        onClick={() => openModal({
-                          type: 'reset', userId: user.id, userName: user.name, userEmail: user.email,
-                          targetIsAdmin: user.role === 'admin',
-                        })}
-                      >
-                        Reset credentials
-                      </button>
-                    )}
-                    {canDeleteUsers && user.id !== authUser?.id && (user.role !== 'admin' || manageAdmins) && (
-                      <button
-                        className={`${styles.actionButton} ${styles.deleteButton}`}
-                        onClick={() => openModal(deletionWizard
-                          ? { type: 'deleteWizard', userId: user.id, userName: user.name, targetIsAdmin: user.role === 'admin' }
-                          : { type: user.role === 'admin' ? 'deleteAdmin' : 'delete', userId: user.id, userName: user.name })}
-                      >
-                        Delete
-                      </button>
-                    )}
-                    {mayAssign(user) && (
-                      <button
-                        className={styles.actionButton}
-                        aria-label={`Permissions of ${user.name}`}
-                        onClick={() => openModal({ type: 'permissions', userId: user.id, userName: user.name, userEmail: user.email })}
-                      >
-                        Permissions
-                      </button>
-                    )}
-                    {confirmedRoot && user.id === authUser?.id && (
-                      <RootTransferAction selfId={user.id} users={users} className={styles.actionButton} />
-                    )}
-                    <AccountStatusActions
-                      user={user}
-                      selfId={authUser?.id}
-                      identity={identity}
-                      manageAdmins={confirmedRoot}
-                      buttonClassName={styles.actionButton}
-                      dangerClassName={styles.deleteButton}
-                      onChanged={() => void refetchUsers?.()}
-                    />
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className={styles.tableCard}>
+          <div className={styles.toolbar}>
+            <h2 className={styles.toolbarTitle}>
+              Accounts <span className={styles.count}>{users.length}</span>
+            </h2>
+            <div className={styles.search}>
+              <Search size={14} className={styles.searchIcon} />
+              <input
+                type="search"
+                className={styles.input}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search by name or email"
+                aria-label="Search accounts"
+              />
+            </div>
+          </div>
+          <div className={styles.tableScroll}>
+            <table className={styles.userTable}>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  {/* Identity switch on: Root, Admin or Member (ID-31); off, Phase 1's stored role. */}
+                  <th className={styles.fit}>{identity ? 'Type' : 'Role'}</th>
+                  <th className={styles.fit}>Status</th>
+                  <th className={styles.fit}>Password</th>
+                  <th className={styles.fit}>Projects</th>
+                  <th className={styles.fit}>Last login</th>
+                  <th className={`${styles.fit} ${styles.alignEnd}`}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className={styles.noMatch}>No account matches &ldquo;{query.trim()}&rdquo;.</td>
+                  </tr>
+                )}
+                {shown.map(user => {
+                  const isSelf = user.id === authUser?.id
+                  return (
+                    <tr key={user.id}>
+                      <td>
+                        <div className={styles.identity}>
+                          <span className={`${styles.avatar}${isSelf ? ` ${styles.avatarSelf}` : ''}`} aria-hidden="true">
+                            {initialsOf(user.name, user.email)}
+                          </span>
+                          <span className={styles.userName}>{user.name}</span>
+                          {isSelf && <span className={styles.youChip}>You</span>}
+                        </div>
+                      </td>
+                      <td>
+                        <span className={styles.emailCell} title={user.email}>{user.email}</span>
+                      </td>
+                      <td className={styles.fit}>
+                        {manageAdmins && !isSelf ? (
+                          <RoleControl
+                            user={user}
+                            identity={identity}
+                            className={`${styles.select} ${styles.roleSelect}`}
+                            onChanged={() => void refetchUsers?.()}
+                          />
+                        ) : identity ? (
+                          <AccountTypeBadge
+                            type={accountTypeFor(user, authUser?.rbac?.root)}
+                            unconfirmed={authUser?.rbac?.root?.confirmed === false}
+                          />
+                        ) : (
+                          <span className={`${styles.badge} ${user.role === 'admin' ? styles.badgeAdmin : styles.badgeStandard}`}>
+                            {user.role}
+                          </span>
+                        )}
+                      </td>
+                      <td className={styles.fit}>
+                        <AccountStatusCell status={user.status} mustChange={identity && user.mustChangePassword === true} />
+                      </td>
+                      <td className={styles.fit}>
+                        {user.hasPassword ? (
+                          <span className={`${styles.badge} ${styles.badgeYes}`}>Set</span>
+                        ) : (
+                          <span className={styles.badgeNo}>Not set</span>
+                        )}
+                      </td>
+                      <td className={styles.fit}><span className={styles.number}>{user._count?.projects ?? 0}</span></td>
+                      <td className={styles.fit}><LastLogin at={user.lastLoginAt} /></td>
+                      <td className={styles.fit}>
+                        {/* The destructive actions (Cancel invite, Disable, Delete) come last, set apart. */}
+                        <div className={styles.rowActions}>
+                          {identity && user.status === 'invited' && (
+                            <InviteRowActions
+                              user={user}
+                              buttonClassName={styles.iconAction}
+                              dangerClassName={styles.iconActionDanger}
+                              onChanged={() => void refetchUsers?.()}
+                            />
+                          )}
+                          {(isSelf || user.role !== 'admin' || manageAdmins) && !(identity && user.status === 'invited') && (
+                            <button
+                              type="button"
+                              className={styles.iconAction}
+                              onClick={() => openModal({
+                                type: 'password', userId: user.id, userName: user.name, userEmail: user.email,
+                                targetIsAdmin: user.role === 'admin',
+                              })}
+                            >
+                              <ActionLabel icon={KeyRound}>Set Password</ActionLabel>
+                            </button>
+                          )}
+                          {identity && !isSelf && user.status !== 'invited' && (user.role !== 'admin' || confirmedRoot) && (
+                            <button
+                              type="button"
+                              className={styles.iconAction}
+                              aria-label={`Reset the credentials of ${user.name}`}
+                              onClick={() => openModal({
+                                type: 'reset', userId: user.id, userName: user.name, userEmail: user.email,
+                                targetIsAdmin: user.role === 'admin',
+                              })}
+                            >
+                              <ActionLabel icon={RotateCcwKey}>Reset credentials</ActionLabel>
+                            </button>
+                          )}
+                          {mayAssign(user) && (
+                            <button
+                              type="button"
+                              className={styles.iconAction}
+                              aria-label={`Permissions of ${user.name}`}
+                              onClick={() => openModal({ type: 'permissions', userId: user.id, userName: user.name, userEmail: user.email })}
+                            >
+                              <ActionLabel icon={ShieldCheck}>Permissions</ActionLabel>
+                            </button>
+                          )}
+                          {confirmedRoot && isSelf && (
+                            <RootTransferAction selfId={user.id} users={users} className={styles.iconAction} />
+                          )}
+                          <AccountStatusActions
+                            user={user}
+                            selfId={authUser?.id}
+                            identity={identity}
+                            manageAdmins={confirmedRoot}
+                            buttonClassName={styles.iconAction}
+                            dangerClassName={styles.iconActionDanger}
+                            onChanged={() => void refetchUsers?.()}
+                          />
+                          {canDeleteUsers && !isSelf && (user.role !== 'admin' || manageAdmins) && (
+                            <button
+                              type="button"
+                              className={`${styles.iconAction} ${styles.iconActionDanger}`}
+                              onClick={() => openModal(deletionWizard
+                                ? { type: 'deleteWizard', userId: user.id, userName: user.name, targetIsAdmin: user.role === 'admin' }
+                                : { type: user.role === 'admin' ? 'deleteAdmin' : 'delete', userId: user.id, userName: user.name })}
+                            >
+                              <ActionLabel icon={Trash2}>Delete</ActionLabel>
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
 
       {ownPasswordModal}
@@ -652,7 +704,6 @@ export default function UsersPage() {
         isOpen={modal.type === 'password'}
         onClose={closeModal}
         title={`Set Password - ${modal.type === 'password' ? modal.userName : ''}`}
-        size="small"
       >
         <div className={styles.form}>
           {targetLabel}
@@ -755,17 +806,16 @@ export default function UsersPage() {
         <div className={styles.form}>
           {targetLabel}
           {formError && <div className={styles.error}>{formError}</div>}
-          <p style={{ color: 'var(--text-primary)', fontSize: 'var(--text-sm)' }}>
+          <p className={styles.message}>
             Are you sure you want to delete <strong>{modal.type === 'delete' ? modal.userName : ''}</strong>?
             This will also delete all their projects, conversations, and settings.
           </p>
           <div className={styles.modalActions}>
             <button className={styles.actionButton} onClick={closeModal}>Cancel</button>
             <button
-              className={`${styles.actionButton} ${styles.deleteButton}`}
+              className={styles.dangerButton}
               onClick={handleDeleteUser}
               disabled={deleteUser.isPending}
-              style={{ borderColor: 'var(--status-error)' }}
             >
               {deleteUser.isPending ? 'Deleting...' : 'Delete User'}
             </button>
@@ -802,6 +852,13 @@ export default function UsersPage() {
   )
 }
 
+/** The row avatar's letters: the first two words' initials, else the first letter of the name or address. */
+function initialsOf(name: string, email: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean)
+  const letters = words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? email).slice(0, 1)
+  return letters.toUpperCase()
+}
+
 const TYPE_BADGE: Record<AccountType, string> = {
   root: styles.badgeRoot,
   admin: styles.badgeAdmin,
@@ -828,8 +885,8 @@ const STATUS: Record<string, { label: string; tone: string }> = {
 function AccountStatusCell({ status, mustChange }: { status?: string; mustChange: boolean }) {
   const known = STATUS[status || 'active'] ?? { label: status ?? '', tone: styles.badgeStandard }
   return (
-    <span className={styles.cellStack}>
-      <span className={`${styles.badge} ${known.tone}`}>{known.label}</span>
+    <span className={styles.statusStack}>
+      <span className={`${styles.badge} ${known.tone}`}><span className={styles.dot} aria-hidden="true" />{known.label}</span>
       {mustChange && <span className={`${styles.badge} ${styles.badgeWarn}`}>Must change password</span>}
     </span>
   )
@@ -842,11 +899,12 @@ function AccountStatusCell({ status, mustChange }: { status?: string; mustChange
 function LastLogin({ at }: { at?: string | null }) {
   const when = at ? new Date(at) : null
   if (!when || Number.isNaN(when.getTime())) {
-    return <span className={styles.badgeNo} title="No sign-in recorded since this version">Not recorded</span>
+    return <span className={styles.muted} title="No sign-in recorded since this version">Not recorded</span>
   }
   return (
-    <time dateTime={when.toISOString()} title={when.toLocaleString()}>
-      {when.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+    <time className={styles.when} dateTime={when.toISOString()} title={when.toLocaleString()}>
+      <span className={styles.whenDate}>{when.toLocaleDateString(undefined, { dateStyle: 'medium' })}</span>{' '}
+      <span className={styles.whenTime}>{when.toLocaleTimeString(undefined, { timeStyle: 'short' })}</span>
     </time>
   )
 }
