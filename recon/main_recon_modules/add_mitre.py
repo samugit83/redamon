@@ -139,6 +139,19 @@ def _atomic_write_bytes(dest_path: Path, data: bytes) -> None:
     _atomic_write(dest_path, lambda tmp: tmp.write_bytes(data))
 
 
+def _catalog_namespace(root, family: str) -> str:
+    """The namespace a MITRE catalog's root element declares, e.g. http://cwe.mitre.org/cwe-8.
+
+    MITRE puts the schema version in the namespace (CWE 5.0 moved from cwe-7 to cwe-8),
+    and ElementTree matches a namespace exactly, so a hardcoded one finds no element at
+    all and the parse comes back empty instead of failing.
+    """
+    match = re.match(r"\{(http://%s\.mitre\.org/%s-\d+)\}" % (family, family), root.tag)
+    if not match:
+        raise ValueError(f"unexpected {family.upper()} catalog root {root.tag!r}")
+    return match.group(1)
+
+
 _GUNZIP_CHUNK_BYTES = 256 * 1024
 
 
@@ -233,7 +246,7 @@ def download_cwe_metadata(db_path: Path, settings: Optional[Dict] = None) -> boo
 
         # Parse XML
         root = ET.fromstring(xml_content)
-        ns = {'cwe': 'http://cwe.mitre.org/cwe-7'}
+        ns = {'cwe': _catalog_namespace(root, 'cwe')}
 
         def get_text(element, path):
             """Helper to get text from XML path."""
@@ -283,7 +296,10 @@ def download_cwe_metadata(db_path: Path, settings: Optional[Dict] = None) -> boo
                 entry["description"] = desc
 
             # Extended Description
-            ext_desc = get_text(weakness, './/cwe:Extended_Description')
+            # Since CWE 5.0 most extended descriptions are XHTML paragraphs, with no text
+            # of their own on the element, so read every nested text node.
+            ext_el = weakness.find('.//cwe:Extended_Description', ns)
+            ext_desc = " ".join("".join(ext_el.itertext()).split()) if ext_el is not None else None
             if ext_desc:
                 # Truncate if too long
                 if len(ext_desc) > 500:
@@ -368,7 +384,12 @@ def download_cwe_metadata(db_path: Path, settings: Optional[Dict] = None) -> boo
 
             cwe_metadata[cwe_id] = entry
 
-        # Save parsed data
+        if not cwe_metadata:
+            # The catalog is never empty: an empty parse means its format moved, and
+            # writing {} would replace good metadata for every scan until the next refresh.
+            print("[!][MITRE] FAILED (no CWE entries parsed; keeping the current file)")
+            return False
+
         dest_file.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_bytes(dest_file, json.dumps(cwe_metadata).encode())
 
@@ -411,7 +432,7 @@ def download_capec_metadata(db_path: Path, settings: Optional[Dict] = None) -> b
 
         # Parse XML
         root = ET.fromstring(response.content)
-        ns = {'capec': 'http://capec.mitre.org/capec-3'}
+        ns = {'capec': _catalog_namespace(root, 'capec')}
 
         def get_text(element, path):
             """Helper to get text from XML path."""
@@ -505,7 +526,10 @@ def download_capec_metadata(db_path: Path, settings: Optional[Dict] = None) -> b
 
             capec_metadata[capec_id] = entry
 
-        # Save parsed data
+        if not capec_metadata:
+            print("[!][MITRE] FAILED (no CAPEC entries parsed; keeping the current file)")
+            return False
+
         dest_file.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_bytes(dest_file, json.dumps(capec_metadata).encode())
 
