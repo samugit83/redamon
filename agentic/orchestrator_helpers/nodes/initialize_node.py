@@ -96,6 +96,33 @@ def _build_guardrail_loop_failure(user_id, project_id, session_id, target_desc, 
     }
 
 
+LLM_BUDGET_GUARDRAIL_REFUSED = "Scope Guardrail: daily model-call budget used up"
+
+
+def _build_guardrail_budget_refusal(user_id, project_id, session_id, target_desc, exc) -> dict:
+    """A daily budget on instance LLM providers refused the guardrail's model call: still blocked.
+
+    The exception's own text names the limit and whose budget it is (never an
+    account id), as every other surface that meets the budget says it.
+    """
+    return {
+        "messages": [AIMessage(content=(
+            f"**{LLM_BUDGET_GUARDRAIL_REFUSED}**\n\n"
+            f"The scope check for `{target_desc}` needs a model call, and it was refused: {exc}\n\n"
+            f"Send your message again once the budget starts again, or ask an administrator "
+            f"to raise it.\n\n"
+            f"The agent uses a fail-closed policy: it will not proceed until the guardrail "
+            f"can verify the target."
+        ))],
+        "task_complete": True,
+        "completion_reason": LLM_BUDGET_GUARDRAIL_REFUSED,
+        "_guardrail_blocked": True,
+        "user_id": user_id,
+        "project_id": project_id,
+        "session_id": session_id,
+    }
+
+
 async def _run_scope_guardrail(llm, user_id, project_id, session_id) -> dict | None:
     """Run LLM-based guardrail check on the project's target scope.
 
@@ -154,12 +181,23 @@ async def _run_scope_guardrail(llm, user_id, project_id, session_id) -> dict | N
             return _build_guardrail_block(user_id, project_id, session_id, target_desc, reason)
 
     except Exception as e:
-        if getattr(e, "no_retry", False):
+        # By class, not by `no_retry`: the budget refusal carries that marker too
+        # and is no loop step, so it must not read as the external agent's silence.
+        from agent_in_the_loop.errors import LoopError
+        from llm_budget import LlmBudgetExhausted
+
+        if isinstance(e, LoopError):
             logger.error(
                 f"[{user_id}/{project_id}/{session_id}] Scope guardrail step not answered "
                 f"(fail closed): {type(e).__name__}"
             )
             return _build_guardrail_loop_failure(user_id, project_id, session_id, target_desc, e)
+        if isinstance(e, LlmBudgetExhausted):
+            logger.warning(
+                f"[{user_id}/{project_id}/{session_id}] Scope guardrail refused by the daily "
+                f"model-call budget (fail closed): {e.code}"
+            )
+            return _build_guardrail_budget_refusal(user_id, project_id, session_id, target_desc, e)
         # FAIL CLOSED — agent must not proceed if it cannot verify the target
         logger.error(
             f"[{user_id}/{project_id}/{session_id}] Scope guardrail error (fail closed): {e}"
