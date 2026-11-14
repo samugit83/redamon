@@ -10,10 +10,13 @@
  * Run: npx vitest run --no-file-parallelism src/app/graph/components/AIAssistantDrawer/conversationSharing.test.tsx
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useRef, useState } from 'react'
 import { render, screen, fireEvent, renderHook, act, cleanup } from '@testing-library/react'
 import { ConversationHistory, type ConversationSharingControls } from './ConversationHistory'
 import { ReadOnlyConversationNotice } from './ReadOnlyConversationNotice'
 import { useConversationRestoration } from './hooks/useConversationRestoration'
+import { useSessionChangeReset } from './hooks/useSessionChangeReset'
+import type { ChatItem } from './types'
 import { useConversations, type Conversation } from '@/hooks/useConversations'
 
 const base = {
@@ -171,6 +174,51 @@ describe('opening a read-only session (step 5.8)', () => {
     expect(result.current.readOnlyView).toBeNull()
     expect(result.current.conversationId).toBe('c-own')
     expect(d.onSwitchSession).toHaveBeenCalledWith('s-c-own')
+  })
+})
+
+// P5-07 (S4 red): the drawer clears its chat when the live session id changes, and opening a
+// read-only session moves the socket to a fresh session of the viewer's own (handleNewChat ->
+// onResetSession). The restore and the drawer's real session-change reset run together here, with a
+// handleNewChat that does what the drawer's does (clears, then a new session id).
+describe('a read-only session opened in the drawer keeps its messages (P5-07)', () => {
+  beforeEach(() => { vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }))) })
+
+  const message = { id: 'm1', type: 'user_message', data: { content: 'hello from Bob' }, createdAt: '2026-11-13T12:00:00Z' }
+
+  function useDrawerSession(base: ReturnType<typeof deps>) {
+    const [sessionId, setSessionId] = useState('s-viewer')
+    const [chatItems, setChatItems] = useState<ChatItem[]>([])
+    const isRestoringConversation = useRef(false)
+    const restoration = useConversationRestoration({
+      ...base,
+      setChatItems,
+      isRestoringConversation,
+      onSwitchSession: setSessionId,
+      handleNewChat: () => { setChatItems([]); setSessionId(`s-fresh-${Math.random()}`) },
+    })
+    useSessionChangeReset(sessionId, isRestoringConversation, () => setChatItems([]))
+    return { ...restoration, sessionId, chatItems, isRestoringConversation }
+  }
+
+  test("another person's shared session: its messages stay on screen after the socket moves to a fresh session", async () => {
+    const conv = theirs('c-bob', 'Bob Writer')
+    const { result } = renderHook(() => useDrawerSession(deps({ ...conv, messages: [message], access: conv.access })))
+    await act(async () => { await result.current.handleSelectConversation(conv) })
+    expect(result.current.sessionId).toMatch(/^s-fresh-/)
+    expect(result.current.readOnlyView).toEqual({ conversationId: 'c-bob', by: 'Bob Writer', authorDeleted: false })
+    expect(result.current.chatItems).toEqual([expect.objectContaining({ type: 'message', role: 'user', content: 'hello from Bob' })])
+    // The skip is spent on that one change: the next session change (New session) clears as before.
+    expect(result.current.isRestoringConversation.current).toBe(false)
+  })
+
+  test("the viewer's own session still opens with its messages", async () => {
+    const conv = mine('c-own')
+    const { result } = renderHook(() => useDrawerSession(deps({ ...conv, messages: [message] })))
+    await act(async () => { await result.current.handleSelectConversation(conv) })
+    expect(result.current.sessionId).toBe('s-c-own')
+    expect(result.current.readOnlyView).toBeNull()
+    expect(result.current.chatItems).toHaveLength(1)
   })
 })
 

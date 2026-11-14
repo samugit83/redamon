@@ -22,6 +22,7 @@ import { useModelPicker } from './hooks/useModelPicker'
 import { useSettingsModal } from './hooks/useSettingsModal'
 import { useWebSocketHandler } from './hooks/useWebSocketHandler'
 import { useConversationRestoration } from './hooks/useConversationRestoration'
+import { useSessionChangeReset } from './hooks/useSessionChangeReset'
 import { clearProjectSession } from './sessionMemory'
 import { useSendHandlers } from './hooks/useSendHandlers'
 import { useDownloadMarkdown } from './hooks/useDownloadMarkdown'
@@ -441,19 +442,13 @@ export function AIAssistantDrawer({
     onArmed: useCallback(() => setShowHistory(false), [setShowHistory]),
   })
 
-  // Reset state when session changes (skip when restoring a conversation)
-  useEffect(() => {
-    if (isRestoringConversation.current) {
-      isRestoringConversation.current = false
-      return
-    }
+  useSessionChangeReset(sessionId, isRestoringConversation, () => {
     resetChatState()
     resetInteractionState()
     resetScrollState()
     setConversationId(null)
     setActiveSkill(null)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId])
+  })
 
   // Per-project session memory: when the current project actually changes,
   // restore THAT project's last-open session (or a fresh chat), so the previous

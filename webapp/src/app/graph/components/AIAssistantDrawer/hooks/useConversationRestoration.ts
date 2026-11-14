@@ -971,6 +971,9 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     const readOnly = (full.access ?? conv.access)?.readOnly === true
     if (readOnly) {
       pendingResyncConvRef.current = null
+      // handleNewChat moves the socket to a fresh session id, on which the drawer clears the chat
+      // (useSessionChangeReset) unless a restore set this: that clear wiped the timeline set below.
+      isRestoringConversation.current = true
       handleNewChat()
       setChatItems(settleRunningTools(restored))
       setCurrentPhase((conv.currentPhase || 'informational') as Phase)
