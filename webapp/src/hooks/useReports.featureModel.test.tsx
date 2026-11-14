@@ -101,6 +101,46 @@ describe('useReports(projectId).generate', () => {
   })
 })
 
+// P5-06: on a project the person does not own the route runs the narratives on the OWNER's model
+// (or skips them, use_agent_required / owner_model_required); the person's own model is never
+// read, asked for, nor offered, so a collaborator with no model of their own still generates.
+describe("useAllReports().generate on a project the person does not own (ownerModel)", () => {
+  test("no gate and no read of the person's own model: the report is asked once", async () => {
+    const skipped = { ...REPORT, hasNarratives: false, narrativesSkipped: 'use_agent_required' }
+    const stub = stubGateFetch({}, reportsRoute(() => jsonResponse(201, skipped)))
+    const { result } = renderHook(() => useAllReports(), { wrapper })
+    await act(async () => {
+      await expect(result.current.generate('p1', { ownerModel: true })).resolves.toEqual(skipped)
+    })
+    expect(stub.calls(REPORTS_URL, 'POST')).toHaveLength(1)
+    expect(stub.calls(`/api/users/${GATE_USER}/settings`)).toHaveLength(0)
+    expect(stub.calls('/api/models')).toHaveLength(0)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  test("a gate code about the owner's model is the error, never the person's gate", async () => {
+    const stub = stubGateFetch({}, reportsRoute(() =>
+      jsonResponse(503, { error: 'x', code: 'model_unavailable', featureId: 'report_narratives', model: 'custom/owner-1' })))
+    const { result } = renderHook(() => useAllReports(), { wrapper })
+    await act(async () => {
+      await expect(result.current.generate('p1', { ownerModel: true }))
+        .rejects.toThrow("The project owner's Report narratives model could not be used")
+    })
+    expect(stub.calls(REPORTS_URL, 'POST')).toHaveLength(1)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  test("the owner's own project (ownerModel false) keeps the gate", async () => {
+    const stub = stubGateFetch({}, reportsRoute(() => jsonResponse(200, REPORT)))
+    const { result } = renderHook(() => useAllReports(), { wrapper })
+    let generated!: Promise<ReportMeta | null>
+    act(() => { generated = result.current.generate('p1', { ownerModel: false }) })
+    await pickInGate('Claude Opus 4.6')
+    await expect(generated).resolves.toEqual(REPORT)
+    expect(stub.saved).toEqual({ report_narratives: 'claude-opus-4-6' })
+  })
+})
+
 describe('what a report failure says (G-12, G-20, G-21, P-29, P-33)', () => {
   test('a proxy 504 names its status instead of a bare "failed"', async () => {
     stubGateFetch({ report_narratives: 'gpt-5' },

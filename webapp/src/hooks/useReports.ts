@@ -5,9 +5,10 @@
  * Supports both project-specific and all-projects modes.
  */
 
+import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useFeatureModelGate, type FeatureModelGateApi } from '@/components/shared/FeatureModelGate'
-import { featureModelMessage, providerFailureDetail, readFeatureModelCode } from '@/lib/llmFeatures'
+import { featureModelMessage, GATE_CODES, providerFailureDetail, readFeatureModelCode } from '@/lib/llmFeatures'
 import { fetchJson, fetchOk, readApiError } from '@/lib/apiError'
 
 export interface ReportMeta {
@@ -62,16 +63,36 @@ async function fetchAllReports(): Promise<ReportMeta[]> {
 
 type ReportGate = Pick<FeatureModelGateApi, 'ensureFeatureModel' | 'fetchWithFeatureModel'>
 
+export interface GenerateReportOptions {
+  /**
+   * The project is not the person's own (`readsOwnerCatalog`): the route runs the narratives on
+   * the OWNER's "Report narratives" model, or skips them, so the person's own model is neither
+   * asked for nor offered.
+   */
+  ownerModel?: boolean
+}
+
+const OWNER_MODEL_FAILED = "The project owner's Report narratives model could not be used"
+
 /**
  * Generate one report. Resolves null when the user cancels the first model
  * prompt: nothing was sent, so there is no failure to show.
  */
-async function generateReport(projectId: string, gate: ReportGate): Promise<ReportMeta | null> {
-  // The narratives run on the user's own "Report narratives" model, which the
-  // route reads itself; this only makes sure one is saved.
-  if (!(await gate.ensureFeatureModel('report_narratives'))) return null
-  const res = await gate.fetchWithFeatureModel('report_narratives',
-    () => fetch(`/api/projects/${projectId}/reports`, { method: 'POST' }))
+async function generateReport(
+  projectId: string,
+  gate: ReportGate,
+  { ownerModel = false }: GenerateReportOptions = {},
+): Promise<ReportMeta | null> {
+  const post = () => fetch(`/api/projects/${projectId}/reports`, { method: 'POST' })
+  let res: Response
+  if (ownerModel) {
+    res = await post()
+  } else {
+    // The owner's narratives run on their own "Report narratives" model, which
+    // the route reads itself; this only makes sure one is saved.
+    if (!(await gate.ensureFeatureModel('report_narratives'))) return null
+    res = await gate.fetchWithFeatureModel('report_narratives', post)
+  }
   if (!res.ok) {
     const err = await readApiError(res, 'Report generation failed')
     const body = err.body ?? {}
@@ -80,7 +101,10 @@ async function generateReport(projectId: string, gate: ReportGate): Promise<Repo
     // context overflow; the agent sends them instead of the provider's text.
     const provider = providerFailureDetail(body)
     if (code) {
-      const message = featureModelMessage(code, typeof body.model === 'string' ? body.model : undefined)
+      // "Your model" would point a collaborator at a model only the owner can change.
+      const message = ownerModel && GATE_CODES.includes(code)
+        ? OWNER_MODEL_FAILED
+        : featureModelMessage(code, typeof body.model === 'string' ? body.model : undefined)
       throw new Error(provider ? `${message} (${provider})` : message)
     }
     if (provider) throw new Error(`${err.message} [${provider}]`)
@@ -155,17 +179,23 @@ export function useAllReports() {
   })
 
   const generateMutation = useMutation({
-    mutationFn: (projectId: string) => generateReport(projectId, gate),
+    mutationFn: ({ projectId, ...opts }: { projectId: string } & GenerateReportOptions) =>
+      generateReport(projectId, gate, opts),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [ALL_REPORTS_KEY] })
     },
   })
+  const { mutateAsync: generateAsync } = generateMutation
+  const generate = useCallback(
+    (projectId: string, opts: GenerateReportOptions = {}) => generateAsync({ projectId, ...opts }),
+    [generateAsync],
+  )
 
   return {
     reports: query.data ?? [],
     isLoading: query.isLoading,
     error: query.error,
-    generate: generateMutation.mutateAsync,
+    generate,
     isGenerating: generateMutation.isPending,
     generateError: generateMutation.error,
     deleteReport: deleteMutation.mutate,

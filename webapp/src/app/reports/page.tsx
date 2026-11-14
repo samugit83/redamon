@@ -10,6 +10,7 @@ import { useToast, WikiInfoButton } from '@/components/ui'
 import { errorMessage, readApiError, toApiError } from '@/lib/apiError'
 import { FeatureModelLine } from '@/components/shared/FeatureModelGate'
 import { useRefusalCheck } from '@/hooks/useRefusal'
+import { readsOwnerCatalog } from '@/hooks/useProjectOwnerCatalog'
 import type { MyAccess } from '@/lib/authz/projectAccess'
 import styles from './page.module.css'
 
@@ -70,12 +71,15 @@ export default function ReportsPage() {
   const generateRefusal = selectedProjectId
     ? refusalCheck('reports:generate', accessOf(selectedProjectId))?.text ?? null
     : null
+  // A project the person does not own runs its narratives on the OWNER's model, or none (P5-06),
+  // by the rule the project form and the graph page read the owner's catalog with.
+  const ownerModel = selectedProjectId ? readsOwnerCatalog(accessOf(selectedProjectId)) : false
 
   const handleGenerate = useCallback(async () => {
     if (!selectedProjectId) return
     try {
       // null: the user cancelled the model prompt, so nothing started.
-      const report = await generate(selectedProjectId)
+      const report = await generate(selectedProjectId, { ownerModel })
       if (!report) return
       if (report.narrativesSkipped) {
         toast.warning(`Report generated without AI narratives: ${skippedReason(report.narrativesSkipped)} (${report.narrativesSkipped}).`)
@@ -86,7 +90,7 @@ export default function ReportsPage() {
       // The same text stays on the page as generateError.
       toast.error(errorMessage(e, 'Failed to generate report'))
     }
-  }, [generate, selectedProjectId, toast])
+  }, [generate, selectedProjectId, ownerModel, toast])
 
   const handleDelete = useCallback(async (projectId: string, reportId: string) => {
     try {
@@ -167,7 +171,17 @@ export default function ReportsPage() {
               </>
             )}
           </button>
-          <FeatureModelLine featureId="report_narratives" label="Narratives model" />
+          {ownerModel ? (
+            <span
+              className={styles.ownerModelLine}
+              data-feature-model="report_narratives"
+              title="The narratives run on the project owner's Report narratives model, which only the owner changes, in their Global Settings"
+            >
+              Narratives model: the project owner&apos;s
+            </span>
+          ) : (
+            <FeatureModelLine featureId="report_narratives" label="Narratives model" />
+          )}
         </div>
       </div>
 

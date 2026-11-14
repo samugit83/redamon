@@ -133,6 +133,12 @@
   font-size: var(--text-xs);
 }
 
+/* A project the person does not own: the narratives model is the owner's. */
+.ownerModelLine {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 /* A project the person reads through a share: why Generate is off. */
 .readOnlyNote {
   padding: var(--space-2) 0;
