@@ -611,8 +611,18 @@ class TestPdcpApiKeyPlumbing(unittest.TestCase):
         )
         with open(hook, 'r') as f:
             content = f.read()
-        self.assertIn('cve_intel:', content)
-        self.assertIn("if (!settings.pdcpApiKey) missing.add('cve_intel')", content)
+        # The missing-key check is derived from API_KEY_INFO (missingKeyTools), so
+        # cve_intel is covered only while API_KEY_INFO maps it to pdcpApiKey and the
+        # settings fetch goes through missingKeyTools.
+        info = re.search(r'^export const API_KEY_INFO\b[^=]*= \{\n(.*?)^\}', content, re.M | re.S)
+        self.assertIsNotNone(info, 'API_KEY_INFO object not found')
+        self.assertRegex(info.group(1), r"(?m)^\s*cve_intel:\s*\{\s*field:\s*'pdcpApiKey'")
+        derive = re.search(r'^function missingKeyTools\(settings[^)]*\)[^{]*\{\n(.*?)^\}',
+                           content, re.M | re.S)
+        self.assertIsNotNone(derive, 'missingKeyTools not found')
+        self.assertIn('Object.keys(API_KEY_INFO)', derive.group(1))
+        self.assertRegex(derive.group(1), r'!\s*settings\[API_KEY_INFO\[\w+\]\.field\]')
+        self.assertIn('setMissingApiKeys(missingKeyTools(settings))', content)
 
     def test_tool_execution_card_has_cve_intel_label(self):
         card = os.path.join(
