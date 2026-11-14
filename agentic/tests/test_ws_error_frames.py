@@ -304,6 +304,22 @@ class OrchestratorFrames(unittest.TestCase):
         self.assertEqual(err["message"], "LLM not configured. Please add an API key in Global Settings.")
         self.assertEqual(err["code"], "llm_not_configured")
 
+    def test_an_instance_provider_refusal_sends_the_person_to_the_administrator(self):
+        """The model is the administrator's (instance/), so the person's own keys
+        cannot fix it: the frame says who can, and the run still fails closed."""
+        orch = self._orchestrator()
+        orch.llm_setup_failure = {"code": "instance_provider_unavailable", "model": "instance/inst-1/gpt-5"}
+        cb = _Callback()
+        resp = asyncio.run(orch._report_llm_unavailable(cb, "u", "p", "s"))
+        [err] = cb.errors
+        self.assertEqual(err["message"], "This project uses a model provided by your administrator, "
+                                         "which is not available now. Ask your administrator.")
+        self.assertEqual((err["code"], err["model"]), ("instance_provider_unavailable", "instance/inst-1/gpt-5"))
+        self.assertFalse(err["recoverable"])
+        self.assertNotIn("API key", err["message"])
+        self.assertNotIn("Global Settings", err["message"])
+        self.assertEqual(resp.error, err["message"])
+
     def test_no_recorded_failure_still_says_not_configured(self):
         orch = self._orchestrator()
         cb = _Callback()

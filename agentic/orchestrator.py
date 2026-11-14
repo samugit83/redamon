@@ -1008,12 +1008,19 @@ class AgentOrchestrator:
 
         "No key" is only the message when a key or provider row is really
         missing; any other build failure names the model and the exception's
-        class (llm_setup_failed), so a broken provider is not read as a missing key.
+        class (llm_setup_failed), so a broken provider is not read as a missing key,
+        and an administrator's model the owner's list lacks
+        (instance_provider_unavailable) sends the person to the administrator.
         """
         failure = getattr(self, "llm_setup_failure", None) or {}
         if failure.get("code") == "llm_setup_failed":
             msg = (f"Could not set up the model {failure.get('model')}. "
                    "Check its provider in Global Settings.")
+        elif failure.get("code") == "instance_provider_unavailable":
+            # An instance/ model is served only by the administrator's assignment;
+            # the person's own keys never serve it, so sending them there misleads.
+            msg = ("This project uses a model provided by your administrator, "
+                   "which is not available now. Ask your administrator.")
         else:
             msg = "LLM not configured. Please add an API key in Global Settings."
             failure = {"code": "llm_not_configured", **failure}
