@@ -1,6 +1,7 @@
 /**
  * The RBAC feature switches (T10, DV-01): parsing, the dependency chain and the
- * test hook. Each test imports a fresh module, because "warns once" is per process.
+ * test hooks. Each test imports a fresh module and resets the once-only memory,
+ * because "warns once" is per process, shared by every copy of the module.
  *
  * @vitest-environment node
  */
@@ -24,7 +25,16 @@ const ALL_OFF = {
   governance: false,
 }
 
+// A fresh module that has logged nothing: the once-only memory is per process, so it is reset too.
 async function freshFlags() {
+  vi.resetModules()
+  const flags = await import('./flags')
+  flags.resetFlagWarningsForTests()
+  return flags
+}
+
+// Another copy of the module in the same process, as each Next.js server bundle loads its own.
+async function anotherCopy() {
   vi.resetModules()
   return import('./flags')
 }
@@ -171,6 +181,45 @@ describe('rbacFlags()', () => {
     const flags = rbacFlags()
     expect(Object.isFrozen(flags)).toBe(true)
     expect(rbacFlags()).not.toBe(flags)
+  })
+})
+
+describe('once per process, not once per copy of the module', () => {
+  test('each dependent switch is logged once across three copies (X2: permissions off)', async () => {
+    vi.stubEnv('RBAC_IDENTITY_ENABLED', 'true')
+    vi.stubEnv('RBAC_SHARING_ENABLED', 'true')
+    vi.stubEnv('RBAC_SHARING_WRITE_ENABLED', 'true')
+    vi.stubEnv('RBAC_GOVERNANCE_ENABLED', 'true')
+    const copies = [await freshFlags(), await anotherCopy(), await anotherCopy()]
+    for (const { rbacFlags } of copies) {
+      expect(rbacFlags()).toEqual({ ...ALL_OFF, identity: true })
+    }
+    expect(rbacWarnings(warn)).toEqual([
+      '[rbac] RBAC_SHARING_ENABLED requires RBAC_PERMISSIONS_ENABLED, which is off; the switch reads off',
+      '[rbac] RBAC_SHARING_WRITE_ENABLED requires RBAC_SHARING_ENABLED, which is off; the switch reads off',
+      '[rbac] RBAC_GOVERNANCE_ENABLED requires RBAC_PERMISSIONS_ENABLED, which is off; the switch reads off',
+    ])
+  })
+
+  test('an unrecognised value is logged once across copies', async () => {
+    vi.stubEnv('RBAC_IDENTITY_ENABLED', 'enabled')
+    for (const { rbacFlags } of [await freshFlags(), await anotherCopy()]) {
+      expect(rbacFlags().identity).toBe(false)
+    }
+    expect(rbacWarnings(warn)).toHaveLength(1)
+  })
+
+  test('resetFlagWarningsForTests lets a line be logged again, and is refused in production', async () => {
+    const { rbacFlags, resetFlagWarningsForTests } = await freshFlags()
+    vi.stubEnv('RBAC_PERMISSIONS_ENABLED', 'true')
+    rbacFlags()
+    rbacFlags()
+    resetFlagWarningsForTests()
+    rbacFlags()
+    expect(rbacWarnings(warn)).toHaveLength(2)
+
+    vi.stubEnv('NODE_ENV', 'production')
+    expect(() => resetFlagWarningsForTests()).toThrow(/tests only/)
   })
 })
 

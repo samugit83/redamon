@@ -41,10 +41,17 @@ const REQUIRES: ReadonlyArray<readonly [FlagName, FlagName]> = [
 const ON = new Set(['true', '1', 'yes'])
 const OFF = new Set(['', 'false', '0', 'no'])
 
-const warned = new Set<string>()
+// Next.js loads this module once per server bundle, so one process holds several
+// copies, each with its own module state: "once per process" lives on globalThis,
+// which every copy shares.
+const WARNED = Symbol.for('redamon.rbac.flagWarnings')
+type WarnedStore = typeof globalThis & { [WARNED]?: Set<string> }
+
 let override: Partial<RbacFlags> | null = null
 
 function warnOnce(line: string): void {
+  const store = globalThis as WarnedStore
+  const warned = (store[WARNED] ??= new Set<string>())
   if (warned.has(line)) return
   warned.add(line)
   console.warn(line)
@@ -100,4 +107,16 @@ export function setFlagsForTests(values: Partial<RbacFlags> | null): void {
     throw new Error('setFlagsForTests is for tests only')
   }
   override = values ? { ...values } : null
+}
+
+/**
+ * Tests only: forgets which lines were logged, so a test sees its own line
+ * although an earlier test (or another copy of the module) logged it.
+ * Refused in a production build, like setFlagsForTests.
+ */
+export function resetFlagWarningsForTests(): void {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('resetFlagWarningsForTests is for tests only')
+  }
+  delete (globalThis as WarnedStore)[WARNED]
 }
