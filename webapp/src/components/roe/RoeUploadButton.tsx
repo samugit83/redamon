@@ -12,6 +12,8 @@ import { Loader2, Upload } from 'lucide-react'
 import { useToast } from '@/components/ui'
 import { FeatureModelLine, useFeatureModelGate } from '@/components/shared/FeatureModelGate'
 import { ACCEPT_ATTRIBUTE, ALLOWED_EXTENSIONS_LABEL, MAX_FILE_SIZE } from '@/lib/roe/limits'
+import { useProjectAccess } from '@/hooks/useRefusal'
+import { readsOwnerCatalog } from '@/hooks/useProjectOwnerCatalog'
 import { readRoeError } from './roeClient'
 import { startRoeParse, useRoeEntry, useRoeMounted } from './roeParseStore'
 
@@ -30,6 +32,12 @@ export interface RoeUploadButtonProps {
   compact?: boolean
 }
 
+// "Your model" would point a collaborator at a model only the owner can choose or change.
+const OWNER_MODEL_ERRORS: Record<string, string> = {
+  model_required: "The project's owner has not chosen an RoE parsing model; only the owner can choose one",
+  model_unavailable: "The project owner's RoE parsing model could not be used",
+}
+
 function elapsed(since: number | null, now: number): string {
   if (!since) return '0:00'
   const s = Math.max(0, Math.floor((now - since) / 1000))
@@ -43,6 +51,11 @@ export function RoeUploadButton({
   const entry = useRoeEntry(storeKey)
   const inputRef = useRef<HTMLInputElement>(null)
   const { ensureFeatureModel, fetchWithFeatureModel } = useFeatureModelGate()
+  // An existing project the person does not own is parsed on its OWNER's model (step 5.6), by the
+  // rule the reports page and the project form read the owner's catalog with; a project being
+  // created is the caller's own.
+  const access = useProjectAccess(projectId || null)
+  const ownerModel = !!projectId && readsOwnerCatalog(access)
   const toast = useToast()
   const [now, setNow] = useState(() => Date.now())
   const [localError, setLocalError] = useState<string | null>(null)
@@ -60,24 +73,28 @@ export function RoeUploadButton({
       setLocalError(`The file is larger than ${MAX_FILE_SIZE / 1024 / 1024} MB.`)
       return
     }
-    // The route reads the user's own "RoE parsing" model itself; picking one
-    // here only makes sure there is one.
-    if (!(await ensureFeatureModel('roe_parse'))) return
+    // The route reads the "RoE parsing" model itself; on the person's own
+    // project picking one here only makes sure there is one.
+    if (!ownerModel && !(await ensureFeatureModel('roe_parse'))) return
     onFileSelected?.(file)
+    const post = () => {
+      const form = new FormData()
+      form.append('file', file)
+      if (projectId) form.append('projectId', projectId)
+      // Narrowed to the fields a document could propose: the form also holds
+      // stored credentials, and a value that does not need to travel should not.
+      if (currentForDiff) form.append('current', JSON.stringify(currentForDiff()))
+      return fetch('/api/roe/parse', { method: 'POST', body: form })
+    }
     void startRoeParse(
       storeKey,
       file,
-      () => fetchWithFeatureModel('roe_parse', () => {
-        const form = new FormData()
-        form.append('file', file)
-        if (projectId) form.append('projectId', projectId)
-        // Narrowed to the fields a document could propose: the form also holds
-        // stored credentials, and a value that does not need to travel should not.
-        if (currentForDiff) form.append('current', JSON.stringify(currentForDiff()))
-        return fetch('/api/roe/parse', { method: 'POST', body: form })
-      }),
+      ownerModel ? post : () => fetchWithFeatureModel('roe_parse', post),
       {
-        readError: async res => (await readRoeError(res)).error,
+        readError: async res => {
+          const err = await readRoeError(res)
+          return (ownerModel && err.code && OWNER_MODEL_ERRORS[err.code]) || err.error
+        },
         notifyUnmounted: outcome => toast.addToast({
           type: outcome === 'review' ? 'info' : 'error',
           title: outcome === 'review' ? 'RoE ready to review' : 'RoE parse failed',
@@ -130,7 +147,15 @@ export function RoeUploadButton({
             </>
           )}
         </button>
-        {showModelLine && <FeatureModelLine featureId="roe_parse" />}
+        {showModelLine && (ownerModel ? (
+          <span
+            data-feature-model="roe_parse"
+            style={{ fontSize: 11, color: 'var(--form-ink-muted)' }}
+            title="The document is read by the project owner's RoE parsing model, which only the owner changes, in their Global Settings"
+          >
+            Model: the project owner&apos;s
+          </span>
+        ) : <FeatureModelLine featureId="roe_parse" />)}
       </div>
       {parsing && (
         <span style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--form-ink-muted)' }}>
