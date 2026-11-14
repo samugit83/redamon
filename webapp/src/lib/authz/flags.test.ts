@@ -223,6 +223,63 @@ describe('once per process, not once per copy of the module', () => {
   })
 })
 
+describe('once per container: the edge middleware logs nothing, the Node.js runtime logs at boot', () => {
+  const X2_LINES = [
+    '[rbac] RBAC_SHARING_ENABLED requires RBAC_PERMISSIONS_ENABLED, which is off; the switch reads off',
+    '[rbac] RBAC_SHARING_WRITE_ENABLED requires RBAC_SHARING_ENABLED, which is off; the switch reads off',
+    '[rbac] RBAC_GOVERNANCE_ENABLED requires RBAC_PERMISSIONS_ENABLED, which is off; the switch reads off',
+  ]
+  const X2_VALUES = { ...ALL_OFF, identity: true }
+
+  beforeEach(() => {
+    vi.stubEnv('RBAC_IDENTITY_ENABLED', 'true')
+    vi.stubEnv('RBAC_SHARING_ENABLED', 'true')
+    vi.stubEnv('RBAC_SHARING_WRITE_ENABLED', 'true')
+    vi.stubEnv('RBAC_GOVERNANCE_ENABLED', 'true')
+  })
+
+  // The middleware runs in a vm sandbox with its own globalThis, so its once-only store starts
+  // empty however much the Node.js runtime logged (the X2 red: every line twice).
+  test('an edge copy with its own empty store reads the same switches and logs nothing', async () => {
+    vi.stubEnv('NEXT_RUNTIME', 'nodejs')
+    const node = await freshFlags()
+    expect(node.rbacFlags()).toEqual(X2_VALUES)
+    expect(rbacWarnings(warn)).toEqual(X2_LINES)
+
+    vi.stubEnv('NEXT_RUNTIME', 'edge')
+    vi.stubEnv('REDAMON_SHARED_TOOLS_COMPAT', 'enabled')
+    const edge = await freshFlags()
+    expect(edge.rbacFlags()).toEqual(X2_VALUES)
+    expect(rbacWarnings(warn)).toEqual(X2_LINES)
+  })
+
+  test('an edge copy that reads first leaves every line to the Node.js runtime', async () => {
+    vi.stubEnv('NEXT_RUNTIME', 'edge')
+    const edge = await freshFlags()
+    expect(edge.rbacFlags()).toEqual(X2_VALUES)
+    expect(rbacWarnings(warn)).toEqual([])
+
+    vi.stubEnv('NEXT_RUNTIME', 'nodejs')
+    const node = await anotherCopy()
+    expect(node.rbacFlags()).toEqual(X2_VALUES)
+    expect(node.rbacFlags()).toEqual(X2_VALUES)
+    expect(rbacWarnings(warn)).toEqual(X2_LINES)
+  })
+
+  // Without the boot read, a line would wait for the first request that reaches a Node.js route.
+  test('instrumentation reads the switches at boot in the Node.js runtime only', async () => {
+    await freshFlags()
+    const { register } = await import('../../instrumentation')
+    vi.stubEnv('NEXT_RUNTIME', 'edge')
+    await register()
+    expect(rbacWarnings(warn)).toEqual([])
+
+    vi.stubEnv('NEXT_RUNTIME', 'nodejs')
+    await register()
+    expect(rbacWarnings(warn)).toEqual(X2_LINES)
+  })
+})
+
 describe('setFlagsForTests', () => {
   test('overrides the environment, missing switches read off', async () => {
     const { rbacFlags, setFlagsForTests } = await freshFlags()

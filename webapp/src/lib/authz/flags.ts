@@ -49,7 +49,12 @@ type WarnedStore = typeof globalThis & { [WARNED]?: Set<string> }
 
 let override: Partial<RbacFlags> | null = null
 
+// The middleware runs on the edge runtime, a vm sandbox with its own globalThis that
+// the store above cannot reach, so only the Node.js runtime logs; src/instrumentation.ts
+// reads the switches there at boot, so no line waits for a request. A static property
+// read: Next inlines it per runtime.
 function warnOnce(line: string): void {
+  if (process.env.NEXT_RUNTIME === 'edge') return
   const store = globalThis as WarnedStore
   const warned = (store[WARNED] ??= new Set<string>())
   if (warned.has(line)) return
