@@ -49,7 +49,7 @@ describe('redirect only with the switch on', () => {
     expect(nav.replace).toHaveBeenCalledWith('/admin/users')
     expect(nav.push).not.toHaveBeenCalled()
     expect(screen.queryByText('users page')).toBeNull()
-    expect(screen.getByRole('status')).toHaveTextContent(/admin console/i)
+    expect(screen.getByRole('status')).toHaveTextContent(/IAM console/)
   })
 
   test('on: the query string and the anchor are kept', () => {

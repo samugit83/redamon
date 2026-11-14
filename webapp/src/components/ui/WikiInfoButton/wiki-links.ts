@@ -20,7 +20,7 @@ export const PAGE_WIKI: Record<string, { page: string; anchor?: string }> = {
   projectSettings: { page: 'Project-Settings-Reference' },
   reports:      { page: 'Pentest-Reports' },
   settings:     { page: 'Global-Settings' },
-  settingsUsers:{ page: 'User-Management' },
+  settingsUsers:{ page: 'Identity-and-Access-Management' },
   cypherfix:    { page: 'CypherFix-Automated-Remediation' },
   plugins:      { page: 'Plugins' },
   login:        { page: 'Getting-Started' },

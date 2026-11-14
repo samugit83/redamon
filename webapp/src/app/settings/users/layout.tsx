@@ -35,6 +35,6 @@ export default function UsersLayout({ children }: { children: ReactNode }) {
     router.replace(`${target}${query ? `?${query}` : ''}${window.location.hash}`)
   }, [target, query, router])
 
-  if (target) return <div className={styles.page}><p className={styles.empty} role="status">Opening the admin console…</p></div>
+  if (target) return <div className={styles.page}><p className={styles.empty} role="status">Opening the IAM console…</p></div>
   return <>{children}</>
 }

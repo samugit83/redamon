@@ -367,7 +367,7 @@ export default function UsersPage() {
         <div>
           <div className={styles.titleRow}>
             <h1 className={styles.title}>User Management</h1>
-            <WikiInfoButton target="settingsUsers" title="Open User Management wiki page" size={15} />
+            <WikiInfoButton target="settingsUsers" title="Open Identity & Access Management wiki page" size={15} />
           </div>
           <p className={styles.subtitle}>The accounts on this instance: their role, their status and what you can change for each.</p>
         </div>

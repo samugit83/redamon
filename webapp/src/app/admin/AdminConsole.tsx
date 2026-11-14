@@ -73,7 +73,7 @@ export function AdminConsole({ children }: { children: ReactNode }) {
   const allShares = useAllSharesView(user?.sharing?.enabled === true && capabilities.has('users:read'))
 
   if (isLoading) {
-    return <Frame><p className={styles.state} role="status">Loading the admin console…</p></Frame>
+    return <Frame><p className={styles.state} role="status">Loading the IAM console…</p></Frame>
   }
   if (!user) {
     return (
@@ -86,7 +86,7 @@ export function AdminConsole({ children }: { children: ReactNode }) {
             </div>
           </>
         ) : (
-          <p className={styles.state}>You are signed out. <Link href="/login">Sign in</Link> to open the admin console.</p>
+          <p className={styles.state}>You are signed out. <Link href="/login">Sign in</Link> to open the IAM console.</p>
         )}
       </Frame>
     )
@@ -98,7 +98,7 @@ export function AdminConsole({ children }: { children: ReactNode }) {
     return (
       <Frame>
         <div role="alert" className={noticeStyles.notice}>
-          <p className={noticeStyles.title}>The admin console needs an administration permission.</p>
+          <p className={noticeStyles.title}>The IAM console needs an administration permission.</p>
           <p className={noticeStyles.body}>
             You hold none of the permissions that open its sections (for example <code className={noticeStyles.id}>users:read</code> or{' '}
             <code className={noticeStyles.id}>audit:read</code>). Ask an administrator to grant one to you.
@@ -143,8 +143,8 @@ export function AdminConsole({ children }: { children: ReactNode }) {
     <SectionsContext.Provider value={sections}>
       <div className={styles.console}>
         {sections.length > 0 && (
-          <nav className={styles.nav} aria-label="Admin console">
-            <p className={styles.navTitle} aria-hidden="true">Admin console</p>
+          <nav className={styles.nav} aria-label="IAM">
+            <p className={styles.navTitle} aria-hidden="true">IAM</p>
             <ul className={styles.navList}>
               {sections.map((s) => navItem(s.href, s.label, current?.id === s.id, SECTION_ICONS[s.id]))}
             </ul>

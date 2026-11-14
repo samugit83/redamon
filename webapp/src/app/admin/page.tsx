@@ -17,5 +17,5 @@ export default function AdminIndexPage() {
   useEffect(() => {
     if (first) router.replace(first)
   }, [first, router])
-  return <p className={styles.state} role="status">Opening the admin console…</p>
+  return <p className={styles.state} role="status">Opening the IAM console…</p>
 }

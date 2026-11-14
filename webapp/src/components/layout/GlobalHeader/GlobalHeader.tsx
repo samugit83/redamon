@@ -87,7 +87,7 @@ export function GlobalHeader() {
             className={`${styles.navItem} ${pathname === '/admin' || pathname.startsWith('/admin/') ? styles.navItemActive : ''}`}
           >
             <LayoutDashboard size={14} />
-            <span>Admin</span>
+            <span>IAM</span>
           </Link>
         )}
 

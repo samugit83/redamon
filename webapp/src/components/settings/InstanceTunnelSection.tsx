@@ -151,7 +151,7 @@ export function InstanceTunnelSection({ placement = 'settings' }: { placement?: 
         <div className="formGroup">
           <span className="formLabel">Tunnel settings</span>
           <span>
-            The tunnel is shared by the whole instance and is managed on the Instance page of the admin console.{' '}
+            The tunnel is shared by the whole instance and is managed on the Instance page of the IAM console.{' '}
             <GuardedLink href={INSTANCE_PAGE_TUNNELS}>Open the tunnel settings</GuardedLink>
           </span>
         </div>

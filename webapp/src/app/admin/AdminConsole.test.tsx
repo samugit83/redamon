@@ -70,7 +70,7 @@ function renderConsole(auth: AuthContextValue, children: ReactNode = <p>section 
 }
 
 const navLinks = () => {
-  const landmark = screen.queryByRole('navigation', { name: 'Admin console' })
+  const landmark = screen.queryByRole('navigation', { name: 'IAM' })
   return landmark ? within(landmark).getAllByRole('link').map((a) => a.textContent) : []
 }
 
@@ -83,7 +83,7 @@ describe('the layout', () => {
       </AuthContext.Provider>,
     )
     expect(nav.notFound).not.toHaveBeenCalled()
-    expect(screen.getByRole('navigation', { name: 'Admin console' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'IAM' })).toBeInTheDocument()
   })
 })
 
@@ -135,7 +135,7 @@ describe('nav shows only permitted sections', () => {
       </AuthContext.Provider>,
     )
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/admin/users'))
-    expect(screen.getByRole('status')).toHaveTextContent('Opening the admin console')
+    expect(screen.getByRole('status')).toHaveTextContent('Opening the IAM console')
   })
 
   test('/admin with only an Audit permission opens Audit', async () => {
@@ -194,8 +194,8 @@ describe('denied state', () => {
   test('a member holding no console permission: the console says so, no navigation', () => {
     renderConsole(fakeAuth(FLAGS_GOV, ['recon:scan', 'agent:chat']), <AdminIndexPage />)
     expect(screen.getByRole('alert')).toHaveTextContent(/administration permission/i)
-    expect(screen.queryByRole('navigation', { name: 'Admin console' })).toBeNull()
-    expect(screen.queryByRole('heading', { level: 1, name: 'Admin console' })).toBeNull()
+    expect(screen.queryByRole('navigation', { name: 'IAM' })).toBeNull()
+    expect(screen.queryByRole('heading', { level: 1, name: 'IAM' })).toBeNull()
   })
 
   test('a permitted section renders its page', () => {
@@ -209,7 +209,7 @@ describe('denied state', () => {
 describe('the shell states', () => {
   test('loading: a status, no navigation and no page yet', () => {
     renderConsole(fakeAuth(null, [], { isLoading: true }))
-    expect(screen.getByRole('status')).toHaveTextContent('Loading the admin console')
+    expect(screen.getByRole('status')).toHaveTextContent('Loading the IAM console')
     expect(screen.queryByRole('navigation')).toBeNull()
     expect(screen.queryByText('section body')).toBeNull()
   })
@@ -234,7 +234,7 @@ describe('keyboard and labels', () => {
   test('a labelled navigation of links in reading order, the current section marked', () => {
     nav.pathname = '/admin/audit'
     renderConsole(adminAuth(profile('security-auditor')))
-    const landmark = screen.getByRole('navigation', { name: 'Admin console' })
+    const landmark = screen.getByRole('navigation', { name: 'IAM' })
     const links = within(landmark).getAllByRole('link')
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/admin/users', '/admin/projects', '/admin/audit'])
     expect(links.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['Audit'])
@@ -247,7 +247,7 @@ describe('keyboard and labels', () => {
 
   test('/admin itself marks no section current (it opens one at once)', () => {
     renderConsole(adminAuth(['users:read']))
-    const landmark = screen.getByRole('navigation', { name: 'Admin console' })
+    const landmark = screen.getByRole('navigation', { name: 'IAM' })
     expect(within(landmark).getByRole('link', { name: 'Users' })).not.toHaveAttribute('aria-current')
   })
 })

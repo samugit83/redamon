@@ -274,10 +274,10 @@ describe('GlobalHeader – Users link', () => {
 describe('GlobalHeader – Admin link (step 6.1, UI-10, OQ-44)', () => {
   const PERMISSIONS_ON = { sharedToolsCompat: false, identity: true, permissions: true, sharing: false, sharingWrite: false, governance: false }
   const GOVERNANCE_ON = { ...PERMISSIONS_ON, governance: true }
-  const adminLink = () => screen.queryByRole('link', { name: /^admin$/i })
+  const adminLink = () => screen.queryByRole('link', { name: /^IAM$/ })
   const usersLink = () => screen.queryByRole('link', { name: /^users$/i })
 
-  test('on: "Admin" to the console replaces "Users"', () => {
+  test('on: "IAM" to the console replaces "Users"', () => {
     mockFlags = GOVERNANCE_ON
     render(<GlobalHeader />)
     expect(adminLink()?.getAttribute('href')).toBe('/admin')
@@ -309,7 +309,7 @@ describe('GlobalHeader – Admin link (step 6.1, UI-10, OQ-44)', () => {
     expect(adminLink()!.className).toContain('navItemActive')
   })
 
-  test('off: "Users" stays, linking to the Users page, and no "Admin" whatever is held', () => {
+  test('off: "Users" stays, linking to the Users page, and no "IAM" whatever is held', () => {
     for (const flags of [null, PERMISSIONS_ON]) {
       mockFlags = flags
       mockGranted = new Set(['users:read', 'audit:read', 'platform:tunnels'])

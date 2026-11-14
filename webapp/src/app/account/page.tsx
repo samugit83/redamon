@@ -110,7 +110,7 @@ export default function AccountPage() {
       <div className={styles.header}>
         <div className={styles.titleRow}>
           <h1 className={styles.title}>My account</h1>
-          <WikiInfoButton target="settingsUsers" title="Open User Management wiki page" size={15} />
+          <WikiInfoButton target="settingsUsers" title="Open Identity & Access Management wiki page" size={15} />
         </div>
         <p className={styles.subtitle}>
           {full ? 'Your profile, password, sessions and what happened to your account.' : 'Change the password you sign in with.'}

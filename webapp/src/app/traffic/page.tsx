@@ -208,7 +208,7 @@ export default function TrafficPage() {
         )}
         {settingsOnInstancePage ? (
           <GuardedLink className={styles.settingsBtn} href={INSTANCE_PAGE_TRAFFIC}
-            title="TrafficMind global settings, on the admin console's Instance page">
+            title="TrafficMind global settings, on the IAM console's Instance page">
             <Settings size={15} /> Settings
           </GuardedLink>
         ) : canManageCapture && (
