@@ -226,5 +226,5 @@ bash tests/rbac_matrix_live.sh  # live: needs the stack up
 
 - [README.SECURITY_POSTURE.md](../../docs/readmes/README.SECURITY_POSTURE.md) §7 (authorization and multi-tenancy), §9 (tickets), §16 (audit)
 - [README.DEV.md](../../docs/readmes/README.DEV.md) §8, "RBAC feature switches" - each switch, its requirement and roll-back
-- [Sharing-Projects.md](../../redamon.wiki/Sharing-Projects.md), [User-Management.md](../../redamon.wiki/User-Management.md) - the levels and toggles as users see them
+- [Sharing-Projects.md](../../redamon.wiki/Sharing-Projects.md), [Identity-and-Access-Management.md](../../redamon.wiki/Identity-and-Access-Management.md) - the levels and toggles as users see them
 - Related skills: `mcp-server-tools`, `plugin-platform`, `graph-db-writes`, `priority-board-triage`, `redamon-testing`

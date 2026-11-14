@@ -221,9 +221,9 @@ Use `create-admin` when no admin exists yet; `reset-password` only updates a use
 ./redamon.sh set-root you@example.com
 ```
 
-See [User Management](https://github.com/samugit83/redamon/wiki/User-Management) for Root, invites, account status and sessions.
+See [Identity & Access Management](https://github.com/samugit83/redamon/wiki/Identity-and-Access-Management) for Root, invites, account status and sessions.
 
-The lists above are the behaviour with the default permission sets. Identity (`RBAC_IDENTITY_ENABLED`), permission sets (`RBAC_PERMISSIONS_ENABLED`), project sharing (`RBAC_SHARING_ENABLED`, `RBAC_SHARING_WRITE_ENABLED`) and the admin console (`RBAC_GOVERNANCE_ENABLED`) are on by default: `./redamon.sh` writes all five `true` into `.env` when they are missing and keeps any value you set, so `false` turns one off for good. Sharing also needs Root to turn on the sharing policy in the admin console (**Instance**), which is off until then: see [Sharing Projects](https://github.com/samugit83/redamon/wiki/Sharing-Projects) and [Admin Console](https://github.com/samugit83/redamon/wiki/Admin-Console), and the [Changelog](CHANGELOG.md) for the order to turn them on.
+The lists above are the behaviour with the default permission sets. Identity (`RBAC_IDENTITY_ENABLED`), permission sets (`RBAC_PERMISSIONS_ENABLED`), project sharing (`RBAC_SHARING_ENABLED`, `RBAC_SHARING_WRITE_ENABLED`) and the IAM console (`RBAC_GOVERNANCE_ENABLED`) are on by default: `./redamon.sh` writes all five `true` into `.env` when they are missing and keeps any value you set, so `false` turns one off for good. Sharing also needs Root to turn on the sharing policy in the IAM console (**Instance**), which is off until then: see [Sharing Projects](https://github.com/samugit83/redamon/wiki/Sharing-Projects) and [IAM Console](https://github.com/samugit83/redamon/wiki/Admin-Console), and the [Changelog](CHANGELOG.md) for the order to turn them on.
 
 ### 3. Configure
 
@@ -839,6 +839,12 @@ Detects known-malicious (`MAL-`) and known-vulnerable (`CVE`/`GHSA`) packages **
 <p align="center">
   <img src="docs/assets/settings.gif" alt="RedAmon Project Settings" width="100%"/>
 </p>
+
+### Identity & Access Management
+
+One instance for the whole team: a protected Root account, administrators and members, invited by link and disabled, reset or signed out everywhere when needed. Permission sets, per-account overrides and admin profiles decide what each person may do, and projects are shared at Read or Read + Write, with the owner's consent before anyone spends their credentials. Administrators run it all from **IAM** in the header, with every action in the audit log.
+
+> **[Wiki: Identity & Access Management](https://github.com/samugit83/redamon/wiki/Identity-and-Access-Management)**
 
 ### Rules of Engagement (RoE)
 

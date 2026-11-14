@@ -503,10 +503,10 @@ and makes the overlay part of the repo history).
 The identity controls (Root, account status, invites, shorter admin sessions) follow
 `RBAC_IDENTITY_ENABLED`, which `deploy.sh` never writes. `redamon.sh` writes it to the app `.env`
 on the server as `true` (with the other four `RBAC_*_ENABLED` switches: permissions, sharing,
-write sharing and the admin console) whenever a line is missing or blank, and keeps any value
+write sharing and the IAM console) whenever a line is missing or blank, and keeps any value
 already there (`seed` keeps lines it does not own too), so all five are on unless you change a
 line to `false` and run `update`. No project is shared until Root turns the sharing policy on
-(**Admin**, **Instance**). After the restart
+(**IAM**, **Instance**). After the restart
 `redamon.sh update` confirms Root: the only admin with a password, or the admin `ADMIN_EMAIL`
 names (exported from this `.env`); otherwise it leaves Root unconfirmed and prints how to set it
 (`./redamon.sh set-root <email>` in the checkout on the server). Invite and reset links point at
