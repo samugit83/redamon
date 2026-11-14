@@ -347,6 +347,35 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.3): the permission sets and admin 
   })
 })
 
+describe('RBAC_GOVERNANCE_ENABLED off (step 6.6): the audit viewer and its export do not exist', () => {
+  test('GET /api/admin/audit, /api/admin/audit/[id] and /api/admin/audit/export answer 404 and read neither the session nor the database', async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    vi.doMock('@/lib/session', () => ({
+      requireSession: vi.fn(async () => { touched('session'); return { userId: 'aud-1', role: 'admin' } }),
+      getSession: vi.fn(async () => { touched('session'); return { userId: 'aud-1', role: 'admin' } }),
+    }))
+    const { GET: list } = await import('@/app/api/admin/audit/route')
+    const { GET: row } = await import('@/app/api/admin/audit/[id]/route')
+    const { GET: exported } = await import('@/app/api/admin/audit/export/route')
+    for (const [identity, permissions] of [['', ''], ['true', 'true']]) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', identity)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', permissions)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect((await list(new Request('http://redamon.test/api/admin/audit') as never)).status).toBe(404)
+      expect((await row(new Request('http://redamon.test/api/admin/audit/al-1') as never, { params: Promise.resolve({ id: 'al-1' }) })).status).toBe(404)
+      expect((await exported(new Request('http://redamon.test/api/admin/audit/export?format=csv') as never)).status).toBe(404)
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/session')
+  })
+})
+
 describe('RBAC_GOVERNANCE_ENABLED off (step 6.8): no quota is enforced or read', () => {
   test('every account is unlimited, and neither the instance row nor an account is read', async () => {
     const touched = vi.fn()
@@ -432,35 +461,6 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.11): instance LLM providers are ne
     vi.doUnmock('@/lib/prisma')
     vi.doUnmock('@/lib/session')
     vi.doUnmock('@/lib/instanceProviders/store')
-  })
-})
-
-describe('RBAC_GOVERNANCE_ENABLED off (step 6.6): the audit viewer and its export do not exist', () => {
-  test('GET /api/admin/audit, /api/admin/audit/[id] and /api/admin/audit/export answer 404 and read neither the session nor the database', async () => {
-    const touched = vi.fn()
-    vi.resetModules()
-    vi.doMock('@/lib/prisma', () => {
-      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
-      return { default: db, prisma: db }
-    })
-    vi.doMock('@/lib/session', () => ({
-      requireSession: vi.fn(async () => { touched('session'); return { userId: 'aud-1', role: 'admin' } }),
-      getSession: vi.fn(async () => { touched('session'); return { userId: 'aud-1', role: 'admin' } }),
-    }))
-    const { GET: list } = await import('@/app/api/admin/audit/route')
-    const { GET: row } = await import('@/app/api/admin/audit/[id]/route')
-    const { GET: exported } = await import('@/app/api/admin/audit/export/route')
-    for (const [identity, permissions] of [['', ''], ['true', 'true']]) {
-      vi.stubEnv('RBAC_IDENTITY_ENABLED', identity)
-      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', permissions)
-      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
-      expect((await list(new Request('http://redamon.test/api/admin/audit') as never)).status).toBe(404)
-      expect((await row(new Request('http://redamon.test/api/admin/audit/al-1') as never, { params: Promise.resolve({ id: 'al-1' }) })).status).toBe(404)
-      expect((await exported(new Request('http://redamon.test/api/admin/audit/export?format=csv') as never)).status).toBe(404)
-    }
-    expect(touched).not.toHaveBeenCalled()
-    vi.doUnmock('@/lib/prisma')
-    vi.doUnmock('@/lib/session')
   })
 })
 
