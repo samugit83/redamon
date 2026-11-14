@@ -70,20 +70,31 @@ p4-oversee-ws-ticket-terminal	4.3	admin_a	POST	/api/agent/ws-ticket	{"projectId"
 # without a change (each counted lookup is audited). viewer_tmp's share is then revoked (its next read is 404, a
 # second revoke 404), granted again (the answer names the recipient, D-24) and left (its next read 404, a second
 # leave 404); the next seed puts it back. The note PATCH is rewritten by the next seed too.
+# A write grant or change is refused while write sharing is not in force: `write_sharing_off` with the write switch
+# off, `above_max_level` with it on and Root's policy at Read (sharingwriteswitch: splits the two); both refusals
+# come before any lookup, so they may name the seeded viewer. With write sharing in force the write grant and
+# change are allowed, so those rows act on viewer_tmp only and put it back where the block left it (Read before
+# the revoke, no share after the leave): viewer and the later Read-viewer rows of p4, p4_generated and p5 stay Read.
 p4-share-list-owner	4.4	member_c	GET	/api/projects/${PSHARED_ID}/collaborators	-	200;has=${VIEWER_EMAIL};has=${VIEWER_RAW_EMAIL};has="rawData":true	req:SH-09 sharing:on
 p4-share-list-viewer	4.4	viewer	GET	/api/projects/${PSHARED_ID}/collaborators	-	403;has=project:share;lacks=${VIEWER_RAW_EMAIL}	req:SH-09 sharing:on
 p4-share-list-other	4.4	member_b	GET	/api/projects/${PSHARED_ID}/collaborators	-	404;lacks=${VIEWER_EMAIL}	req:SH-09 sharing:on
 p4-share-list-oversee	4.4	admin_a	GET	/api/projects/${PSHARED_ID}/collaborators	-	200;has=${VIEWER_EMAIL}	req:SH-18 req:SH-21 sharing:on
 p4-share-grant-unknown	4.4	member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"rbac-nobody@e2e.local","access":"read"}	404;has=no_such_account	req:SH-19 sharing:on
 p4-share-grant-self	4.4	member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${MEMBER_C_EMAIL}","access":"read"}	400;has=share_with_self	req:SH-09 sharing:on
-p4-share-grant-write	4.4	member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${VIEWER_EMAIL}","access":"write"}	409;has=write_sharing_off	req:SH-06 sharing:on
+p4-share-grant-write	4.4	member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${VIEWER_EMAIL}","access":"write"}	409;has=write_sharing_off	req:SH-06 sharing:on sharingwrite:off sharingwriteswitch:off
+p4-share-grant-write-capped	5.14	member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${VIEWER_EMAIL}","access":"write"}	409;has="code":"above_max_level";has="maxLevel":"read"	req:SH-06 req:SH-21 sharing:on sharingwrite:off sharingwriteswitch:on
 p4-share-grant-existing	4.4	member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${VIEWER_EMAIL}","access":"read"}	409;has=already_shared	req:SH-09 sharing:on
 p4-share-grant-viewer	4.4	viewer	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${MEMBER_B_EMAIL}","access":"read"}	403;has=project:share	req:SH-09 sharing:on
 p4-share-grant-other	4.4	member_b	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${MEMBER_A_EMAIL}","access":"read"}	404;lacks=no_such_account	req:SH-09 sharing:on
 p4-share-grant-cross-origin	4.4	member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${VIEWER_TMP_EMAIL}","access":"read"}	403;has=cross_origin	req:SH-09 sharing:on origin:https://rbac-other-site.example
 p4-share-grant-acting	4.4	admin_a_as_member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${VIEWER_TMP_EMAIL}","access":"read"}	403;has=not_while_acting_as	req:SH-09 sharing:on
 p4-share-update-owner	4.4	member_c	PATCH	/api/projects/${PSHARED_ID}/collaborators/${VIEWER_ID}	{"note":"rbac matrix note"}	200;has="note":"rbac matrix note";has="rawData":false	req:SH-10 sharing:on
-p4-share-update-write	4.4	member_c	PATCH	/api/projects/${PSHARED_ID}/collaborators/${VIEWER_ID}	{"access":"write"}	409;has=write_sharing_off	req:SH-06 sharing:on
+p4-share-update-write	4.4	member_c	PATCH	/api/projects/${PSHARED_ID}/collaborators/${VIEWER_ID}	{"access":"write"}	409;has=write_sharing_off	req:SH-06 sharing:on sharingwrite:off sharingwriteswitch:off
+p4-share-update-write-capped	5.14	member_c	PATCH	/api/projects/${PSHARED_ID}/collaborators/${VIEWER_ID}	{"access":"write"}	409;has="code":"above_max_level";has="maxLevel":"read"	req:SH-06 req:SH-21 sharing:on sharingwrite:off sharingwriteswitch:on
+p4-share-update-write-on	5.14	member_c	PATCH	/api/projects/${PSHARED_ID}/collaborators/${VIEWER_TMP_ID}	{"access":"write"}	200;has=${VIEWER_TMP_EMAIL};has="access":"write"	req:SH-02 req:SH-10 sharing:on sharingwrite:on
+p4-share-update-write-on-read	5.14	viewer_tmp	GET	/api/projects/${PSHARED_ID}/my-access	-	200;has="level":"write";has="via":"share"	req:SH-02 sharing:on sharingwrite:on
+p4-share-update-write-on-restore	5.14	member_c	PATCH	/api/projects/${PSHARED_ID}/collaborators/${VIEWER_TMP_ID}	{"access":"read"}	200;has=${VIEWER_TMP_EMAIL};has="access":"read"	req:SH-10 sharing:on sharingwrite:on
+p4-share-update-write-on-restored	5.14	viewer_tmp	GET	/api/projects/${PSHARED_ID}/my-access	-	200;has="level":"read";has="via":"share"	req:SH-10 sharing:on sharingwrite:on
 p4-share-update-viewer	4.4	viewer	PATCH	/api/projects/${PSHARED_ID}/collaborators/${VIEWER_ID}	{"rawData":true}	403;has=project:share	req:SH-10 sharing:on
 p4-share-revoke-none	4.4	member_c	DELETE	/api/projects/${PSHARED_ID}/collaborators/${MEMBER_B_ID}	-	404;has=no_such_share	req:SH-11 sharing:on
 p4-share-tmp-read	4.4	viewer_tmp	GET	/api/projects/${PSHARED_ID}/my-access	-	200;has="via":"share"	req:SH-11 sharing:on
@@ -97,6 +108,10 @@ p4-share-leave-owner	4.4	member_c	POST	/api/projects/${PSHARED_ID}/leave	{}	404;
 p4-share-leave	4.4	viewer_tmp	POST	/api/projects/${PSHARED_ID}/leave	{}	200;has="left"	req:SH-13 sharing:on
 p4-share-left-read	4.4	viewer_tmp	GET	/api/projects/${PSHARED_ID}/my-access	-	404;lacks="myAccess"	req:SH-13 sharing:on
 p4-share-leave-twice	4.4	viewer_tmp	POST	/api/projects/${PSHARED_ID}/leave	{}	404;has=no_such_share	req:SH-13 sharing:on
+p4-share-grant-write-on	5.14	member_c	POST	/api/projects/${PSHARED_ID}/collaborators	{"email":"${VIEWER_TMP_EMAIL}","access":"write"}	201;has=${VIEWER_TMP_EMAIL};has="access":"write"	req:SH-02 req:SH-09 sharing:on sharingwrite:on
+p4-share-grant-write-on-read	5.14	viewer_tmp	GET	/api/projects/${PSHARED_ID}/my-access	-	200;has="level":"write";has="via":"share"	req:SH-02 sharing:on sharingwrite:on
+p4-share-grant-write-on-leave	5.14	viewer_tmp	POST	/api/projects/${PSHARED_ID}/leave	{}	200;has="left"	req:SH-13 sharing:on sharingwrite:on
+p4-share-grant-write-on-left	5.14	viewer_tmp	GET	/api/projects/${PSHARED_ID}/my-access	-	404;lacks="myAccess"	req:SH-13 sharing:on sharingwrite:on
 # With sharing off the share routes do not exist (DV-30).
 p4-share-off-list	4.4	member_c	GET	/api/projects/${PSHARED_ID}/collaborators	-	404;lacks=${VIEWER_EMAIL}	req:SH-01 sharing:off
 p4-share-off-leave	4.4	viewer	POST	/api/projects/${PSHARED_ID}/leave	{}	404	req:SH-01 sharing:off

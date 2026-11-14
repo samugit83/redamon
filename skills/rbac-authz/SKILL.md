@@ -175,7 +175,11 @@ triage write, `redamon-testing` for the tests.
   [rbac_matrix_live.sh](../../tests/rbac_matrix_live.sh)), or it fails in the other state.
   `sharing:` is sharing in force (the switch and Root's policy); a route or field gated on
   `RBAC_SHARING_ENABLED` itself, which exists with the switch on and the policy `{}`, takes
-  `sharingswitch:` (the S3a red: four `sharing:off` rows failed there).
+  `sharingswitch:` (the S3a red: four `sharing:off` rows failed there). A write grant refused
+  while write sharing is not in force answers per the write switch (`write_sharing_off` off,
+  `above_max_level` on with Root's policy at Read): `sharingwrite:off` plus `sharingwriteswitch:`.
+  A row that raises a share to write with it in force acts on `viewer_tmp` and puts it back: the
+  runner seeds once, so a raised `viewer` fails every later Read-viewer row (the S5 red).
 - **A project the caller cannot see and one that does not exist are the same 404.** A 403 names
   the permission (`forbiddenResponse`, `requireLevel`) and goes only to someone who reaches the
   project below the level.

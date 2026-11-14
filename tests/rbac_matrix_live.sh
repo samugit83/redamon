@@ -51,6 +51,10 @@
 #           reads off while the sharing switch is off, AND Root's policy `maxLevel` "write",
 #           as maxShareLevel reads it: a policy without `maxLevel` allows write, its default
 #           in SHARING_POLICY_DEFAULTS; read and failed the same way),
+#           sharingwriteswitch:on | sharingwriteswitch:off (RBAC_SHARING_WRITE_ENABLED alone,
+#           with its chain and no policy read: write sharing not in force answers a write
+#           grant `write_sharing_off` with the switch off and `above_max_level` with it on
+#           and Root's policy at Read, so such a row is `sharingwrite:off` plus this tag),
 #           governance:on | governance:off (the same for RBAC_GOVERNANCE_ENABLED, step 6.13,
 #           which reads off while the permissions switch is off, as flags.ts chains it; it
 #           needs neither sharing nor a policy, so nothing more is read),
@@ -364,7 +368,7 @@ for line in "${ROWS[@]}"; do
     echo "SKIP  $label  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue
   fi
   off_switch=""; policy_unread=""
-  for sw in identity permissions sharing sharingswitch sharingwrite governance; do
+  for sw in identity permissions sharing sharingswitch sharingwrite sharingwriteswitch governance; do
     [[ " $tags " =~ \ $sw:(on|off)\  ]] || continue
     want="${BASH_REMATCH[1]}"
     read_switches
@@ -374,6 +378,7 @@ for line in "${ROWS[@]}"; do
       permissions) state="$PERMISSIONS" ;;
       governance) state="$GOVERNANCE" ;;
       sharingswitch) state="$SHARING"; why="sharing switch" ;;
+      sharingwriteswitch) state="$SHARINGWRITE"; why="sharingwrite switch" ;;
       sharingwrite) state="$SHARINGWRITE"
          # In force only with sharing in force and Root's policy at write (maxShareLevel).
          if [ "$state" = on ]; then
