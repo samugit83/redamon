@@ -177,9 +177,29 @@ class TestUseApiKeyModal(unittest.TestCase):
         self.assertIn("field: 'wpscanApiToken'", self.content)
 
     def test_fetch_status_checks_wpscan(self):
-        """fetchApiKeyStatus must check for missing wpscanApiToken."""
-        self.assertIn("!settings.wpscanApiToken", self.content)
-        self.assertIn("missing.add('execute_wpscan')", self.content)
+        """The drawer's missing-key check covers wpscanApiToken.
+
+        The check is derived from API_KEY_INFO (missingKeyTools), so WPScan is
+        covered only while API_KEY_INFO maps execute_wpscan to wpscanApiToken
+        AND both the own-settings fetch and the owner-catalog path use it.
+        """
+        info = re.search(r'^export const API_KEY_INFO\b[^=]*= \{\n(.*?)^\}',
+                         self.content, re.M | re.S)
+        self.assertIsNotNone(info, 'API_KEY_INFO object not found')
+        self.assertRegex(info.group(1),
+                         r"(?m)^\s*execute_wpscan:\s*\{\s*field:\s*'wpscanApiToken'")
+
+        derive = re.search(r'^function missingKeyTools\(settings[^)]*\)[^{]*\{\n(.*?)^\}',
+                           self.content, re.M | re.S)
+        self.assertIsNotNone(derive, 'missingKeyTools not found')
+        self.assertIn('Object.keys(API_KEY_INFO)', derive.group(1))
+        self.assertRegex(derive.group(1), r'!\s*settings\[API_KEY_INFO\[\w+\]\.field\]')
+
+        fetch = re.search(r'const fetchApiKeyStatus = useCallback\((.*?)\n  \}, \[',
+                          self.content, re.S)
+        self.assertIsNotNone(fetch, 'fetchApiKeyStatus not found')
+        self.assertIn('setMissingApiKeys(missingKeyTools(settings))', fetch.group(1))
+        self.assertIn('missingKeyTools(ownerKeys)', self.content)
 
 
 class TestToolExecutionCard(unittest.TestCase):
