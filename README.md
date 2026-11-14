@@ -6,7 +6,7 @@
   <b><i><big><big>Unmask the hidden before the world does</big></big></i></b>
 </p>
 <p align="center" style="font-size: 120%;">
-  <b>RedAmon is an open-source, self-hosted AI penetration testing framework</b> that maps your attack surface into a graph, autonomously exploits it from a Kali sandbox with human approval gates, and opens pull requests that fix what it finds. From first packet to merged patch, with human oversight at every critical step.
+  <b>RedAmon is a next-generation, enterprise-grade platform for AI-driven penetration testing, at the forefront of agentic offensive security.</b> It is self-hosted and supports multiple users and tenants, with role-based access control, Rules of Engagement enforcement and append-only audit trails. Security teams can run full-scope assessments on infrastructure they control: the attack surface mapped as a graph, exploitation driven by an agent behind human approval gates, and fixes delivered as pull requests. Local models are supported when data must not leave your environment.
 </p>
 
 <br/>
@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/samugit83/redamon/stargazers"><img height="24" src="https://img.shields.io/github/stars/samugit83/redamon?style=flat&color=2E8B57&label=Stars" alt="GitHub Stars"/></a>
-  <img height="24" src="https://img.shields.io/badge/v7.7.2-release-2E8B57?style=flat" alt="Version 7.7.2"/>
+  <img height="24" src="https://img.shields.io/badge/v7.8.0-release-2E8B57?style=flat" alt="Version 7.8.0"/>
   <img height="24" src="https://img.shields.io/badge/WARNING-SECURITY%20TOOL-B22222?style=flat" alt="Security Tool Warning"/>
   <img height="24" src="https://img.shields.io/badge/LICENSE-MIT-4169A1?style=flat" alt="MIT License"/>
   <img height="24" src="https://img.shields.io/badge/AI-AUTONOMOUS%20AGENT-6A5ACD?style=flat&logo=openai&logoColor=white" alt="AI Powered"/>
