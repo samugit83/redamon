@@ -1028,6 +1028,25 @@ _env_strip_var() {
     mv -f "$tmp" "$env_file"
 }
 
+# Write KEY=VALUE where KEY's last assignment in .env stands, so the comment above it
+# stays with it; earlier assignments are dead under compose's last-wins rule and are
+# dropped. With no assignment, the line is appended.
+_env_set_in_place() {
+    local env_file="$1" key="$2" value="$3" last tmp
+    last="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$env_file" 2>/dev/null | tail -1 | cut -d: -f1 || true)"
+    if [[ -z "$last" ]]; then
+        echo "${key}=${value}" >> "$env_file"
+        return 0
+    fi
+    tmp="$(mktemp "${env_file}.XXXXXX")" || return 0
+    awk -v k="$key" -v v="$value" -v last="$last" '
+        NR == last { print k "=" v; next }
+        { line = $0; sub(/^[ \t]+/, "", line); sub(/^export[ \t]+/, "", line) }
+        index(line, k "=") != 1' "$env_file" > "$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$env_file"
+}
+
 # Write the computed allocation into a managed block in .env.
 #
 # WHY THIS EXISTS: the values used to be `export`ed into a shell that then
@@ -2029,6 +2048,27 @@ ensure_auth_secrets() {
         fi
     done
     grep -qxF "$switched_on_once" "$env_file" 2>/dev/null || echo "$switched_on_once" >> "$env_file"
+    # The five RBAC switches are ON by default, written EXPLICITLY so the operator
+    # sees them in .env and turns one off by changing one word. A switch with no
+    # line, or only a blank value (the bare `KEY=` placeholder older .env.example
+    # files carried), is written true; any other value is the operator's and is
+    # never changed, so a `false` set by hand survives every update. Read from
+    # .env alone (the subshell's `unset`): a value exported in this shell is gone
+    # at the next update. Listed in requirement order (flags.ts REQUIRES), so a
+    # fresh .env reads top-down the way the chain does.
+    #
+    # On an existing install this runs before the update restarts the webapp, and
+    # `update` then confirms Root (_confirm_root); turning permissions on lapses
+    # the legacy grants nobody decided (CHANGELOG 7.8.0, Upgrade). The sharing
+    # switches share nothing by themselves: Root's sharing policy
+    # (instance_settings.sharing_policy) stays off until Root turns it on.
+    for switch in RBAC_IDENTITY_ENABLED RBAC_PERMISSIONS_ENABLED \
+                  RBAC_SHARING_ENABLED RBAC_SHARING_WRITE_ENABLED RBAC_GOVERNANCE_ENABLED; do
+        value="$(unset "$switch"; _env_compose_value "$switch" "$env_file")"
+        [[ -n "${value//[[:space:]]/}" ]] && continue
+        _env_set_in_place "$env_file" "$switch" true
+        info "Set ${switch}=true in .env (on by default; set it to false to turn it off)"
+    done
     # The plugin platform always runs, so a PLUGINS_ENABLED line left by an older
     # release only misleads whoever reads .env. Nothing reads it.
     if grep -qE '^[[:space:]]*(export[[:space:]]+)?PLUGINS_ENABLED=' "$env_file" 2>/dev/null; then
@@ -2780,11 +2820,14 @@ ensure_admin() {
 
 # The identity switch read as the webapp reads it (webapp/src/lib/authz/flags.ts):
 # true, 1 or yes, in any case, is on; anything else is off. From the app .env, where
-# the operator sets it (deploy.sh forwards no RBAC_* key).
+# the operator sets it (deploy.sh forwards no RBAC_* key). Read as compose reads it,
+# not with _env_get: the LAST line wins and an inline " # comment" is dropped. Since
+# ensure_auth_secrets writes the key as false, an operator who appends a =true line
+# below it runs the webapp with identity on, and the Root check must agree.
 _rbac_identity_on() {
-    local v
-    v="$(_env_get RBAC_IDENTITY_ENABLED)"
-    v="$(printf '%s' "$v" | tr -d "[:space:]\"'" | tr '[:upper:]' '[:lower:]')"
+    local v="" env_file="$SCRIPT_DIR/.env"
+    [[ -f "$env_file" ]] && v="$(grep -E '^RBAC_IDENTITY_ENABLED=' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    v="$(printf '%s' "$v" | sed -E 's/[[:space:]]+#.*$//' | tr -d "[:space:]\"'" | tr '[:upper:]' '[:lower:]')"
     [[ "$v" == true || "$v" == 1 || "$v" == yes ]]
 }
 

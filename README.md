@@ -215,7 +215,7 @@ If you forget the admin password, reset it from the terminal:
 
 Use `create-admin` when no admin exists yet; `reset-password` only updates a user that already exists, never changes its role, and revokes its MCP tokens. Both resets also sign that account out everywhere and re-enable it if it was disabled.
 
-**Root.** The first admin is the instance's Root: the one account no other admin can demote, disable, reset or act as, and the only one that manages other admins (with `RBAC_IDENTITY_ENABLED=true` in `.env`; off by default). An install that already had admins gets one at the update (the oldest admin with a password), and `./redamon.sh update` confirms it. To make another account Root, or to get back in when Root's account is lost:
+**Root.** The first admin is the instance's Root: the one account no other admin can demote, disable, reset or act as, and the only one that manages other admins (with `RBAC_IDENTITY_ENABLED=true` in `.env`, the default; set it to `false` to turn it off). An install that already had admins gets one at the update (the oldest admin with a password), and `./redamon.sh update` confirms it. To make another account Root, or to get back in when Root's account is lost:
 
 ```bash
 ./redamon.sh set-root you@example.com
@@ -223,7 +223,7 @@ Use `create-admin` when no admin exists yet; `reset-password` only updates a use
 
 See [User Management](https://github.com/samugit83/redamon/wiki/User-Management) for Root, invites, account status and sessions.
 
-The lists above are the behaviour with the RBAC switches off, the default. Permission sets (`RBAC_PERMISSIONS_ENABLED`), project sharing (`RBAC_SHARING_ENABLED`, `RBAC_SHARING_WRITE_ENABLED`) and the admin console (`RBAC_GOVERNANCE_ENABLED`) are further switches in `.env`, each off by default: see [Sharing Projects](https://github.com/samugit83/redamon/wiki/Sharing-Projects) and [Admin Console](https://github.com/samugit83/redamon/wiki/Admin-Console), and the [Changelog](CHANGELOG.md) for the order to turn them on.
+The lists above are the behaviour with the default permission sets. Identity (`RBAC_IDENTITY_ENABLED`), permission sets (`RBAC_PERMISSIONS_ENABLED`), project sharing (`RBAC_SHARING_ENABLED`, `RBAC_SHARING_WRITE_ENABLED`) and the admin console (`RBAC_GOVERNANCE_ENABLED`) are on by default: `./redamon.sh` writes all five `true` into `.env` when they are missing and keeps any value you set, so `false` turns one off for good. Sharing also needs Root to turn on the sharing policy in the admin console (**Instance**), which is off until then: see [Sharing Projects](https://github.com/samugit83/redamon/wiki/Sharing-Projects) and [Admin Console](https://github.com/samugit83/redamon/wiki/Admin-Console), and the [Changelog](CHANGELOG.md) for the order to turn them on.
 
 ### 3. Configure
 
