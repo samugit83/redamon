@@ -93,7 +93,8 @@ const db = {
     },
     create: async ({ data }: { data: Omit<Msg, 'id' | 'createdAt'> }) => {
       if (!h.threads.some((t) => t.id === data.threadId)) throw Object.assign(new Error('fk'), { code: 'P2003' })
-      const m = { routes: [], citations: null, trace: null, modelUsed: null, errorCode: null, actorId: null, ...data, id: id(), createdAt: new Date() } as Msg
+      const defaults = { routes: [], citations: null, trace: null, modelUsed: null, errorCode: null, actorId: null }
+      const m = Object.assign(defaults, data, { id: id(), createdAt: new Date() }) as Msg
       h.messages.push(m)
       return m
     },
