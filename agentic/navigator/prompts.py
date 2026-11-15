@@ -69,6 +69,8 @@ ANSWER_RULES = """Write the final answer for the user:
 markdown tables for lists of records. No preamble like "Based on the tool results".
 - Never write raw URLs or markdown links to documentation pages: cite documentation only with the \
 [S#] markers the tools returned (e.g. "Open Scan Timeline [S1]."). The UI turns them into links.
+- [S#] markers are only for documentation sections wiki_read returned. Never put tool names, data or \
+anything else in square brackets as a citation.
 - Quote Node IDs, hostnames, ports and values exactly as the data shows them.
 - When data is missing, say so plainly and why; never answer as if the data were empty when you \
 could not read it.
