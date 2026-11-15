@@ -65,6 +65,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'conversation.share': 'Shared a conversation with the project',
     'conversation.unshare': 'Stopped sharing a conversation',
     'project.conversations_policy': 'Changed whether co-owners read every conversation',
+    'project.navigator_collaborators.allow': 'Let collaborators use AI Navigator on a project',
+    'project.navigator_collaborators.disallow': 'Stopped collaborators using AI Navigator on a project',
   }),
   // Step 4.14: one row per admin, project and day of oversight reads; Root's break-glass, opened and
   // closed early (its expiry is named by the opening row).
@@ -127,6 +129,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'agent.approval': 'Answered an agent phase approval',
     'agent.tool_confirmation': 'Answered an agent tool confirmation',
     'agent.decision_refused': 'An answer to the agent was refused when it was made',
+    'navigator.refused': 'An AI Navigator read was refused',
     'agent.emergency_stop': 'Pressed the emergency stop',
     'agent.run_stop': 'Stopped an agent run from the operations view',
     'agent.session_interact': 'Sent input to an agent session',

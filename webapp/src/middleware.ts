@@ -66,6 +66,10 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/internal\/plugins\/reconcile$/ },
   // The RBAC expiry sweep (step 4.15), driven by the same loop; the route re-checks the key.
   { method: 'POST', pattern: /^\/api\/internal\/rbac\/sweep$/ },
+  // AI Navigator tool callbacks from the agent: the master key AND a live run's credential, both
+  // re-checked by the routes (lib/navigator/credential.ts).
+  { method: 'GET', pattern: /^\/api\/internal\/navigator\/tools$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/navigator\/tools\/[^/]+$/ },
   // Scan Timeline scheduler: the orchestrator worker polls for due schedules and
   // asks the webapp to run or defer them (the webapp owns the version freeze).
   { method: 'GET', pattern: /^\/api\/internal\/scan-schedules\/due$/ },

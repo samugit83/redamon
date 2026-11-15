@@ -116,6 +116,9 @@ const h = vi.hoisted(() => {
 })
 
 vi.mock('@/lib/prisma', () => ({ default: h.client, prisma: h.client }))
+// The AI Navigator part runs whatever the switches say (lib/navigator/retention.test.ts pins it): one
+// thread past its retention, so every answer shows the part ran.
+vi.mock('@/lib/navigator/retention', () => ({ sweepNavigatorRetention: async () => 1 }))
 vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agentFetch')>()),
   agentFetch: (...a: unknown[]) => h.agentFetch(...a),
@@ -277,7 +280,7 @@ describe('expired rows audited and removed', () => {
     expect(h.s.breakGlass).toEqual([])
     expect(h.s.invites).toEqual([])
     expect(h.s.audit).toEqual([])
-    expect(body.removed).toEqual({ shares: 0, breakGlass: 2, overrides: 0, links: 3 })
+    expect(body.removed).toEqual({ shares: 0, breakGlass: 2, overrides: 0, links: 3, navigatorRetention: 1 })
   })
 
   test('a used link is kept even once expired: it is the record of how the account was set up', async () => {
@@ -292,7 +295,7 @@ describe('expired rows audited and removed', () => {
     h.s.breakGlass = [breakGlass('bg-1', T0)]
     h.s.invites = [link('inv-1', 'invite', T0)]
     const { body } = await sweep()
-    expect(body.removed).toEqual({ shares: 1, breakGlass: 1, overrides: 1, links: 1 })
+    expect(body.removed).toEqual({ shares: 1, breakGlass: 1, overrides: 1, links: 1, navigatorRetention: 1 })
   })
 
   test('the /invite page answers a swept link exactly as an expired one: {valid: false}', async () => {
@@ -326,7 +329,7 @@ describe('live rows kept', () => {
     expect(h.s.invites).toHaveLength(2)
     expect(h.s.audit).toEqual([])
     expect(h.agentFetch).not.toHaveBeenCalled()
-    expect(body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0 })
+    expect(body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0, navigatorRetention: 1 })
   })
 
   test('only the expired share of a project goes; the live one beside it stays', async () => {
@@ -342,10 +345,10 @@ describe('idempotent', () => {
     h.s.collaborators = [share('proj-1', 'viewer-1', ago(5))]
     h.s.overrides = [override('member-1', 'recon:run', ago(5))]
     h.s.invites = [link('inv-1', 'invite', ago(5))]
-    expect((await sweep()).body.removed).toEqual({ shares: 1, breakGlass: 0, overrides: 1, links: 1 })
+    expect((await sweep()).body.removed).toEqual({ shares: 1, breakGlass: 0, overrides: 1, links: 1 , navigatorRetention: 1 })
     const second = await sweep()
     expect(second.status).toBe(200)
-    expect(second.body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0 })
+    expect(second.body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0 , navigatorRetention: 1 })
     expect(h.s.audit.map((r) => r.action)).toEqual(['user.override_expired', 'project.share.expired'])
     expect(closeCalls().map((c) => c.path)).toEqual(['/agent-sessions/stop-for', '/ws/close'])
   })
@@ -447,7 +450,7 @@ describe('each part only with its switch on (DV-30)', () => {
     everyKind()
     const { status, body } = await sweep()
     expect(status).toBe(200)
-    expect(body.removed).toEqual({ shares: null, breakGlass: null, overrides: null, links: null })
+    expect(body.removed).toEqual({ shares: null, breakGlass: null, overrides: null, links: null , navigatorRetention: 1 })
     expect([...h.s.touched]).toEqual([])
     expect([h.s.collaborators, h.s.breakGlass, h.s.overrides, h.s.invites].map((t) => t.length)).toEqual([1, 1, 1, 1])
   })
@@ -456,7 +459,7 @@ describe('each part only with its switch on (DV-30)', () => {
     setFlagsForTests({ identity: true })
     everyKind()
     const { body } = await sweep()
-    expect(body.removed).toEqual({ shares: null, breakGlass: null, overrides: null, links: 1 })
+    expect(body.removed).toEqual({ shares: null, breakGlass: null, overrides: null, links: 1 , navigatorRetention: 1 })
     expect([...h.s.touched].sort()).toEqual(['userInvite'])
   })
 
@@ -464,7 +467,7 @@ describe('each part only with its switch on (DV-30)', () => {
     setFlagsForTests({ identity: true, permissions: true })
     everyKind()
     const { body } = await sweep()
-    expect(body.removed).toEqual({ shares: null, breakGlass: null, overrides: 1, links: 1 })
+    expect(body.removed).toEqual({ shares: null, breakGlass: null, overrides: 1, links: 1 , navigatorRetention: 1 })
     expect([...h.s.touched].sort()).toEqual(['auditLog', 'userInvite', 'userPermissionOverride'])
   })
 
@@ -472,7 +475,7 @@ describe('each part only with its switch on (DV-30)', () => {
     h.s.instance = { id: 'instance', sharingPolicy: {} }
     everyKind()
     const { body } = await sweep()
-    expect(body.removed).toEqual({ shares: null, breakGlass: null, overrides: 1, links: 1 })
+    expect(body.removed).toEqual({ shares: null, breakGlass: null, overrides: 1, links: 1 , navigatorRetention: 1 })
     expect(h.s.touched.has('projectCollaborator')).toBe(false)
     expect(h.s.touched.has('projectBreakGlass')).toBe(false)
     expect(h.s.collaborators).toHaveLength(1)
@@ -517,7 +520,7 @@ describe('device sessions (step 6.10)', () => {
     ]
     const { status, body } = await sweep()
     expect(status).toBe(200)
-    expect(body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0, devices: 3 })
+    expect(body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0, devices: 3 , navigatorRetention: 1 })
     expect(h.s.sessions.map((r) => r.id).sort()).toEqual(['expired-2d', 'live', 'revoked-29d'])
     expect(h.s.audit).toEqual([])
     expect((await sweep()).body.removed.devices).toBe(0)
@@ -526,7 +529,7 @@ describe('device sessions (step 6.10)', () => {
   test('governance off (the other switches on): no device session is read, and the answer has no devices key', async () => {
     h.s.sessions = [deviceRow('revoked-31d', { revokedAt: ago(31 * DAY) })]
     const { body } = await sweep()
-    expect(body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0 })
+    expect(body.removed).toEqual({ shares: 0, breakGlass: 0, overrides: 0, links: 0, navigatorRetention: 1 })
     expect(h.s.touched.has('userSession')).toBe(false)
     expect(h.s.sessions).toHaveLength(1)
   })

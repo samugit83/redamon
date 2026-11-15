@@ -6,6 +6,7 @@ import { sharedToolAccess, type SharedToolAccess } from '@/lib/authz/sharedTools
 import { writeAudit } from '@/lib/audit'
 import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { agentErrorResponse, callAgent } from '../agentProxy'
+import { navigatorRuns } from '@/lib/navigator/runRegistry'
 
 const FAILED = 'Failed to stop agents'
 
@@ -55,10 +56,12 @@ export const POST = withRouteErrors(FAILED, async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: who.userId }),
     }, FAILED)
+  // AI Navigator answers stop too: every one for the global scope, the person's own otherwise.
+  const navigator = who.scope === 'all' ? navigatorRuns().abortAll() : navigatorRuns().abortFor({ personId: who.userId })
   if (!call.ok) return call.response
   if (!call.res.ok) return agentErrorResponse(call.res, FAILED)
   const { stopped } = await call.res.json()
-  const count = typeof stopped === 'number' ? stopped : 0
+  const count = (typeof stopped === 'number' ? stopped : 0) + navigator
   await writeAudit({
     ...actorFields(auditActorOf({ id: who.userId, email: who.actorEmail })),
     action: 'agent.emergency_stop',

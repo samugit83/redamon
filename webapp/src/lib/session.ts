@@ -141,6 +141,12 @@ export interface AuthzIdentity {
   principal: Principal
   /** The account an admin is acting as (the effective user), or null. */
   actingAs: Principal | null
+  /**
+   * The act-as start row the impersonation's token names (its `jti`), null without act-as or for a
+   * token that names none. Only from the judged token, never from a request: AI Navigator binds a
+   * run to it, so ending that impersonation ends the run (navigator/runRegistry.ts).
+   */
+  actAsStartId?: string | null
 }
 
 /**
@@ -163,8 +169,10 @@ export async function authzIdentityOf(session: Session, opts: SessionOptions = {
   const principal = sessionPrincipal(session)
   // getSession remembers the principal of every session it answers.
   if (!principal) throw new Error('session: no account read for this session')
-  const target = await actAsTarget(session, opts)
-  return { session, principal, actingAs: target && target.id !== principal.id ? target : null }
+  const inForce = await actAsInForce(session, opts)
+  const target = inForce?.target ?? null
+  const acting = target && target.id !== principal.id ? target : null
+  return { session, principal, actingAs: acting, actAsStartId: acting ? inForce?.startId ?? null : null }
 }
 
 /**
@@ -196,6 +204,8 @@ export async function mayActAs(
 export interface ActAsInForce {
   target: Principal
   expiresAt: number | null
+  /** The start row the token names (`jti`, actAs.ts `bindingOf`); null for a token that names none. */
+  startId: string | null
 }
 
 /** A refused act-as cookie is cleared where the store allows it (a route handler); a Server Component only ignores it. */
@@ -243,7 +253,7 @@ async function impersonation(session: Session, token: string, cookieStore: Cooki
   if (!target) return end('target_deleted')
   const refusal = await actAsRuleRefusal(actor, target, opts)
   if (refusal) return end(endForRefusal(refusal, claims.asv !== undefined))
-  return { target, expiresAt: read.expiresAt }
+  return { target, expiresAt: read.expiresAt, startId: 'startId' in binding ? binding.startId : null }
 }
 
 /** One act-as decision per session object, i.e. per request (switch on): `fresh` when it read the accounts fresh. */
@@ -272,7 +282,10 @@ export async function actAsInForce(session: Session, opts: SessionOptions = {}):
   const claims = await verifyActAsToken(actAsToken)
   if (!claims || claims.sub !== session.userId) return null
   const target = await loadPrincipal(claims.act, opts)
-  return target && (await mayActAs({ id: session.userId, role: session.role }, target, opts)) ? { target, expiresAt: null } : null
+  const binding = bindingOf(claims)
+  return target && (await mayActAs({ id: session.userId, role: session.role }, target, opts))
+    ? { target, expiresAt: null, startId: 'startId' in binding ? binding.startId : null }
+    : null
 }
 
 /**

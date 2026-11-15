@@ -6,7 +6,8 @@
  *   shares it holds in other people's projects, which end with it (cascade); its conversations there,
  *   reassigned to each project's owner (step 5.8); its agent runs, queued scans and schedules, which the
  *   revocation path stops, cancels and pauses; its MCP tokens and device sessions, gone with it; its own
- *   Nuclei templates, which go to the admin deleting it (DV-33);
+ *   Nuclei templates, which go to the admin deleting it (DV-33); its AI Navigator conversations, private
+ *   to it, which are deleted with it (cascade, never reassigned);
  * - each shared project is resolved before the deletion: given to a collaborator (an offer they accept,
  *   or a transfer forced by projects:administer, through ownershipTransfer.ts), or named in the DELETE's
  *   `deleteAnyway`, which tears it down with the unshared ones. A DELETE that leaves one unresolved

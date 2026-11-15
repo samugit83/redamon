@@ -33,6 +33,14 @@ export async function navigatorAllowedFor(access: ProjectAccess, db: Db = prisma
   return navigatorCollaboratorsAllowed(access.project.id, db)
 }
 
+/**
+ * The project's owner is still the tenant a Navigator run started with: an ownership transfer in
+ * between ends the run's reads (plan §7.7).
+ */
+export function sameNavigatorTenant(access: ProjectAccess, tenantId: string | null): boolean {
+  return tenantId !== null && access.project.userId === tenantId
+}
+
 /** Sets the owner's toggle through `tx` (the transaction of its audit row); answers whether it changed. */
 export async function writeNavigatorPolicy(tx: Db, projectId: string, value: boolean, byId: string): Promise<boolean> {
   const before = await navigatorCollaboratorsAllowed(projectId, tx)
@@ -43,4 +51,23 @@ export async function writeNavigatorPolicy(tx: Db, projectId: string, value: boo
     update: { collaboratorsAllowed: value, updatedById: byId },
   })
   return true
+}
+
+/**
+ * After the owner turned "AI Navigator for collaborators" off: each collaborator's in-flight answer
+ * on the project stops (`onAccessReduced`, `navigator_disallowed`, whose plan stops nothing else).
+ * Collaborators listed through `listShares`, never a direct read of the share table. Never throws.
+ */
+export async function endCollaboratorNavigator(projectId: string, ownerId: string): Promise<number> {
+  const { listShares } = await import('./projectShares')
+  const { onAccessReduced } = await import('./revocation')
+  let people: string[]
+  try {
+    people = [...new Set((await listShares(projectId)).map((s) => s.user.id))].filter((id) => id && id !== ownerId)
+  } catch (err) {
+    console.error(`[rbac] navigator-disallow step failed step=list_collaborators project=${projectId}: ${(err as Error)?.name ?? 'error'}`)
+    return 0
+  }
+  for (const userId of people) await onAccessReduced(projectId, userId, 'navigator_disallowed', { ownerId })
+  return people.length
 }

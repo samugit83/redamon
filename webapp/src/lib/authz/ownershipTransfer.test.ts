@@ -126,7 +126,7 @@ const db = vi.hoisted(() => {
 
   const TABLES = ['projectTransfer', 'project', 'projectCollaborator', 'user', 'capturedHttpTransaction', 'scanSchedule',
     'projectAccessPolicy', 'projectAuthProfile', 'conversation', 'userLlmProvider', 'userAttackSkill', 'nucleiTemplate',
-    'jobQueue', 'auditLog'] as const
+    'jobQueue', 'auditLog', 'navigatorProjectPolicy'] as const
 
   const db: Record<string, unknown> = {}
   for (const t of TABLES) db[t] = table(t)
@@ -436,6 +436,28 @@ describe('accept moves Postgres and graph', () => {
       after: expect.objectContaining({ ownerId: NEW, oldOwnerRole: 'co-owner', moved: { graphNodes: 6, graphRelationships: 0, traffic: 2, schedulesPaused: 1, conversations: 1 } }),
     })])
     expect(h.invalidate).toHaveBeenCalledWith(P)
+  })
+
+  test('AI Navigator: the old owner\'s "for collaborators" goes off with the transfer, and is not in the re-pick list', async () => {
+    h.state.tables.navigatorProjectPolicy = [
+      { projectId: P, collaboratorsAllowed: true, updatedById: OLD },
+      { projectId: 'proj-2', collaboratorsAllowed: true, updatedById: OLD },
+    ]
+    await offer()
+    const res = await accept()
+    expect(res.status).toBe(200)
+    expect(rows('navigatorProjectPolicy')).toEqual([
+      expect.objectContaining({ projectId: P, collaboratorsAllowed: false, updatedById: NEW }),
+      expect.objectContaining({ projectId: 'proj-2', collaboratorsAllowed: true }),
+    ])
+    expect(JSON.stringify(transfer())).not.toContain('navigator')
+  })
+
+  test('AI Navigator: a toggle already off stays off', async () => {
+    h.state.tables.navigatorProjectPolicy = [{ projectId: P, collaboratorsAllowed: false, updatedById: OLD }]
+    await offer()
+    expect((await accept()).status).toBe(200)
+    expect(rows('navigatorProjectPolicy')[0]).toMatchObject({ collaboratorsAllowed: false, updatedById: OLD })
   })
 
   test('schedules paused: the old owner\'s wait for a confirmation; another collaborator\'s and another project\'s keep running', async () => {

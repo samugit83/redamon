@@ -39,14 +39,15 @@ import { sharingInForce } from './sharingPolicy'
 import { sweepDeviceSessions } from './deviceSessions'
 import { sweepAuditRetention, type RetentionSweep } from './auditRetention'
 import { onAccessReduced } from './revocation'
+import { sweepNavigatorRetention } from '@/lib/navigator/retention'
 
 /** Audited rows of one kind handled per sweep; the rest wait for the next sweep. */
 export const SWEEP_BATCH = 500
 // Expired shares whose sockets are closed at once (as endSessionsOf's batches).
 const SOCKET_CLOSE_BATCH = 8
 
-export type SweepPart = 'shares' | 'breakGlass' | 'overrides' | 'links' | 'devices' | 'auditRetention'
-type CorePart = Exclude<SweepPart, 'devices' | 'auditRetention'>
+export type SweepPart = 'shares' | 'breakGlass' | 'overrides' | 'links' | 'devices' | 'auditRetention' | 'navigatorRetention'
+type CorePart = Exclude<SweepPart, 'devices' | 'auditRetention' | 'navigatorRetention'>
 
 export interface SweepResult {
   at: string
@@ -54,7 +55,7 @@ export interface SweepResult {
    * Rows removed per part; null when the part's switch is off (or its gate could not be read).
    * `devices` only with the governance switch on.
    */
-  removed: Record<CorePart, number | null> & { devices?: number | null }
+  removed: Record<CorePart, number | null> & { devices?: number | null; navigatorRetention?: number | null }
   /** Expired shares whose sockets the agent did not confirm closed. */
   socketCloseFailed: number
   /** The parts that failed; their rows stay for the next sweep. */
@@ -199,6 +200,9 @@ export async function sweepExpired(): Promise<SweepResult> {
   }
 
   if (flags.governance) await run('devices', () => sweepDeviceSessions(at))
+  // AI Navigator retention is not an RBAC feature, so no switch gates it: conversations of projects
+  // nobody opens still expire (the list route purges lazily for the rest).
+  await run('navigatorRetention', () => sweepNavigatorRetention(at))
   let auditRetention: RetentionSweep | null | undefined
   if (flags.governance) {
     try {
@@ -217,6 +221,7 @@ export async function sweepExpired(): Promise<SweepResult> {
       `[rbac] sweep removed shares=${shown(removed.shares)} breakglass=${shown(removed.breakGlass)} `
       + `overrides=${shown(removed.overrides)} links=${shown(removed.links)}`
       + (removed.devices !== undefined ? ` devices=${shown(removed.devices)}` : '')
+      + (removed.navigatorRetention ? ` navigator_threads=${removed.navigatorRetention}` : '')
       + (auditRetention?.deleted ? ` audit_rows=${auditRetention.deleted} (retention ${auditRetention.days} days)` : '')
       + (auditRetention?.activated ? ' audit_retention_change_applied' : '')
       + (socketCloseFailed ? ` socket_close_failed=${socketCloseFailed}` : ''),
