@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **AI Navigator**: a draggable chat button on every page that answers questions about **how RedAmon works** (from the documentation, with links to the exact section on redamon.org and the GitHub wiki) and about **the selected project's data** (graph, findings, scans and versions, settings, triage, remediations, reports, workspace files). It only reads: requests to act are handed to the AI Agent ("Open the AI Agent"). It runs on each person's own model (Global Settings → Models by feature → AI Navigator, asked on the first message), reads only what that person may read (checked on every call), and keeps each person's conversations private, per project. See the wiki page *AI Navigator*.
+- New permission `navigator:use` (project, Read), in every built-in member set but *Automation*.
+- Owners choose **AI Navigator for collaborators** in the share dialog (off by default): the project's data would go to each collaborator's own AI provider. Root turns AI Navigator on or off for everyone in **IAM → Instance**.
+
+### What changes for you
+
+- **Admins with custom permission sets:** `navigator:use` is a new feature, so custom sets show it as *available, not granted*: add it to the sets that should use AI Navigator.
+- `./redamon.sh install` and `update` now fetch the documentation submodule (`redamon.wiki`) that AI Navigator answers from (or run `git submodule update --init redamon.wiki`). A wiki checkout with local work is left as it is.
+- This update edits `docker-compose.yml` (the agent mounts the wiki read-only), so `update` rebuilds every core image once.
+- **Rolling back** past this release drops every AI Navigator conversation and every owner's collaborator choice (the older schema is applied with `--accept-data-loss`); back up the database first to keep them.
+
 ## [7.8.0] - 2026-11-11
 
 Project sharing at Read and at Read + Write, the IAM console and the audit tools, each behind its own switch and off by default, and security fixes that apply at once. It builds on 7.8.0's identity and permission switches: coming from 7.7.x, read 7.8.0 first.

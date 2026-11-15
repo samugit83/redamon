@@ -24,6 +24,7 @@ export const PAGE_WIKI: Record<string, { page: string; anchor?: string }> = {
   cypherfix:    { page: 'CypherFix-Automated-Remediation' },
   plugins:      { page: 'Plugins' },
   login:        { page: 'Getting-Started' },
+  navigator:    { page: 'AI-Navigator' },
 }
 
 // ---- Recon Pipeline tools ----------------------------------------------------------

@@ -13,6 +13,7 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Adding a built-in attack skill to the agent | `builtin-agent-skill` |
 | Adding a non-chat provider type, or a path that picks any provider row | `llm-provider-integration` |
 | Adding a path a project collaborator can reach, or a ticket, token or job that carries a tenant and an actor | `rbac-authz` |
+| Adding a tool AI Navigator can call | `navigator` |
 | Adding an agent model call site, a retry loop, or a path that builds an LLM from a model id | `agent-in-the-loop` |
 | Adding or integrating an LLM provider | `llm-provider-integration` |
 | Adding, removing or changing a tool on the inbound MCP server | `mcp-server-tools` |
@@ -20,6 +21,7 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Changing how a triage score, review or verdict is computed or written | `priority-board-triage` |
 | Changing how plugin services, networks or the plugins overlay are started by redamon.sh or compose | `plugin-platform` |
 | Changing or adding a project setting or default value | `project-settings-cascade` |
+| Editing AI Navigator (agentic/navigator, lib/navigator, the navigator routes or components) | `navigator` |
 | Editing a Prisma @default, a Python settings default, or the /defaults endpoint | `project-settings-cascade` |
 | Editing agent skill classification, phase injection, or the attack-skill UI | `builtin-agent-skill` |
 | Editing model-id routing or provider credential handling | `llm-provider-integration` |

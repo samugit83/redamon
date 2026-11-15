@@ -575,6 +575,16 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | Neo4j-to-JSON coercion | `agentic/api.py:3667` <-> `mcp/servers/redagraph.py:86` | NONE |
 | Internal routes Python calls on the webapp | `INTERNAL_ALLOWLIST` (28 patterns) and `SCANNER_ALLOWLIST` (3) in `webapp/src/middleware.ts` <-> 32 distinct method+route pairs called with `X-Internal-Key` (all match today) | TEST (`middleware.internalCallers.test.ts`, computed from the callers). Enforcement is **log-only** unless `INTERNAL_KEY_ALLOWLIST_ENFORCE=true` |
 
+#### AI Navigator
+
+| Item | Where | Guard | Risk when it drifts |
+|---|---|---|---|
+| Navigator tool permissions and MCP scopes vs the MCP functions' `requireScope` | `webapp/src/lib/navigator/tools/registry.ts` <-> `webapp/src/lib/mcp/*Tools.ts` | TEST (`tools/registry.test.ts` calls each tool with exactly its scopes and with each one removed) | A tool refused for every person, or a scope granted that no permission decided |
+| Shared MCP / Navigator tool text | `UNTRUSTED_DATA_NOTE` in `webapp/src/lib/mcp/toolText.ts`, read by `server.ts` and the Navigator registry | TEST (`toolNameDrift.test.ts` lists `toolText.ts`) | |
+| Wiki slugger vs the docs site's `rehype-slug` (github-slugger) | `agentic/navigator/wiki_index.py` `github_slug` | TEST (`test_navigator_wiki_index.py`: every anchor of `wiki-links.ts` resolves) | A citation lands at the top of its page instead of its section |
+| Citation URL allowlist, 2 copies | `agentic/navigator/citations.py` <-> `webapp/src/lib/navigator/events.ts` | TEST (`test_navigator_citations.py`, `events.test.ts`), same regexes by hand | A docs link the webapp drops, or one it lets through |
+| Navigator limits, 2 copies | `agentic/navigator/limits.py` <-> `webapp/src/lib/navigator/constants.ts` | NONE | The agent and the webapp cap an answer or a run differently |
+
 ### 4.11 Bundled third-party data and external ids
 
 | Data | Where | Refreshed by | Guard / risk |

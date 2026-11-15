@@ -4314,6 +4314,10 @@ When a Deep Think pre-step runs, its `usage_metadata` is added to `_dt_in` / `_d
 
 ---
 
+## AI Navigator (agentic/navigator/)
+
+A separate, read-only chat that never touches the orchestrator above: `POST /navigator/chat` (master key) streams NDJSON events for one run. The router classifies the message into `docs`, `graph`, `records`, `workspace` or `direct`; each chosen route runs a bounded tool loop (6 tool calls, 20 per run) in parallel; a synthesizer streams the answer (one route answers alone). The docs route reads the wiki checkout mounted at `/app/wiki` through a local BM25 index with github-slugger anchors (`wiki_index.py`) and cites only the sections it read (`citations.py`); the graph route has local schema tools; every project read is a callback to the webapp (`remote_tools.py`) with the run's credential, so the agent holds no project data. The model is the person's own (`_build_feature_llm`, loop models refused) and every call carries `metadata.user_id`. `/navigator/stop`, `/navigator/stop-all` and `/emergency-stop-all` cancel runs; a client disconnect cancels the run's task. Nothing logs message text, tool results or Cypher.
+
 ## Knowledge Base Integration
 
 When the agent calls `web_search` (or any retrieval tool), the request is routed through a federated KB-first pipeline: **knowledge base** (curated infosec corpus) → **web search fallback**. Configured per-project via the webapp; defaults inherited from `services/knowledge_base/kb_config.yaml` (baked into the agent image as the `knowledge_base` package).

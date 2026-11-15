@@ -158,8 +158,10 @@ That's it. No Node.js, Python, or security tools needed on your host.
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/samugit83/redamon.git
+git clone --recurse-submodules https://github.com/samugit83/redamon.git
 cd redamon
+# Cloned without --recurse-submodules? `./redamon.sh install` fetches the docs AI Navigator
+# answers from (redamon.wiki); or by hand: git submodule update --init redamon.wiki
 
 # Without GVM (lighter, faster startup):
 ./redamon.sh install

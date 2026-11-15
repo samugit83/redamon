@@ -150,6 +150,10 @@ The owner helpers keep their signatures and ask the same policy instead of compa
 
 ---
 
+## AI Navigator
+
+A draggable chat overlay (`src/components/navigator/`, mounted in `AppLayout` inside the disclaimer gate) that answers questions about RedAmon's docs and the selected project's data. The browser talks to `/api/navigator/projects/:pid/*` (threads, messages as `text/event-stream`, stop, status, the owner's collaborator policy); the messages route relays the agent's NDJSON (`agentic/navigator/`) after validating every event (`src/lib/navigator/events.ts`, `stream.ts`). Project reads are the agent's callbacks to `/api/internal/navigator/tools/:name`, authorized fresh per call (`src/lib/navigator/tools/run.ts`) and served by the inbound MCP server's read functions through a session context (`tools/sessionContext.ts`). Live runs live in an in-memory registry on `globalThis` (`runRegistry.ts`): the webapp is a single replica. Rules: the `navigator` skill.
+
 ## Prerequisites
 
 **Neo4j must be running first.** This webapp connects to the existing Neo4j instance in `../graph_db/`.
