@@ -1,0 +1,23 @@
+[
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/sqli/README.md",
+    "name": "README.md",
+    "path": "sqli/README.md",
+    "size": 48,
+    "type": "file"
+  },
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/sqli/blind.md",
+    "name": "blind.md",
+    "path": "sqli/blind.md",
+    "size": 34,
+    "type": "file"
+  },
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/sqli/union.md",
+    "name": "union.md",
+    "path": "sqli/union.md",
+    "size": 45,
+    "type": "file"
+  }
+]

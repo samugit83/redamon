@@ -30,6 +30,7 @@ model User {
   projectPresets  UserProjectPreset[]
   muteRulesPresets UserMuteRulesPreset[]
   tradecraftResources UserTradecraftResource[]
+  tradecraftSettings  TradecraftUserSettings?
   mcpTokens       McpAccessToken[]
   settings        UserSettings?
   apiUsageReport  ApiUsageReport?
@@ -3051,6 +3052,28 @@ model UserTradecraftResource {
   @@unique([userId, slug])
   @@index([userId])
   @@map("user_tradecraft_resources")
+}
+
+// One row per account, written the first time the person changes a Tradecraft setting;
+// a missing row reads as "switch off, nothing changed". Read and written only through
+// src/lib/tradecraft/switch.ts (and, from T3.4, userSettings.ts).
+model TradecraftUserSettings {
+  id                   String    @id @default(cuid())
+  userId               String    @unique @map("user_id")
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Tradecraft 2.0 for this account (the build-time switch, removed from the code at cut-over).
+  v2Enabled            Boolean   @default(false) @map("v2_enabled")
+  v2EnabledAt          DateTime? @map("v2_enabled_at")
+  // Only the values the person changed; the spec (settingsSpec.json) holds every default.
+  ingestion            Json      @default("{}")
+  search               Json      @default("{}")
+  recipes              Json      @default("[]")
+  synonyms             Json      @default("[]")
+  bulkRefreshOfferedAt DateTime? @map("bulk_refresh_offered_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  @@map("tradecraft_user_settings")
 }
 
 // ========== PLUGIN PLATFORM ==========

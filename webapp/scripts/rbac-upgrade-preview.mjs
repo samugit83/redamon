@@ -634,6 +634,7 @@ export const DOWNGRADE_TABLES = [
   { table: 'instance_llm_providers', step: '6.11', lost: 'the instance LLM providers, with their keys' },
   { table: 'permission_set_providers', step: '6.11', lost: 'which permission set may use which instance LLM provider' },
   { table: 'quota_usage', step: '6.11', lost: "today's use counted against the quotas and the daily LLM budget" },
+  { table: 'tradecraft_user_settings', step: null, feature: 'Tradecraft 2.0', lost: "each account's Tradecraft 2.0 switch, ingestion and search settings, focus recipes and synonyms" },
 ]
 
 /**

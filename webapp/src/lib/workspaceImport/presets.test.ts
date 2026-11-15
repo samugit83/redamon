@@ -1,19 +1,7 @@
 import { describe, test, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { IMPORT_PRESETS } from './presets'
 import { isGithubFamilyHost } from './githubHosts'
-
-const TRADECRAFT_FORM = join(process.cwd(), 'src/components/settings/TradecraftResourceForm.tsx')
-
-/** The URLs of QUICK_ADD_PRESETS_RAW, read from the form's source (the array is not exported). */
-function tradecraftPresetUrls(): string[] {
-  const src = readFileSync(TRADECRAFT_FORM, 'utf8')
-  const start = src.indexOf('const QUICK_ADD_PRESETS_RAW')
-  const end = src.indexOf('\n]', start)
-  if (start < 0 || end < 0) throw new Error('QUICK_ADD_PRESETS_RAW not found in TradecraftResourceForm.tsx - update this test')
-  return Array.from(src.slice(start, end).matchAll(/url: '([^']+)'/g), (m) => m[1])
-}
+import { FEATURED_PRESETS, TRADECRAFT_PRESETS } from '@/lib/tradecraft/presets'
 
 describe('workspace import presets', () => {
   test('labels unique', () => {
@@ -33,13 +21,33 @@ describe('workspace import presets', () => {
   })
 
   test('every URL also appears in the Tradecraft presets, except the documented subfolder preset', () => {
-    const tradecraft = tradecraftPresetUrls()
-    expect(tradecraft.length).toBeGreaterThan(20)
+    const tradecraft = TRADECRAFT_PRESETS.map((p) => p.url)
+    expect(tradecraft).toHaveLength(100)
     const outside = IMPORT_PRESETS.filter((p) => !tradecraft.includes(p.url))
     // The one exception is a folder of a Tradecraft repository, not a URL of its own.
     expect(outside.map((p) => p.label)).toEqual(['SecLists: Web-Content'])
     const seclists = tradecraft.find((u) => u.endsWith('/SecLists'))
     expect(seclists).toBeDefined()
     expect(outside[0].url).toBe(`${seclists}/tree/master/Discovery/Web-Content`)
+  })
+
+  test('the Featured presets are not offered for workspace import', () => {
+    const featured = new Set(FEATURED_PRESETS.map((p) => p.url))
+    expect(IMPORT_PRESETS.filter((p) => featured.has(p.url))).toEqual([])
+  })
+
+  test('the chips offer the same URLs as before they were read from the Tradecraft presets', () => {
+    expect(IMPORT_PRESETS.map((p) => p.url)).toEqual([
+      'https://github.com/danielmiessler/SecLists',
+      'https://github.com/danielmiessler/SecLists/tree/master/Discovery/Web-Content',
+      'https://github.com/swisskyrepo/PayloadsAllTheThings',
+      'https://github.com/swisskyrepo/InternalAllTheThings',
+      'https://github.com/OWASP/CheatSheetSeries',
+      'https://github.com/OWASP/wstg',
+      'https://github.com/GTFOBins/GTFOBins.github.io',
+      'https://github.com/LOLBAS-Project/LOLBAS',
+      'https://github.com/peass-ng/PEASS-ng',
+      'https://github.com/redcanaryco/atomic-red-team',
+    ])
   })
 })

@@ -1,0 +1,9 @@
+[
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/recon/subdomains.yml",
+    "name": "subdomains.yml",
+    "path": "recon/subdomains.yml",
+    "size": 34,
+    "type": "file"
+  }
+]

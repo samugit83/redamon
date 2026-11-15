@@ -1,0 +1,87 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /PageMode /UseOutlines >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 3 0 R >> >> >>
+endobj
+5 0 obj
+<< /Length 161 >>
+stream
+BT /F1 18 Tf 72 720 Td (1 Introduction) Tj /F1 11 Tf
+0 -22 Td (A synthetic guide for the tradecraft tests.) Tj
+0 -22 Td (It has three pages and bookmarks.) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 3 0 R >> >> >>
+endobj
+7 0 obj
+<< /Length 153 >>
+stream
+BT /F1 18 Tf 72 720 Td (2 SQL injection) Tj /F1 11 Tf
+0 -22 Td (2.1 Union-based: ' UNION SELECT NULL--) Tj
+0 -22 Td (2.2 Blind: ' AND SLEEP\(5\)--) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 9 0 R /Resources << /Font << /F1 3 0 R >> >> >>
+endobj
+9 0 obj
+<< /Length 126 >>
+stream
+BT /F1 18 Tf 72 720 Td (3 Kerberos) Tj /F1 11 Tf
+0 -22 Td (Kerberoasting requests service tickets for offline cracking.) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Type /Outlines /First 11 0 R /Last 13 0 R /Count 5 >>
+endobj
+11 0 obj
+<< /Title (1 Introduction) /Parent 10 0 R /Dest [4 0 R /Fit] /Next 12 0 R >>
+endobj
+12 0 obj
+<< /Title (2 SQL injection) /Parent 10 0 R /Dest [6 0 R /Fit] /Prev 11 0 R /Next 13 0 R /First 14 0 R /Last 15 0 R /Count 2 >>
+endobj
+13 0 obj
+<< /Title (3 Kerberos) /Parent 10 0 R /Dest [8 0 R /Fit] /Prev 12 0 R >>
+endobj
+14 0 obj
+<< /Title (2.1 Union-based) /Parent 12 0 R /Dest [6 0 R /Fit] /Next 15 0 R >>
+endobj
+15 0 obj
+<< /Title (2.2 Blind) /Parent 12 0 R /Dest [6 0 R /Fit] /Prev 14 0 R >>
+endobj
+xref
+0 16
+0000000000 65535 f 
+0000000015 00000 n 
+0000000104 00000 n 
+0000000173 00000 n 
+0000000243 00000 n 
+0000000369 00000 n 
+0000000581 00000 n 
+0000000707 00000 n 
+0000000911 00000 n 
+0000001037 00000 n 
+0000001214 00000 n 
+0000001288 00000 n 
+0000001381 00000 n 
+0000001524 00000 n 
+0000001613 00000 n 
+0000001707 00000 n 
+trailer
+<< /Size 16 /Root 1 0 R >>
+startxref
+1795
+%%EOF

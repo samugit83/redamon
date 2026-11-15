@@ -1,0 +1,3 @@
+filters:
+  - name: basic
+    pattern: "<script"

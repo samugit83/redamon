@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://book.tc-fixture.test/</loc></url>
+  <url><loc>https://book.tc-fixture.test/methodology</loc></url>
+  <url><loc>https://book.tc-fixture.test/methodology/recon</loc></url>
+  <url><loc>https://book.tc-fixture.test/methodology/exploitation</loc></url>
+  <url><loc>https://book.tc-fixture.test/web/sqli</loc></url>
+  <url><loc>https://book.tc-fixture.test/web/xss</loc></url>
+  <url><loc>https://book.tc-fixture.test/active-directory/kerberos</loc></url>
+  <url><loc>https://book.tc-fixture.test/tools/cheat-sheet</loc></url>
+</urlset>
