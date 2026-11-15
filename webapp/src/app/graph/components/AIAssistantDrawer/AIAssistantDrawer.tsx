@@ -38,6 +38,7 @@ import { loopDisplay, stampLoopStatus, type LoopStatusView } from './hooks/loopS
 import { useRateLimitWait } from './hooks/rateLimitWait'
 import { useConversationPolicy, useConversations } from '@/hooks/useConversations'
 import { useProjectAccess, useRefusal } from '@/hooks/useRefusal'
+import { useNavigatorObstacle } from '@/components/navigator/obstacles'
 import type { ConversationSharingControls } from './ConversationHistory'
 import { ReadOnlyConversationNotice } from './ReadOnlyConversationNotice'
 import { useChatPersistence } from '@/hooks/useChatPersistence'
@@ -473,6 +474,9 @@ export function AIAssistantDrawer({
   })
   const [isResizing, setIsResizing] = useState(false)
   const lastWidthRef = useRef<number>(drawerWidth)
+  // AI Navigator never covers this drawer's input while it is open (components/navigator/obstacles.ts).
+  const navigatorObstacleRef = useRef<HTMLDivElement>(null)
+  useNavigatorObstacle(navigatorObstacleRef, isOpen)
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -512,6 +516,7 @@ export function AIAssistantDrawer({
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div
+      ref={navigatorObstacleRef}
       className={`${styles.drawer} ${isOpen ? styles.drawerOpen : ''} ${isResizing ? styles.drawerResizing : ''}`}
       style={{ width: `${drawerWidth}px` }}
       aria-hidden={!isOpen}

@@ -128,8 +128,8 @@ export function baseUrlOf(policy: Record<string, unknown> | undefined): string {
 }
 
 export type PanelId =
-  | 'security' | 'public-url' | 'sharing' | 'retention' | 'default-set' | 'llm-providers' | 'quotas' | 'tunnels' | 'traffic' | 'nuclei' | 'plugins'
-  | 'other-tools'
+  | 'security' | 'public-url' | 'sharing' | 'retention' | 'navigator' | 'default-set' | 'llm-providers' | 'quotas' | 'tunnels' | 'traffic'
+  | 'nuclei' | 'plugins' | 'other-tools'
 
 export interface PanelInput {
   holds: Holds
@@ -147,6 +147,8 @@ export function visiblePanels({ holds, settings, sharingPolicyShown }: PanelInpu
   if (admin && sharingPolicyShown) panels.push('sharing')
   // The audit retention: to administrators, with RBAC_GOVERNANCE_ENABLED on (the route carries it then only).
   if (admin && settings?.auditRetention) panels.push('retention')
+  // AI Navigator's switch: to administrators (the route carries it to them), Root's to change.
+  if (admin && typeof settings?.navigatorEnabled === 'boolean') panels.push('navigator')
   if (admin && (holds('roles:manage') || holds('users:assign_permissions'))) panels.push('default-set')
   // Root's alone: instance:settings is held only by the confirmed Root (rootOnly).
   if (holds('instance:settings')) panels.push('llm-providers')

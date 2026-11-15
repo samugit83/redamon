@@ -1303,6 +1303,11 @@ export default function GraphPage() {
       else setIsOtherScansModalOpen(true)
       router.replace(`/graph?project=${projectId}`)
     }
+    // AI Navigator's "Open the AI Agent": the drawer shows its own refusal when the agent is refused.
+    if (searchParams.get('agent') === 'open' && projectId) {
+      setIsAIOpen(true)
+      router.replace(`/graph?project=${projectId}`)
+    }
   }, [searchParams, projectId, router])
 
   const handleConfirmRecon = useCallback(async (mode: ScanMode = 'new') => {
