@@ -166,9 +166,13 @@ export function NavigatorPanel({
     const ok = await dangerConfirm('Delete this conversation? This can’t be undone.', 'Delete conversation', { confirmLabel: 'Delete' })
     if (!ok) return
     await fetch(`${api(projectId)}/threads/${encodeURIComponent(tid)}`, { method: 'DELETE' }).catch(() => undefined)
-    if (chat.threadId === tid) newConversation()
+    // Deleting the open conversation clears it but stays in History, where the person is tidying up.
+    if (chat.threadId === tid) {
+      writeLast(userId, projectId, null)
+      void openThread(null)
+    }
     void queryClient.invalidateQueries({ queryKey: ['navigator', projectId, 'threads'] })
-  }, [projectId, dangerConfirm, chat.threadId, newConversation, queryClient])
+  }, [projectId, userId, dangerConfirm, chat.threadId, openThread, queryClient])
 
   const errorText = useMemo(() => {
     if (!chat.error) return null
