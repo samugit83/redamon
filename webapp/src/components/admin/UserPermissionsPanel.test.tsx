@@ -348,8 +348,8 @@ describe('seeing what a set holds, and what saving changes', () => {
   test('each set opens its permissions, with how it overlaps the other sets', async () => {
     renderPanel()
     await ready()
-    fireEvent.click(screen.getByRole('button', { name: '12 permissions in Read-only analyst' }))
-    const dialog = within(await screen.findByRole('dialog', { name: 'Read-only analyst: 12 permissions' }))
+    fireEvent.click(screen.getByRole('button', { name: '13 permissions in Read-only analyst' }))
+    const dialog = within(await screen.findByRole('dialog', { name: 'Read-only analyst: 13 permissions' }))
     expect(dialog.getByText('graph:read')).toBeTruthy()
     expect(dialog.queryByText('recon:scan')).toBeNull()
     expect(dialog.getByRole('list', { name: 'How it overlaps the other sets' }).textContent).toContain('Fully inside Recon operator, Red-team operator')

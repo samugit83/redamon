@@ -139,7 +139,7 @@ describe('GET: what an account holds, and why', () => {
     expect(body.assignment).not.toHaveProperty('adminProfileId')
     expect((body.sets as Array<{ id: string; via: string }>).map((s) => [s.id, s.via])).toEqual([['builtin:default-member', 'default']])
     const explain = body.explain as Array<{ permission: string; held: boolean; reasons: Array<{ kind: string }> }>
-    expect(explain.length).toBe(98)
+    expect(explain.length).toBe(99)
     expect(explain.find((e) => e.permission === 'recon:scan')).toMatchObject({ held: true })
     expect(explain.find((e) => e.permission === 'users:read')).toMatchObject({ held: false, reasons: [{ kind: 'not_granted' }] })
   })
