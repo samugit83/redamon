@@ -984,6 +984,8 @@ services:
       - ./agentic/logs:/app/logs
       - ./agentic/skills:/app/skills:ro
       - ./agentic/community-skills:/app/community-skills:ro
+      # AI Navigator's docs route reads the wiki at answer time (index rebuilt within 60 s of a change).
+      - ./redamon.wiki:/app/wiki:ro
       - cypherfix-repos:/tmp/cypherfix-repos
       # CodeFix working trees: the agent clones here; the orchestrator bind-mounts
       # each per-job worktree into an isolated build sandbox (T6/E10).

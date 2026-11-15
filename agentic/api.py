@@ -197,6 +197,10 @@ app.include_router(plugin_router)
 app.include_router(workspace_import_router)
 # Agent in the Loop: drivers claim and answer model-call steps (via the webapp).
 app.include_router(loop_router)
+# AI Navigator: the read-only docs and project-data chat (navigator/api.py).
+from navigator.api import router as navigator_router  # noqa: E402
+from navigator import runs as navigator_runs  # noqa: E402
+app.include_router(navigator_router)
 
 
 # =============================================================================
@@ -1588,11 +1592,12 @@ async def jev_route_exposure_assess(body: RouteExposureAssessRequest, cred: Opti
 @app.post("/emergency-stop-all", tags=["System"], dependencies=[Depends(require_configured_master_auth)])
 async def emergency_stop_all():
     """Emergency stop: cancel every running agent task immediately."""
+    navigator_stopped = navigator_runs.stop_all()
     if not ws_manager:
-        return JSONResponse(content={"stopped": 0}, status_code=503)
+        return JSONResponse(content={"stopped": 0, "navigator": navigator_stopped}, status_code=503)
     stopped = await ws_manager.stop_all()
-    logger.warning(f"Emergency stop: cancelled {stopped} agent task(s)")
-    return {"stopped": stopped}
+    logger.warning(f"Emergency stop: cancelled {stopped} agent task(s), {navigator_stopped} AI Navigator run(s)")
+    return {"stopped": stopped, "navigator": navigator_stopped}
 
 
 class SessionStopRequest(BaseModel):
