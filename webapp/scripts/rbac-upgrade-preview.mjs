@@ -612,7 +612,8 @@ export const DOWNGRADE_TARGET = Object.freeze({ version: '7.7.2', commit: '442de
 
 /**
  * The tables the target release does not have: its boot's `db push --accept-data-loss` drops
- * each, with every row. `step` names the RBAC step that added it; `lost` is what goes.
+ * each, with every row. `step` names the RBAC step that added it (`null` with `feature` for a
+ * non-RBAC feature); `lost` is what goes.
  */
 export const DOWNGRADE_TABLES = [
   { table: 'nuclei_templates', step: '1.12', lost: 'who owns each custom Nuclei template (the template files stay)' },
@@ -634,6 +635,9 @@ export const DOWNGRADE_TABLES = [
   { table: 'instance_llm_providers', step: '6.11', lost: 'the instance LLM providers, with their keys' },
   { table: 'permission_set_providers', step: '6.11', lost: 'which permission set may use which instance LLM provider' },
   { table: 'quota_usage', step: '6.11', lost: "today's use counted against the quotas and the daily LLM budget" },
+  { table: 'navigator_threads', step: null, feature: 'AI Navigator', lost: "every person's AI Navigator conversations" },
+  { table: 'navigator_messages', step: null, feature: 'AI Navigator', lost: 'the questions and answers of those conversations' },
+  { table: 'navigator_project_policies', step: null, feature: 'AI Navigator', lost: "owners' choice to let collaborators use AI Navigator on their projects" },
 ]
 
 /**

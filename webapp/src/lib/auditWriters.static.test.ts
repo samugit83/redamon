@@ -420,7 +420,8 @@ describe('every webapp audit row is forwarded once it is committed', () => {
     expect(sources.get('src/lib/audit.ts')).toMatch(/createAuditLogRow\(tx, /)
   })
 
+  // Parses and follows every production file (~1,700): 4-10 s on a loaded box, over the 5 s default.
   test('every audit row goes through lib/auditForward.ts, in an auditedTransaction or on the root client', () => {
     expect(auditWriteProblems(sources)).toEqual([])
-  })
+  }, 60_000)
 })

@@ -527,7 +527,9 @@ export async function mcpProjectAccess(
     throw new McpAccessDenied('projectId is required')
   }
   const holder: McpProjectToken = typeof token === 'string' ? { userId: token } : token
-  const access = await projectAccess({ userId: holder.userId }, projectId, holder.actingAs ? { actingAs: true } : {})
+  const access = holder.actingAs
+    ? await projectAccess({ userId: holder.userId }, projectId, { actingAs: true })
+    : await projectAccess({ userId: holder.userId }, projectId)
   if (!access) throw new McpAccessDenied()
   if (access.level !== 'owner') {
     const reach = holder.sharedProjects

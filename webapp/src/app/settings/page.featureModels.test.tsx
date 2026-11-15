@@ -1,7 +1,7 @@
 /**
  * Global Settings → LLM Providers → "Models by feature".
  *
- * The grid shares ONE /api/models call across its nine pickers (each call
+ * The grid shares ONE /api/models call across its ten pickers (each call
  * makes the agent list every provider's models). Each change saves only its
  * own key. And the API Keys save must never carry `featureModels`: a stale
  * copy riding that save would put back models changed since the page loaded.
@@ -114,10 +114,10 @@ async function tile(id: string) {
 }
 
 describe('Models by feature section', () => {
-  test('nine tiles from ONE /api/models call, with their saved state', async () => {
+  test('ten tiles from ONE /api/models call, with their saved state', async () => {
     renderPage()
     const triage = await tile('triage')
-    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(9))
+    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(10))
     expect(calls('/api/models')).toHaveLength(1)
     expect(JSON.parse((calls('/api/models')[0][1] as RequestInit).body as string)).toEqual({ userId: 'user-1' })
 
@@ -135,7 +135,7 @@ describe('Models by feature section', () => {
     modelsAnswer = () => new Promise(() => {})
     renderPage()
     await screen.findByText('Models by feature')
-    expect(await screen.findAllByTestId('feature-model-skeleton')).toHaveLength(9)
+    expect(await screen.findAllByTestId('feature-model-skeleton')).toHaveLength(10)
     expect(document.querySelector('[data-feature]')).toBeNull()
   })
 
@@ -161,8 +161,8 @@ describe('Models by feature section', () => {
     const pluginNotice = () => screen.getByText(/Plugin items could not be loaded \(HTTP 404\)/).closest('[role="alert"]') as HTMLElement
     await waitFor(() => expect(within(pluginNotice()).getByRole('button', { name: /Retry/ })).toBeInTheDocument())
     const featureRetries = () => screen.queryAllByRole('button', { name: /Retry/ }).filter(b => !pluginNotice().contains(b))
-    expect(featureRetries()).toHaveLength(9)
-    expect(screen.getAllByRole('button', { name: /Retry/ })).toHaveLength(10)
+    expect(featureRetries()).toHaveLength(10)
+    expect(screen.getAllByRole('button', { name: /Retry/ })).toHaveLength(11)
     expect(screen.queryByText('Choose a model')).toBeNull()
 
     modelsAnswer = async () => ({ status: 200, body: MODELS })
