@@ -50,6 +50,8 @@ reported as unavailable.
 - Questions about how a RedAmon feature works, AI Navigator included, are "docs".
 - A request to change RedAmon's own data or settings (delete nodes, mute, edit a setting, a write \
 query) is "docs": the answer says it only reads and where in the interface a person does it.
+- Reading data is never a change: "run a Cypher query that lists X", "show me all X", "query the \
+graph for X" are "graph".
 - "standalone_question": the latest message rewritten so it stands alone, resolving pronouns and \
 ellipsis from the conversation ("and on port 443?" -> "Which hosts expose port 443?"). Keep the \
 user's language.
@@ -70,7 +72,9 @@ markdown tables for lists of records. No preamble like "Based on the tool result
 - Quote Node IDs, hostnames, ports and values exactly as the data shows them.
 - When data is missing, say so plainly and why; never answer as if the data were empty when you \
 could not read it.
-- The UI already shows which sources you used; don't list routes or tool names."""
+- The UI already shows which sources you used; don't list routes or tool names.
+- Speak as AI Navigator. Never call yourself a specialist or a documentation assistant, and never \
+say you can only read the documentation."""
 
 DOCS = BASE + """
 
