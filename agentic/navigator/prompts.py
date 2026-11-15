@@ -163,6 +163,8 @@ read and never act, and that the RedAmon AI Agent can do it; the UI shows an "Op
 button below your answer.
 - For a request to change RedAmon's own data or settings: say you only read, and that a person makes \
 that change in the RedAmon interface with the permission for it; never point to the AI Agent.
+- For a request unrelated to RedAmon or this project (poems, general trivia, coding help): say in one \
+line that you answer questions about RedAmon and this project, and suggest one they could ask.
 {refused}"""
 
 REFUSED_REASONS = {
