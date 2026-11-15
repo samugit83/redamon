@@ -721,3 +721,28 @@ describe('the share dialog and Leave with sharing not in force (step 4.12)', () 
     expect(page).toMatch(/\{canCreateUsers && showUserModal && !sharingInForce && \(/)
   })
 })
+
+describe('RBAC_SHARING_ENABLED off: AI Navigator', () => {
+  // No share is read, so no collaborator reaches a project and its Navigator; the owner's
+  // "AI Navigator for collaborators" route does not exist (404 before the session or a table).
+  test.each([
+    ['every switch off', {}],
+    ['identity + permissions on, the sharing switch off', { identity: true, permissions: true }],
+  ] as const)('%s: the policy route answers 404 for both methods', async (_what, flags) => {
+    setFlagsForTests(flags)
+    const { NextRequest } = await import('next/server')
+    const { GET, POST } = await import('@/app/api/navigator/projects/[projectId]/policy/route')
+    const params = { params: Promise.resolve({ projectId: 'cproject000000000000000001' }) }
+    expect((await GET(new NextRequest('http://x/api/navigator/projects/cproject000000000000000001/policy'), params)).status).toBe(404)
+    const post = new NextRequest('http://x/api/navigator/projects/cproject000000000000000001/policy', {
+      method: 'POST', body: JSON.stringify({ collaboratorsAllowed: true }), headers: { 'content-type': 'application/json' },
+    })
+    expect((await POST(post, params)).status).toBe(404)
+  })
+
+  test('a collaborator reaches no project, so no Navigator route either', async () => {
+    setFlagsForTests({ identity: true, permissions: true })
+    db.projectFindUnique.mockResolvedValueOnce({ id: 'P-owner', userId: 'owner' } as never)
+    expect(await projectAccess({ userId: 'collaborator' }, 'P-owner')).toBeNull()
+  })
+})
