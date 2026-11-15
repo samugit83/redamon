@@ -180,11 +180,17 @@ class RoutingTest(RunHarness):
 
 class SafetyTest(RunHarness):
     def test_tool_budget_per_specialist(self):
-        llm = FakeLLM([route_json(["graph"])] + [tool_call("graph_labels", {}, f"x{i}") for i in range(20)])
+        llm = FakeLLM([route_json(["graph"])] + [tool_call("graph_labels", {}, f"x{i}") for i in range(TOOL_CALLS_PER_SPECIALIST)]
+                      + [text("Final answer from the tool results.")])
         self.run_nav(llm)
         ends = [e for e in self.events if e["type"] == "tool" and e["status"] in ("end", "error")]
         self.assertEqual(len(ends), TOOL_CALLS_PER_SPECIALIST)
         self.assertEqual(self.types()[-1], "done")
+        # The budget spent, the last call binds no tool and carries the results as text.
+        last = llm.calls[-1]
+        self.assertIsNone(last["tools"])
+        self.assertIn("Here is everything your tools returned", last["messages"][-1].content)
+        self.assertEqual(self.answer(), "Final answer from the tool results.")
 
     def test_injected_instruction_cannot_reach_a_write_tool(self):
         llm = FakeLLM([route_json(["records"]), tool_call("recon_status", {}),

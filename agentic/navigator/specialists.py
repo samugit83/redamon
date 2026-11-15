@@ -154,6 +154,33 @@ async def _stream_step(bound, messages: list, state: RunState) -> tuple[AIMessag
     return msg, live
 
 
+TRANSCRIPT_MAX_CHARS = 60_000
+
+
+async def _final_without_tools(state: RunState, system: str, conversation: list, transcript: list[str],
+                               *, answer: bool) -> str:
+    """The budget is spent: one last call with NO tool bound, the results inlined as text.
+
+    Some models keep asking for tools when they are still bound, whatever the prompt says, and a
+    history holding tool calls may not be sent without tool definitions to every provider; a plain
+    conversation is accepted by all of them, and the model can only answer.
+    """
+    results = "\n\n".join(transcript)
+    if len(results) > TRANSCRIPT_MAX_CHARS:
+        results = results[-TRANSCRIPT_MAX_CHARS:]
+    ask = ("You have used every tool call allowed. Here is everything your tools returned:\n\n"
+           f"{results}\n\nDo not ask for more tools. "
+           + ("Write the final answer now from what you have, and say what you could not check."
+              if answer else "Write your notes now."))
+    messages = [SystemMessage(system), *conversation, HumanMessage(ask)]
+    await state.checkpoint()
+    if answer:
+        async for chunk in state.llm.astream(messages, config=state.config):
+            await state.stream_text(message_text(chunk.content))
+        return state.answer
+    return message_text((await state.llm.ainvoke(messages, config=state.config)).content)
+
+
 async def run_specialist(state: RunState, route: str, system: str, conversation: list, tools: list[NavTool],
                          *, answer: bool) -> SpecialistResult:
     """The loop. `conversation` holds the history and the user's question, after the system prompt."""
@@ -161,19 +188,22 @@ async def run_specialist(state: RunState, route: str, system: str, conversation:
     by_name = {t.name: t for t in tools}
     bound = bind(state.llm, tools)
     messages: list = [SystemMessage(system), *conversation]
+    transcript: list[str] = []
     own_calls = 0
     final: Optional[AIMessage] = None
     while True:
-        exhausted = own_calls >= TOOL_CALLS_PER_SPECIALIST or state.tool_calls >= TOOL_CALLS_PER_RUN
+        if own_calls >= TOOL_CALLS_PER_SPECIALIST or state.tool_calls >= TOOL_CALLS_PER_RUN:
+            text = await _final_without_tools(state, system, conversation, transcript, answer=answer)
+            result.tool_calls = own_calls
+            if not answer:
+                result.notes = text.strip()
+            return result
         await state.checkpoint()
         if answer:
             ai, streamed = await _stream_step(bound, messages, state)
         else:
             ai, streamed = await bound.ainvoke(messages, config=state.config), False
         if streamed or not ai.tool_calls:
-            final = ai
-            break
-        if exhausted:
             final = ai
             break
         messages.append(ai)
@@ -190,11 +220,9 @@ async def run_specialist(state: RunState, route: str, system: str, conversation:
                 outcome = await _run_tool(state, route, by_name.get(name), name, args)
             if not outcome.ok and outcome.error_code:
                 result.errors.append(outcome.error_code)
-            messages.append(ToolMessage(content=wrap_untrusted(outcome.content, label=name.upper()[:40] or "TOOL"),
-                                        tool_call_id=call.get("id") or name))
-        if own_calls >= TOOL_CALLS_PER_SPECIALIST or state.tool_calls >= TOOL_CALLS_PER_RUN:
-            messages.append(HumanMessage("You have used every tool call allowed. Do not call tools again: "
-                                         + ("write the final answer now." if answer else "write your notes now.")))
+            wrapped = wrap_untrusted(outcome.content, label=name.upper()[:40] or "TOOL")
+            messages.append(ToolMessage(content=wrapped, tool_call_id=call.get("id") or name))
+            transcript.append(f"Tool {name} with arguments {as_json(args)} returned:\n{wrapped}")
     result.tool_calls = own_calls
     text = message_text(final.content) if final is not None else ""
     if answer:
