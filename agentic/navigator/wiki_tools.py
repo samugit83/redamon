@@ -5,6 +5,8 @@ named. `wiki_read` allocates the citation id the answer may cite.
 """
 from __future__ import annotations
 
+import html
+
 from navigator.citations import CitationRegistry
 from navigator.limits import WIKI_QUERY_MAX_CHARS, WIKI_READ_MAX_CHARS, WIKI_SEARCH_MAX_K
 from navigator.tooling import NavTool, ToolOutcome, as_json, refused
@@ -36,7 +38,8 @@ def make_wiki_tools(index: WikiIndex, citations: CitationRegistry) -> list[NavTo
         return ToolOutcome(toc_text(index), True, "Read the docs table of contents")
 
     async def wiki_search(args: dict) -> ToolOutcome:
-        query = str(args.get("query") or "")[:WIKI_QUERY_MAX_CHARS].strip()
+        # Some models HTML-escape their tool arguments ("&amp;"); the wiki is plain text.
+        query = html.unescape(str(args.get("query") or ""))[:WIKI_QUERY_MAX_CHARS].strip()
         try:
             k = int(args.get("k") or 5)
         except (TypeError, ValueError):

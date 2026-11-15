@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useFeatureModelGate } from '@/components/shared/FeatureModelGate'
+import { stripUnknownMarkers } from '@/lib/navigator/events'
 
 export interface CitationView {
   id: string
@@ -316,8 +317,10 @@ export function useNavigatorChat(projectId: string | null, opts: {
       flush()
       abortRef.current = null
       setStreaming(false)
+      // The saved row drops a marker no section backs (stream.ts); the live view does the same.
       patchAnswer((a) => ({
         ...a,
+        content: stripUnknownMarkers(a.content, a.citations),
         status: finalStatus,
         errorCode: finalCode,
         trace: a.trace.filter((t) => t.status !== 'start'),
