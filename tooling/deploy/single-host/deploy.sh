@@ -506,7 +506,7 @@ EOF
   remote <<EOF
 ${PREAMBLE}
 step "Clone ${REPO_URL} (${REPO_BRANCH}) -> \$APP_PATH"
-git clone -b "\${REPO_BRANCH}" --depth 1 "\${REPO_URL}" "\$APP_PATH"
+git clone -b "\${REPO_BRANCH}" --depth 1 --recurse-submodules --shallow-submodules "\${REPO_URL}" "\$APP_PATH"
 cd "\$APP_PATH"
 # (the prod overlay is installed at \$OVERLAY_DIR by PREAMBLE, outside the repo tree)
 # No deploy-time source patches: the single-origin agent WebSocket URL is now a

@@ -1642,8 +1642,37 @@ _upstream_ref() {
 
 # Tracked files modified in the working tree (never untracked ones - a user's
 # stray notes.txt must not read as "you have edits blocking the update").
+# The wiki submodule is left out: ensure_wiki_checkout moves it, and a checkout at
+# another commit than the one recorded is never the user's edit to protect.
 _dirty_tracked_files() {
-    git -C "$SCRIPT_DIR" status --porcelain --untracked-files=no 2>/dev/null
+    git -C "$SCRIPT_DIR" status --porcelain --untracked-files=no --ignore-submodules=all 2>/dev/null
+}
+
+# AI Navigator's docs route reads ./redamon.wiki, a submodule mounted read-only into
+# the agent. A clone without --recurse-submodules leaves it empty and `update` never
+# moved it, so install and update fetch it here (the wiki is public: no credentials).
+# A wiki someone works in is never moved: only an uninitialised submodule, or one on a
+# detached HEAD with a clean tree, is updated. A failed fetch warns and goes on; the
+# docs answers degrade and nothing else needs the wiki.
+ensure_wiki_checkout() {
+    local dir="$SCRIPT_DIR/redamon.wiki"
+    [[ -f "$SCRIPT_DIR/.gitmodules" ]] && grep -q 'redamon.wiki' "$SCRIPT_DIR/.gitmodules" || return 0
+    git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    if [[ -e "$dir/.git" ]]; then
+        if git -C "$dir" symbolic-ref -q HEAD >/dev/null 2>&1 \
+            || [[ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]]; then
+            info "redamon.wiki has local work; left as it is"
+            return 0
+        fi
+    fi
+    git -C "$SCRIPT_DIR" submodule sync --quiet redamon.wiki >/dev/null 2>&1 || true
+    if git -C "$SCRIPT_DIR" submodule update --init --depth 1 redamon.wiki >/dev/null 2>&1; then
+        success "AI Navigator documentation in place (redamon.wiki)"
+    else
+        warn "Could not fetch the documentation (redamon.wiki); AI Navigator answers without it."
+        warn "  Fetch it later with: git submodule update --init redamon.wiki"
+    fi
+    return 0
 }
 
 # True when this checkout has commits the upstream does not, which is the ONE
@@ -3567,6 +3596,8 @@ cmd_install() {
     if ! preflight_ram_gate; then exit 1; fi
     if ! preflight_disk_gate "$DISK_FULL_BUILD_GB" "install"; then exit 1; fi
 
+    ensure_wiki_checkout
+
     local version
     version="$(get_version)"
     info "Installing RedAmon v${version}..."
@@ -4056,6 +4087,7 @@ cmd_update() {
         # logic from the freshly-pulled (newer) script.
         old_head="$REDAMON_UPDATE_FROM"
         new_head="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
+        ensure_wiki_checkout
     else
         old_head="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
 
@@ -4066,6 +4098,7 @@ cmd_update() {
         # Pull latest (upstream tracking branch, then origin/master), diagnosing
         # and self-healing the failure modes users actually hit.
         _update_pull
+        ensure_wiki_checkout
 
         # A heal moved HEAD by reset, not by fast-forward. Diff from the real
         # pre-divergence base so the rebuild map, the up-to-date check and the
