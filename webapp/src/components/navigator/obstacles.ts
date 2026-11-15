@@ -19,10 +19,22 @@ function emit() {
   listeners.forEach((l) => l())
 }
 
+/**
+ * A drawer registers as it opens, usually mid slide-in (still off-screen), so its place is measured
+ * again when its transition ends, when it is resized, and once shortly after, whichever comes.
+ */
 export function registerObstacle(el: HTMLElement): () => void {
   elements.add(el)
   emit()
+  const remeasure = () => emit()
+  el.addEventListener('transitionend', remeasure)
+  const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(remeasure) : null
+  observer?.observe(el)
+  const late = setTimeout(remeasure, 450)
   return () => {
+    clearTimeout(late)
+    observer?.disconnect()
+    el.removeEventListener('transitionend', remeasure)
     elements.delete(el)
     emit()
   }
