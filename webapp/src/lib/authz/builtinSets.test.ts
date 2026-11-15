@@ -119,7 +119,7 @@ describe('member sets (PE-14, §4.6, §5.14)', () => {
     const expected = PERMISSION_IDS.filter((p) => PERMISSIONS[p].kind === 'member' && !PERMISSIONS[p].crossTenant)
     expect(byId(DEFAULT_MEMBER_SET_ID).permissions).toEqual(expected)
     expect(expected).toEqual(MEMBER_SIDE)
-    expect(expected).toHaveLength(70)
+    expect(expected).toHaveLength(71)
     // OQ-46: the Kali sandbox stays in today's member abilities, labelled sandboxShared.
     expect(held(DEFAULT_MEMBER_SET_ID).has('agent:kali_exec')).toBe(true)
   })
@@ -132,7 +132,7 @@ describe('member sets (PE-14, §4.6, §5.14)', () => {
 
   test('Read-only analyst has no write, scan or agent chat', () => {
     const analyst = byId('builtin:read-only-analyst')
-    expect(analyst.permissions).toEqual(inRegistryOrder(['self:presets', ...READS, 'agent:assistants']))
+    expect(analyst.permissions).toEqual(inRegistryOrder(['self:presets', ...READS, 'agent:assistants', 'navigator:use']))
     const ids = held(analyst.id)
     for (const p of [...SCANS, ...WRITES, ...EXPLOITATION_TOGGLE, 'agent:chat', 'agent:fireteam', 'agent:loop']) {
       expect(ids.has(p), p).toBe(false)
@@ -175,6 +175,8 @@ describe('member sets (PE-14, §4.6, §5.14)', () => {
     expect(automation.permissions.filter((p) => p.startsWith('agent:'))).toEqual(['agent:loop'])
     expect(automation.permissions.filter((p) => EXPLOITATION_TOGGLE.includes(p))).toEqual([])
     expect(automation.permissions.filter((p) => p.startsWith('plugins:'))).toEqual([])
+    // AI Navigator is a UI chat: an account that drives RedAmon over MCP does not use it.
+    expect(held(automation.id).has('navigator:use')).toBe(false)
     // It drives RedAmon over MCP: every MCP scope but kali:exec (exploitation) stays usable.
     const mcpBacked = PERMISSION_IDS.filter((p) => PERMISSIONS[p].mcpScopes.length > 0 && p !== 'agent:kali_exec')
     expect(mcpBacked.filter((p) => !held(automation.id).has(p))).toEqual([])
@@ -190,6 +192,7 @@ describe('member sets (PE-14, §4.6, §5.14)', () => {
       ['project:create', 'project:import', 'project:share'],
       READS, SCANS, WRITES,
       ['agent:chat', 'agent:fireteam', 'agent:loop', 'agent:assistants', 'agent:conversations_share'],
+      ['navigator:use'],
       EXPLOITATION_TOGGLE,
       ['plugins:use', 'plugins:approve_overrides'],
     ].flat()

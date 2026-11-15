@@ -76,6 +76,8 @@ model User {
   deviceSessions      UserSession[]
   // Daily use counted against a budget (step 6.11): goes with the account.
   quotaUsage          QuotaUsage[]
+  // AI Navigator conversations are private to their author and go with the account (never reassigned).
+  navigatorThreads    NavigatorThread[]
 
   @@map("users")
 }
@@ -118,6 +120,9 @@ model InstanceSettings {
   // On: the agent stops using the LLM providers an account added itself when the account lacks
   // self:llm_providers (step 6.11). Off keeps every account's own providers, as before.
   byoLlmForbidden             Boolean   @default(false) @map("byo_llm_forbidden")
+  // Root's switch for AI Navigator (D15). On by default; off hides the launcher and refuses every
+  // Navigator route. Read through lib/navigator/switch.ts only.
+  navigatorEnabled            Boolean   @default(true) @map("navigator_enabled")
 
   // Moved from UserSettings: same columns, types and defaults as there, so the
   // backfill copies each value unchanged. The *SourceUserId fields name the user row
@@ -1822,9 +1827,72 @@ model Project {
   accessPolicy                      ProjectAccessPolicy?
   // Offers to give the project to one of its collaborators, and what came of them (RBAC Phase 5).
   transfers                         ProjectTransfer[]
+  // AI Navigator: each person's private conversations here, and the owner's collaborator toggle.
+  navigatorThreads                  NavigatorThread[]
+  navigatorPolicy                   NavigatorProjectPolicy?
 
   @@index([jevProviderId])
   @@map("projects")
+}
+
+/// A person's AI Navigator conversation on one project (D6, D13). Private to `userId`:
+/// never shared, never read by managers, oversight or break-glass, deleted with the account,
+/// not exported, purged after the project's data retention of inactivity.
+model NavigatorThread {
+  id            String             @id @default(cuid())
+  projectId     String             @map("project_id")
+  project       Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// The person (the effective user). Under act-as, the account acted as.
+  userId        String             @map("user_id")
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String             @default("")
+  createdAt     DateTime           @default(now()) @map("created_at")
+  updatedAt     DateTime           @updatedAt @map("updated_at")
+  lastMessageAt DateTime           @default(now()) @map("last_message_at")
+  messages      NavigatorMessage[]
+
+  @@index([projectId, userId, lastMessageAt])
+  @@index([lastMessageAt])
+  @@map("navigator_threads")
+}
+
+model NavigatorMessage {
+  id        String          @id @default(cuid())
+  threadId  String          @map("thread_id")
+  thread    NavigatorThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  seq       Int
+  /// user | assistant
+  role      String
+  content   String          @db.Text
+  /// complete | stopped | failed (assistant only; user messages are complete)
+  status    String          @default("complete")
+  /// The routes the router chose: docs | graph | records | workspace | direct
+  routes    String[]        @default([])
+  /// [{id: "S1", title, heading, url, mirror_url}] built by the server from sections actually read
+  citations Json?
+  /// [{route, tool, status, summary, detail?}]: never raw tool results (data minimisation)
+  trace     Json?
+  modelUsed String?         @map("model_used")
+  /// The admin who acted as `thread.userId`, when one did
+  actorId   String?         @map("actor_id")
+  errorCode String?         @map("error_code")
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  @@unique([threadId, seq])
+  @@map("navigator_messages")
+}
+
+/// Whether the project's owner lets collaborators use AI Navigator on it (D3). No row is off.
+/// Read and written only by webapp/src/lib/authz/navigatorPolicy.ts; reset by an ownership transfer.
+model NavigatorProjectPolicy {
+  projectId            String   @id @map("project_id")
+  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  collaboratorsAllowed Boolean  @default(false) @map("collaborators_allowed")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+  /// The owner who last changed it; a plain id, so the row outlives that account.
+  updatedById          String?  @map("updated_by_id")
+
+  @@map("navigator_project_policies")
 }
 
 /// A project shared with one account (RBAC Phase 4). The owner stays Project.userId, the only

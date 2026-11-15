@@ -23,6 +23,7 @@ FEATURE_IDS = (
     "report_narratives",
     "multi_mute",
     "skill_metadata",
+    "navigator",
 )
 
 

@@ -59,6 +59,13 @@ export interface RequirePermissionOptions {
    * instance default are read from the database (`CanOptions.fresh`).
    */
   fresh?: boolean
+  /**
+   * False refuses a caller who reaches the project only through oversight or break-glass with 403
+   * `oversight_not_allowed`, before the `project.oversee` row would be written: a feature that must
+   * never serve those reads (AI Navigator, D12) refuses inside the guard, so a refused attempt
+   * leaves no misleading oversight row. Default true.
+   */
+  allowOversight?: boolean
 }
 
 /** The 403 of every permission check (master plan §9.8, DV-07). */
@@ -84,6 +91,7 @@ async function decide(
   permission: PermissionId,
   project: Pick<RequirePermissionOptions, 'projectId'>,
   fresh: boolean,
+  allowOversight = true,
 ): Promise<PermissionContext | NextResponse> {
   let decision: CanDecision
   try {
@@ -95,6 +103,12 @@ async function decide(
     const via = decision.access?.via
     if (identity.actingAs && (via === 'oversight' || via === 'break_glass')) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    }
+    if (!allowOversight && (via === 'oversight' || via === 'break_glass')) {
+      return NextResponse.json(
+        { error: 'This feature is not available with oversight or break-glass access.', code: 'oversight_not_allowed' },
+        { status: 403 },
+      )
     }
     if (via === 'oversight') {
       try {
@@ -132,7 +146,7 @@ export async function requirePermission(
   const fresh = opts.fresh === true
   const identity = await signedIn(fresh)
   if (identity instanceof NextResponse) return identity
-  return decide(identity, permission, 'projectId' in opts ? { projectId: opts.projectId } : {}, fresh)
+  return decide(identity, permission, 'projectId' in opts ? { projectId: opts.projectId } : {}, fresh, opts.allowOversight !== false)
 }
 
 /**
@@ -193,6 +207,8 @@ export interface WithPermissionOptions<C> {
    */
   projectId?: ProjectIdExtractor<C>
   fresh?: boolean
+  /** See `RequirePermissionOptions.allowOversight`. */
+  allowOversight?: boolean
 }
 
 /**
@@ -222,11 +238,12 @@ export function withPermission<C = unknown, R extends Request = Request>(
   const fresh = opts.fresh === true
   const namesProject = 'projectId' in opts
   const extract = opts.projectId
+  const allowOversight = opts.allowOversight !== false
   return async (request: R, context: C) => {
     const identity = await signedIn(fresh)
     if (identity instanceof NextResponse) return identity
     const project = namesProject ? { projectId: extract ? await projectIdOf(extract, request, context) : undefined } : {}
-    const auth = await decide(identity, permission, project, fresh)
+    const auth = await decide(identity, permission, project, fresh, allowOversight)
     if (auth instanceof NextResponse) return auth
     return handler(request, context, auth)
   }

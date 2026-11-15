@@ -15,10 +15,11 @@ from feature_models import FEATURE_IDS, feature_model  # noqa: E402
 WEBAPP_REGISTRY = REPO_ROOT / "webapp" / "src" / "lib" / "llmFeatures.ts"
 
 
-def test_the_nine_ids():
+def test_the_ten_ids():
     assert FEATURE_IDS == (
         "roe_parse", "preset_generator", "triage", "codefix", "command_whisperer",
         "tradecraft_section_picker", "report_narratives", "multi_mute", "skill_metadata",
+        "navigator",
     )
 
 

@@ -253,6 +253,9 @@ const IDENTITY_READERS: string[] = [
   // (governance.flags.off.test.ts: the agent list and every provider route).
   'src/lib/instanceProviders/admin.ts',
   'src/lib/instanceProviders/store.ts',
+  // AI Navigator (plan §7.5): a run keeps the session version of the login that started it, copied
+  // from the guard's principal; the tool route compares it with a fresh read. Reads no table itself.
+  'src/lib/navigator/runRegistry.ts',
   // Compares the session version whatever the switch, the status only with it on.
   'src/lib/session.ts',
   // Step 2.4: the tunnel and capture readers read the instance settings row only with the

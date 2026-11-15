@@ -1,6 +1,6 @@
 /**
  * The permission registry: every permission a person can hold (feature document §5.1-§5.12,
- * 98 ids), with what the policy, the UI and the upgrade need to know about each one.
+ * 99 ids), with what the policy, the UI and the upgrade need to know about each one.
  *
  * One vocabulary for route checks, the permission screens, MCP token scopes and the built-in
  * sets (PE-02): `assertKnownPermission` rejects any other string. The plugin platform keeps its
@@ -188,6 +188,10 @@ const REGISTRY = {
   'agent:kali_exec': project('W+X', 'Run commands in the Kali sandbox over MCP. The sandbox is shared with every other project on this server.', { sandboxShared: true, mcpScopes: ['kali:exec'] }),
   'agent:assistants': project('W+A', 'Use the text-to-Cypher and command assistants (spends LLM credits).'),
   'agent:conversations_share': project('W+A', 'Share your conversations with the members of the project.', NEW_FEATURE),
+  'navigator:use': project('R',
+    "Ask AI Navigator about RedAmon's documentation and about this project's data. It reads only " +
+    'what you may read, runs on your own model, and on a project shared with you only when its owner allows it.',
+    NEW_FEATURE),
 
   // §5.7 Workspace
   'workspace:read': project('R*', "Browse, preview, download and archive the agent's workspace."),

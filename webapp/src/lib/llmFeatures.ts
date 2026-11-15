@@ -18,6 +18,7 @@ export type FeatureId =
   | 'report_narratives'
   | 'multi_mute'
   | 'skill_metadata'
+  | 'navigator'
 
 /**
  * A plugin's own entry in Models by feature: `plugin:<pluginId>` (README.PLUGINS.md §7.3,
@@ -107,6 +108,14 @@ export const LLM_FEATURES: readonly LlmFeature[] = [
     description: 'Turns a plain-English request into a shell command in session terminals.',
     hint: 'A small model is enough.',
     alsoEditedIn: ['Session terminals'],
+    excludeModelPrefixes: [],
+  },
+  {
+    id: 'navigator',
+    label: 'AI Navigator',
+    description: 'Answers questions about RedAmon and your projects in the AI Navigator chat.',
+    hint: 'Needs a model that can call tools. A mid-size model is enough.',
+    alsoEditedIn: ['AI Navigator (asked on your first message)'],
     excludeModelPrefixes: [],
   },
   {

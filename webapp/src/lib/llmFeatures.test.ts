@@ -23,7 +23,7 @@ import {
 } from './llmFeatures'
 
 describe('registry', () => {
-  test('the nine features, in the grid order', () => {
+  test('the ten features, in the grid order', () => {
     expect(FEATURE_IDS).toEqual([
       'triage',
       'codefix',
@@ -32,6 +32,7 @@ describe('registry', () => {
       'roe_parse',
       'preset_generator',
       'command_whisperer',
+      'navigator',
       'tradecraft_section_picker',
       'skill_metadata',
     ])
@@ -43,6 +44,7 @@ describe('registry', () => {
       'RoE parsing',
       'Recon preset generator',
       'Command whisperer',
+      'AI Navigator',
       'Tradecraft section picker',
       'Skill names & descriptions',
     ])
