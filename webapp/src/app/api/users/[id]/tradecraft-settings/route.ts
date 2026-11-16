@@ -5,12 +5,29 @@ import { auditActor } from '@/lib/auditActor'
 import { internalError } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { setTradecraftV2, tradecraftV2Enabled } from '@/lib/tradecraft/switch'
+import {
+  readIngestionSettings, resetIngestionSettings, saveIngestionSettings, type SaveResult,
+} from '@/lib/tradecraft/userSettings'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-const BAD_BODY = 'Body must be {"v2Enabled": true} or {"v2Enabled": false}'
+const BAD_BODY = 'Body must be {"v2Enabled": boolean}, {"ingestion": {<key>: <value>}} or {"reset": "<section>" | "all"}'
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+// The 1.x tab never sees the 2.0 settings: they answer only while the account has 2.0 on.
+const V2_OFF = () => NextResponse.json({ error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' }, { status: 404 })
+
+function settingsAnswer(result: SaveResult): NextResponse {
+  if (!result.ok) {
+    return NextResponse.json({ error: result.errors[0].message, code: 'invalid_settings', errors: result.errors }, { status: 400 })
+  }
+  return NextResponse.json({ v2Enabled: true, ingestion: result.view })
+}
 
 // GET /api/users/[id]/tradecraft-settings
 export async function GET(request: NextRequest, { params }: RouteParams) {
@@ -20,13 +37,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (denied) return denied
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
-    return NextResponse.json({ v2Enabled: await tradecraftV2Enabled(id) })
+    if (!(await tradecraftV2Enabled(id))) return NextResponse.json({ v2Enabled: false })
+    return NextResponse.json({ v2Enabled: true, ingestion: await readIngestionSettings(id) })
   } catch (error) {
     return internalError(error, 'Failed to read the Tradecraft settings')
   }
 }
 
-// PUT /api/users/[id]/tradecraft-settings   Body: { v2Enabled: boolean }
+// PUT /api/users/[id]/tradecraft-settings
+//   Body, exactly one of: { v2Enabled: boolean } | { ingestion: { <key>: <value> } } | { reset: "<section>" | "all" }
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
@@ -41,11 +60,21 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const parsed = await readJsonBody(request)
     if (parsed instanceof NextResponse) return parsed
     const { body } = parsed
-    if (Object.keys(body).length !== 1 || typeof body.v2Enabled !== 'boolean') {
-      return NextResponse.json({ error: BAD_BODY }, { status: 400 })
+    const keys = Object.keys(body)
+    if (keys.length !== 1) return NextResponse.json({ error: BAD_BODY }, { status: 400 })
+    if (typeof body.v2Enabled === 'boolean') {
+      await setTradecraftV2(actor, id, body.v2Enabled)
+      return NextResponse.json({ v2Enabled: body.v2Enabled })
     }
-    await setTradecraftV2(actor, id, body.v2Enabled)
-    return NextResponse.json({ v2Enabled: body.v2Enabled })
+    if (isPlainObject(body.ingestion)) {
+      if (!(await tradecraftV2Enabled(id))) return V2_OFF()
+      return settingsAnswer(await saveIngestionSettings(id, body.ingestion))
+    }
+    if (typeof body.reset === 'string') {
+      if (!(await tradecraftV2Enabled(id))) return V2_OFF()
+      return settingsAnswer(await resetIngestionSettings(id, body.reset))
+    }
+    return NextResponse.json({ error: BAD_BODY }, { status: 400 })
   } catch (error) {
     return internalError(error, 'Failed to save the Tradecraft settings')
   }

@@ -1,5 +1,6 @@
 /**
- * GET/PUT /api/users/[id]/tradecraft-settings: the account's Tradecraft 2.0 switch.
+ * GET/PUT /api/users/[id]/tradecraft-settings: the account's Tradecraft 2.0 switch and, while
+ * it is on, the account's ingestion settings (Configure ingestion, T3.4).
  *
  * The real session helpers run over signed tokens, so the account rule is the one every
  * `/api/users/[id]/**` write follows (requireUserAccess, HD-23): the account itself writes,
@@ -18,7 +19,7 @@ vi.stubEnv('INTERNAL_API_KEY', 'ik-test-tradecraft-0001')
 const h = vi.hoisted(() => ({
   auth: undefined as string | undefined,
   actAs: undefined as string | undefined,
-  rows: new Map<string, { v2Enabled: boolean; v2EnabledAt: Date | null }>(),
+  rows: new Map<string, { v2Enabled: boolean; v2EnabledAt: Date | null; ingestion?: Record<string, unknown> }>(),
   audits: [] as Record<string, unknown>[],
   writes: [] as string[],
   reads: 0,
@@ -50,7 +51,7 @@ vi.mock('@/lib/prisma', () => {
       const r = h.rows.get(where.userId)
       return r ? { ...r } : null
     },
-    upsert: async ({ where, create, update }: { where: { userId: string }; create: { v2Enabled: boolean; v2EnabledAt: Date | null }; update: { v2Enabled: boolean; v2EnabledAt: Date | null } }) => {
+    upsert: async ({ where, create, update }: { where: { userId: string }; create: { v2Enabled: boolean; v2EnabledAt: Date | null }; update: Record<string, unknown> }) => {
       h.writes.push(`tradecraftUserSettings.upsert ${where.userId}`)
       h.rows.set(where.userId, h.rows.has(where.userId) ? { ...h.rows.get(where.userId)!, ...update } : { ...create })
       return h.rows.get(where.userId)
@@ -127,10 +128,13 @@ afterEach(() => {
 })
 
 describe('GET /api/users/[id]/tradecraft-settings', () => {
-  test('the account reads its switch, off without a row', async () => {
+  test('the account reads its switch, off without a row; the ingestion section only while on', async () => {
     expect(await answer(await get('victim'))).toEqual({ status: 200, body: { v2Enabled: false } })
     h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
-    expect(await answer(await get('victim'))).toEqual({ status: 200, body: { v2Enabled: true } })
+    const on = await answer(await get('victim'))
+    expect(on.status).toBe(200)
+    expect(on.body.v2Enabled).toBe(true)
+    expect(Object.keys(on.body.ingestion as object).sort()).toEqual(['changed', 'defaults', 'values'])
   })
 
   test('get_requires_self_permission', async () => {
@@ -159,7 +163,7 @@ describe('PUT /api/users/[id]/tradecraft-settings', () => {
       after: { v2Enabled: true },
     })])
     expect(vi.mocked(requireSelfPermission).mock.calls.at(-1)!.slice(1)).toEqual(['victim', 'self:tradecraft'])
-    expect(await answer(await get('victim'))).toEqual({ status: 200, body: { v2Enabled: true } })
+    expect(await answer(await get('victim'))).toMatchObject({ status: 200, body: { v2Enabled: true } })
     expect(await answer(await put('victim', { v2Enabled: false }))).toEqual({ status: 200, body: { v2Enabled: false } })
     expect(h.audits).toHaveLength(2)
   })
@@ -223,5 +227,104 @@ describe('PUT /api/users/[id]/tradecraft-settings', () => {
     const p = await answer(await put('victim', { v2Enabled: true }))
     expect(p).toEqual({ status: 500, body: { error: 'Failed to save the Tradecraft settings', code: 'P1001' } })
     expect(JSON.stringify([g, p])).not.toContain('secret_user')
+  })
+})
+
+describe('the ingestion settings (T3.4)', () => {
+  type View = { values: Record<string, unknown>; changed: string[]; defaults: Record<string, unknown> }
+  const on = () => h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
+
+  test('get_values_changed_defaults: values, the changed keys and the defaults', async () => {
+    on()
+    h.rows.get('victim')!.ingestion = { 'crawl.maxPages': 50 }
+    const r = await answer(await get('victim'))
+    const view = r.body.ingestion as View
+    expect(view.values['crawl.maxPages']).toBe(50)
+    expect(view.defaults['crawl.maxPages']).toBe(200)
+    expect(view.changed).toEqual(['crawl.maxPages'])
+  })
+
+  test('put_stores_only_changed, and answers the new view', async () => {
+    on()
+    const r = await answer(await put('victim', { ingestion: { 'crawl.maxPages': 120 } }))
+    expect(r.status).toBe(200)
+    expect((r.body.ingestion as View).changed).toEqual(['crawl.maxPages'])
+    expect(h.rows.get('victim')!.ingestion).toEqual({ 'crawl.maxPages': 120 })
+    expect(h.rows.get('victim')!.v2Enabled).toBe(true)
+  })
+
+  test('put_default_removes_key', async () => {
+    on()
+    h.rows.get('victim')!.ingestion = { 'crawl.maxPages': 120, 'summary.titles': 10 }
+    await put('victim', { ingestion: { 'crawl.maxPages': 200 } })
+    expect(h.rows.get('victim')!.ingestion).toEqual({ 'summary.titles': 10 })
+  })
+
+  test('refuses_out_of_range: 400 naming the key and its range, nothing written', async () => {
+    on()
+    const r = await answer(await put('victim', { ingestion: { 'crawl.maxPages': 9000 } }))
+    expect(r.status).toBe(400)
+    expect(r.body.code).toBe('invalid_settings')
+    expect(r.body.error).toBe('crawl.maxPages must be an integer from 1 to 500')
+    expect(r.body.errors).toEqual([{ key: 'crawl.maxPages', code: 'bad_value', message: 'crawl.maxPages must be an integer from 1 to 500' }])
+    expect(h.writes).toEqual([])
+  })
+
+  test('resource_only_keys_refused and user_only_keys_accepted', async () => {
+    on()
+    const bad = await answer(await put('victim', { ingestion: { 'content.bodySelector': 'main' } }))
+    expect(bad.status).toBe(400)
+    expect((bad.body.errors as { key: string; code: string }[])[0]).toMatchObject({ key: 'content.bodySelector', code: 'resource_only' })
+    const good = await answer(await put('victim', { ingestion: { 'storage.userQuotaMb': 2048 } }))
+    expect(good.status).toBe(200)
+    expect(h.rows.get('victim')!.ingestion).toEqual({ 'storage.userQuotaMb': 2048 })
+  })
+
+  test('reset_section and reset_all', async () => {
+    on()
+    h.rows.get('victim')!.ingestion = { 'crawl.maxPages': 120, 'crawl.parallel': 3, 'summary.titles': 10 }
+    const r = await answer(await put('victim', { reset: 'crawl' }))
+    expect(r.status).toBe(200)
+    expect(h.rows.get('victim')!.ingestion).toEqual({ 'summary.titles': 10 })
+    await put('victim', { reset: 'all' })
+    expect(h.rows.get('victim')!.ingestion).toEqual({})
+    const bad = await answer(await put('victim', { reset: 'nope' }))
+    expect(bad.status).toBe(400)
+    expect(bad.body.code).toBe('invalid_settings')
+  })
+
+  test('switch_off_404: with 2.0 off the section neither reads nor writes', async () => {
+    for (const body of [{ ingestion: { 'crawl.maxPages': 120 } }, { reset: 'all' }]) {
+      const r = await answer(await put('victim', body))
+      expect(r).toEqual({ status: 404, body: { error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' } })
+    }
+    expect(h.writes).toEqual([])
+    expect((await answer(await get('victim'))).body).toEqual({ v2Enabled: false })
+  })
+
+  test.each([
+    ['two sections at once', { ingestion: {}, reset: 'all' }],
+    ['ingestion that is not an object', { ingestion: [1] }],
+    ['reset that is not a string', { reset: 1 }],
+  ])('a malformed body is a 400 before anything is written: %s', async (_name, body) => {
+    on()
+    const r = await answer(await put('victim', body))
+    expect(r.status).toBe(400)
+    expect(h.writes).toEqual([])
+  })
+
+  test('isolated (AC-04): an account cannot read or write another account\'s settings', async () => {
+    h.rows.set('managed', { v2Enabled: true, v2EnabledAt: new Date(), ingestion: { 'crawl.maxPages': 7 } })
+    expect((await get('managed')).status).toBe(403)
+    expect((await put('managed', { ingestion: { 'crawl.maxPages': 9 } })).status).toBe(403)
+    expect(h.rows.get('managed')!.ingestion).toEqual({ 'crawl.maxPages': 7 })
+  })
+
+  test('the internal key alone saves no setting', async () => {
+    on()
+    h.auth = undefined
+    const r = await put('victim', { ingestion: { 'crawl.maxPages': 9 } }, { 'x-internal-key': 'ik-test-tradecraft-0001' })
+    expect(r.status).toBe(401)
+    expect(h.rows.get('victim')!.ingestion).toBeUndefined()
   })
 })

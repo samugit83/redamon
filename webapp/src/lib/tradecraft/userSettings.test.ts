@@ -1,0 +1,161 @@
+/**
+ * The account's ingestion settings (Configure ingestion, §3.2, §4): only the values a person
+ * changed are stored, a value equal to its default is removed, a reset clears a section or
+ * everything, and one account's values never reach another's (AC-04).
+ *
+ * @vitest-environment node
+ */
+import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { createTradecraftDb, type TradecraftDb } from './__testing__/tradecraftDb'
+
+const h = vi.hoisted(() => ({ db: null as unknown as TradecraftDb }))
+vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as never)[k] }) }))
+
+import {
+  INGESTION_SECTIONS, ingestionDefaults, readIngestionSettings, resetIngestionSettings, saveIngestionSettings,
+} from './userSettings'
+import { SETTINGS } from './settingsSpec'
+
+function stored(userId: string): Record<string, unknown> {
+  const row = h.db.rows('tradecraftUserSettings', { userId })[0]
+  return (row?.ingestion ?? {}) as Record<string, unknown>
+}
+
+beforeEach(() => {
+  h.db = createTradecraftDb()
+})
+
+describe('readIngestionSettings', () => {
+  test('get_values_changed_defaults: defaults without a row, then the saved value marked changed', async () => {
+    const empty = await readIngestionSettings('u1')
+    expect(empty.changed).toEqual([])
+    expect(empty.values['crawl.maxPages']).toBe(200)
+    expect(empty.defaults['crawl.maxPages']).toBe(200)
+    h.db.seed('tradecraftUserSettings', { userId: 'u1', ingestion: { 'crawl.maxPages': 50 } })
+    const saved = await readIngestionSettings('u1')
+    expect(saved.values['crawl.maxPages']).toBe(50)
+    expect(saved.defaults['crawl.maxPages']).toBe(200)
+    expect(saved.changed).toEqual(['crawl.maxPages'])
+  })
+
+  test('answers every ingestion setting a person may set and no resource-only or search key', async () => {
+    const r = await readIngestionSettings('u1')
+    const expected = SETTINGS.filter(s => s.scope === 'ingestion' && s.level !== 'resource').map(s => s.key).sort()
+    expect(Object.keys(r.values).sort()).toEqual(expected)
+    expect(Object.keys(r.defaults).sort()).toEqual(expected)
+    expect(r.values['content.bodySelector']).toBeUndefined()
+    expect(r.values['search.results']).toBeUndefined()
+  })
+
+  test('a stored value outside the ceiling reads clamped, and one of the wrong type reads as the default', async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'u1', ingestion: { 'crawl.maxPages': 99999, 'crawl.parallel': 'many' } })
+    const r = await readIngestionSettings('u1')
+    expect(r.values['crawl.maxPages']).toBe(500)
+    expect(r.values['crawl.parallel']).toBe(1)
+    expect(r.changed).toEqual(['crawl.maxPages'])
+  })
+})
+
+describe('saveIngestionSettings', () => {
+  test('put_stores_only_changed: only the keys sent, and nothing else of the spec', async () => {
+    const r = await saveIngestionSettings('u1', { 'crawl.maxPages': 120, 'fetching.userAgent': 'Probe/1.0' })
+    expect(r.ok).toBe(true)
+    expect(stored('u1')).toEqual({ 'crawl.maxPages': 120, 'fetching.userAgent': 'Probe/1.0' })
+    await saveIngestionSettings('u1', { 'summary.titles': 10 })
+    expect(stored('u1')).toEqual({ 'crawl.maxPages': 120, 'fetching.userAgent': 'Probe/1.0', 'summary.titles': 10 })
+  })
+
+  test('put_default_removes_key: a value equal to the default removes the key (a list too)', async () => {
+    await saveIngestionSettings('u1', { 'crawl.maxPages': 120, 'crawl.excludePaths': ['login'] })
+    const def = ingestionDefaults()['crawl.excludePaths']
+    await saveIngestionSettings('u1', { 'crawl.maxPages': 200, 'crawl.excludePaths': def })
+    expect(stored('u1')).toEqual({})
+    expect((await readIngestionSettings('u1')).changed).toEqual([])
+  })
+
+  test('refuses_out_of_range: every bad key named with its range, nothing written', async () => {
+    await saveIngestionSettings('u1', { 'crawl.maxPages': 120 })
+    const r = await saveIngestionSettings('u1', { 'crawl.maxPages': 501, 'crawl.parallel': 0, 'summary.titles': 10 })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.errors.map(e => e.key).sort()).toEqual(['crawl.maxPages', 'crawl.parallel'])
+    expect(r.errors.find(e => e.key === 'crawl.maxPages')!.message).toBe('crawl.maxPages must be an integer from 1 to 500')
+    expect(stored('u1')).toEqual({ 'crawl.maxPages': 120 })
+  })
+
+  test('user_only_keys_accepted: a user-only setting is saved', async () => {
+    const r = await saveIngestionSettings('u1', { 'storage.userQuotaMb': 2048, 'detection.enabledDetectors': ['github'] })
+    expect(r.ok).toBe(true)
+    expect(stored('u1')).toEqual({ 'storage.userQuotaMb': 2048, 'detection.enabledDetectors': ['github'] })
+  })
+
+  test('resource_only_keys_refused: a resource-only key, a search key and an unknown key are refused', async () => {
+    const r = await saveIngestionSettings('u1', { 'content.bodySelector': 'main', 'search.results': 5, 'nope.key': 1 })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(Object.fromEntries(r.errors.map(e => [e.key, e.code]))).toEqual({
+      'content.bodySelector': 'resource_only', 'search.results': 'wrong_scope', 'nope.key': 'unknown_key',
+    })
+    expect(h.db.rows('tradecraftUserSettings')).toEqual([])
+  })
+
+  test('keeps the switch, the search settings and a stored key the spec does not know', async () => {
+    h.db.seed('tradecraftUserSettings', {
+      userId: 'u1', v2Enabled: true, search: { 'search.results': 5 }, ingestion: { 'future.key': 7 },
+    })
+    await saveIngestionSettings('u1', { 'crawl.maxPages': 9 })
+    const row = h.db.rows('tradecraftUserSettings', { userId: 'u1' })[0]
+    expect(row.v2Enabled).toBe(true)
+    expect(row.search).toEqual({ 'search.results': 5 })
+    expect(row.ingestion).toEqual({ 'future.key': 7, 'crawl.maxPages': 9 })
+  })
+
+  test('takes the account row lock before it reads, inside one transaction', async () => {
+    await saveIngestionSettings('u1', { 'crawl.maxPages': 9 })
+    expect(h.db.raw.map(r => r.sql)).toEqual(['SELECT pg_advisory_xact_lock(hashtext($1))'])
+    expect(h.db.raw[0].values).toEqual(['tradecraft_user_settings:u1'])
+    const lockAt = h.db.calls.indexOf('$raw')
+    expect(lockAt).toBeLessThan(h.db.calls.indexOf('tradecraftUserSettings.findUnique'))
+  })
+
+  test('an empty object changes nothing and is not an error', async () => {
+    const r = await saveIngestionSettings('u1', {})
+    expect(r.ok).toBe(true)
+    expect(stored('u1')).toEqual({})
+  })
+})
+
+describe('resetIngestionSettings', () => {
+  test('reset_section: only that section goes back to its defaults', async () => {
+    await saveIngestionSettings('u1', { 'crawl.maxPages': 9, 'crawl.parallel': 4, 'summary.titles': 10 })
+    const r = await resetIngestionSettings('u1', 'crawl')
+    expect(r.ok).toBe(true)
+    expect(stored('u1')).toEqual({ 'summary.titles': 10 })
+  })
+
+  test('reset_all: every value goes back to its default', async () => {
+    await saveIngestionSettings('u1', { 'crawl.maxPages': 9, 'summary.titles': 10 })
+    await resetIngestionSettings('u1', 'all')
+    expect(stored('u1')).toEqual({})
+    expect((await readIngestionSettings('u1')).values['crawl.maxPages']).toBe(200)
+  })
+
+  test('an unknown section, a resource-only section or a search section is refused', async () => {
+    for (const section of ['nope', 'siteType', 'content', 'search', '']) {
+      expect((await resetIngestionSettings('u1', section)).ok).toBe(false)
+    }
+  })
+
+  test('the sections a person may reset are the ingestion sections that hold a user setting', () => {
+    expect(INGESTION_SECTIONS).toEqual(['fetching', 'detection', 'knownTypes', 'crawl', 'storage', 'summary', 'refreshing', 'focus'])
+  })
+})
+
+test('isolated (AC-04): one account saving or resetting never changes another account', async () => {
+  await saveIngestionSettings('u2', { 'crawl.maxPages': 77 })
+  await saveIngestionSettings('u1', { 'crawl.maxPages': 9, 'summary.titles': 10 })
+  await resetIngestionSettings('u1', 'all')
+  expect(stored('u2')).toEqual({ 'crawl.maxPages': 77 })
+  expect((await readIngestionSettings('u2')).values['crawl.maxPages']).toBe(77)
+  expect((await readIngestionSettings('u1')).values['crawl.maxPages']).toBe(200)
+})
