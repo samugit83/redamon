@@ -189,7 +189,7 @@ def test_cut_on_a_character_boundary():
 ])
 def test_a_refresh_that_loses_most_page_downloads_has_failed(downloads, failures, expected):
     """Finding B: more than half of the downloads failed: the refresh failed (the threshold is
-    assumption 48 in progress_log.md)."""
+    assumption 41 in progress_log.md)."""
     st = state_for([])
     st.store_downloads, st.store_download_failures = downloads, failures
     assert storage.failure_code(st) == expected
