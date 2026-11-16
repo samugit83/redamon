@@ -178,7 +178,7 @@ class JobRunner:
             code = "queue_full"
         if code:
             # The job is ours now: close it and release the claim rather than leave it to its lease.
-            await self.store.set_last_error(user, job.resource_id, job.job_id, code, self._now())
+            await self.store.set_error_without_fetch(user, job.resource_id, job.job_id, code, self._now())
             await self.store.finish_job(user, job.job_id, "failed", code)
             logger.info(f"[tradecraft] job {job.job_id} failed code={code}")
             return code

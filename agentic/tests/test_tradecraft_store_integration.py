@@ -479,10 +479,26 @@ async def test_a_job_that_ends_without_a_swap_leaves_a_1x_error_state(env):
         "SELECT id, last_error, last_verified_at FROM user_tradecraft_resources WHERE id = ANY(%s)", [fresh, verified])}
     assert rows[fresh]["last_error"] == "cancelled" and rows[fresh]["last_verified_at"] is not None
     assert rows[verified]["last_error"] == "" and rows[verified]["last_verified_at"] == before
-    # Boot recovery: the released resource carries the error and the time.
-    lost = await env.resource(uid, url=URL + "lost/")
-    await env.job(uid, lost, lease_until=None)
+    # Never reached the site (a refused start, a boot recovery): the error, and a time only on a
+    # resource never verified; a verified one keeps the time of its last real verify.
+    first = await env.resource(uid, url=URL + "first/")
+    jfirst = await env.job(uid, first)
+    assert await s.set_error_without_fetch(uid, first, jfirst, "queue_full", when)
+    good = await env.resource(uid, url=URL + "good/")
+    await env.sql("UPDATE user_tradecraft_resources SET last_verified_at = %s WHERE id = %s", before, good)
+    jgood = await env.job(uid, good)
+    assert await s.set_error_without_fetch(uid, good, jgood, "queue_full", when)
+    lost_new = await env.resource(uid, url=URL + "lost-new/")
+    await env.job(uid, lost_new, lease_until=None)
+    lost_good = await env.resource(uid, url=URL + "lost-good/")
+    await env.sql("UPDATE user_tradecraft_resources SET last_verified_at = %s WHERE id = %s", before, lost_good)
+    await env.job(uid, lost_good, lease_until=None)
     await s.fail_expired_leases(datetime.now(timezone.utc))
-    row = (await env.sql("SELECT last_error, last_verified_at, active_job_id FROM user_tradecraft_resources "
-                         "WHERE id = %s", lost))[0]
-    assert row["last_error"] == "agent_restarted" and row["last_verified_at"] is not None and row["active_job_id"] is None
+    rows = {r["id"]: r for r in await env.sql(
+        "SELECT id, last_error, last_verified_at, active_job_id FROM user_tradecraft_resources WHERE id = ANY(%s)",
+        [first, good, lost_new, lost_good])}
+    assert rows[first]["last_error"] == "queue_full" and rows[first]["last_verified_at"] == when.replace(tzinfo=None)
+    assert rows[good]["last_error"] == "queue_full" and rows[good]["last_verified_at"] == before
+    assert rows[lost_new]["last_error"] == "agent_restarted" and rows[lost_new]["last_verified_at"] is not None
+    assert rows[lost_good]["last_error"] == "agent_restarted" and rows[lost_good]["last_verified_at"] == before
+    assert rows[lost_new]["active_job_id"] is None and rows[lost_good]["active_job_id"] is None

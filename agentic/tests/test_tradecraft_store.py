@@ -178,8 +178,12 @@ def test_a_job_ended_without_a_swap_records_the_1x_error_state():
     assert "last_error = %(code)s, last_verified_at = %(at)s" in STATEMENTS["set_last_error"]
     never = STATEMENTS["set_error_if_never_verified"]
     assert "last_error = %(code)s, last_verified_at = %(at)s" in never and never.endswith("AND last_verified_at IS NULL")
+    # A job that never reached the site keeps the time of the last real verify (1.x's rule
+    # when its agent call fails) and sets one only on a resource never verified.
+    assert "last_error = %(code)s, last_verified_at = COALESCE(last_verified_at, %(at)s)" in \
+        STATEMENTS["set_error_without_fetch"]
     released = STATEMENTS["expired_jobs"].split("released AS")[1]
-    assert "active_job_id = NULL, last_error = %(code)s, last_verified_at = %(now)s" in released
+    assert "active_job_id = NULL, last_error = %(code)s, last_verified_at = COALESCE(r.last_verified_at, %(now)s)" in released
 
 
 # --------------------------------------------------------------------------------------
@@ -464,6 +468,7 @@ def test_every_method_sends_only_keyed_statements():
         await s.legacy_sitemap("u1", "r1")
         await s.set_last_error("u1", "r1", "j", "fetch_failed", WHEN)
         await s.set_error_if_never_verified("u1", "r1", "j", "cancelled", WHEN)
+        await s.set_error_without_fetch("u1", "r1", "j", "queue_full", WHEN)
         await s.swap("u1", "r1", "job-1", 2, "https://wiki.tc-fixture.test/", "stored", {"summary": "x"})
         await s.allocate_page_ids("u1", "r1", ["u"])
         await s.write_entries("u1", "r1", 2, [{"page_id": 1, "url": "u"}])

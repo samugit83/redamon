@@ -663,9 +663,15 @@ def test_a_failed_job_records_the_1x_error_state():
     assert r["sitemap"] == {"nav": []} and r["active_job_id"] is None
 
 
-def test_a_refused_start_records_the_1x_error_state():
+@pytest.mark.parametrize("verified_before", [False, True])
+def test_a_refused_start_records_the_1x_error_state(verified_before):
+    """The agent never reached the site: the error, and a verify time only for a resource never
+    verified (1.x keeps lastVerifiedAt when its agent call fails)."""
     store, clock = MemoryStore(), SteppedClock()
+    earlier = datetime(2026, 11, 1, tzinfo=timezone.utc)
     batch = seed(store, job("loopy", model="loop/claude-code"))
+    if verified_before:
+        store.resources["r-loopy"]["last_verified_at"] = earlier
 
     async def go():
         runner = runner_with(store, Gate(), clock=clock)
@@ -674,7 +680,8 @@ def test_a_refused_start_records_the_1x_error_state():
 
     run(go())
     r = store.resources["r-loopy"]
-    assert r["last_error"] == "loop_model_not_supported_here" and r["last_verified_at"] == clock.now()
+    assert r["last_error"] == "loop_model_not_supported_here"
+    assert r["last_verified_at"] == (earlier if verified_before else clock.now())
 
 
 @pytest.mark.parametrize("verified_before", [False, True])
@@ -709,13 +716,16 @@ def test_a_cancelled_job_marks_only_a_resource_never_verified(verified_before):
         assert r["active_job_id"] is None
 
 
-def test_a_job_recovered_at_boot_records_the_1x_error_state():
-    """The boot recovery (code agent_restarted) marks each resource whose claim it releases."""
+@pytest.mark.parametrize("verified_before", [False, True])
+def test_a_job_recovered_at_boot_records_the_1x_error_state(verified_before):
+    """The boot recovery (code agent_restarted) marks each resource whose claim it releases:
+    nothing was verified, so a verified resource keeps the time of its last real verify."""
     store, clock = MemoryStore(), SteppedClock()
-    store.add_resource("u1", "r-lost")
+    earlier = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    store.add_resource("u1", "r-lost", last_verified_at=earlier if verified_before else None)
     store.add_job("u1", "r-lost", "lost-job", lease_until=None)
     runner = runner_with(store, Gate(), clock=clock)
     assert run(runner.recover()) == 1
     r = store.resources["r-lost"]
-    assert r["last_error"] == "agent_restarted" and r["last_verified_at"] == clock.now()
-    assert r["active_job_id"] is None
+    assert r["last_error"] == "agent_restarted" and r["active_job_id"] is None
+    assert r["last_verified_at"] == (earlier if verified_before else clock.now())

@@ -170,7 +170,8 @@ class MemoryStore:
                 j.update(status="failed", error_code=error_code, lease_until=None)
                 r = self.resources.get(j["resource_id"])
                 if r and r["active_job_id"] == j["id"]:
-                    r.update(active_job_id=None, last_error=error_code, last_verified_at=now)
+                    r.update(active_job_id=None, last_error=error_code,
+                             last_verified_at=r.get("last_verified_at") or now)
                 out.append({"id": j["id"], "user_id": j["user_id"], "resource_id": j["resource_id"],
                             "target_generation": j["target_generation"]})
         return out
@@ -203,6 +204,14 @@ class MemoryStore:
         r = self._res(user_id, resource_id)
         if r and r["active_job_id"] == job_id:
             r.update(last_error=code, last_verified_at=at)
+            return True
+        return False
+
+    async def set_error_without_fetch(self, user_id, resource_id, job_id, code, at):
+        self._log("set_error_without_fetch", user_id, resource_id, job_id, code)
+        r = self._res(user_id, resource_id)
+        if r and r["active_job_id"] == job_id:
+            r.update(last_error=code, last_verified_at=r.get("last_verified_at") or at)
             return True
         return False
 

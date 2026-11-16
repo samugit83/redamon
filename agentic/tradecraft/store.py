@@ -166,7 +166,8 @@ STATEMENTS: dict[str, str] = {
         f"failed AS (UPDATE {J} j SET status = 'failed', error_code = %(code)s, finished_at = now(), "
         f"lease_until = NULL, updated_at = now() FROM expired x WHERE j.id = x.id AND j.user_id = x.user_id "
         f"RETURNING j.id, j.user_id, j.resource_id, j.target_generation), "
-        f"released AS (UPDATE {R} r SET active_job_id = NULL, last_error = %(code)s, last_verified_at = %(now)s, "
+        f"released AS (UPDATE {R} r SET active_job_id = NULL, last_error = %(code)s, "
+        f"last_verified_at = COALESCE(r.last_verified_at, %(now)s), "
         f"updated_at = now() FROM failed f "
         f"WHERE r.id = f.resource_id AND r.user_id = f.user_id AND r.active_job_id = f.id RETURNING r.id) "
         f"SELECT id, user_id, resource_id, target_generation FROM failed ORDER BY id"
@@ -191,6 +192,13 @@ STATEMENTS: dict[str, str] = {
     "set_last_error": (
         f"UPDATE {R} SET last_error = %(code)s, last_verified_at = %(at)s, updated_at = now() "
         f"WHERE id = %(rid)s AND user_id = %(uid)s AND active_job_id = %(job)s"
+    ),
+    # A job that never reached the site (a refused start): 1.x writes only the error and keeps
+    # the time of the last real verify, setting one only so a never-verified card is not
+    # "verifying..." for ever.
+    "set_error_without_fetch": (
+        f"UPDATE {R} SET last_error = %(code)s, last_verified_at = COALESCE(last_verified_at, %(at)s), "
+        f"updated_at = now() WHERE id = %(rid)s AND user_id = %(uid)s AND active_job_id = %(job)s"
     ),
     "set_error_if_never_verified": (
         f"UPDATE {R} SET last_error = %(code)s, last_verified_at = %(at)s, updated_at = now() "
@@ -440,8 +448,9 @@ class Store:
 
     async def fail_expired_leases(self, now: datetime, error_code: str = "agent_restarted") -> list[dict]:
         """Fails every queued or running job whose lease expired (no lease counts as expired)
-        and releases their claims, recording the error and ``now`` on the 1.x columns of each
-        resource it releases; returns the jobs (id, user_id, resource_id, target_generation)."""
+        and releases their claims, recording the error on the 1.x columns of each resource it
+        releases (``last_verified_at`` only where it is empty: nothing was verified); returns the
+        jobs (id, user_id, resource_id, target_generation)."""
         return await self._all("expired_jobs", {"now": now, "code": error_code})
 
     async def begin_generation(self, user_id: str, resource_id: str, job_id: str) -> Optional[int]:
@@ -467,6 +476,13 @@ class Store:
         ``last_verified_at`` together (only while the claim names the job)."""
         return await self._count("set_last_error", {"uid": user_id, "rid": resource_id, "job": job_id,
                                                     "code": code, "at": at}) == 1
+
+    async def set_error_without_fetch(self, user_id: str, resource_id: str, job_id: str, code: str,
+                                      at: datetime) -> bool:
+        """The end of a job that never reached the site: ``last_error``, and ``last_verified_at``
+        only when the resource was never verified (as 1.x when its agent call fails)."""
+        return await self._count("set_error_without_fetch", {"uid": user_id, "rid": resource_id, "job": job_id,
+                                                             "code": code, "at": at}) == 1
 
     async def set_error_if_never_verified(self, user_id: str, resource_id: str, job_id: str, code: str,
                                           at: datetime) -> bool:
