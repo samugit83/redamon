@@ -32,7 +32,7 @@ import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { myAccessView, type ProjectAccess } from '@/lib/authz/projectAccess'
 import { rbacFlags } from '@/lib/authz/flags'
 import { classifyChange, riskSelect, settingsRefusal } from '@/lib/authz/settingsRisk'
-import { parseTradecraftOff, writeProjectChoices } from '@/lib/tradecraft/projectChoices'
+import { offIdsForProject, parseTradecraftOff, writeProjectChoices } from '@/lib/tradecraft/projectChoices'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -624,6 +624,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     updateData.updatedById = eff.userId
     let project
     let tradecraftAfter: string[] | null = null
+    let tradecraftBefore: string[] | null = null
     if (tradecraftOff) {
       // The owner from the access the guard answered: the ids must name the owner's resources.
       const written = await prisma.$transaction(async (tx) => {
@@ -633,19 +634,21 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         } else {
           await tx.project.update({ where: { id }, data: updateData })
         }
+        const was = await offIdsForProject(tx, id)
         const off = await writeProjectChoices(tx, {
           projectId: id,
           ownerId: auth.access!.project.userId,
           off: tradecraftOff,
           viewer: { personId: eff.userId, actorId: auth.actingAs ? auth.principal.id : null },
         })
-        return { off, row: await tx.project.findUnique({ where: { id } }) }
+        return { was, off, row: await tx.project.findUnique({ where: { id } }) }
       })
       if (!written) return NextResponse.json({ error: STALE_SAVE_MESSAGE, code: 'stale_save' }, { status: 409 })
       stage = 'after_write'
       if (!written.row) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
       project = written.row
       tradecraftAfter = written.off
+      tradecraftBefore = written.was
     } else if (expectedVersion) {
       const { count } = await prisma.project.updateMany({
         where: { id, updatedAt: expectedVersion },
@@ -675,6 +678,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const changed = Object.keys(updateData).filter(k =>
       k !== 'updatedById' && !(regroupOnly && k === 'domainBatchGroups')
       && comparable(before[k]) !== comparable((project as Record<string, unknown>)[k]))
+    // The tradecraft switches are no column, but a change of them is the save's as a skill switch is.
+    const tradecraftChanged = tradecraftBefore !== null && tradecraftAfter !== null
+      && comparable(tradecraftBefore) !== comparable(tradecraftAfter)
+    if (tradecraftChanged) {
+      changed.push('tradecraftOff')
+      before.tradecraftOff = tradecraftBefore
+    }
+    const savedValue = (k: string) => (k === 'tradecraftOff' ? tradecraftAfter : (project as Record<string, unknown>)[k])
     if (changed.length > 0) {
       const valued = changed.filter(auditsValue)
       void writeAudit({
@@ -687,7 +698,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         before: Object.fromEntries(valued.map(k => [k, before[k] ?? null])),
         after: {
           changed,
-          values: Object.fromEntries(valued.map(k => [k, (project as Record<string, unknown>)[k] ?? null])),
+          values: Object.fromEntries(valued.map(k => [k, savedValue(k) ?? null])),
         },
         source: 'ui',
       })

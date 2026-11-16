@@ -45,6 +45,7 @@ vi.mock('@/lib/authz/guards', async () => ({
 import { createFakePrisma, type FakePrisma } from '@/lib/plugins/__testing__/fakePrisma'
 import { createTradecraftDb, type TradecraftDb } from '@/lib/tradecraft/__testing__/tradecraftDb'
 import { GET, PUT } from './route'
+import { writeAudit } from '@/lib/audit'
 
 const OWNER = 'owner-1'
 const P = 'proj-1'
@@ -248,5 +249,19 @@ describe('PUT saves the switches with the project', () => {
     expect((await res.json()).code).toBe('invalid_tradecraft_off')
     expect(project().name).toBe('p')
     expect(off()).toEqual(['r2'])
+  })
+
+  test('a change of the switches is in the save\'s audit row, before and after; an unchanged list is not', async () => {
+    vi.mocked(writeAudit).mockClear()
+    await put({ tradecraftOff: ['r1'] })
+    expect(writeAudit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'project.update',
+      before: expect.objectContaining({ tradecraftOff: ['r2'] }),
+      after: expect.objectContaining({ changed: expect.arrayContaining(['tradecraftOff']), values: expect.objectContaining({ tradecraftOff: ['r1'] }) }),
+    }))
+    vi.mocked(writeAudit).mockClear()
+    await put({ tradecraftOff: ['r1'] })
+    const rows = vi.mocked(writeAudit).mock.calls.map(c => c[0] as { after: { changed: string[] } })
+    expect(rows.every(r => !r.after.changed.includes('tradecraftOff'))).toBe(true)
   })
 })
