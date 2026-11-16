@@ -86,6 +86,7 @@ def client(monkeypatch):
     # A route that fetches (Check URL since T4.1) reads the fixture sites, never the network:
     # the TestClient runs the app in its own thread, so the double is the variable's default.
     monkeypatch.setattr(net, "_current", contextvars.ContextVar("tradecraft_fetcher", default=FixtureFetcher()))
+    monkeypatch.setattr(jobs, "default_fetcher", FixtureFetcher)
     monkeypatch.setenv("INTERNAL_API_KEY", MASTER)
     monkeypatch.setenv("SCANNER_API_KEY", SCANNER)
     runner = FakeRunner()

@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tradecraft import check_url as cu  # noqa: E402
-from tradecraft import contract, net  # noqa: E402
+from tradecraft import contract, jobs, net  # noqa: E402
 from tradecraft.contract import CheckUrlRequest, CheckUrlResult  # noqa: E402
 from tradecraft_doubles import FixtureFetcher, ScriptedChatModel, run  # noqa: E402
 from tradecraft_memory_store import padded_sites  # noqa: E402
@@ -304,7 +304,58 @@ def test_deadline(sites, monkeypatch):
 
     monkeypatch.setitem(contract.DEADLINES_SEC, "check_url", 0.05)
     assert api.DEADLINES_SEC is contract.DEADLINES_SEC
-    with net.use_fetcher(Hanging(sites)):
-        answer = run(api.check_url(req(WIKI)))
+    monkeypatch.setattr(jobs, "default_fetcher", lambda: Hanging(sites))
+    answer = run(api.check_url(req(WIKI)))
     assert answer == {**CheckUrlResult(ok=False, error_code="timeout").model_dump()}
     assert contract.DEADLINES_SEC["check_url"] == 0.05
+
+
+class _NoFetcher:
+    """The context's default fetcher in the route tests: a route that reads it fails loudly."""
+
+    async def get(self, url, **kw):
+        raise AssertionError("the route used the context's default fetcher")
+
+    async def render(self, url, **kw):
+        raise AssertionError("the route used the context's default fetcher")
+
+
+def test_the_route_reads_with_a_browser(sites, monkeypatch):
+    """Review finding 1: the route binds the jobs' fetcher, whose browser goes through the
+    agent's MCP manager; net's module default has no browser at all."""
+    import contextvars
+
+    from tradecraft import api
+
+    js = BLOG + "posts/42-js-only/"
+    used = []
+
+    def route_fetcher():
+        used.append(FixtureFetcher(sites))
+        return used[-1]
+
+    monkeypatch.setattr(net, "_current", contextvars.ContextVar("tradecraft_fetcher", default=_NoFetcher()))
+    monkeypatch.setattr(jobs, "default_fetcher", route_fetcher)
+    answer = run(api.check_url(req(js, settings={"fetching.alwaysBrowser": True})))
+    assert answer["ok"] is True and answer["needs_browser"] is True
+    assert len(used) == 1 and used[0].browser.renders == [js] and used[0].requests  # robots.txt, plain GETs
+    detected = run(api.check_url(req(js)))
+    assert detected["ok"] is True and used[1].browser.renders == [js]
+
+
+def test_the_jobs_fetcher_renders_through_the_agents_browser(monkeypatch):
+    """The fetcher the route and the jobs bind holds the agent's MCP manager: its render runs
+    the guarded script in the sandbox (net's module default answers browser_unavailable)."""
+    import types
+    from unittest.mock import patch
+
+    from orchestrator_helpers import fetch_guard
+    from tradecraft_doubles import RecordingMcp
+
+    mcp = RecordingMcp(reply="<html><body>rendered by the sandbox</body></html>")
+    monkeypatch.setitem(sys.modules, "api", types.SimpleNamespace(orchestrator=types.SimpleNamespace(_mcp_manager=mcp)))
+    with patch.object(fetch_guard, "_resolve_ips", lambda _host: ["93.184.216.34"]):
+        rendered = run(jobs.default_fetcher().render(WIKI, clean=True))
+        default = run(net.GuardedFetcher().render(WIKI))
+    assert rendered.error == "" and "rendered by the sandbox" in rendered.html and len(mcp.calls) == 1
+    assert default.error == "browser_unavailable"

@@ -25,7 +25,7 @@ from llm_guard import _enforce_llm_limits, require_configured_master_auth, requi
 from logging_config import get_logger
 from tradecraft import check_url as check_url_mod
 from tradecraft import convert as convert_mod
-from tradecraft import jobs
+from tradecraft import jobs, net
 from tradecraft import preview as preview_mod
 from tradecraft import read_now as read_now_mod
 from tradecraft import settings as tc_settings
@@ -116,8 +116,13 @@ async def _within_deadline(name: str, call: Callable[[], Awaitable[Any]], on_tim
 
 @router.post("/check-url", dependencies=[Depends(require_internal_auth)])
 async def check_url(body: CheckUrlRequest) -> Any:
-    return await _within_deadline("check_url", lambda: check_url_mod.check_url(body),
-                                  lambda: CheckUrlResult(ok=False, error_code="timeout"))
+    async def call() -> CheckUrlResult:
+        # The jobs' fetcher, so the browser tier works here too (a JavaScript site, "always
+        # use the browser", "wait for element", a GitBook's rendered menu).
+        with net.use_fetcher(jobs.default_fetcher()):
+            return await check_url_mod.check_url(body)
+
+    return await _within_deadline("check_url", call, lambda: CheckUrlResult(ok=False, error_code="timeout"))
 
 
 @router.post("/preview-focus", dependencies=[Depends(require_internal_auth)])

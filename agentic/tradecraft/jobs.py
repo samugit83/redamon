@@ -79,7 +79,10 @@ def _agent_mcp_manager() -> Any:
     return getattr(getattr(agent_api, "orchestrator", None), "_mcp_manager", None)
 
 
-def _default_fetcher() -> net.Fetcher:
+def default_fetcher() -> net.Fetcher:
+    """The fetcher the agent's jobs and synchronous tradecraft routes use: the address guard
+    on every hop, and the sandbox browser through the agent's own MCP manager (net's module
+    default has none, so its every render would answer browser_unavailable)."""
     return net.GuardedFetcher(_agent_mcp_manager())
 
 
@@ -101,7 +104,7 @@ class JobRunner:
         self._entry = entry
         self._regenerate = regenerate
         self._clock = clock
-        self._fetcher_factory = fetcher_factory or _default_fetcher
+        self._fetcher_factory = fetcher_factory or default_fetcher
         self.max_running = max_running or tc_settings.constant("jobsPerAgent")
         self.lease_sec = tc_settings.constant("jobLeaseSec")
         self.renew_sec = tc_settings.constant("jobLeaseRenewSec")
