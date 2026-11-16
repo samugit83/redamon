@@ -215,6 +215,11 @@ def test_db_timeout_no_map(monkeypatch, caplog):
 
     threading.Thread(target=hold, daemon=True).start()
     port = server.getsockname()[1]
+    # A first binding with no database configured answers at once and does the binding's first
+    # imports, which take seconds on a loaded host: the timed binding measures the connection.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with mock.patch("prompts.tool_registry.swap_tradecraft_v2_entries"):
+        contextvars.Context().run(runtime.bind_run_catalog, catalog(2).model_dump())
     monkeypatch.setenv("DATABASE_URL", f"postgresql://u:p@127.0.0.1:{port}/x")
     try:
         started = time.monotonic()
@@ -229,7 +234,7 @@ def test_db_timeout_no_map(monkeypatch, caplog):
     assert bound_ok and elapsed < coverage.CONNECT_TIMEOUT_SEC + 3
     entries = swap.call_args[0][0]
     assert "What the library holds" not in entries["tradecraft_lookup"]["description"]
-    assert "[tradecraft] coverage code=" in caplog.text
+    assert "[tradecraft] coverage code=timeout" in caplog.text
 
 
 def test_computed_at_the_binding_only(monkeypatch):

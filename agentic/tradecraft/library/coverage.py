@@ -61,7 +61,7 @@ def _error_code(exc: BaseException) -> str:
 
     if isinstance(exc, db.StoreUnavailable):
         return "store_unavailable"
-    if isinstance(exc, psycopg.errors.QueryCanceled):
+    if isinstance(exc, (psycopg.errors.QueryCanceled, psycopg.errors.ConnectionTimeout)):
         return "timeout"
     if isinstance(exc, psycopg.OperationalError):
         return "unreachable"
