@@ -31,6 +31,7 @@ services:
         node scripts/db-push-locked.mjs db push --accept-data-loss || exit 1
         node scripts/apply-ingest-role.mjs
         node scripts/apply-traffic-fts.mjs
+        node scripts/apply-tradecraft-search.mjs
         node scripts/apply-engagement-immutability.mjs
         node scripts/apply-plugin-constraints.mjs || echo "[plugins] constraint script failed"
         node scripts/clamp-triage-review-budget.mjs

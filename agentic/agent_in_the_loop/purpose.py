@@ -10,9 +10,12 @@ from typing import Iterator
 
 from agent_context import current_llm_purpose
 
+# tradecraft_ingest and tradecraft_librarian label calls that refuse a loop model (their
+# builders call refuse_loop_model), so no driver ever sees them: they name the calls in
+# logs and the daily budget only, and the driver guide and CONTRACT_VERSION stay as they are.
 PURPOSES = (
     "think", "deep_think", "lats_expand", "fireteam_member", "classify",
-    "scope_guardrail", "cypher", "report", "other",
+    "scope_guardrail", "cypher", "report", "tradecraft_ingest", "tradecraft_librarian", "other",
 )
 
 ANSWER_FORMAT = {
@@ -24,6 +27,8 @@ ANSWER_FORMAT = {
     "scope_guardrail": "json",
     "cypher": "cypher",
     "report": "markdown",
+    "tradecraft_ingest": "json",
+    "tradecraft_librarian": "json",
     "other": "text",
 }
 

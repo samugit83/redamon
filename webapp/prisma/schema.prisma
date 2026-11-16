@@ -8,11 +8,15 @@ generator client {
   // (Ubuntu 24.04 host, node:22-slim image); the explicit entry pins it so a
   // generate from either side produces an engine the other can load.
   binaryTargets = ["native", "debian-openssl-3.0.x"]
+  // `extensions` below needs it: the Tradecraft trigram indexes use pg_trgm's
+  // gin_trgm_ops, and a fresh install's first push fails without the extension.
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pg_trgm]
 }
 
 model User {
@@ -31,6 +35,9 @@ model User {
   muteRulesPresets UserMuteRulesPreset[]
   tradecraftResources UserTradecraftResource[]
   tradecraftSettings  TradecraftUserSettings?
+  // Tradecraft 2.0: the account's ingestion jobs and its page store go with it (§7.1).
+  tradecraftJobs      TradecraftIngestionJob[]
+  tradecraftEntries   TradecraftEntry[]
   mcpTokens       McpAccessToken[]
   settings        UserSettings?
   apiUsageReport  ApiUsageReport?
@@ -1656,7 +1663,7 @@ model Project {
   deserializationPharEnabled            Boolean  @default(false) @map("deserialization_phar_enabled")
 
   // ========== ATTACK SKILL CONFIG ==========
-  attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":false,\"phishing_social_engineering\":false,\"denial_of_service\":false,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}") @map("attack_skill_config")
+  attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":false,\"brute_force_credential_guess\":false,\"phishing_social_engineering\":false,\"denial_of_service\":false,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}") @map("attack_skill_config")
 
   // ========== CYPHERFIX SETTINGS ==========
   cypherfixGithubToken              String   @default("") @map("cypherfix_github_token")
@@ -1831,6 +1838,9 @@ model Project {
   // AI Navigator: each person's private conversations here, and the owner's collaborator toggle.
   navigatorThreads                  NavigatorThread[]
   navigatorPolicy                   NavigatorProjectPolicy?
+  // The owner's tradecraft resources turned off in this project (Tradecraft 2.0, §3.4): a
+  // relation, so the settings form's whole-row PUT never sees it.
+  tradecraftChoices                 TradecraftProjectChoice[]
 
   @@index([jevProviderId])
   @@map("projects")
@@ -3048,10 +3058,241 @@ model UserTradecraftResource {
   createdAt            DateTime @default(now()) @map("created_at")
   updatedAt            DateTime @updatedAt @map("updated_at")
 
+  // Tradecraft 2.0 (phase 1 "Data model"). Every column has a default, so an existing row
+  // reads as a 1.x resource, Live, nothing changed; the 1.x columns above stay current
+  // (2.0 also writes them) so switching off or downgrading keeps working maps (TD-18).
+  storageMode          String   @default("live") @map("storage_mode")
+  // "" = Auto (detected); otherwise one of the type names of resourceType, or "pdf".
+  forcedType           String   @default("") @map("forced_type")
+  // Setting overrides keyed by settingsSpec.json key; list-mode keys hold { mode, items }.
+  overrides            Json     @default("{}")
+  typeOptions          Json     @default("{}") @map("type_options")
+  focus                Json     @default("{}")
+  // Cookies, headers and basic auth: masked in every answer like githubTokenOverride, sent
+  // only to the agent with the internal key; hasLogin is rewritten with every write of it.
+  credentials          Json     @default("{}")
+  hasLogin             Boolean  @default(false) @map("has_login")
+  summarySource        String   @default("generated") @map("summary_source")
+  summaryLocked        Boolean  @default(false) @map("summary_locked")
+  // The effective settings the live generation was ingested with (values and provenance),
+  // and their hash: a different hash today shows the stale badge.
+  settingsSnapshot     Json     @default("{}") @map("settings_snapshot")
+  settingsHash         String   @default("") @map("settings_hash")
+  ingestionReport      Json     @default("{}") @map("ingestion_report")
+  // 1 = only the 1.x `sitemap`; 2 = converted from 1.x; 3 = ingested by 2.0.
+  mapVersion           Int      @default(1) @map("map_version")
+  legacyMapHash        String   @default("") @map("legacy_map_hash")
+  // Which generation of tradecraft_entries is live; a refresh writes n+1 and swaps it in.
+  generation           Int      @default(0)
+  // The claim: the one unfinished job of this resource. A plain id, no foreign key, so a
+  // finished or failed job never blocks; a claim whose job's lease expired is taken over.
+  activeJobId          String?  @map("active_job_id")
+  priority             String   @default("normal")
+  presetKey            String   @default("") @map("preset_key")
+
+  jobs                 TradecraftIngestionJob[]
+  pageIds              TradecraftPageId[]
+  entries              TradecraftEntry[]
+  sections             TradecraftSection[]
+  treeNodes            TradecraftTreeNode[]
+  curations            TradecraftCuration[]
+  projectChoices       TradecraftProjectChoice[]
+
   @@unique([userId, url])
   @@unique([userId, slug])
   @@index([userId])
   @@map("user_tradecraft_resources")
+}
+
+// Tradecraft 2.0 tables. Every one cascades on delete to its resource and/or its user, so
+// deleting either leaves nothing behind (§7.1; src/lib/tradecraft/schemaCascade.test.ts).
+// The agent writes ingestion output with raw SQL (agentic/tradecraft/schema_columns.py
+// pins the column names): `@updatedAt` is applied by the Prisma client only, so the
+// tables it writes also carry a database default, and its UPDATEs set updated_at.
+
+/// One ingestion job. The webapp creates it with a 60 s start lease and claims the resource
+/// in the same transaction; the agent renews the lease of every job it holds every 20 s.
+/// Never holds a secret, page text or a URL with a query string.
+model TradecraftIngestionJob {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Null for a job of the whole account (conversion).
+  resourceId       String?   @map("resource_id")
+  resource         UserTradecraftResource? @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  // add | refresh | reingest | bulk | regenerate_summary | convert | pdf_convert
+  kind             String
+  // queued | running | succeeded | failed | cancelled
+  status           String    @default("queued")
+  stage            String    @default("")
+  progress         Json      @default("{}")
+  errorCode        String    @default("") @map("error_code")
+  cancelRequested  Boolean   @default(false) @map("cancel_requested")
+  // No lease reads as expired.
+  leaseUntil       DateTime? @map("lease_until")
+  ownerInstance    String    @default("") @map("owner_instance")
+  bulkId           String?   @map("bulk_id")
+  targetGeneration Int       @default(0) @map("target_generation")
+  // The person who started it, and the administrator acting as them (plain ids, so the
+  // job's record outlives either account's deletion; the owner is userId).
+  actorUserId      String?   @map("actor_user_id")
+  realActorUserId  String?   @map("real_actor_user_id")
+  startedAt        DateTime? @map("started_at")
+  finishedAt       DateTime? @map("finished_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([userId, status])
+  @@index([resourceId])
+  @@index([bulkId])
+  @@index([status, leaseUntil])
+  @@map("tradecraft_ingestion_jobs")
+}
+
+/// A stable page number per (resource, canonical URL): the agent sees `<slug>:<id>`. Kept
+/// across refreshes; a resource deleted and added again gets new numbers (TD-4).
+model TradecraftPageId {
+  id         Int      @id @default(autoincrement())
+  resourceId String   @map("resource_id")
+  resource   UserTradecraftResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  url        String
+  createdAt  DateTime @default(now()) @map("created_at")
+  entries    TradecraftEntry[]
+
+  @@unique([resourceId, url])
+  @@map("tradecraft_page_ids")
+}
+
+/// The page store: one row per map entry and generation, holding the page card and, on a
+/// Stored resource, the cleaned text. Readers take only the resource row's live generation.
+/// search_vector is filled by a trigger that scripts/apply-tradecraft-search.mjs creates.
+model TradecraftEntry {
+  id                BigInt    @id @default(autoincrement())
+  userId            String    @map("user_id")
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resourceId        String    @map("resource_id")
+  resource          UserTradecraftResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  generation        Int
+  pageId            Int       @map("page_id")
+  page              TradecraftPageId @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  url               String
+  title             String    @default("")
+  // real | guessed | renamed
+  titleSource       String    @default("guessed") @map("title_source")
+  breadcrumb        String[]  @default([])
+  // [{ "level": 1-3, "text": "..." }]
+  headings          Json      @default("[]")
+  description       String    @default("") @db.Text
+  descriptionSource String    @default("") @map("description_source")
+  // sitemap | tree | crawl | nav | searchindex | pdf | pin | legacy
+  source            String    @default("")
+  // kept | dropped (a dropped entry stays visible in the Map view with its reason)
+  status            String    @default("kept")
+  dropReason        String    @default("") @map("drop_reason")
+  topics            String[]  @default([])
+  kinds             String[]  @default([])
+  technologies      String[]  @default([])
+  entities          String[]  @default([])
+  sizeChars         Int       @default(0) @map("size_chars")
+  storedText        String?   @map("stored_text") @db.Text
+  storedBytes       Int       @default(0) @map("stored_bytes")
+  textHash          String    @default("") @map("text_hash")
+  etag              String    @default("")
+  lastModified      String    @default("") @map("last_modified")
+  fetchedAt         DateTime? @map("fetched_at")
+  searchVector      Unsupported("tsvector")? @map("search_vector")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at")
+  sections          TradecraftSection[]
+
+  @@unique([resourceId, generation, pageId])
+  @@index([userId, resourceId, generation])
+  // A resource delete cascades through tradecraft_page_ids too: one lookup per page id.
+  @@index([pageId])
+  @@index([searchVector], type: Gin)
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([topics], type: Gin)
+  @@index([entities], type: Gin)
+  @@map("tradecraft_entries")
+}
+
+/// A stored page split by its headings (Stored resources only). userId is a plain column:
+/// the entry and the resource carry the cascade.
+model TradecraftSection {
+  id           BigInt   @id @default(autoincrement())
+  entryId      BigInt   @map("entry_id")
+  entry        TradecraftEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  resourceId   String   @map("resource_id")
+  resource     UserTradecraftResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  userId       String   @map("user_id")
+  generation   Int
+  ord          Int
+  heading      String   @default("")
+  level        Int
+  anchor       String   @default("")
+  text         String   @db.Text
+  chars        Int      @default(0)
+  searchVector Unsupported("tsvector")? @map("search_vector")
+
+  @@unique([entryId, ord])
+  @@index([resourceId, generation])
+  @@index([userId])
+  @@index([searchVector], type: Gin)
+  @@map("tradecraft_sections")
+}
+
+/// The resource's tree: folders (navigation, GitHub folders, URL paths) or, for a flat
+/// website, virtual topics, each with its page count and a one-line description.
+model TradecraftTreeNode {
+  id          BigInt   @id @default(autoincrement())
+  resourceId  String   @map("resource_id")
+  resource    UserTradecraftResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  userId      String   @map("user_id")
+  generation  Int
+  path        String
+  parentPath  String   @map("parent_path")
+  label       String
+  pageCount   Int      @default(0) @map("page_count")
+  description String   @default("") @db.Text
+  // folder | topic
+  kind        String   @default("folder")
+
+  @@unique([resourceId, generation, path])
+  @@index([resourceId, generation, parentPath])
+  @@index([userId])
+  @@map("tradecraft_tree_nodes")
+}
+
+/// A person's pins, blocks and renames of one URL of a resource's map, kept across refreshes.
+model TradecraftCuration {
+  id               String   @id @default(cuid())
+  resourceId       String   @map("resource_id")
+  resource         UserTradecraftResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  url              String
+  pinned           Boolean  @default(false)
+  blocked          Boolean  @default(false)
+  renamedTitle     String?  @map("renamed_title")
+  restoredFromDrop Boolean  @default(false) @map("restored_from_drop")
+  createdById      String?  @map("created_by_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([resourceId, url])
+  @@map("tradecraft_curations")
+}
+
+/// A row means "turned off in this project"; a missing row means on (§3.4, R-228).
+model TradecraftProjectChoice {
+  projectId   String   @map("project_id")
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  resourceId  String   @map("resource_id")
+  resource    UserTradecraftResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@id([projectId, resourceId])
+  @@index([resourceId])
+  @@map("tradecraft_project_choices")
 }
 
 // One row per account, written the first time the person changes a Tradecraft setting;

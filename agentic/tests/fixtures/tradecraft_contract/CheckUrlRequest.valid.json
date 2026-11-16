@@ -1,0 +1,13 @@
+{
+  "user_id": "user_owner_fake",
+  "url": "https://github.com/example-org/fake-repo",
+  "forced_type": "",
+  "type_options": {},
+  "settings": {
+    "fetching.requestTimeoutSec": 30
+  },
+  "secrets": {
+    "github_token": "fake-github-token",
+    "credentials": null
+  }
+}

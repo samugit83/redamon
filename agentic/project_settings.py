@@ -422,7 +422,7 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     # Attack Skill Configuration
     'ATTACK_SKILL_CONFIG': {
         'builtIn': {
-            'cve_exploit': True,
+            'cve_exploit': False,
             'brute_force_credential_guess': False,
             'phishing_social_engineering': False,
             'denial_of_service': False,

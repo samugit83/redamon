@@ -1,0 +1,26 @@
+{
+  "contractVersion": 1,
+  "jobKinds": ["add", "refresh", "reingest", "bulk", "regenerate_summary", "convert", "pdf_convert"],
+  "jobStatuses": ["queued", "running", "succeeded", "failed", "cancelled"],
+  "unfinishedJobStatuses": ["queued", "running"],
+  "jobStages": [
+    "fetch_home", "detect", "build_map", "curation", "focus", "titles", "incremental", "store", "cards", "sections",
+    "tags", "entities", "tree", "content_check", "write", "summary", "report", "legacy_map", "swap", "convert"
+  ],
+  "errorCodes": [
+    "fetch_failed", "blocked_private_address", "homepage_http_error", "thin_homepage", "llm_budget_exhausted",
+    "loop_model_not_supported_here", "model_unavailable", "agent_restarted", "agent_lost", "agent_unreachable",
+    "cancelled", "resource_deleted", "resource_changed", "quota_reached", "timeout", "job_running", "userinfo_refused",
+    "job_not_claimed", "queue_full", "bad_url", "not_implemented", "page_blocked", "outside_map", "internal_error"
+  ],
+  "storageModes": ["live", "stored"],
+  "siteTypes": ["mkdocs-wiki", "sphinx-docs", "gitbook", "github-repo", "cve-poc-db", "pdf", "agentic-crawl"],
+  "summarySources": ["generated", "manual"],
+  "priorities": ["high", "normal", "low"],
+  "skipReasons": ["excluded", "outOfScope", "tooLittleText", "robots", "outsideFocus"],
+  "indexKinds": ["sitemap", "github_tree", "searchindex", "nav", "pdf", "none"],
+  "previewDecisions": ["keep", "maybe", "drop"],
+  "readSources": ["stored", "live", "live_not_stored"],
+  "provenances": ["system", "user", "resource"],
+  "purposes": ["tradecraft_ingest", "tradecraft_librarian"]
+}

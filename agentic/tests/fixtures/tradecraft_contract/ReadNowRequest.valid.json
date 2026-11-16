@@ -1,0 +1,17 @@
+{
+  "user_id": "user_owner_fake",
+  "resource_id": "res_fake_0001",
+  "url": "https://wiki.example.invalid/sqli/postgres",
+  "read_settings": {
+    "fetching.requestTimeoutSec": 30,
+    "content.bodySelector": ""
+  },
+  "secrets": {
+    "github_token": null,
+    "credentials": {
+      "cookie": "session=fake-session",
+      "headers": [],
+      "basic_auth": null
+    }
+  }
+}

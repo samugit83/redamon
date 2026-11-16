@@ -77,6 +77,12 @@ class TestPrismaDefaultParity(unittest.TestCase):
         for skill in ("brute_force_credential_guess", "phishing_social_engineering", "denial_of_service"):
             self.assertIs(built_in[skill], False, skill)
 
+    def test_cve_exploit_starts_off_in_both_layers(self):
+        """U2 (§12, R-240): CVE (MSF) is off in new projects, however they are created."""
+        fields = json.load(open(_REGISTRY, encoding="utf-8"))["fields"]
+        self.assertIs(_prisma_default(fields["attackSkillConfig"])["builtIn"]["cve_exploit"], False)
+        self.assertIs(ps.DEFAULT_AGENT_SETTINGS["ATTACK_SKILL_CONFIG"]["builtIn"]["cve_exploit"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

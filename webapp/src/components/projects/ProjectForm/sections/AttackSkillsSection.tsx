@@ -162,7 +162,7 @@ type AttackSkillConfig = {
 
 const DEFAULT_CONFIG: AttackSkillConfig = {
   builtIn: {
-    cve_exploit: true,
+    cve_exploit: false,
     sql_injection: true,
     xss: true,
     ssrf: true,

@@ -1604,7 +1604,7 @@
    "unit": "seconds"
   },
   "attackSkillConfig": {
-   "default": "{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":false,\"phishing_social_engineering\":false,\"denial_of_service\":false,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}",
+   "default": "{\"builtIn\":{\"cve_exploit\":false,\"brute_force_credential_guess\":false,\"phishing_social_engineering\":false,\"denial_of_service\":false,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}",
    "form_section": "AttackSkillsSection",
    "group": "agent",
    "has_default": true,
