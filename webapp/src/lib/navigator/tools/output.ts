@@ -5,8 +5,9 @@
  *     attack-chain step content;
  *   - the owner-only project columns (`share: secret`) and a short list of credential fields are
  *     never returned, to anyone: the model needs none of them;
- *   - unless the project's RoE says `full_access`, every string is passed through the secret-shape
- *     masker shared with the agent (D14);
+ *   - unless the project's RoE says `full_access`, every secret-valued property is withheld by name
+ *     (secretGuard.ts) and every string is passed through the secret-shape masker shared with the
+ *     agent (D14);
  *   - arrays are cut at ROWS_MAX and the whole at TOOL_RESULT_MAX_BYTES, with `truncated: true`.
  */
 import { SHARE_SECRET_FIELDS } from '@/lib/authz/projectReadView'
@@ -14,6 +15,7 @@ import { stripStepContent } from '@/lib/authz/stepContent'
 import type { ProjectAccess } from '@/lib/authz/projectAccess'
 import { redactDeep } from '@/lib/plugins/redact'
 import { ROWS_MAX, TOOL_RESULT_MAX_BYTES } from '../constants'
+import { maskSecretValues } from './secretGuard'
 
 const NEVER_RETURNED = new Set<string>([
   ...SHARE_SECRET_FIELDS,
@@ -82,7 +84,7 @@ function halveLargestArray(value: unknown): boolean {
 export function shapeToolResult(raw: unknown, opts: { access: ProjectAccess; mask: boolean }): Shaped {
   const state = { truncated: false }
   let result = walk(raw, opts.access, state)
-  if (opts.mask) result = redactDeep(result)
+  if (opts.mask) result = redactDeep(maskSecretValues(result))
   for (let i = 0; i < 12 && JSON.stringify(result ?? null).length > TOOL_RESULT_MAX_BYTES; i += 1) {
     if (!halveLargestArray(result)) break
     state.truncated = true

@@ -23,6 +23,7 @@ import { navigatorEnabled } from '../switch'
 import { navigatorTool, navigatorTools, type NavigatorTool } from './registry'
 import { navigatorMcpContext } from './sessionContext'
 import { shapeToolResult } from './output'
+import { cypherSecretRefusal } from './secretGuard'
 import { validateArgs } from './validate'
 
 export type ToolAnswer =
@@ -188,6 +189,12 @@ export async function runNavigatorTool(run: NavigatorRun, name: string, rawArgs:
   if (!parsed.ok) return refuse('invalid_args', 400, parsed.message)
   const extra = tool.check?.(parsed.args)
   if (extra) return refuse('invalid_args', 400, extra)
+  const mask = await maskFor(run.projectId)
+  // A raw query could alias a secret value past the masking by name (RETURN s.matched_text AS x).
+  if (tool.name === 'run_cypher' && mask) {
+    const why = cypherSecretRefusal(String(parsed.args.cypher ?? ''))
+    if (why) return refuse('invalid_args', 400, why)
+  }
 
   const mcp = navigatorMcpContext({ personId: run.personId, projectId: run.projectId, actorId: run.actorId, scopes: tool.mcpScopes })
   let raw: unknown
@@ -203,6 +210,6 @@ export async function runNavigatorTool(run: NavigatorRun, name: string, rawArgs:
     console.error(`[navigator] tool failed tool=${name} run=${run.runId} class=${(err as Error)?.name ?? 'unknown'}`)
     return refuse('tool_failed', 500)
   }
-  const shaped = shapeToolResult(raw, { access: d.access, mask: await maskFor(run.projectId) })
+  const shaped = shapeToolResult(raw, { access: d.access, mask })
   return { ok: true, result: shaped.result, ...(shaped.truncated ? { truncated: true } : {}) }
 }

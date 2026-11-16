@@ -27,9 +27,10 @@ const h = vi.hoisted(() => ({
   accessSubjects: [] as string[],
   execCalls: [] as Array<{ userId: string; projectId: string; cypher: string }>,
   execResult: { records: [] } as { records: unknown[] },
+  roe: 'no_access',
 }))
 
-vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: async () => ({ roeSensitiveDataHandling: 'no_access' }) } } }))
+vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: async () => ({ roeSensitiveDataHandling: h.roe }) } } }))
 vi.mock('@/lib/authz/principal', () => ({ loadPrincipal: async (id: string) => h.principals.get(id) ?? null }))
 vi.mock('@/lib/authz/flags', async (orig) => ({ ...(await orig<typeof import('@/lib/authz/flags')>()), rbacFlags: () => ({ identity: true }) }))
 vi.mock('@/lib/authz/can', () => ({
@@ -123,6 +124,7 @@ beforeEach(() => {
   h.accessSubjects = []
   h.execCalls = []
   h.execResult = { records: [] }
+  h.roe = 'no_access'
 })
 
 describe('who may call', () => {
@@ -223,6 +225,36 @@ describe('the call', () => {
     expect(h.accessSubjects.length).toBeGreaterThanOrEqual(2)
     expect(new Set(h.accessSubjects)).toEqual(new Set(['alice']))
     expect(h.canCalls.every((c) => c.who === 'alice')).toBe(true)
+  })
+
+  test('unless the RoE allows full access, no secret value reaches the model (rows 8, 27)', async () => {
+    h.access = { project: { id: P, userId: 'owner' }, level: 'owner', toggles: { rawData: true }, via: 'owner' }
+    const { token } = start()
+    const named = await call(token, 'run_cypher', { args: { cypher: 'MATCH (s:Secret) RETURN s.matched_text AS x LIMIT 5' } })
+    expect(named.status).toBe(400)
+    expect(await named.json()).toMatchObject({ ok: false, code: 'invalid_args', message: expect.stringMatching(/rules of engagement/) })
+    const computed = await call(token, 'run_cypher', { args: { cypher: 'MATCH (s:Secret) RETURN [k IN keys(s) | s[k]] LIMIT 5' } })
+    expect(await computed.json()).toMatchObject({ ok: false, code: 'invalid_args' })
+    expect(h.execCalls).toEqual([])
+
+    // A whole node or a map comes back with the value withheld, even with no shape to recognise.
+    h.execResult = { records: [{ s: { _kind: 'node', labels: ['Secret'], properties: {
+      secret_type: 'AWS Secret Key', matched_text: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', user_id: 'owner', project_id: P,
+    } } }] }
+    const node = await (await call(token, 'run_cypher', { args: { cypher: 'MATCH (s:Secret) RETURN s LIMIT 5' } })).text()
+    expect(node).not.toContain('wJalrXUtnFEMI')
+    expect(node).toContain('AWS Secret Key')
+    expect(node).toContain('withheld')
+  })
+
+  test('with full access the same query runs and the value comes back', async () => {
+    h.access = { project: { id: P, userId: 'owner' }, level: 'owner', toggles: { rawData: true }, via: 'owner' }
+    h.roe = 'full_access'
+    h.execResult = { records: [{ x: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' }] }
+    const { token } = start()
+    const res = await call(token, 'run_cypher', { args: { cypher: 'MATCH (s:Secret) RETURN s.matched_text AS x LIMIT 5' } })
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('wJalrXUtnFEMI')
   })
 
   test('a row of another tenant in the result is discarded, never answered', async () => {

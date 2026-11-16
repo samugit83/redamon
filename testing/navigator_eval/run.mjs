@@ -107,6 +107,7 @@ async function ask(projectId, threadId, text) {
         routes: (of('route')[0]?.routes ?? []).filter((r) => r !== 'direct'),
         refused: of('refused_route').map((r) => `${r.route}:${r.reason_code}`),
         tools: of('tool').filter((t) => t.status !== 'start').map((t) => `${t.name}:${t.status}`),
+        trace: of('tool').filter((t) => t.status !== 'start').map(({ name, status, summary, detail }) => ({ name, status, summary, detail })),
         handoff: of('handoff').length > 0,
         citations: of('citations')[0]?.items ?? [],
         answer: of('delta').map((d) => d.text).join(''),
