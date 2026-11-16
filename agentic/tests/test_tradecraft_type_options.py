@@ -167,6 +167,41 @@ def test_folder_entries():
     assert builders.folder_entries([]) == []
 
 
+def test_folder_entries_on_a_large_tree():
+    """Review finding 4 (TD-8): 40,000 files in 2,000 README folders, at the speed of a set
+    lookup per file (the quadratic version took minutes here and stalled the event loop)."""
+    import time
+
+    paths = []
+    for d in range(2000):
+        paths.append(f"techniques/t{d}/README.md")
+        paths += [f"techniques/t{d}/payload-{i}.md" for i in range(18)]
+        paths.append(f"techniques/t{d}/deep/notes.md")
+    paths += [f"loose/file-{i}.md" for i in range(100)]
+    assert len(paths) == 40100
+    started = time.perf_counter()
+    entries = builders.folder_entries(paths)
+    assert time.perf_counter() - started < 5.0
+    assert entries[:2] == ["techniques/t0/README.md", "techniques/t1/README.md"]
+    assert len(entries) == 2000 + 100 and entries[-1] == "loose/file-99.md"
+
+
+def test_github_tree_work_runs_off_the_event_loop(tmp_path):
+    root = padded_sites(tmp_path)
+    calls = []
+
+    async def recording(fn, *args):
+        calls.append(fn.__name__)
+        return fn(*args)
+
+    with net.use_fetcher(FixtureFetcher(root)):
+        result = run(builders.build_github(PAYLOADS, EffectiveSettings({"type.github.folderEntries": True}),
+                                           blocking=recording))
+        known = run(builders.build_known("github-repo", PAYLOADS, EffectiveSettings({}), blocking=recording))
+    assert result.entries and known.entries
+    assert calls == ["github_tree_entries", "_dedupe", "github_tree_entries", "_dedupe"]
+
+
 def test_wiki_options(tmp_path):
     host = "kb.tc-fixture.test"
     root = add(tmp_path, host, {

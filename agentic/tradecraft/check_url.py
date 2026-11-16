@@ -262,7 +262,8 @@ async def _github(result: CheckUrlResult, url: str, site_type: str, settings: Ef
             result.index = IndexInfo(kind="none", url=f"https://github.com/{owner}/{repo}")
             result.cve_pattern = await probe_cve_pattern(owner, repo, branch, root, years, settings, token)
             return site_type
-    mapped = await builders.build_github(url, _with(settings, {"type.github.branch": branch}), github_token=token)
+    mapped = await builders.build_github(url, _with(settings, {"type.github.branch": branch}), github_token=token,
+                                         blocking=_thread)
     result.index = IndexInfo(kind="github_tree", url=f"https://github.com/{owner}/{repo}", count=len(mapped.entries))
     result.sample_entries = _samples(mapped.entries)
     result.estimated_bytes = await _estimate(len(mapped.entries), [e.url for e in mapped.entries], settings, token)

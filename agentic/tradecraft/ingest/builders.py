@@ -353,19 +353,53 @@ def _is_readme(path: str) -> bool:
 def folder_entries(paths: list[str]) -> list[str]:
     """§6.5 "One entry per folder": a folder (not the root) with a README becomes one entry, its
     README, standing for every file under it that no deeper README folder claims. Files under
-    no such folder stay one entry each. Order: the first file of each group."""
-    readme_dirs = {p.rsplit("/", 1)[0] for p in paths if "/" in p and _is_readme(p)}
-    out: list[str] = []
+    no such folder stay one entry each. Order: the first file of each group. Linear in the
+    number of files (a big repository has tens of thousands)."""
+    readme_of: dict[str, str] = {}
     for p in paths:
-        parts = p.split("/")[:-1]
-        owner = next(("/".join(parts[:i]) for i in range(len(parts), 0, -1) if "/".join(parts[:i]) in readme_dirs), None)
-        entry = p if owner is None else next(q for q in paths if q.rsplit("/", 1)[0] == owner and _is_readme(q))
-        if entry not in out:
+        if "/" in p and _is_readme(p):
+            readme_of.setdefault(p.rsplit("/", 1)[0], p)
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        entry, folder = p, p
+        while "/" in folder:
+            folder = folder.rsplit("/", 1)[0]
+            if folder in readme_of:
+                entry = readme_of[folder]
+                break
+        if entry not in seen:
+            seen.add(entry)
             out.append(entry)
     return out
 
 
-async def build_github(url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None) -> MapResult:
+def github_tree_entries(text: str, owner: str, repo: str, branch: str, file_types: list[str], include: list[str],
+                        exclude: list[str], by_folder: bool) -> tuple[list[Candidate], bool]:
+    """(entries, GitHub cut the tree) from the tree API's answer: CPU work over a repository's
+    every file, so the caller runs it through ``blocking`` (off the event loop)."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        data = None
+    items = data.get("tree", []) if isinstance(data, dict) else []
+    paths = [str(item.get("path", "")) for item in items if isinstance(item, dict) and item.get("type") == "blob"]
+    paths = [p for p in paths if _wanted_path(p, file_types, include, exclude)]
+    if by_folder:
+        paths = folder_entries(paths)
+    entries = []
+    for path in paths:
+        # A folder's entry is named after the folder; every other entry after its file (1.x).
+        name = path.rsplit("/", 1)[0] if by_folder and _is_readme(path) and "/" in path else path.rsplit(".", 1)[0]
+        title = " > ".join(seg.replace("_", " ").replace("-", " ") for seg in name.split("/"))
+        encoded = "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/"))
+        raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{encoded}"
+        entries.append(Candidate(raw, title, "tree", path))
+    return entries, bool(isinstance(data, dict) and data.get("truncated"))
+
+
+async def build_github(url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None,
+                       blocking: Blocking = inline) -> MapResult:
     """The repository's tree through the GitHub API at ``type.github.branch`` (a branch or a
     tag; the default branch when empty): one entry per text file, or per README folder."""
     parsed = split_github_url(url)
@@ -386,27 +420,14 @@ async def build_github(url: str, settings: EffectiveSettings, *, github_token: O
     resp = await fetch.fetch_raw(tree_url, settings, github_token=github_token)
     if resp.status != 200:
         return MapResult("github-repo", meta=meta, error="fetch_failed", note=resp.error or _status_note(resp.status))
-    data = _json_or_none(resp)
-    items = data.get("tree", []) if isinstance(data, dict) else []
-    file_types = settings.list("knownTypes.githubFileTypes")
-    include, exclude = settings.list("type.github.includeFolders"), settings.list("type.github.excludeFolders")
-    paths = [str(item.get("path", "")) for item in items if isinstance(item, dict) and item.get("type") == "blob"]
-    paths = [p for p in paths if _wanted_path(p, file_types, include, exclude)]
-    by_folder = settings.bool("type.github.folderEntries")
-    if by_folder:
-        paths = folder_entries(paths)
-    entries = []
-    for path in paths:
-        # A folder's entry is named after the folder; every other entry after its file (1.x).
-        name = path.rsplit("/", 1)[0] if by_folder and _is_readme(path) and "/" in path else path.rsplit(".", 1)[0]
-        title = " > ".join(seg.replace("_", " ").replace("-", " ") for seg in name.split("/"))
-        encoded = "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/"))
-        raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{encoded}"
-        entries.append(Candidate(raw, title, "tree", path))
-    entries, cut = _dedupe(entries, settings.int("knownTypes.maxMapEntries.github"))
+    entries, github_cut = await blocking(
+        github_tree_entries, resp.text, owner, repo, branch, settings.list("knownTypes.githubFileTypes"),
+        settings.list("type.github.includeFolders"), settings.list("type.github.excludeFolders"),
+        settings.bool("type.github.folderEntries"))
+    entries, cut = await blocking(_dedupe, entries, settings.int("knownTypes.maxMapEntries.github"))
     result = MapResult("github-repo", entries, meta=meta, index_kind="github_tree", index_url=f"https://github.com/{owner}/{repo}",
-                       truncated=cut or bool(isinstance(data, dict) and data.get("truncated")))
-    if isinstance(data, dict) and data.get("truncated"):
+                       truncated=cut or github_cut)
+    if github_cut:
         result.note = "github_tree_truncated"
     return result
 
@@ -560,13 +581,13 @@ async def build_known(site_type: str, url: str, settings: EffectiveSettings, *, 
         return await build_gitbook(url, settings, home_html=home_html, home_final_url=home_final_url,
                                    allow_browser=allow_browser, blocking=blocking)
     if site_type == "github-repo":
-        return await build_github(url, settings, github_token=github_token)
+        return await build_github(url, settings, github_token=github_token, blocking=blocking)
     if site_type == "cve-poc-db":
         result = await build_cve(url, settings, github_token=github_token)
         if forced:
             result.retype = ""
         if result.retype == "github-repo":
-            retyped = await build_github(url, settings, github_token=github_token)
+            retyped = await build_github(url, settings, github_token=github_token, blocking=blocking)
             retyped.retype = "github-repo"
             return retyped
         return result
