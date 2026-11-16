@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Plus, SlidersHorizontal } from 'lucide-react'
 import { TradecraftResourceForm } from '@/components/settings/TradecraftResourceForm'
 import type { TradecraftResource } from '@/components/settings/TradecraftResourceForm'
 import { TradecraftResourceList } from '@/components/settings/TradecraftResourceList'
@@ -12,6 +12,7 @@ import { readApiError } from '@/lib/apiError'
 import { tradecraftClient } from '@/lib/tradecraft/client'
 import { V2Switch } from './V2Switch'
 import { ResourceListV2 } from './ResourceListV2'
+import { ConfigureIngestionDialog } from './ConfigureIngestionDialog'
 
 const TRADECRAFT_LOAD_FAILED = "Couldn't load your tradecraft resources"
 
@@ -57,6 +58,10 @@ export function TradecraftTab({ userId, onDirtyChange }: TradecraftTabProps) {
 }
 
 function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
+  const toast = useToast()
+  const [configuring, setConfiguring] = useState(false)
+  // A save changes which cards read as stale: the list is read again by mounting it anew.
+  const [listKey, setListKey] = useState(0)
   return (
     <div className={styles.section}>
       <div className={styles.sectionHeader}>
@@ -70,7 +75,28 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
         background: its card shows the stage, and Refresh becomes Cancel while it runs. Live resources are
         read from their site at every read; Stored ones keep a copy in your database.
       </p>
-      <ResourceListV2 userId={userId} onDirtyChange={onDirtyChange} />
+      <ResourceListV2
+        key={listKey}
+        userId={userId}
+        onDirtyChange={onDirtyChange}
+        headerActions={
+          <button type="button" className="secondaryButton" onClick={() => setConfiguring(true)}>
+            <SlidersHorizontal size={14} /> Configure ingestion
+          </button>
+        }
+      />
+      {configuring && (
+        <ConfigureIngestionDialog
+          userId={userId}
+          onDirtyChange={onDirtyChange}
+          onClose={() => setConfiguring(false)}
+          onSaved={() => {
+            setConfiguring(false)
+            toast.success('Saved: each resource uses the new settings the next time it is added or refreshed')
+            setListKey(k => k + 1)
+          }}
+        />
+      )}
     </div>
   )
 }

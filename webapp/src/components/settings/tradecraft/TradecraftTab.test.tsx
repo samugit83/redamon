@@ -181,6 +181,51 @@ describe('TradecraftTab and the 2.0 switch', () => {
     expect(alertSpies.confirm).toHaveBeenCalledTimes(1)
   })
 
+  test('configure_buttons_follow_add: Configure ingestion sits left of Add Resource and shows exactly when it does (R-020)', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true } }
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    const configure = await screen.findByRole('button', { name: /Configure ingestion/ })
+    const add = screen.getByRole('button', { name: /Add Resource/ })
+    expect(configure.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(add)
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Configure ingestion/ })).toBeNull())
+    expect(screen.queryByRole('button', { name: /^Add Resource$/ })).toBeNull()
+  })
+
+  test('configure_buttons_follow_add: no Configure ingestion while the list is refused, nor on the 1.x tab', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true } }
+    routes[`GET ${BASE}`] = { status: 403, body: { error: 'Forbidden', code: 'own_account_only' } }
+    renderTab()
+    expect(await screen.findByText(/You cannot use these resources/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Configure ingestion/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Add Resource/ })).toBeNull()
+    cleanup()
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: false } }
+    routes[`GET ${BASE}`] = { status: 200, body: [RES] }
+    renderTab()
+    await screen.findByText('Lab Wiki')
+    expect(screen.getByRole('button', { name: /Add Resource/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Configure ingestion/ })).toBeNull()
+  })
+
+  test('Configure ingestion opens the dialog; a save closes it and reads the list again', async () => {
+    const DEFAULTS = { 'crawl.maxPages': 200 }
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true, ingestion: { values: DEFAULTS, changed: [], defaults: DEFAULTS } } }
+    routes[`PUT ${SETTINGS}`] = { status: 200, body: { v2Enabled: true, ingestion: { values: { 'crawl.maxPages': 120 }, changed: ['crawl.maxPages'], defaults: DEFAULTS } } }
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    fireEvent.click(await screen.findByRole('button', { name: /Configure ingestion/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Configure ingestion' })
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Website crawl/ }))
+    fireEvent.change(within(dialog).getByLabelText('Max pages visited'), { target: { value: '120' } })
+    const listReads = calls('GET', BASE).length
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(/Saved: each resource uses the new settings/)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Configure ingestion' })).toBeNull()
+    await waitFor(() => expect(calls('GET', BASE).length).toBeGreaterThan(listReads))
+  })
+
   test('a switch that cannot be read: the 1.x tab, without the switch', async () => {
     routes[`GET ${SETTINGS}`] = { status: 403, body: { error: 'Forbidden', code: 'forbidden' } }
     renderTab()

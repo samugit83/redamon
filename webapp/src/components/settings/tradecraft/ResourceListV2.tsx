@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
 import { useAlertModal, useToast } from '@/components/ui'
 import { actionFailedText, failureText } from '@/components/settings/failureText'
@@ -15,8 +15,15 @@ const LOAD_FAILED = "Couldn't load your tradecraft resources"
 
 type Status = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; text: string } | { kind: 'denied'; text: string }
 
-/** The 2.0 resources of the account: cards, the basic form, and the job views read every 3 s while a job runs. */
-export function ResourceListV2({ userId, onDirtyChange }: { userId: string; onDirtyChange: (dirty: boolean) => void }) {
+/**
+ * The 2.0 resources of the account: cards, the basic form, and the job views read every 3 s while a job runs.
+ * `headerActions` sit left of Add Resource and show exactly when it does (§3.1).
+ */
+export function ResourceListV2({ userId, onDirtyChange, headerActions }: {
+  userId: string
+  onDirtyChange: (dirty: boolean) => void
+  headerActions?: ReactNode
+}) {
   const { dangerConfirm } = useAlertModal()
   const toast = useToast()
   const [resources, setResources] = useState<ResourceView[]>([])
@@ -114,9 +121,12 @@ export function ResourceListV2({ userId, onDirtyChange }: { userId: string; onDi
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '12px' }}>
         {status.kind === 'ready' && !form && (
-          <button type="button" className="primaryButton" onClick={() => setForm('new')}><Plus size={14} /> Add Resource</button>
+          <>
+            {headerActions}
+            <button type="button" className="primaryButton" onClick={() => setForm('new')}><Plus size={14} /> Add Resource</button>
+          </>
         )}
       </div>
       {form && (

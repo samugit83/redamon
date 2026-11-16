@@ -6,8 +6,9 @@
 import { fetchJson } from '@/lib/apiError'
 import type { JobView } from './jobs'
 import type { ResourceView } from './v2/list'
+import type { IngestionSettingsView } from './userSettings'
 
-export type { JobView, ResourceView }
+export type { IngestionSettingsView, JobView, ResourceView }
 
 /** How often a card's job view is read while its job runs. */
 export const JOB_POLL_MS = 3000
@@ -39,6 +40,13 @@ export const tradecraftClient = {
     fetchJson<{ v2Enabled: boolean }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ v2Enabled }),
     }, "Couldn't change the Tradecraft 2.0 switch"),
+  getSettings: (userId: string) =>
+    fetchJson<{ v2Enabled: boolean; ingestion?: IngestionSettingsView }>(
+      `/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, undefined, "Couldn't read your ingestion settings"),
+  saveSettings: (userId: string, ingestion: Record<string, unknown>) =>
+    fetchJson<{ v2Enabled: true; ingestion: IngestionSettingsView }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ ingestion }),
+    }, "Couldn't save your ingestion settings"),
   list: (userId: string) => fetchJson<ResourceView[]>(resources(userId), undefined, "Couldn't load your tradecraft resources"),
   create: (userId: string, input: ResourceInput) =>
     fetchJson<SavedResource>(resources(userId), { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) }, "Couldn't add the resource"),
