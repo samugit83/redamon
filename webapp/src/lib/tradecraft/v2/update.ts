@@ -16,6 +16,7 @@ import prisma from '@/lib/prisma'
 import { auditedTransaction } from '@/lib/auditForward'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { auditLoginChange, loginChangeRefusal, loginUseRefusal } from '../actAs'
+import { librarianModelRefusal } from './create'
 import { claimHolder, jobView, startJob, startedJobFields, type JobActor } from '../jobs'
 import { hasStoredLogin } from '../masking'
 import { clearChoicesForResource } from '../projectChoices'
@@ -64,6 +65,11 @@ export async function updateResourceV2(input: {
   // The agent names the resource and its page IDs with it: read-only once added (R-137).
   if (fields.slug !== undefined && fields.slug !== before.slug) {
     return fieldErrorResponse({ field: 'slug', code: 'slug_read_only', error: 'The resource ID cannot change once the resource is added' })
+  }
+  // Turning a resource on puts it in the agent's library: the librarian needs its model (Q10).
+  if (fields.enabled === true && !before.enabled) {
+    const noLibrarian = await librarianModelRefusal(ownerId)
+    if (noLibrarian) return noLibrarian
   }
   // A login is never written while someone acts as the account (§6.6), even on an account they may write.
   const loginPatch = fields.credentials

@@ -316,6 +316,29 @@ describe('updateResourceV2', () => {
   })
 })
 
+describe('the librarian model gate (Q10, T7.1; R-404, AC-70)', () => {
+  test('enabled_on_requires_model: turning Enabled on without the librarian model opens the gate, nothing written', async () => {
+    row().enabled = false
+    stubAgent()
+    const res = await update({ enabled: true, name: 'Renamed' })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: 'model_required', featureId: 'tradecraft_librarian' })
+    expect(row()).toMatchObject({ enabled: false, name: 'Wiki' })
+    h.db.seed('userSettings', { userId: 'owner', featureModels: { tradecraft_librarian: 'gpt-4o-mini' } })
+    expect((await update({ enabled: true })).status).toBe(200)
+    expect(row().enabled).toBe(true)
+  })
+
+  test('turning Enabled off, keeping it on, or any other edit never asks; Search only never asks', async () => {
+    stubAgent()
+    expect((await update({ enabled: true })).status).toBe(200)
+    expect((await update({ name: 'Renamed' })).status).toBe(200)
+    expect((await update({ enabled: false })).status).toBe(200)
+    h.db.seed('tradecraftUserSettings', { userId: 'owner', search: { 'librarian.use': 'search_only' } })
+    expect((await update({ enabled: true })).status).toBe(200)
+  })
+})
+
 describe('site logins (§6.6, T6.5)', () => {
   const STORED = { cookie: 'session=fake-session' }
   const actions = () => vi.mocked(refuseWhileActingAsOn).mock.calls.map(c => c[1])

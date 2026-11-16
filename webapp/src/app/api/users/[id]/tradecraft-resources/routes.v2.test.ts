@@ -63,6 +63,8 @@ beforeEach(() => {
     settingsSnapshot: { values: { 'crawl.maxPages': 50 }, provenance: { 'crawl.maxPages': 'resource' } }, settingsHash: 'abcdef0123456789',
     storageMode: 'stored', ingestionReport: { visited: 3 }, mapVersion: 3, generation: 1,
   })
+  // T7.1: an add needs the librarian model while the librarian is in use; this account has one.
+  h.db.seed('userSettings', { userId: 'owner', featureModels: { tradecraft_librarian: 'gpt-4o-mini' } })
   h.db.seed('userTradecraftResource', {
     id: 'r2', userId: 'owner', name: 'Blog', slug: 'blog', url: 'https://blog.example.test/', llmModel: 'gpt-4o',
     githubTokenOverride: 'ghp_BLOG_fake_8888', createdAt: new Date('2026-11-16T11:00:00Z'),

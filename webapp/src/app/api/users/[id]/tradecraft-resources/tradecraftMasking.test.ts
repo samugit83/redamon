@@ -124,7 +124,7 @@ const agentAnswers = (path: string, body: unknown) => {
 function seed(v2: boolean) {
   h.db = createTradecraftDb()
   h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: v2 })
-  h.db.seed('userSettings', { userId: 'owner', githubAccessToken: ACCOUNT_TOKEN })
+  h.db.seed('userSettings', { userId: 'owner', githubAccessToken: ACCOUNT_TOKEN, featureModels: { tradecraft_librarian: 'gpt-4o-mini' } })
   h.db.seed('project', { id: 'proj-1', userId: 'owner', attackSkillConfig: { builtIn: {}, user: {} } })
   h.db.seed('userTradecraftResource', {
     id: 'r1', userId: 'owner', name: 'Wiki', slug: 'wiki', url: 'https://wiki.example.test/', llmModel: 'gpt-4o', resourceType: 'mkdocs-wiki',

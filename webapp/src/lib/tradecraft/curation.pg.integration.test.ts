@@ -128,6 +128,7 @@ describe.skipIf(!URL_)('S09 on a real Postgres', () => {
 
   test('a site login: stored in the contract\'s shape, the flag set, its audit row in the same transaction', async () => {
     const userId = await account()
+    await db.userSettings.create({ data: { userId, featureModels: { tradecraft_librarian: 'gpt-4o-mini' } } })
     const actor = { actorUserId: userId, realActorUserId: null }
     const login = { cookie: 'session=fake-pg', headers: [{ name: 'X-Api-Key', value: 'fake-pg-key' }], basic_auth: null }
     const res = await createResourceV2({ ownerId: userId, body: { name: 'KB', url: `https://kb${n}.example.invalid/`, llmModel: 'gpt-4o', credentials: login }, actor, skipVerify: true })
@@ -141,6 +142,15 @@ describe.skipIf(!URL_)('S09 on a real Postgres', () => {
     const audits = await db.auditLog.findMany({ where: { actorId: userId, action: 'tradecraft.credentials_changed' }, orderBy: { createdAt: 'asc' } })
     expect(audits.map(a => (a.after as { changed: string[] }).changed)).toEqual([['cookie', 'header:X-Api-Key'], ['header:X-Api-Key']])
     expect(JSON.stringify(audits)).not.toMatch(/fake-pg/)
+  })
+
+  test('the librarian gate reads the real featureModels column (T7.1)', async () => {
+    const userId = await account()
+    const actor = { actorUserId: userId, realActorUserId: null }
+    const body = { name: 'Wiki', url: `https://gate${n}.example.invalid/`, llmModel: 'gpt-4o' }
+    expect((await createResourceV2({ ownerId: userId, body, actor, skipVerify: true })).status).toBe(409)
+    await db.userSettings.create({ data: { userId, featureModels: { tradecraft_librarian: 'gpt-4o-mini' } } })
+    expect((await createResourceV2({ ownerId: userId, body, actor, skipVerify: true })).status).toBe(201)
   })
 
   test('the focus recipes as a JSON list, and a skill topic checked against real skills', async () => {

@@ -33,6 +33,8 @@ beforeEach(() => {
   h.actingAs = false
   setNowForTests(() => new Date('2026-11-16T10:00:00Z'))
   vi.mocked(refuseWhileActingAsOn).mockClear()
+  // T7.1: while the librarian is in use an add needs its model; the tests below that are not about it have one.
+  h.db.seed('userSettings', { userId: 'owner', featureModels: { tradecraft_librarian: 'gpt-4o-mini' } })
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'info').mockImplementation(() => {})
 })
@@ -146,7 +148,7 @@ describe('createResourceV2', () => {
   test("act-as: the add job would send the account's GitHub token, so it is refused before any write", async () => {
     h.permissions = true
     h.actingAs = true
-    h.db.seed('userSettings', { userId: 'owner', githubAccessToken: 'ghp_account_fake' })
+    h.db.rows('userSettings', { userId: 'owner' })[0].githubAccessToken = 'ghp_account_fake'
     const agent = stubAgent()
     const res = await create()
     expect(res.status).toBe(403)
@@ -261,6 +263,47 @@ describe('createResourceV2', () => {
       expect(res.status).toBe(400)
       expect(await res.json()).toMatchObject({ field: 'credentials.headers[0].name', code: 'bad_credentials' })
       expect(resources()).toEqual([])
+    })
+  })
+
+  describe('the librarian model gate (Q10, T7.1; R-013, R-404, AC-70)', () => {
+    const noModel = () => { h.db.rows('userSettings', { userId: 'owner' })[0].featureModels = {} }
+
+    test('model_required_without_librarian: while the librarian is in use, an add without its model opens the gate, nothing written', async () => {
+      noModel()
+      const agent = stubAgent()
+      const res = await create()
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual({ error: 'Choose a model for this feature first', code: 'model_required', featureId: 'tradecraft_librarian' })
+      expect(resources()).toEqual([])
+      expect(agent.calls).toEqual([])
+      expect((await create(BODY, true)).status).toBe(409)
+    })
+
+    test('with the model saved (the gate saved it), the same add goes through', async () => {
+      noModel()
+      stubAgent()
+      expect((await create()).status).toBe(409)
+      h.db.rows('userSettings', { userId: 'owner' })[0].featureModels = { tradecraft_librarian: 'gpt-4o-mini' }
+      expect((await create()).status).toBe(201)
+    })
+
+    test('search_only_asks_nothing: with Librarian use "Search only", no model is asked for', async () => {
+      noModel()
+      h.db.seed('tradecraftUserSettings', { userId: 'owner', search: { 'librarian.use': 'search_only' } })
+      stubAgent()
+      expect((await create()).status).toBe(201)
+    })
+
+    test('loop_model_refused_for_librarian: a saved Agent in the Loop model is no librarian model', async () => {
+      h.db.rows('userSettings', { userId: 'owner' })[0].featureModels = { tradecraft_librarian: 'loop/mcp' }
+      stubAgent()
+      expect(await (await create()).json()).toMatchObject({ code: 'model_required', featureId: 'tradecraft_librarian' })
+    })
+
+    test('a field the rules refuse is still a 400 first', async () => {
+      noModel()
+      expect((await create({ ...BODY, url: 'http://127.0.0.1/' })).status).toBe(400)
     })
   })
 

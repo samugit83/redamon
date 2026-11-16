@@ -15,6 +15,7 @@ export type FeatureId =
   | 'codefix'
   | 'command_whisperer'
   | 'tradecraft_section_picker'
+  | 'tradecraft_librarian'
   | 'report_narratives'
   | 'multi_mute'
   | 'skill_metadata'
@@ -124,6 +125,15 @@ export const LLM_FEATURES: readonly LlmFeature[] = [
     description: 'Picks which page of a Tradecraft resource the agent reads.',
     hint: 'The smallest model is enough: it answers with one number. Not set: pages are picked by text match.',
     alsoEditedIn: ['Tradecraft resource form'],
+    excludeModelPrefixes: [],
+  },
+  {
+    // Q10: no fallback to the chat or an ingestion model; required while the librarian is in use.
+    id: 'tradecraft_librarian',
+    label: 'Tradecraft librarian',
+    description: 'Finds and checks library pages for vague needs while the agent works.',
+    hint: 'A small or mid-size fast model is enough, but it must follow instructions well: it judges which section answers the need and quotes it exactly. It runs while the agent waits, so speed matters more than size.',
+    alsoEditedIn: ['Settings → Tradecraft', 'Configure search'],
     excludeModelPrefixes: [],
   },
   {

@@ -7,6 +7,8 @@
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { auditedTransaction } from '@/lib/auditForward'
+import { featureModelErrorResponse, readFeatureModel } from '@/lib/featureModels'
+import { modelAllowedForFeature } from '@/lib/llmFeatures'
 import { rbacFlags } from '@/lib/authz/flags'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { auditLoginChange, loginChangeRefusal } from '../actAs'
@@ -22,6 +24,22 @@ import { focusSkillRefusal } from './focusFields'
 import { resourceViewOf } from './list'
 
 export const MAX_RESOURCES_PER_USER: number = SETTINGS_CONSTANTS.maxResourcesPerUser
+
+/**
+ * The feature-model gate of the librarian (Q10, R-404): while Librarian use is "Agent decides"
+ * (the default), adding a resource or turning one on needs the owner's Tradecraft librarian
+ * model, so the agent never meets a library its librarian cannot run on. The `model_required`
+ * answer opens the client's gate, which saves a model and sends the same request again. With
+ * "Search only" nothing is asked. A saved model no feature may run on (Agent in the Loop) counts
+ * as none.
+ */
+export async function librarianModelRefusal(ownerId: string): Promise<NextResponse | null> {
+  const user = await prisma.tradecraftUserSettings.findUnique({ where: { userId: ownerId }, select: { search: true } })
+  if (effectiveSettings({ user, scope: 'search' }).values['librarian.use'] !== 'agent') return null
+  const model = await readFeatureModel(ownerId, 'tradecraft_librarian')
+  if (model && modelAllowedForFeature('tradecraft_librarian', model)) return null
+  return featureModelErrorResponse('model_required', 'tradecraft_librarian')
+}
 
 class CapReached extends Error {}
 class SlugTaken extends Error {}
@@ -49,6 +67,8 @@ export async function createResourceV2(input: {
   }
   const foreignSkill = await focusSkillRefusal(ownerId, fields.focus)
   if (foreignSkill) return foreignSkill
+  const noLibrarian = await librarianModelRefusal(ownerId)
+  if (noLibrarian) return noLibrarian
 
   // The add job would send the account's GitHub token, which stays with the account while
   // someone acts as it (step 3.14): refused before anything is written, as in 1.x.
