@@ -88,8 +88,10 @@ const READ_KEY = /^(fetching|content)\./
 // the agent finds a CVE's file with them at every lookup.
 const CVE_READ_KEY = /^type\.cve\./
 
-/** The values a live read uses: those the resource was ingested with, else today's. */
-function readSettings(row: ActiveRow, user: { ingestion?: unknown } | null, type: string): Record<string, unknown> {
+/** The values a live read uses: those the resource was ingested with, else today's. Read now (T6.7) sends the same. */
+export function readSettings(
+  row: Pick<ActiveRow, 'settingsSnapshot' | 'overrides'>, user: { ingestion?: unknown } | null, type: string,
+): Record<string, unknown> {
   const snapshot = isPlainObject(row.settingsSnapshot) && isPlainObject(row.settingsSnapshot.values) ? row.settingsSnapshot.values : null
   const values = snapshot && Object.keys(snapshot).length > 0 ? snapshot : effectiveSettings({ user, resource: row.overrides }).values
   const read = (k: string) => READ_KEY.test(k) || (type === 'cve-poc-db' && CVE_READ_KEY.test(k))

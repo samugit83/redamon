@@ -377,6 +377,8 @@
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]","guard":"user","methods":["GET","PUT","DELETE"],"permission":"self:tradecraft"},
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/enabled-impact","guard":"user","methods":["GET"],"permission":"self:tradecraft"},
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/jobs","guard":"user","methods":["GET","DELETE"],"permission":"self:tradecraft"},
+  {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/map","guard":"user","methods":["GET","POST"],"permission":"self:tradecraft"},
+  {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/pages/[pageId]","guard":"user","methods":["GET","POST"],"permission":"self:tradecraft"},
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/refresh","guard":"user","methods":["POST"],"permission":"self:tradecraft"},
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/summary","guard":"user","methods":["PUT"],"permission":"self:tradecraft"},
   {"path":"/api/users/[id]/tradecraft-resources/[resourceId]/summary/regenerate","guard":"user","methods":["POST"],"permission":"self:tradecraft"},

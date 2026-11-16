@@ -33,7 +33,7 @@ const DEFAULTS: Record<string, () => Row> = {
     title: '', status: 'kept', storedText: null, storedBytes: 0, topics: [], kinds: [], technologies: [], entities: [],
   }),
   tradecraftSection: () => ({}),
-  tradecraftCuration: () => ({ pinned: false, blocked: false }),
+  tradecraftCuration: () => ({ pinned: false, blocked: false, renamedTitle: null, restoredFromDrop: false, createdById: null }),
   tradecraftPageId: () => ({}),
   tradecraftTreeNode: () => ({}),
   userSettings: () => ({ githubAccessToken: '' }),
@@ -50,6 +50,8 @@ const UNIQUE: Record<string, string[][]> = {
   tradecraftUserSettings: [['userId']],
   tradecraftProjectChoice: [['projectId', 'resourceId']],
   userSettings: [['userId']],
+  tradecraftCuration: [['resourceId', 'url']],
+  tradecraftEntry: [['resourceId', 'generation', 'pageId']],
 }
 
 /** `schema.prisma`'s onDelete: Cascade, child table -> its foreign key, per parent table. */
@@ -82,8 +84,16 @@ function cmp(a: unknown, b: unknown): number {
 function matchesField(value: unknown, cond: unknown): boolean {
   if (cond === null) return value === null || value === undefined
   if (!isPlain(cond)) return eq(value, cond)
+  const insensitive = cond.mode === 'insensitive'
   for (const [op, arg] of Object.entries(cond)) {
     switch (op) {
+      case 'mode': break
+      case 'contains': {
+        if (typeof value !== 'string') return false
+        const [v, a] = insensitive ? [value.toLowerCase(), String(arg).toLowerCase()] : [value, String(arg)]
+        if (!v.includes(a)) return false
+        break
+      }
       case 'equals': if (!matchesField(value, arg)) return false; break
       case 'in': if (!(arg as unknown[]).some(a => eq(a, value))) return false; break
       case 'notIn': if ((arg as unknown[]).some(a => eq(a, value))) return false; break

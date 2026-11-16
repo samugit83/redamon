@@ -114,6 +114,18 @@ export async function refuseWhileActingAsOn(targetUserId: string, action: Acting
   return session ? refuseWhileActingAs({ session, targetUserId }, action) : null
 }
 
+/**
+ * Whether the signed-in session acts as `targetUserId` (switch on), for an answer that leaves out
+ * what an acting administrator may not see rather than refusing it: the Map view of a resource
+ * with a site login shows titles and URLs only (§6.6). No audit row: nothing was refused.
+ */
+export async function actingAsOn(targetUserId: string): Promise<boolean> {
+  if (!rbacFlags().permissions) return false
+  const session = await getSession()
+  const inForce = session ? await actAsInForce(session) : null
+  return !!inForce && inForce.target.id === targetUserId
+}
+
 /** Null when allowed, else the 403 `{error, code: 'not_while_acting_as', action}` the route returns. */
 export async function refuseWhileActingAs(ctx: ActingAsContext, action: ActingAsAction): Promise<NextResponse | null> {
   const refusal = await actingAsRefusal(ctx, action)

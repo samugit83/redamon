@@ -23,7 +23,7 @@ vi.mock('@/lib/auditActor', async orig => ({
   ...(await orig<typeof import('@/lib/auditActor')>()),
   auditActor: vi.fn(async () => ({ actorId: 'owner', onBehalfOfUserId: null, actorEmail: null })),
 }))
-vi.mock('@/lib/authz/actAsRefusals', () => ({ refuseWhileActingAsOn: vi.fn(async () => null) }))
+vi.mock('@/lib/authz/actAsRefusals', () => ({ refuseWhileActingAsOn: vi.fn(async () => null), actingAsOn: vi.fn(async () => false) }))
 vi.mock('@/lib/authz/guards', () => ({
   requirePermission: vi.fn(async () => ({
     principal: { id: 'owner' }, actingAs: null, effective: { userId: 'owner' },
@@ -36,6 +36,8 @@ import * as list from './route'
 import * as one from './[resourceId]/route'
 import * as enabledImpact from './[resourceId]/enabled-impact/route'
 import * as jobs from './[resourceId]/jobs/route'
+import * as mapRoute from './[resourceId]/map/route'
+import * as pages from './[resourceId]/pages/[pageId]/route'
 import * as refreshRoute from './[resourceId]/refresh/route'
 import * as summary from './[resourceId]/summary/route'
 import * as regenerate from './[resourceId]/summary/regenerate/route'
@@ -58,6 +60,7 @@ const LOGIN = { cookie: COOKIE, headers: [{ name: 'X-Api-Key', value: HEADER }],
 const BASE = 'http://webapp.test/api/users/owner'
 const P = { params: Promise.resolve({ id: 'owner' }) }
 const PR = { params: Promise.resolve({ id: 'owner', resourceId: 'r1' }) }
+const PAGE = { params: Promise.resolve({ id: 'owner', resourceId: 'r1', pageId: 'wiki:1' }) }
 
 function req(path: string, method = 'GET', body?: unknown): NextRequest {
   return new NextRequest(`${BASE}${path}`, {
@@ -79,6 +82,12 @@ const CALLS: Record<string, () => Promise<Response>> = {
   'GET /api/users/[id]/tradecraft-resources/[resourceId]/enabled-impact': () => enabledImpact.GET(req('/tradecraft-resources/r1/enabled-impact?next=false'), PR),
   'GET /api/users/[id]/tradecraft-resources/[resourceId]/jobs': () => jobs.GET(req('/tradecraft-resources/r1/jobs'), PR),
   'DELETE /api/users/[id]/tradecraft-resources/[resourceId]/jobs': () => jobs.DELETE(req('/tradecraft-resources/r1/jobs', 'DELETE'), PR),
+  'GET /api/users/[id]/tradecraft-resources/[resourceId]/map': () => mapRoute.GET(req('/tradecraft-resources/r1/map'), PR),
+  'POST /api/users/[id]/tradecraft-resources/[resourceId]/map': () => mapRoute.POST(req('/tradecraft-resources/r1/map', 'POST', {
+    op: 'pin', url: 'https://wiki.example.test/pinned',
+  }), PR),
+  'GET /api/users/[id]/tradecraft-resources/[resourceId]/pages/[pageId]': () => pages.GET(req('/tradecraft-resources/r1/pages/wiki%3A1'), PAGE),
+  'POST /api/users/[id]/tradecraft-resources/[resourceId]/pages/[pageId]': () => pages.POST(req('/tradecraft-resources/r1/pages/wiki%3A1', 'POST', {}), PAGE),
   'POST /api/users/[id]/tradecraft-resources/[resourceId]/refresh': () => refreshRoute.POST(req('/tradecraft-resources/r1/refresh', 'POST'), PR),
   'PUT /api/users/[id]/tradecraft-resources/[resourceId]/summary': () => summary.PUT(req('/tradecraft-resources/r1/summary', 'PUT', { source: 'manual', text: 'Mine' }), PR),
   'POST /api/users/[id]/tradecraft-resources/[resourceId]/summary/regenerate': () => regenerate.POST(req('/tradecraft-resources/r1/summary/regenerate', 'POST'), PR),
@@ -105,6 +114,7 @@ const agentAnswers = (path: string, body: unknown) => {
   if (path === '/tradecraft/v2/check-url') {
     return json({ ok: true, error_code: '', final_url: 'https://wiki.example.test/', detected_type: 'mkdocs-wiki', recommended_storage: 'stored' })
   }
+  if (path === '/tradecraft/v2/read-now') return json({ text: 'page text', source: 'live', fetched_at: '', truncated: false, error_code: '' })
   if (path === '/tradecraft/v2/preview-focus') return json({ kept: 1, maybe: 0, dropped: 0, examples: [], llm_calls: 1, error_code: '' })
   if (path === '/tradecraft/v2/jobs') return json({ accepted: (body as { jobs: { job_id: string }[] }).jobs.map(j => j.job_id), refused: [] }, 202)
   if (/\/cancel$/.test(path)) return json({ ok: true })
