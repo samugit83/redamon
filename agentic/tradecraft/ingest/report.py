@@ -26,7 +26,7 @@ async def build(state: "IngestState") -> "IngestState":
         visited=state.visited,
         kept=kept,
         skipped=dict(state.skipped),
-        stopReason=(crawl.stop_reason if crawl is not None else state.stop_reason)[:64],
+        stopReason=(crawl.report_stop_reason if crawl is not None else state.stop_reason)[:64],
         llmCalls=state.llm_calls,
         durationSec=round(max(0.0, clock.monotonic() - state.started), 1),
         stored=dict(state.stored_counts),

@@ -76,8 +76,9 @@ def _skips() -> dict:
 @dataclass
 class CrawlResult:
     entries: list[Candidate] = field(default_factory=list)
-    # A code for the report: max_pages max_llm_calls time_budget max_map_entries frontier_empty
-    # no_llm llm_stop llm_error llm_parse_error cancelled sitemap.
+    # A code, the report's stopReason unless report_stop says more: max_pages max_llm_calls
+    # time_budget max_map_entries frontier_empty no_llm llm_stop llm_error llm_parse_error
+    # cancelled sitemap.
     stop_reason: str = ""
     # 1.x's crawl_stopped_because text (the model's own reason when it stopped).
     stopped_because: str = ""
@@ -88,10 +89,19 @@ class CrawlResult:
     error_code: str = ""
     # Report error codes counted on the way (page_too_large), by code.
     errors: dict = field(default_factory=dict)
+    # Set only by Auto, whose code alone hides what ran: which sitemap gave the map, or that
+    # none did and the model crawled. Fixed words, codes and counts, never a URL; it must fit
+    # the report's 64 characters.
+    report_stop: str = ""
 
     @property
     def llm_calls(self) -> int:
         return int(self.stats.get("llm_calls", 0))
+
+    @property
+    def report_stop_reason(self) -> str:
+        """The ingestion report's ``stopReason``."""
+        return self.report_stop or self.stop_reason
 
 
 # --------------------------------------------------------------------------------------
@@ -609,18 +619,20 @@ async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[F
         if found.stopped in ("cancelled", "time_budget") and (found.stopped == "cancelled" or not found.entries):
             logger.info(f"[tradecraft] crawl done strategy=auto stop={found.stopped} entries={len(found.entries)}")
             return CrawlResult(stop_reason=found.stopped, stopped_because=found.stopped.replace("_", " "),
-                               stats=stats, skipped=state.skipped())
+                               stats=stats, skipped=state.skipped(), report_stop=f"auto: {found.stopped}")
         if found.entries:
             stop = "max_map_entries" if found.cut else ("time_budget" if found.stopped == "time_budget" else "sitemap")
             logger.info(f"[tradecraft] crawl done strategy=auto source={found.source} entries={len(found.entries)} "
                         f"stop={stop}")
-            return CrawlResult(
-                entries=found.entries, stop_reason=stop,
-                stopped_because=f"auto: {found.source} ({len(found.entries)} pages"
-                                f"{', map limit' if found.cut else ', time budget' if stop == 'time_budget' else ''})",
-                stats=stats, skipped=state.skipped())
+            because = (f"auto: {found.source} ({len(found.entries)} pages"
+                       f"{', map limit' if found.cut else ', time budget' if stop == 'time_budget' else ''})")
+            return CrawlResult(entries=found.entries, stop_reason=stop, stopped_because=because, stats=stats,
+                               skipped=state.skipped(), report_stop=because)
         logger.info("[tradecraft] crawl auto found no usable sitemap: llm-guided")
-        strategy = "llm"
+        result = await _loop(state, settings, "llm", fetch_page, llm, blocking, cancel_check, progress,
+                             robots_cache if respect_robots else None)
+        result.report_stop = f"auto: no usable sitemap, llm-guided ({result.stop_reason})"
+        return result
     return await _loop(state, settings, strategy, fetch_page, llm, blocking, cancel_check, progress,
                        robots_cache if respect_robots else None)
 

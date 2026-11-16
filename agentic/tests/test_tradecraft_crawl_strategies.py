@@ -671,3 +671,57 @@ def test_a_cut_page_is_counted_in_the_report(tmp_path):
     outcome, store, _ = _job_without_model(tmp_path, SITE + "/", {"crawl.strategy": "rules"})
     assert outcome.status == "succeeded" and len(store.live_entries("r1")) == 2
     assert {"code": "page_too_large", "count": 1} in store.resources["r1"]["ingestion_report"]["errors"]
+
+
+# --------------------------------------------------------------------------------------
+# Milestone M2: the 2.0 report names Auto and where its map came from (phase 3, check 2)
+# --------------------------------------------------------------------------------------
+
+def test_auto_report_names_strategy_and_source(tmp_path):
+    """The report's stopReason, the card's "stopped: …", says that Auto ran and which sitemap
+    gave the map (1.x's ``crawl_stopped_because`` text), or that Auto found none and the model
+    crawled; fixed words, codes and counts only, within the contract's 64 characters. The
+    model-guided and rule-based crawls keep their plain codes."""
+    from tradecraft_doubles import FIXTURES
+
+    outcome, store, _ = _job_without_model(FIXTURES, BLOG, {"crawl.strategy": "auto"})
+    assert outcome.status == "succeeded"
+    row = store.resources["r1"]
+    assert row["ingestion_report"]["stopReason"] == "auto: robots (60 pages)"
+    assert row["crawl_stopped_because"] == "auto: robots (60 pages)" and row["crawl_stats"]["strategy"] == "auto"
+
+    pages = [f"{SITE}/notes/n{i}/" for i in range(150)]
+    write_site(tmp_path, HOST, {"/": html("Home", [(f"{SITE}/a/", "A")]), "/a/": html("A"),
+                                "/sitemap.xml": urlset(pages)})
+    auto = s(**{"crawl.strategy": "auto", "knownTypes.maxMapEntries.website": 100})
+    cut = go(SITE + "/", auto, fetcher=FixtureFetcher(tmp_path), llm=NoModel())
+    assert cut.report_stop_reason == "auto: sitemap.xml (100 pages, map limit)"
+
+    timed_root = _sitemaps_site(tmp_path / "timed", 5, 50)
+    fake = FakeClock()
+    timed = go(SITE + "/", s(**{"crawl.strategy": "auto", "crawl.timeBudgetSec": 180}),
+               fetcher=_SlowSite(timed_root, fake), fake_clock=fake, llm=NoModel())
+    assert timed.report_stop_reason == "auto: robots (50 pages, time budget)"
+    spent = FakeClock()
+    starved = go(SITE + "/", s(**{"crawl.strategy": "auto", "crawl.timeBudgetSec": 30}),
+                 fetcher=_SlowSite(timed_root, spent), fake_clock=spent, llm=NoModel())
+    assert starved.entries == [] and starved.report_stop_reason == "auto: time_budget"
+
+    bare = tmp_path / "bare"
+    write_site(bare, HOST, {"/": html("Home", [(f"{SITE}/a/", "A")]), "/a/": html("A")})
+    model = ScriptedChatModel('{"action": "follow", "indices": [1], "reason": "x"}')
+    fell_back = go(SITE + "/", s(**{"crawl.strategy": "auto"}), fetcher=FixtureFetcher(bare), llm=model)
+    assert fell_back.stop_reason == "frontier_empty"
+    assert fell_back.report_stop_reason == "auto: no usable sitemap, llm-guided (frontier_empty)"
+
+    guided = go(SITE + "/", s(), fetcher=FixtureFetcher(bare),
+                llm=ScriptedChatModel('{"action": "follow", "indices": [1], "reason": "x"}'))
+    ruled = go(SITE + "/", s(**{"crawl.strategy": "rules"}), fetcher=FixtureFetcher(bare))
+    assert guided.report_stop_reason == "frontier_empty" and ruled.report_stop_reason == "frontier_empty"
+
+    # The longest stop code after a fallback still fits the contract, and no text holds a URL.
+    unparsed = go(SITE + "/", s(**{"crawl.strategy": "auto"}), fetcher=FixtureFetcher(bare),
+                  llm=ScriptedChatModel("not json", "still not json"))
+    assert unparsed.report_stop_reason == "auto: no usable sitemap, llm-guided (llm_parse_error)"
+    for text in (cut.report_stop_reason, timed.report_stop_reason, unparsed.report_stop_reason):
+        assert IngestionReport(stopReason=text).stopReason == text and "://" not in text
