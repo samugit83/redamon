@@ -3,9 +3,11 @@
 Rules first, free (Q4 "Every page is tagged"): the vocabulary's ``keywords`` (topics),
 ``kindKeywords`` (kinds) and technology names and aliases, matched as whole words in the card's
 title, breadcrumb and headings. "SQL" or "sqli" mean SQL injection, "Kerberos" Active Directory.
-A page the rules leave without a topic is left for the model pass (``tag_by_model``), which tags
-it from its title when ``focus.tagEveryPage`` is ``rules_model``; until T5.1 that pass is a stub
-and such a page keeps no topic. Every tag is a vocabulary id, so the coverage map can count them.
+A page the rules leave without a topic goes to the model pass (``tag_by_model``, T5.1) when
+``focus.tagEveryPage`` is ``rules_model`` (the default): the focus's title triage in its tag-only
+form, batches of ``constants.titleTriageBatch`` titles with the resource's model, nothing dropped.
+Tags the focus's triage already gave a page count first. Every tag is a vocabulary id, so the
+coverage map can count them.
 """
 
 from __future__ import annotations
@@ -15,10 +17,13 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, Sequence
 
+from logging_config import get_logger
 from tradecraft.vocab import load_vocab
 
 if TYPE_CHECKING:  # the pipeline imports this module: the state is a type here only
     from tradecraft.ingest.pipeline import IngestState
+
+logger = get_logger(__name__)
 
 _SEPARATORS = re.compile(r"[\s_\-/]+")
 
@@ -92,13 +97,15 @@ def _merged(existing: Optional[Iterable[str]], found: Iterable[str]) -> list[str
 
 
 async def tag(state: "IngestState") -> "IngestState":
-    """Every card with its rules' tags, added to any it already has (a curation or a focus may
-    have set some); then the model pass for the cards left without a topic."""
+    """Every card with its rules' tags, added to any it already has (a curation or the focus's
+    triage may have set some); then the model pass for the kept cards left without a topic."""
+    from_focus = {e.url: e.extra for e in state.entries if "focus_topics" in e.extra or "focus_kinds" in e.extra}
     untagged = []
     for card in state.cards:
         found = classify(card.get("title", ""), card.get("breadcrumb") or (), heading_texts(card.get("headings")))
-        card["topics"] = _merged(card.get("topics"), found.topics)
-        card["kinds"] = _merged(card.get("kinds"), found.kinds)
+        judged = from_focus.get(card.get("url"), {})
+        card["topics"] = _merged(_merged(card.get("topics"), judged.get("focus_topics") or ()), found.topics)
+        card["kinds"] = _merged(_merged(card.get("kinds"), judged.get("focus_kinds") or ()), found.kinds)
         card["technologies"] = _merged(card.get("technologies"), found.technologies)
         if not card["topics"]:
             untagged.append(card)
@@ -108,7 +115,36 @@ async def tag(state: "IngestState") -> "IngestState":
 
 
 async def tag_by_model(state: "IngestState", cards: list[dict]) -> None:
-    """Title tagging for the cards the rules could not classify (T5.1: batches of
-    ``constants.titleTriageBatch`` titles with the resource's model, nothing dropped). Until
-    then: nothing, and no model call."""
-    return None
+    """Title tagging for the kept cards the rules could not classify: the triage's tag-only form,
+    with the resource's model. A model error is counted and never retried (TD-20): the cards
+    left keep no topic."""
+    from tradecraft.ingest import focus
+    from tradecraft.ingest.crawl import error_code_of
+
+    cards = [c for c in cards if c.get("status", "kept") == "kept"]
+    if not cards:
+        return
+    try:
+        llm = await state.model()
+    except Exception as exc:
+        state.count_error(error_code_of(exc))
+        return
+    if llm is None:
+        return
+
+    async def before(done: int, total: int) -> None:
+        await state.check_cancelled()
+        await state.progress("tags", done, total, "entries")
+
+    result = await focus.triage_titles(llm, [(c.get("title", ""), c.get("url", "")) for c in cards], drop=False,
+                                       step="tagging", before_batch=before)
+    state.llm_calls += result.calls
+    for card, verdict in zip(cards, result.verdicts):
+        if verdict is not None:
+            card["topics"] = _merged(card.get("topics"), verdict.topics)
+            card["kinds"] = _merged(card.get("kinds"), verdict.kinds)
+    for _ in range(result.invalid):
+        state.count_error("title_tagging_invalid")
+    if result.error_code:
+        state.count_error(result.error_code)
+        logger.info(f"[tradecraft] job {state.request.job_id} tagging code={result.error_code}")

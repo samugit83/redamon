@@ -356,9 +356,12 @@ def _homepage_fallback(state: IngestState) -> None:
 
 def failure_code(state: IngestState) -> str:
     """The code of a refresh that failed or came back empty, or "" for a usable result. A
-    CVE archive has no entries by design."""
+    CVE archive has no entries by design, and a map whose pages the focus all dropped was read:
+    its dropped entries are written, for the Map view."""
     kept = [e for e in state.entries if e.extra.get("status", "kept") == "kept"]
     if kept or (state.site_type == "cve-poc-db" and not state.map_error):
+        return ""
+    if not state.map_error and any(e.extra.get("dropped_by") == "focus" for e in state.entries):
         return ""
     return state.map_error or state.home_problem or "fetch_failed"
 

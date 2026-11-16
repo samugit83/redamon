@@ -1,8 +1,8 @@
 """Tags by rules (T2.2): topics, kinds and technologies from the vocabulary's words, matched in a
 card's title, breadcrumb and headings (Q4 "Every page is tagged", R-008, R-332, R-337).
 
-The model pass for what the rules leave (``tag_by_model``) is T5.1's; here it stays a stub that
-never calls a model.
+The model pass for what the rules leave (``tag_by_model``) is T5.1's and is tested in
+``test_tradecraft_title_triage.py``; here the rules run with no model to call.
 """
 
 from __future__ import annotations
@@ -74,8 +74,11 @@ def test_every_tag_is_a_vocabulary_id():
 
 
 def _state(cards, tag_every_page="rules_model"):
+    async def no_model():
+        return None
+
     return SimpleNamespace(cards=cards, settings=EffectiveSettings({"focus.tagEveryPage": tag_every_page}),
-                           llm_calls=0, model_calls=[])
+                           llm_calls=0, model_calls=[], entries=[], model=no_model)
 
 
 def test_stage_tags_every_card_and_keeps_existing_tags():
@@ -92,13 +95,16 @@ def test_stage_tags_every_card_and_keeps_existing_tags():
     assert third["topics"] == ["active_directory"] and third["kinds"] == ["poc"]
 
 
-def test_the_model_pass_is_a_stub_that_calls_no_model():
+def test_rules_only_never_builds_a_model():
+    """R-338: "Rules only" asks no model, and a page the rules classify never needs one."""
     class NoModel:
         async def model(self):  # would be the resource's model
             raise AssertionError("the rules-only stage must not build a model")
 
-    for mode in ("rules_model", "rules"):
-        state = _state([{"url": "u", "title": "About us"}], mode)
+    cases = (("rules", [{"url": "u", "title": "About us"}]),
+             ("rules_model", [{"url": "u", "title": "SQLi union based"}]))
+    for mode, cards in cases:
+        state = _state(cards, mode)
         state.model = NoModel().model
         asyncio.run(tags.tag(state))
         assert state.llm_calls == 0

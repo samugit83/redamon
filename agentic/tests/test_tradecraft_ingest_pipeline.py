@@ -103,8 +103,9 @@ def test_report_fields(tmp_path):
     report = IngestionReport.model_validate(h.resource["ingestion_report"])
     assert report == outcome.report
     assert report.kept == len(h.store.live_entries(RID)) > 0
-    # Two model calls: the summary, and one for the wiki's folder descriptions (T2.3).
-    assert report.visited >= 1 and report.llmCalls == 2 and report.durationSec >= 0
+    # Three model calls: the summary, one for the wiki's folder descriptions (T2.3), and one
+    # tagging the pages the rules leave without a topic (the start pages, T5.1).
+    assert report.visited >= 1 and report.llmCalls == 3 and report.durationSec >= 0
     assert set(report.skipped.model_dump()) == {"excluded", "outOfScope", "tooLittleText", "robots", "outsideFocus"}
     assert report.stored.pages == 0  # a Live resource stores nothing
 
