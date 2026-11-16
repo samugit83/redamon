@@ -1,4 +1,4 @@
-"""Every SQL statement of library search and browse (T2.4), and of reading by section (T2.5).
+"""Every SQL statement of library search and browse (T2.4).
 
 Rules, held by ``tests/test_tradecraft_search.py``:
 
@@ -112,12 +112,6 @@ STATEMENTS: dict[str, str] = {
     "kept_count": (
         f"SELECT count(*) AS n FROM {E} e {LIVE_E} "
         f"WHERE e.user_id = %(uid)s AND e.resource_id = %(rid)s AND e.status = 'kept'"
-    ),
-    # --- reading by section (T2.5): a stored page's sections, in order ------------------
-    "sections_of_entry": (
-        f"SELECT s.ord, s.heading, s.level, s.anchor, s.text, s.chars FROM {S} s {LIVE_S} "
-        f"JOIN {E} e ON e.id = s.entry_id AND e.user_id = s.user_id AND e.generation = s.generation "
-        f"WHERE s.user_id = %(uid)s AND s.resource_id = %(rid)s AND s.entry_id = %(entry)s ORDER BY s.ord"
     ),
 }
 

@@ -14,9 +14,19 @@ live generation at this call, so a refresh that swaps during a run is seen at th
 The catalog, its token and its logins come only from ``runtime.bound_catalog()``; outside a
 run's task nothing is bound and nothing is requested. Reading never writes (R-306).
 
-Until search arrives (phase 2), a page is picked by 1.x's title match over the resource's
-1.x map, which every 2.0 ingestion keeps current (TD-18); an unconverted resource reads the
-map 1.x wrote (R-217). A CVE archive is read live, a CVE at a time; a PDF page from the store.
+Reading by page and section (Q8, T2.5): ``page`` (an ID from search, a hint or the librarian)
+names the page, ``section`` one of its headings and ``part`` a part of a long section. A read
+returns one section, the one asked for or the best match for ``query``, at most
+``reading.charsPerRead`` characters with code blocks whole (``split``), and its header names
+the page ID, the section, "part N of M" and the page's other sections. A Live page is split
+at read time and nothing is kept. Every page returned is recorded as seen in the run.
+
+With ``resource_id`` and ``query`` (the 1.x arguments), the free first pass of search picks
+the page of a resource that has cards (``map_version`` 2 and up); the section picker model is
+no longer used. An unconverted resource, a page the first pass does not find, and a forced
+``section_path`` keep today's title match over the resource's 1.x map, which every 2.0
+ingestion keeps current (TD-18, R-217), and today's whole-page answer. A CVE archive is read
+live, a CVE at a time; a PDF page from the store.
 """
 
 from __future__ import annotations
@@ -28,10 +38,10 @@ from datetime import datetime
 from typing import Any, Optional
 
 from logging_config import get_logger
-from tradecraft import net, runtime
+from tradecraft import net, run_state, runtime
 from tradecraft.ingest import fetch
-from tradecraft.library import cve, legacy_match
-from tradecraft.library.types import format_source, wrap_untrusted
+from tradecraft.library import cve, legacy_match, page_ids, search, split
+from tradecraft.library.types import READ_PAGE, READ_SOURCE, format_read_section, format_source, wrap_untrusted
 from tradecraft.settings import EffectiveSettings, constant
 
 logger = get_logger(__name__)
@@ -51,6 +61,13 @@ NOT_REFRESHED = "the site could not be reached ({code}); this is the stored copy
 SKIPPED_COPY = "read from the site at your request; the stored copy from {date} was not used"
 # The address guard's refusals: not an unreachable site, and no copy is offered instead.
 _REFUSED = ("unsafe_address", "userinfo_refused", "bad_url")
+PAGE_GONE = ("Error: page {page_id} is no longer in resource '{slug}' (a refresh removed it); "
+             "search again with tradecraft_search.")
+NO_SECTION = "Error: page {page_id} has no section {section!r}. Its sections: {sections}."
+NO_PART = "Error: section {section!r} of page {page_id} has {parts} part(s); ask for part 1 to {parts}."
+CVE_BY_ID = "Error: resource '{slug}' is a cve-poc-db: read it with cve_id='CVE-YYYY-NNNNN', not by page."
+# The other sections a read header lists: the rest are counted.
+OTHER_SECTIONS_LISTED = 30
 
 
 def _date(value: Any) -> str:
@@ -107,11 +124,14 @@ class _Read:
         return bool(self.resource.has_login or self.row.get("has_login"))
 
 
-async def lookup(*, resource_id: str, query: str = "", cve_id: Optional[str] = None,
-                 section_path: Optional[str] = None, force_refresh: bool = False) -> str:
+async def lookup(*, resource_id: str = "", query: str = "", cve_id: Optional[str] = None,
+                 section_path: Optional[str] = None, force_refresh: bool = False, page: Optional[str] = None,
+                 section: Optional[str] = None, part: Optional[int] = None) -> str:
     catalog = runtime.bound_catalog()
     if catalog is None:
         return NOT_AVAILABLE
+    if page:
+        return await _by_page_id(catalog, page, section=section, part=part, query=query, force_refresh=force_refresh)
     resource = next((r for r in catalog.resources if r.slug == (resource_id or "")), None)
     if resource is None:
         available = ", ".join(sorted(r.slug for r in catalog.resources)) or "(none)"
@@ -124,6 +144,12 @@ async def lookup(*, resource_id: str, query: str = "", cve_id: Optional[str] = N
     logger.info(f"[tradecraft] lookup resource={read.slug} section={'forced' if section_path else 'auto'}")
     if resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
         return await _cve(read, cve_id)
+    index = runtime.run_index()
+    if index is not None and not section_path and int(row.get("map_version") or 1) >= 2:
+        picked = await _first_pass_pick(read, query, index)
+        if picked is not None:
+            return await _read_section(read, *picked, section=section, part=part, query=query,
+                                       force_refresh=force_refresh)
     if isinstance(read.sitemap.get("pages"), list) and read.sitemap.get("pages"):
         return await _pdf(read, query, section_path, force_refresh)
     return await _page(read, query, section_path, force_refresh)
@@ -168,31 +194,154 @@ async def _stored_copy(read: _Read, url: str) -> Optional[dict]:
     return entry if entry and entry.get("stored_text") else None
 
 
+async def _text_of(read: _Read, target: str, copy: Optional[dict], force_refresh: bool) -> tuple:
+    """(text, source label, note, error): the stored copy, else the site, else the copy with a
+    note, else the error that says whether a copy exists."""
+    if copy is not None and not force_refresh:
+        return copy["stored_text"], format_source("stored", _date(copy.get("fetched_at"))), "", ""
+    page = await fetch.smart_fetch(target, read.settings, github_token=read.token)
+    if page.error in _REFUSED:
+        return None, "", "", BAD_URL.format(url=target, code=page.error)
+    ok = not page.error and 200 <= page.status < 300 and bool(page.text)
+    if not ok:
+        code = page.error or (f"http_{page.status}" if page.status else "unreachable")
+        if copy is not None:
+            return (copy["stored_text"], format_source("stored", _date(copy.get("fetched_at"))),
+                    NOT_REFRESHED.format(code=code), "")
+        template = UNREACHABLE_NOT_STORED if read.mode == "stored" else UNREACHABLE_LIVE
+        return None, "", "", template.format(url=target, code=code, slug=read.slug)
+    if copy is not None:
+        return page.text, format_source("live"), SKIPPED_COPY.format(date=_date(copy.get("fetched_at"))), ""
+    return page.text, format_source("live_not_stored" if read.mode == "stored" else "live"), "", ""
+
+
 async def _page(read: _Read, query: str, section_path: Optional[str], force_refresh: bool) -> str:
     target, title = await _pick_url(read, query, section_path)
     refused = await _refusal(read, target)
     if refused:
         return refused
-    canonical = fetch.canonical_url(target)
-    copy = await _stored_copy(read, canonical)
-    if copy is not None and not force_refresh:
-        return render(read.slug, target, title, format_source("stored", _date(copy.get("fetched_at"))), copy["stored_text"])
-    page = await fetch.smart_fetch(target, read.settings, github_token=read.token)
-    if page.error in _REFUSED:
-        return BAD_URL.format(url=target, code=page.error)
-    ok = not page.error and 200 <= page.status < 300 and bool(page.text)
-    if not ok:
-        code = page.error or (f"http_{page.status}" if page.status else "unreachable")
-        if copy is not None:
-            return render(read.slug, target, title, format_source("stored", _date(copy.get("fetched_at"))),
-                          copy["stored_text"], note=NOT_REFRESHED.format(code=code))
-        template = UNREACHABLE_NOT_STORED if read.mode == "stored" else UNREACHABLE_LIVE
-        return template.format(url=target, code=code, slug=read.slug)
-    if copy is not None:
-        return render(read.slug, target, title, format_source("live"), page.text,
-                      note=SKIPPED_COPY.format(date=_date(copy.get("fetched_at"))))
-    source = format_source("live_not_stored" if read.mode == "stored" else "live")
-    return render(read.slug, target, title, source, page.text)
+    copy = await _stored_copy(read, fetch.canonical_url(target))
+    text, source, note, error = await _text_of(read, target, copy, force_refresh)
+    if error:
+        return error
+    return render(read.slug, target, title, source, text, note=note)
+
+
+# --------------------------------------------------------------------------------------
+# By page ID and section (Q8)
+# --------------------------------------------------------------------------------------
+
+async def _first_pass_pick(read: _Read, query: str, index: Any) -> Optional[tuple[str, str]]:
+    """(page ID, URL) of the resource's page the free first pass ranks first, or None."""
+    if not (query or "").strip():
+        return None
+    settings = EffectiveSettings(read.catalog.search or {}, scope="search")
+    try:
+        first = await search.free_first_pass(read.owner, read.catalog, query, resource=read.slug,
+                                             settings=settings, index=index)
+    except search.SearchError:
+        return None
+    _verdict, ranked = search.verdict_of(first.candidates, settings.str("search.strictness"))
+    if not ranked:
+        return None
+    best = ranked[0].row
+    return page_ids.format(read.slug, int(best["page_id"])), best["url"]
+
+
+async def _by_page_id(catalog: Any, text: str, *, section: Optional[str], part: Optional[int], query: str,
+                      force_refresh: bool) -> str:
+    store = runtime.run_store()
+    resolved = await page_ids.resolve(store, catalog.owner_id, catalog, text)
+    if isinstance(resolved, page_ids.Refused):
+        return f"Error: {resolved.message}"
+    row = await store.legacy_sitemap(catalog.owner_id, resolved.resource.id)
+    if row is None:
+        return DELETED.format(slug=resolved.resource.slug)
+    read = _Read(catalog, resolved.resource, row, store)
+    if resolved.resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
+        return CVE_BY_ID.format(slug=read.slug)
+    logger.info(f"[tradecraft] lookup resource={read.slug} section=page")
+    return await _read_section(read, resolved.page_id, resolved.url, section=section, part=part, query=query,
+                               force_refresh=force_refresh)
+
+
+async def _pdf_page_live(read: _Read, url: str, entry: dict, force_refresh: bool) -> tuple:
+    """A PDF page's text: the stored copy, else the document read again (as ``_pdf`` does)."""
+    base = url.split("#", 1)[0]
+    number = int(re.search(r"#page=(\d+)$", url).group(1))
+    if entry.get("stored_text") and not force_refresh:
+        return entry["stored_text"], format_source("stored", _date(entry.get("fetched_at"))), "", ""
+    resp = await fetch.fetch_raw(base, read.settings, github_token=read.token)
+    text = ""
+    if resp.ok and resp.body[:5] == b"%PDF-":
+        try:
+            text = await asyncio.get_running_loop().run_in_executor(None, _pdf_page_text, resp.body, number)
+        except Exception:
+            text = ""
+    if text:
+        note = SKIPPED_COPY.format(date=_date(entry.get("fetched_at"))) if entry.get("stored_text") else ""
+        return text, format_source("live" if note else "live_not_stored"), note, ""
+    code = resp.error or (f"http_{resp.status}" if resp.status else "unreachable")
+    if entry.get("stored_text"):
+        return (entry["stored_text"], format_source("stored", _date(entry.get("fetched_at"))),
+                NOT_REFRESHED.format(code=code), "")
+    return None, "", "", UNREACHABLE_NOT_STORED.format(url=url, code=code, slug=read.slug)
+
+
+def _hint_value(text: str) -> str:
+    return _one_line(text).replace('"', "'")
+
+
+def render_section(page_id: str, crumbs: list[str], chosen: split.Section, sections: list[split.Section], part: int,
+                   parts: int, source: str, text: str, note: str = "") -> str:
+    """A read in Q8's shape, inside the untrusted envelope."""
+    others = [split.section_name(s) for s in sections if s is not chosen]
+    if len(others) > OTHER_SECTIONS_LISTED:
+        others = others[:OTHER_SECTIONS_LISTED] + [f"… {len(others) - OTHER_SECTIONS_LISTED} more"]
+    lines = [READ_PAGE.format(page_id=page_id, breadcrumb=_one_line(" › ".join(c for c in crumbs if c))),
+             format_read_section(split.section_name(chosen), part, parts, others),
+             READ_SOURCE.format(source=_one_line(source))]
+    if note:
+        lines.append(f"note: {_one_line(note)}")
+    if part < parts:
+        lines.append(f'next: tradecraft_lookup(page="{page_id}", section="{_hint_value(split.section_name(chosen))}", '
+                     f"part={part + 1})")
+    lines += ["---", text or ""]
+    return wrap_untrusted(lines)
+
+
+async def _read_section(read: _Read, page_id: str, url: str, *, section: Optional[str], part: Optional[int],
+                        query: str, force_refresh: bool) -> str:
+    refused = await _refusal(read, url)
+    if refused:
+        return refused
+    # Page IDs and the first pass name an entry's own URL (canonical; a PDF page keeps "#page=N").
+    entry = await read.store.entry_by_url(read.owner, read.resource.id, url)
+    if entry is None:
+        return PAGE_GONE.format(page_id=page_id, slug=read.slug)
+    if "#page=" in url:
+        text, source, note, error = await _pdf_page_live(read, url, entry, force_refresh)
+    else:
+        copy = entry if (read.mode == "stored" and entry.get("stored_text")) else None
+        text, source, note, error = await _text_of(read, url, copy, force_refresh)
+    if error:
+        return error
+    sections = split.split_markdown(text) or [split.Section(0, "", 0, "", "")]
+    chosen = split.pick_section(sections, section, query)
+    if chosen is None:
+        names = ", ".join(split.section_name(s) for s in sections[:OTHER_SECTIONS_LISTED])
+        return NO_SECTION.format(page_id=page_id, section=section, sections=names)
+    chars = EffectiveSettings(read.catalog.search or {}, scope="search").int("reading.charsPerRead")
+    pieces = split.parts(chosen.text, chars)
+    number = 1 if part in (None, "") else int(part)
+    if number < 1 or number > len(pieces):
+        return NO_PART.format(section=split.section_name(chosen), page_id=page_id, parts=len(pieces))
+    try:
+        run_state.record_seen([page_id])
+    except LookupError:
+        pass  # a read outside an executor node (a test, the librarian's own check) counts nowhere
+    crumbs = [read.resource.name or read.slug, *(entry.get("breadcrumb") or []), entry.get("title") or ""]
+    return render_section(page_id, crumbs, chosen, sections, number, len(pieces), source, pieces[number - 1], note)
 
 
 # --------------------------------------------------------------------------------------

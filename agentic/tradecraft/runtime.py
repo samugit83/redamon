@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 
 _catalog: contextvars.ContextVar[Optional[V2Catalog]] = contextvars.ContextVar("tradecraft_v2_catalog", default=None)
 _store: contextvars.ContextVar[Any] = contextvars.ContextVar("tradecraft_v2_store", default=None)
+_index: contextvars.ContextVar[Any] = contextvars.ContextVar("tradecraft_v2_index", default=None)
 
 
 def bind_run_catalog(catalog: Any) -> bool:
@@ -111,6 +112,28 @@ def use_store(store: Any) -> Iterator[Any]:
         yield store
     finally:
         _store.reset(token)
+
+
+def run_index() -> Any:
+    """The search index the run reads (``library.search.LibraryIndex`` on the page store's
+    database), or None when a caller bound a store of its own and no index with it (a test's
+    in-memory store has no full-text search; its reads keep today's title match)."""
+    index = _index.get()
+    if index is not None:
+        return index
+    if _store.get() is not None:
+        return None
+    from tradecraft.library.search import LibraryIndex
+    return LibraryIndex()
+
+
+@contextlib.contextmanager
+def use_index(index: Any) -> Iterator[Any]:
+    token = _index.set(index)
+    try:
+        yield index
+    finally:
+        _index.reset(token)
 
 
 def section_picker() -> Any:
