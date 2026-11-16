@@ -66,6 +66,7 @@ BROWSED_RESOURCES = 5
 NO_MODEL = "no librarian model is set, so these are the plain search results"
 LOOP_RUN = "the librarian is not used in an Agent in the Loop run: these are the plain search results"
 MODEL_ERROR = "the librarian's model failed ({code}) and was not retried: these are the plain search results"
+FAILED = "the librarian stopped on an error ({code}): these are the plain search results"
 TIME_UP = "the time limit of {secs} s was reached: this is the best result so far"
 CALLS_UP = "the limit of {calls} model calls per question was reached: this is the best result so far"
 UNREADABLE = "the pages found could not be read: these are the plain search results"
@@ -329,6 +330,8 @@ def _stop_note(run: _Run) -> str:
         return CALLS_UP.format(calls=run.max_calls)
     if run.stop == "model_error":
         return MODEL_ERROR.format(code=run.error_code or "model_unavailable")
+    if run.stop == "error":
+        return FAILED.format(code=run.error_code or "internal_error")
     return ""
 
 
@@ -440,8 +443,10 @@ async def ask(request: Request, *, owner_id: str, person_id: Optional[str], cata
     except asyncio.TimeoutError:
         run.stop = "time"
     except Exception as exc:
+        # A step that failed outside a model call (the store, a read); the free results answer.
         logger.warning(f"[tradecraft] librarian code=internal_error error={type(exc).__name__}")
-        run.stop, run.error_code = run.stop or "model_error", run.error_code or "internal_error"
+        if not run.stop:
+            run.stop, run.error_code = "error", "internal_error"
     answer = build_answer(run, first, notes)
     logger.info(f"[tradecraft] librarian verdict={answer.verdict} calls={answer.model_calls} "
                 f"pages={answer.pages_inspected} picks={len(answer.picks)} stop={run.stop or '-'}")

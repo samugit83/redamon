@@ -151,3 +151,16 @@ def test_shared_semaphore():
         assert graph.call_gate() is not graph.call_gate()  # outside a run: one gate per ask
 
     run(two_runs())
+
+
+def test_an_error_outside_a_model_call_answers_the_free_results():
+    lib = tools()
+
+    async def broken(page_id):
+        raise RuntimeError("the store is down")
+
+    lib.outline = broken
+    model = LibrarianModel({"shortlist": {"pages": ["patt:412"]}, "judge": FOUND_ANSWER})
+    answer = run(ask_with(model, lib))
+    assert model.steps == ["shortlist"] and answer.verdict == "PARTIAL"
+    assert answer.notes == (graph.FAILED.format(code="internal_error"),)
