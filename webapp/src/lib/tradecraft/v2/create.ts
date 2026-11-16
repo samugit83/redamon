@@ -6,13 +6,18 @@
  */
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
+import { auditedTransaction } from '@/lib/auditForward'
 import { rbacFlags } from '@/lib/authz/flags'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
+import { auditLoginChange, loginChangeRefusal } from '../actAs'
 import { effectiveSettings } from '../effectiveSettings'
 import { startJob, startedJobFields, type JobActor } from '../jobs'
 import { SETTINGS_CONSTANTS } from '../settingsSpec'
 import { slugify, uniqueSlug } from '../urls'
-import { defaultStorageMode, fieldErrorResponse, forcedStorageMode, parseResourceFields, typeOptionsOf } from './fields'
+import {
+  applyCredentials, defaultStorageMode, fieldErrorResponse, forcedStorageMode, hasCredentials, parseResourceFields,
+  typeOptionsOf, type StoredCredentials,
+} from './fields'
 import { focusSkillRefusal } from './focusFields'
 import { resourceViewOf } from './list'
 
@@ -31,6 +36,17 @@ export async function createResourceV2(input: {
   const parsed = parseResourceFields(body, 'create')
   if (!parsed.ok) return fieldErrorResponse(parsed.error)
   const fields = parsed.value
+  let login: StoredCredentials = {}
+  if (fields.credentials) {
+    const applied = applyCredentials({}, fields.credentials)
+    if (!applied.ok) return fieldErrorResponse(applied.error)
+    login = applied.value
+    // A login is never written while someone acts as the account (§6.6): before anything is.
+    if (hasCredentials(login)) {
+      const refused = await loginChangeRefusal(ownerId)
+      if (refused) return refused
+    }
+  }
   const foreignSkill = await focusSkillRefusal(ownerId, fields.focus)
   if (foreignSkill) return foreignSkill
 
@@ -54,7 +70,7 @@ export async function createResourceV2(input: {
 
   let createdId: string
   try {
-    createdId = await prisma.$transaction(async (tx) => {
+    createdId = await auditedTransaction(prisma, async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`tradecraft_resources:${ownerId}`}))`
       if ((await tx.userTradecraftResource.count({ where: { userId: ownerId } })) >= MAX_RESOURCES_PER_USER) throw new CapReached()
       if (fields.slug && (await tx.userTradecraftResource.count({ where: { userId: ownerId, slug: fields.slug } })) > 0) throw new SlugTaken()
@@ -73,10 +89,13 @@ export async function createResourceV2(input: {
           overrides: overrides as object,
           typeOptions: typeOptionsOf(overrides) as object,
           focus: (fields.focus ?? {}) as object,
+          credentials: login as object,
+          hasLogin: hasCredentials(login),
           presetKey: fields.presetKey ?? '',
         },
         select: { id: true },
       })
+      await auditLoginChange(tx, { actor, ownerId, resourceId: row.id, before: {}, after: login })
       return row.id
     })
   } catch (err) {

@@ -140,6 +140,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'workspace.import': 'Imported a link into the workspace',
     'workspace.resync': 'Refreshed a workspace import',
     'tradecraft.v2_switched': 'Turned Tradecraft 2.0 on or off',
+    'tradecraft.credentials_changed': "Changed a Tradecraft resource's site login",
   }),
   ...g('mcp', {
     'mcp.auth.denied': 'An MCP request was refused at sign-in',

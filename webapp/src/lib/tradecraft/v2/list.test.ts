@@ -50,7 +50,8 @@ describe('listResourcesV2', () => {
     const text = JSON.stringify(list)
     expect(text).not.toMatch(/SECRET|fake-session/)
     expect(list[0]).toMatchObject({ githubTokenOverride: 'set', hasLogin: true })
-    expect(list[0]).not.toHaveProperty('credentials')
+    // The login reads masked (T6.5): what is set, header names, never a value.
+    expect(list[0].credentials).toEqual({ cookie: 'set', headers: [], basic_auth: null })
     expect(list[1].githubTokenOverride).toBe('')
   })
 

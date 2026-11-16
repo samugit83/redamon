@@ -40,6 +40,8 @@ const DEFAULTS: Record<string, () => Row> = {
   project: () => ({}),
   user: () => ({}),
   userAttackSkill: () => ({ description: null, content: '', quarantinedAt: null, lineageRootId: null, version: 1 }),
+  // The rows `writeAuditTx` writes inside a write's transaction: rolled back with it.
+  auditLog: () => ({}),
 }
 
 /** Unique keys per table, as `schema.prisma` declares them (the id is always one). */

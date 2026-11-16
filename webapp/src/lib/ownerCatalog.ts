@@ -1,8 +1,9 @@
 /**
  * The project owner's catalogs, as a collaborator's project form reads them (step 5.7, SH-26):
  * which LLM providers and Jev configurations the owner has (id, name, type, whether a key is
- * stored), the owner's attack skills (id, name, quarantined), tradecraft resources (id, name,
- * enabled), MCP servers (id, name, enabled, tool names, default phases) and which API keys are set.
+ * stored), the owner's attack skills (id, name, quarantined), tradecraft resources without a site
+ * login (id, name, enabled), MCP servers (id, name, enabled, tool names, default phases) and which
+ * API keys are set.
  *
  * Names and presence only, never a value. Every list is rebuilt field by field from an explicit
  * select, so a column added to one of these rows later stays out of the answer until it is named
@@ -17,6 +18,7 @@ import { isChatProvider, isJevProvider } from '@/lib/llmProviderKinds'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
 import { PHASES } from '@/lib/mcp/schema'
+import { hasStoredLogin } from '@/lib/tradecraft/masking'
 
 /**
  * The owner's API keys (UserSettings), named by presence. The secrets the settings route masks
@@ -167,8 +169,10 @@ export async function ownerCatalog(ownerId: string): Promise<OwnerCatalog> {
     prisma.userAttackSkill.findMany({
       where: { userId: ownerId }, select: { id: true, name: true, quarantinedAt: true }, orderBy: { createdAt: 'desc' },
     }),
+    // The login columns are read only to leave those resources out (§6.6): a collaborator's runs
+    // never list them, so the form must not count them as something the tradecraft tool can use.
     prisma.userTradecraftResource.findMany({
-      where: { userId: ownerId }, select: { id: true, name: true, enabled: true }, orderBy: { createdAt: 'asc' },
+      where: { userId: ownerId }, select: { id: true, name: true, enabled: true, hasLogin: true, credentials: true }, orderBy: { createdAt: 'asc' },
     }),
     prisma.userSettings.findUnique({ where: { userId: ownerId }, select: SETTINGS_SELECT }) as Promise<Record<string, unknown> | null>,
   ])
@@ -178,7 +182,7 @@ export async function ownerCatalog(ownerId: string): Promise<OwnerCatalog> {
     providers: providerRows.filter(isChatProvider).map(provider),
     jevProviders: providerRows.filter(isJevProvider).map(provider),
     attackSkills: skills.map((s) => ({ id: s.id, name: s.name, quarantined: s.quarantinedAt !== null })),
-    tradecraftResources: resources.map((r) => ({ id: r.id, name: r.name, enabled: r.enabled })),
+    tradecraftResources: resources.filter((r) => !hasStoredLogin(r)).map((r) => ({ id: r.id, name: r.name, enabled: r.enabled })),
     mcpServers: catalogMcpServers(settings?.mcpServers),
     keys: Object.fromEntries(OWNER_KEY_FIELDS.map((f) => [f, present(settings?.[f])])) as Record<OwnerKeyField, boolean>,
   }

@@ -28,6 +28,8 @@ const ACTIONS = {
   mint_mcp_token: 'creating or widening an MCP token in their name',
   reveal_secret: 'revealing their stored secrets',
   use_github_token: 'using their GitHub token',
+  use_site_logins: 'using their saved site logins',
+  change_site_logins: 'changing their saved site logins',
   write_agent_skills: 'writing their agent skills',
   write_chat_skills: 'writing their chat skills',
   change_shares: 'changing their project shares',

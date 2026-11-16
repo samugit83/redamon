@@ -169,4 +169,45 @@ describe('Check URL', () => {
     expect(await answer(await post({ url: 'https://wiki.tc-fixture.test/' }))).toMatchObject({ status: 404, body: { code: 'tradecraft_v2_off' } })
     expect(agent.calls).toEqual([])
   })
+
+  describe('a site login (§6.6, T6.5)', () => {
+    test('a login typed for a URL being added travels to the agent, after the login rule was asked with it', async () => {
+      const agent = checkUrlAgent()
+      const login = { cookie: 'session=fake-typed', headers: [{ name: 'X-Api-Key', value: 'fake-key-1' }] }
+      const r = await answer(await post({ url: 'https://kb.tc-fixture.test/', credentials: login }))
+      expect(r.status).toBe(200)
+      expect(vi.mocked(loginUseRefusal)).toHaveBeenCalledWith({ ownerId: 'owner', credentials: { ...login, basic_auth: null } })
+      expect(CheckUrlRequest.parse(agent.calls[0].body).secrets.credentials).toEqual({ ...login, basic_auth: null })
+      expect(JSON.stringify(r.body)).not.toMatch(/fake-/)
+    })
+
+    test('use_refused: the login rule refuses a typed login (acting as the account): the agent never called', async () => {
+      const agent = checkUrlAgent()
+      h.loginRefusal = NextResponse.json({ code: 'not_while_acting_as' }, { status: 403 })
+      expect((await post({ url: 'https://kb.tc-fixture.test/', credentials: { cookie: 'session=fake-typed' } })).status).toBe(403)
+      expect(agent.calls).toEqual([])
+    })
+
+    test('a saved resource: "set" keeps the stored value, a typed header joins it; never the placeholder', async () => {
+      Object.assign(h.db.rows('userTradecraftResource', { id: 'r1' })[0], { credentials: { cookie: 'session=fake-stored' }, hasLogin: true })
+      const agent = checkUrlAgent()
+      await post({ resourceId: 'r1', credentials: { cookie: 'set', headers: [{ name: 'X-Team', value: 'fake-team' }] } })
+      expect(CheckUrlRequest.parse(agent.calls[0].body).secrets.credentials).toEqual({
+        cookie: 'session=fake-stored', headers: [{ name: 'X-Team', value: 'fake-team' }], basic_auth: null,
+      })
+      await post({ resourceId: 'r1' })
+      expect(CheckUrlRequest.parse(agent.calls[1].body).secrets.credentials).toEqual({ cookie: 'session=fake-stored', headers: [], basic_auth: null })
+      await post({ resourceId: 'r1', credentials: null })
+      expect(CheckUrlRequest.parse(agent.calls[2].body).secrets.credentials).toBeNull()
+      expect(JSON.stringify(agent.calls.map(c => c.body))).not.toMatch(/"set"/)
+      expect(writes()).toEqual([])
+    })
+
+    test('a login the rules refuse is a 400 naming its field; the agent never called', async () => {
+      const agent = checkUrlAgent()
+      const r = await answer(await post({ url: 'https://kb.tc-fixture.test/', credentials: { cookie: 'a=1\r\nX-Evil: 1' } }))
+      expect(r).toMatchObject({ status: 400, body: { field: 'credentials.cookie', code: 'bad_credentials' } })
+      expect(agent.calls).toEqual([])
+    })
+  })
 })

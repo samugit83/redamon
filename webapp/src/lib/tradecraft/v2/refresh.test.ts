@@ -15,6 +15,7 @@ vi.mock('@/lib/authz/actAsRefusals', () => ({
 }))
 
 import { setNowForTests } from '@/lib/authz/clock'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { refreshResourceV2 } from './refresh'
 
 const refresh = (ownerId = 'owner') => refreshResourceV2({ ownerId, resourceId: 'r1', actor: { actorUserId: ownerId, realActorUserId: null } })
@@ -50,6 +51,17 @@ describe('refreshResourceV2', () => {
     h.db.seed('userSettings', { userId: 'owner', githubAccessToken: 'ghp_account_fake' })
     const agent = stubAgent()
     expect((await refresh()).status).toBe(403)
+    expect(h.db.rows('tradecraftIngestionJob')).toHaveLength(0)
+    expect(agent.calls).toHaveLength(0)
+  })
+
+  test('use_refused: acting as the account, a resource with a login is refused as use_site_logins, no job', async () => {
+    h.actingAs = true
+    Object.assign(h.db.rows('userTradecraftResource', { id: 'r1' })[0], { credentials: { cookie: 'session=fake-session' }, hasLogin: true })
+    const agent = stubAgent()
+    const res = await refresh()
+    expect(res.status).toBe(403)
+    expect(vi.mocked(refuseWhileActingAsOn).mock.calls.at(-1)).toEqual(['owner', 'use_site_logins'])
     expect(h.db.rows('tradecraftIngestionJob')).toHaveLength(0)
     expect(agent.calls).toHaveLength(0)
   })

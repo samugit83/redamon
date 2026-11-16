@@ -4,7 +4,10 @@
  * @vitest-environment node
  */
 import { describe, test, expect } from 'vitest'
-import { defaultStorageMode, forcedStorageMode, parseResourceFields, recommendedStorageMode, typeOptionsOf } from './fields'
+import {
+  applyCredentials, changedLoginFields, defaultStorageMode, forcedStorageMode, hasCredentials, parseResourceFields,
+  recommendedStorageMode, typeOptionsOf,
+} from './fields'
 
 const CREATE = { name: 'Wiki', url: 'https://wiki.example.test/', llmModel: 'gpt-4o' }
 
@@ -45,7 +48,7 @@ describe('parseResourceFields', () => {
     expect(parseResourceFields({ storageMode: 'cached' }, 'update').ok).toBe(false)
     expect(parseResourceFields({ forcedType: 'wordpress' }, 'update').ok).toBe(false)
     expect(parseResourceFields({ credentials: null }, 'update')).toEqual({ ok: true, value: { credentials: null } })
-    expect(parseResourceFields({ credentials: { cookie: 'x' } }, 'update')).toMatchObject({ ok: false, error: { field: 'credentials' } })
+    expect(parseResourceFields({ credentials: { cookie: 'x' } }, 'update')).toMatchObject({ ok: true, value: { credentials: { cookie: { value: 'x' } } } })
     expect(parseResourceFields({ focus: { mode: 'focused' } }, 'update')).toMatchObject({ ok: true, value: { focus: { mode: 'focused', strictness: 'balanced' } } })
     expect(parseResourceFields({ focus: { mode: 'focused', keep: 'k'.repeat(1001) } }, 'update')).toMatchObject({ ok: false, error: { field: 'focus.keep', code: 'bad_focus' } })
     expect(parseResourceFields({ focus: {} }, 'update')).toEqual({ ok: true, value: { focus: {} } })
@@ -132,3 +135,104 @@ describe('the recommended mode per type (§4.5)', () => {
   })
 })
 
+
+describe('credentials (§6.6, T6.5, D-55)', () => {
+  const parse = (credentials: unknown, mode: 'create' | 'update' = 'update') => parseResourceFields({ ...(mode === 'create' ? CREATE : {}), credentials }, mode)
+  const STORED = {
+    cookie: 'session=fake-session', headers: [{ name: 'X-Api-Key', value: 'fake-key-123' }], basic_auth: { username: 'bob', password: 'fake-pass' },
+  }
+
+  test('credentials: a cookie, headers and basic authentication are taken; null removes the login', () => {
+    const login = { cookie: 'session=fake-session', headers: [{ name: 'X-Api-Key', value: 'k1' }], basic_auth: { username: 'bob', password: 'p:w' } }
+    expect(parse(login)).toEqual({
+      ok: true,
+      value: { credentials: { cookie: { value: 'session=fake-session' }, headers: [{ name: 'X-Api-Key', value: { value: 'k1' } }], basicAuth: { username: 'bob', password: { value: 'p:w' } } } },
+    })
+    expect(parse(login, 'create')).toMatchObject({ ok: true, value: { credentials: { cookie: { value: 'session=fake-session' } } } })
+    expect(parse(null)).toEqual({ ok: true, value: { credentials: null } })
+    expect(parse(null, 'create')).toEqual({ ok: true, value: { name: 'Wiki', url: 'https://wiki.example.test/', llmModel: 'gpt-4o' } })
+    expect(parse({ basic_auth: null })).toEqual({ ok: true, value: { credentials: { basicAuth: null } } })
+  })
+
+  test.each([
+    ['not an object', 'cookie=1', 'credentials'],
+    ['an unknown key', { cookies: 'a=1' }, 'credentials'],
+    ['a cookie over 8 KB', { cookie: 'c'.repeat(8001) }, 'credentials.cookie'],
+    ['a cookie with CR', { cookie: 'a=1\rX: y' }, 'credentials.cookie'],
+    ['a cookie with LF', { cookie: 'a=1\nSet-Cookie: x' }, 'credentials.cookie'],
+    ['a cookie with NUL', { cookie: 'a=1\u0000' }, 'credentials.cookie'],
+    ['headers not a list', { headers: { 'X-A': '1' } }, 'credentials.headers'],
+    ['21 headers', { headers: Array.from({ length: 21 }, (_, i) => ({ name: `X-H${i}`, value: 'v' })) }, 'credentials.headers'],
+    ['a header name that is no HTTP token', { headers: [{ name: 'X Api', value: 'v' }] }, 'credentials.headers[0].name'],
+    ['a header name with a colon', { headers: [{ name: 'X-A:', value: 'v' }] }, 'credentials.headers[0].name'],
+    ['an empty header name', { headers: [{ name: '', value: 'v' }] }, 'credentials.headers[0].name'],
+    ['a header value with LF', { headers: [{ name: 'X-A', value: 'v\nHost: evil' }] }, 'credentials.headers[0].value'],
+    ['a header value with NUL', { headers: [{ name: 'X-A', value: 'v\u0000' }] }, 'credentials.headers[0].value'],
+    ['a header value over 4 KB', { headers: [{ name: 'X-A', value: 'v'.repeat(4097) }] }, 'credentials.headers[0].value'],
+    ['a header named twice', { headers: [{ name: 'X-A', value: '1' }, { name: 'x-a', value: '2' }] }, 'credentials.headers[1].name'],
+    ['a basic username with a colon', { basic_auth: { username: 'bo:b', password: 'p' } }, 'credentials.basic_auth.username'],
+    ['an empty basic username', { basic_auth: { username: '', password: 'p' } }, 'credentials.basic_auth.username'],
+    ['a basic username with CR', { basic_auth: { username: 'bob\r', password: 'p' } }, 'credentials.basic_auth.username'],
+    ['a basic password with LF', { basic_auth: { username: 'bob', password: 'p\n' } }, 'credentials.basic_auth.password'],
+    ['a basic password not text', { basic_auth: { username: 'bob', password: 5 } }, 'credentials.basic_auth.password'],
+  ])('refused: %s', (_why, credentials, field) => {
+    expect(parse(credentials)).toMatchObject({ ok: false, error: { field, code: 'bad_credentials' } })
+  })
+
+  test.each(['Host', 'content-length', 'Transfer-Encoding', 'CONNECTION', 'Cookie', 'authorization'])('forbidden header name: %s', (name) => {
+    expect(parse({ headers: [{ name, value: 'v' }] })).toMatchObject({ ok: false, error: { field: 'credentials.headers[0].name', code: 'bad_credentials' } })
+  })
+
+  test('"set" keeps the stored value; a new value replaces it; an empty one clears it', () => {
+    const keepAll = parse({ cookie: 'set', headers: [{ name: 'x-api-key', value: 'set' }], basic_auth: { username: 'bob', password: 'set' } })
+    expect(keepAll.ok).toBe(true)
+    if (!keepAll.ok) return
+    // A header is matched by its name whatever its case; it keeps the spelling the form sent.
+    expect(applyCredentials(STORED, keepAll.value.credentials!)).toEqual({ ok: true, value: { ...STORED, headers: [{ name: 'x-api-key', value: 'fake-key-123' }] } })
+    const changed = parse({ cookie: 'session=fake-new', headers: [], basic_auth: { username: 'alice', password: 'set' } })
+    if (!changed.ok) throw new Error('parse')
+    expect(applyCredentials(STORED, changed.value.credentials!)).toEqual({
+      ok: true, value: { cookie: 'session=fake-new', headers: [], basic_auth: { username: 'alice', password: 'fake-pass' } },
+    })
+    const cleared = parse({ cookie: '' })
+    if (!cleared.ok) throw new Error('parse')
+    expect(applyCredentials(STORED, cleared.value.credentials!)).toEqual({ ok: true, value: { ...STORED, cookie: '' } })
+  })
+
+  test('absent parts are kept as stored', () => {
+    const onlyCookie = parse({ cookie: 'session=fake-2' })
+    if (!onlyCookie.ok) throw new Error('parse')
+    expect(applyCredentials(STORED, onlyCookie.value.credentials!)).toEqual({ ok: true, value: { ...STORED, cookie: 'session=fake-2' } })
+  })
+
+  test('"set" with nothing stored to keep: refused for a header and a password; a cookie stays empty', () => {
+    const header = parse({ headers: [{ name: 'X-New', value: 'set' }] })
+    if (!header.ok) throw new Error('parse')
+    expect(applyCredentials({}, header.value.credentials!)).toMatchObject({ ok: false, error: { field: 'credentials.headers[0].value', code: 'bad_credentials' } })
+    const password = parse({ basic_auth: { username: 'bob', password: 'set' } })
+    if (!password.ok) throw new Error('parse')
+    expect(applyCredentials({}, password.value.credentials!)).toMatchObject({ ok: false, error: { field: 'credentials.basic_auth.password' } })
+    const cookie = parse({ cookie: 'set' })
+    if (!cookie.ok) throw new Error('parse')
+    expect(applyCredentials({}, cookie.value.credentials!)).toEqual({ ok: true, value: {} })
+  })
+
+  test('has_login_recomputed: a login is any of the three; nothing set stores {}', () => {
+    expect(hasCredentials({})).toBe(false)
+    expect(hasCredentials({ cookie: '', headers: [], basic_auth: null })).toBe(false)
+    expect(hasCredentials({ cookie: 'a=1', headers: [], basic_auth: null })).toBe(true)
+    expect(hasCredentials({ cookie: '', headers: [{ name: 'X-A', value: '1' }], basic_auth: null })).toBe(true)
+    expect(hasCredentials({ cookie: '', headers: [], basic_auth: { username: 'bob', password: '' } })).toBe(true)
+    const emptied = parse({ cookie: '', headers: [], basic_auth: null })
+    if (!emptied.ok) throw new Error('parse')
+    expect(applyCredentials(STORED, emptied.value.credentials!)).toEqual({ ok: true, value: {} })
+  })
+
+  test('changedLoginFields names what changed, never a value', () => {
+    const after = { cookie: 'session=fake-new', headers: [{ name: 'X-Api-Key', value: 'fake-key-123' }, { name: 'X-Team', value: 'fake-t' }], basic_auth: { username: 'bob', password: 'fake-pass-2' } }
+    expect(changedLoginFields(STORED, after)).toEqual(['cookie', 'header:X-Team', 'basic_auth.password'])
+    expect(changedLoginFields(STORED, {})).toEqual(['cookie', 'header:X-Api-Key', 'basic_auth.username', 'basic_auth.password'])
+    expect(changedLoginFields(STORED, STORED)).toEqual([])
+    expect(JSON.stringify(changedLoginFields(STORED, after))).not.toMatch(/fake/)
+  })
+})

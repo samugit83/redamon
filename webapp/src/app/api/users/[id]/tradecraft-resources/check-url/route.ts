@@ -14,7 +14,9 @@ import {
 import { effectiveSettings } from '@/lib/tradecraft/effectiveSettings'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
 import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
-import { fieldErrorResponse, parseResourceFields, typeOptionsOf } from '@/lib/tradecraft/v2/fields'
+import {
+  applyCredentials, fieldErrorResponse, hasCredentials, parseResourceFields, typeOptionsOf, type StoredCredentials,
+} from '@/lib/tradecraft/v2/fields'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -32,8 +34,8 @@ function isTimeout(err: AgentUnreachableError): boolean {
 }
 
 // POST /api/users/[id]/tradecraft-resources/check-url
-//   Body: { url, forcedType?, overrides?, githubTokenOverride? }  (a URL being added)
-//      or { resourceId, forcedType?, overrides?, githubTokenOverride? }  (a saved resource)
+//   Body: { url, forcedType?, overrides?, githubTokenOverride?, credentials? }  (a URL being added)
+//      or { resourceId, forcedType?, overrides?, githubTokenOverride?, credentials? }  (a saved resource)
 // Check URL (§6.3): the agent fetches the homepage and the type's index, calls no model and saves
 // nothing (AC-09); neither does this route. For a saved resource the URL and the secrets come
 // from its row, and a masked value the form sends back is never what reaches the agent (D-54).
@@ -69,7 +71,10 @@ async function check(request: NextRequest, id: string): Promise<NextResponse> {
   let forcedType: string = fields.value.forcedType ?? ''
   let overrides: unknown = fields.value.overrides ?? {}
   let token = fields.value.githubTokenOverride ?? ''
-  let credentials: unknown = null
+  // The login the form holds now: typed for a URL being added, or merged with a saved resource's
+  // stored one, so a value sent back as "set" is the stored value and never the placeholder.
+  const patch = fields.value.credentials
+  let base: unknown = {}
   if (resourceId) {
     // A login's use is refused while someone acts as the account (§6.6): before the row is read.
     const loginRefused = await loginUseRefusal({ ownerId: id, resourceId })
@@ -81,8 +86,19 @@ async function check(request: NextRequest, id: string): Promise<NextResponse> {
     overrides = fields.value.overrides ?? row.overrides
     // A token typed in the form now wins; otherwise the stored one, never the placeholder.
     token = fields.value.githubTokenOverride ?? row.githubTokenOverride
-    credentials = row.hasLogin ? Credentials.parse(row.credentials ?? {}) : null
+    base = row.credentials
   }
+  let login: StoredCredentials = {}
+  if (patch !== null) {
+    const applied = applyCredentials(base, patch ?? {})
+    if (!applied.ok) return fieldErrorResponse(applied.error)
+    login = applied.value
+  }
+  if (hasCredentials(login)) {
+    const loginRefused = await loginUseRefusal({ ownerId: id, credentials: login })
+    if (loginRefused) return loginRefused
+  }
+  const credentials = hasCredentials(login) ? Credentials.parse(login) : null
 
   const account = token ? null : await prisma.userSettings.findUnique({ where: { userId: id }, select: { githubAccessToken: true } })
   const githubToken = token || account?.githubAccessToken || ''

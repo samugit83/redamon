@@ -8,12 +8,12 @@ import prisma from '@/lib/prisma'
 import { IngestionReport } from '../agentContract'
 import { effectiveSettings } from '../effectiveSettings'
 import { jobView, sweepLostJobs, type JobView } from '../jobs'
-import { secretState } from '../masking'
+import { maskCredentials, secretState, type MaskedCredentials } from '../masking'
 import { isStale } from '../staleness'
 
 const VIEW_SELECT = {
   id: true, name: true, slug: true, url: true, enabled: true, resourceType: true, forcedType: true, storageMode: true,
-  llmModel: true, githubTokenOverride: true, hasLogin: true, priority: true, mapVersion: true, generation: true,
+  llmModel: true, githubTokenOverride: true, hasLogin: true, credentials: true, priority: true, mapVersion: true, generation: true,
   summary: true, summarySource: true, summaryLocked: true, settingsHash: true, overrides: true, ingestionReport: true, focus: true,
   lastVerifiedAt: true, lastRefreshedAt: true, lastError: true, createdAt: true, updatedAt: true,
 } satisfies Prisma.UserTradecraftResourceSelect
@@ -32,6 +32,8 @@ export interface ResourceView {
   llmModel: string
   githubTokenOverride: '' | 'set'
   hasLogin: boolean
+  /** The site login masked (§6.6): header names and the user name, every value "set" or empty. */
+  credentials: MaskedCredentials
   priority: string
   /** 1: a 1.x map only; 2: converted from 1.x; 3: ingested by 2.0. */
   mapVersion: number
@@ -79,6 +81,7 @@ function view(row: ViewRow, extra: { entryCount: number; currentHash: string; jo
     llmModel: row.llmModel,
     githubTokenOverride: secretState(row.githubTokenOverride),
     hasLogin: row.hasLogin,
+    credentials: maskCredentials(row.credentials),
     priority: row.priority,
     mapVersion: row.mapVersion,
     overrides: row.overrides && typeof row.overrides === 'object' && !Array.isArray(row.overrides) ? row.overrides as Record<string, unknown> : {},

@@ -15,6 +15,7 @@ vi.mock('@/lib/authz/actAsRefusals', () => ({
 }))
 
 import { setNowForTests } from '@/lib/authz/clock'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { JobStartBatch } from '../agentContract'
 import { effectiveSettings } from '../effectiveSettings'
 import { ingestionHash } from '../staleness'
@@ -47,6 +48,8 @@ beforeEach(() => {
   h.db.seed('tradecraftSection', { id: 's1', userId: 'owner', resourceId: 'r1', entryId: 'e1', ord: 0, text: 'page text' })
   h.db.seed('tradecraftSection', { id: 's2', userId: 'owner', resourceId: 'r2', entryId: 'e2', ord: 0, text: 'other text' })
   vi.spyOn(console, 'error').mockImplementation(() => {})
+  vi.spyOn(console, 'info').mockImplementation(() => {})
+  vi.mocked(refuseWhileActingAsOn).mockClear()
 })
 afterEach(() => { setNowForTests(null); vi.restoreAllMocks() })
 
@@ -310,5 +313,88 @@ describe('updateResourceV2', () => {
       expect(res.status).toBe(400)
       expect(row().name).toBe('Wiki')
     })
+  })
+})
+
+describe('site logins (§6.6, T6.5)', () => {
+  const STORED = { cookie: 'session=fake-session' }
+  const actions = () => vi.mocked(refuseWhileActingAsOn).mock.calls.map(c => c[1])
+
+  test('has_login_recomputed: a login added, changed with "set" kept, then emptied; the flag follows every write', async () => {
+    stubAgent()
+    expect((await update({ credentials: { cookie: 'set', headers: [{ name: 'X-Api-Key', value: 'fake-key-1' }] } })).status).toBe(200)
+    expect(row()).toMatchObject({ credentials: { cookie: 'session=fake-session', headers: [{ name: 'X-Api-Key', value: 'fake-key-1' }], basic_auth: null }, hasLogin: true })
+    expect((await update({ credentials: { headers: [{ name: 'X-Api-Key', value: 'set' }], basic_auth: { username: 'bob', password: 'fake-pass' } } })).status).toBe(200)
+    expect(row().credentials).toEqual({ cookie: 'session=fake-session', headers: [{ name: 'X-Api-Key', value: 'fake-key-1' }], basic_auth: { username: 'bob', password: 'fake-pass' } })
+    expect((await update({ credentials: { cookie: '', headers: [], basic_auth: null } })).status).toBe(200)
+    expect(row()).toMatchObject({ credentials: {}, hasLogin: false })
+    expect(h.db.rows('auditLog').map(a => (a.after as { changed: string[] }).changed)).toEqual([
+      ['header:X-Api-Key'], ['basic_auth.username', 'basic_auth.password'], ['cookie', 'header:X-Api-Key', 'basic_auth.username', 'basic_auth.password'],
+    ])
+    expect(JSON.stringify(h.db.rows('auditLog'))).not.toMatch(/fake-/)
+  })
+
+  test('the login sent back masked writes nothing, asks no refusal and writes no audit row', async () => {
+    h.actingAs = true
+    stubAgent()
+    const res = await update({ name: 'Renamed', credentials: { cookie: 'set' } })
+    expect(res.status).toBe(200)
+    expect(row()).toMatchObject({ name: 'Renamed', credentials: STORED, hasLogin: true })
+    expect(actions()).toEqual([])
+    expect(h.db.rows('auditLog')).toEqual([])
+  })
+
+  test('credential_writes_refused: acting as the account, any change of the login is refused as change_site_logins, nothing written', async () => {
+    h.actingAs = true
+    stubAgent()
+    for (const credentials of [{ cookie: 'session=fake-other' }, null, { basic_auth: { username: 'bob', password: 'p' } }]) {
+      const res = await update({ name: 'Renamed', credentials })
+      expect(res.status, JSON.stringify(credentials)).toBe(403)
+    }
+    expect(actions()).toEqual(['change_site_logins', 'change_site_logins', 'change_site_logins'])
+    expect(row()).toMatchObject({ name: 'Wiki', credentials: STORED, hasLogin: true })
+    expect(h.db.rows('auditLog')).toEqual([])
+  })
+
+  test('use_refused: acting as the account, a URL change on a resource with a login (its re-ingest) is refused as use_site_logins', async () => {
+    h.actingAs = true
+    const agent = stubAgent()
+    Object.assign(row(), { githubTokenOverride: '' })
+    expect((await update({ url: 'https://wiki2.example.test/' })).status).toBe(403)
+    expect(actions()).toEqual(['use_site_logins'])
+    expect(row().url).toBe('https://wiki.example.test/')
+    expect(agent.calls).toEqual([])
+  })
+
+  test('a login change waits for a running job, like its removal (D-45)', async () => {
+    runningJob(new Date(T0 + 60_000))
+    stubAgent()
+    const res = await update({ credentials: { cookie: 'session=fake-rotated' } })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: 'job_running' })
+    expect(row().credentials).toEqual(STORED)
+  })
+
+  test('a failed audit insert leaves the login as it was', async () => {
+    stubAgent()
+    h.db.failNext('auditLog.create', new Error('audit down'))
+    await expect(update({ credentials: { cookie: 'session=fake-rotated' } })).rejects.toThrow('audit down')
+    expect(row()).toMatchObject({ credentials: STORED, hasLogin: true })
+  })
+
+  test('a flag with no stored login is cleared by a removal, and audited', async () => {
+    Object.assign(row(), { credentials: {}, hasLogin: true })
+    stubAgent()
+    expect((await update({ credentials: null })).status).toBe(200)
+    expect(row().hasLogin).toBe(false)
+    expect(h.db.rows('auditLog')).toEqual([expect.objectContaining({ before: { hasLogin: true }, after: { hasLogin: false, changed: [] } })])
+  })
+
+  test('the answer shows the login masked: names and "set", never a value', async () => {
+    stubAgent()
+    const res = await update({ credentials: { headers: [{ name: 'X-Api-Key', value: 'fake-key-9' }] } })
+    const body = await res.json()
+    expect(body.resource.credentials).toEqual({ cookie: 'set', headers: [{ name: 'X-Api-Key', value: 'set' }], basic_auth: null })
+    expect(JSON.stringify(body)).not.toMatch(/fake-/)
   })
 })

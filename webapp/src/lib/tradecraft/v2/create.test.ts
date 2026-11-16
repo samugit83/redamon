@@ -16,6 +16,7 @@ vi.mock('@/lib/authz/actAsRefusals', () => ({
 }))
 
 import { setNowForTests } from '@/lib/authz/clock'
+import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { JobStartBatch } from '../agentContract'
 import { effectiveSettings } from '../effectiveSettings'
 import { MAX_RESOURCES_PER_USER, createResourceV2 } from './create'
@@ -31,7 +32,9 @@ beforeEach(() => {
   h.permissions = false
   h.actingAs = false
   setNowForTests(() => new Date('2026-11-16T10:00:00Z'))
+  vi.mocked(refuseWhileActingAsOn).mockClear()
   vi.spyOn(console, 'error').mockImplementation(() => {})
+  vi.spyOn(console, 'info').mockImplementation(() => {})
 })
 afterEach(() => { setNowForTests(null); vi.restoreAllMocks() })
 
@@ -207,6 +210,58 @@ describe('createResourceV2', () => {
     expect(await res.json()).toMatchObject({ field: 'focus.topics', code: 'foreign_skill' })
     expect(resources()).toEqual([])
     expect(agent.calls).toEqual([])
+  })
+
+  describe('site logins (§6.6, T6.5)', () => {
+    const LOGIN = { cookie: 'session=fake-session', headers: [{ name: 'X-Api-Key', value: 'fake-key-1' }], basic_auth: { username: 'bob', password: 'fake-pass' } }
+
+    test('has_login_recomputed: a login typed at add is stored in the contract\'s shape, the flag set, its audit row names fields only', async () => {
+      const agent = stubAgent()
+      const res = await create({ ...BODY, credentials: LOGIN })
+      expect(res.status).toBe(201)
+      expect(resources()[0]).toMatchObject({ credentials: LOGIN, hasLogin: true })
+      const audit = h.db.rows('auditLog')
+      expect(audit).toEqual([expect.objectContaining({
+        action: 'tradecraft.credentials_changed', actorId: 'owner', targetType: 'tradecraft_resource', targetId: resources()[0].id,
+        before: { hasLogin: false }, after: { hasLogin: true, changed: ['cookie', 'header:X-Api-Key', 'basic_auth.username', 'basic_auth.password'] },
+      })])
+      expect(JSON.stringify(audit)).not.toMatch(/fake-/)
+      // The owner's add job carries the login, to the agent only.
+      expect(jobRequests(agent)[0].secrets.credentials).toEqual(LOGIN)
+      const text = JSON.stringify(await res.json())
+      expect(text).not.toMatch(/fake-/)
+    })
+
+    test('an add without a login writes no audit row and keeps the flag off', async () => {
+      stubAgent()
+      await create({ ...BODY, credentials: { cookie: '', headers: [] } })
+      expect(resources()[0]).toMatchObject({ credentials: {}, hasLogin: false })
+      expect(h.db.rows('auditLog')).toEqual([])
+    })
+
+    test('credential_writes_refused: acting as the account, an add with a login is refused as change_site_logins, nothing written', async () => {
+      h.actingAs = true
+      const agent = stubAgent()
+      expect((await create({ ...BODY, credentials: LOGIN })).status).toBe(403)
+      expect(vi.mocked(refuseWhileActingAsOn).mock.calls[0]).toEqual(['owner', 'change_site_logins'])
+      expect(resources()).toEqual([])
+      expect(agent.calls).toEqual([])
+    })
+
+    test('a failed audit insert adds nothing (the row and the login roll back together)', async () => {
+      stubAgent()
+      h.db.failNext('auditLog.create', new Error('audit down'))
+      await expect(create({ ...BODY, credentials: LOGIN })).rejects.toThrow('audit down')
+      expect(resources()).toEqual([])
+    })
+
+    test('a bad login is a 400 naming its field, nothing written', async () => {
+      stubAgent()
+      const res = await create({ ...BODY, credentials: { headers: [{ name: 'Host', value: 'evil.example.test' }] } })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({ field: 'credentials.headers[0].name', code: 'bad_credentials' })
+      expect(resources()).toEqual([])
+    })
   })
 
   test('a user-only override is refused before anything is written', async () => {
