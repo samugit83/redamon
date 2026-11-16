@@ -290,12 +290,19 @@ def _take(state: IngestState, result: builders.MapResult) -> None:
 
 
 async def _crawl(state: IngestState) -> None:
-    llm = None
-    try:
-        llm = await state.model()
-    except Exception as exc:
-        state.map_error = crawl.error_code_of(exc)
-        state.count_error(state.map_error)
+    # Only the model-guided crawl needs the owner's model, and Auto only when the site has no
+    # usable sitemap: a Rule-based or sitemap crawl whose model cannot be built still maps the
+    # site, and only the summary is kept as it was.
+    strategy = state.settings.str("crawl.strategy")
+    llm, model_error = None, ""
+    if strategy != "rules":
+        try:
+            llm = await state.model()
+        except Exception as exc:
+            model_error = crawl.error_code_of(exc)
+    if model_error and strategy == "llm":
+        state.map_error = model_error
+        state.count_error(model_error)
         return
 
     async def progress(done: int, total: int) -> None:
@@ -305,6 +312,12 @@ async def _crawl(state: IngestState) -> None:
                                cancel_check=state.ctx.is_cancelled, progress=progress)
     if result.stop_reason == "cancelled":
         raise Cancelled()
+    if model_error:
+        state.count_error(model_error)
+        if result.stats.get("strategy") == "llm":
+            # Auto found no usable sitemap, and its model-guided crawl had no model.
+            state.map_error = model_error
+            return
     state.crawl = result
     state.entries = list(result.entries)
     state.visited += int(result.stats.get("pages_fetched", 0))
@@ -317,11 +330,16 @@ async def _crawl(state: IngestState) -> None:
             state.map_error = result.error_code
 
 
+# A crawl that needed the owner's model and could not have it found nothing: its map is not
+# replaced by the start page alone (the refresh fails and the previous map stays).
+_MODEL_ERRORS = ("model_unavailable", "llm_budget_exhausted", "loop_model_not_supported_here")
+
+
 def _homepage_fallback(state: IngestState) -> None:
     """1.x: an empty map of a site whose start page answered gets that page as its only entry
     (never for a PDF or a CVE archive, which are never listed this way)."""
     home = state.home
-    if state.entries or state.site_type in ("pdf", "cve-poc-db") or home is None:
+    if state.entries or state.site_type in ("pdf", "cve-poc-db") or home is None or state.map_error in _MODEL_ERRORS:
         return
     if not (0 < home.status < 400) or len(home.text or "") < _FALLBACK_MIN_CHARS:
         return

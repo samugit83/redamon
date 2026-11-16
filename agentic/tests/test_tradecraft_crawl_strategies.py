@@ -598,3 +598,65 @@ def test_sitemap_parsing_runs_through_blocking(tmp_path):
     go(SITE + "/", s(**{"crawl.strategy": "auto"}), fetcher=FixtureFetcher(_sitemaps_site(tmp_path, 2, 10)),
        llm=NoModel(), blocking=recording)
     assert calls == ["parse_sitemap_xml", "parse_sitemap_xml"]  # both sitemaps, each parsed off the loop
+
+
+# --------------------------------------------------------------------------------------
+# Review finding 5: a model that cannot be built stops only the strategies that need it (R-074)
+# --------------------------------------------------------------------------------------
+
+def _job_without_model(root, url, settings):
+    """A refresh of resource r1 (previous map and summary) whose owner's model cannot be built."""
+    import json
+
+    from tradecraft.contract import JobContext, JobStartRequest
+    from tradecraft.ingest import pipeline
+    from tradecraft.models import ModelUnavailable
+    from tradecraft_memory_store import MemoryStore
+
+    fixture = json.loads((Path(__file__).resolve().parent / "fixtures" / "tradecraft_contract" /
+                          "JobStartBatch.valid.json").read_text())["jobs"][0]
+    spec = json.loads(json.dumps(fixture))
+    spec.update(job_id="j1", user_id="u1", actor_user_id="u1", resource_id="r1", settings=settings)
+    spec["resource"].update(url=url, storage_mode="live", model="openai/fake-small-model")
+    spec["secrets"] = {"github_token": None, "credentials": None}
+    req = JobStartRequest.model_validate(spec)
+    store = MemoryStore()
+    store.add_resource("u1", "r1", url=url, storage_mode="live", summary="previous summary",
+                       sitemap={"nav": [{"title": "old", "path": "old"}]}, generation=2)
+    store.add_job("u1", "r1", "j1", status="running")
+    store.jobs["j1"]["target_generation"] = 3
+    builds = []
+
+    async def build_llm(owner, model):
+        builds.append(model)
+        raise ModelUnavailable("providers route timed out")
+
+    async def no(*_a):
+        return False
+
+    ctx = JobContext(request=req, settings=EffectiveSettings(req.settings), target_generation=3, is_cancelled=no,
+                     set_stage=no)
+    with net.use_fetcher(FixtureFetcher(root)):
+        outcome = asyncio.run(pipeline.run(ctx, store=store, build_llm=build_llm))
+    return outcome, store, builds
+
+
+def test_rules_and_auto_crawl_without_a_model(tmp_path):
+    write_site(tmp_path, HOST, {"/": html("Home", [(f"{SITE}/a/", "a"), (f"{SITE}/b/", "b")]), "/a/": html("A"), "/b/": html("B"),
+                                "/sitemap.xml": urlset([f"{SITE}/n{i}/" for i in range(30)])})
+    for strategy, kept in (("rules", 3), ("auto", 30)):
+        outcome, store, builds = _job_without_model(tmp_path, SITE + "/", {"crawl.strategy": strategy})
+        assert outcome.status == "succeeded" and outcome.swapped, strategy
+        assert len(store.live_entries("r1")) == kept and store.resources["r1"]["summary"] == "previous summary"
+        report = store.resources["r1"]["ingestion_report"]
+        assert {"code": "model_unavailable", "count": 1} in report["errors"] and len(builds) == 1
+
+    # The model-guided crawl needs the model: the refresh fails and the previous map stays.
+    outcome, store, _ = _job_without_model(tmp_path, SITE + "/", {"crawl.strategy": "llm"})
+    assert (outcome.status, outcome.error_code, outcome.swapped) == ("failed", "model_unavailable", False)
+    assert store.resources["r1"]["generation"] == 2
+    # So does Auto on a site with no usable sitemap.
+    bare = tmp_path / "bare"
+    write_site(bare, HOST, {"/": html("Home", [(f"{SITE}/a/", "a")]), "/a/": html("A")})
+    outcome, _store, _ = _job_without_model(bare, SITE + "/", {"crawl.strategy": "auto"})
+    assert (outcome.status, outcome.error_code) == ("failed", "model_unavailable")
