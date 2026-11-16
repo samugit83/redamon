@@ -31,6 +31,14 @@ export interface ProjectNavigatorStatus {
 
 const api = (projectId: string) => `/api/navigator/projects/${encodeURIComponent(projectId)}`
 
+/** Refusals a Retry cannot fix: each has its own action, or none (plan §9.14). */
+const NO_RETRY = new Set([
+  'rate_limited', 'busy', 'thread_full', 'too_many_threads', 'navigator_disabled', 'owner_disallowed',
+  'navigator_not_available', 'agent_outdated', 'navigator_unavailable', 'invalid_message',
+  'model_required', 'model_unavailable', 'model_no_tools', 'providers_unreachable', 'llm_budget_exhausted',
+  'loop_model_not_supported_here',
+])
+
 function lastKey(userId: string | null, projectId: string) {
   return `redamon.navigator.last.v1.${userId ?? 'anon'}.${projectId}`
 }
@@ -82,6 +90,7 @@ export function NavigatorPanel({
   const [view, setView] = useState<'chat' | 'history'>('chat')
   const [draft, setDraft] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
+  const [coolingDown, setCoolingDown] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const status = useQuery({
@@ -144,7 +153,20 @@ export function NavigatorPanel({
   const variant: IntroVariant | null = !projectId ? 'no_project'
     : status.data && !status.data.allowed ? ((status.data.reason as IntroVariant) ?? 'navigator_not_available') : null
   const actingAsNoModel = status.data?.actingAs === true && status.data.modelConfigured === false
-  const inputDisabled = !projectId || !allowed || chat.streaming || actingAsNoModel
+  const inputDisabled = !projectId || !allowed || chat.streaming || actingAsNoModel || coolingDown
+
+  // rate_limited: the input comes back after the bucket's retryAfterSeconds.
+  const { error: chatError, clearError } = chat
+  useEffect(() => {
+    if (chatError?.code !== 'rate_limited') return
+    setCoolingDown(true)
+    const t = setTimeout(() => { setCoolingDown(false); clearError() }, Math.max(1, chatError.retryAfterSeconds ?? 60) * 1000)
+    return () => { clearTimeout(t); setCoolingDown(false) }
+  }, [chatError, clearError])
+  // Turned off mid-session: read the switch now, so the launcher goes without waiting for its poll.
+  useEffect(() => {
+    if (chatError?.code === 'navigator_disabled') void queryClient.invalidateQueries({ queryKey: ['navigator', 'status'] })
+  }, [chatError, queryClient])
 
   const send = useCallback(async (text: string) => {
     if (!text.trim()) return
@@ -251,6 +273,12 @@ export function NavigatorPanel({
           )}
           {chat.error?.code === 'thread_full' && (
             <button type="button" className={styles.linkButton} onClick={newConversation}>New conversation</button>
+          )}
+          {chat.error?.phase === 'load' && chat.threadId && (
+            <button type="button" className={styles.linkButton} onClick={() => void openThread(chat.threadId)}>Retry</button>
+          )}
+          {chat.error?.retryText && !NO_RETRY.has(chat.error.code ?? '') && (
+            <button type="button" className={styles.linkButton} onClick={() => void send(chat.error!.retryText!)}>Retry</button>
           )}
           {chat.error?.code === 'busy' && chat.error.threadId && (
             <button type="button" className={styles.linkButton} onClick={() => {

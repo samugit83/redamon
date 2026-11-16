@@ -27,7 +27,10 @@ export function ChatView({ messages, onRetry, onOpenAgent, agentAllowed, empty }
     <div className={styles.chat} data-testid="navigator-chat">
       {messages.map((m, i) => {
         const isLast = i === messages.length - 1
-        const unanswered = m.role === 'user' && isLast && m.status === 'complete' && !m.id.startsWith('local-')
+        // A saved question with no answer after it: the web app restarted mid-answer, or the agent
+        // failed before answering. Retry belongs to the last turn only.
+        const unanswered = m.role === 'user' && m.status === 'complete' && !m.id.startsWith('local-')
+          && messages[i + 1]?.role !== 'assistant'
         return (
           <div key={m.id} aria-live={isLast && m.role === 'assistant' && m.status !== 'streaming' ? 'polite' : undefined}>
             <MessageBubble
@@ -39,8 +42,8 @@ export function ChatView({ messages, onRetry, onOpenAgent, agentAllowed, empty }
             />
             {unanswered && (
               <p className={styles.muted}>
-                No answer was saved.{' '}
-                <button type="button" className={styles.linkButton} onClick={() => onRetry(m.content)}>Retry</button>
+                No answer was saved.
+                {isLast && <>{' '}<button type="button" className={styles.linkButton} onClick={() => onRetry(m.content)}>Retry</button></>}
               </p>
             )}
           </div>

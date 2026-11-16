@@ -45,6 +45,10 @@ export interface ChatError {
   status?: number
   retryAfterSeconds?: number
   threadId?: string
+  /** A conversation that failed to load (Retry reopens it), not a refused send. */
+  phase?: 'load'
+  /** The text of a send refused before anything was saved, so Retry can send it again. */
+  retryText?: string
 }
 
 interface SavedMessage {
@@ -145,11 +149,21 @@ export function useNavigatorChat(projectId: string | null, opts: {
     }
   }, [projectId])
 
-  // A project switch ends the answer in flight (§9.7) and clears the conversation.
+  // A project switch ends the answer in flight (§9.7) and clears the conversation. The server stops a
+  // run whose browser went away; /stop is the best-effort second signal, for a proxy that keeps the
+  // connection open.
   useEffect(() => {
     return () => {
-      abortRef.current?.abort()
+      const inFlight = abortRef.current
+      if (!inFlight) return
+      inFlight.abort()
       abortRef.current = null
+      const tid = threadRef.current
+      if (projectId && tid) {
+        void fetch(`${api(projectId)}/threads/${encodeURIComponent(tid)}/stop`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        }).catch(() => undefined)
+      }
     }
   }, [projectId])
 
@@ -170,13 +184,13 @@ export function useNavigatorChat(projectId: string | null, opts: {
       const res = await fetch(`${api(projectId)}/threads/${encodeURIComponent(tid)}`, { cache: 'no-store' })
       const body = await res.json().catch(() => null) as { messages?: SavedMessage[]; code?: string } | null
       if (!res.ok || !body) {
-        setError({ code: body?.code ?? null, status: res.status })
+        setError({ code: body?.code ?? null, status: res.status, phase: 'load' })
         setMessages([])
         return
       }
       if (threadRef.current === tid) setMessages(asArray<SavedMessage>(body.messages).map(fromSaved))
     } catch {
-      setError({ code: 'agent_unreachable' })
+      setError({ code: 'agent_unreachable', phase: 'load' })
     } finally {
       setLoading(false)
     }
@@ -214,7 +228,7 @@ export function useNavigatorChat(projectId: string | null, opts: {
     } catch {
       setStreaming(false)
       setMessages((list) => list.filter((m) => m.id !== tempAnswer.id && m.id !== tempUser.id))
-      if (!controller.signal.aborted) setError({ code: 'agent_unreachable' })
+      if (!controller.signal.aborted) setError({ code: 'agent_unreachable', retryText: trimmed })
       return
     }
 
@@ -223,9 +237,13 @@ export function useNavigatorChat(projectId: string | null, opts: {
       const body = await res.json().catch(() => null) as { code?: string; retryAfterSeconds?: number; threadId?: string } | null
       setStreaming(false)
       setMessages((list) => list.filter((m) => m.id !== tempAnswer.id && m.id !== tempUser.id))
-      setError({ code: body?.code ?? null, status: res.status, retryAfterSeconds: body?.retryAfterSeconds, threadId: body?.threadId })
-      // The message was saved before the agent failed: show the thread as the server has it.
-      if (body?.threadId) {
+      // `busy` names the conversation already being answered, for its Stop button; any other code
+      // with a thread id means the message was saved before the agent failed.
+      const saved = !!body?.threadId && body.code !== 'busy'
+      setError({ code: body?.code ?? null, status: res.status, retryAfterSeconds: body?.retryAfterSeconds, threadId: body?.threadId,
+        ...(saved ? {} : { retryText: trimmed }) })
+      // Show the thread as the server has it: the question with no answer after it, and its Retry.
+      if (saved && body?.threadId) {
         if (!sentThread) optsRef.current.onThreadCreated?.(body.threadId)
         threadRef.current = body.threadId
         setThreadId(body.threadId)
@@ -331,5 +349,6 @@ export function useNavigatorChat(projectId: string | null, opts: {
     }
   }, [projectId, streaming, fetchWithFeatureModel, opts.pagePath, open])
 
-  return { threadId, messages, streaming, loading, error, handoff, send, stop, open, clearError: () => setError(null) }
+  const clearError = useCallback(() => setError(null), [])
+  return { threadId, messages, streaming, loading, error, handoff, send, stop, open, clearError }
 }
