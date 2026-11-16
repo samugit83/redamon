@@ -69,7 +69,9 @@ export const POST = withRouteErrors('Could not send the message to AI Navigator'
     if (!rate.allowed) return navigatorError('rate_limited', 429, { retryAfterSeconds: rate.retryAfterSeconds })
   }
 
-  const reservation = navigatorRuns().reserve({ personId: nav.personId, projectId: nav.projectId })
+  const reservation = navigatorRuns().reserve({
+    personId: nav.personId, projectId: nav.projectId, actorId: nav.actorId, login: nav.login,
+  })
   if (!reservation.ok) {
     const running = [...navigatorRuns().liveThreadIds()]
       .map((id) => navigatorRuns().liveForThread(id))

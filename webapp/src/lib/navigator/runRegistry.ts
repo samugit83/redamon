@@ -136,8 +136,19 @@ function abortWhere(match: (run: NavigatorRun) => boolean): number {
   return n
 }
 
+export interface ReserveInput {
+  personId: string
+  projectId: string
+  /**
+   * The acting admin and the login, known when the route reserves: a reservation carries them so a
+   * device revoke or the act-as end that lands before complete() ends it too.
+   */
+  actorId?: string | null
+  login?: RunLogin | null
+}
+
 export interface NavigatorRunRegistry {
-  reserve(input: { personId: string; projectId: string }): ReserveAnswer
+  reserve(input: ReserveInput): ReserveAnswer
   complete(runId: string, input: CompleteInput): string | null
   release(runId: string): void
   get(runId: string): NavigatorRun | null
@@ -157,15 +168,15 @@ export interface NavigatorRunRegistry {
 }
 
 const registry: NavigatorRunRegistry = {
-  reserve({ personId, projectId }) {
+  reserve({ personId, projectId, actorId = null, login = null }) {
     sweep()
     const mine = [...store().runs.values()].filter((r) => r.personId === personId)
     if (mine.length >= MAX_RUNS_PER_PERSON) return { ok: false, code: 'busy' }
     if (mine.filter((r) => r.projectId === projectId).length >= MAX_RUNS_PER_PERSON_PROJECT) return { ok: false, code: 'busy' }
     const runId = randomUUID()
     store().runs.set(runId, {
-      runId, personId, projectId, actorId: null, threadId: null, tenantId: null, startedAt: Date.now(),
-      abort: new AbortController(), toolCalls: 0, credentialHash: null, login: null, state: 'reserved',
+      runId, personId, projectId, actorId, threadId: null, tenantId: null, startedAt: Date.now(),
+      abort: new AbortController(), toolCalls: 0, credentialHash: null, login: login ? { ...login } : null, state: 'reserved',
     })
     return { ok: true, runId }
   },

@@ -121,6 +121,30 @@ describe('abort selectors hit only their runs', () => {
     expect(navigatorRuns().abortAll()).toBe(1)
     expect(stops).toEqual([])
   })
+
+  test('a reservation is bound to its login: a device revoke or the act-as end before complete() ends it', () => {
+    // The messages route awaits the database between reserve() and complete(); a revoke landing
+    // there used to match nothing, and the run started anyway.
+    const lg = login({ userId: 'admin', deviceSessionId: 'sid-1', actAsStartId: 'start-1' })
+    const reserveAs = () => {
+      const r = navigatorRuns().reserve({ personId: 'alice', projectId: 'P1', actorId: 'admin', login: lg })
+      if (!r.ok) throw new Error('reserve refused')
+      return r.runId
+    }
+    const completes = (runId: string) =>
+      navigatorRuns().complete(runId, { threadId: 'T1', tenantId: 'owner', actorId: 'admin', login: lg })
+
+    let runId = reserveAs()
+    expect(navigatorRuns().abortDeviceSession('sid-1')).toBe(1)
+    expect(completes(runId)).toBeNull()
+    runId = reserveAs()
+    expect(navigatorRuns().abortActAs({ startId: 'start-1', adminId: 'admin', targetUserId: 'alice' })).toBe(1)
+    expect(completes(runId)).toBeNull()
+    runId = reserveAs()
+    expect(navigatorRuns().abortActor('admin')).toBe(1)
+    expect(completes(runId)).toBeNull()
+    expect(stops).toEqual([])
+  })
 })
 
 test('the store is shared across two module instances', async () => {
