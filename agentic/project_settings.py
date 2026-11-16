@@ -823,17 +823,41 @@ def fetch_agent_settings(project_id: str, webapp_url: str, *,
             logger.warning(f"Failed to fetch user settings: {e}")
             settings['USER_SETTINGS'] = {}
 
-        # Fetch user tradecraft resources (for the tradecraft_lookup tool catalog)
+        # The run's tradecraft catalog. While the owner's Tradecraft 2.0 switch is off
+        # the webapp answers the 1.x rows unchanged; a webapp older than the route
+        # (a 404 page with no JSON code, mid-deployment) is asked the 1.x way. The
+        # route's own 404 for an unknown project carries a code and must not fall
+        # back, or the 1.x list would skip every 2.0 rule.
         try:
+            from tradecraft.runtime import catalog_query
             tc_resp = requests.get(
-                f"{webapp_url.rstrip('/')}/api/users/{user_id}/tradecraft-resources?internal=true",
+                f"{webapp_url.rstrip('/')}/api/internal/agent/tradecraft/catalog",
+                params=catalog_query(project_id),
                 headers=INTERNAL_HEADERS,
                 timeout=10,
             )
-            tc_resp.raise_for_status()
-            settings['TRADECRAFT_RESOURCES'] = tc_resp.json()
+            try:
+                tc_code = tc_resp.json().get('code') if tc_resp.status_code == 404 else None
+            except ValueError:
+                tc_code = None
+            if tc_resp.status_code == 404 and tc_code == 'project_not_found':
+                catalog = {'v2': False, 'legacy': []}
+            elif tc_resp.status_code == 404:
+                tc_resp = requests.get(
+                    f"{webapp_url.rstrip('/')}/api/users/{user_id}/tradecraft-resources?internal=true",
+                    headers=INTERNAL_HEADERS,
+                    timeout=10,
+                )
+                tc_resp.raise_for_status()
+                catalog = {'v2': False, 'legacy': tc_resp.json()}
+            else:
+                tc_resp.raise_for_status()
+                catalog = tc_resp.json()
+            settings['TRADECRAFT_CATALOG'] = catalog
+            settings['TRADECRAFT_RESOURCES'] = [] if catalog.get('v2') else catalog.get('legacy', [])
         except Exception as e:
             logger.warning(f"Failed to fetch tradecraft resources: {e}")
+            settings['TRADECRAFT_CATALOG'] = None
             settings['TRADECRAFT_RESOURCES'] = []
 
         # If selected model is custom/, extract its specific config

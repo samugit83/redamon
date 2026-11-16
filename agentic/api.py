@@ -46,6 +46,8 @@ from orchestrator import AgentOrchestrator
 from project_settings import DEFAULT_AGENT_SETTINGS as _DEFAULT_AGENT_SETTINGS
 from orchestrator_helpers import normalize_content
 from plugin_api import router as plugin_router
+from tradecraft.api import router as tradecraft_v2_router
+from tradecraft.jobs import recover_on_boot as tradecraft_recover_on_boot
 from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 from startup_guard import check_single_worker
 from utils import get_session_count
@@ -106,6 +108,7 @@ async def lifespan(app: FastAPI):
     # tasks are gone by definition - this is a state-only fixup.
     reg = job_runner.get_registry()
     reg.recover_on_boot()
+    await tradecraft_recover_on_boot()
 
     # No upload or import survives a restart. First put back any folder a
     # Re-sync was swapping when the process died, then empty the staging area.
@@ -201,6 +204,8 @@ app.include_router(loop_router)
 from navigator.api import router as navigator_router  # noqa: E402
 from navigator import runs as navigator_runs  # noqa: E402
 app.include_router(navigator_router)
+# Tradecraft 2.0: ingestion jobs, Check URL, preview, read now (master internal key).
+app.include_router(tradecraft_v2_router)
 
 
 # =============================================================================

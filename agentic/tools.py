@@ -2787,7 +2787,9 @@ class PhaseAwareToolExecutor:
             elif tool_name == "tradecraft_lookup":
                 # Pass the structured args through. The tool function picks them up
                 # by name (resource_id, query, cve_id, section_path, force_refresh).
-                output = await active_tool.ainvoke(tool_args)
+                # A run whose owner has Tradecraft 2.0 on reads through the 2.0 library.
+                from tradecraft.runtime import v2_tool_for
+                output = await (v2_tool_for(tool_name) or active_tool).ainvoke(tool_args)
             elif tool_name == "execute_wpscan":
                 # Inject WPScan API token if configured and not already in args.
                 # Read from the task-isolated settings at use-time (not a shared

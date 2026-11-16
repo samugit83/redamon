@@ -1,0 +1,273 @@
+"""The read path of ``tradecraft_lookup`` in a 2.0 run (Q1.1-Q1.3).
+
+    the tool picked page P of resource R, for the run's owner
+    1. R no longer exists?                      -> say it was deleted, no request
+    2. P blocked, or R has a login and P is not in its map?  -> refused, no request
+    3. R is Stored and P has a stored copy?     -> return it ("stored copy from <date>")
+    4. otherwise                                -> download P, return it ("live", or
+                                                   "live (not stored)" on a Stored resource);
+                                                   nothing is kept
+    5. the site cannot be reached               -> an error that says whether a copy exists
+
+Every read is keyed by the catalog's owner and the resource's id, and reads the resource's
+live generation at this call, so a refresh that swaps during a run is seen at the next call.
+The catalog, its token and its logins come only from ``runtime.bound_catalog()``; outside a
+run's task nothing is bound and nothing is requested. Reading never writes (R-306).
+
+Until search arrives (phase 2), a page is picked by 1.x's title match over the resource's
+1.x map, which every 2.0 ingestion keeps current (TD-18); an unconverted resource reads the
+map 1.x wrote (R-217). A CVE archive is read live, a CVE at a time; a PDF page from the store.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import re
+from datetime import datetime
+from typing import Any, Optional
+
+from logging_config import get_logger
+from tradecraft import net, runtime
+from tradecraft.ingest import fetch
+from tradecraft.library import cve, legacy_match
+from tradecraft.library.types import format_source, wrap_untrusted
+from tradecraft.settings import EffectiveSettings, constant
+
+logger = get_logger(__name__)
+
+NOT_AVAILABLE = "Error: tradecraft_lookup is not available in this run (no Tradecraft library is bound to it)."
+DELETED = "Error: resource '{slug}' was deleted from the library; it can no longer be read."
+NOT_CONFIGURED = "Error: resource '{slug}' not configured. Available: {available}."
+BLOCKED = "Error: refusing to read {url}: this page is blocked in resource '{slug}'."
+OUTSIDE_MAP = ("Error: refusing to read {url}: resource '{slug}' has a site login, and only the pages of its "
+               "map are read with it.")
+BAD_URL = "Error: refusing to read {url}: {code}."
+UNREACHABLE_LIVE = ("Error: could not read {url} ({code}). Resource '{slug}' is Live: no copy of its pages is "
+                    "kept, so nothing can be returned until the site answers.")
+UNREACHABLE_NOT_STORED = ("Error: could not read {url} ({code}). Resource '{slug}' is Stored, but this page has no "
+                          "stored copy.")
+NOT_REFRESHED = "the site could not be reached ({code}); this is the stored copy, not a fresh read"
+SKIPPED_COPY = "read from the site at your request; the stored copy from {date} was not used"
+# The address guard's refusals: not an unreachable site, and no copy is offered instead.
+_REFUSED = ("unsafe_address", "userinfo_refused", "bad_url")
+
+
+def _date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, str) and value:
+        return value[:10]
+    return "unknown date"
+
+
+def code_blocks(text: str, max_blocks: Optional[int] = None) -> str:
+    """The page's fenced code blocks, as 1.x lists them after the text."""
+    limit = constant("codeBlocksPerRead") if max_blocks is None else max_blocks
+    parts = []
+    for lang, body in re.findall(r"```(\w*)\n(.*?)```", text or "", re.DOTALL)[:limit]:
+        body = (body or "").strip()
+        if body:
+            parts.append(f"- {lang or 'text'}:\n    " + body.replace("\n", "\n    "))
+    return "\n".join(parts)
+
+
+def _one_line(value: Any) -> str:
+    # A title or URL from the map is one header line: it cannot forge a second one.
+    return " ".join(str(value).split())
+
+
+def render(slug: str, url: str, section_title: str, source: str, text: str, note: str = "") -> str:
+    """The result in Q1.2's shape, inside the untrusted envelope whatever the source."""
+    lines = [f"resource: {_one_line(slug)}", f"url: {_one_line(url)}",
+             f"section_title: {_one_line(section_title)}", f"source: {_one_line(source)}"]
+    if note:
+        lines.append(f"note: {_one_line(note)}")
+    lines += ["---", text or ""]
+    blocks = code_blocks(text)
+    if blocks:
+        lines += ["", "Code blocks:", blocks]
+    return wrap_untrusted(lines)
+
+
+class _Read:
+    """One lookup's context: the catalog resource, its row, its settings."""
+
+    def __init__(self, catalog: Any, resource: Any, row: dict, store: Any):
+        self.catalog, self.resource, self.row, self.store = catalog, resource, row, store
+        self.owner = catalog.owner_id
+        self.settings = EffectiveSettings(resource.read_settings or {})
+        self.token = resource.github_token
+        self.sitemap = row.get("sitemap") or {}
+        self.mode = row.get("storage_mode") or resource.storage_mode
+        self.slug = resource.slug
+
+    @property
+    def has_login(self) -> bool:
+        return bool(self.resource.has_login or self.row.get("has_login"))
+
+
+async def lookup(*, resource_id: str, query: str = "", cve_id: Optional[str] = None,
+                 section_path: Optional[str] = None, force_refresh: bool = False) -> str:
+    catalog = runtime.bound_catalog()
+    if catalog is None:
+        return NOT_AVAILABLE
+    resource = next((r for r in catalog.resources if r.slug == (resource_id or "")), None)
+    if resource is None:
+        available = ", ".join(sorted(r.slug for r in catalog.resources)) or "(none)"
+        return NOT_CONFIGURED.format(slug=resource_id, available=available)
+    store = runtime.run_store()
+    row = await store.legacy_sitemap(catalog.owner_id, resource.id)
+    if row is None:
+        return DELETED.format(slug=resource.slug)
+    read = _Read(catalog, resource, row, store)
+    logger.info(f"[tradecraft] lookup resource={read.slug} section={'forced' if section_path else 'auto'}")
+    if resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
+        return await _cve(read, cve_id)
+    if isinstance(read.sitemap.get("pages"), list) and read.sitemap.get("pages"):
+        return await _pdf(read, query, section_path, force_refresh)
+    return await _page(read, query, section_path, force_refresh)
+
+
+# --------------------------------------------------------------------------------------
+# A page of a site
+# --------------------------------------------------------------------------------------
+
+async def _pick_url(read: _Read, query: str, section_path: Optional[str]) -> tuple[str, str]:
+    rtype = read.row.get("resource_type") or read.resource.type
+    base = read.row.get("url") or read.resource.url
+    if section_path:
+        return legacy_match.resolve_path(rtype, base, read.sitemap, section_path), section_path
+    entries = legacy_match.sitemap_entries(read.sitemap)
+    picker = runtime.section_picker() if len(entries) > legacy_match.SMALL_MAP else None
+    picked = await legacy_match.pick(query, entries, picker=picker, resource_name=read.resource.name or read.slug)
+    if picked is None:
+        return base, "(homepage)"
+    path = picked.get("path") or ""
+    return legacy_match.resolve_path(rtype, base, read.sitemap, path), picked.get("title") or path
+
+
+async def _refusal(read: _Read, url: str) -> str:
+    """Why ``url`` must not be requested at all, or ""."""
+    problem = net.url_problem(url)
+    if problem:
+        return BAD_URL.format(url=url, code=problem)
+    canonical = fetch.canonical_url(url)
+    curation = await read.store.curation(read.owner, read.resource.id, canonical)
+    if curation and curation.get("blocked"):
+        return BLOCKED.format(url=url, slug=read.slug)
+    if read.has_login and not await read.store.in_map(read.owner, read.resource.id, canonical):
+        return OUTSIDE_MAP.format(url=url, slug=read.slug)
+    return ""
+
+
+async def _stored_copy(read: _Read, url: str) -> Optional[dict]:
+    if read.mode != "stored":
+        return None
+    entry = await read.store.entry_by_url(read.owner, read.resource.id, url)
+    return entry if entry and entry.get("stored_text") else None
+
+
+async def _page(read: _Read, query: str, section_path: Optional[str], force_refresh: bool) -> str:
+    target, title = await _pick_url(read, query, section_path)
+    refused = await _refusal(read, target)
+    if refused:
+        return refused
+    canonical = fetch.canonical_url(target)
+    copy = await _stored_copy(read, canonical)
+    if copy is not None and not force_refresh:
+        return render(read.slug, target, title, format_source("stored", _date(copy.get("fetched_at"))), copy["stored_text"])
+    page = await fetch.smart_fetch(target, read.settings, github_token=read.token)
+    if page.error in _REFUSED:
+        return BAD_URL.format(url=target, code=page.error)
+    ok = not page.error and 200 <= page.status < 300 and bool(page.text)
+    if not ok:
+        code = page.error or (f"http_{page.status}" if page.status else "unreachable")
+        if copy is not None:
+            return render(read.slug, target, title, format_source("stored", _date(copy.get("fetched_at"))),
+                          copy["stored_text"], note=NOT_REFRESHED.format(code=code))
+        template = UNREACHABLE_NOT_STORED if read.mode == "stored" else UNREACHABLE_LIVE
+        return template.format(url=target, code=code, slug=read.slug)
+    if copy is not None:
+        return render(read.slug, target, title, format_source("live"), page.text,
+                      note=SKIPPED_COPY.format(date=_date(copy.get("fetched_at"))))
+    source = format_source("live_not_stored" if read.mode == "stored" else "live")
+    return render(read.slug, target, title, source, page.text)
+
+
+# --------------------------------------------------------------------------------------
+# A CVE archive, and a PDF
+# --------------------------------------------------------------------------------------
+
+async def _cve(read: _Read, cve_id: Optional[str]) -> str:
+    if not cve_id or not cve.CVE_ID_RE.match(cve_id):
+        return (f"Error: resource '{read.slug}' is a cve-poc-db; "
+                f"you must pass cve_id='CVE-YYYY-NNNNN'.")
+    cve_norm = cve_id.upper()
+    content, src, api_error = await cve.lookup(cve_norm, read.sitemap, read.settings, github_token=read.token)
+    title = cve_norm
+    if not content and api_error:
+        return (f"Error: could not look up {cve_norm} in resource '{read.slug}' ({api_error}). This is NOT a "
+                f"'PoC not found' answer; retry later or add a GitHub token in Global Settings -> API Keys.")
+    if not content:
+        text, url = await cve.readme(read.sitemap, read.settings, github_token=read.token)
+        if text and cve_norm in text.upper():
+            content, src = text, url
+            title = f"{cve_norm} (repository README; no {cve_norm.split('-')[1]}/{cve_norm} entry)"
+    if not content:
+        return (f"PoC not found for {cve_norm} in resource '{read.slug}' "
+                f"(no archive entry, and the repository README does not mention it).")
+    return render(read.slug, src, title, format_source("live"), content)
+
+
+def _pdf_page_text(body: bytes, page: int) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(body))
+    if page < 1 or page > len(reader.pages):
+        return ""
+    return reader.pages[page - 1].extract_text() or ""
+
+
+async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refresh: bool) -> str:
+    pages = [p for p in read.sitemap.get("pages") or [] if isinstance(p, dict)]
+    base = read.row.get("url") or read.resource.url
+    if section_path:
+        m = re.search(r"page\s*=\s*(\d+)", section_path) or re.fullmatch(r"\s*(\d+)\s*", section_path)
+        if not m:
+            return "Error: section_path for PDF must be 'page=N' or just an integer."
+        number = int(m.group(1))
+    else:
+        entries = [{"title": str(p.get("firstLine", "")), "path": f"page={p.get('page')}"} for p in pages]
+        picker = runtime.section_picker() if len(entries) > legacy_match.SMALL_MAP else None
+        picked = await legacy_match.pick(query, entries, picker=picker, resource_name=read.resource.name or read.slug)
+        if picked is None:
+            return f"PDF '{read.slug}': no page matched query={query!r}."
+        number = int(re.search(r"page=(\d+)", picked["path"]).group(1))
+    if number < 1 or number > len(pages):
+        return f"PDF '{read.slug}': page {number} out of range (1..{len(pages)})."
+    url = f"{fetch.canonical_url(base)}#page={number}"
+    refused = await _refusal(read, url)
+    if refused:
+        return refused
+    entry = await read.store.entry_by_url(read.owner, read.resource.id, url)
+    if entry and entry.get("stored_text") and not force_refresh:
+        return render(read.slug, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
+                      entry["stored_text"])
+    resp = await fetch.fetch_raw(base, read.settings, github_token=read.token)
+    text = ""
+    if resp.ok and resp.body[:5] == b"%PDF-":
+        try:
+            text = await asyncio.get_running_loop().run_in_executor(None, _pdf_page_text, resp.body, number)
+        except Exception:
+            text = ""
+    if not text:
+        code = resp.error or (f"http_{resp.status}" if resp.status else "unreachable")
+        if entry and entry.get("stored_text"):
+            return render(read.slug, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
+                          entry["stored_text"], note=NOT_REFRESHED.format(code=code))
+        return UNREACHABLE_NOT_STORED.format(url=url, code=code, slug=read.slug)
+    if entry and entry.get("stored_text"):
+        return render(read.slug, url, f"page {number}", format_source("live"), text,
+                      note=SKIPPED_COPY.format(date=_date(entry.get("fetched_at"))))
+    source = "live_not_stored" if read.row.get("map_version", 1) >= 2 else "live"
+    return render(read.slug, url, f"page {number}", format_source(source), text)

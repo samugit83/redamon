@@ -23,6 +23,10 @@ _mcp_injected_keys: set = set()
 _tradecraft_overlay: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
     "tradecraft_overlay", default=None
 )
+# A Tradecraft 2.0 run's entries ({tool name: entry}); when set they replace the 1.x one.
+_tradecraft_v2_overlay: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "tradecraft_v2_overlay", default=None
+)
 
 # Serialises mutations (apply / remove) so concurrent fireteam reads never
 # observe a half-mutated dict. Reads themselves don't take the lock — they
@@ -1038,6 +1042,9 @@ def pop_tradecraft_entry() -> None:
     _tradecraft_overlay.set(None)
 
 
+def swap_tradecraft_v2_entries(entries): _tradecraft_v2_overlay.set(dict(entries) if entries else None)
+
+
 def visible_registry() -> dict:
     """The tool registry as the CURRENT session sees it: the shared/global
     registry (built-ins + startup web_search swap + MCP-injected entries) with
@@ -1051,19 +1058,20 @@ def visible_registry() -> dict:
     stability.
     """
     tc = _tradecraft_overlay.get()
-    if not tc:
+    entries = _tradecraft_v2_overlay.get() or ({"tradecraft_lookup": tc} if tc else None)
+    if not entries:
         return TOOL_REGISTRY
     merged: dict = {}
     inserted = False
     for name, info in TOOL_REGISTRY.items():
-        if name == "tradecraft_lookup":
+        if name in entries or name == "tradecraft_lookup":
             continue  # overlay is authoritative; never duplicate a stale global one
         if not inserted and name in _mcp_injected_keys:
-            merged["tradecraft_lookup"] = tc
+            merged.update(entries)
             inserted = True
         merged[name] = info
     if not inserted:
-        merged["tradecraft_lookup"] = tc
+        merged.update(entries)
     return merged
 
 

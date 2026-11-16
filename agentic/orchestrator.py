@@ -252,7 +252,14 @@ class AgentOrchestrator:
             # only bind this project's resources + prompt catalog; a disabled
             # project clears its own resources so the always-registered tool
             # returns "resource not configured".
-            if get_setting('TRADECRAFT_TOOL_ENABLED', True):
+            from tradecraft.runtime import bind_run_catalog
+            import project_settings as _ps
+            # A 2.0 catalog binds the 2.0 library and its registry entries; a 1.x
+            # payload clears that binding and falls through to the 1.x manager.
+            # Read from this task's settings only: the catalog carries secrets.
+            if bind_run_catalog((_ps._settings_ctx.get() or {}).get('TRADECRAFT_CATALOG')):
+                self._tradecraft_manager.set_resources([])
+            elif get_setting('TRADECRAFT_TOOL_ENABLED', True):
                 self._tradecraft_manager.set_resources(get_setting('TRADECRAFT_RESOURCES', []) or [])
                 self._tradecraft_manager.section_picker_llm = self._build_section_picker_llm()
                 # tier2_threshold_bytes / fetch_timeout / default_ttl are read per
