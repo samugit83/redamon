@@ -26,6 +26,7 @@ import httpx
 
 from logging_config import get_logger
 from orchestrator_helpers.fetch_guard import (
+    CLEAN_FAILED,
     UnsafeFetchURLError,
     assert_safe_fetch_url,
     guarded_browser_script,
@@ -266,6 +267,10 @@ class GuardedFetcher:
             _log_failure("browser_error", url)
             return Rendered(url=url, html="", error="browser_error")
         output, error = await self.run_browser_script(script, timeout=timeout)
+        if not error and (output.lstrip().startswith(("[STDERR]", CLEAN_FAILED)) or "\n[STDERR]:" in output):
+            # The sandbox adds [STDERR] only when the script exited with an error: what it
+            # printed before is not a page. A cleaning the page broke prints its fixed line.
+            error = "browser_error"
         if error:
             _log_failure(error, url)
             return Rendered(url=url, html="", error=error)

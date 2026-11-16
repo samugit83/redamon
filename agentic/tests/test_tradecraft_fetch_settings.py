@@ -164,6 +164,23 @@ def test_the_options_reach_the_guarded_script():
         assert bad.error == "browser_error" and bad.html == "" and len(mcp.calls) == calls
 
 
+@pytest.mark.parametrize("reply", [
+    fetch_guard.CLEAN_FAILED,
+    "\n[STDERR]: Traceback (most recent call last):\n  File x\nError: boom",
+    "<html><body>half a page</body></html>\n[STDERR]: Traceback (most recent call last): boom",
+])
+def test_a_failed_script_is_never_a_page(reply, caplog):
+    """A cleaning the page broke, or a script that exited with an error, is a browser error
+    with a [tradecraft] log line: its output is never stored or indexed as the page."""
+    with patch.object(fetch_guard, "_resolve_ips", lambda _host: ["93.184.216.34"]), caplog.at_level("WARNING"):
+        r = run(GuardedFetcher(RecordingMcp(reply=reply)).render(WIKI, clean=True))
+    assert (r.html, r.error) == ("", "browser_error")
+    assert "[tradecraft] net browser_error host=wiki.tc-fixture.test" in caplog.text
+    with patch.object(fetch_guard, "_resolve_ips", lambda _host: ["93.184.216.34"]):
+        ok = run(GuardedFetcher(RecordingMcp(reply="<html><body>[STDERR] in the text is fine</body></html>")).render(WIKI))
+    assert ok.error == "" and "in the text is fine" in ok.html
+
+
 # --------------------------------------------------------------------------------------
 # AC-10: heavy pages come back whole
 # --------------------------------------------------------------------------------------

@@ -238,3 +238,64 @@ def test_selector_is_one_inert_literal():
 def test_options_outside_the_script_are_refused(bad):
     with pytest.raises(ValueError):
         fetch_guard.guarded_browser_script(URL, **bad)
+
+
+class _BrokenPage:
+    """A sandbox ``page`` whose own JavaScript breaks the cleaning (a replaced
+    querySelectorAll): ``evaluate`` raises as Playwright does for an error thrown in the page."""
+
+    url = URL
+
+    class _Request:
+        url = URL
+        redirected_from = None
+
+    class _Response:
+        def __init__(self):
+            self.request = _BrokenPage._Request()
+
+    def route(self, _pattern, _handler):
+        pass
+
+    def goto(self, _url, **_kw):
+        return self._Response()
+
+    def wait_for_selector(self, *_a, **_kw):
+        pass
+
+    def evaluate(self, _js):
+        raise RuntimeError("Error: document.querySelectorAll is not a function")
+
+    def content(self):
+        return "<html><body>the page</body></html>"
+
+
+def _run_script(script, page):
+    import contextlib
+    import io
+    import socket
+    from unittest.mock import patch
+
+    out = io.StringIO()
+    public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+    with patch("socket.getaddrinfo", lambda *_a, **_k: public), contextlib.redirect_stdout(out):
+        exec(compile(script, "<guarded>", "exec"), {"page": page})
+    return out.getvalue()
+
+
+def test_a_cleaning_the_page_breaks_prints_a_fixed_error():
+    """The cleaning runs in the page's JavaScript: when the page breaks it, the script prints
+    a fixed error line and no page, so nothing is stored as the page's text."""
+    broken = _run_script(fetch_guard.guarded_browser_script(URL, clean=True), _BrokenPage())
+    assert broken.strip() == fetch_guard.CLEAN_FAILED and "the page" not in broken
+    assert fetch_guard.parse_guarded_browser_output(broken) == ("", "")
+
+    class Working(_BrokenPage):
+        def evaluate(self, _js):
+            return None
+
+    assert _run_script(fetch_guard.guarded_browser_script(URL, clean=True), Working()).strip() == \
+        "<html><body>the page</body></html>"
+    # The no-option script has no cleaning step, so nothing changed there.
+    assert _run_script(fetch_guard.guarded_browser_script(URL), _BrokenPage()).strip() == \
+        "<html><body>the page</body></html>"

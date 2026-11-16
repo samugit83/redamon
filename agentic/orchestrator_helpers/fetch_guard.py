@@ -211,7 +211,7 @@ else:
     if _rd_bad:
         print("[BLOCKED] navigation reached a non-public address: " + _rd_bad[0])
     else:
-{clean}        print(page.content()[:{max_chars}])
+{read_page}
 '''
 
 
@@ -227,6 +227,7 @@ _CLEAN_JS = (
     "for (const n of document.querySelectorAll('svg, noscript, template')) n.remove(); }"
 )
 _WAIT_UNTIL = ("load", "domcontentloaded", "networkidle", "commit")
+CLEAN_FAILED = "[ERROR] Cleaning failed"
 # The sandbox stops a script at 60 s (mcp/servers/playwright_server.py); the wait for an
 # element gets what the page load leaves of 55 s, keeping 5 s to start and send the page.
 _SCRIPT_BUDGET_MS = 55_000
@@ -268,14 +269,26 @@ def guarded_browser_script(
     # ascii() gives a literal with every non-ASCII character escaped, so the
     # URL (or the selector) can neither break out of the string nor split the
     # line when the MCP wrapper re-indents the script with str.splitlines().
+    read_page = f"        print(page.content()[:{max_chars}])"
+    if clean:
+        # The cleaning runs in the page's own JavaScript, which the page can break (a replaced
+        # querySelectorAll, a throwing setter): then nothing is printed but a fixed error line,
+        # never a traceback that would be taken for the page.
+        read_page = (
+            "        try:\n"
+            f"            page.evaluate({ascii(_CLEAN_JS)})\n"
+            "        except Exception:\n"
+            f"            print({ascii(CLEAN_FAILED)})\n"
+            "        else:\n"
+            f"            print(page.content()[:{max_chars}])"
+        )
     return _BROWSER_GUARD_SCRIPT.format(
         url=ascii(url),
         blocked_names=ascii(frozenset(_BLOCKED_HOSTNAMES)),
         wait_until=json.dumps(wait_until),
         timeout_ms=timeout_ms,
         wait_for=wait_block,
-        clean=f"        page.evaluate({ascii(_CLEAN_JS)})\n" if clean else "",
-        max_chars=max_chars,
+        read_page=read_page,
     )
 
 
