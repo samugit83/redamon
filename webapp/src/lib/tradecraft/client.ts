@@ -7,9 +7,10 @@ import { fetchJson } from '@/lib/apiError'
 import type { JobView } from './jobs'
 import type { ResourceView } from './v2/list'
 import type { IngestionSettingsView } from './userSettings'
-import type { CheckUrlResult } from './agentContract'
+import type { CheckUrlResult, PreviewResult } from './agentContract'
+import type { Focus, UserRecipe } from './focus'
 
-export type { IngestionSettingsView, JobView, ResourceView }
+export type { IngestionSettingsView, JobView, ResourceView, UserRecipe }
 
 /** How often a card's job view is read while its job runs. */
 export const JOB_POLL_MS = 3000
@@ -29,7 +30,19 @@ export interface ResourceInput {
   forcedType?: string
   overrides?: Record<string, unknown>
   presetKey?: string
+  /** `{}` is no focus (Everything). */
+  focus?: Focus | Record<string, never>
 }
+
+/** The focus preview of a saved resource (its live map), or of the entries Check URL found. */
+export type FocusPreviewInput =
+  | { focus: Focus | Record<string, never>; resourceId: string; llmModel?: string }
+  | { focus: Focus | Record<string, never>; entries: { url: string; title: string }[]; llmModel: string }
+
+export type RecipeEdit =
+  | { add: { name: string; topics: string[]; kinds: string[] } }
+  | { rename: { id: string; name: string } }
+  | { delete: string }
 
 export interface CheckUrlInput {
   url?: string
@@ -60,7 +73,7 @@ export const tradecraftClient = {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ v2Enabled }),
     }, "Couldn't change the Tradecraft 2.0 switch"),
   getSettings: (userId: string) =>
-    fetchJson<{ v2Enabled: boolean; ingestion?: IngestionSettingsView }>(
+    fetchJson<{ v2Enabled: boolean; ingestion?: IngestionSettingsView; recipes?: UserRecipe[] }>(
       `/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, undefined, "Couldn't read your ingestion settings"),
   saveSettings: (userId: string, ingestion: Record<string, unknown>) =>
     fetchJson<{ v2Enabled: true; ingestion: IngestionSettingsView }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
@@ -75,6 +88,16 @@ export const tradecraftClient = {
     fetchJson<{ success: true }>(one(userId, id), { method: 'DELETE' }, "Couldn't delete the resource"),
   refresh: (userId: string, id: string) =>
     fetchJson<{ job: JobView }>(`${one(userId, id)}/refresh`, { method: 'POST', headers: JSON_HEADERS, body: '{}' }, "Couldn't start the refresh"),
+  editRecipes: (userId: string, edit: RecipeEdit) =>
+    fetchJson<{ v2Enabled: true; recipes: UserRecipe[] }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ recipes: edit }),
+    }, "Couldn't save your recipes"),
+  ownSkills: (userId: string) =>
+    fetchJson<{ id: string; name: string }[]>(`/api/users/${encodeURIComponent(userId)}/attack-skills`, undefined, "Couldn't load your skills"),
+  previewFocus: (userId: string, input: FocusPreviewInput) =>
+    fetchJson<{ result: PreviewResult }>(`${resources(userId)}/focus-preview`, {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input),
+    }, 'The focus preview failed'),
   checkUrl: (userId: string, input: CheckUrlInput) =>
     fetchJson<{ result: CheckUrlResult }>(`${resources(userId)}/check-url`, {
       method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input),

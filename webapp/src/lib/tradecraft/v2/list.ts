@@ -39,6 +39,8 @@ export interface ResourceView {
   mapVersion: number
   /** The resource's own settings (§6.1), for its Edit form; no secret is ever one. */
   overrides: Record<string, unknown>
+  /** The ingestion focus (§6.14) as saved; `{}` is Everything. */
+  focus: Record<string, unknown>
   summary: string
   summarySource: string
   summaryLocked: boolean
@@ -85,6 +87,7 @@ function view(row: ViewRow, extra: { entryCount: number; currentHash: string; jo
     priority: row.priority,
     mapVersion: row.mapVersion,
     overrides: row.overrides && typeof row.overrides === 'object' && !Array.isArray(row.overrides) ? row.overrides as Record<string, unknown> : {},
+    focus: row.focus && typeof row.focus === 'object' && !Array.isArray(row.focus) ? row.focus as Record<string, unknown> : {},
     summary: row.summary,
     summarySource: row.summarySource,
     summaryLocked: row.summaryLocked,

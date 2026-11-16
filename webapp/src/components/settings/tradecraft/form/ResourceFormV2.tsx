@@ -12,6 +12,7 @@ import type { CheckUrlResult } from '@/lib/tradecraft/agentContract'
 import {
   tradecraftClient, type IngestionSettingsView, type ResourceInput, type ResourceView, type SavedResource,
 } from '@/lib/tradecraft/client'
+import { focusFromStored, focusPayload, newResourceFocus, type Focus } from '@/lib/tradecraft/focus'
 import { presetSettings, type TradecraftPreset } from '@/lib/tradecraft/presets'
 import { isValidValue, settingDef, specDefaults, type SettingValue } from '@/lib/tradecraft/settingsSpec'
 import { slugify } from '@/lib/tradecraft/slug'
@@ -23,6 +24,7 @@ import { ContentSection } from './ContentSection'
 import { CveSection } from './CveSection'
 import { DocsSection } from './DocsSection'
 import { FetchingSection } from './FetchingSection'
+import { FocusSection, type FocusPreviewSource } from './FocusSection'
 import { GithubSection } from './GithubSection'
 import type { FormContext } from './OverrideList'
 import { PdfSection } from './PdfSection'
@@ -59,7 +61,10 @@ interface Fields {
 interface Draft {
   fields: Fields
   overrides: Record<string, unknown>
+  focus: Focus
 }
+
+const PREVIEW_TITLE_MAX = 300
 
 type ListOverride = { mode: string; items?: unknown[]; text?: unknown }
 
@@ -139,6 +144,8 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
         presetKey: '',
       },
       overrides: structuredClone(resource?.overrides ?? {}),
+      // A saved resource keeps its focus (none is Everything); a new one starts on the account's defaults (§4.8).
+      focus: resource ? focusFromStored(resource.focus) : newResourceFocus(accountValues),
     }
   }, [resource, accountValues])
   const [draft, setDraft] = useState<Draft>(initial)
@@ -196,6 +203,7 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
         ...(!slugEdited ? { slug: slugify(preset.name) } : {}),
       },
       overrides: carried.overrides ?? {},
+      focus: prev.focus,
     }))
     setCheck(null)
     // §6.3: Check URL runs by itself when a preset is picked.
@@ -207,7 +215,7 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
     setDraft(prev => {
       const fields = { ...prev.fields }
       if (!isEdit && !storageTouched && accountValues['storage.defaultMode'] === 'recommended') fields.storageMode = result.recommended_storage
-      return { fields, overrides: prefillFromCheck(result, prev.overrides) }
+      return { ...prev, fields, overrides: prefillFromCheck(result, prev.overrides) }
     })
   }
 
@@ -224,12 +232,15 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
     setSubmitting(true)
     setError('')
     const overrides = overridesPayload(draft.overrides)
+    // A CVE archive has no page list to focus: its hidden section sends no focus.
+    const focus = effectiveType === 'cve-poc-db' ? {} : focusPayload(draft.focus)
     const input: ResourceInput = {
       name: f.name.trim(), url: f.url.trim(), llmModel: f.llmModel.trim(), enabled: f.enabled, storageMode,
       ...(f.githubToken.trim() ? { githubTokenOverride: f.githubToken.trim() } : {}),
       ...(isEdit
-        ? { forcedType: f.forcedType, overrides }
+        ? { forcedType: f.forcedType, overrides, focus }
         : {
+            ...(Object.keys(focus).length ? { focus } : {}),
             ...(slugEdited && f.slug ? { slug: f.slug } : {}),
             ...(f.forcedType ? { forcedType: f.forcedType } : {}),
             ...(Object.keys(overrides).length ? { overrides } : {}),
@@ -253,6 +264,18 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
   }
 
   const typeSection = typeSectionOf(effectiveType)
+  // The answer reaches the browser unparsed: a field the agent left out is missing, not defaulted.
+  const indexCount = check?.ok && typeof check.index?.count === 'number' ? check.index.count : null
+  const entryCount = indexCount ?? (isEdit && !urlChanged ? resource!.entryCount : null)
+  const sample = check?.ok && Array.isArray(check.sample_entries) ? check.sample_entries : []
+  // The preview samples the saved map, else the entries Check URL found; the form's model judges them.
+  let focusPreview: FocusPreviewSource = null
+  if (isEdit && !urlChanged && resource!.entryCount > 0) {
+    focusPreview = { resourceId: resource!.id, ...(f.llmModel.trim() ? { llmModel: f.llmModel.trim() } : {}) }
+  } else if (sample.length > 0 && f.llmModel.trim()) {
+    focusPreview = { entries: sample.map(e => ({ url: e.url, title: (e.title ?? '').slice(0, PREVIEW_TITLE_MAX) })), llmModel: f.llmModel.trim() }
+  }
+  const maxContentChecks = Number(draft.overrides['focus.maxContentChecks'] ?? accountValues['focus.maxContentChecks']) || 0
   const sitemapFound = check?.ok && check.index?.kind === 'sitemap' && check.index.url ? check.index.url : null
   const docsIndexFound = check?.ok && check.index?.kind === 'searchindex' && check.index.url ? check.index.url : null
   const busy = submitting
@@ -355,6 +378,11 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
         </label>
 
         <SiteTypeSection ctx={ctx} forcedType={f.forcedType} detectedType={detectedType} onForcedType={t => set('forcedType', t)} />
+        <FocusSection
+          userId={userId} focus={draft.focus} onChange={focus => setDraft(prev => ({ ...prev, focus }))} siteType={effectiveType}
+          alwaysSkip={typeof accountValues['focus.alwaysSkip'] === 'string' ? accountValues['focus.alwaysSkip'] as string : ''}
+          maxContentChecks={maxContentChecks} entryCount={entryCount} preview={focusPreview}
+        />
         {typeSection === 'github' && <GithubSection ctx={ctx} github={check?.ok ? check.github : null} />}
         {typeSection === 'cve' && <CveSection ctx={ctx} foundPattern={check?.ok ? check.cve_pattern : null} />}
         {(typeSection === 'wiki' || typeSection === 'gitbook') && <WikiSection ctx={ctx} variant={typeSection} sitemapFound={sitemapFound} />}

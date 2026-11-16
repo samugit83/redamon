@@ -125,3 +125,37 @@
   flex-wrap: wrap;
   gap: 4px;
 }
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: none;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.chip[aria-pressed='true'] {
+  border-color: var(--accent-primary, #3b82f6);
+  color: var(--accent-primary, #3b82f6);
+  background: var(--bg-secondary);
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.previewList {
+  margin: 0;
+  padding-left: 16px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}

@@ -128,11 +128,11 @@ describe('the full form (T4.6)', () => {
 
   test('sections_by_type: no type section until the type is known; then the section of that type only', () => {
     renderFull()
-    expect(sectionNames()).toEqual(['Site type', 'Fetching', 'Content', 'Summary', 'Refreshing'])
+    expect(sectionNames()).toEqual(['Site type', 'Focus', 'Fetching', 'Content', 'Summary', 'Refreshing'])
     expect(screen.getByText(/Pick a type, or run Check URL/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^Site type/ }))
     fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'github-repo' } })
-    expect(sectionNames()).toEqual(['Site type', 'GitHub repository', 'Fetching', 'Content', 'Summary', 'Refreshing'])
+    expect(sectionNames()).toEqual(['Site type', 'Focus', 'GitHub repository', 'Fetching', 'Content', 'Summary', 'Refreshing'])
     fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'pdf' } })
     expect(sectionNames()).toContain('PDF')
     expect(sectionNames()).not.toContain('GitHub repository')
@@ -276,5 +276,76 @@ describe('the full form (T4.6)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Fetching/ }))
     expect(screen.getAllByText('Using your setting: 30 s')).toHaveLength(2)
     expect(screen.getByText('Using your setting: 40,000 chars')).toBeInTheDocument()
+  })
+
+  describe('the focus (§6.14, T5.6)', () => {
+    test('a new resource starts on the account\'s default mode; a focus is sent with the add', async () => {
+      routes(url => (url.endsWith('/tradecraft-settings') ? new Response(JSON.stringify({ v2Enabled: true, recipes: [] }), { status: 200 }) : undefined),
+        url => (url.endsWith('/attack-skills') ? new Response('[]', { status: 200 }) : undefined))
+      renderFull(null, { ...SETTINGS, values: { ...SETTINGS.values, 'focus.defaultMode': 'focused', 'focus.defaultStrictness': 'strict' } })
+      fill()
+      fireEvent.click(screen.getByRole('button', { name: /^Focus/ }))
+      expect((screen.getByLabelText('Focused') as HTMLInputElement).checked).toBe(true)
+      fireEvent.click(screen.getByRole('button', { name: 'XSS' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Add & ingest' }))
+      await waitFor(() => expect(onSaved).toHaveBeenCalled())
+      expect(bodyOf('POST', BASE).focus).toEqual({ mode: 'focused', topics: ['xss'], kinds: [], keep: 'Pages about XSS.', skip: '', skipMode: 'add', strictness: 'strict' })
+    })
+
+    test('an edit sends the saved focus back; Everything sends none', async () => {
+      routes((url, init) => (init?.method === 'PUT' ? new Response(JSON.stringify({ resource: RESOURCE, job: null }), { status: 200 }) : undefined),
+        url => (url.endsWith('/tradecraft-settings') ? new Response(JSON.stringify({ v2Enabled: true, recipes: [] }), { status: 200 }) : undefined),
+        url => (url.endsWith('/attack-skills') ? new Response('[]', { status: 200 }) : undefined))
+      const saved = { mode: 'focused', topics: ['ssrf'], kinds: ['poc'], keep: 'k', skip: '', skipMode: 'add', strictness: 'balanced' }
+      renderFull({ ...RESOURCE, resourceType: 'agentic-crawl', focus: saved })
+      expect(screen.getByRole('button', { name: /^Focus/ })).toHaveTextContent('Focused: 1 topic, 1 content type')
+      fireEvent.click(screen.getByRole('button', { name: /^Focus/ }))
+      fireEvent.click(screen.getByLabelText('Everything'))
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(onSaved).toHaveBeenCalled())
+      expect(bodyOf('PUT', `${BASE}/r1`).focus).toEqual({})
+    })
+
+    test('a resource being added previews the entries Check URL found, with the model picked in the form', async () => {
+      routes(checkAnswers({ detected_type: 'agentic-crawl', index: { kind: 'sitemap', url: 'https://wiki.tc-fixture.test/sitemap.xml', count: 250 },
+        sample_entries: [{ url: 'https://wiki.tc-fixture.test/a', title: 'A' }, { url: 'https://wiki.tc-fixture.test/b', title: 'B' }] }),
+      url => (url.endsWith('/focus-preview')
+        ? new Response(JSON.stringify({ result: { kept: 1, maybe: 0, dropped: 1, examples: [], llm_calls: 1, error_code: '' } }), { status: 200 })
+        : undefined),
+      url => (url.endsWith('/tradecraft-settings') ? new Response(JSON.stringify({ v2Enabled: true, recipes: [] }), { status: 200 }) : undefined),
+      url => (url.endsWith('/attack-skills') ? new Response('[]', { status: 200 }) : undefined))
+      renderFull()
+      fill()
+      fireEvent.click(screen.getByRole('button', { name: /Check URL/ }))
+      await screen.findByRole('status')
+      fireEvent.click(screen.getByRole('button', { name: /^Focus/ }))
+      fireEvent.click(screen.getByLabelText('Focused'))
+      fireEvent.click(screen.getByRole('button', { name: 'XSS' }))
+      expect(screen.getByText('Estimated cost: title triage ≈ 3 small LLM calls · content checks up to 100 calls')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: /Preview on 100 pages/ }))
+      expect(await screen.findByText('Would keep 1, drop 1 of 2 pages')).toBeInTheDocument()
+      expect(bodyOf('POST', `${BASE}/focus-preview`)).toMatchObject({
+        llmModel: 'gpt-4o', entries: [{ url: 'https://wiki.tc-fixture.test/a', title: 'A' }, { url: 'https://wiki.tc-fixture.test/b', title: 'B' }],
+      })
+    })
+
+    test('hidden_for_cve: a CVE archive shows no Focus section and sends no focus', async () => {
+      renderFull({ ...RESOURCE, resourceType: 'cve-poc-db', focus: { mode: 'focused', topics: ['xss'] } })
+      expect(sectionNames()).not.toContain('Focus')
+    })
+
+    test('the preview samples the saved map with the form\'s model', async () => {
+      routes(url => (url.endsWith('/focus-preview')
+        ? new Response(JSON.stringify({ result: { kept: 3, maybe: 0, dropped: 9, examples: [], llm_calls: 1, error_code: '' } }), { status: 200 })
+        : undefined),
+      url => (url.endsWith('/tradecraft-settings') ? new Response(JSON.stringify({ v2Enabled: true, recipes: [] }), { status: 200 }) : undefined),
+      url => (url.endsWith('/attack-skills') ? new Response('[]', { status: 200 }) : undefined))
+      renderFull({ ...RESOURCE, resourceType: 'agentic-crawl', entryCount: 12, focus: { mode: 'focused', topics: ['xss'] } })
+      fireEvent.click(screen.getByRole('button', { name: /^Focus/ }))
+      expect(screen.getByText('Estimated cost: title triage ≈ 1 small LLM call · content checks up to 12 calls')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: /Preview on 100 pages/ }))
+      expect(await screen.findByText('Would keep 3, drop 9 of 12 pages')).toBeInTheDocument()
+      expect(bodyOf('POST', `${BASE}/focus-preview`)).toMatchObject({ resourceId: 'r1', llmModel: 'm', focus: { mode: 'focused', topics: ['xss'] } })
+    })
   })
 })

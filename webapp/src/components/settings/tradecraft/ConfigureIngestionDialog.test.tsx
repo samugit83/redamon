@@ -74,10 +74,10 @@ describe('ConfigureIngestionDialog', () => {
     expect(screen.getByText(/Default: 200 pages\. Allowed: 1–500 pages\./)).toBeInTheDocument()
   })
 
-  test('the focus defaults, resource-only settings and real page titles are not in the dialog', async () => {
+  test('the focus defaults are the last section (T5.6); resource-only settings and real page titles are not in the dialog', async () => {
     renderDialog()
     await screen.findByText(APPLIES_TEXT)
-    expect(nav().queryByRole('button', { name: /Ingestion focus/ })).toBeNull()
+    expect(nav().getAllByRole('button').at(-1)).toHaveTextContent('Ingestion focus')
     open('Known site types')
     expect(screen.queryByText('Use real page titles')).toBeNull()
     expect(screen.queryByText('Max title fetches')).toBeNull()

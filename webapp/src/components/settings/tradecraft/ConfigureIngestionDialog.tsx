@@ -9,15 +9,16 @@ import { ApiError, toApiError } from '@/lib/apiError'
 import { failureText } from '@/components/settings/failureText'
 import { estimateText, estimateWebsite } from '@/lib/tradecraft/estimate'
 import { SECTIONS, SETTINGS, settingDef, type SettingDef } from '@/lib/tradecraft/settingsSpec'
-import { tradecraftClient, type IngestionSettingsView } from '@/lib/tradecraft/client'
+import { tradecraftClient, type IngestionSettingsView, type UserRecipe } from '@/lib/tradecraft/client'
 import { draftError, parseDraft, sameValue, type Draft } from './dialog/draft'
 import { SectionFields, SettingsSection } from './dialog/SettingsSection'
 import { KnownTypesFields } from './dialog/KnownTypesSection'
+import { FocusDefaultsFields } from './dialog/FocusDefaultsSection'
 import tc from './tradecraft.module.css'
 import css from './dialog/dialog.module.css'
 
-/** The sections of Configure ingestion (§3.2), in order. The focus defaults join with phase 5. */
-export const DIALOG_SECTIONS = ['fetching', 'detection', 'knownTypes', 'crawl', 'storage', 'summary', 'refreshing'] as const
+/** The sections of Configure ingestion (§3.2), in order (§4.1-§4.8). */
+export const DIALOG_SECTIONS = ['fetching', 'detection', 'knownTypes', 'crawl', 'storage', 'summary', 'refreshing', 'focus'] as const
 /** Settings whose feature is not built yet: real page titles arrive with phase 6. */
 export const HIDDEN_KEYS: ReadonlySet<string> = new Set(['knownTypes.realTitles', 'knownTypes.maxTitleFetches'])
 export const APPLIES_TEXT = 'Applies to all your resources the next time each one is added or refreshed.'
@@ -63,6 +64,7 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
 }) {
   const [status, setStatus] = useState<Status>({ kind: 'loading' })
   const [view, setView] = useState<IngestionSettingsView | null>(null)
+  const [recipes, setRecipes] = useState<UserRecipe[]>([])
   const [draft, setDraft] = useState<Draft>({})
   const [section, setSection] = useState<string>(DIALOG_SECTIONS[0])
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({})
@@ -86,6 +88,7 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
       const res = await tradecraftClient.getSettings(userId)
       if (!res.v2Enabled || !res.ingestion) return setStatus({ kind: 'off' })
       adopt(res.ingestion)
+      setRecipes(res.recipes ?? [])
       setStatus({ kind: 'ready' })
     } catch (e) {
       if (e instanceof ApiError && e.code === 'tradecraft_v2_off') return setStatus({ kind: 'off' })
@@ -211,9 +214,11 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
               ))}
             </nav>
             <SettingsSection label={sectionLabel(section)} onReset={() => resetKeys(SECTION_KEYS[section])}>
-              {section === 'knownTypes'
-                ? <KnownTypesFields defs={sectionDefs(section).filter(d => d.key in draft)} {...fieldProps} />
-                : <SectionFields defs={sectionDefs(section).filter(d => d.key in draft)} {...fieldProps} />}
+              {section === 'knownTypes' && <KnownTypesFields defs={sectionDefs(section).filter(d => d.key in draft)} {...fieldProps} />}
+              {section === 'focus' && (
+                <FocusDefaultsFields defs={sectionDefs(section).filter(d => d.key in draft)} {...fieldProps} recipes={recipes} onRecipes={setRecipes} />
+              )}
+              {section !== 'knownTypes' && section !== 'focus' && <SectionFields defs={sectionDefs(section).filter(d => d.key in draft)} {...fieldProps} />}
             </SettingsSection>
           </div>
         </>

@@ -77,10 +77,10 @@ describe('validateFocus', () => {
     }
   })
 
-  test('at most 100 topics', () => {
-    const topics = Array.from({ length: 101 }, (_, i) => `user_skill:s${i}`)
+  test('at most 30 topics, what the agent\'s focus stage reads', () => {
+    const topics = Array.from({ length: 31 }, (_, i) => `user_skill:s${i}`)
     expect(validateFocus({ mode: 'focused', topics })).toMatchObject({ ok: false, field: 'focus.topics' })
-    expect(validateFocus({ mode: 'focused', topics: topics.slice(0, 100) }).ok).toBe(true)
+    expect(validateFocus({ mode: 'focused', topics: topics.slice(0, 30) }).ok).toBe(true)
   })
 })
 
