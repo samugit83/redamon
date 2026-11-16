@@ -14,6 +14,7 @@
 import prisma from '@/lib/prisma'
 import { activeCounts, type ActiveCounts } from './activeCounts'
 import { isOwnerRun } from './catalog'
+import { lastRefreshedOf } from './client'
 import { hasStoredLogin } from './masking'
 import { choiceChangeable, type ChoiceViewer } from './projectChoices'
 import { tradecraftV2Enabled } from './switch'
@@ -109,7 +110,7 @@ export async function projectTradecraftView(opts: {
       type: v.forcedType || v.resourceType,
       storageMode: v.storageMode,
       pages: v.entryCount,
-      lastRefreshedAt: v.lastRefreshedAt ?? v.lastVerifiedAt,
+      lastRefreshedAt: lastRefreshedOf(v),
       details: {
         url: v.url,
         mapVersion: v.mapVersion,

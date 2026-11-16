@@ -2,7 +2,7 @@
 
 import { Loader2, Pencil, RotateCw, Square, Trash2 } from 'lucide-react'
 import { Toggle } from '@/components/ui'
-import { isRunning, jobLabel, relTime, type ResourceView } from '@/lib/tradecraft/client'
+import { isRunning, jobLabel, lastRefreshedOf, relTime, type ResourceView } from '@/lib/tradecraft/client'
 import { useEnabledImpactConfirm } from './EnabledImpactAlert'
 import css from './tradecraft.module.css'
 
@@ -26,9 +26,7 @@ export interface ResourceCardProps {
 export function ResourceCard({ userId, resource: r, busy = false, onRefresh, onCancel, onEdit, onDelete, onToggleEnabled }: ResourceCardProps) {
   const running = isRunning(r.job)
   const confirmEnabled = useEnabledImpactConfirm(userId)
-  // A failed ingestion sets the 1.x verification time (TD-18): only a 2.0 swap, or a 1.x
-  // verify that found nothing wrong, is a refresh worth naming here.
-  const refreshedAt = r.lastRefreshedAt ?? (r.mapVersion === 1 && !r.lastError ? r.lastVerifiedAt : null)
+  const refreshedAt = lastRefreshedOf(r)
   const report = r.report
   return (
     <div className={`${css.card} ${r.enabled ? '' : css.cardDisabled}`} data-testid={`tc-card-${r.id}`}>

@@ -115,6 +115,15 @@ export function jobLabel(job: Pick<JobView, 'status' | 'stage' | 'cancelRequeste
   return `Failed (${job.errorCode || 'unknown'}): the previous version is kept`
 }
 
+/**
+ * When the resource was last refreshed, as the card and the project's accordion both say it. A
+ * failed ingestion sets the 1.x verification time (TD-18): only a 2.0 swap, or a 1.x verify that
+ * found nothing wrong, is a refresh worth naming.
+ */
+export function lastRefreshedOf(r: Pick<ResourceView, 'lastRefreshedAt' | 'lastVerifiedAt' | 'mapVersion' | 'lastError'>): string | null {
+  return r.lastRefreshedAt ?? (r.mapVersion === 1 && !r.lastError ? r.lastVerifiedAt : null)
+}
+
 export function relTime(iso: string | null | undefined, now: number = Date.now()): string {
   if (!iso) return 'never'
   const t = new Date(iso).getTime()

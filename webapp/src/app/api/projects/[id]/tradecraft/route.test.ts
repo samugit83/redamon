@@ -103,6 +103,17 @@ describe('GET /api/projects/[id]/tradecraft', () => {
     expect(JSON.stringify(body)).not.toMatch(/fake-session|credentials|sitemap/)
   })
 
+  test("last refreshed: the card's rule; a failed ingestion's 1.x verification time is no refresh", async () => {
+    const row = (id: string) => h.db.rows('userTradecraftResource', { id })[0]
+    // Its only 2.0 ingestion failed: the failure set the 1.x time (TD-18), and the card says "never".
+    Object.assign(row('r2'), { mapVersion: 3, lastRefreshedAt: null, lastVerifiedAt: new Date('2026-11-15T00:00:00Z'), lastError: 'fetch_failed' })
+    // A 1.x map verified without an error is a refresh, as on the card.
+    Object.assign(row('r3'), { mapVersion: 1, lastRefreshedAt: null, lastVerifiedAt: new Date('2026-11-14T00:00:00Z'), lastError: '' })
+    const { body } = await get()
+    expect(body.resources.map((r: { lastRefreshedAt: string | null }) => r.lastRefreshedAt))
+      .toEqual(['2026-11-10T00:00:00.000Z', null, '2026-11-14T00:00:00.000Z'])
+  })
+
   test('missing_row_means_on: a resource with no choice row is on in the project', async () => {
     const { body } = await get()
     expect(body.resources.find((r: { id: string }) => r.id === 'r2').offInProject).toBe(false)
