@@ -17,7 +17,7 @@ import json
 import re
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from orchestrator_helpers.web_sources import (
     _LANG_RE,
@@ -123,24 +123,66 @@ def language_filter(urls: list[str], settings: EffectiveSettings) -> list[str]:
     return keep if keep and tagged > 0.4 * len(urls) else urls
 
 
-async def sitemap_urls(url: str, settings: EffectiveSettings, *, blocking: Blocking = inline,
-                       depth: Optional[int] = None) -> list[str]:
-    """The page URLs of a sitemap or sitemap index: at most ``sitemapMaxBytes`` each, two
-    levels, ``sitemapMaxChildren`` children of an index (the mirror's limits)."""
+Stop = Callable[[], Awaitable[str]]
+
+
+class SitemapBudget:
+    """One reading of a site's sitemaps, within the mirror's limits (§5): each file at most
+    ``sitemapMaxBytes``, and for the whole reading at most an index and its
+    ``sitemapMaxChildren`` children (21 files) and ``sitemapMaxBytes`` in all, however many
+    sitemaps robots.txt names. ``should_stop`` is asked before each download (a crawl's time
+    budget, a cancel) and answers the reason to stop, or ""."""
+
+    def __init__(self, should_stop: Optional[Stop] = None) -> None:
+        self.files = int(constant("sitemapMaxChildren")) + 1
+        self.bytes = int(constant("sitemapMaxBytes"))
+        self.should_stop = should_stop
+        # Why the reading stopped early: a should_stop reason, or "sitemap_limit".
+        self.stopped = ""
+
+    async def allow(self) -> bool:
+        if not self.stopped and self.should_stop is not None:
+            self.stopped = await self.should_stop() or ""
+        if not self.stopped and (self.files <= 0 or self.bytes <= 0):
+            self.stopped = "sitemap_limit"
+        if self.stopped:
+            return False
+        self.files -= 1
+        return True
+
+
+async def iter_sitemap_urls(url: str, settings: EffectiveSettings, *, budget: SitemapBudget,
+                            blocking: Blocking = inline, depth: Optional[int] = None) -> AsyncIterator[list[str]]:
+    """The page URLs of a sitemap or sitemap index, one urlset at a time, so a reader can stop
+    as soon as it has enough: two levels, ``sitemapMaxChildren`` children of an index, within
+    ``budget``. Parsing goes through ``blocking`` (off the event loop in a job)."""
     depth = constant("sitemapMaxDepth") if depth is None else depth
-    if depth <= 0:
-        return []
-    max_bytes = int(constant("sitemapMaxBytes"))
+    if depth <= 0 or not await budget.allow():
+        return
+    max_bytes = min(int(constant("sitemapMaxBytes")), budget.bytes)
     resp = await fetch.fetch_raw(url, settings, max_bytes=max_bytes + 1)
+    budget.bytes -= len(resp.body)
     if not resp.ok or resp.truncated or not resp.body:
-        return []
+        return
     kind, locs = await blocking(parse_sitemap_xml, resp.text)
     if kind == "index":
-        urls: list[str] = []
         for loc in locs[: int(constant("sitemapMaxChildren"))]:
-            urls.extend(await sitemap_urls(loc, settings, blocking=blocking, depth=depth - 1))
-        return urls
-    return list(locs) if kind == "urlset" else []
+            async for batch in iter_sitemap_urls(loc, settings, budget=budget, blocking=blocking, depth=depth - 1):
+                yield batch
+            if budget.stopped:
+                return
+    elif kind == "urlset":
+        yield list(locs)
+
+
+async def sitemap_urls(url: str, settings: EffectiveSettings, *, blocking: Blocking = inline,
+                       depth: Optional[int] = None, budget: Optional[SitemapBudget] = None) -> list[str]:
+    """Every page URL of a sitemap or sitemap index, within ``budget`` (a fresh one when none)."""
+    urls: list[str] = []
+    async for batch in iter_sitemap_urls(url, settings, budget=budget or SitemapBudget(), blocking=blocking,
+                                         depth=depth):
+        urls.extend(batch)
+    return urls
 
 
 def _nav_links(html: str, page_url: str, selector: str) -> list[tuple[str, str]]:
@@ -170,10 +212,11 @@ async def _from_sitemaps(base: str, configured: list[str], settings: EffectiveSe
     named += (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
     if not configured:
         named.append(f"{base}/sitemap.xml")
+    budget = SitemapBudget()
     for sm in dict.fromkeys(named):
-        urls = await sitemap_urls(sm, settings, blocking=blocking)
-        if urls:
-            return urls, sm
+        urls = await sitemap_urls(sm, settings, blocking=blocking, budget=budget)
+        if urls or budget.stopped:
+            return urls, sm if urls else ""
     return [], ""
 
 

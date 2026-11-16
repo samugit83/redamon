@@ -185,7 +185,8 @@ async def _website(result: CheckUrlResult, url: str, robots_txt: robots.Robots, 
     cache = robots.RobotsCache(settings)
     cache.remember(robots_txt)
     rules = crawl.FollowRules(settings, crawl.start_pages(base, settings), crawl.exclude_patterns(settings))
-    entries, source, _cut = await crawl.sitemap_entries(base, settings, rules=rules, robots_cache=cache, blocking=_thread)
+    found = await crawl.sitemap_entries(base, settings, rules=rules, robots_cache=cache, blocking=_thread)
+    entries, source = found.entries, found.source
     if not entries:
         result.index = IndexInfo(kind="none")
         return

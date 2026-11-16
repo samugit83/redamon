@@ -472,58 +472,77 @@ async def llm_decide(llm: Any, prompt: str, state: _State) -> tuple[str, list[in
 # Auto: the sitemap as the map
 # --------------------------------------------------------------------------------------
 
-async def sitemap_page_urls(base: str, robots_txt: robots.Robots, settings: EffectiveSettings,
-                            blocking: Blocking = inline) -> tuple[list[str], str]:
-    """(page URLs, where they came from): the resource's own sitemap URLs
-    (``type.website.sitemapUrls``, relative ones against the start URL), then the sitemaps
-    robots.txt names (at most ``sitemapMaxChildren`` of them), and ``/sitemap.xml`` only when
-    the resource names none (§6.5, as ``builders`` reads a wiki's); each within the mirror's
-    limits (``builders.sitemap_urls``)."""
-    max_children = int(constant("sitemapMaxChildren"))
-    configured = [urllib.parse.urljoin(base, u.strip()) for u in settings.list("type.website.sitemapUrls") if u.strip()]
-    for source, named in (("configured", configured), ("robots", robots_txt.sitemaps)):
-        urls: list[str] = []
-        for sm in named[:max_children]:
-            urls.extend(await builders.sitemap_urls(sm, settings, blocking=blocking))
-        if urls:
-            return urls, source
-    if configured:
-        return [], "configured"
-    origin = robots.origin_of(base)
-    return await builders.sitemap_urls(f"{origin}/sitemap.xml", settings, blocking=blocking), "sitemap.xml"
-
-
 Skip = Callable[[str, str], None]
+# The filter yields to the event loop this often while it judges a sitemap's URLs.
+_YIELD_EVERY = 500
+
+
+@dataclass
+class SitemapMap:
+    entries: list[Candidate] = field(default_factory=list)
+    # Where the pages came from: configured, robots or sitemap.xml ("" when none listed any).
+    source: str = ""
+    # Cut at knownTypes.maxMapEntries.website.
+    cut: bool = False
+    # Why the reading stopped early: time_budget, cancelled, sitemap_limit, or "".
+    stopped: str = ""
 
 
 async def sitemap_entries(base: str, settings: EffectiveSettings, *, rules: FollowRules,
                           robots_cache: robots.RobotsCache, skip: Optional[Skip] = None,
-                          blocking: Blocking = inline) -> tuple[list[Candidate], str, bool]:
-    """The map Auto takes from the site's sitemap: (entries, where the sitemap came from, cut
-    at ``knownTypes.maxMapEntries.website``). Every entry passes the follow rules, and robots.txt
-    when ``crawl.respectRobots`` is on; ``skip(reason, url)`` hears about the others."""
+                          blocking: Blocking = inline, should_stop: Optional[builders.Stop] = None) -> SitemapMap:
+    """The map Auto takes from the site's sitemaps: the resource's own sitemap URLs
+    (``type.website.sitemapUrls``, relative ones against the start URL), else the ones
+    robots.txt names, else ``/sitemap.xml`` when the resource names none (§6.5); the first
+    source that lists any page is the one used. Every entry passes the follow rules, and
+    robots.txt when ``crawl.respectRobots`` is on; ``skip(reason, url)`` hears about the others.
+
+    The reading stops as soon as the map is full (``knownTypes.maxMapEntries.website``), within
+    one ``builders.SitemapBudget`` for the whole reading, and asks ``should_stop`` before each
+    download; it never holds more than one sitemap's URLs at a time."""
     robots_txt = await robots_cache.get(base)
-    urls, source = await sitemap_page_urls(base, robots_txt, settings, blocking)
     cap = settings.int("knownTypes.maxMapEntries.website")
     respect_robots = settings.bool("crawl.respectRobots")
-    entries: list[Candidate] = []
+    budget = builders.SitemapBudget(should_stop)
+    configured = [urllib.parse.urljoin(base, u.strip()) for u in settings.list("type.website.sitemapUrls") if u.strip()]
+    sources = [("configured", configured), ("robots", robots_txt.sitemaps)]
+    if not configured:
+        sources.append(("sitemap.xml", [f"{robots.origin_of(base)}/sitemap.xml"]))
+    out = SitemapMap()
     seen: set[str] = set()
-    for raw in urls:
-        url = rules.normalize(fetch.canonical_url(raw))
-        if url in seen:
-            continue
-        seen.add(url)
-        reason = rules.verdict(url)
-        if not reason and respect_robots and not await robots_cache.allows(url):
-            reason = "robots"
-        if reason:
-            if skip is not None:
-                skip(reason, url)
-            continue
-        if len(entries) >= cap:
-            return entries, source, True
-        entries.append(Candidate(url, builders.title_from_slug(url, strip_html=True), "sitemap", url))
-    return entries, source, False
+    for source, named in sources:
+        listed = False
+        for sm in named[: int(constant("sitemapMaxChildren"))]:
+            async for batch in builders.iter_sitemap_urls(sm, settings, budget=budget, blocking=blocking):
+                listed = listed or bool(batch)
+                for i, raw in enumerate(batch):
+                    if i % _YIELD_EVERY == _YIELD_EVERY - 1:
+                        await asyncio.sleep(0)
+                    url = rules.normalize(fetch.canonical_url(raw))
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    reason = rules.verdict(url)
+                    if not reason and respect_robots and not await robots_cache.allows(url):
+                        reason = "robots"
+                    if reason:
+                        if skip is not None:
+                            skip(reason, url)
+                        continue
+                    if len(out.entries) >= cap:
+                        out.cut = True
+                        break
+                    out.entries.append(Candidate(url, builders.title_from_slug(url, strip_html=True), "sitemap", url))
+                if out.cut:
+                    break
+            if out.cut or budget.stopped:
+                break
+        if listed:
+            out.source = source
+        if listed or out.cut or budget.stopped:
+            break
+    out.stopped = budget.stopped
+    return out
 
 
 # --------------------------------------------------------------------------------------
@@ -570,16 +589,30 @@ async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[F
     robots_cache = robots.RobotsCache(settings)
 
     if strategy == "auto":
-        entries, source, cut = await sitemap_entries(state.base, settings, rules=state.rules,
-                                                     robots_cache=robots_cache, skip=state.skip, blocking=blocking)
-        if entries:
-            elapsed = int(clock.monotonic() - state.started)
-            logger.info(f"[tradecraft] crawl done strategy=auto source={source} entries={len(entries)} cut={cut}")
+        budget_sec = settings.int("crawl.timeBudgetSec")
+
+        async def should_stop() -> str:
+            if cancel_check is not None and await cancel_check():
+                return "cancelled"
+            return "time_budget" if clock.monotonic() - state.started >= budget_sec else ""
+
+        found = await sitemap_entries(state.base, settings, rules=state.rules, robots_cache=robots_cache,
+                                      skip=state.skip, blocking=blocking, should_stop=should_stop)
+        elapsed = int(clock.monotonic() - state.started)
+        stats = {"pages_fetched": 0, "llm_calls": 0, "elapsed_sec": elapsed, "strategy": "auto"}
+        if found.stopped in ("cancelled", "time_budget") and (found.stopped == "cancelled" or not found.entries):
+            logger.info(f"[tradecraft] crawl done strategy=auto stop={found.stopped} entries={len(found.entries)}")
+            return CrawlResult(stop_reason=found.stopped, stopped_because=found.stopped.replace("_", " "),
+                               stats=stats, skipped=state.skipped())
+        if found.entries:
+            stop = "max_map_entries" if found.cut else ("time_budget" if found.stopped == "time_budget" else "sitemap")
+            logger.info(f"[tradecraft] crawl done strategy=auto source={found.source} entries={len(found.entries)} "
+                        f"stop={stop}")
             return CrawlResult(
-                entries=entries, stop_reason="max_map_entries" if cut else "sitemap",
-                stopped_because=f"auto: {source} ({len(entries)} pages{', map limit' if cut else ''})",
-                stats={"pages_fetched": 0, "llm_calls": 0, "elapsed_sec": elapsed, "strategy": "auto"},
-                skipped=state.skipped())
+                entries=found.entries, stop_reason=stop,
+                stopped_because=f"auto: {found.source} ({len(found.entries)} pages"
+                                f"{', map limit' if found.cut else ', time budget' if stop == 'time_budget' else ''})",
+                stats=stats, skipped=state.skipped())
         logger.info("[tradecraft] crawl auto found no usable sitemap: llm-guided")
         strategy = "llm"
     return await _loop(state, settings, strategy, fetch_page, llm, blocking, cancel_check, progress,

@@ -506,3 +506,95 @@ def test_skip_reasons_counted(tmp_path):
     result = go(SITE + "/", s(**{"crawl.strategy": "rules", "crawl.respectRobots": True}), fetcher=FixtureFetcher(tmp_path))
     assert result.skipped == {"excluded": 2, "outOfScope": 1, "tooLittleText": 1, "robots": 1}
     assert IngestionReport(skipped=result.skipped).skipped.robots == 1
+
+
+# --------------------------------------------------------------------------------------
+# Review finding 3: the sitemap reading is bounded (R-112, R-230, R-076)
+# --------------------------------------------------------------------------------------
+
+def _sitemaps_site(tmp_path, count, per_map, *, prefix="notes"):
+    files = {"/": html("Home"),
+             "/robots.txt": "".join(f"Sitemap: {SITE}/s{i}.xml\n" for i in range(count))}
+    for i in range(count):
+        files[f"/s{i}.xml"] = urlset([f"{SITE}/{prefix}/m{i}-{j}/" for j in range(per_map)])
+    write_site(tmp_path, HOST, files)
+    return tmp_path
+
+
+def _downloads(fetcher, part=".xml"):
+    return [u for u, _h in fetcher.requests if u.endswith(part)]
+
+
+def test_sitemap_read_stops_at_the_map_limit(tmp_path):
+    fetcher = FixtureFetcher(_sitemaps_site(tmp_path, 20, 300))
+    result = go(SITE + "/", s(**{"crawl.strategy": "auto", "knownTypes.maxMapEntries.website": 100}), fetcher=fetcher,
+                llm=NoModel())
+    assert len(result.entries) == 100 and result.stop_reason == "max_map_entries"
+    assert _downloads(fetcher) == [f"{SITE}/s0.xml"]  # the other 19 sitemaps are never read
+
+
+def test_sitemap_read_has_a_file_and_byte_budget(tmp_path, monkeypatch):
+    # 30 indexes of 20 children each, every page refused by the rules: one index and its 20
+    # children are read in all, not 630 files.
+    files = {"/": html("Home"), "/robots.txt": "".join(f"Sitemap: {SITE}/i{i}.xml\n" for i in range(30))}
+    for i in range(30):
+        files[f"/i{i}.xml"] = sitemap_index([f"{SITE}/c{i}-{j}.xml" for j in range(20)])
+        for j in range(20):
+            files[f"/c{i}-{j}.xml"] = urlset([f"{SITE}/tag/t{i}-{j}/"])
+    write_site(tmp_path, HOST, files)
+    fetcher = FixtureFetcher(tmp_path)
+    result = go(SITE + "/", s(**{"crawl.strategy": "auto"}), fetcher=fetcher, llm=ScriptedChatModel())
+    assert len(_downloads(fetcher)) == 21 and result.stats["strategy"] == "llm"
+    # The bytes too: 10 MB for the whole reading (here 4,000 bytes), however many files are named.
+    real = builders.constant
+    monkeypatch.setattr(builders, "constant", lambda name: 4000 if name == "sitemapMaxBytes" else real(name))
+    big = tmp_path / "big"
+    _sitemaps_site(big, 5, 40, prefix="tag")  # each about 3,000 bytes, every page refused
+    fetcher = FixtureFetcher(big)
+    go(SITE + "/", s(**{"crawl.strategy": "auto"}), fetcher=fetcher, llm=ScriptedChatModel())
+    assert _downloads(fetcher) == [f"{SITE}/s0.xml", f"{SITE}/s1.xml"]
+
+
+class _SlowSite(FixtureFetcher):
+    """Each request takes 100 s of the fake clock."""
+
+    def __init__(self, root, fake_clock):
+        super().__init__(root)
+        self.clock = fake_clock
+
+    async def get(self, url, **kw):
+        self.clock.advance(100)
+        return await super().get(url, **kw)
+
+
+def test_sitemap_read_honours_the_time_budget_and_cancel(tmp_path):
+    root = _sitemaps_site(tmp_path, 5, 50)
+    fake = FakeClock()
+    slow = _SlowSite(root, fake)
+    timed = go(SITE + "/", s(**{"crawl.strategy": "auto", "crawl.timeBudgetSec": 180}), fetcher=slow, fake_clock=fake,
+               llm=NoModel())
+    # robots.txt at 100 s, the first sitemap at 200 s: the budget is spent before the second.
+    assert timed.stop_reason == "time_budget" and len(timed.entries) == 50
+    assert _downloads(slow) == [f"{SITE}/s0.xml"]
+
+    fetcher = FixtureFetcher(root)
+
+    async def cancel_after_first():
+        return len(_downloads(fetcher)) >= 1
+
+    cancelled = go(SITE + "/", s(**{"crawl.strategy": "auto"}), fetcher=fetcher, llm=NoModel(),
+                   cancel_check=cancel_after_first)
+    assert cancelled.stop_reason == "cancelled" and cancelled.entries == []
+    assert _downloads(fetcher) == [f"{SITE}/s0.xml"]
+
+
+def test_sitemap_parsing_runs_through_blocking(tmp_path):
+    calls = []
+
+    async def recording(fn, *args):
+        calls.append(fn.__name__)
+        return fn(*args)
+
+    go(SITE + "/", s(**{"crawl.strategy": "auto"}), fetcher=FixtureFetcher(_sitemaps_site(tmp_path, 2, 10)),
+       llm=NoModel(), blocking=recording)
+    assert calls == ["parse_sitemap_xml", "parse_sitemap_xml"]  # both sitemaps, each parsed off the loop
