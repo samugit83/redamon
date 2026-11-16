@@ -1,18 +1,114 @@
-"""Stage ``tags`` (T2.2 and T5.1 fill it): topics, kinds and technologies on every card.
+"""Stage ``tags`` (T2.2; T5.1 adds the model pass): topics, kinds and technologies on every card.
 
-Rules first (``vocab.keywords``, ``kindKeywords``, the technologies list); with
-``focus.tagEveryPage`` at ``rules_model`` the model tags, from titles, what the rules left.
-Until then the cards carry no tag.
+Rules first, free (Q4 "Every page is tagged"): the vocabulary's ``keywords`` (topics),
+``kindKeywords`` (kinds) and technology names and aliases, matched as whole words in the card's
+title, breadcrumb and headings. "SQL" or "sqli" mean SQL injection, "Kerberos" Active Directory.
+A page the rules leave without a topic is left for the model pass (``tag_by_model``), which tags
+it from its title when ``focus.tagEveryPage`` is ``rules_model``; until T5.1 that pass is a stub
+and such a page keeps no topic. Every tag is a vocabulary id, so the coverage map can count them.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import functools
+import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, Sequence
+
+from tradecraft.vocab import load_vocab
 
 if TYPE_CHECKING:  # the pipeline imports this module: the state is a type here only
     from tradecraft.ingest.pipeline import IngestState
 
+_SEPARATORS = re.compile(r"[\s_\-/]+")
+
+
+def normalize(text: str) -> str:
+    """Lower case, with ``-``, ``_`` and ``/`` read as spaces: "SQL-Injection", "sql_injection"
+    and "sql injection" are the same words."""
+    return _SEPARATORS.sub(" ", str(text or "").lower()).strip()
+
+
+class PhraseMatcher:
+    """Which of a fixed set of phrases occur in a text as whole words, a plural ``s``/``es``
+    allowed: "payload" matches "Payloads", "sql" never matches "mysql"."""
+
+    def __init__(self, phrases: Mapping[str, Iterable[str]]):
+        # One alternation per id; ids keep the order of the mapping.
+        self._patterns: list[tuple[str, re.Pattern]] = []
+        for key, words in phrases.items():
+            alts = sorted({normalize(w) for w in words if normalize(w)}, key=len, reverse=True)
+            if alts:
+                body = "|".join(re.escape(a) for a in alts)
+                self._patterns.append((key, re.compile(rf"(?<![a-z0-9])(?:{body})(?:e?s)?(?![a-z0-9])")))
+
+    def find(self, text: str) -> list[str]:
+        norm = normalize(text)
+        return [key for key, pattern in self._patterns if pattern.search(norm)]
+
+
+@functools.lru_cache(maxsize=1)
+def _matchers() -> tuple[PhraseMatcher, PhraseMatcher, PhraseMatcher]:
+    vocab = load_vocab()
+    topics = PhraseMatcher({t: vocab.keywords.get(t, ()) for t in vocab.topic_ids})
+    kinds = PhraseMatcher({k: vocab.kind_keywords.get(k, ()) for k in vocab.kind_ids})
+    technologies = PhraseMatcher(technology_words())
+    return topics, kinds, technologies
+
+
+def technology_words() -> dict[str, list[str]]:
+    """{technology id: its id, name and aliases}: the only names a technology is known by."""
+    return {t["id"]: [t["id"], t["name"], *t.get("aliases", ())] for t in load_vocab().technologies}
+
+
+@dataclass(frozen=True)
+class Tags:
+    topics: tuple[str, ...] = ()
+    kinds: tuple[str, ...] = ()
+    technologies: tuple[str, ...] = ()
+
+
+def heading_texts(headings: Any) -> list[str]:
+    """The text of each heading; a card stores ``[{level, text}]`` (a bare string is read too)."""
+    out = []
+    for h in headings or ():
+        text = h.get("text") if isinstance(h, Mapping) else h
+        if isinstance(text, str) and text.strip():
+            out.append(text)
+    return out
+
+
+def classify(title: str, breadcrumb: Sequence[str] = (), headings: Sequence[str] = ()) -> Tags:
+    """The rules' tags for a page from its title, breadcrumb and heading texts."""
+    text = " | ".join([title or "", *[str(b) for b in breadcrumb or ()], *[str(h) for h in headings or ()]])
+    topics, kinds, technologies = _matchers()
+    return Tags(tuple(topics.find(text)), tuple(kinds.find(text)), tuple(technologies.find(text)))
+
+
+def _merged(existing: Optional[Iterable[str]], found: Iterable[str]) -> list[str]:
+    out = [t for t in existing or () if isinstance(t, str) and t]
+    out += [t for t in found if t not in out]
+    return out
+
 
 async def tag(state: "IngestState") -> "IngestState":
-    """The cards with their tags. Phase 1: unchanged."""
+    """Every card with its rules' tags, added to any it already has (a curation or a focus may
+    have set some); then the model pass for the cards left without a topic."""
+    untagged = []
+    for card in state.cards:
+        found = classify(card.get("title", ""), card.get("breadcrumb") or (), heading_texts(card.get("headings")))
+        card["topics"] = _merged(card.get("topics"), found.topics)
+        card["kinds"] = _merged(card.get("kinds"), found.kinds)
+        card["technologies"] = _merged(card.get("technologies"), found.technologies)
+        if not card["topics"]:
+            untagged.append(card)
+    if untagged and state.settings.str("focus.tagEveryPage") == "rules_model":
+        await tag_by_model(state, untagged)
     return state
+
+
+async def tag_by_model(state: "IngestState", cards: list[dict]) -> None:
+    """Title tagging for the cards the rules could not classify (T5.1: batches of
+    ``constants.titleTriageBatch`` titles with the resource's model, nothing dropped). Until
+    then: nothing, and no model call."""
+    return None
