@@ -46,7 +46,8 @@ export async function seed(run, uid, pid) {
     MERGE (s)-[:RESOLVES_TO]->(ip)
   `, p)
 
-  // Ports, services and technologies: [ip, port, service, product, version, host for the BaseURL]
+  // Ports, services and technologies: [ip, port, service, product, version, host for the BaseURL].
+  // A JS number reaches Cypher as a float, so ports are made integers there (8080, not 8080.0).
   const services = [
     ['192.0.2.10', 80, 'http', 'nginx', '1.18.0', `www.${DOMAIN}`],
     ['192.0.2.10', 443, 'https', 'nginx', '1.18.0', `api.${DOMAIN}`],
@@ -61,20 +62,21 @@ export async function seed(run, uid, pid) {
   for (const [ip, port, svc, product, version, host] of services) {
     await run(`
       MATCH (i:IP {address: $ip, user_id: $uid, project_id: $pid})
-      MERGE (po:Port {number: $port, protocol: 'tcp', ip_address: $ip, user_id: $uid, project_id: $pid})
+      WITH i, toInteger($port) AS port
+      MERGE (po:Port {number: port, protocol: 'tcp', ip_address: $ip, user_id: $uid, project_id: $pid})
         ON CREATE SET po.state = 'open'
       MERGE (i)-[:HAS_PORT]->(po)
-      MERGE (sv:Service {name: $svc, port_number: $port, ip_address: $ip, user_id: $uid, project_id: $pid})
+      MERGE (sv:Service {name: $svc, port_number: port, ip_address: $ip, user_id: $uid, project_id: $pid})
         ON CREATE SET sv.product = $product, sv.version = $version
       MERGE (po)-[:RUNS_SERVICE]->(sv)
       MERGE (t:Technology {name: $product, version: $version, user_id: $uid, project_id: $pid})
       MERGE (sv)-[:USES_TECHNOLOGY]->(t)
       MERGE (po)-[:HAS_TECHNOLOGY]->(t)
       FOREACH (h IN CASE WHEN $host IS NULL THEN [] ELSE [$host] END |
-        MERGE (b:BaseURL {url: (CASE WHEN $port = 443 THEN 'https://' ELSE 'http://' END) + h +
-                               (CASE WHEN $port IN [80, 443] THEN '' ELSE ':' + toString($port) END),
+        MERGE (b:BaseURL {url: (CASE WHEN port = 443 THEN 'https://' ELSE 'http://' END) + h +
+                               (CASE WHEN port IN [80, 443] THEN '' ELSE ':' + toString(port) END),
                           user_id: $uid, project_id: $pid})
-          ON CREATE SET b.host = h, b.scheme = CASE WHEN $port = 443 THEN 'https' ELSE 'http' END, b.status_code = 200
+          ON CREATE SET b.host = h, b.scheme = CASE WHEN port = 443 THEN 'https' ELSE 'http' END, b.status_code = 200
         MERGE (sv)-[:SERVES_URL]->(b)
       )
     `, { ...p, ip, port, svc, product, version, host })
@@ -138,7 +140,7 @@ export async function seed(run, uid, pid) {
     n += 1
     await run(`
       MATCH (s:Subdomain {name: $host, user_id: $uid, project_id: $pid})
-      CREATE (v:Vulnerability {id: $pid + '-v' + toString($n), name: $name, severity: $severity, source: 'nuclei',
+      CREATE (v:Vulnerability {id: $pid + '-v' + toString(toInteger($n)), name: $name, severity: $severity, source: 'nuclei',
                                type: 'nuclei', host: $host, user_id: $uid, project_id: $pid})
       MERGE (s)-[:HAS_VULNERABILITY]->(v)
       WITH v
