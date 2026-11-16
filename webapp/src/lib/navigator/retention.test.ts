@@ -11,7 +11,7 @@ const h = vi.hoisted(() => ({ threads: [] as T[] }))
 vi.mock('@/lib/prisma', () => ({ default: {
   project: { findUnique: async ({ where }: { where: { id: string } }) => ({ roeDataRetentionDays: h.threads.find((t) => t.projectId === where.id)?.retention ?? 90 }) },
   navigatorThread: {
-    findMany: async ({ where }: { where: Record<string, unknown> }) => h.threads.filter((t) => {
+    findMany: async ({ where, take }: { where: Record<string, unknown>; take?: number }) => h.threads.filter((t) => {
       if (where.projectId && t.projectId !== where.projectId) return false
       const lm = where.lastMessageAt as { lt: Date } | undefined
       if (lm && !(t.lastMessageAt < lm.lt)) return false
@@ -19,7 +19,11 @@ vi.mock('@/lib/prisma', () => ({ default: {
       const ca = where.createdAt as { lt: Date } | undefined
       if (ca && !(t.createdAt < ca.lt)) return false
       return true
-    }).map((t) => ({ id: t.id, lastMessageAt: t.lastMessageAt, project: { roeDataRetentionDays: t.retention } })),
+    }).slice(0, take ?? Infinity)
+      .map((t) => ({ id: t.id, lastMessageAt: t.lastMessageAt, project: { roeDataRetentionDays: t.retention } })),
+    groupBy: async ({ where }: { where: { lastMessageAt: { lt: Date } } }) =>
+      [...new Set(h.threads.filter((t) => t.lastMessageAt < where.lastMessageAt.lt).map((t) => t.projectId))]
+        .map((projectId) => ({ projectId })),
     deleteMany: async ({ where }: { where: { id: { in: string[] } } }) => {
       const n = h.threads.length
       h.threads = h.threads.filter((t) => !where.id.in.includes(t.id))
@@ -81,5 +85,17 @@ describe('retention', () => {
     ]
     expect(await sweepNavigatorRetention(NOW)).toBe(2)
     expect(h.threads.map((t) => t.id).sort()).toEqual(['empty-new', 'p2-young'])
+  })
+
+  test('more unexpired threads than one batch never hide an expired one of another project', async () => {
+    // One batch read across every project kept answering the same 5000 threads still inside a long
+    // retention, so a short-retention project's expired threads were never reached.
+    h.threads = [
+      ...Array.from({ length: 5001 }, (_, i) => thread(`p1-kept-${i}`, 10, { retention: 90 })),
+      thread('p2-expired', 30, { projectId: 'P2', retention: 7 }),
+    ]
+    expect(await sweepNavigatorRetention(NOW)).toBe(1)
+    expect(h.threads.some((t) => t.id === 'p2-expired')).toBe(false)
+    expect(h.threads).toHaveLength(5001)
   })
 })

@@ -44,22 +44,24 @@ export async function purgeProjectThreads(projectId: string, now = new Date()): 
   return (await prisma.navigatorThread.deleteMany({ where: { id: { in: ids } } })).count
 }
 
-/** The sweep part: every project's expired threads, and the empty-thread backstop. */
+/**
+ * The sweep part: every project's expired threads, and the empty-thread backstop. Purged project by
+ * project, each with its own cutoff in the query: one batch read across every project could keep
+ * answering the same unexpired threads of a long retention and never reach another's expired ones.
+ */
 export async function sweepNavigatorRetention(now = new Date()): Promise<number> {
-  const candidates = await prisma.navigatorThread.findMany({
+  const projects = await prisma.navigatorThread.groupBy({
+    by: ['projectId'],
     where: { lastMessageAt: { lt: new Date(now.getTime() - NAVIGATOR_MIN_RETENTION_DAYS * DAY_MS) } },
-    select: { id: true, lastMessageAt: true, project: { select: { roeDataRetentionDays: true } } },
-    take: SWEEP_BATCH,
   })
-  const expired = candidates
-    .filter((t) => t.lastMessageAt.getTime() < now.getTime() - effectiveRetentionDays(t.project.roeDataRetentionDays) * DAY_MS)
-    .map((t) => t.id)
+  let removed = 0
+  for (const { projectId } of projects) removed += await purgeProjectThreads(projectId, now)
   const empty = await prisma.navigatorThread.findMany({
     where: { messages: { none: {} }, createdAt: { lt: new Date(now.getTime() - EMPTY_THREAD_MAX_AGE_S * 1000) } },
     select: { id: true },
     take: SWEEP_BATCH,
   })
-  const ids = notLive([...new Set([...expired, ...empty.map((t) => t.id)])])
-  if (!ids.length) return 0
-  return (await prisma.navigatorThread.deleteMany({ where: { id: { in: ids } } })).count
+  const ids = notLive(empty.map((t) => t.id))
+  if (!ids.length) return removed
+  return removed + (await prisma.navigatorThread.deleteMany({ where: { id: { in: ids } } })).count
 }
