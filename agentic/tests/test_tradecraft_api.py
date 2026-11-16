@@ -6,6 +6,7 @@ rate limit on the routes that fetch or call a model (D-12), one request for a wh
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import sys
@@ -23,9 +24,11 @@ from fastapi.routing import APIRoute  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from tradecraft import api as tc_api  # noqa: E402
+from tradecraft import net  # noqa: E402
 from tradecraft import jobs  # noqa: E402
 from tradecraft.contract import JobStartAnswer, JobStartBatch, ROUTES  # noqa: E402
 from tradecraft.settings import EffectiveSettings  # noqa: E402
+from tradecraft_doubles import FixtureFetcher  # noqa: E402
 from tradecraft_memory_store import MemoryStore  # noqa: E402
 
 MASTER = "dummy-master-key-tradecraft-api"
@@ -80,6 +83,9 @@ class Daily:
 
 @pytest.fixture
 def client(monkeypatch):
+    # A route that fetches (Check URL since T4.1) reads the fixture sites, never the network:
+    # the TestClient runs the app in its own thread, so the double is the variable's default.
+    monkeypatch.setattr(net, "_current", contextvars.ContextVar("tradecraft_fetcher", default=FixtureFetcher()))
     monkeypatch.setenv("INTERNAL_API_KEY", MASTER)
     monkeypatch.setenv("SCANNER_API_KEY", SCANNER)
     runner = FakeRunner()
@@ -212,7 +218,8 @@ def test_the_runner_hands_the_settings_to_the_pipeline():
     assert seen == {"pages": 120, "types": [".md", ".txt", ".rst"]}
 
 
-@pytest.mark.parametrize("path,body", [p for p in POSTS if p[0].endswith(("check-url", "preview-focus", "read-now", "convert"))])
+# Check URL left this list with T4.1: tests/test_tradecraft_check_url.py holds what it answers.
+@pytest.mark.parametrize("path,body", [p for p in POSTS if p[0].endswith(("preview-focus", "read-now", "convert"))])
 def test_stubs_answer_501(client, path, body):
     resp = client.post(path, json=body, headers=H)
     assert resp.status_code == 501 and resp.json() == {"error_code": "not_implemented"}

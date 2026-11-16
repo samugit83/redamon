@@ -108,5 +108,10 @@ class RobotsCache:
                 self._rules[origin] = await read(url, self._settings)
         return self._rules[origin]
 
+    def remember(self, rules: Robots) -> None:
+        """Keeps a verdict already read (Check URL reads robots.txt before it maps the site)."""
+        if rules.origin:
+            self._rules[rules.origin] = rules
+
     async def allows(self, url: str) -> bool:
         return (await self.get(url)).allows(url, self._user_agent)

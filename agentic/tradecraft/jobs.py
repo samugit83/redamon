@@ -12,6 +12,9 @@ that dies stops renewing, so the lease expires and the next claim (or this copy'
 ``recover_on_boot``) fails the job. Cancel is a database flag, so any copy can cancel any
 job; the copy that holds the job also wakes it at once.
 
+A ``regenerate_summary`` job (T4.1) begins no generation: it reads the live one, and its swap
+writes only the summary, so a failure leaves nothing to discard.
+
 Jobs run in a context of their own (no context variable of the HTTP request that started
 them), with the clock and the fetcher the runner was given. Parsing runs on the
 ``tradecraft-ingest`` thread pool through ``run_blocking``, which passes plain values: a pool
@@ -56,6 +59,7 @@ POOL_PREFIX = "tradecraft-ingest"
 CANCEL_POLL_SEC = 1.0
 
 Entry = Callable[[JobContext], Awaitable[JobOutcome]]
+REGENERATE_SUMMARY = "regenerate_summary"
 
 
 def error_code_of(exc: BaseException) -> str:
@@ -91,10 +95,11 @@ class JobRunner:
     def __init__(self, store: Optional[Store] = None, *, entry: Optional[Entry] = None,
                  instance: Optional[str] = None, clock: Optional[tc_clock.Clock] = None,
                  fetcher_factory: Optional[Callable[[], net.Fetcher]] = None,
-                 max_running: Optional[int] = None) -> None:
+                 max_running: Optional[int] = None, regenerate: Optional[Entry] = None) -> None:
         self.store = store or Store()
         self.instance = instance or f"agent-{uuid.uuid4().hex[:12]}"
         self._entry = entry
+        self._regenerate = regenerate
         self._clock = clock
         self._fetcher_factory = fetcher_factory or _default_fetcher
         self.max_running = max_running or tc_settings.constant("jobsPerAgent")
@@ -223,6 +228,12 @@ class JobRunner:
             self._entry = functools.partial(pipeline.run, store=self.store, run_blocking=self.run_blocking)
         return self._entry
 
+    def _regenerate_fn(self) -> Entry:
+        if self._regenerate is None:
+            from tradecraft.ingest import summary
+            self._regenerate = functools.partial(summary.regenerate, store=self.store, run_blocking=self.run_blocking)
+        return self._regenerate
+
     async def _run(self, running: _Running) -> None:
         job, user = running.job, running.user_id
         jid, rid = job.job_id, job.resource_id
@@ -237,6 +248,9 @@ class JobRunner:
                 await self.store.set_error_if_never_verified(user, rid, jid, "cancelled", self._now())
                 await self.store.finish_job(user, jid, "cancelled", "cancelled")
                 logger.info(f"[tradecraft] job {jid} cancelled code=cancelled")
+                return
+            if job.kind == REGENERATE_SUMMARY:
+                await self._run_regenerate(running)
                 return
             begun = await self.store.begin_generation(user, rid, jid)
             if begun is None:
@@ -268,6 +282,23 @@ class JobRunner:
             self._running.pop(jid, None)
             self._held.pop(jid, None)
             self._dispatch()
+
+    async def _run_regenerate(self, running: _Running) -> None:
+        job, user = running.job, running.user_id
+        logger.info(f"[tradecraft] job {job.job_id} running code=")
+        ctx = JobContext(request=job, settings=tc_settings.EffectiveSettings(job.settings), target_generation=0,
+                         is_cancelled=self._cancel_check(running), set_stage=self._stage_setter(user, job.job_id))
+        try:
+            outcome = await self._regenerate_fn()(ctx)
+        except Exception as exc:
+            code = error_code_of(exc)
+            logger.warning(f"[tradecraft] job {job.job_id} failed code={code} error={type(exc).__name__}")
+            outcome = JobOutcome(status="failed", error_code=code)
+        if not outcome.swapped:
+            # Nothing was written: the resource keeps its map and its summary, and only the job
+            # row says why (its 1.x columns are not an error state: the map is still good).
+            await self.store.finish_job(user, job.job_id, outcome.status, outcome.error_code)
+        logger.info(f"[tradecraft] job {job.job_id} {outcome.status} code={outcome.error_code}")
 
     async def _close(self, user: str, rid: str, jid: str, generation: int, outcome: JobOutcome) -> None:
         if outcome.swapped:

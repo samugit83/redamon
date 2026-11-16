@@ -461,10 +461,11 @@ async def llm_decide(llm: Any, prompt: str, state: _State) -> tuple[str, list[in
 # Auto: the sitemap as the map
 # --------------------------------------------------------------------------------------
 
-async def _sitemap_page_urls(base: str, robots_txt: robots.Robots, settings: EffectiveSettings,
-                             blocking: Blocking) -> tuple[list[str], str]:
-    """The page URLs of the sitemaps robots.txt names (at most ``sitemapMaxChildren`` of them),
-    else of ``/sitemap.xml``; each within the mirror's limits (``builders.sitemap_urls``)."""
+async def sitemap_page_urls(base: str, robots_txt: robots.Robots, settings: EffectiveSettings,
+                            blocking: Blocking = inline) -> tuple[list[str], str]:
+    """(page URLs, where they came from): the sitemaps robots.txt names (at most
+    ``sitemapMaxChildren`` of them), else ``/sitemap.xml``; each within the mirror's limits
+    (``builders.sitemap_urls``)."""
     named = robots_txt.sitemaps[: int(constant("sitemapMaxChildren"))]
     urls: list[str] = []
     for sm in named:
@@ -475,24 +476,32 @@ async def _sitemap_page_urls(base: str, robots_txt: robots.Robots, settings: Eff
     return await builders.sitemap_urls(f"{origin}/sitemap.xml", settings, blocking=blocking), "sitemap.xml"
 
 
-async def _auto_entries(state: _State, settings: EffectiveSettings, robots_cache: robots.RobotsCache,
-                        respect_robots: bool, blocking: Blocking) -> tuple[list[Candidate], str, bool]:
-    """(entries, where the sitemap came from, cut at the map limit)."""
-    robots_txt = await robots_cache.get(state.base)
-    urls, source = await _sitemap_page_urls(state.base, robots_txt, settings, blocking)
+Skip = Callable[[str, str], None]
+
+
+async def sitemap_entries(base: str, settings: EffectiveSettings, *, rules: FollowRules,
+                          robots_cache: robots.RobotsCache, skip: Optional[Skip] = None,
+                          blocking: Blocking = inline) -> tuple[list[Candidate], str, bool]:
+    """The map Auto takes from the site's sitemap: (entries, where the sitemap came from, cut
+    at ``knownTypes.maxMapEntries.website``). Every entry passes the follow rules, and robots.txt
+    when ``crawl.respectRobots`` is on; ``skip(reason, url)`` hears about the others."""
+    robots_txt = await robots_cache.get(base)
+    urls, source = await sitemap_page_urls(base, robots_txt, settings, blocking)
     cap = settings.int("knownTypes.maxMapEntries.website")
+    respect_robots = settings.bool("crawl.respectRobots")
     entries: list[Candidate] = []
     seen: set[str] = set()
     for raw in urls:
-        url = state.rules.normalize(fetch.canonical_url(raw))
+        url = rules.normalize(fetch.canonical_url(raw))
         if url in seen:
             continue
         seen.add(url)
-        reason = state.rules.verdict(url)
+        reason = rules.verdict(url)
         if not reason and respect_robots and not await robots_cache.allows(url):
             reason = "robots"
         if reason:
-            state.skip(reason, url)
+            if skip is not None:
+                skip(reason, url)
             continue
         if len(entries) >= cap:
             return entries, source, True
@@ -517,7 +526,8 @@ async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[F
     robots_cache = robots.RobotsCache(settings)
 
     if strategy == "auto":
-        entries, source, cut = await _auto_entries(state, settings, robots_cache, respect_robots, blocking)
+        entries, source, cut = await sitemap_entries(state.base, settings, rules=state.rules,
+                                                     robots_cache=robots_cache, skip=state.skip, blocking=blocking)
         if entries:
             elapsed = int(clock.monotonic() - state.started)
             logger.info(f"[tradecraft] crawl done strategy=auto source={source} entries={len(entries)} cut={cut}")
