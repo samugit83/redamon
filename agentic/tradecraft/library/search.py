@@ -452,9 +452,12 @@ async def _snippets(index: Any, owner_id: str, shown: Sequence[Candidate], group
 def _order(cand: Candidate) -> tuple:
     """Related pages, the ones that hold more of the need first: an exact CVE, then the share
     of the need found anywhere on the page, then in its title, then in its title and headings;
-    among equals the fused rank with its boosts decides."""
+    among equals the fused rank with its boosts decides. The fuzzy title similarity is
+    continuous: ahead of the fused rank it would leave priority, the session and the wordings'
+    agreement nothing to decide, so it only breaks the fused rank's ties (it is in that rank
+    already, as the fuzzy wording's list)."""
     return (not cand.entity_match, -round(cand.anywhere, 3), -round(cand.title, 3), -round(cand.strong, 3),
-            -cand.fuzzy, -cand.score, cand.row["page_id"])
+            -cand.score, -cand.fuzzy, cand.row["page_id"])
 
 
 def verdict_of(candidates: Sequence[Candidate], strictness: str) -> tuple[str, list[Candidate]]:

@@ -163,6 +163,31 @@ def test_priority_boost():
     assert [h.card.page_id for h in answer.hits] == ["high:3", "normal:2", "low:1"]
 
 
+def test_boosts_decide_among_equal_coverage_whatever_the_title_similarity():
+    """Review finding 2 (R-412, R-373): the fuzzy wording's title similarity is continuous, so
+    ordering by it before the fused rank left priority, the session boosts and agreement
+    nothing to decide. L's title is the closer one, H covers the need as well: H wins."""
+    cat = catalog(("r1", "low", "low"), ("r3", "high", "high"))
+    # The fused rank alone puts L first (every wording ranks it first): only the boost can lift H.
+    answers = {"entries_text": [row(1, "r1", title="Kerberos delegation"),
+                                row(3, "r3", title="Kerberos Unconstrained Delegation")],
+               "entries_fuzzy": [row(1, "r1", rank=1.0, title="Kerberos delegation"),
+                                 row(3, "r3", rank=0.6, title="Kerberos Unconstrained Delegation")]}
+    cov = {1: (1, 1), 3: (1, 1)}
+    answer = run(search.search(OWNER, cat, "kerberos delegation", index=FakeIndex(answers, cov)))
+    assert [h.card.page_id for h in answer.hits] == ["high:3", "low:1"]
+    # The session's topic boost the same way, at one priority.
+    same = catalog(("r1", "wiki", "normal"))
+    answers = {"entries_text": [row(1, title="Kerberos delegation"),
+                                row(3, title="Kerberos Unconstrained Delegation", topics=["active_directory"])],
+               "entries_fuzzy": [row(1, rank=1.0, title="Kerberos delegation"),
+                                 row(3, rank=0.6, title="Kerberos Unconstrained Delegation",
+                                     topics=["active_directory"])]}
+    boosted = run(search.search(OWNER, same, "kerberos delegation", session=search.Session(topic="active_directory"),
+                                index=FakeIndex(answers, cov)))
+    assert [h.card.page_id for h in boosted.hits] == ["wiki:3", "wiki:1"]
+
+
 def test_session_boosts_never_filter():
     answers = {"entries_text": lambda p: [] if p["topic"] or p["techs"] else
                [row(1), row(2, topics=["sql_injection"], kinds=["payloads"], technologies=["postgresql"])]}
