@@ -1,7 +1,8 @@
 /**
  * The drawer saves the tradecraft switches as it saves the skill switches (§3.4, R-050): a moment
  * after the change, only that field, with the row's version; a stale save is refused, says so and
- * reloads the row; a save that lands tells the counter badge (TRADECRAFT_COUNTS_CHANNEL).
+ * reloads the row; a save that lands tells the counter badge (TRADECRAFT_COUNTS_CHANNEL); a skills
+ * notice that moves the window's version brings the switches saved elsewhere with it.
  */
 import { test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor, cleanup } from '@testing-library/react'
@@ -11,7 +12,8 @@ vi.mock('@/components/ui', async (orig) => ({ ...(await orig<typeof import('@/co
 const posted = vi.hoisted(() => [] as unknown[])
 vi.mock('@/lib/tradecraft/channels', () => ({ postTradecraftCountsChanged: (c: unknown) => posted.push(c) }))
 
-import { useSettingsModal } from './useSettingsModal'
+import { mergeOwnOff, useSettingsModal } from './useSettingsModal'
+import { postUserSkillsChanged } from '@/lib/userSkillsChannel'
 
 const ROW = {
   id: 'p1', userId: 'alice', createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-12T10:00:00.000Z', user: { id: 'alice' },
@@ -76,4 +78,35 @@ test('a skill toggle saved from the drawer tells the badge too', async () => {
   const hook = await open()
   act(() => hook.result.current.updateProjectField('attackSkillConfig', { builtIn: { xss: false }, user: {} } as never))
   await waitFor(() => expect(posted).toEqual([{ projectId: 'p1' }]))
+})
+
+// The project form saved r1 off with a skill change, which posts on the skills channel: the window
+// takes the row's version, so it must take the switches too, or its next save turns r1 back on.
+const SAVED_ELSEWHERE = { ...ROW, updatedAt: '2026-10-12T11:00:00.000Z', tradecraftOff: ['r1', 'r2'] }
+
+test('drawer_autosave_and_stale: a switch saved in another window is kept when the skills notice moves the version (R-050, AC-27)', async () => {
+  const hook = await open()
+  h.row = SAVED_ELSEWHERE
+  act(() => postUserSkillsChanged({ projectId: 'p1' }))
+  await waitFor(() => expect(hook.result.current.projectFormData?.tradecraftOff).toEqual(['r1', 'r2']))
+  act(() => hook.result.current.updateProjectField('tradecraftOff', [...hook.result.current.projectFormData!.tradecraftOff!, 'r3']))
+  await waitFor(() => expect(h.puts).toHaveLength(1))
+  expect(h.puts[0]).toEqual({ tradecraftOff: ['r1', 'r2', 'r3'], updatedAt: SAVED_ELSEWHERE.updatedAt })
+})
+
+test("drawer_autosave_and_stale: this window's unsaved switches are applied to the list saved elsewhere, so its save keeps both", async () => {
+  const hook = await open()
+  // This window turns r2 back on and r3 off; the save waits for the debounce.
+  act(() => hook.result.current.updateProjectField('tradecraftOff', ['r3']))
+  h.row = SAVED_ELSEWHERE
+  act(() => postUserSkillsChanged({ projectId: 'p1' }))
+  await waitFor(() => expect(h.puts).toHaveLength(1))
+  expect(h.puts[0]).toEqual({ tradecraftOff: ['r1', 'r3'], updatedAt: SAVED_ELSEWHERE.updatedAt })
+  expect(toast.warning).not.toHaveBeenCalled()
+})
+
+test('mergeOwnOff keeps only the switches this window changed', () => {
+  expect(mergeOwnOff(['a', 'b'], ['b', 'c'], ['a', 'b', 'd'])).toEqual(['b', 'd', 'c'])
+  expect(mergeOwnOff(['a'], ['a'], ['d'])).toEqual(['d'])
+  expect(mergeOwnOff(undefined, ['x'], null)).toEqual(['x'])
 })

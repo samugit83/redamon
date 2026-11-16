@@ -25,6 +25,17 @@ export function mergeOwnToggles(base: unknown, local: unknown, fresh: unknown): 
   return { ...f, builtIn: { ...mapOf(f.builtIn), ...mine('builtIn') }, user: { ...mapOf(f.user), ...mine('user') } }
 }
 
+const idsOf = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+
+/** `fresh` with the tradecraft switches `local` changed relative to `base` applied to it. */
+export function mergeOwnOff(base: unknown, local: unknown, fresh: unknown): string[] {
+  const was = new Set(idsOf(base))
+  const now = new Set(idsOf(local))
+  const turnedOn = new Set([...was].filter(id => !now.has(id)))
+  const turnedOff = [...now].filter(id => !was.has(id))
+  return [...new Set([...idsOf(fresh), ...turnedOff])].filter(id => !turnedOn.has(id))
+}
+
 /**
  * The chat drawer's settings modals edit the project with a debounced auto-save that sends
  * ONLY the fields changed since the modal opened (or since the last save that landed).
@@ -37,7 +48,9 @@ export function mergeOwnToggles(base: unknown, local: unknown, fresh: unknown): 
  * `attackSkillConfig` is one field holding every toggle, so a toggle sends the whole map. When a
  * skill version is saved elsewhere (it may switch toggles, and says so on the user-skills
  * channel), the open window takes the server's map, with the toggles it changed itself and has
- * not saved yet laid over it, so its pending save keeps both sides.
+ * not saved yet laid over it, so its pending save keeps both sides. `tradecraftOff` is one whole
+ * list too, and the same notice moves the window's version, so it is merged the same way: a
+ * switch saved in the project form is never turned back by the drawer's next save (R-064).
  */
 export function useSettingsModal(projectId: string) {
   const toast = useToast()
@@ -56,6 +69,7 @@ export function useSettingsModal(projectId: string) {
   // The toggle map as the server last had it, so a change from elsewhere can be told from this
   // window's own unsaved toggles.
   const skillBaseRef = useRef<unknown>(null)
+  const offBaseRef = useRef<unknown>(null)
   // The row's updatedAt as this modal last read or saved it; null sends no version (as before).
   const versionRef = useRef<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
@@ -94,6 +108,7 @@ export function useSettingsModal(projectId: string) {
             // Other windows of this project (the project form, another drawer) take the toggles.
             postUserSkillsChanged({ projectId })
           }
+          if ('tradecraftOff' in patch && !dirtyRef.current.has('tradecraftOff')) offBaseRef.current = patch.tradecraftOff
           // The chat's counter badge reads its numbers again (§3.4).
           if ('attackSkillConfig' in patch || 'tradecraftOff' in patch) postTradecraftCountsChanged({ projectId })
           return
@@ -148,6 +163,7 @@ export function useSettingsModal(projectId: string) {
         if (!cancelled && data) {
           const { id, userId: _u, createdAt, updatedAt, user, ...formData } = data
           skillBaseRef.current = formData.attackSkillConfig
+          offBaseRef.current = formData.tradecraftOff
           versionRef.current = versionOf(updatedAt)
           setProjectFormData(formData)
         }
@@ -166,12 +182,17 @@ export function useSettingsModal(projectId: string) {
       const row = await res.json()
       const next = mergeOwnToggles(skillBaseRef.current, latestFormDataRef.current.attackSkillConfig, row.attackSkillConfig)
       skillBaseRef.current = row.attackSkillConfig
-      // The merged map holds both sides' toggles, and the modal sends only the fields it changed, so
-      // it may take this row's version: its next save overwrites nothing it did not change.
+      const merged: Partial<ProjectFormData> = { attackSkillConfig: next as ProjectFormData['attackSkillConfig'] }
+      if (Array.isArray(row.tradecraftOff)) {
+        merged.tradecraftOff = mergeOwnOff(offBaseRef.current, latestFormDataRef.current.tradecraftOff, row.tradecraftOff)
+        offBaseRef.current = row.tradecraftOff
+      }
+      // The merged values hold both sides' changes, and the modal sends only the fields it changed,
+      // so it may take this row's version: its next save overwrites nothing it did not change.
       versionRef.current = versionOf(row.updatedAt) ?? versionRef.current
-      // The ref too: a save already debounced reads it, and must send the merged map.
-      latestFormDataRef.current = { ...latestFormDataRef.current, attackSkillConfig: next as ProjectFormData['attackSkillConfig'] }
-      setProjectFormData(prev => (prev ? { ...prev, attackSkillConfig: next as ProjectFormData['attackSkillConfig'] } : prev))
+      // The ref too: a save already debounced reads it, and must send the merged values.
+      latestFormDataRef.current = { ...latestFormDataRef.current, ...merged }
+      setProjectFormData(prev => (prev ? { ...prev, ...merged } : prev))
     } catch {
       // Nothing to refresh from; the next toggle still sends only what changed.
     }
