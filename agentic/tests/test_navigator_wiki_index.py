@@ -84,6 +84,25 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(self.idx.resolve_page("scan timeline").name, "Scan-Timeline")
         self.assertEqual(self.idx.resolve_page("Scan-Timeline.md").name, "Scan-Timeline")
 
+    def test_a_symlinked_page_is_never_read(self):
+        # In the agent a link to /proc/self/environ would hand the model the master key.
+        with tempfile.TemporaryDirectory() as outside:
+            target = os.path.join(outside, "environ")
+            with open(target, "w") as fh:
+                fh.write("# Leak\n\nINTERNAL_API_KEY=synthetic-not-a-real-key\n")
+            os.symlink(target, os.path.join(self.tmp.name, "Config-Notes.md"))
+            os.symlink(os.path.join(self.tmp.name, "Home.md"), os.path.join(self.tmp.name, "Home-Copy.md"))
+            idx = wi.build_index(self.tmp.name)
+            self.assertNotIn("Config-Notes", idx.pages)
+            self.assertNotIn("Home-Copy", idx.pages)
+            self.assertIn("Scan-Timeline", idx.pages)
+            self.assertEqual(idx.search("synthetic", 5), [])
+            # The holder counts the same files, so the link does not force a rebuild every check.
+            holder = wi.WikiIndexHolder(self.tmp.name)
+            first = holder.get()
+            holder.force_stale()
+            self.assertIs(holder.get(), first)
+
     def test_rebuild_on_modification(self):
         holder = wi.WikiIndexHolder(self.tmp.name)
         first = holder.get()

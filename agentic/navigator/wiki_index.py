@@ -334,11 +334,21 @@ def _sidebar_text(raw: str) -> str:
 
 
 def _md_files(root: str) -> list[str]:
+    """The top-level pages, never a symlink: one would read any file of the agent container (its
+    environment included) as a page the model can quote."""
     try:
         names = os.listdir(root)
     except OSError:
         return []
-    return sorted(n for n in names if n.endswith(".md") and os.path.isfile(os.path.join(root, n)))
+    return sorted(n for n in names if n.endswith(".md") and not os.path.islink(os.path.join(root, n))
+                  and os.path.isfile(os.path.join(root, n)))
+
+
+def _read_page(path: str) -> str:
+    """The file's text; O_NOFOLLOW refuses a symlink swapped in after the listing."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
 
 
 def _newest_mtime(root: str, files: list[str]) -> float:
@@ -358,8 +368,7 @@ def build_index(root: str) -> WikiIndex:
     for fname in files:
         name = fname[:-3]
         try:
-            with open(os.path.join(root, fname), encoding="utf-8", errors="replace") as fh:
-                raw = fh.read()
+            raw = _read_page(os.path.join(root, fname))
         except OSError:
             continue
         if name == "_Footer":
