@@ -759,6 +759,14 @@ def get_phase_tools(
                 parts.append(POST_EXPLOITATION_TOOLS_STATELESS)
         # else: descriptions above are sufficient
 
+    # Tradecraft 2.0 (Q5): the library's line for the chosen skill, where its tools are offered.
+    # A 1.x run binds no coverage, so its prompt is unchanged.
+    if "tradecraft_lookup" in allowed_tools or "tradecraft_search" in allowed_tools:
+        from tradecraft.library.coverage import skill_line
+        _tc_line = skill_line(attack_path_type)
+        if _tc_line:
+            parts.append(_tc_line)
+
     return "\n".join(parts)
 
 

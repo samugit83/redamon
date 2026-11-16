@@ -28,11 +28,13 @@ logger = get_logger(__name__)
 _catalog: contextvars.ContextVar[Optional[V2Catalog]] = contextvars.ContextVar("tradecraft_v2_catalog", default=None)
 _store: contextvars.ContextVar[Any] = contextvars.ContextVar("tradecraft_v2_store", default=None)
 _index: contextvars.ContextVar[Any] = contextvars.ContextVar("tradecraft_v2_index", default=None)
+_coverage: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("tradecraft_v2_coverage", default=None)
 
 
 def bind_run_catalog(catalog: Any) -> bool:
-    """Binds a 2.0 catalog and its registry entries to the current task; True when bound.
-    A 1.x payload, None, or a catalog that does not parse clears the 2.0 binding (False)."""
+    """Binds a 2.0 catalog, its coverage counts (Q5, when ``prompt.coverageMap`` is on) and its
+    registry entries to the current task; True when bound. A 1.x payload, None, or a catalog that
+    does not parse clears the 2.0 binding (False)."""
     from prompts.tool_registry import pop_tradecraft_entry, swap_tradecraft_v2_entries
     from tradecraft import overlay
 
@@ -43,7 +45,9 @@ def bind_run_catalog(catalog: Any) -> bool:
         except ValidationError as exc:
             logger.warning(f"[tradecraft] run catalog refused code=internal_error errors={len(exc.errors())}")
     _catalog.set(parsed)
-    swap_tradecraft_v2_entries(overlay.build_entries(parsed) if parsed is not None else None)
+    coverage = _coverage_of(parsed) if parsed is not None else None
+    _coverage.set(coverage)
+    swap_tradecraft_v2_entries(overlay.build_entries(parsed, coverage) if parsed is not None else None)
     if parsed is not None:
         # A 1.x entry left in this task (an earlier run of the session) must not show beside
         # the 2.0 entries, nor in their place when the 2.0 list is empty.
@@ -51,6 +55,22 @@ def bind_run_catalog(catalog: Any) -> bool:
         _bind_browser_fetcher()
         logger.info(f"[tradecraft] run catalog bound resources={len(parsed.resources)}")
     return parsed is not None
+
+
+def _coverage_of(catalog: V2Catalog) -> Optional[dict]:
+    """The coverage counts of the run's resources (one bounded query), or None when the map is
+    off or cannot be read: the run then goes on without one."""
+    from tradecraft.library import coverage
+    from tradecraft.settings import EffectiveSettings
+
+    if not EffectiveSettings(catalog.search or {}, scope="search").bool("prompt.coverageMap"):
+        return None
+    return coverage.coverage_for(catalog)
+
+
+def bound_coverage() -> Optional[dict]:
+    """The run's coverage counts, or None outside a 2.0 run's task or without a map."""
+    return _coverage.get()
 
 
 def _bind_browser_fetcher() -> None:

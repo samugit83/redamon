@@ -59,7 +59,7 @@ def test_auto_list():
     eleven = untrusted_block(eleven_desc)
     lines = eleven.splitlines()
     assert len(lines) == 11
-    assert lines[0] == "- `lib-00`  Library 0 (mkdocs-wiki, Live): " + " ".join(LONG.split()[:12]) + "…"
+    assert lines[0] == "- `lib-00` Library 0 (wiki): " + " ".join(LONG.split()[:12]) + "…"
     assert "full summary" in eleven_desc and 'path=""' in eleven_desc
 
 
