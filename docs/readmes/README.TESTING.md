@@ -164,6 +164,18 @@ Every MCP test that stubs `MCP_KALI_EXEC_ENABLED` also stubs `AGENT_IN_THE_LOOP_
 switches change `tools/list`, and a host whose `.env` turns one on would otherwise see a different
 tool count from the one the test pins.
 
+### AI Navigator
+
+AI Navigator (the `navigator` skill) is tested at five levels:
+
+| Layer | Where | Tier |
+|---|---|---|
+| Agent: router, specialists, budget, citations, wiki index, API, logging | `agentic/tests/test_navigator_*.py` (a scripted fake chat model in `navigator_fakes.py`) | unit |
+| Documentation retrieval | `agentic/tests/test_navigator_docs_eval.py`: hit@3 of `wiki_search` on 67 synthetic questions (`fixtures/navigator_eval/docs_questions.json`) against floors under the measured baseline; skips without the wiki checkout | unit |
+| Webapp: routes, tool callbacks, registry, relay, panel and states | `webapp/src/lib/navigator`, `src/app/api/navigator`, `src/app/api/internal/navigator`, `src/components/navigator` | vitest |
+| Two tenants through the real tool callback | `webapp/src/app/api/internal/navigator/tools/tenancy.integration.test.ts`: crafted Cypher against a running agent and Neo4j; skips unless `NEO4J_PASSWORD`, `INTERNAL_API_KEY` and `AGENT_API_URL` reach them | integration |
+| End to end | `testing/e2e/tests/navigator.spec.ts` (no model needed); `testing/navigator_eval/run.mjs --user <id>`: 73 cases on a real model against a synthetic seeded project, graded and written to `summary.md`, run by hand (it honours the 20 messages / 5 min limit, about 20 to 40 minutes) | Playwright / manual |
+
 ### The live RBAC route matrix
 
 `tests/rbac_matrix_live.sh` asks the running webapp who may call which route, as rows of

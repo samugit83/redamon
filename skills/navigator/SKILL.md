@@ -24,8 +24,8 @@ metadata:
 - Changing how a Navigator run is authorized, bound to its login, stopped or saved.
 - Changing the wiki index, the citations, the router or the specialists in `agentic/navigator/`.
 
-The design is `_local/internal/new_plans/navigator/ai-navigator-plan.md` when present; the user
-doc is the wiki page `AI-Navigator`. Also follow `rbac-authz` (every check), `agent-in-the-loop`
+The user doc is the wiki page `AI-Navigator`; the developer notes are the AI Navigator sections of
+`docs/readmes/README.WEBAPP.md` and `docs/readmes/README.AGENTIC_SYSTEM.md`. Also follow `rbac-authz` (every check), `agent-in-the-loop`
 (the model builder) and `mcp-server-tools` (anything under `webapp/src/lib/mcp/`).
 
 ---
@@ -70,4 +70,6 @@ doc is the wiki page `AI-Navigator`. Also follow `rbac-authz` (every check), `ag
 cd webapp && npx vitest run --no-file-parallelism src/lib/navigator src/app/api/navigator src/app/api/internal/navigator src/components/navigator
 ./agentic/run_tests.sh tests/test_navigator_graph.py   # one file; the gate runs each in isolation
 bash tests/redamon_wiki_checkout_test.sh
+./agentic/run_tests.sh tests/test_navigator_docs_eval.py   # docs retrieval hit@3 against its floors
+node testing/navigator_eval/run.mjs --user <userId>       # by hand: 73 cases on a real model, synthetic project
 ```
