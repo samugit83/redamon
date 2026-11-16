@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New permission `navigator:use` (project, Read), in every built-in member set but *Automation*.
 - Owners choose **AI Navigator for collaborators** in the share dialog (off by default): the project's data would go to each collaborator's own AI provider. Root turns AI Navigator on or off for everyone in **IAM → Instance**.
 
+### Security
+
+- **A `\uXXXX` escape hid Cypher from the tenant filters.** Neo4j decodes the escape before it reads the query, so `'x\u0027 ...'` ended a string for Neo4j but not for `scope_query` or the saved-view filter, and a `UNION` branch or a procedure call after it ran with no tenant filter: a read of another project's graph, or a URL fetched by the database (`apoc.load.json`). `scope_query` (the agent's `query_graph`, `/graph/exec`, MCP `query_graph` raw Cypher, the sandbox's `redagraph`) and `POST /api/graph-views/execute` now refuse any `\uXXXX` escape in a query.
+- **A failed graph query no longer writes the query or a value to the logs.** `/graph/exec` logged Neo4j's error text, which quotes the query and the value a function failed on (`date(s.name)` logged the host name); it now logs the error code and class, and the webapp logs the status and stage only.
+
 ### What changes for you
 
 - **Admins with custom permission sets:** `navigator:use` is a new feature, so custom sets show it as *available, not granted*: add it to the sets that should use AI Navigator.

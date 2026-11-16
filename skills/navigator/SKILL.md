@@ -63,10 +63,15 @@ The user doc is the wiki page `AI-Navigator`; the developer notes are the AI Nav
   goes through `shapeToolResult`, which withholds the properties in `SECRET_VALUE_KEYS` by name
   before the secret-shape masker (a 40-character AWS secret has no shape), and `run_cypher` refuses
   a query that names one or reads a property by a computed key
-  ([secretGuard.ts](../../webapp/src/lib/navigator/tools/secretGuard.ts)). A tool that returns a new
+  ([secretGuard.ts](../../webapp/src/lib/navigator/tools/secretGuard.ts)). Judge a query as Neo4j
+  reads it, never as raw text: Neo4j decodes `\uXXXX` before it lexes (`s.\u006datched_text`), a
+  comment may sit before a subscript (`properties(s)/**/[k]`), and most keywords are valid variable
+  names (`limit[k]`); each of these read values in the security review. A tool that returns a new
   secret-bearing field adds it to `SECRET_VALUE_KEYS`.
 - **Never log message text, deltas, tool results or Cypher**, in the webapp or the agent: ids,
-  codes and timings only (`test_navigator_logging.py`, `stream.test.ts`).
+  codes and timings only (`test_navigator_logging.py`, `stream.test.ts`). That includes the code
+  a tool calls: a Neo4j error quotes the query and the value it failed on, so `/graph/exec` and
+  `graphClient.ts` log a code and a status, never the exception's text.
 
 ---
 
