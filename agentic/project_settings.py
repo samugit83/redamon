@@ -36,6 +36,10 @@ INTERNAL_HEADERS = {"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")}
 # traffic, and so have no stealth rule, RoE category or confirmation gate.
 GRAPH_COMPANION_TOOLS = frozenset({"graph_schema", "graph_summary"})
 
+# Tradecraft 2.0's search (and, from phase 7, the librarian) follow tradecraft_lookup's
+# phases, for the reasons above, and only in a run whose catalog is 2.0.
+TRADECRAFT_COMPANION_TOOLS = frozenset({"tradecraft_search"})
+
 # =============================================================================
 # DANGEROUS TOOLS — require manual confirmation before execution
 # =============================================================================
@@ -854,10 +858,12 @@ def fetch_agent_settings(project_id: str, webapp_url: str, *,
                 tc_resp.raise_for_status()
                 catalog = tc_resp.json()
             settings['TRADECRAFT_CATALOG'] = catalog
+            settings['TRADECRAFT_V2'] = bool(catalog.get('v2'))
             settings['TRADECRAFT_RESOURCES'] = [] if catalog.get('v2') else catalog.get('legacy', [])
         except Exception as e:
             logger.warning(f"Failed to fetch tradecraft resources: {e}")
             settings['TRADECRAFT_CATALOG'] = None
+            settings['TRADECRAFT_V2'] = False
             settings['TRADECRAFT_RESOURCES'] = []
 
         # If selected model is custom/, extract its specific config
@@ -1397,6 +1403,8 @@ def is_tool_allowed_in_phase(tool_name: str, phase: str) -> bool:
     # {"query_graph": []} turns all three off.
     if tool_name in GRAPH_COMPANION_TOOLS:
         return is_tool_allowed_in_phase("query_graph", phase)
+    if tool_name in TRADECRAFT_COMPANION_TOOLS:
+        return bool(get_setting('TRADECRAFT_V2', False)) and is_tool_allowed_in_phase("tradecraft_lookup", phase)
 
     tool_phase_map = get_setting('TOOL_PHASE_MAP', {})
     if tool_name in tool_phase_map:
@@ -1442,6 +1450,10 @@ def get_allowed_tools_for_phase(phase: str) -> list:
         allowed.update(GRAPH_COMPANION_TOOLS)
     else:
         allowed.difference_update(GRAPH_COMPANION_TOOLS)
+    if get_setting('TRADECRAFT_V2', False) and is_tool_allowed_in_phase("tradecraft_lookup", phase):
+        allowed.update(TRADECRAFT_COMPANION_TOOLS)
+    else:
+        allowed.difference_update(TRADECRAFT_COMPANION_TOOLS)
 
     # Always include foundational workspace + job tools (mirror of the
     # fs_/job_ bypass in is_tool_allowed_in_phase). Import lazily to keep

@@ -178,7 +178,7 @@ def _builtin_tool_names() -> Set[str]:
             from prompts.tool_registry import TOOL_REGISTRY, _mcp_injected_keys  # type: ignore
             # tradecraft_lookup is a built-in that now lives in the per-session
             # tradecraft overlay (not the global dict), so add it explicitly.
-            names = (set(TOOL_REGISTRY.keys()) - set(_mcp_injected_keys)) | {"tradecraft_lookup"}
+            names = (set(TOOL_REGISTRY.keys()) - set(_mcp_injected_keys)) | {"tradecraft_lookup", "tradecraft_search", "tradecraft_ask"}
         except Exception:
             pass
         try:

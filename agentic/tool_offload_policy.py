@@ -20,6 +20,7 @@ OFFLOAD_POLICY = {
     "shodan": "never",
     "google_dork": "never",
     "tradecraft_lookup": "never",
+    "tradecraft_search": "never",
     "msf_restart": "never",
 
     # always: reliably huge

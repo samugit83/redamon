@@ -29,7 +29,7 @@ export const BUILTIN_RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set([
   // shadow a built-in graph tool with its own.
   'query_graph', 'graph_summary', 'graph_schema',
   'web_search', 'cve_intel', 'shodan', 'google_dork',
-  'execute_code', 'tradecraft_lookup', 'proxy_brain',
+  'execute_code', 'tradecraft_lookup', 'tradecraft_search', 'tradecraft_ask', 'proxy_brain',
   'execute_osv_scanner', 'execute_guarddog',
   // System MCP-backed tools (the 5 baseline kali-sandbox servers)
   'execute_curl', 'execute_naabu', 'execute_httpx', 'execute_subfinder',

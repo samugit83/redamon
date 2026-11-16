@@ -178,7 +178,8 @@ def test_no_get_setting_for_catalog():
 
 def test_the_executor_routes_a_2x_run_to_the_2x_tool():
     tools_src = (TRADECRAFT_DIR.parent / "tools.py").read_text()
-    branch = tools_src[tools_src.index('elif tool_name == "tradecraft_lookup":'):]
+    # T2.6 widened the branch to the 2.0 tools that share it (TD-10).
+    branch = tools_src[tools_src.index('elif tool_name in ("tradecraft_lookup", "tradecraft_search", "tradecraft_ask"):'):]
     branch = branch[:branch.index("elif tool_name ==", 10)]
     assert "await (v2_tool_for(tool_name) or active_tool).ainvoke(tool_args)" in branch
 

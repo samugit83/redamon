@@ -2225,6 +2225,8 @@ TOOL_DEADLINES_S: Dict[str, float] = {
         "graph_schema": 60,
         "graph_summary": 120,
         "tradecraft_lookup": 240,
+        "tradecraft_search": 60,
+        "tradecraft_ask": 150,
         "web_search": 120,
         "shodan": 60,
         "google_dork": 60,
@@ -2339,6 +2341,10 @@ class PhaseAwareToolExecutor:
         # Register Tradecraft Lookup tool (conditional on enabled resources)
         if tradecraft_tool:
             self._all_tools["tradecraft_lookup"] = tradecraft_tool
+        # Tradecraft 2.0's own tools stay registered; runtime.py answers them only in a
+        # run whose catalog is 2.0, and the phase list offers them only then.
+        from tradecraft.agent_tools import registered_tools as _tradecraft_v2_tools
+        self._all_tools.update(_tradecraft_v2_tools())
 
         # The captured-traffic corpus is reached ONLY through proxy_brain now
         # (the kali code tool + its /traffic/exec + /traffic/replay broker). The
@@ -2784,7 +2790,7 @@ class PhaseAwareToolExecutor:
                 # Agent-native (not MCP): single "args" string, dispatched to the
                 # orchestrator analyzer via the webapp internal lane.
                 output = await active_tool.ainvoke(tool_args.get("args", ""))
-            elif tool_name == "tradecraft_lookup":
+            elif tool_name in ("tradecraft_lookup", "tradecraft_search", "tradecraft_ask"):
                 # Pass the structured args through. The tool function picks them up
                 # by name (resource_id, query, cve_id, section_path, force_refresh).
                 # A run whose owner has Tradecraft 2.0 on reads through the 2.0 library.
