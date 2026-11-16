@@ -181,4 +181,7 @@ def test_canonical_url():
     assert fetch.canonical_url("http://wiki.tc-fixture.test:8080/x") == "http://wiki.tc-fixture.test:8080/x"
     assert fetch.canonical_url("http://[::1]:8080/x") == "http://[::1]:8080/x"
     assert not fetch.entry_url_ok("https://wiki.tc-fixture.test/" + "a" * 2100)
+    # Bytes, not characters: 1,100 two-byte characters are 2,200 bytes.
+    assert not fetch.entry_url_ok("https://wiki.tc-fixture.test/" + "é" * 1100)
+    assert fetch.entry_url_ok("https://wiki.tc-fixture.test/" + "a" * 2000)
     assert not fetch.entry_url_ok("javascript:alert(1)")

@@ -15,7 +15,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional
 
 from tradecraft.library.page_ids import PageIdRow
-from tradecraft.store import ENTRY_WRITE, SECTION_WRITE, SWAP_COLUMNS, TREE_WRITE, ResourceGone, _rows_for
+from tradecraft.store import (ENTRY_WRITE, SECTION_WRITE, SUMMARY_COLUMNS, SWAP_COLUMNS, TREE_WRITE, ResourceGone,
+                              _rows_for, summary_is_kept)
 
 UNFINISHED = ("queued", "running")
 
@@ -44,7 +45,7 @@ class MemoryStore:
                      slug: str = "wiki", storage_mode: str = "live", **cols: Any) -> dict:
         row = {"id": resource_id, "user_id": user_id, "url": url, "slug": slug, "name": slug,
                "storage_mode": storage_mode, "generation": 0, "active_job_id": None, "summary": "",
-               "summary_source": "generated", "sitemap": {}, "resource_type": "agentic-crawl",
+               "summary_source": "generated", "summary_locked": False, "sitemap": {}, "resource_type": "agentic-crawl",
                "map_version": 1, "last_error": "", "crawl_stats": {}, "crawl_stopped_because": "",
                "settings_snapshot": {}, "settings_hash": "", "ingestion_report": {}, "legacy_map_hash": "",
                "last_verified_at": None, "last_refreshed_at": None, "has_login": False, "enabled": True}
@@ -218,6 +219,8 @@ class MemoryStore:
             return "lost"
         if r["url"] != expected_url or r["storage_mode"] != expected_storage_mode:
             return "changed"
+        if summary_is_kept(r):
+            updates = {k: v for k, v in updates.items() if k not in SUMMARY_COLUMNS}
         r.update(copy.deepcopy(dict(updates)))
         r.update(generation=generation, active_job_id=None)
         j = self._job(user_id, job_id)

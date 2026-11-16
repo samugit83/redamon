@@ -30,7 +30,8 @@ from tradecraft.settings import EffectiveSettings, constant
 # Elements 1.x always drops before it looks for the article (web_sources.html_to_markdown).
 _NOISE_ELEMENTS = ("nav", "footer", "header", "aside", "script", "style", "form", "iframe")
 _ARTICLE_SELECTORS = ("article", "main", ".md-content", "[role='main']", ".post-content", ".content")
-# The contract caps a URL at 2,048 characters; a longer one never becomes an entry.
+# The contract caps a URL at 2,048 characters; a longer one never becomes an entry. Counted
+# in UTF-8 bytes, which is what the unique b-tree on (resource_id, url) measures.
 MAX_URL_CHARS = 2048
 
 # net error code -> the job's error code (contract.ERROR_CODES).
@@ -87,7 +88,7 @@ def canonical_url(url: str) -> str:
 
 
 def entry_url_ok(url: str) -> bool:
-    return bool(url) and len(url) <= MAX_URL_CHARS and not net.url_problem(url)
+    return bool(url) and len(url.encode("utf-8", "replace")) <= MAX_URL_CHARS and not net.url_problem(url)
 
 
 def github_headers(url: str, github_token: Optional[str]) -> dict[str, str]:

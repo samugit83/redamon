@@ -182,3 +182,28 @@ def test_cancel_between_pages():
 def test_cut_on_a_character_boundary():
     text, cut = storage.cut_utf8("é" * 10, 5)
     assert cut and text == "éé" and len(text.encode()) <= 5
+
+
+@pytest.mark.parametrize("downloads,failures,expected", [
+    (0, 0, ""), (10, 5, ""), (10, 6, "fetch_failed"), (1, 1, "fetch_failed"), (3, 1, ""),
+])
+def test_a_refresh_that_loses_most_page_downloads_has_failed(downloads, failures, expected):
+    """Finding B: more than half of the downloads failed: the refresh failed (the threshold is
+    assumption 48 in progress_log.md)."""
+    st = state_for([])
+    st.store_downloads, st.store_download_failures = downloads, failures
+    assert storage.failure_code(st) == expected
+
+
+def test_downloads_are_counted_and_limits_are_not_failures():
+    fetcher = FixtureFetcher()
+    entries = [Candidate(f"{WIKI}sqli/union-based/", "Union", "sitemap"),
+               Candidate("https://down.tc-fixture.test/x", "Down", "sitemap")]
+    st = state_for(entries, site_type="mkdocs-wiki", settings={"fetching.browserEnabled": False})
+    with net.use_fetcher(fetcher):
+        run(storage.store(st))
+    assert (st.store_downloads, st.store_download_failures) == (2, 1) and storage.failure_code(st) == ""
+    # Pages left unstored by a limit were never downloaded: no failure.
+    capped = state_for([html_page(i, 100) for i in range(5)], settings={"storage.maxPages": 1})
+    run(storage.store(capped))
+    assert capped.store_downloads == 0 and storage.failure_code(capped) == ""

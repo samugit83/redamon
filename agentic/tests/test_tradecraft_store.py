@@ -282,6 +282,21 @@ def test_swap_writes_nothing_unless_the_row_still_matches(row, expected):
     assert fake.names() == ["swap_lock"]
 
 
+@pytest.mark.parametrize("flags", [{"summary_locked": True}, {"summary_source": "manual"}])
+def test_swap_keeps_a_summary_the_row_protects(flags):
+    """Finding A: the lock and the source are read from the row under the swap's lock, not from
+    the job's copy taken when it started."""
+    row = {**_resource_row(), "summary_locked": False, "summary_source": "generated", **flags}
+    fake = FakeDb(lambda name, p: ([row], 1) if name == "swap_lock" else ([], 1))
+    answer = run(Store(fake.connect).swap("u1", "r1", "job-1", 4, "https://wiki.tc-fixture.test/", "stored",
+                                          {"summary": "generated", "summary_source": "generated", "map_version": 3}))
+    assert answer == "swapped"
+    sql, params = fake.executed[1][2], fake.executed[1][3]
+    assert "summary =" not in sql and "summary_source =" not in sql and "u_summary" not in params
+    assert "map_version = %(u_map_version)s::int" in sql
+    assert "summary_locked, summary_source" in fake.executed[0][2]
+
+
 def test_swap_refuses_a_column_outside_its_list():
     fake = FakeDb()
     for column in ("credentials", "github_token_override", "active_job_id", "user_id", "url"):

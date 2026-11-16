@@ -242,7 +242,7 @@ def test_cve_live_pdf_stored():
     answer = pdf.read(resource_id="guide", section_path="page=2")
     assert "stored text of page 2" in answer and pdf.requested() == []
     assert header(answer, "url") == f"{pdf_url}#page=2"
-    assert "out of range" in pdf.read(resource_id="guide", section_path="9")
+    assert "is not in this resource's map" in pdf.read(resource_id="guide", section_path="9")
 
 
 def test_unstored_pdf_page_is_read_from_the_document():
@@ -272,3 +272,20 @@ def test_a_non_web_path_stays_on_the_resources_site():
     lib = Library().add("r1", "wiki", WIKI, read_settings=no_browser())
     lib.read(resource_id="wiki", section_path="file:///etc/passwd")
     assert [u.split("/")[2] for u in lib.requested()] == ["wiki.tc-fixture.test"]
+
+
+def test_pdf_pages_are_the_maps_own_numbers():
+    """Finding D: a PDF ingested from page 5 with page 7 skipped: its stored pages are read by
+    their real numbers, and an excluded page is refused, never fetched live."""
+    pdf_url = "https://files.tc-fixture.test/guide.pdf"
+    numbers = [n for n in range(5, 15) if n != 7]
+    lib = Library().add("r2", "guide", pdf_url, type_="pdf", mode="stored",
+                        sitemap={"pages": [{"page": n, "firstLine": f"Chapter {n}"} for n in numbers]})
+    for n in numbers:
+        lib.entry("r2", f"{pdf_url}#page={n}", f"stored text of page {n}")
+    answer = lib.read(resource_id="guide", section_path="page=12")
+    assert "stored text of page 12" in answer and header(answer, "url") == f"{pdf_url}#page=12"
+    for excluded in ("page=3", "7", "page=15"):
+        refused = lib.read(resource_id="guide", section_path=excluded)
+        assert "is not in this resource's map (pages 5..14)" in refused, excluded
+    assert lib.requested() == []

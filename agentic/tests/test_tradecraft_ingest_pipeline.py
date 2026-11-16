@@ -186,6 +186,70 @@ def test_locked_summary(tmp_path):
         assert "summary" not in swap[4]
 
 
+@pytest.mark.parametrize("policy,site", [("keep", WIKI), ("replace", "https://down.tc-fixture.test/")])
+@pytest.mark.parametrize("flags", [{"summary_locked": True}, {"summary_source": "manual"}])
+def test_summary_written_or_locked_during_the_refresh_is_kept(tmp_path, flags, policy, site):
+    """Finding A / AC-40: the job started with an unlocked, generated summary; the person then
+    wrote or locked theirs. The swap keeps it, whatever the job generated (or, under "replace",
+    the empty result would have written)."""
+    h = Harness(tmp_path, site, settings={"refreshing.onFailure": policy})
+    assert not h.request.resource.summary_locked and h.request.resource.summary_source == "generated"
+    h.resource.update(summary="the person's own summary", **flags)
+    outcome = h.run()
+    assert outcome.swapped
+    assert h.resource["summary"] == "the person's own summary"
+    assert h.resource.get("summary_locked", False) == flags.get("summary_locked", False)
+    assert h.resource["summary_source"] == flags.get("summary_source", "generated")
+
+
+def _pages_failing(tmp_path, status=503):
+    """The padded fixture sites, with every wiki page but its start page answering ``status``:
+    the sitemap still answers, the pages do not."""
+    root = padded_sites(tmp_path)
+    wiki = root / "wiki.tc-fixture.test"
+    paths = {"/" + p.parent.relative_to(wiki).as_posix() + "/": status
+             for p in wiki.rglob("index.html") if p.parent != wiki}
+    (wiki / "_status.json").write_text(json.dumps(paths))
+    return root
+
+
+@pytest.mark.parametrize("policy", ["keep", "replace"])
+def test_stored_refresh_whose_pages_fail_keeps_the_previous_copies(tmp_path, policy):
+    """Finding B / R-194 / AC-16: a Stored wiki whose index answers but whose pages fail; under
+    the default policy the refresh fails and the previous generation, with its stored copies,
+    stays live."""
+    h = Harness(tmp_path, WIKI, mode="stored", root=_pages_failing(tmp_path),
+                settings={"refreshing.onFailure": policy, "fetching.browserEnabled": False})
+    outcome = h.run()
+    assert outcome.status == "failed" and outcome.error_code == "fetch_failed"
+    if policy == "keep":
+        assert not outcome.swapped and "swap" not in h.store.names()
+        assert h.resource["generation"] == 2 and h.resource["summary"] == "previous summary"
+    else:
+        assert outcome.swapped and h.resource["generation"] == 3 and h.resource["last_error"] == "fetch_failed"
+
+
+def test_an_entry_over_the_url_limit_is_dropped_not_fatal(tmp_path, monkeypatch):
+    """Finding C: whatever builds the map, an over-long URL never reaches the page store."""
+    from tradecraft.ingest import crawl as crawl_mod
+    from tradecraft.ingest.builders import Candidate
+
+    good = "https://blog.tc-fixture.test/posts/01-xss-note-1/"
+    long_url = "https://blog.tc-fixture.test/posts/?" + "x" * 3000
+
+    async def fake_crawl(url, settings, **kw):
+        return crawl_mod.CrawlResult(entries=[Candidate(good, "Good", "crawl", good),
+                                              Candidate(long_url, "Long", "crawl", long_url)],
+                                     stop_reason="frontier_empty", stats={"pages_fetched": 2, "llm_calls": 0})
+
+    monkeypatch.setattr(pipeline.crawl, "crawl", fake_crawl)
+    h = Harness(tmp_path, "https://blog.tc-fixture.test/")
+    outcome = h.run()
+    assert outcome.status == "succeeded"
+    assert [e["url"] for e in h.store.live_entries(RID)] == [good]
+    assert {"code": "url_too_long_or_bad", "count": 1} in h.resource["ingestion_report"]["errors"]
+
+
 def test_wrapped_untrusted(tmp_path):
     h = Harness(tmp_path, WIKI, settings={"summary.extraInstructions": "List the vulnerability classes."})
     h.run()

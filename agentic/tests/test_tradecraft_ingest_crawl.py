@@ -43,7 +43,7 @@ class GeneratedSite:
         self.fetched.append(url)
         if self.clock is not None:
             self.clock.advance(self.advance)
-        n = int(url.rsplit("/p", 1)[1]) if "/p" in url else 0
+        n = int(url.rsplit("/p", 1)[1].split("?")[0]) if "/p" in url else 0
         links = [(f"{SITE}/p{n * self.fan_out + i}", f"Page {n * self.fan_out + i}") for i in range(1, self.fan_out + 1)]
         return c.CrawlFetch(page(f"Page {n}", list(self.extra) + links, self.body), url, 1)
 
@@ -250,3 +250,20 @@ def test_crawl_fetch_never_sends_a_refused_address_to_the_browser():
 def test_invalid_base(bad):
     result = go(bad, fetch_page=GeneratedSite(), llm=None)
     assert result.entries == [] and result.stats.get("pages_fetched", 0) == 0
+
+
+LONG = SITE + "/p1?" + "q=" + "x" * 3000
+
+
+def test_a_link_over_the_url_limit_is_never_offered_nor_fetched():
+    """Finding C: a same-host link of 3,000+ characters would fail the page-ID index."""
+    site = GeneratedSite(fan_out=1, extra_links=[(LONG, "long link")])
+    model = RecordingModel('{"action": "follow", "indices": [1, 2], "reason": "x"}', '{"action": "stop", "reason": "y"}')
+    result = go(fetch_page=site, llm=model)
+    assert "long link" not in model.prompts[0] and "xxxx" not in model.prompts[0]
+    assert LONG not in site.fetched and all(len(e.url) <= 2048 for e in result.entries)
+
+
+def test_a_page_over_the_url_limit_is_not_kept():
+    result = go(LONG, fetch_page=GeneratedSite(), llm=None)
+    assert result.entries == [] and result.skipped["excluded"] == 1

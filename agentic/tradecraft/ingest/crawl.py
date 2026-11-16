@@ -217,7 +217,7 @@ def follow_candidates(meta: dict[str, Any], state: _State, settings: EffectiveSe
     limit = settings.int("crawl.linksPerPage")
     for link in meta["links"]:
         href = link.get("href") or ""
-        if not href or net.url_problem(href):
+        if not fetch.entry_url_ok(href):
             continue
         host = _host(href)
         if host != state.host:
@@ -382,8 +382,10 @@ async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[F
         if not got.html:
             continue
         meta = await blocking(page_meta, got.html, got.final_url or current)
-        reason = keep_reason(meta, settings)
-        if reason:
+        reason = keep_reason(meta, settings) or ("" if fetch.entry_url_ok(current) else "excluded")
+        if reason == "excluded":
+            state.excluded.add(current)
+        elif reason:
             state.too_little += 1
         else:
             state.entries.append(Candidate(current, meta["title"], "crawl", current,

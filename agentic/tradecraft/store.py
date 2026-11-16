@@ -190,7 +190,8 @@ STATEMENTS: dict[str, str] = {
         f"WHERE id = %(rid)s AND user_id = %(uid)s AND active_job_id = %(job)s"
     ),
     "swap_lock": (
-        f"SELECT url, storage_mode, active_job_id FROM {R} WHERE id = %(rid)s AND user_id = %(uid)s FOR UPDATE"
+        f"SELECT url, storage_mode, active_job_id, summary_locked, summary_source FROM {R} "
+        f"WHERE id = %(rid)s AND user_id = %(uid)s FOR UPDATE"
     ),
     # swap_resource is completed with the SET list of the updates (swap_set).
     "swap_resource": (
@@ -278,6 +279,24 @@ UNKEYED_STATEMENTS = {
     "instance_stored_bytes": "the install's storage ceiling (OQ-26): one number over every user",
     "expired_jobs": "boot recovery finds the expired jobs of every user, then writes each by id and owner",
 }
+
+
+SUMMARY_COLUMNS = ("summary", "summary_source")
+
+
+def summary_is_kept(row: Mapping[str, Any]) -> bool:
+    """A summary the person locked or wrote is never replaced by an ingestion. Read from the
+    row under the swap's lock: the job's own copy of these flags is from when it started."""
+    return bool(row.get("summary_locked")) or row.get("summary_source") == "manual"
+
+
+def _swap_set(updates: Mapping[str, Any]) -> tuple[str, dict]:
+    sets, params = "", {}
+    for column, value in updates.items():
+        kind = SWAP_COLUMNS[column]
+        params[f"u_{column}"] = _json(value) if kind == "jsonb" else (_clean(value) if isinstance(value, str) else value)
+        sets += f", {column} = %(u_{column})s::{kind}"
+    return sets, params
 
 
 class ResourceGone(Exception):
@@ -448,17 +467,12 @@ class Store:
         ``gone``: the resource was deleted (nothing to write). ``lost``: its claim names
         another job (this one's lease expired and a new job took the resource). ``changed``:
         its URL or storage mode is no longer what the job built from (D-45). In those three
-        cases nothing is written; the caller discards the generation and closes the job.
+        cases nothing is written; the caller discards the generation and closes the job. A
+        summary the row has locked or marked manual by then is left as it is (AC-40).
         """
         unknown = set(updates) - set(SWAP_COLUMNS)
         if unknown:
             raise ValueError(f"a swap cannot write {sorted(unknown)}")
-        sets, params = "", {"uid": user_id, "rid": resource_id, "job": job_id, "gen": generation,
-                            "status": status, "code": error_code}
-        for column, value in updates.items():
-            kind = SWAP_COLUMNS[column]
-            params[f"u_{column}"] = _json(value) if kind == "jsonb" else (_clean(value) if isinstance(value, str) else value)
-            sets += f", {column} = %(u_{column})s::{kind}"
         async with self._connect() as conn:
             cur = await conn.execute(STATEMENTS["swap_lock"], {"uid": user_id, "rid": resource_id})
             row = await cur.fetchone()
@@ -468,6 +482,12 @@ class Store:
                 return "lost"
             if row["url"] != expected_url or row["storage_mode"] != expected_storage_mode:
                 return "changed"
+            if summary_is_kept(row):
+                # The person wrote or locked the summary while the job ran: theirs stays.
+                updates = {k: v for k, v in updates.items() if k not in SUMMARY_COLUMNS}
+            sets, params = _swap_set(updates)
+            params.update({"uid": user_id, "rid": resource_id, "job": job_id, "gen": generation,
+                           "status": status, "code": error_code})
             await conn.execute(STATEMENTS["swap_resource"].replace("{sets}", sets), params)
             await conn.execute(STATEMENTS["swap_job"], params)
         return "swapped"

@@ -101,6 +101,8 @@ class IngestState:
     legacy_hash: str = ""
     # report counters
     visited: int = 0
+    store_downloads: int = 0
+    store_download_failures: int = 0
     llm_calls: int = 0
     stop_reason: str = ""
     skipped: dict = field(default_factory=lambda: {"excluded": 0, "outOfScope": 0, "tooLittleText": 0,
@@ -195,6 +197,10 @@ async def _run(state: IngestState) -> JobOutcome:
 
     await state.stage("store")
     await storage.store(state)
+    if not failure:
+        failure = storage.failure_code(state)
+        if failure and state.settings.str("refreshing.onFailure") == "keep":
+            return JobOutcome(status="failed", error_code=failure)
     for name, step in (("cards", cards.build), ("sections", sections.build), ("tags", tags.tag),
                        ("entities", entities.extract), ("tree", tree.build), ("content_check", focus.content_check)):
         await state.stage(name)
@@ -258,7 +264,17 @@ async def build_map(state: IngestState) -> None:
             logger.info(f"[tradecraft] job {state.request.job_id} retyped code=")
     else:
         await _crawl(state)
+    _drop_unstorable_urls(state)
     _homepage_fallback(state)
+
+
+def _drop_unstorable_urls(state: IngestState) -> None:
+    """The last guard before the page store: a URL the contract refuses (over 2,048 bytes, not
+    http(s)) would fail the whole write at the page-ID index."""
+    kept = [e for e in state.entries if fetch.entry_url_ok(e.url)]
+    if len(kept) != len(state.entries):
+        state.errors["url_too_long_or_bad"] += len(state.entries) - len(kept)
+        state.entries = kept
 
 
 def _take(state: IngestState, result: builders.MapResult) -> None:

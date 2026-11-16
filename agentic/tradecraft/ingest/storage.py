@@ -70,7 +70,9 @@ async def _page_text(state: "IngestState", entry) -> tuple[str, str, dict]:
     page = await fetch.smart_fetch(entry.url, state.settings, github_token=state.github_token,
                                    allow_browser=True, cleaner=state.clean)
     state.visited += 1
+    state.store_downloads += 1
     if page.error or not (200 <= page.status < 300):
+        state.store_download_failures += 1
         return "", page.error or "http_error", {}
     return page.text, "", page.headers
 
@@ -122,6 +124,17 @@ async def store(state: "IngestState") -> "IngestState":
     state.stored_counts["pages"] = stored
     state.stored_counts["bytes"] = total
     return state
+
+
+def failure_code(state: "IngestState") -> str:
+    """``fetch_failed`` when more than half of the pages this refresh downloaded to store could
+    not be read: the site is down or limiting us, and swapping in a generation without their
+    text would delete the copies a Stored resource exists to keep (R-194, AC-16). Pages left
+    unstored by the quota or a size limit are not failures; a crawl's or a PDF's text needs no
+    download."""
+    if state.store_downloads and state.store_download_failures * 2 > state.store_downloads:
+        return "fetch_failed"
+    return ""
 
 
 def _header(headers: dict, name: str) -> str:

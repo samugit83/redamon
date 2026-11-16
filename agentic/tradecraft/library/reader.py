@@ -243,8 +243,12 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
         if picked is None:
             return f"PDF '{read.slug}': no page matched query={query!r}."
         number = int(re.search(r"page=(\d+)", picked["path"]).group(1))
-    if number < 1 or number > len(pages):
-        return f"PDF '{read.slug}': page {number} out of range (1..{len(pages)})."
+    # The map holds the pages the person chose (a range, a skip list): those numbers, not
+    # 1..len, are the readable ones, and an excluded page is never fetched live instead.
+    numbers = sorted({p["page"] for p in pages if isinstance(p.get("page"), int)})
+    if number not in numbers:
+        span = f"{numbers[0]}..{numbers[-1]}" if numbers else "none"
+        return f"PDF '{read.slug}': page {number} is not in this resource's map (pages {span})."
     url = f"{fetch.canonical_url(base)}#page={number}"
     refused = await _refusal(read, url)
     if refused:

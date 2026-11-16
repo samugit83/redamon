@@ -248,6 +248,24 @@ async def test_swap_refused_after_a_change(env, column, value):
     assert job["status"] == "running"
 
 
+@pytest.mark.parametrize("column,value", [("summary_locked", True), ("summary_source", "manual")])
+async def test_swap_keeps_a_summary_protected_during_the_job(env, column, value):
+    """Finding A: the person locks or writes the summary after the job started; the swap still
+    makes the new generation live but leaves the summary as the row has it."""
+    s = Store()
+    uid = await env.user()
+    rid = await env.resource(uid)
+    jid = await env.job(uid, rid)
+    gen = await env.running(s, uid, rid, jid)
+    await env.sql(f"UPDATE user_tradecraft_resources SET summary = 'mine', {column} = %s WHERE id = %s", value, rid)
+    answer = await s.swap(uid, rid, jid, gen, URL, "stored",
+                          {"summary": "generated text", "summary_source": "generated", "map_version": 3})
+    assert answer == "swapped"
+    row = await s.resource(uid, rid)
+    assert row["summary"] == "mine" and row[column] == value
+    assert row["generation"] == gen and row["map_version"] == 3 and row["active_job_id"] is None
+
+
 async def test_swap_refused_after_takeover(env):
     s = Store()
     uid = await env.user()
