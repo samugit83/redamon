@@ -142,3 +142,50 @@ describe('TradecraftTab', () => {
     }
   })
 })
+
+describe('TradecraftTab and the 2.0 switch', () => {
+  const SETTINGS = '/api/users/user-1/tradecraft-settings'
+  const V2_RESOURCE = {
+    ...RES, slug: 'lab-wiki', forcedType: '', storageMode: 'stored', githubTokenOverride: '', hasLogin: false, priority: 'normal',
+    mapVersion: 3, summarySource: 'generated', summaryLocked: false, report: null, lastRefreshedAt: null, lastError: '',
+    entryCount: 4, stale: false, job: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+  }
+
+  test('switch_off_renders_1x: the 1.x tab, with the switch off on top', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: false } }
+    renderTab()
+    expect(await screen.findByText('Lab Wiki')).toBeInTheDocument()
+    expect(screen.getByText(/On add, the\s+agent fetches the homepage/)).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Tradecraft 2.0 (preview)' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByText(/ingested in the\s+background/)).toBeNull()
+    expect(calls('GET', BASE)).toHaveLength(1)
+  })
+
+  test('switch on: the 2.0 list', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true } }
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    expect(await screen.findByText('Stored')).toBeInTheDocument()
+    expect(screen.getByText(/ingested in the\s+background/)).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Tradecraft 2.0 (preview)' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  test('turning the switch on, confirmed, swaps to the 2.0 list', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: false } }
+    routes[`PUT ${SETTINGS}`] = { status: 200, body: { v2Enabled: true } }
+    renderTab()
+    await screen.findByText('Lab Wiki')
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    fireEvent.click(screen.getByRole('switch', { name: 'Tradecraft 2.0 (preview)' }))
+    expect(await screen.findByText('Stored')).toBeInTheDocument()
+    expect(alertSpies.confirm).toHaveBeenCalledTimes(1)
+  })
+
+  test('a switch that cannot be read: the 1.x tab, without the switch', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 403, body: { error: 'Forbidden', code: 'forbidden' } }
+    renderTab()
+    expect(await screen.findByText('Lab Wiki')).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Tradecraft 2.0 (preview)' })).toBeNull()
+  })
+})
+

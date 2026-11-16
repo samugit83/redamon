@@ -8,79 +8,18 @@ import { isLoopModel } from '@/lib/agentInTheLoop'
 import { requireSelfPermission } from '@/lib/authz/selfService'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { rbacFlags } from '@/lib/authz/flags'
+import { auditActor } from '@/lib/auditActor'
+import { readJsonBody } from '@/lib/jsonBody'
+import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
+import { maskResource } from '@/lib/tradecraft/masking'
+import { LEGACY_SELECT } from '@/lib/tradecraft/resourceAccess'
+import { slugify, uniqueSlug, validateUrl } from '@/lib/tradecraft/urls'
+import { jobActorOf } from '@/lib/tradecraft/jobs'
+import { listResourcesV2 } from '@/lib/tradecraft/v2/list'
+import { createResourceV2 } from '@/lib/tradecraft/v2/create'
 
 interface RouteParams {
   params: Promise<{ id: string }>
-}
-
-function maskSecret(value: string): string {
-  if (!value || value.length <= 4) return value ? '••••' : ''
-  return '••••••••' + value.slice(-4)
-}
-
-function maskResource(r: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...r,
-    githubTokenOverride: maskSecret(r.githubTokenOverride as string),
-  }
-}
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64) || 'resource'
-}
-
-async function uniqueSlug(userId: string, base: string): Promise<string> {
-  let slug = base
-  let suffix = 2
-  while (true) {
-    const existing = await prisma.userTradecraftResource.findUnique({
-      where: { userId_slug: { userId, slug } },
-    })
-    if (!existing) return slug
-    slug = `${base}-${suffix}`
-    suffix++
-  }
-}
-
-function isPrivateHost(hostname: string): boolean {
-  if (!hostname) return true
-  const lc = hostname.toLowerCase()
-  if (lc === 'localhost' || lc.endsWith('.local') || lc.endsWith('.internal')) return true
-  // IPv4 literal check
-  const m = lc.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)
-  if (m) {
-    const o = m.slice(1).map(Number)
-    if (o[0] === 10) return true
-    if (o[0] === 127) return true
-    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true
-    if (o[0] === 192 && o[1] === 168) return true
-    if (o[0] === 169 && o[1] === 254) return true
-    if (o[0] === 0) return true
-  }
-  // IPv6 loopback / link-local
-  if (lc === '::1' || lc.startsWith('fe80:') || lc.startsWith('fc') || lc.startsWith('fd')) return true
-  return false
-}
-
-function validateUrl(raw: string): { ok: boolean; error?: string } {
-  try {
-    const u = new URL(raw)
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-      return { ok: false, error: 'Only http(s) URLs are allowed' }
-    }
-    if (isPrivateHost(u.hostname)) {
-      return { ok: false, error: 'private address blocked' }
-    }
-    return { ok: true }
-  } catch {
-    return { ok: false, error: 'Invalid URL' }
-  }
 }
 
 // GET /api/users/[id]/tradecraft-resources
@@ -96,9 +35,16 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (selfRefused) return selfRefused
     const internal = isInternalRequest(request) && request.nextUrl.searchParams.get('internal') === 'true'
 
+    // The agent's 1.x run fetch reads the 1.x rows in both switch states, until it reads the
+    // run catalog (T1.9); a browser on 2.0 gets the 2.0 view.
+    if (!internal && await tradecraftV2Enabled(id)) {
+      return NextResponse.json(await listResourcesV2(id))
+    }
+
     const resources = await prisma.userTradecraftResource.findMany({
       where: { userId: id },
       orderBy: { createdAt: 'asc' },
+      select: LEGACY_SELECT,
     })
 
     if (internal) {
@@ -114,7 +60,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
 // POST /api/users/[id]/tradecraft-resources
 //   Body: { name, url, enabled?, resourceType?, githubTokenOverride?, cacheTtlSec? }
-//   Query: ?skipVerify=true to skip the agent /tradecraft/verify call
+//   Query: ?skipVerify=true to skip the agent /tradecraft/verify call (2.0: the add job)
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
@@ -124,8 +70,18 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
 
-    const body = await request.json()
     const skipVerify = request.nextUrl.searchParams.get('skipVerify') === 'true'
+
+    if (await tradecraftV2Enabled(id)) {
+      // A job names the person who started it: the internal key alone starts none.
+      const actor = jobActorOf(await auditActor())
+      if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      const parsed = await readJsonBody(request)
+      if (parsed instanceof NextResponse) return parsed
+      return await createResourceV2({ ownerId: id, body: parsed.body, actor, skipVerify })
+    }
+
+    const body = await request.json()
 
     if (!body.name || !body.url) {
       return NextResponse.json(
@@ -148,7 +104,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const v = validateUrl(body.url)
     if (!v.ok) {
-      return NextResponse.json({ error: v.error }, { status: 400 })
+      return NextResponse.json({ error: v.error, ...(v.code ? { code: v.code } : {}) }, { status: 400 })
     }
 
     // The crawl below would send the account's GitHub token, which stays with the account while
@@ -179,6 +135,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         cacheTtlSec: body.cacheTtlSec ?? 0,
         llmModel: body.llmModel.trim(),
       },
+      select: LEGACY_SELECT,
     })
 
     // Optionally trigger verify in the background

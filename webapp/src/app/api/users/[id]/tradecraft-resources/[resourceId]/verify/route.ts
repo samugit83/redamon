@@ -6,6 +6,12 @@ import prisma from '@/lib/prisma'
 import { agentAnswerLastError, thrownLastError } from '../../agentLastError'
 import { requireSelfPermission } from '@/lib/authz/selfService'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
+import { auditActor } from '@/lib/auditActor'
+import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
+import { maskResource } from '@/lib/tradecraft/masking'
+import { LEGACY_SELECT, loadOwnLegacyResource } from '@/lib/tradecraft/resourceAccess'
+import { jobActorOf } from '@/lib/tradecraft/jobs'
+import { refreshResourceV2 } from '@/lib/tradecraft/v2/refresh'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
@@ -24,12 +30,18 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (__denied) return __denied
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
+
+    // 2.0: a background job, answered at once (R-097).
+    if (await tradecraftV2Enabled(id)) {
+      const actor = jobActorOf(await auditActor())
+      if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return await refreshResourceV2({ ownerId: id, resourceId, actor })
+    }
+
     const body = await request.json().catch(() => ({}))
     const force = body.force === true
 
-    const existing = await prisma.userTradecraftResource.findFirst({
-      where: { id: resourceId, userId: id },
-    })
+    const existing = await loadOwnLegacyResource(id, resourceId)
     if (!existing) {
       return NextResponse.json({ error: 'Resource not found' }, { status: 404 })
     }
@@ -85,8 +97,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         lastError: result.last_error ?? '',
         lastVerifiedAt: new Date(),
       },
+      select: LEGACY_SELECT,
     })
-    return NextResponse.json(updated)
+    // U1: the row holds the GitHub token, which a browser answer never carries in full.
+    return NextResponse.json(maskResource(updated as unknown as Record<string, unknown>))
   } catch (error: unknown) {
     if (error instanceof AgentUnreachableError) {
       try {

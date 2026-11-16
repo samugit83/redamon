@@ -205,26 +205,6 @@ const ALLOWED: Record<string, Allowed> = {
       'if (eff.userId !== id) return refused',
     ],
   },
-  'src/app/api/users/[id]/tradecraft-resources/[resourceId]/refresh/route.ts::find_by_id_and_owner': {
-    reason: `the path's account's own tradecraft resource, looked up by id and that account: ${PATH_ROW}`,
-    lines: [
-      'const existing = await prisma.userTradecraftResource.findFirst({ where: { id: resourceId, userId: id },',
-    ],
-  },
-  'src/app/api/users/[id]/tradecraft-resources/[resourceId]/route.ts::find_by_id_and_owner': {
-    reason: `the path's account's own tradecraft resource, looked up by id and that account: ${PATH_ROW}`,
-    lines: [
-      'const resource = await prisma.userTradecraftResource.findFirst({ where: { id: resourceId, userId: id },',
-      'const existing = await prisma.userTradecraftResource.findFirst({ where: { id: resourceId, userId: id },',
-      'const existing = await prisma.userTradecraftResource.findFirst({ where: { id: resourceId, userId: id },',
-    ],
-  },
-  'src/app/api/users/[id]/tradecraft-resources/[resourceId]/verify/route.ts::find_by_id_and_owner': {
-    reason: `the path's account's own tradecraft resource, looked up by id and that account: ${PATH_ROW}`,
-    lines: [
-      'const existing = await prisma.userTradecraftResource.findFirst({ where: { id: resourceId, userId: id },',
-    ],
-  },
   'src/app/api/users/route.ts::role_admin': {
     reason: `the requested ${ACCOUNT_TYPE}: creating an admin is Root's (rootPowers.ts)`,
     lines: [
@@ -311,6 +291,12 @@ const ALLOWED: Record<string, Allowed> = {
     reason: `${ACCOUNT_TYPE}: requireAdmin, the administrator-account gate each caller follows with its permission`,
     lines: [
       "if (result.role !== 'admin') {",
+    ],
+  },
+  'src/lib/tradecraft/resourceAccess.ts::find_by_id_and_owner': {
+    reason: `the one lookup of a tradecraft resource by id and account (D-27), which every route of /api/users/[id]/tradecraft-resources/[resourceId] calls after its account rule: ${PATH_ROW}`,
+    lines: [
+      'return db.userTradecraftResource.findFirst({ where: { id: resourceId, userId: accountId }, ...(select ? { select } : {}) })',
     ],
   },
   'src/lib/userSkillWrites.ts::find_by_id_and_owner': {

@@ -16,6 +16,8 @@ const mockUpdate = vi.fn()
 const mockUserSettingsFindUnique = vi.fn()
 
 vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
+// The 1.x path: the account's Tradecraft 2.0 switch is off (routes.v2.test.ts covers both states).
+vi.mock('@/lib/tradecraft/switch', () => ({ tradecraftV2Enabled: vi.fn(async () => false) }))
 vi.mock('@/lib/session', () => ({ requireUserAccess: vi.fn().mockResolvedValue(null) }))
 
 vi.mock('@/lib/prisma', () => ({

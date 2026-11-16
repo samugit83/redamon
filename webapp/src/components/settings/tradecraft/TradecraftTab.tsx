@@ -9,6 +9,9 @@ import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import styles from '@/components/settings/Settings.module.css'
 import { actionFailedText, failureText } from '@/components/settings/failureText'
 import { readApiError } from '@/lib/apiError'
+import { tradecraftClient } from '@/lib/tradecraft/client'
+import { V2Switch } from './V2Switch'
+import { ResourceListV2 } from './ResourceListV2'
 
 const TRADECRAFT_LOAD_FAILED = "Couldn't load your tradecraft resources"
 
@@ -24,8 +27,56 @@ export interface TradecraftTabProps {
   onDirtyChange: (dirty: boolean) => void
 }
 
-/** Global Settings → Tradecraft. Mounted only while its tab is open. */
+/**
+ * Global Settings → Tradecraft. Mounted only while its tab is open. The account's Tradecraft 2.0
+ * (preview) switch sits on top; with it off the tab is exactly the 1.x component. A switch that
+ * cannot be read shows the 1.x tab without it: the routes decide by the switch themselves.
+ */
 export function TradecraftTab({ userId, onDirtyChange }: TradecraftTabProps) {
+  const [v2, setV2] = useState<boolean | null>(null)
+  const [switchKnown, setSwitchKnown] = useState(false)
+
+  useEffect(() => {
+    if (!userId) return
+    let live = true
+    tradecraftClient.getSwitch(userId)
+      .then(s => { if (live) { setV2(s?.v2Enabled === true); setSwitchKnown(true) } })
+      .catch(() => { if (live) { setV2(false); setSwitchKnown(false) } })
+    return () => { live = false }
+  }, [userId])
+
+  if (!userId || v2 === null) {
+    return <div className={styles.section}><div className={styles.emptyState}>Loading…</div></div>
+  }
+  return (
+    <>
+      {switchKnown && <V2Switch userId={userId} enabled={v2} onChange={setV2} />}
+      {v2 ? <TradecraftV2Section userId={userId} onDirtyChange={onDirtyChange} /> : <LegacyTradecraftTab userId={userId} onDirtyChange={onDirtyChange} />}
+    </>
+  )
+}
+
+function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <h2 className={styles.sectionTitle}>
+          Tradecraft Resources
+          <WikiInfoButton target="https://github.com/samugit83/redamon/wiki/Tradecraft-Lookup" title="Open Tradecraft Lookup wiki page" />
+        </h2>
+      </div>
+      <p className={styles.sectionHint}>
+        Curated knowledge sites the agent consults during exploitation. Each resource is ingested in the
+        background: its card shows the stage, and Refresh becomes Cancel while it runs. Live resources are
+        read from their site at every read; Stored ones keep a copy in your database.
+      </p>
+      <ResourceListV2 userId={userId} onDirtyChange={onDirtyChange} />
+    </div>
+  )
+}
+
+/** The 1.x tab, unchanged. */
+function LegacyTradecraftTab({ userId, onDirtyChange }: TradecraftTabProps) {
   const { confirm: showConfirm } = useAlertModal()
   const toast = useToast()
   const [tcResources, setTcResources] = useState<TcResource[]>([])

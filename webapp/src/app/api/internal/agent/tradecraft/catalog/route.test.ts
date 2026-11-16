@@ -1,0 +1,98 @@
+/**
+ * GET /api/internal/agent/tradecraft/catalog: the internal key checked in the route, the owner
+ * from the project row, the coded 404, and the 1.x payload identical to the 1.x internal GET.
+ *
+ * @vitest-environment node
+ */
+import { describe, test, expect, vi, beforeEach, afterAll } from 'vitest'
+import { NextRequest } from 'next/server'
+import { createTradecraftDb, type TradecraftDb } from '@/lib/tradecraft/__testing__/tradecraftDb'
+
+vi.stubEnv('INTERNAL_API_KEY', 'ik-test-catalog-0001')
+vi.stubEnv('SCANNER_API_KEY', 'sk-test-catalog-0001')
+vi.stubEnv('AUTH_SECRET', 't'.repeat(64))
+
+const h = vi.hoisted(() => ({ db: null as unknown as TradecraftDb }))
+vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as Record<string | symbol, unknown>)[k] }) }))
+vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSelfService()))
+vi.mock('next/headers', () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: 'a-session-cookie' }) })) }))
+
+import { GET } from './route'
+import { GET as legacyGet } from '@/app/api/users/[id]/tradecraft-resources/route'
+
+const KEY = { 'x-internal-key': 'ik-test-catalog-0001' }
+const get = (query: string, headers: Record<string, string> = KEY) =>
+  GET(new NextRequest(`http://webapp.test/api/internal/agent/tradecraft/catalog${query}`, { headers }))
+
+beforeEach(() => {
+  h.db = createTradecraftDb()
+  h.db.seed('project', { id: 'p1', userId: 'owner' })
+  h.db.seed('userTradecraftResource', {
+    id: 'r1', userId: 'owner', name: 'Wiki', slug: 'wiki', url: 'https://wiki.example.test/', githubTokenOverride: 'ghp_fake_1',
+    hasLogin: true, credentials: { cookie: 'session=fake-session' }, sitemap: { nav: [1] },
+  })
+  h.db.seed('userTradecraftResource', { id: 'r-evil', userId: 'evil', name: 'E', slug: 'e', url: 'https://e.example.test/' })
+})
+afterAll(() => vi.unstubAllEnvs())
+
+describe('catalog route', () => {
+  test.each([
+    ['no key', {}],
+    ['the scanner key', { 'x-internal-key': 'sk-test-catalog-0001' }],
+    ['a wrong key', { 'x-internal-key': 'nope' }],
+    ['a session cookie and no key', { cookie: 'redamon-auth=a-session-cookie' }],
+  ])('requires_internal_key: %s is refused, nothing read', async (_name, headers) => {
+    const res = await get('?projectId=p1&personId=owner', headers)
+    expect(res.status).toBe(401)
+    expect(h.db.calls).toEqual([])
+  })
+
+  test('owner_read_from_project: the project row names whose library it is; the query cannot', async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
+    const body = await (await get('?projectId=p1&personId=owner&ownerId=evil&userId=evil')).json()
+    expect(body).toMatchObject({ v2: true, owner_id: 'owner' })
+    expect(body.resources.map((r: { id: string }) => r.id)).toEqual(['r1'])
+  })
+
+  test('unknown_project_404_code: a coded 404 the agent never falls back on (D-53)', async () => {
+    const res = await get('?projectId=nope&personId=owner')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Project not found', code: 'project_not_found' })
+  })
+
+  test('the project and the person are required', async () => {
+    expect((await get('?personId=owner')).status).toBe(400)
+    expect(await (await get('?projectId=p1')).json()).toMatchObject({ code: 'person_required' })
+  })
+
+  test('legacy_payload_identical_switch_off: the rows the 1.x internal GET answers, byte for byte', async () => {
+    const catalog = await (await get('?projectId=p1&personId=collab')).json()
+    const legacy = await (await legacyGet(
+      new NextRequest('http://webapp.test/api/users/owner/tradecraft-resources?internal=true', { headers: KEY }),
+      { params: Promise.resolve({ id: 'owner' }) },
+    )).json()
+    expect(catalog.v2).toBe(false)
+    expect(JSON.stringify(catalog.legacy)).toBe(JSON.stringify(legacy))
+    expect(JSON.stringify(catalog)).not.toContain('fake-session')
+  })
+
+  test("switch on, a collaborator's run: the login resource is not listed", async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
+    const body = await (await get('?projectId=p1&personId=collab')).json()
+    expect(body).toMatchObject({ v2: true, person_id: 'collab', resources: [] })
+  })
+
+  test('the acting administrator is carried and closes the login rule', async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
+    const body = await (await get('?projectId=p1&personId=owner&actorId=admin-1')).json()
+    expect(body).toMatchObject({ actor_id: 'admin-1', resources: [] })
+  })
+
+  test('a database failure answers its code', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.db.failNext('project.findUnique', Object.assign(new Error('down'), { code: 'P1001' }))
+    const res = await get('?projectId=p1&personId=owner')
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Failed to build the tradecraft run catalog', code: 'P1001' })
+  })
+})

@@ -46,6 +46,21 @@ describe('node-filter apply runs: the three agent callbacks and nothing else', (
   })
 })
 
+// The agent reads a run's tradecraft catalog when the run starts (T1.12). The route checks the key
+// itself; the allowlist opens exactly that GET, and the scanner key never.
+describe('the tradecraft run catalog: one GET for the agent', () => {
+  test.each([
+    ['GET', '/api/internal/agent/tradecraft/catalog', true],
+    ['POST', '/api/internal/agent/tradecraft/catalog', false],
+    ['GET', '/api/internal/agent/tradecraft/catalog/extra', false],
+    ['GET', '/api/internal/agent/tradecraft', false],
+    ['GET', '/api/internal/agent/tradecraft/catalog/../../../users/x/settings', false],
+  ])('%s %s → %s', (method, path, allowed) => {
+    expect(internalKeyRouteAllowed(method, path)).toBe(allowed)
+    expect(scannerKeyRouteAllowed(method, path)).toBe(false)
+  })
+})
+
 describe('scannerKeyRouteAllowed — S3/E6 scoped scanner token', () => {
   test.each([
     ['GET', '/api/users/abc/llm-providers'],       // key harvest — MUST be blocked

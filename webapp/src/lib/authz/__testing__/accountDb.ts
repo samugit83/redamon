@@ -389,9 +389,13 @@ export function createAccountDb() {
       return { count: gone.length }
     },
   }
+  // Tradecraft (T1.10, T1.11): no account here turned 2.0 on or holds an ingestion job.
+  const tradecraftUserSettings = { findUnique: async () => null }
+  const tradecraftIngestionJob = { updateMany: async () => ({ count: 0 }) }
   const client = {
     user, mcpAccessToken, auditLog, actAsAudit, instanceSettings, project, nucleiTemplate, userInvite,
     permissionSet, userPermissionSet, userPermissionOverride, pluginAccessRule, userSession, permissionSetProvider,
+    tradecraftUserSettings, tradecraftIngestionJob,
     $executeRaw, $queryRaw,
   }
 

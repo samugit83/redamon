@@ -1,0 +1,161 @@
+.switchBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.switchText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.switchTitle {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.hint {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+.cardDisabled {
+  opacity: 0.65;
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.cardName {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cardUrl {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.cardActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.badgeWarn {
+  border-color: var(--warning, #b7791f);
+  color: var(--warning, #b7791f);
+}
+
+.badgeInfo {
+  border-color: var(--accent-primary, #3b82f6);
+  color: var(--accent-primary, #3b82f6);
+}
+
+.stage {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.failure {
+  font-size: var(--text-xs);
+  color: var(--error, #c53030);
+}
+
+.linkButton {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-primary, #3b82f6);
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+}
+
+.state {
+  text-align: center;
+  padding: var(--space-6) var(--space-4);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.goes {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+}
+
+.storageChoice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.storageOption {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  font-size: var(--text-sm);
+}
+
+.spin {
+  animation: tcspin 1s linear infinite;
+}
+
+@keyframes tcspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
