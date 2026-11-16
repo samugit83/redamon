@@ -5,6 +5,8 @@ import { BookOpen, ChevronDown, ChevronRight, ExternalLink, Lock } from 'lucide-
 import { Toggle } from '@/components/ui/Toggle/Toggle'
 import { ApiError, fetchJson, toApiError } from '@/lib/apiError'
 import { relTime } from '@/lib/tradecraft/client'
+import { canonicalJson } from '@/lib/tradecraft/effectiveSettings'
+import { SETTINGS, settingDef } from '@/lib/tradecraft/settingsSpec'
 import type { ProjectResourceRow, ProjectTradecraftView } from '@/lib/tradecraft/projectView'
 import styles from '../ProjectForm.module.css'
 
@@ -166,10 +168,39 @@ export function TradecraftResourcesAccordion({ projectId, offIds, onChange, inDr
   )
 }
 
+const SPEC_ORDER = new Map(SETTINGS.map((s, i) => [s.key, i]))
+
+function settingText(key: string, value: unknown): string {
+  if (typeof value === 'boolean') return value ? 'on' : 'off'
+  if (Array.isArray(value)) return value.length ? value.join(', ') : 'none'
+  if (typeof value === 'number') {
+    const unit = settingDef(key)?.unit
+    return unit ? `${value.toLocaleString('en-US')} ${unit}` : value.toLocaleString('en-US')
+  }
+  if (typeof value === 'string') return value || 'none'
+  return JSON.stringify(value)
+}
+
+/**
+ * The snapshot's values in the spec's order, each by its label (several share one, so the key
+ * follows it), marked when it is not the spec's default; a key this version no longer knows
+ * comes last, by its name.
+ */
+export function ingestedWithRows(values: Record<string, unknown>): { key: string; text: string; changed: boolean }[] {
+  return Object.keys(values)
+    .sort((a, b) => (SPEC_ORDER.get(a) ?? Infinity) - (SPEC_ORDER.get(b) ?? Infinity) || a.localeCompare(b))
+    .map(key => {
+      const def = settingDef(key)
+      const changed = !!def && canonicalJson(values[key]) !== canonicalJson(def.default)
+      return { key, changed, text: `${def ? `${def.label} (${key})` : key}: ${settingText(key, values[key])}${changed ? ' (changed)' : ''}` }
+    })
+}
+
 function Details({ row, linkProps }: { row: ProjectResourceRow; linkProps: Record<string, string> }) {
   const d = row.details!
   const report = d.report
-  const ingestedWith = Object.keys(d.ingestedWith).length
+  const ingestedWith = ingestedWithRows(d.ingestedWith)
+  const changedCount = ingestedWith.filter(s => s.changed).length
   return (
     <dl className={styles.sectionDescription} data-testid={`details-${row.id}`} style={{ margin: '6px 0 0 44px', display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '2px 12px' }}>
       <dt>URL</dt><dd>{d.url}</dd>
@@ -187,7 +218,19 @@ function Details({ row, linkProps }: { row: ProjectResourceRow; linkProps: Recor
           </dd>
         </>
       )}
-      <dt>Ingested with</dt><dd>{ingestedWith ? `${ingestedWith} settings recorded` : 'not ingested by 2.0 yet'}</dd>
+      <dt>Ingested with</dt>
+      <dd>
+        {ingestedWith.length ? (
+          <details>
+            <summary>
+              {ingestedWith.length} setting{ingestedWith.length === 1 ? '' : 's'}, {changedCount} changed from the defaults
+            </summary>
+            <ul data-testid={`ingested-with-${row.id}`} style={{ margin: '2px 0 0', paddingLeft: 16 }}>
+              {ingestedWith.map(s => <li key={s.key}>{s.text}</li>)}
+            </ul>
+          </details>
+        ) : 'not ingested by 2.0 yet'}
+      </dd>
       <dt>Login</dt><dd>{d.hasLogin ? 'Has a login' : 'No login'}</dd>
       {d.lastError && <><dt>Last error</dt><dd>{d.lastError}</dd></>}
       <dt />

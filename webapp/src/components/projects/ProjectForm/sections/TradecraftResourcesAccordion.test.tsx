@@ -21,7 +21,11 @@ const ROWS = [
     details: {
       url: 'https://wiki.tc-fixture.test/', mapVersion: 3, stale: true, focus: {}, summary: 'Offensive wiki.', summarySource: 'generated',
       report: { visited: 40, kept: 31, skipped: { excluded: 0, outOfScope: 0, tooLittleText: 0, robots: 0, outsideFocus: 0 }, stopReason: 'frontier_empty', llmCalls: 9, durationSec: 61, stored: { pages: 31, bytes: 1, notStoredQuota: 0, notStoredSize: 0 }, focus: {}, readiness: {}, errors: [] },
-      ingestedWith: { 'crawl.maxPages': 200 }, hasLogin: false, lastError: '',
+      ingestedWith: {
+        'content.removeSelectors': ['nav', '.ads'], 'crawl.maxPages': 150, 'crawl.respectRobots': false, 'crawl.includePaths': [],
+        'fetching.userAgent': 'RedAmon-Tradecraft/1.0', 'legacy.retiredKey': 3,
+      },
+      hasLogin: false, lastError: '',
     },
   },
   {
@@ -99,7 +103,16 @@ describe('TradecraftResourcesAccordion', () => {
       expect(d.getByText(text)).toBeInTheDocument()
     }
     expect(d.getByText(/40 visited, 31 kept, 9 LLM calls, 61 s, stopped: frontier_empty/)).toBeInTheDocument()
-    expect(d.getByText('1 settings recorded')).toBeInTheDocument()
+    // The values themselves, in the spec's order, by their labels; unknown keys last, by name (R-044).
+    expect(d.getByText('6 settings, 2 changed from the defaults')).toBeInTheDocument()
+    expect([...screen.getByTestId('ingested-with-r1').querySelectorAll('li')].map(li => li.textContent)).toEqual([
+      'User-Agent (fetching.userAgent): RedAmon-Tradecraft/1.0',
+      'Max pages visited (crawl.maxPages): 150 pages (changed)',
+      'Include paths (crawl.includePaths): none',
+      'Respect robots.txt (crawl.respectRobots): off',
+      'Remove elements (content.removeSelectors): nav, .ads (changed)',
+      'legacy.retiredKey: 3',
+    ])
     expect(screen.getByTestId('details-r1').querySelectorAll('input, textarea, select')).toHaveLength(0)
   })
 
