@@ -231,6 +231,35 @@ def test_cve_pattern_probe(sites):
     assert archive("none", []).cve_pattern is None
 
 
+def nested_cve_archive(sites):
+    """A CVE archive whose year folders sit under http/cves/: nothing at its root says CVE."""
+    add(sites, "api.github.com", {
+        "/repos/tc-fixture/nested/index.json": {"default_branch": "main"},
+        "/repos/tc-fixture/nested/contents/index.json": [
+            {"name": "http", "path": "http", "type": "dir"},
+            {"name": "README.md", "path": "README.md", "type": "file",
+             "download_url": "https://raw.githubusercontent.com/tc-fixture/nested/main/README.md"}],
+        "/repos/tc-fixture/nested/contents/http/cves/index.json": [{"name": "2023", "path": "http/cves/2023", "type": "dir"}],
+        "/repos/tc-fixture/nested/contents/http/cves/2023/index.json": [
+            {"name": "CVE-2023-1234.yaml", "path": "http/cves/2023/CVE-2023-1234.yaml", "type": "file"}],
+    })
+    add(sites, "raw.githubusercontent.com", {"/tc-fixture/nested/main/README.md": "Templates.",
+                                             "/tc-fixture/nested/main/http/cves/2023/CVE-2023-1234.yaml": "id: x"})
+    add(sites, "github.com", {"/tc-fixture/nested/": page("nested")})
+    return "https://github.com/tc-fixture/nested"
+
+
+def test_a_forced_cve_archive_is_never_retyped(sites):
+    """Review finding 2 (R-144): forced, it stays a CVE archive and its own pattern is found."""
+    url = nested_cve_archive(sites)
+    pattern = "http/cves/{year}/{cve}.yaml"
+    forced = check(sites, url, forced_type="cve-poc-db", type_options={"type.cve.pathPatterns": [pattern]})
+    assert forced.detected_type == "cve-poc-db" and forced.cve_pattern == pattern
+    assert forced.recommended_storage == "live" and forced.index.kind == "none"
+    # Not forced, a repository with no year folder at its root is a plain repository.
+    assert check(sites, url).detected_type == "github-repo"
+
+
 def test_needs_browser(sites):
     js = BLOG + "posts/42-js-only/"
     fetcher = FixtureFetcher(sites)

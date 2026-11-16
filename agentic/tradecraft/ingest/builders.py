@@ -547,9 +547,11 @@ async def build_pdf(url: str, body: bytes, settings: EffectiveSettings, *, block
 
 async def build_known(site_type: str, url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None,
                       home_html: str = "", home_final_url: str = "", allow_browser: bool = True,
-                      blocking: Blocking = inline) -> MapResult:
+                      blocking: Blocking = inline, forced: bool = False) -> MapResult:
     """The builder of a known type (not ``pdf``, which needs the document, nor the website
-    crawl of ``crawl.py``)."""
+    crawl of ``crawl.py``). A ``forced`` type is the person's choice (R-144): a CVE archive
+    without year folders at its root stays one (its files may sit under a path its pattern
+    names), where a detected one becomes a plain repository."""
     if site_type == "mkdocs-wiki":
         return await build_wiki(url, settings, home_html=home_html, home_final_url=home_final_url, blocking=blocking)
     if site_type == "sphinx-docs":
@@ -561,6 +563,8 @@ async def build_known(site_type: str, url: str, settings: EffectiveSettings, *, 
         return await build_github(url, settings, github_token=github_token)
     if site_type == "cve-poc-db":
         result = await build_cve(url, settings, github_token=github_token)
+        if forced:
+            result.retype = ""
         if result.retype == "github-repo":
             retyped = await build_github(url, settings, github_token=github_token)
             retyped.retype = "github-repo"

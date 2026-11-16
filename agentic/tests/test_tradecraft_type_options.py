@@ -114,6 +114,30 @@ def test_forced_type_skips_detection(tmp_path):
     assert state.site_type == "mkdocs-wiki"
 
 
+def test_a_forced_cve_archive_is_never_retyped(tmp_path):
+    """Review finding 2 (R-144, R-193): a forced CVE archive with no year folder at its root
+    (its files under http/cves/{year}/) is ingested as a CVE archive, not as a 5,000-entry
+    file tree; detected, the same repository is a plain repository."""
+    root = padded_sites(tmp_path)
+    add(root, "api.github.com", {
+        "/repos/tc-fixture/nested/index.json": {"default_branch": "main"},
+        "/repos/tc-fixture/nested/contents/index.json": [{"name": "http", "path": "http", "type": "dir"}],
+        "/repos/tc-fixture/nested/git/trees/main/index.json": {"tree": [
+            {"path": "http/cves/2023/CVE-2023-1234.md", "type": "blob"}, {"path": "README.md", "type": "blob"}]},
+    })
+    add(root, "github.com", {"/tc-fixture/nested/": f"<html><body><article>{TEXT}</article></body></html>"})
+    url = "https://github.com/tc-fixture/nested"
+    store, outcome, state = job(root, url, {"type.cve.pathPatterns": ["http/cves/{year}/{cve}.md"]},
+                                forced_type="cve-poc-db")
+    assert outcome.status == "succeeded" and state.site_type == "cve-poc-db" and state.entries == []
+    assert store.resources[RID]["resource_type"] == "cve-poc-db"
+    assert store.resources[RID]["sitemap"] == {"owner": "tc-fixture", "repo": "nested", "branch": "main"}
+    _s, _o, detected = job(root, url, {"detection.cveArchiveThreshold": 5}, forced_type="")
+    assert detected.site_type == "github-repo"
+    _s, _o, retyped = job(root, url)
+    assert retyped.site_type == "github-repo" and len(retyped.entries) == 2
+
+
 def test_github_options(tmp_path):
     root = padded_sites(tmp_path)
     tree = json.loads((root / "api.github.com/repos/tc-fixture/payloads/git/trees/main/index.json").read_text())

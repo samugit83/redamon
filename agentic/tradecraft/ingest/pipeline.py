@@ -255,11 +255,12 @@ async def build_map(state: IngestState) -> None:
         result = await builders.build_pdf(state.url, state.home.body, s, blocking=state.blocking)
         _take(state, result)
     elif t != WEBSITE:
+        forced = bool(state.request.resource.forced_type)
         result = await builders.build_known(
             t, state.url, s, github_token=state.github_token, home_html=state.home.html,
-            home_final_url=state.home.final_url, blocking=state.blocking)
+            home_final_url=state.home.final_url, blocking=state.blocking, forced=forced)
         _take(state, result)
-        if result.retype:
+        if result.retype and not forced:
             state.site_type = result.retype
             logger.info(f"[tradecraft] job {state.request.job_id} retyped code=")
     else:

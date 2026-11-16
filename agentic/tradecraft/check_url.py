@@ -98,7 +98,7 @@ async def check_url(request: CheckUrlRequest) -> CheckUrlResult:
     if site_type == "pdf":
         await _pdf(result, url, home, settings)
     elif site_type in ("github-repo", "cve-poc-db"):
-        site_type = await _github(result, url, site_type, settings, token)
+        site_type = await _github(result, url, site_type, settings, token, forced=bool(request.forced_type))
     elif site_type == WEBSITE:
         await _website(result, url, robots_txt, settings, token)
     else:
@@ -234,9 +234,10 @@ def _names(items: Any, *, kind: Optional[str] = None) -> list[str]:
 
 
 async def _github(result: CheckUrlResult, url: str, site_type: str, settings: EffectiveSettings,
-                  token: Optional[str]) -> str:
-    """Fills the GitHub fields and the index; answers the type ingestion would use (a CVE
-    archive with no year folder at its root is a plain repository, as ``builders.build_cve`` says)."""
+                  token: Optional[str], *, forced: bool = False) -> str:
+    """Fills the GitHub fields and the index; answers the type ingestion would use (a detected
+    CVE archive with no year folder at its root is a plain repository, as ``builders.build_cve``
+    says; a forced one stays a CVE archive)."""
     parsed = split_github_url(url)
     if not parsed:
         result.index = IndexInfo(kind="none")
@@ -255,7 +256,7 @@ async def _github(result: CheckUrlResult, url: str, site_type: str, settings: Ef
     )
     if site_type == "cve-poc-db":
         years = [n for n in _names(root, kind="dir") if _YEAR_DIR.fullmatch(n)]
-        if isinstance(root, list) and not years:
+        if isinstance(root, list) and not years and not forced:
             site_type = "github-repo"
         else:
             result.index = IndexInfo(kind="none", url=f"https://github.com/{owner}/{repo}")
@@ -268,13 +269,38 @@ async def _github(result: CheckUrlResult, url: str, site_type: str, settings: Ef
     return site_type
 
 
+def _patterns(settings: EffectiveSettings) -> list[str]:
+    """The archive's own patterns first (they may name a folder below the root), then the
+    candidates, each once."""
+    return list(dict.fromkeys([*settings.list("type.cve.pathPatterns"), *CVE_PATTERNS]))
+
+
+def _year_roots(settings: EffectiveSettings) -> list[str]:
+    """Where year folders sit: the root, and the folder before ``{year}`` in the archive's own
+    patterns (``http/cves`` in ``http/cves/{year}/{cve}.yaml``)."""
+    roots = [""]
+    for pattern in settings.list("type.cve.pathPatterns"):
+        head = pattern.split("{year}", 1)[0].strip("/")
+        if "{year}" in pattern and head and "{" not in head and ".." not in head.split("/") and head not in roots:
+            roots.append(head)
+    return roots[:3]
+
+
 async def _cve_ids(owner: str, repo: str, root: Any, years: list[str], settings: EffectiveSettings,
                    token: Optional[str]) -> list[str]:
-    """CVE ids the archive itself names: its first year folder's listing, then its README."""
+    """CVE ids the archive itself names: its first year folder's listing (at the root, or under
+    the folder its own pattern names), then its README."""
     ids: list[str] = []
-    if years:
-        listing = await _json(_api(owner, repo, f"/contents/{sorted(years)[0]}"), settings, token)
-        ids += [m.group(0).upper() for n in _names(listing) if (m := _CVE_RE.search(n))]
+    for folder in _year_roots(settings):
+        found = years if not folder else [
+            n for n in _names(await _json(_api(owner, repo, f"/contents/{urllib.parse.quote(folder)}"), settings, token),
+                              kind="dir") if _YEAR_DIR.fullmatch(n)]
+        if found:
+            path = f"{folder}/{sorted(found)[0]}" if folder else sorted(found)[0]
+            listing = await _json(_api(owner, repo, f"/contents/{urllib.parse.quote(path)}"), settings, token)
+            ids += [m.group(0).upper() for n in _names(listing) if (m := _CVE_RE.search(n))]
+        if ids:
+            break
     readme = next((it for it in root if isinstance(it, dict) and str(it.get("name", "")).lower().startswith("readme")
                    and it.get("download_url")), None) if isinstance(root, list) else None
     if readme is not None and fetch.entry_url_ok(str(readme["download_url"])):
@@ -286,9 +312,10 @@ async def _cve_ids(owner: str, repo: str, root: Any, years: list[str], settings:
 
 async def probe_cve_pattern(owner: str, repo: str, branch: str, root: Any, years: list[str],
                             settings: EffectiveSettings, token: Optional[str]) -> Optional[str]:
-    """The first of ``CVE_PATTERNS`` under which a CVE id the archive names exists, or None."""
+    """The first pattern (the archive's own, then ``CVE_PATTERNS``) under which a CVE id the
+    archive names exists, or None."""
     ids = (await _cve_ids(owner, repo, root, years, settings, token))[:CVE_PROBE_IDS]
-    for pattern in CVE_PATTERNS:
+    for pattern in _patterns(settings):
         for cve_id in ids:
             path = cve.pattern_path(pattern, cve_id)
             if path is None:
