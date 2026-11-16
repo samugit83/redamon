@@ -157,3 +157,21 @@ describe('a query the filter cannot read at all is refused', () => {
     expect(unreadableQuery("MATCH (d:Domain)<-[:BELONGS_TO]-(s:Subdomain) WHERE s.name ENDS WITH '.test' RETURN d, s")).toBeNull()
   })
 })
+
+describe('a \\uXXXX escape is refused: Neo4j decodes it before it lexes the query', () => {
+  // `'x\u0027 ...'` ends the literal for Neo4j but not for this reader, so the UNION branch after
+  // it ran with no tenant filter (found by the AI Navigator review, confirmed live on the agent's
+  // scoper, which reads literals the same way).
+  test.each([
+    "MATCH (s:Subdomain) RETURN 'x\\u0027 AS name UNION MATCH (n:Subdomain) RETURN n.name AS name //' AS name",
+    'MATCH (s:Host) RETURN s.`\\u006eame` LIMIT 5',
+    "MATCH (s:Host) WHERE s.name = 'caf\\u00e9.example.test' RETURN s",
+  ])('%s', (q) => {
+    expect(unreadableQuery(q)).toContain('escape')
+    expect(findUnscopedNodePattern(injectProjectFilter(q))).not.toBeNull()
+  })
+
+  test('a backslash that is not an escape still reads', () => {
+    expect(unreadableQuery("MATCH (s:Host) WHERE s.name STARTS WITH 'C:\\\\users' RETURN s")).toBeNull()
+  })
+})

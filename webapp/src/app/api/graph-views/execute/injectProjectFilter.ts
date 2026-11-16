@@ -49,6 +49,10 @@ const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202
 const CODE_CHAR = /[A-Za-z0-9_ \t\r\n()[\]{}<>=!\-+*/%^.,:;|&$~]/
 // Neo4j reads `$` inside a name (`n$` is a variable), so a `$` is read only as the bound parameter.
 const PARAM_RE = /\$projectId(?![\w$])/y
+// Neo4j decodes `\uXXXX` before it lexes the query, so `'x\u0027 ...'` ends a literal for Neo4j and
+// not for this reader, and an escape spells a name in a backticked one. Refused anywhere, never
+// decoded (graph_db/tenant_filter.py `_UNICODE_ESCAPE_RE` is the agent's copy of this rule).
+const UNICODE_ESCAPE = /\\u[0-9A-Fa-f]{4}/
 
 interface ReadQuery {
   code: string
@@ -57,6 +61,7 @@ interface ReadQuery {
 
 function readQuery(cypher: string): ReadQuery | { problem: string } {
   if (CONTROL_CHARS.test(cypher)) return { problem: 'a control character' }
+  if (UNICODE_ESCAPE.test(cypher)) return { problem: 'a \\uXXXX escape (write the character itself)' }
   let code = ''
   const literals: string[] = []
   const setAside = (text: string, mark: (n: number) => string) => {

@@ -1327,7 +1327,22 @@ def scope_query(cypher: str, user_id: str, project_id: str) -> str:
         ) from exc
 
 
+#: Neo4j decodes `\uXXXX` before it lexes the query, so `'x\u0027 ...'` ends a
+#: string literal for Neo4j but not for `code_positions()`, and every check below
+#: would judge another query than the one that runs (an unscoped UNION branch, a
+#: procedure, a display-only name spelled with an escape). Refused, never decoded:
+#: no graph read needs one, and a decoder of our own is a second parser to trust.
+#: Matched even after an escaped backslash (`\\u0041`), which Neo4j leaves alone.
+_UNICODE_ESCAPE_RE = re.compile(r"\\u[0-9A-Fa-f]{4}")
+
+
 def _scope_query(cypher: str, user_id: str, project_id: str) -> str:
+    if _UNICODE_ESCAPE_RE.search(cypher):
+        raise TenantScopeError(
+            "Query rejected: a \\uXXXX escape is not allowed in a graph query. Write the "
+            "character itself, inside a string literal if it is not plain ASCII."
+        )
+
     bad_char = find_disallowed_character(cypher)
     if bad_char is not None:
         raise TenantScopeError(

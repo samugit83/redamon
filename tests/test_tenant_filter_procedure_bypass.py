@@ -69,11 +69,12 @@ class ProcedureBypassRegressionTests(unittest.TestCase):
     def test_write_keyword_hidden_by_a_unicode_escape(self):
         # Cypher decodes \\u0043 -> C at parse time. The raw text a regex sees
         # never contains "CREATE", so the write-clause guard returned None.
-        self._refused(
-            ANCHOR + 'CALL apoc.cypher.runMany("\\u0043REATE (x:Pwn {a:1})", {}) '
-            "YIELD result RETURN result",
-            "an escaped write keyword",
-        )
+        # The escape itself is now refused before the procedure allowlist runs
+        # (test_tenant_filter_unicode_escape.py), so only the refusal is asserted.
+        cypher = (ANCHOR + 'CALL apoc.cypher.runMany("\\u0043REATE (x:Pwn {a:1})", {}) '
+                  "YIELD result RETURN result")
+        with self.assertRaises(TenantScopeError, msg=f"STILL APPROVED: {cypher[:80]}"):
+            scope_query(cypher, "attacker-user", "attacker-project")
 
     def test_ssrf_via_apoc_load_json(self):
         self._refused(

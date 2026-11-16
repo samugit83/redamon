@@ -136,6 +136,10 @@ describe.runIf(PASSWORD && KEY && AGENT)('a run of tenant A never reads tenant B
     ['a procedure', 'CALL db.labels() YIELD label RETURN label'],
     ['LOAD CSV', "LOAD CSV FROM 'http://192.0.2.1/x.csv' AS row RETURN row LIMIT 1"],
     ['a write', `MATCH (s:Subdomain) SET s.note = 'x' RETURN s LIMIT 1`],
+    // Neo4j decodes \u0027 before it lexes, so the string closes there for Neo4j but not for the
+    // scoper, which left the UNION branch unscoped (the AI Navigator security review read B's names).
+    ['an escaped quote that hides a UNION branch',
+      "MATCH (s:Subdomain) RETURN 'x\\u0027 AS name UNION MATCH (n:Subdomain) RETURN n.name + ' ' + n.note AS name //' AS name"],
   ])('%s: refused, or A\'s rows only', async (_name, raw) => {
     if (!alive) return
     const query = raw.replaceAll('${B}', T.B_PROJECT)
