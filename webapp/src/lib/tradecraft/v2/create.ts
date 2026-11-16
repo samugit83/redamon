@@ -12,7 +12,7 @@ import { effectiveSettings } from '../effectiveSettings'
 import { startJob, startedJobFields, type JobActor } from '../jobs'
 import { SETTINGS_CONSTANTS } from '../settingsSpec'
 import { slugify, uniqueSlug } from '../urls'
-import { fieldErrorResponse, forcedStorageMode, parseResourceFields } from './fields'
+import { defaultStorageMode, fieldErrorResponse, forcedStorageMode, parseResourceFields } from './fields'
 import { resourceViewOf } from './list'
 
 export const MAX_RESOURCES_PER_USER: number = SETTINGS_CONSTANTS.maxResourcesPerUser
@@ -41,8 +41,8 @@ export async function createResourceV2(input: {
   }
 
   const user = await prisma.tradecraftUserSettings.findUnique({ where: { userId: ownerId }, select: { ingestion: true } })
-  const userDefault = effectiveSettings({ user }).values['storage.defaultMode'] as 'live' | 'stored'
   const forcedType = fields.forcedType ?? ''
+  const userDefault = defaultStorageMode(effectiveSettings({ user }).values['storage.defaultMode'], forcedType)
   const storageMode = forcedStorageMode(forcedType) ?? fields.storageMode ?? userDefault
   const slug = await uniqueSlug(ownerId, slugify(fields.name!))
 

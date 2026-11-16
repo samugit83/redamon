@@ -1325,5 +1325,66 @@
         }
       ]
     }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "a login in a run whose person is unknown",
+    "value": {
+      "v2": true,
+      "owner_id": "user_owner_fake",
+      "person_id": null,
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0003",
+          "slug": "fake-private-kb",
+          "name": "Fake private KB",
+          "url": "https://kb.example.invalid/",
+          "type": "agentic-crawl",
+          "storage_mode": "live",
+          "summary": "A synthetic private knowledge base.",
+          "has_login": true,
+          "priority": "high",
+          "map_version": 3,
+          "read_settings": {},
+          "github_token": null,
+          "credentials": {
+            "cookie": "session=fake-session",
+            "headers": [],
+            "basic_auth": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "no person_id key at all (null says the person is unknown)",
+    "value": {
+      "v2": true,
+      "owner_id": "user_owner_fake",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0001",
+          "slug": "fake-wiki",
+          "name": "Fake wiki",
+          "url": "https://wiki.example.invalid/",
+          "type": "mkdocs-wiki",
+          "storage_mode": "stored",
+          "summary": "A synthetic wiki.",
+          "has_login": false,
+          "priority": "normal",
+          "map_version": 3,
+          "read_settings": {
+            "fetching.requestTimeoutSec": 30
+          },
+          "github_token": null,
+          "credentials": null
+        }
+      ]
+    }
   }
 ]

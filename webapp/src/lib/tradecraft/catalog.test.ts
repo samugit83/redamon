@@ -109,7 +109,7 @@ describe('the 1.x payload (switch off)', () => {
   })
 
   test('legacy_payload_has_no_2x_column: a row with a login set carries the 1.x columns only (D-44)', async () => {
-    const c = await legacyCatalog('owner')
+    const c = await legacyCatalog(OWNER_RUN)
     expect(LegacyCatalog.safeParse(c).success).toBe(true)
     if (c.v2) throw new Error('expected the 1.x payload')
     expect(c.legacy.map(r => r.id)).toEqual(['public', 'private', 'disabled', 'off-in-p1'])
@@ -117,3 +117,52 @@ describe('the 1.x payload (switch off)', () => {
     expect(JSON.stringify(c)).not.toMatch(/fake-session|fake-key|hasLogin|credentials/)
   })
 })
+
+describe('logins in the 1.x payload (switch off): the same rule (R-119, R-153, R-155)', () => {
+  test.each([
+    ["the owner's own run", { personId: 'owner', actorId: null }, true],
+    ["a collaborator's run", { personId: 'collab', actorId: null }, false],
+    ['the owner, acted on by an administrator', { personId: 'owner', actorId: 'admin-1' }, false],
+    ['no person given', { personId: null, actorId: null }, false],
+  ])('%s', async (_name, who, listsLogin) => {
+    h.db.rows('tradecraftUserSettings', { userId: 'owner' })[0].v2Enabled = false
+    const c = await runCatalog({ ...OWNER_RUN, ...who })
+    if (c.v2) throw new Error('expected the 1.x payload')
+    expect(c.legacy.map(r => r.id).includes('private')).toBe(listsLogin)
+    expect(c.legacy.map(r => r.id)).toEqual(expect.arrayContaining(['public', 'disabled', 'off-in-p1']))
+  })
+
+  test('a login the flag missed (credentials stored, hasLogin false) counts as a login', async () => {
+    h.db.rows('userTradecraftResource', { id: 'private' })[0].hasLogin = false
+    const c = await legacyCatalog({ ...OWNER_RUN, personId: 'collab' })
+    expect(JSON.stringify(c)).not.toContain('"private"')
+    const v2 = await v2Catalog({ ...OWNER_RUN, personId: 'collab' }) as V2
+    expect(v2.resources.map(r => r.id)).toEqual(['public'])
+  })
+})
+
+describe('the 2.0 catalog without a person (a request outside a run, R-155)', () => {
+  test('person_id null, no resource with a login, the contract holds', async () => {
+    const c = await runCatalog({ ...OWNER_RUN, personId: null }) as V2
+    expect(c).toMatchObject({ v2: true, person_id: null, actor_id: null })
+    expect(c.resources.map(r => r.id)).toEqual(['public'])
+    expect(V2Catalog.safeParse(JSON.parse(JSON.stringify(c))).success).toBe(true)
+  })
+})
+
+describe('a row the contract refuses is left out, not the catalog (R-K1)', () => {
+  test.each([
+    ['a 1.x URL over 2,048 characters', { url: `https://public.example.test/${'a'.repeat(2100)}` }, 'url'],
+    ['a 1.x GitHub token over 500 characters', { githubTokenOverride: `ghp_${'b'.repeat(600)}` }, 'github_token'],
+  ])('%s', async (_name, bad, field) => {
+    Object.assign(h.db.rows('userTradecraftResource', { id: 'public' })[0], bad)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const c = await v2Catalog(OWNER_RUN) as V2
+    expect(c.resources.map(r => r.id)).toEqual(['private'])
+    const logged = errors.mock.calls.flat().join(' ')
+    expect(logged).toBe(`[tradecraft] catalog_row_invalid resource=public fields=${field}`)
+    expect(logged).not.toMatch(/aaaa|bbbb/)
+    errors.mockRestore()
+  })
+})
+

@@ -31,6 +31,7 @@ beforeEach(() => {
     id: 'r1', userId: 'owner', name: 'Wiki', slug: 'wiki', url: 'https://wiki.example.test/', githubTokenOverride: 'ghp_fake_1',
     hasLogin: true, credentials: { cookie: 'session=fake-session' }, sitemap: { nav: [1] },
   })
+  h.db.seed('userTradecraftResource', { id: 'r2', userId: 'owner', name: 'Docs', slug: 'docs', url: 'https://docs.example.test/', createdAt: new Date('2026-11-16T11:00:00Z') })
   h.db.seed('userTradecraftResource', { id: 'r-evil', userId: 'evil', name: 'E', slug: 'e', url: 'https://e.example.test/' })
 })
 afterAll(() => vi.unstubAllEnvs())
@@ -51,7 +52,7 @@ describe('catalog route', () => {
     h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
     const body = await (await get('?projectId=p1&personId=owner&ownerId=evil&userId=evil')).json()
     expect(body).toMatchObject({ v2: true, owner_id: 'owner' })
-    expect(body.resources.map((r: { id: string }) => r.id)).toEqual(['r1'])
+    expect(body.resources.map((r: { id: string }) => r.id)).toEqual(['r1', 'r2'])
   })
 
   test('unknown_project_404_code: a coded 404 the agent never falls back on (D-53)', async () => {
@@ -60,9 +61,20 @@ describe('catalog route', () => {
     expect(await res.json()).toEqual({ error: 'Project not found', code: 'project_not_found' })
   })
 
-  test('the project and the person are required', async () => {
-    expect((await get('?personId=owner')).status).toBe(400)
-    expect(await (await get('?projectId=p1')).json()).toMatchObject({ code: 'person_required' })
+  test('the project is required', async () => {
+    expect(await (await get('?personId=owner')).json()).toEqual({ error: 'projectId is required', code: 'project_required' })
+  })
+
+  test.each([false, true])('no person (a request outside a run), switch %s: an answer without the login resource (R-155)', async (on) => {
+    h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: on })
+    const res = await get('?projectId=p1')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    const ids = (on ? body.resources : body.legacy).map((r: { id: string }) => r.id)
+    expect(ids).toEqual(['r2'])
+    if (on) expect(body).toMatchObject({ v2: true, person_id: null })
+    else expect(body.v2).toBe(false)
+    expect(JSON.stringify(body)).not.toMatch(/fake-session|ghp_fake_1/)
   })
 
   test('legacy_payload_identical_switch_off: the rows the 1.x internal GET answers, byte for byte', async () => {
@@ -72,6 +84,7 @@ describe('catalog route', () => {
       { params: Promise.resolve({ id: 'owner' }) },
     )).json()
     expect(catalog.v2).toBe(false)
+    expect(catalog.legacy.map((r: { id: string }) => r.id)).toEqual(['r2'])
     expect(JSON.stringify(catalog.legacy)).toBe(JSON.stringify(legacy))
     expect(JSON.stringify(catalog)).not.toContain('fake-session')
   })
@@ -79,13 +92,20 @@ describe('catalog route', () => {
   test("switch on, a collaborator's run: the login resource is not listed", async () => {
     h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
     const body = await (await get('?projectId=p1&personId=collab')).json()
-    expect(body).toMatchObject({ v2: true, person_id: 'collab', resources: [] })
+    expect(body).toMatchObject({ v2: true, person_id: 'collab' })
+    expect(body.resources.map((r: { id: string }) => r.id)).toEqual(['r2'])
   })
 
   test('the acting administrator is carried and closes the login rule', async () => {
     h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
     const body = await (await get('?projectId=p1&personId=owner&actorId=admin-1')).json()
-    expect(body).toMatchObject({ actor_id: 'admin-1', resources: [] })
+    expect(body).toMatchObject({ actor_id: 'admin-1' })
+    expect(body.resources.map((r: { id: string }) => r.id)).toEqual(['r2'])
+  })
+
+  test("switch off, the owner's own run: the 1.x payload lists the login resource, the others' runs do not", async () => {
+    expect((await (await get('?projectId=p1&personId=owner')).json()).legacy.map((r: { id: string }) => r.id)).toEqual(['r1', 'r2'])
+    expect((await (await get('?projectId=p1&personId=collab')).json()).legacy.map((r: { id: string }) => r.id)).toEqual(['r2'])
   })
 
   test('a database failure answers its code', async () => {

@@ -68,6 +68,21 @@ describe('createResourceV2', () => {
     ])
   })
 
+  test.each([
+    ['recommended, Auto type', 'recommended', '', 'live'],
+    ['recommended, a website', 'recommended', 'agentic-crawl', 'stored'],
+    ['recommended, a GitHub repository', 'recommended', 'github-repo', 'stored'],
+    ['recommended, a wiki (size unknown before Check URL)', 'recommended', 'mkdocs-wiki', 'live'],
+    ['recommended, a CVE archive', 'recommended', 'cve-poc-db', 'live'],
+    ['live', 'live', 'agentic-crawl', 'live'],
+  ])("the account's default %s: a mode a row and a job can hold", async (_name, defaultMode, forcedType, expected) => {
+    h.db.seed('tradecraftUserSettings', { userId: 'owner', ingestion: { 'storage.defaultMode': defaultMode } })
+    const agent = stubAgent()
+    expect((await create({ ...BODY, forcedType })).status).toBe(201)
+    expect(resources()[0].storageMode).toBe(expected)
+    expect(jobRequests(agent)[0].resource.storage_mode).toBe(expected)
+  })
+
   test('skipVerify: the row only, no job, no request', async () => {
     const agent = stubAgent()
     const res = await create(BODY, true)

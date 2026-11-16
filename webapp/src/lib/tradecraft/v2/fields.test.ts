@@ -4,7 +4,7 @@
  * @vitest-environment node
  */
 import { describe, test, expect } from 'vitest'
-import { forcedStorageMode, parseResourceFields } from './fields'
+import { defaultStorageMode, forcedStorageMode, parseResourceFields, recommendedStorageMode } from './fields'
 
 const CREATE = { name: 'Wiki', url: 'https://wiki.example.test/', llmModel: 'gpt-4o' }
 
@@ -62,3 +62,20 @@ describe('forced_modes (R-082, R-142)', () => {
     for (const t of ['', 'mkdocs-wiki', 'sphinx-docs', 'gitbook', 'github-repo', 'agentic-crawl']) expect(forcedStorageMode(t)).toBeNull()
   })
 })
+
+describe('the recommended mode per type (§4.5)', () => {
+  test.each([
+    ['agentic-crawl', null, 'stored'], ['github-repo', null, 'stored'], ['pdf', null, 'stored'], ['cve-poc-db', null, 'live'],
+    ['mkdocs-wiki', null, 'live'], ['mkdocs-wiki', true, 'stored'], ['gitbook', false, 'live'], ['sphinx-docs', true, 'stored'], ['', null, 'live'],
+  ] as const)('%s (fits the limits: %s) → %s', (type, fits, mode) => {
+    expect(recommendedStorageMode(type, fits)).toBe(mode)
+  })
+
+  test("the account's default as a mode a row can hold", () => {
+    expect(defaultStorageMode('recommended', 'github-repo')).toBe('stored')
+    expect(defaultStorageMode('stored', '')).toBe('stored')
+    expect(defaultStorageMode('live', 'agentic-crawl')).toBe('live')
+    expect(defaultStorageMode('nonsense', 'agentic-crawl')).toBe('live')
+  })
+})
+

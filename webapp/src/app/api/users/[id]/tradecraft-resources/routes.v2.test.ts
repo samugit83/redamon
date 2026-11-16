@@ -63,6 +63,10 @@ beforeEach(() => {
     settingsSnapshot: { values: { 'crawl.maxPages': 50 }, provenance: { 'crawl.maxPages': 'resource' } }, settingsHash: 'abcdef0123456789',
     storageMode: 'stored', ingestionReport: { visited: 3 }, mapVersion: 3, generation: 1,
   })
+  h.db.seed('userTradecraftResource', {
+    id: 'r2', userId: 'owner', name: 'Blog', slug: 'blog', url: 'https://blog.example.test/', llmModel: 'gpt-4o',
+    githubTokenOverride: 'ghp_BLOG_fake_8888', createdAt: new Date('2026-11-16T11:00:00Z'),
+  })
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => { setNowForTests(null); vi.restoreAllMocks() })
@@ -137,6 +141,18 @@ describe('switch off: the 1.x routes', () => {
   })
 })
 
+describe("the agent's 1.x list names no person: a resource with a login stays out (R-155)", () => {
+  test.each([false, true])('switch %s', async (on) => {
+    setSwitch(on)
+    h.internal = true
+    const internal = await (await list.GET(req('?internal=true'), P)).json()
+    expect(internal.map((r: { id: string }) => r.id)).toEqual(['r2'])
+    expect(JSON.stringify(internal)).not.toMatch(/fake-session|7777/)
+    h.internal = false
+    if (!on) expect((await (await list.GET(req(''), P)).json()).map((r: { id: string }) => r.id)).toEqual(['r1', 'r2'])
+  })
+})
+
 describe('switch on: the 2.0 modules', () => {
   beforeEach(() => setSwitch(true))
 
@@ -167,8 +183,9 @@ describe('switch on: the 2.0 modules', () => {
     expect(browser[0]).not.toHaveProperty('sitemap')
     h.internal = true
     const internal = await (await list.GET(req('?internal=true'), P)).json()
+    expect(internal.map((r: { id: string }) => r.id)).toEqual(['r2'])
     expect(Object.keys(internal[0]).sort()).toEqual([...LEGACY_RESOURCE_COLUMNS].sort())
-    expect(internal[0].githubTokenOverride).toBe(TOKEN)
+    expect(internal[0].githubTokenOverride).toBe('ghp_BLOG_fake_8888')
   })
 
   test('GET one: the 2.0 view; 404 for a resource of another account', async () => {

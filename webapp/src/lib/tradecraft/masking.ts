@@ -55,3 +55,13 @@ export function maskResource(r: Record<string, unknown>): Record<string, unknown
 export function isMaskedValue(value: unknown): boolean {
   return typeof value === 'string' && (value.startsWith('••••') || value.trim() === SECRET_PLACEHOLDER)
 }
+
+/**
+ * Whether a resource holds a site login: the flag every write of `credentials` maintains, or a
+ * stored login the flag missed. Every rule about logins (the catalog, the edits a running job
+ * would undo) reads this, so a stale flag never lets one through.
+ */
+export function hasStoredLogin(row: { hasLogin: boolean; credentials: unknown }): boolean {
+  const c = row.credentials
+  return row.hasLogin || (!!c && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length > 0)
+}

@@ -300,7 +300,8 @@ export const CatalogResource = z.object({
 export const V2Catalog = z.object({
   v2: z.literal(true),
   owner_id: id,
-  person_id: id,
+  // Null for a request outside a person's run (R-155): it then lists no resource with a login.
+  person_id: id.nullable(),
   actor_id: id.nullable().default(null),
   search: record.default({}),
   // No cap here: maxResourcesPerUser is checked when a resource is added (OQ-20), and an

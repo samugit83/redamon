@@ -10,10 +10,10 @@
  * (D-45). The check and the writes run under the resource's row lock, like a job start.
  */
 import { NextResponse } from 'next/server'
-import type { UserTradecraftResource } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { claimHolder, jobView, startJob, startedJobFields, type JobActor } from '../jobs'
+import { hasStoredLogin } from '../masking'
 import { clearChoicesForResource } from '../projectChoices'
 import { loadOwnResource, lockOwnResource } from '../resourceAccess'
 import { fieldErrorResponse, forcedStorageMode, parseResourceFields } from './fields'
@@ -22,11 +22,6 @@ import { resourceViewOf } from './list'
 class NotFound extends Error {}
 class ClaimHeld extends Error {
   constructor(readonly job: Parameters<typeof jobView>[0]) { super('job_running') }
-}
-
-function hasStoredLogin(row: Pick<UserTradecraftResource, 'hasLogin' | 'credentials'>): boolean {
-  const c = row.credentials
-  return row.hasLogin || (!!c && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length > 0)
 }
 
 export async function updateResourceV2(input: {

@@ -17,6 +17,7 @@ import { slugify, uniqueSlug, validateUrl } from '@/lib/tradecraft/urls'
 import { jobActorOf } from '@/lib/tradecraft/jobs'
 import { listResourcesV2 } from '@/lib/tradecraft/v2/list'
 import { createResourceV2 } from '@/lib/tradecraft/v2/create'
+import { legacyRows } from '@/lib/tradecraft/catalog'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -41,15 +42,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json(await listResourcesV2(id))
     }
 
+    if (internal) {
+      // The agent's 1.x run fetch names no person: a resource with a login stays out (R-155).
+      return NextResponse.json(await legacyRows(id, { ownerRun: false }))
+    }
+
     const resources = await prisma.userTradecraftResource.findMany({
       where: { userId: id },
       orderBy: { createdAt: 'asc' },
       select: LEGACY_SELECT,
     })
 
-    if (internal) {
-      return NextResponse.json(resources)
-    }
     return NextResponse.json(
       resources.map(r => maskResource(r as unknown as Record<string, unknown>))
     )

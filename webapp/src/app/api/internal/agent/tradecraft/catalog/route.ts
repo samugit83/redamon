@@ -12,7 +12,8 @@ import { runCatalog } from '@/lib/tradecraft/catalog'
  * INTERNAL_KEY_ALLOWLIST_ENFORCE is off, and a session or the scanner key reads nothing. The
  * owner comes from the project row, never from the query. An unknown project answers its own
  * coded 404, which the agent tells apart from an older webapp's page 404 (that one falls back to
- * the 1.x route; this one must not, D-53).
+ * the 1.x route; this one must not, D-53). Without a person (a request outside a run, R-155) it
+ * answers as for anyone but the owner: no resource with a login.
  */
 export async function GET(request: NextRequest) {
   if (!isInternalRequest(request)) {
@@ -21,11 +22,9 @@ export async function GET(request: NextRequest) {
   try {
     const params = request.nextUrl.searchParams
     const projectId = params.get('projectId') ?? ''
-    const personId = params.get('personId') ?? ''
+    const personId = params.get('personId') || null
     const actorId = params.get('actorId') || null
     if (!projectId) return NextResponse.json({ error: 'projectId is required', code: 'project_required' }, { status: 400 })
-    // Without the person the login rule cannot be decided: the agent always has the run's person.
-    if (!personId) return NextResponse.json({ error: 'personId is required', code: 'person_required' }, { status: 400 })
 
     const project = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } })
     if (!project) return NextResponse.json({ error: 'Project not found', code: 'project_not_found' }, { status: 404 })

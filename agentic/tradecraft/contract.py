@@ -439,7 +439,8 @@ class CatalogResource(_Model):
 class V2Catalog(_Model):
     v2: Literal[True]
     owner_id: IdStr
-    person_id: IdStr
+    # Null for a request outside a person's run (R-155): it then lists no resource with a login.
+    person_id: Optional[IdStr]
     # The administrator acting as the person; null otherwise.
     actor_id: Optional[IdStr] = None
     search: dict[str, Any] = Field(default_factory=dict)
