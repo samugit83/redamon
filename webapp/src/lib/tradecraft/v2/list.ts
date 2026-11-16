@@ -9,6 +9,7 @@ import { IngestionReport } from '../agentContract'
 import { effectiveSettings } from '../effectiveSettings'
 import { jobView, sweepLostJobs, type JobView } from '../jobs'
 import { secretState } from '../masking'
+import { isStale } from '../staleness'
 
 const VIEW_SELECT = {
   id: true, name: true, slug: true, url: true, enabled: true, resourceType: true, forcedType: true, storageMode: true,
@@ -42,7 +43,7 @@ export interface ResourceView {
   lastRefreshedAt: string | null
   lastError: string
   entryCount: number
-  /** Ingested by 2.0 with settings whose hash differs from today's effective settings. */
+  /** Ingested by 2.0 otherwise than it is configured today (staleness.ts). */
   stale: boolean
   job: JobView | null
   createdAt: string
@@ -63,6 +64,7 @@ function reportOf(stored: unknown): IngestionReport | null {
 }
 
 function view(row: ViewRow, extra: { entryCount: number; currentHash: string; job: JobView | null }): ResourceView {
+  const report = reportOf(row.ingestionReport)
   return {
     id: row.id,
     name: row.name,
@@ -80,13 +82,12 @@ function view(row: ViewRow, extra: { entryCount: number; currentHash: string; jo
     summary: row.summary,
     summarySource: row.summarySource,
     summaryLocked: row.summaryLocked,
-    report: reportOf(row.ingestionReport),
+    report,
     lastVerifiedAt: row.lastVerifiedAt?.toISOString() ?? null,
     lastRefreshedAt: row.lastRefreshedAt?.toISOString() ?? null,
     lastError: row.lastError,
     entryCount: extra.entryCount,
-    // A resource 2.0 never ingested has no snapshot: it shows the "before 2.0" badge instead.
-    stale: row.settingsHash !== '' && row.settingsHash !== extra.currentHash,
+    stale: isStale(row, extra.currentHash, report),
     job: extra.job,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

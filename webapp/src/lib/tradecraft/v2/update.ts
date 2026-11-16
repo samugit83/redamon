@@ -1,6 +1,8 @@
 /**
- * Editing a 2.0 resource. Most changes only make the resource stale (its next refresh uses
- * them); four act at once:
+ * Editing a 2.0 resource (§6.13). Name, Enabled and the model are saved with no ingestion; the
+ * type, the overrides (crawl, map, fetching, content) and Live → Stored only make the resource
+ * stale (staleness.ts: its next refresh, or Save & re-ingest, applies them); the Resource ID
+ * never changes (R-137); four changes act at once:
  *  - a new URL passes the address check (D-04) and is ingested again (R-195);
  *  - a change of Enabled forgets every project's choice for the resource (R-062);
  *  - Stored → Live deletes the stored text now (§4.5);
@@ -16,7 +18,7 @@ import { claimHolder, jobView, startJob, startedJobFields, type JobActor } from 
 import { hasStoredLogin } from '../masking'
 import { clearChoicesForResource } from '../projectChoices'
 import { loadOwnResource, lockOwnResource } from '../resourceAccess'
-import { fieldErrorResponse, forcedStorageMode, parseResourceFields } from './fields'
+import { fieldErrorResponse, forcedStorageMode, parseResourceFields, typeOptionsOf } from './fields'
 import { resourceViewOf } from './list'
 
 class NotFound extends Error {}
@@ -37,6 +39,10 @@ export async function updateResourceV2(input: {
 
   const before = await loadOwnResource(ownerId, resourceId)
   if (!before) return NextResponse.json({ error: 'Resource not found' }, { status: 404 })
+  // The agent names the resource and its page IDs with it: read-only once added (R-137).
+  if (fields.slug !== undefined && fields.slug !== before.slug) {
+    return fieldErrorResponse({ field: 'slug', code: 'slug_read_only', error: 'The resource ID cannot change once the resource is added' })
+  }
   const reingest = fields.url !== undefined && fields.url !== before.url
   if (reingest) {
     // The re-ingest sends the GitHub token, which stays with the account under act-as (step 3.14).
@@ -69,6 +75,10 @@ export async function updateResourceV2(input: {
         if (fields[key] !== undefined) data[key] = fields[key]
       }
       if (fields.forcedType !== undefined) data.forcedType = forcedType
+      if (fields.overrides !== undefined) {
+        data.overrides = fields.overrides
+        data.typeOptions = typeOptionsOf(fields.overrides)
+      }
       if (storageMode !== existing.storageMode) data.storageMode = storageMode
       if (loginRemoved) {
         data.credentials = {}

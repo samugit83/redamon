@@ -22,13 +22,14 @@ import {
   type ErrorCode, type JobStartRequest,
 } from './agentContract'
 import { effectiveSettings } from './effectiveSettings'
+import { ingestionHash } from './staleness'
 import { SETTINGS_CONSTANTS } from './settingsSpec'
 import { lockOwnResource } from './resourceAccess'
 
 export const START_LEASE_MS: number = SETTINGS_CONSTANTS.jobStartLeaseSec * 1000
 
 /** The kinds a person's action starts in this phase; T4.5 and T6.10 add theirs. */
-export const MANUAL_JOB_KINDS = ['add', 'refresh', 'reingest'] as const
+export const MANUAL_JOB_KINDS = ['add', 'refresh', 'reingest', 'regenerate_summary'] as const
 export type ManualJobKind = (typeof MANUAL_JOB_KINDS)[number]
 
 /** The agent only queues the job: a start that takes longer is a timeout, not a refusal. */
@@ -208,7 +209,7 @@ export function buildJobRequest(
     bulk_id: job.bulkId,
     settings: settings.values,
     settings_snapshot: { values: settings.values, provenance: settings.provenance },
-    settings_hash: settings.hash,
+    settings_hash: ingestionHash(settings.hash, resource.forcedType),
     resource: {
       url: resource.url,
       slug: resource.slug,

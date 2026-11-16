@@ -259,7 +259,7 @@ describe('the start request', () => {
 
 describe('only a person starts a job (R-096, AC-31)', () => {
   test('only_manual_triggers: the kinds a click starts here, and no other kind', async () => {
-    expect([...MANUAL_JOB_KINDS]).toEqual(['add', 'refresh', 'reingest'])
+    expect([...MANUAL_JOB_KINDS]).toEqual(['add', 'refresh', 'reingest', 'regenerate_summary'])
     await expect(startJob({ ownerId: 'owner', resourceId: 'r1', kind: 'bulk' as never, actor: OWNER })).rejects.toThrow('not started by a person')
   })
 

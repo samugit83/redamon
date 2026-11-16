@@ -6,7 +6,11 @@ import {
   FEATURED_PRESETS,
   TRADECRAFT_PRESETS,
   presetByKey,
+  presetSettings,
+  presetsWithSettings,
 } from './presets'
+import { SITE_TYPES } from './agentContract'
+import { validateOverrides } from './settingsSpec'
 
 describe('tradecraft presets', () => {
   test('has_105', () => {
@@ -80,7 +84,60 @@ describe('tradecraft presets', () => {
     expect(presetByKey('nope')).toBeUndefined()
   })
 
-  test('no preset carries settings yet', () => {
-    expect(ALL_PRESETS.filter(p => p.settings !== undefined)).toEqual([])
+})
+
+describe('carry_settings (§6.12, R-171, AC-45)', () => {
+  const byKey = (k: string) => presetSettings(presetByKey(k)!)
+
+  test('every preset key with settings exists, and every override is one the form may save', () => {
+    for (const key of presetsWithSettings()) expect(presetByKey(key), key).toBeDefined()
+    for (const preset of ALL_PRESETS) {
+      const s = presetSettings(preset)
+      if (s.forcedType) expect(SITE_TYPES).toContain(s.forcedType)
+      expect(validateOverrides(s.overrides ?? {}), preset.key).toMatchObject({ ok: true })
+      for (const k of s.unverified ?? []) expect(Object.keys(s.overrides ?? {}), preset.key).toContain(k)
+    }
+  })
+
+  test('the type: forced for a GitHub repository and a CVE archive, Auto where the chip is only a hint', () => {
+    expect(byKey('payloadsallthethings').forcedType).toBe('github-repo')
+    expect(byKey('trickest-cve').forcedType).toBe('cve-poc-db')
+    expect(byKey('hacktricks').forcedType).toBeUndefined()
+    expect(byKey('scapy-docs').forcedType).toBeUndefined()
+    for (const p of ALL_PRESETS.filter(x => x.type === 'github-repo')) {
+      expect(new URL(p.url).hostname, p.key).toBe('github.com')
+      expect(presetSettings(p).forcedType, p.key).toBe('github-repo')
+    }
+  })
+
+  test('file types: .yml for LOLBAS and Sigma, .yar for YARA-Rules, added to the user\'s list', () => {
+    expect(byKey('lolbas-source').overrides).toEqual({ 'knownTypes.githubFileTypes': { mode: 'add', items: ['.yml'] } })
+    expect(byKey('sigma-rules').overrides).toEqual({ 'knownTypes.githubFileTypes': { mode: 'add', items: ['.yml'] } })
+    expect(byKey('yara-rules').overrides).toEqual({ 'knownTypes.githubFileTypes': { mode: 'add', items: ['.yar'] } })
+  })
+
+  test('every CVE archive carries path patterns, recorded as unverified for MC-3', () => {
+    for (const p of ALL_PRESETS.filter(x => x.type === 'cve-poc-db')) {
+      const s = presetSettings(p)
+      expect((s.overrides?.['type.cve.pathPatterns'] as string[]).length, p.key).toBeGreaterThan(0)
+      expect(s.unverified, p.key).toContain('type.cve.pathPatterns')
+    }
+  })
+
+  test('the Featured websites: their sitemap through Auto; HexBrain inside /payloads', () => {
+    expect(byKey('web-hacking-techniques-index')).toEqual({ forcedType: 'agentic-crawl', overrides: { 'crawl.strategy': 'auto' } })
+    expect(byKey('hexbrain-payloads')).toEqual({
+      forcedType: 'agentic-crawl',
+      overrides: { 'crawl.strategy': 'auto', 'crawl.includePaths': { mode: 'add', items: ['/payloads/*'] }, 'crawl.stayInFolder': true },
+    })
+    for (const k of ['web-hacking-techniques-archive-github', 'claude-bughunter', 'agentic-bug-hunter']) {
+      expect(byKey(k), k).toEqual({ forcedType: 'github-repo' })
+    }
+  })
+
+  test('a copy: changing what the form got never changes the preset', () => {
+    const s = byKey('hexbrain-payloads')
+    ;(s.overrides!['crawl.includePaths'] as { items: string[] }).items.push('/x')
+    expect(byKey('hexbrain-payloads').overrides!['crawl.includePaths']).toEqual({ mode: 'add', items: ['/payloads/*'] })
   })
 })

@@ -12,12 +12,13 @@ import { effectiveSettings } from '../effectiveSettings'
 import { startJob, startedJobFields, type JobActor } from '../jobs'
 import { SETTINGS_CONSTANTS } from '../settingsSpec'
 import { slugify, uniqueSlug } from '../urls'
-import { defaultStorageMode, fieldErrorResponse, forcedStorageMode, parseResourceFields } from './fields'
+import { defaultStorageMode, fieldErrorResponse, forcedStorageMode, parseResourceFields, typeOptionsOf } from './fields'
 import { resourceViewOf } from './list'
 
 export const MAX_RESOURCES_PER_USER: number = SETTINGS_CONSTANTS.maxResourcesPerUser
 
 class CapReached extends Error {}
+class SlugTaken extends Error {}
 
 export async function createResourceV2(input: {
   ownerId: string
@@ -44,13 +45,16 @@ export async function createResourceV2(input: {
   const forcedType = fields.forcedType ?? ''
   const userDefault = defaultStorageMode(effectiveSettings({ user }).values['storage.defaultMode'], forcedType)
   const storageMode = forcedStorageMode(forcedType) ?? fields.storageMode ?? userDefault
-  const slug = await uniqueSlug(ownerId, slugify(fields.name!))
+  // A chosen Resource ID must be free (R-137); a generated one takes a suffix instead.
+  const slug = fields.slug ?? await uniqueSlug(ownerId, slugify(fields.name!))
+  const overrides = fields.overrides ?? {}
 
   let createdId: string
   try {
     createdId = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`tradecraft_resources:${ownerId}`}))`
       if ((await tx.userTradecraftResource.count({ where: { userId: ownerId } })) >= MAX_RESOURCES_PER_USER) throw new CapReached()
+      if (fields.slug && (await tx.userTradecraftResource.count({ where: { userId: ownerId, slug: fields.slug } })) > 0) throw new SlugTaken()
       const row = await tx.userTradecraftResource.create({
         data: {
           userId: ownerId,
@@ -63,12 +67,19 @@ export async function createResourceV2(input: {
           storageMode,
           llmModel: fields.llmModel!,
           githubTokenOverride: fields.githubTokenOverride ?? '',
+          overrides: overrides as object,
+          typeOptions: typeOptionsOf(overrides) as object,
+          presetKey: fields.presetKey ?? '',
         },
         select: { id: true },
       })
       return row.id
     })
   } catch (err) {
+    if (err instanceof SlugTaken) {
+      return NextResponse.json(
+        { field: 'slug', error: 'You already have a resource with this ID', code: 'slug_taken' }, { status: 409 })
+    }
     if (err instanceof CapReached) {
       return NextResponse.json(
         { error: `An account holds at most ${MAX_RESOURCES_PER_USER} Tradecraft resources`, code: 'resource_cap' },

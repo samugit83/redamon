@@ -16,6 +16,8 @@ vi.mock('@/lib/authz/actAsRefusals', () => ({
 
 import { setNowForTests } from '@/lib/authz/clock'
 import { JobStartBatch } from '../agentContract'
+import { effectiveSettings } from '../effectiveSettings'
+import { ingestionHash } from '../staleness'
 import { updateResourceV2 } from './update'
 
 const T0 = Date.parse('2026-11-16T10:00:00Z')
@@ -178,5 +180,97 @@ describe('updateResourceV2', () => {
     const body = await (await update({ name: 'x' })).json()
     expect(JSON.stringify(body)).not.toMatch(/ghp_stored_fake|fake-session/)
     expect(body.resource).toMatchObject({ githubTokenOverride: 'set', hasLogin: true })
+  })
+
+  describe('editing_rules (§6.13, R-174): what is saved, what goes stale, what is ingested', () => {
+    /** r1 as a 2.0 ingestion with today's settings left it: current, not stale. */
+    function ingestedCurrent(over: Record<string, unknown> = {}) {
+      Object.assign(row(), { mapVersion: 3, overrides: {}, forcedType: '', ingestionReport: { visited: 5, kept: 5, stored: { pages: 5, bytes: 50, notStoredQuota: 0, notStoredSize: 0 } }, ...over })
+      const r = row()
+      r.settingsHash = ingestionHash(effectiveSettings({ resource: r.overrides }).hash, r.forcedType as string)
+    }
+    const view = async (body: Record<string, unknown>) => {
+      const res = await update(body)
+      expect(res.status).toBe(200)
+      return res.json() as Promise<{ resource: { stale: boolean }; job: unknown }>
+    }
+
+    test('the resource starts current', async () => {
+      ingestedCurrent()
+      stubAgent()
+      expect((await view({})).resource.stale).toBe(false)
+    })
+
+    test('name, enabled, model: saved, no ingestion, not stale', async () => {
+      ingestedCurrent()
+      const agent = stubAgent()
+      const body = await view({ name: 'Renamed', enabled: false, llmModel: 'gpt-4o-mini' })
+      expect(body).toMatchObject({ job: null, resource: { stale: false } })
+      expect(row()).toMatchObject({ name: 'Renamed', enabled: false, llmModel: 'gpt-4o-mini' })
+      expect(agent.calls).toEqual([])
+    })
+
+    test('URL: saved and ingested again', async () => {
+      ingestedCurrent()
+      stubAgent()
+      expect((await view({ url: 'https://wiki2.example.test/' })).job).toMatchObject({ kind: 'reingest' })
+    })
+
+    test('type: saved, stale, no ingestion', async () => {
+      ingestedCurrent()
+      const agent = stubAgent()
+      const body = await view({ forcedType: 'mkdocs-wiki' })
+      expect(body).toMatchObject({ job: null, resource: { stale: true } })
+      expect(row().forcedType).toBe('mkdocs-wiki')
+      expect(agent.calls).toEqual([])
+      // Back to Auto: the hash matches again.
+      expect((await view({ forcedType: '' })).resource.stale).toBe(false)
+    })
+
+    test.each([
+      ['a crawl field', { 'crawl.maxPages': 50 }],
+      ['a map field', { 'knownTypes.maxMapEntries.wiki': 500 }],
+      ['a fetching field', { 'fetching.userAgent': 'Probe/1.0' }],
+      ['a content field', { 'content.bodySelector': 'main' }],
+      ['a type option', { 'type.github.branch': 'dev' }],
+    ])('%s: saved (type options mirrored), stale, no ingestion', async (_name, overrides) => {
+      ingestedCurrent()
+      const agent = stubAgent()
+      const body = await view({ overrides })
+      expect(body).toMatchObject({ job: null, resource: { stale: true } })
+      expect(row().overrides).toEqual(overrides)
+      expect(row().typeOptions).toEqual(Object.fromEntries(Object.entries(overrides).filter(([k]) => k.startsWith('type.'))))
+      expect(agent.calls).toEqual([])
+      expect((await view({ overrides: {} })).resource.stale).toBe(false)
+    })
+
+    test('Live → Stored: saved, stale until an ingestion stores the pages', async () => {
+      ingestedCurrent({ storageMode: 'live', ingestionReport: { visited: 5, kept: 5 } })
+      stubAgent()
+      expect((await view({ storageMode: 'stored' }))).toMatchObject({ job: null, resource: { stale: true } })
+      expect(row().storageMode).toBe('stored')
+    })
+
+    test('Stored → Live: the stored text goes at once, and the resource is not stale', async () => {
+      ingestedCurrent()
+      stubAgent()
+      expect((await view({ storageMode: 'live' })).resource.stale).toBe(false)
+      expect(h.db.rows('tradecraftEntry', { resourceId: 'r1' })[0].storedText).toBeNull()
+    })
+
+    test('the Resource ID is read-only: the same ID passes, another is refused and nothing is written (R-137)', async () => {
+      stubAgent()
+      expect((await update({ slug: 'wiki', name: 'Same id' })).status).toBe(200)
+      const res = await update({ slug: 'renamed', name: 'Other id' })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({ field: 'slug', code: 'slug_read_only' })
+      expect(row()).toMatchObject({ slug: 'wiki', name: 'Same id' })
+    })
+
+    test('a user-only override is refused, nothing written (R-133)', async () => {
+      const res = await update({ overrides: { 'storage.userQuotaMb': 5 }, name: 'x' })
+      expect(res.status).toBe(400)
+      expect(row().name).toBe('Wiki')
+    })
   })
 })

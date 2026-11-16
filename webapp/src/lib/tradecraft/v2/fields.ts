@@ -1,13 +1,19 @@
 /**
  * The fields a person may write on a 2.0 resource, and the rules each one follows. Keys the
  * browser sends that are not listed here are ignored: the server owns the rest of the row
- * (slug, type found by detection, maps, claim, snapshot), and a spread body could carry a
- * relation input Prisma would apply as a nested write. T4.5 adds the full form's fields.
+ * (type found by detection, maps, claim, snapshot, summary), and a spread body could carry a
+ * relation input Prisma would apply as a nested write.
+ *
+ * Every per-resource setting of the spec (§6), the `type.*` options included, is one key of
+ * `overrides`; `typeOptions` mirrors its `type.*` keys for the readers of the row (T4.2). The
+ * summary has its own route (summary/route.ts).
  */
 import { NextResponse } from 'next/server'
 import { isLoopModel } from '@/lib/agentInTheLoop'
-import { SITE_TYPES, STORAGE_MODES, type SiteType, type StorageMode } from '../agentContract'
+import { SITE_TYPES, SLUG_RE, STORAGE_MODES, type SiteType, type StorageMode } from '../agentContract'
 import { isMaskedValue } from '../masking'
+import { presetByKey } from '../presets'
+import { validateOverrides, type ResourceOverrides } from '../settingsSpec'
 import { validateUrl } from '../urls'
 import { validateFocus } from './focusFields'
 
@@ -23,6 +29,12 @@ export interface ResourceFields {
   /** Only `null`, which removes the login: phase 6 (T6.5) lets a person set one. */
   credentials?: null
   focus?: Record<string, never>
+  /** The Resource ID: chosen at creation, read-only afterwards (R-137). */
+  slug?: string
+  /** The whole override map: what the form sends replaces what is stored. */
+  overrides?: ResourceOverrides
+  /** The Quick Add preset the resource was added from (OQ-6); creation only. */
+  presetKey?: string
 }
 
 export interface FieldError {
@@ -68,6 +80,11 @@ export function defaultStorageMode(setting: unknown, type: string): StorageMode 
 
 function bad(field: string, error: string, code = 'bad_field'): FieldsResult {
   return { ok: false, error: { field, code, error } }
+}
+
+/** The `type.*` options of an override map, as the `typeOptions` column holds them. */
+export function typeOptionsOf(overrides: ResourceOverrides): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(overrides).filter(([k]) => k.startsWith('type.')))
 }
 
 export function parseResourceFields(body: Record<string, unknown>, mode: 'create' | 'update'): FieldsResult {
@@ -126,6 +143,25 @@ export function parseResourceFields(body: Record<string, unknown>, mode: 'create
     const focus = validateFocus(body.focus)
     if (!focus.ok) return bad('focus', focus.error)
     value.focus = focus.value
+  }
+  if (has('slug')) {
+    // The agent names the resource and prefixes its page IDs with it (§6.4): the contract's pattern.
+    if (typeof body.slug !== 'string' || !SLUG_RE.test(body.slug)) {
+      return bad('slug', 'A resource ID is lowercase letters, digits and dashes, starting with a letter or a digit', 'bad_slug')
+    }
+    value.slug = body.slug
+  }
+  if (has('overrides')) {
+    const parsed = validateOverrides(body.overrides)
+    if (!parsed.ok) {
+      const first = parsed.errors[0]
+      return bad(first.key ? `overrides.${first.key}` : 'overrides', first.message, first.code)
+    }
+    value.overrides = parsed.value
+  }
+  if (has('presetKey') && mode === 'create') {
+    if (typeof body.presetKey !== 'string' || !presetByKey(body.presetKey)) return bad('presetKey', 'Not a Quick Add preset', 'bad_preset')
+    value.presetKey = body.presetKey
   }
   return { ok: true, value }
 }

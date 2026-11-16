@@ -2,14 +2,21 @@
  * The Quick Add presets of the tradecraft resource form, and the URLs workspace import
  * offers from them (workspaceImport/presets.ts).
  *
- * `key` is a preset's stable identity: a resource added from a preset will record it
- * (`presetKey`, T4.5), so a key never changes once shipped, even when the name does.
- * The type is a hint shown as a chip; the agent detects the real type on add.
+ * `key` is a preset's stable identity: a resource added from a preset records it
+ * (`presetKey`, OQ-6), so a key never changes once shipped, even when the name does.
+ * The type is a chip; `presetSettings` says which per-resource fields a preset fills (§6.12).
  */
+import type { SiteType } from './agentContract'
+import type { ResourceOverrides } from './settingsSpec'
 
-/** Per-resource settings a preset fills in. Empty until presets carry settings (T4.5). */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface PresetSettings {}
+/** The per-resource fields a preset fills in the form (§6.12). */
+export interface PresetSettings {
+  /** Absent: Auto, detection decides. */
+  forcedType?: SiteType
+  overrides?: ResourceOverrides
+  /** Override keys whose value was not checked against the live site: manual checkpoint MC-3. */
+  unverified?: string[]
+}
 
 export interface TradecraftPreset {
   key: string
@@ -18,7 +25,6 @@ export interface TradecraftPreset {
   type: string
   description: string
   featured?: boolean
-  settings?: PresetSettings
 }
 
 // Curated list of 100 popular, well-maintained, openly-licensed (or
@@ -200,4 +206,52 @@ export const ALL_PRESETS: readonly TradecraftPreset[] = [...FEATURED_PRESETS, ..
 
 export function presetByKey(key: string): TradecraftPreset | undefined {
   return ALL_PRESETS.find(p => p.key === key)
+}
+
+/**
+ * A type is forced only where the address proves it: a github.com repository is a repository and a
+ * CVE archive is one; the Featured websites are the ones §6.12 names. Every other chip stays a
+ * hint, because a wrong forced type fails the add where detection would fall back to a crawl.
+ */
+const FORCED_BY_CHIP: Readonly<Record<string, SiteType>> = { 'github-repo': 'github-repo', 'cve-poc-db': 'cve-poc-db' }
+
+const add = (items: string[]) => ({ mode: 'add' as const, items })
+
+const SETTINGS_BY_KEY: Readonly<Record<string, PresetSettings>> = {
+  // §6.12: the rule files of these repositories are YAML or YARA, not Markdown.
+  'lolbas-source': { overrides: { 'knownTypes.githubFileTypes': add(['.yml']) } },
+  'sigma-rules': { overrides: { 'knownTypes.githubFileTypes': add(['.yml']) } },
+  'yara-rules': { overrides: { 'knownTypes.githubFileTypes': add(['.yar']) } },
+  // A very large repository, better narrowed by folder (§6.5).
+  'exploitdb-mirror': { overrides: { 'type.github.includeFolders': ['exploits/'] }, unverified: ['type.github.includeFolders'] },
+  // The CVE archives: their file layout. trickest/cve is the layout 1.x was written for.
+  'trickest-cve': { overrides: { 'type.cve.pathPatterns': ['{year}/{cve}.md'] }, unverified: ['type.cve.pathPatterns'] },
+  'nomi-sec-poc-in-github': { overrides: { 'type.cve.pathPatterns': ['{year}/{cve}.json'] }, unverified: ['type.cve.pathPatterns'] },
+  '0xmarcio-cve': { overrides: { 'type.cve.pathPatterns': ['{year}/{cve}.md', '{year}/{cve}/README.md'] }, unverified: ['type.cve.pathPatterns'] },
+  // Versioned Read the Docs sites keep their search index under the version's folder.
+  'scapy-docs': { overrides: { 'type.docs.searchIndexUrl': 'https://scapy.readthedocs.io/en/latest/searchindex.js' }, unverified: ['type.docs.searchIndexUrl'] },
+  'volatility-3': { overrides: { 'type.docs.searchIndexUrl': 'https://volatility3.readthedocs.io/en/latest/searchindex.js' }, unverified: ['type.docs.searchIndexUrl'] },
+  // Featured websites (§6.12 "Settings it carries"): their sitemap, which the Auto strategy reads
+  // (robots.txt's Sitemap: line included); HexBrain stays inside /payloads.
+  'web-hacking-techniques-index': { forcedType: 'agentic-crawl', overrides: { 'crawl.strategy': 'auto' } },
+  'hexbrain-payloads': {
+    forcedType: 'agentic-crawl',
+    overrides: { 'crawl.strategy': 'auto', 'crawl.includePaths': add(['/payloads/*']), 'crawl.stayInFolder': true },
+  },
+}
+
+/** The fields the form fills when a person picks the preset. */
+export function presetSettings(preset: TradecraftPreset): PresetSettings {
+  const own = SETTINGS_BY_KEY[preset.key] ?? {}
+  const forcedType = own.forcedType ?? FORCED_BY_CHIP[preset.type]
+  return {
+    ...(forcedType ? { forcedType } : {}),
+    ...(own.overrides ? { overrides: structuredClone(own.overrides) } : {}),
+    ...(own.unverified ? { unverified: [...own.unverified] } : {}),
+  }
+}
+
+/** The keys of the presets that carry settings of their own, beyond a forced type. */
+export function presetsWithSettings(): string[] {
+  return Object.keys(SETTINGS_BY_KEY)
 }

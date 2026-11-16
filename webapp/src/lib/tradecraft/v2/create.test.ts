@@ -158,4 +158,42 @@ describe('createResourceV2', () => {
     expect(JSON.stringify(body)).not.toContain('SECRET')
     expect(body.resource.githubTokenOverride).toBe('set')
   })
+
+  test('slug_rules: the chosen Resource ID is kept; a taken one is a 409 naming the field, nothing written (R-137)', async () => {
+    stubAgent()
+    expect((await create({ ...BODY, slug: 'my-wiki' })).status).toBe(201)
+    expect(resources()[0].slug).toBe('my-wiki')
+    const res = await create({ ...BODY, url: 'https://other.example.test/', slug: 'my-wiki' })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ field: 'slug', code: 'slug_taken' })
+    expect(resources()).toHaveLength(1)
+    // Without one, the name's slug, suffixed when taken.
+    await create({ ...BODY, name: 'My Wiki', url: 'https://third.example.test/' })
+    expect(resources().map(r => r.slug)).toEqual(['my-wiki', 'my-wiki-2'])
+  })
+
+  test('another account may use the same Resource ID', async () => {
+    stubAgent()
+    h.db.seed('userTradecraftResource', { id: 'r-x', userId: 'other', name: 'X', slug: 'my-wiki', url: 'https://x.example.test/' })
+    expect((await create({ ...BODY, slug: 'my-wiki' })).status).toBe(201)
+  })
+
+  test('the overrides are stored, their type.* keys mirrored, and they reach the first job; the preset is recorded', async () => {
+    const agent = stubAgent()
+    const overrides = { 'crawl.maxPages': 40, 'type.github.branch': 'dev' }
+    await create({ ...BODY, forcedType: 'github-repo', overrides, presetKey: 'payloadsallthethings' })
+    expect(resources()[0]).toMatchObject({ overrides, typeOptions: { 'type.github.branch': 'dev' }, presetKey: 'payloadsallthethings', forcedType: 'github-repo' })
+    const [req] = jobRequests(agent)
+    expect(req.settings).toMatchObject({ 'crawl.maxPages': 40, 'type.github.branch': 'dev' })
+    expect(req.resource.type_options).toEqual({ 'type.github.branch': 'dev' })
+    expect(req.settings_snapshot.provenance['crawl.maxPages']).toBe('resource')
+  })
+
+  test('a user-only override is refused before anything is written', async () => {
+    const agent = stubAgent()
+    const res = await create({ ...BODY, overrides: { 'storage.userQuotaMb': 5 } })
+    expect(res.status).toBe(400)
+    expect(resources()).toEqual([])
+    expect(agent.calls).toEqual([])
+  })
 })
