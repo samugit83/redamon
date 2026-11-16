@@ -67,8 +67,9 @@ async def _page_text(state: "IngestState", entry) -> tuple[str, str, dict]:
         return entry.extra["text"] or "", "", {}
     if "html" in entry.extra:  # the crawl's own download
         return await state.clean(entry.extra["html"]), "", {}
+    # §5: a resource with a login never uses the browser, "always use the browser" included.
     page = await fetch.smart_fetch(entry.url, state.settings, github_token=state.github_token,
-                                   allow_browser=True, cleaner=state.clean)
+                                   allow_browser=not fetch.has_login(state.request.secrets), cleaner=state.clean)
     state.visited += 1
     state.store_downloads += 1
     if page.error or not (200 <= page.status < 300):

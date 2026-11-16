@@ -98,6 +98,12 @@ def github_headers(url: str, github_token: Optional[str]) -> dict[str, str]:
     return {}
 
 
+def has_login(secrets: Any) -> bool:
+    """Whether a job or read carries a login (§6.6): then the browser is never used (§5)."""
+    credentials = getattr(secrets, "credentials", None)
+    return credentials is not None and not credentials.is_empty()
+
+
 def request_headers(settings: EffectiveSettings, extra: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     headers = {"User-Agent": settings.str("fetching.userAgent")}
     language = settings.str("fetching.acceptLanguage")

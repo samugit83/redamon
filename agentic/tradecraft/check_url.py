@@ -182,12 +182,14 @@ async def _website(result: CheckUrlResult, url: str, robots_txt: robots.Robots, 
     base = fetch.canonical_url(url)
     cache = robots.RobotsCache(settings)
     cache.remember(robots_txt)
-    entries, source, _cut = await crawl.sitemap_entries(base, settings, rules=crawl.FollowRules(settings, [base]),
-                                                        robots_cache=cache, blocking=_thread)
+    rules = crawl.FollowRules(settings, crawl.start_pages(base, settings), crawl.exclude_patterns(settings))
+    entries, source, _cut = await crawl.sitemap_entries(base, settings, rules=rules, robots_cache=cache, blocking=_thread)
     if not entries:
         result.index = IndexInfo(kind="none")
         return
-    named = robots_txt.sitemaps[0] if source == "robots" and robots_txt.sitemaps else f"{robots.origin_of(base)}/sitemap.xml"
+    configured = [urllib.parse.urljoin(base, u.strip()) for u in settings.list("type.website.sitemapUrls") if u.strip()]
+    named = {"configured": configured[:1], "robots": robots_txt.sitemaps[:1]}.get(source) or [f"{robots.origin_of(base)}/sitemap.xml"]
+    named = named[0]
     result.index = IndexInfo(kind="sitemap", url=_url_or_empty(named), count=len(entries))
     result.sample_entries = _samples(entries)
     result.estimated_bytes = await _estimate(len(entries), [e.url for e in entries], settings, token)

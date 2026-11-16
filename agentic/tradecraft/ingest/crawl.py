@@ -14,7 +14,10 @@ keeps, so no saved entry breaks them (AC-06): exclude patterns at the start of A
 segment (``tag/`` drops ``/blog/tag/x``; ``*`` is any characters; a ``*.`` pattern must reach
 the end of the path), include patterns, the starting folder, the host scope, query strings,
 and robots.txt (RFC 9309, ``robots.py``). The start pages are always visited, so their links
-are found, but are kept only when they pass the rules.
+are found, but are kept only when they pass the rules. A website resource adds its own
+fields (§6.5, T4.3): more start pages on the same site (``type.website.startPages``), the
+sitemaps Auto reads first (``type.website.sitemapUrls``), and pagination followed
+(``type.website.followPagination`` takes ``page/N`` out of its exclude list).
 
 Every limit is a setting and time comes from ``clock``: pages, model calls, time, depth, links
 offered per page, the map's size; the crawl ends at the first limit it reaches (R-076). Pages
@@ -228,7 +231,14 @@ def fetch_page_for(settings: EffectiveSettings, *, allow_browser: bool = True) -
     ``fetching.crawlBrowserBelowBytes`` (4,000, as 1.x); a refused address never goes to the
     browser, which would follow the same redirect."""
 
+    always = allow_browser and settings.bool("fetching.browserEnabled") and settings.bool("fetching.alwaysBrowser")
+
     async def fetch_page(url: str) -> CrawlFetch:
+        if always:
+            # §6.7 "Always use the browser": no plain request first (never with a login: the
+            # caller passes allow_browser=False then).
+            rendered = await net.get_fetcher().render(url, **fetch.render_options(settings))
+            return CrawlFetch(rendered.html, url, 2, "" if rendered.html else (rendered.error or "http_error"))
         resp = await fetch.fetch_raw(url, settings, headers={"Accept": "text/html,application/xhtml+xml"})
         if resp.error in ("unsafe_address", "userinfo_refused", "bad_url"):
             return CrawlFetch("", url, 0, resp.error)
@@ -316,6 +326,7 @@ class _State:
     out_of_scope: set = field(default_factory=set)
     robots: set = field(default_factory=set)
     too_little: int = 0
+    starts: list = field(default_factory=list)
 
     def skip(self, reason: str, url: str) -> None:
         if reason == "excluded":
@@ -463,15 +474,19 @@ async def llm_decide(llm: Any, prompt: str, state: _State) -> tuple[str, list[in
 
 async def sitemap_page_urls(base: str, robots_txt: robots.Robots, settings: EffectiveSettings,
                             blocking: Blocking = inline) -> tuple[list[str], str]:
-    """(page URLs, where they came from): the sitemaps robots.txt names (at most
-    ``sitemapMaxChildren`` of them), else ``/sitemap.xml``; each within the mirror's limits
-    (``builders.sitemap_urls``)."""
-    named = robots_txt.sitemaps[: int(constant("sitemapMaxChildren"))]
-    urls: list[str] = []
-    for sm in named:
-        urls.extend(await builders.sitemap_urls(sm, settings, blocking=blocking))
-    if urls:
-        return urls, "robots"
+    """(page URLs, where they came from): the resource's own sitemap URLs
+    (``type.website.sitemapUrls``, relative ones against the start URL), then the sitemaps
+    robots.txt names (at most ``sitemapMaxChildren`` of them), else ``/sitemap.xml``; each
+    within the mirror's limits (``builders.sitemap_urls``)."""
+    max_children = int(constant("sitemapMaxChildren"))
+    for source, named in (("configured", [urllib.parse.urljoin(base, u.strip())
+                                          for u in settings.list("type.website.sitemapUrls") if u.strip()]),
+                          ("robots", robots_txt.sitemaps)):
+        urls: list[str] = []
+        for sm in named[:max_children]:
+            urls.extend(await builders.sitemap_urls(sm, settings, blocking=blocking))
+        if urls:
+            return urls, source
     origin = robots.origin_of(base)
     return await builders.sitemap_urls(f"{origin}/sitemap.xml", settings, blocking=blocking), "sitemap.xml"
 
@@ -513,14 +528,41 @@ async def sitemap_entries(base: str, settings: EffectiveSettings, *, rules: Foll
 # The crawl
 # --------------------------------------------------------------------------------------
 
+def start_pages(base: str, settings: EffectiveSettings) -> list[str]:
+    """The resource's URL, then its extra start pages (§6.5), relative ones against it: same
+    site only (the same host, with or without ``www.``), each once."""
+    out = [base]
+    for raw in settings.list("type.website.startPages"):
+        try:
+            url = fetch.canonical_url(urllib.parse.urljoin(base, raw.strip()))
+        except ValueError:
+            continue
+        if fetch.entry_url_ok(url) and _bare(_host(url)) == _bare(_host(base)) and url not in out:
+            out.append(url)
+    return out
+
+
+def exclude_patterns(settings: EffectiveSettings) -> list[str]:
+    """``crawl.excludePaths``, without the ``page/N`` patterns when the resource follows
+    pagination (§6.5): older posts sit behind "Older posts" links."""
+    patterns = settings.list("crawl.excludePaths")
+    if not settings.bool("type.website.followPagination"):
+        return patterns
+    return [p for p in patterns if not p.strip().lstrip("/").lower().startswith("page/")]
+
+
 async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[FetchPage] = None, llm: Any = None,
                 blocking: Blocking = inline, cancel_check: Optional[CancelCheck] = None,
-                progress: Optional[Progress] = None) -> CrawlResult:
-    fetch_page = fetch_page or fetch_page_for(settings)
+                progress: Optional[Progress] = None, allow_browser: bool = True) -> CrawlResult:
+    """``allow_browser`` is False for a resource with a login (§5): its pages are read with
+    plain HTTP only, whatever the browser settings say."""
+    fetch_page = fetch_page or fetch_page_for(settings, allow_browser=allow_browser)
     base = fetch.canonical_url(url)
     if not _host(base):
         return CrawlResult(stop_reason="frontier_empty", stopped_because="invalid base url")
-    state = _State(base=base, rules=FollowRules(settings, [base]), started=clock.monotonic())
+    starts = start_pages(base, settings)
+    state = _State(base=base, rules=FollowRules(settings, starts, exclude_patterns(settings)), started=clock.monotonic())
+    state.starts = starts
     strategy = settings.str("crawl.strategy")
     respect_robots = settings.bool("crawl.respectRobots")
     robots_cache = robots.RobotsCache(settings)
@@ -545,8 +587,8 @@ async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[F
 async def _loop(state: _State, settings: EffectiveSettings, strategy: str, fetch_page: FetchPage, llm: Any,
                 blocking: Blocking, cancel_check: Optional[CancelCheck], progress: Optional[Progress],
                 robots_cache: Optional[robots.RobotsCache]) -> CrawlResult:
-    state.frontier.append((state.base, 0))
-    starts = {state.base}
+    state.frontier.extend((s, 0) for s in state.starts)
+    starts = set(state.starts)
     max_pages, max_calls = settings.int("crawl.maxPages"), settings.int("crawl.maxLlmCalls")
     budget, max_depth = settings.int("crawl.timeBudgetSec"), settings.int("crawl.maxDepth")
     map_cap = settings.int("knownTypes.maxMapEntries.website")
