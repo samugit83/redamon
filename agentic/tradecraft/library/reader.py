@@ -22,11 +22,14 @@ the page ID, the section, "part N of M" and the page's other sections. A Live pa
 at read time and nothing is kept. Every page returned is recorded as seen in the run.
 
 With ``resource_id`` and ``query`` (the 1.x arguments), the free first pass of search picks
-the page of a resource that has cards (``map_version`` 2 and up); the section picker model is
-no longer used. An unconverted resource, a page the first pass does not find, and a forced
-``section_path`` keep today's title match over the resource's 1.x map, which every 2.0
-ingestion keeps current (TD-18, R-217), and today's whole-page answer. A CVE archive is read
-live, a CVE at a time; a PDF page from the store.
+the page of a resource that has cards (``map_version`` 2 and up), and the read is one section of
+it. When the first pass finds nothing, today's title match over the resource's 1.x map, which
+every 2.0 ingestion keeps current (TD-18, R-217), picks the page with no model (the section
+picker is not used on such a resource), and the read is still one section. An unconverted
+resource, a forced ``section_path`` and a run without a search index keep today's title match
+and today's whole-page answer; the page they return is recorded as seen too when it is an
+entry of the store (page IDs name entries). A CVE archive is read live, a CVE at a time; a PDF
+page from the store.
 """
 
 from __future__ import annotations
@@ -66,6 +69,8 @@ PAGE_GONE = ("Error: page {page_id} is no longer in resource '{slug}' (a refresh
 NO_SECTION = "Error: page {page_id} has no section {section!r}. Its sections: {sections}."
 NO_PART = "Error: section {section!r} of page {page_id} has {parts} part(s); ask for part 1 to {parts}."
 CVE_BY_ID = "Error: resource '{slug}' is a cve-poc-db: read it with cve_id='CVE-YYYY-NNNNN', not by page."
+NO_PAGE = ("Error: no page of resource '{slug}' matches {query!r}. Search it with tradecraft_search(query=..., "
+           'resource="{slug}"), or browse it with tradecraft_search(resource="{slug}", path="").')
 # The other sections a read header lists: the rest are counted.
 OTHER_SECTIONS_LISTED = 30
 
@@ -123,6 +128,20 @@ class _Read:
     def has_login(self) -> bool:
         return bool(self.resource.has_login or self.row.get("has_login"))
 
+    @property
+    def converted(self) -> bool:
+        """A 2.0 resource: it has cards, entries and page IDs."""
+        return int(self.row.get("map_version") or 1) >= 2
+
+    def record_seen(self, entry: Optional[dict]) -> None:
+        """A page returned is seen in the run (R-366), when it is an entry: page IDs name entries."""
+        if not entry or entry.get("page_id") is None:
+            return
+        try:
+            run_state.record_seen([page_ids.format(self.slug, int(entry["page_id"]))])
+        except LookupError:
+            pass  # a read outside an executor node (a test, the librarian's own check) counts nowhere
+
 
 async def lookup(*, resource_id: str = "", query: str = "", cve_id: Optional[str] = None,
                  section_path: Optional[str] = None, force_refresh: bool = False, page: Optional[str] = None,
@@ -145,11 +164,12 @@ async def lookup(*, resource_id: str = "", query: str = "", cve_id: Optional[str
     if resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
         return await _cve(read, cve_id)
     index = runtime.run_index()
-    if index is not None and not section_path and int(row.get("map_version") or 1) >= 2:
-        picked = await _first_pass_pick(read, query, index)
-        if picked is not None:
-            return await _read_section(read, *picked, section=section, part=part, query=query,
-                                       force_refresh=force_refresh)
+    if index is not None and not section_path and read.converted:
+        picked = await _first_pass_pick(read, query, index) or await _title_pick(read, query)
+        if picked is None:
+            return NO_PAGE.format(slug=read.slug, query=query)
+        return await _read_section(read, *picked, section=section, part=part, query=query,
+                                   force_refresh=force_refresh)
     if isinstance(read.sitemap.get("pages"), list) and read.sitemap.get("pages"):
         return await _pdf(read, query, section_path, force_refresh)
     return await _page(read, query, section_path, force_refresh)
@@ -159,13 +179,14 @@ async def lookup(*, resource_id: str = "", query: str = "", cve_id: Optional[str
 # A page of a site
 # --------------------------------------------------------------------------------------
 
-async def _pick_url(read: _Read, query: str, section_path: Optional[str]) -> tuple[str, str]:
+async def _pick_url(read: _Read, query: str, section_path: Optional[str], *,
+                    use_picker: bool = True) -> tuple[str, str]:
     rtype = read.row.get("resource_type") or read.resource.type
     base = read.row.get("url") or read.resource.url
     if section_path:
         return legacy_match.resolve_path(rtype, base, read.sitemap, section_path), section_path
     entries = legacy_match.sitemap_entries(read.sitemap)
-    picker = runtime.section_picker() if len(entries) > legacy_match.SMALL_MAP else None
+    picker = runtime.section_picker() if use_picker and len(entries) > legacy_match.SMALL_MAP else None
     picked = await legacy_match.pick(query, entries, picker=picker, resource_name=read.resource.name or read.slug)
     if picked is None:
         return base, "(homepage)"
@@ -224,6 +245,9 @@ async def _page(read: _Read, query: str, section_path: Optional[str], force_refr
     text, source, note, error = await _text_of(read, target, copy, force_refresh)
     if error:
         return error
+    if read.converted:
+        read.record_seen(copy or await read.store.entry_by_url(read.owner, read.resource.id,
+                                                               fetch.canonical_url(target)))
     return render(read.slug, target, title, source, text, note=note)
 
 
@@ -246,6 +270,30 @@ async def _first_pass_pick(read: _Read, query: str, index: Any) -> Optional[tupl
         return None
     best = ranked[0].row
     return page_ids.format(read.slug, int(best["page_id"])), best["url"]
+
+
+def _pdf_entries(read: _Read) -> list[dict]:
+    """A PDF's pages as title-match entries: its first line, ``page=N``."""
+    return [{"title": str(p.get("firstLine", "")), "path": f"page={p.get('page')}"}
+            for p in read.sitemap.get("pages") or [] if isinstance(p, dict)]
+
+
+async def _title_pick(read: _Read, query: str) -> Optional[tuple[str, str]]:
+    """(page ID, URL) of the page today's title match picks with no model: a PDF's best page,
+    else a site's best page or its start page; None when that page is not an entry."""
+    if isinstance(read.sitemap.get("pages"), list) and read.sitemap.get("pages"):
+        picked = await legacy_match.pick(query, _pdf_entries(read))
+        number = re.search(r"page=(\d+)", picked["path"]) if picked else None
+        if number is None:
+            return None
+        url = f"{fetch.canonical_url(read.row.get('url') or read.resource.url)}#page={number.group(1)}"
+    else:
+        target, _title = await _pick_url(read, query, None, use_picker=False)
+        url = fetch.canonical_url(target)
+    entry = await read.store.entry_by_url(read.owner, read.resource.id, url)
+    if entry is None or entry.get("page_id") is None:
+        return None
+    return page_ids.format(read.slug, int(entry["page_id"])), url
 
 
 async def _by_page_id(catalog: Any, text: str, *, section: Optional[str], part: Optional[int], query: str,
@@ -382,7 +430,7 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
             return "Error: section_path for PDF must be 'page=N' or just an integer."
         number = int(m.group(1))
     else:
-        entries = [{"title": str(p.get("firstLine", "")), "path": f"page={p.get('page')}"} for p in pages]
+        entries = _pdf_entries(read)
         picker = runtime.section_picker() if len(entries) > legacy_match.SMALL_MAP else None
         picked = await legacy_match.pick(query, entries, picker=picker, resource_name=read.resource.name or read.slug)
         if picked is None:
@@ -400,6 +448,7 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
         return refused
     entry = await read.store.entry_by_url(read.owner, read.resource.id, url)
     if entry and entry.get("stored_text") and not force_refresh:
+        read.record_seen(entry)
         return render(read.slug, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
                       entry["stored_text"])
     resp = await fetch.fetch_raw(base, read.settings, github_token=read.token)
@@ -412,9 +461,11 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
     if not text:
         code = resp.error or (f"http_{resp.status}" if resp.status else "unreachable")
         if entry and entry.get("stored_text"):
+            read.record_seen(entry)
             return render(read.slug, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
                           entry["stored_text"], note=NOT_REFRESHED.format(code=code))
         return UNREACHABLE_NOT_STORED.format(url=url, code=code, slug=read.slug)
+    read.record_seen(entry)
     if entry and entry.get("stored_text"):
         return render(read.slug, url, f"page {number}", format_source("live"), text,
                       note=SKIPPED_COPY.format(date=_date(entry.get("fetched_at"))))

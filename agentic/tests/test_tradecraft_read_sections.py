@@ -117,9 +117,84 @@ def test_args_compat():
     # section_path, cve_id and force_refresh keep their meaning.
     forced = read(lib, index=FirstPass([]), resource_id="wiki", section_path=KERBEROAST)
     assert header(forced, "url") == KERBEROAST and "kerberoast text" in forced
-    # A query the first pass does not find falls back to today's title match.
+    # A query the first pass does not find falls back to today's title match, and reads one
+    # section of the page it picks (review finding 3).
     fallback = read(lib, index=FirstPass([]), resource_id="wiki", query="kerberoasting")
-    assert header(fallback, "url") == KERBEROAST
+    assert header(fallback, "page") == f"{page_id(lib, 'r1', KERBEROAST)} · wiki" and "kerberoast text" in fallback
+
+
+class Picker:
+    """The owner's section picker model: a read on a converted resource never asks it."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def ainvoke(self, prompt):
+        self.calls += 1
+        return type("Answer", (), {"content": "2"})()
+
+
+# More than legacy_match.SMALL_MAP entries, so today's lookup would ask the picker model.
+BIG_MAP = {"nav": [{"title": t, "path": u} for t, u in PAGES.items()] +
+           [{"title": f"Filler {i}", "path": f"{WIKI}filler/{i}/"} for i in range(6)]}
+
+
+def test_a_first_pass_miss_reads_one_section_without_the_picker(monkeypatch):
+    """Review finding 3 (T2.5, R-380, AC-66): on a converted resource a query the first pass does
+    not find falls back to today's title match with no model, and the answer is one section of
+    the page it picks, recorded as seen; never the whole page. A PDF the same way."""
+    picker = Picker()
+    monkeypatch.setattr(runtime, "section_picker", lambda: picker)
+    lib = Library().add("r1", "wiki", WIKI, mode="stored", sitemap=BIG_MAP, read_settings=no_browser())
+    lib.entry("r1", UNION, PAGE).entry("r1", KERBEROAST, "## How\n\nkerberoast text\n\n## Other\n\nmore words")
+    state = {"session_id": "s1", "current_objective_index": 0}
+    answer = read(lib, state=state, index=FirstPass([]), resource_id="wiki", query="kerberoasting how")
+    assert picker.calls == 0
+    assert header(answer, "page") == f"{page_id(lib, 'r1', KERBEROAST)} · wiki" and header(answer, "url") is None
+    assert section_line(answer)["section"] == "How" and "more words" not in body(answer)
+    assert state["tradecraft_seen_pages"] == [page_id(lib, "r1", KERBEROAST)]
+
+    pdf_url = "https://files.tc-fixture.test/guide.pdf"
+    pdf = Library().add("r2", "guide", pdf_url, type_="pdf", mode="stored", sitemap={"pages": [
+        {"page": n, "firstLine": f"Chapter {n} {'kerberos' if n == 4 else 'filler'}"} for n in range(1, 9)]})
+    for n in range(1, 9):
+        pdf.entry("r2", f"{pdf_url}#page={n}", f"stored text of page {n}")
+    answer = read(pdf, index=FirstPass([]), resource_id="guide", query="kerberos tickets")
+    assert picker.calls == 0 and pdf.requested() == []
+    assert header(answer, "page") == f"{page_id(pdf, 'r2', f'{pdf_url}#page=4', 'guide')} · guide"
+    assert body(answer).strip() == "stored text of page 4"
+
+
+def test_a_miss_with_no_page_to_read_says_how_to_find_one():
+    """No page matches and the start page is not an entry: an error that points to search."""
+    lib = Library().add("r1", "wiki", WIKI, mode="stored", read_settings=no_browser())
+    lib.entry("r1", UNION, PAGE)
+    answer = read(lib, index=FirstPass([]), resource_id="wiki", query="nothing like it")
+    assert answer.startswith("Error: no page of resource 'wiki' matches 'nothing like it'")
+    assert 'tradecraft_search(resource="wiki", path="")' in answer and lib.requested() == []
+
+
+def test_whole_page_reads_are_recorded_as_seen():
+    """Review finding 5 (R-366): the reads that keep today's whole-page answer (a forced
+    section_path, a run without a search index, a PDF page by number) record their page too."""
+    lib = Library().add("r1", "wiki", WIKI, mode="stored", read_settings=no_browser())
+    lib.entry("r1", UNION, PAGE).entry("r1", KERBEROAST, "kerberoast text")
+    state = {"session_id": "s1", "current_objective_index": 0}
+    forced = read(lib, state=state, index=FirstPass([]), resource_id="wiki", section_path=KERBEROAST)
+    assert header(forced, "url") == KERBEROAST
+    title_match = read(lib, state=state, resource_id="wiki", query="union based")
+    assert header(title_match, "url") == UNION
+    pdf_url = "https://files.tc-fixture.test/guide.pdf"
+    pdf = Library().add("r2", "guide", pdf_url, type_="pdf", mode="stored",
+                        sitemap={"pages": [{"page": n, "firstLine": f"Chapter {n}"} for n in (1, 2, 3)]})
+    for n in (1, 2, 3):
+        pdf.entry("r2", f"{pdf_url}#page={n}", f"stored text of page {n}")
+    assert "stored text of page 2" in read(pdf, state=state, resource_id="guide", section_path="page=2")
+    assert state["tradecraft_seen_pages"] == [page_id(lib, "r1", KERBEROAST), page_id(lib, "r1", UNION),
+                                              page_id(pdf, "r2", f"{pdf_url}#page=2", "guide")]
+    # A read that fails returns no page.
+    assert read(lib, state=state, resource_id="wiki", section_path="http://169.254.169.254/").startswith("Error")
+    assert len(state["tradecraft_seen_pages"]) == 3
 
 
 def test_section_read():
