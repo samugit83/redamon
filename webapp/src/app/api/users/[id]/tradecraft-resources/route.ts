@@ -14,7 +14,7 @@ import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 import { maskResource } from '@/lib/tradecraft/masking'
 import { LEGACY_SELECT } from '@/lib/tradecraft/resourceAccess'
 import { slugify, uniqueSlug, validateUrl } from '@/lib/tradecraft/urls'
-import { jobActorOf } from '@/lib/tradecraft/jobs'
+import { jobActorOf, sweepLostJobs } from '@/lib/tradecraft/jobs'
 import { listResourcesV2 } from '@/lib/tradecraft/v2/list'
 import { createResourceV2 } from '@/lib/tradecraft/v2/create'
 import { legacyRows } from '@/lib/tradecraft/catalog'
@@ -47,6 +47,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json(await legacyRows(id, { ownerRun: false }))
     }
 
+    // A 2.0 job no agent renews would leave its resource "verifying" in the 1.x tab of an
+    // account that turned 2.0 off: ended here, its 1.x columns say why (TD-18).
+    await sweepLostJobs(id)
     const resources = await prisma.userTradecraftResource.findMany({
       where: { userId: id },
       orderBy: { createdAt: 'asc' },

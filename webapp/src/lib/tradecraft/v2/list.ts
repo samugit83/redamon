@@ -7,7 +7,7 @@ import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { IngestionReport } from '../agentContract'
 import { effectiveSettings } from '../effectiveSettings'
-import { jobView, type JobView } from '../jobs'
+import { jobView, sweepLostJobs, type JobView } from '../jobs'
 import { secretState } from '../masking'
 
 const VIEW_SELECT = {
@@ -94,6 +94,7 @@ function view(row: ViewRow, extra: { entryCount: number; currentHash: string; jo
 }
 
 async function views(ownerId: string, where: Prisma.UserTradecraftResourceWhereInput): Promise<ResourceView[]> {
+  await sweepLostJobs(ownerId)
   const rows = await prisma.userTradecraftResource.findMany({ where: { ...where, userId: ownerId }, orderBy: { createdAt: 'asc' }, select: VIEW_SELECT })
   if (rows.length === 0) return []
   const ids = rows.map(r => r.id)

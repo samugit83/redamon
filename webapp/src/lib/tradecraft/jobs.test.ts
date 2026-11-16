@@ -18,7 +18,7 @@ vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.
 import { setNowForTests } from '@/lib/authz/clock'
 import { JobStartBatch, SECRET_PLACEHOLDER } from './agentContract'
 import { effectiveSettings } from './effectiveSettings'
-import { MANUAL_JOB_KINDS, START_LEASE_MS, cancelJob, jobActorOf, jobView, latestJob, startJob, type JobActor } from './jobs'
+import { MANUAL_JOB_KINDS, START_LEASE_MS, cancelJob, jobActorOf, jobView, latestJob, startJob, sweepLostJobs, type JobActor } from './jobs'
 
 const T0 = Date.parse('2026-11-16T10:00:00Z')
 let t = new Date(T0)
@@ -333,3 +333,101 @@ describe('cancel is a database flag', () => {
     expect(await cancelJob('other', 'r1')).toEqual({ found: false, job: null })
   })
 })
+
+describe('a job that ends without a swap writes the 1.x columns (TD-18, D-25; M1)', () => {
+  const OLD = new Date('2026-11-10T08:00:00Z')
+  const neverVerified = () => Object.assign(resource(), { lastVerifiedAt: null, lastError: '', summary: 'kept summary', sitemap: { nav: [1] } })
+
+  test.each([
+    ['connection refused', () => refused('ECONNREFUSED'), 'verify failed (agent_unreachable)'],
+    ['an agent 503', () => json({ detail: 'down' }, 503), 'verify failed (agent_unreachable, agent HTTP 503)'],
+  ])('agent_unreachable at the start of an add (%s): the error and a verification time, the rest kept', async (_name, answer, text) => {
+    neverVerified()
+    stubAgent(answer)
+    expect((await start('add')).kind).toBe('agent_unreachable')
+    expect(resource()).toMatchObject({ lastError: text, summary: 'kept summary', sitemap: { nav: [1] }, activeJobId: null })
+    expect((resource().lastVerifiedAt as Date).getTime()).toBe(T0)
+  })
+
+  test('refused by the agent (queue full) on a refresh: the error; the resource keeps its own verification time', async () => {
+    Object.assign(resource(), { lastVerifiedAt: OLD })
+    stubAgent((_p, body) => json({ accepted: [], refused: [{ job_id: (body as { jobs: { job_id: string }[] }).jobs[0].job_id, code: 'queue_full' }] }, 202))
+    await start('refresh')
+    expect(resource()).toMatchObject({ lastError: 'refresh failed (queue_full)', lastVerifiedAt: OLD })
+  })
+
+  test('a request the contract refuses: internal_error', async () => {
+    neverVerified()
+    resource().name = 'x'.repeat(600)
+    stubAgent()
+    await start('add')
+    expect(resource().lastError).toBe('verify failed (internal_error)')
+    expect(resource().lastVerifiedAt).not.toBeNull()
+  })
+
+  test('a timeout ends nothing: the job may run, so no 1.x column is written', async () => {
+    neverVerified()
+    stubAgent(() => timedOut())
+    await start('add')
+    expect(resource()).toMatchObject({ lastError: '', lastVerifiedAt: null })
+  })
+
+  test('agent_lost at a takeover: the lost job\'s error is written, the new job claims', async () => {
+    neverVerified()
+    h.db.seed('tradecraftIngestionJob', { id: 'j-old', userId: 'owner', resourceId: 'r1', kind: 'add', status: 'running', leaseUntil: new Date(T0 - 1) })
+    resource().activeJobId = 'j-old'
+    stubAgent()
+    expect((await start('refresh')).kind).toBe('started')
+    expect(resource()).toMatchObject({ lastError: 'verify failed (agent_lost)' })
+    expect(resource().lastVerifiedAt).not.toBeNull()
+    expect(resource().activeJobId).not.toBe('j-old')
+  })
+
+  test('a lost job cancelled here: "refresh cancelled"', async () => {
+    neverVerified()
+    h.db.seed('tradecraftIngestionJob', { id: 'j-lost', userId: 'owner', resourceId: 'r1', kind: 'refresh', status: 'running', leaseUntil: new Date(T0 - 1) })
+    resource().activeJobId = 'j-lost'
+    stubAgent()
+    await cancelJob('owner', 'r1')
+    expect(resource()).toMatchObject({ lastError: 'refresh cancelled', activeJobId: null })
+    expect(resource().lastVerifiedAt).not.toBeNull()
+  })
+})
+
+describe('sweepLostJobs: a lease no agent renews, read as agent_lost, is ended where it is read', () => {
+  const seedLost = () => {
+    Object.assign(resource(), { lastVerifiedAt: null, lastError: '', activeJobId: 'j-lost' })
+    h.db.seed('tradecraftIngestionJob', { id: 'j-lost', userId: 'owner', resourceId: 'r1', kind: 'add', status: 'queued', leaseUntil: new Date(T0 - 1) })
+  }
+
+  test('the lost add fails agent_lost, its claim is freed, its 1.x columns say why; live jobs and other accounts untouched', async () => {
+    seedLost()
+    h.db.seed('userTradecraftResource', { id: 'r2', userId: 'owner', name: 'B', slug: 'b', url: 'https://b.example.test/', activeJobId: 'j-live' })
+    h.db.seed('tradecraftIngestionJob', { id: 'j-live', userId: 'owner', resourceId: 'r2', kind: 'refresh', status: 'running', leaseUntil: new Date(T0 + 30_000) })
+    h.db.seed('tradecraftIngestionJob', { id: 'j-theirs', userId: 'other', resourceId: 'r9', kind: 'add', status: 'running', leaseUntil: null })
+    expect(await sweepLostJobs('owner')).toBe(1)
+    expect(job('j-lost')).toMatchObject({ status: 'failed', errorCode: 'agent_lost' })
+    expect(resource()).toMatchObject({ lastError: 'verify failed (agent_lost)', activeJobId: null })
+    expect((resource().lastVerifiedAt as Date).getTime()).toBe(T0)
+    expect(job('j-live').status).toBe('running')
+    expect(job('j-theirs').status).toBe('running')
+  })
+
+  test('twice ends it once; a read of the job view sweeps first', async () => {
+    seedLost()
+    expect(await latestJob('owner', 'r1')).toMatchObject({ id: 'j-lost', status: 'failed', errorCode: 'agent_lost' })
+    expect(job('j-lost').status).toBe('failed')
+    expect(await sweepLostJobs('owner')).toBe(0)
+  })
+
+  test('the close and the 1.x write are one transaction; a failure is logged, never thrown', async () => {
+    seedLost()
+    h.db.failNext('userTradecraftResource.updateMany', Object.assign(new Error('db down'), { code: 'P1001' }))
+    expect(await sweepLostJobs('owner')).toBe(0)
+    expect(job('j-lost').status).toBe('queued')
+    expect(resource()).toMatchObject({ lastError: '', lastVerifiedAt: null })
+    const logged = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join(' ')
+    expect(logged).toContain('[tradecraft] job_sweep_failed user=owner code=P1001')
+  })
+})
+

@@ -153,6 +153,19 @@ describe("the agent's 1.x list names no person: a resource with a login stays ou
   })
 })
 
+describe('M1: an account that turned 2.0 off sees a lost 2.0 add as failed, not "verifying" (TD-18)', () => {
+  test('the 1.x list ends the lost job and answers the error with a verification time', async () => {
+    setSwitch(false)
+    Object.assign(row(), { lastVerifiedAt: null, lastError: '', activeJobId: 'j-lost' })
+    h.db.seed('tradecraftIngestionJob', { id: 'j-lost', userId: 'owner', resourceId: 'r1', kind: 'add', status: 'running', leaseUntil: new Date('2026-11-16T09:59:00Z') })
+    stubAgent(agent1x)
+    const listed = (await (await list.GET(req(''), P)).json()) as Record<string, unknown>[]
+    const r1 = listed.find(r => r.id === 'r1')!
+    expect(r1).toMatchObject({ lastError: 'verify failed (agent_lost)', lastVerifiedAt: '2026-11-16T10:00:00.000Z' })
+    expect(h.db.rows('tradecraftIngestionJob', { id: 'j-lost' })[0]).toMatchObject({ status: 'failed', errorCode: 'agent_lost' })
+  })
+})
+
 describe('switch on: the 2.0 modules', () => {
   beforeEach(() => setSwitch(true))
 

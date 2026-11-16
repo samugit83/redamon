@@ -16,7 +16,7 @@ import prisma from '@/lib/prisma'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { now } from '@/lib/authz/clock'
 import type { AuditActor } from '@/lib/auditActor'
-import { upstreamFailure } from '@/lib/routeErrors'
+import { safeErrorCode, upstreamFailure } from '@/lib/routeErrors'
 import {
   AGENT_ROUTES, Credentials, JobStartAnswer, JobStartBatch, UNFINISHED_JOB_STATUSES,
   type ErrorCode, type JobStartRequest,
@@ -97,8 +97,70 @@ export function jobView(job: JobRow, at: Date = now()): JobView {
 
 /** The account's latest job of a resource (the running one, or the one that ended last). */
 export async function latestJob(ownerId: string, resourceId: string): Promise<JobView | null> {
+  await sweepLostJobs(ownerId)
   const job = await prisma.tradecraftIngestionJob.findFirst({ where: { resourceId, userId: ownerId }, orderBy: { createdAt: 'desc' } })
   return job ? jobView(job) : null
+}
+
+type EndedJob = Pick<TradecraftIngestionJob, 'id' | 'kind' | 'resourceId'>
+
+/** The 1.x `lastError` of a job that ended without a swap, in the 1.x format (agentLastError.ts). */
+export function legacyErrorText(kind: string, code: string, upstreamStatus?: number): string {
+  const action = kind === 'add' ? 'verify' : 'refresh'
+  if (code === 'cancelled') return `${action} cancelled`
+  return `${action} failed (${code}${upstreamStatus ? `, agent HTTP ${upstreamStatus}` : ''})`
+}
+
+/**
+ * Ends a job that will not swap, inside the caller's transaction: closes it while it is still
+ * unfinished (and, with `where`, only while that holds too), frees its resource's claim, and
+ * writes the 1.x columns as a failed 1.x verify or refresh would (TD-18, D-25): the error, and a
+ * verification time when the resource never had one, so the 1.x tab of an account that turned
+ * 2.0 off shows the failure instead of "verifying" forever. Everything else stays as it was.
+ * Only the writer that closed the job writes, so the agent's own close and this one never both
+ * do. Answers whether this call closed it.
+ */
+async function endWithoutSwap(
+  tx: Prisma.TransactionClient, job: EndedJob, status: 'failed' | 'cancelled', errorCode: ErrorCode, at: Date,
+  opts: { where?: Prisma.TradecraftIngestionJobWhereInput; cancelRequested?: boolean; upstreamStatus?: number } = {},
+): Promise<boolean> {
+  const { count } = await tx.tradecraftIngestionJob.updateMany({
+    where: { id: job.id, status: { in: [...UNFINISHED_JOB_STATUSES] }, ...opts.where },
+    data: { status, errorCode, finishedAt: at, ...(opts.cancelRequested ? { cancelRequested: true } : {}) },
+  })
+  if (count !== 1) return false
+  if (!job.resourceId) return true
+  await tx.userTradecraftResource.updateMany({ where: { id: job.resourceId, activeJobId: job.id }, data: { activeJobId: null } })
+  await tx.userTradecraftResource.updateMany({
+    where: { id: job.resourceId }, data: { lastError: legacyErrorText(job.kind, errorCode, opts.upstreamStatus) },
+  })
+  await tx.userTradecraftResource.updateMany({ where: { id: job.resourceId, lastVerifiedAt: null }, data: { lastVerifiedAt: at } })
+  return true
+}
+
+const LEASE_GONE = (at: Date): Prisma.TradecraftIngestionJobWhereInput => ({ OR: [{ leaseUntil: null }, { leaseUntil: { lt: at } }] })
+
+/**
+ * Fails the account's unfinished jobs that no agent renews (`agent_lost`), as the reads that
+ * would show them run: the `TriageRun` rule (triageRun.ts), one call both answers and cleans up
+ * after a lost agent. Best effort: a failure is logged and the read goes on. Answers how many it
+ * ended.
+ */
+export async function sweepLostJobs(ownerId: string, at: Date = now()): Promise<number> {
+  try {
+    const lost = await prisma.tradecraftIngestionJob.findMany({
+      where: { userId: ownerId, status: { in: [...UNFINISHED_JOB_STATUSES] }, ...LEASE_GONE(at) },
+      select: { id: true, kind: true, resourceId: true },
+    })
+    let ended = 0
+    for (const job of lost) {
+      if (await prisma.$transaction(tx => endWithoutSwap(tx, job, 'failed', 'agent_lost', at, { where: LEASE_GONE(at) }))) ended += 1
+    }
+    return ended
+  } catch (err) {
+    console.error(`[tradecraft] job_sweep_failed user=${ownerId} code=${safeErrorCode(err)}`)
+    return 0
+  }
 }
 
 export type StartOutcome =
@@ -122,13 +184,10 @@ export async function claimHolder(
   return job && holdsClaim(job, at) ? job : null
 }
 
-/** Ends a job that will not run, and frees its resource's claim if it still holds it. */
-async function closeJob(jobId: string, resourceId: string, status: 'failed' | 'cancelled', errorCode: ErrorCode): Promise<void> {
+/** Ends a job that will not run (see endWithoutSwap). */
+async function closeJob(job: EndedJob, errorCode: ErrorCode, upstreamStatus?: number): Promise<void> {
   const at = now()
-  await prisma.$transaction([
-    prisma.tradecraftIngestionJob.updateMany({ where: { id: jobId, status: { in: [...UNFINISHED_JOB_STATUSES] } }, data: { status, errorCode, finishedAt: at } }),
-    prisma.userTradecraftResource.updateMany({ where: { id: resourceId, activeJobId: jobId }, data: { activeJobId: null } }),
-  ])
+  await prisma.$transaction(tx => endWithoutSwap(tx, job, 'failed', errorCode, at, { upstreamStatus }))
 }
 
 export function buildJobRequest(
@@ -214,13 +273,11 @@ export async function startJob(input: {
       })
       if (claim.count !== 1) throw new Error('startJob: the claim changed under the row lock')
       // The claim it took over, if any: a job whose lease expired or never existed runs nowhere.
-      await tx.tradecraftIngestionJob.updateMany({
-        where: {
-          resourceId, id: { not: created.id }, status: { in: [...UNFINISHED_JOB_STATUSES] },
-          OR: [{ leaseUntil: null }, { leaseUntil: { lt: at } }],
-        },
-        data: { status: 'failed', errorCode: 'agent_lost', finishedAt: at },
+      const lost = await tx.tradecraftIngestionJob.findMany({
+        where: { resourceId, id: { not: created.id }, status: { in: [...UNFINISHED_JOB_STATUSES] }, ...LEASE_GONE(at) },
+        select: { id: true, kind: true, resourceId: true },
       })
+      for (const job of lost) await endWithoutSwap(tx, job, 'failed', 'agent_lost', at, { where: LEASE_GONE(at) })
       return { job: created, resource: row }
     }))
   } catch (err) {
@@ -243,7 +300,7 @@ export async function startJob(input: {
   if (!batch.success) {
     // The request carries secrets: log the job and the paths that failed, never the values.
     console.error(`[tradecraft] job_request_invalid job=${job.id} paths=${batch.error.issues.map(i => i.path.join('.')).join(',')}`)
-    await closeJob(job.id, resourceId, 'failed', 'internal_error')
+    await closeJob(job, 'internal_error')
     return { kind: 'bad_request', job: failedView('internal_error') }
   }
 
@@ -262,12 +319,12 @@ export async function startJob(input: {
     }
     const cause = failure.body.cause
     console.error(`[tradecraft] job_start_unreachable job=${job.id}${cause ? ` cause=${cause}` : ''}`)
-    await closeJob(job.id, resourceId, 'failed', 'agent_unreachable')
+    await closeJob(job, 'agent_unreachable')
     return { kind: 'agent_unreachable', job: failedView('agent_unreachable'), ...(cause ? { cause } : {}) }
   }
   if (!resp.ok) {
     console.error(`[tradecraft] job_start_refused job=${job.id} status=${resp.status}`)
-    await closeJob(job.id, resourceId, 'failed', 'agent_unreachable')
+    await closeJob(job, 'agent_unreachable', resp.status)
     return { kind: 'agent_unreachable', job: failedView('agent_unreachable'), upstreamStatus: resp.status }
   }
   const answer = JobStartAnswer.safeParse(await resp.json().catch(() => null))
@@ -275,7 +332,7 @@ export async function startJob(input: {
   const refusal = answer.data.refused.find(r => r.job_id === job.id)
   if (refusal) {
     console.error(`[tradecraft] job_refused job=${job.id} code=${refusal.code}`)
-    await closeJob(job.id, resourceId, 'failed', refusal.code)
+    await closeJob(job, refusal.code)
     return { kind: 'started', job: failedView(refusal.code), delivery: 'refused' }
   }
   return { kind: 'started', job: jobView(job), delivery: 'accepted' }
@@ -342,11 +399,8 @@ export async function cancelJob(ownerId: string, resourceId: string): Promise<{ 
     if (leaseLive(job, at)) {
       return { job: await tx.tradecraftIngestionJob.update({ where: { id: job.id }, data: { cancelRequested: true } }), notify: true }
     }
-    const ended = await tx.tradecraftIngestionJob.update({
-      where: { id: job.id }, data: { cancelRequested: true, status: 'cancelled', errorCode: 'cancelled', finishedAt: at },
-    })
-    await tx.userTradecraftResource.updateMany({ where: { id: resourceId, activeJobId: job.id }, data: { activeJobId: null } })
-    return { job: ended, notify: false }
+    await endWithoutSwap(tx, job, 'cancelled', 'cancelled', at, { cancelRequested: true })
+    return { job: await tx.tradecraftIngestionJob.findUnique({ where: { id: job.id } }), notify: false }
   })
   if (result === null) return { found: false, job: null }
   if (result.notify && result.job) await notifyCancel(result.job.id)

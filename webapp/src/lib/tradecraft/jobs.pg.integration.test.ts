@@ -22,7 +22,7 @@ vi.mock('@/lib/prisma', async () => {
 })
 
 import db from '@/lib/prisma'
-import { START_LEASE_MS, startJob } from './jobs'
+import { START_LEASE_MS, startJob, sweepLostJobs } from './jobs'
 import { updateResourceV2 } from './v2/update'
 
 const MARKER = 'plugins_pg_integration_test_marker'
@@ -94,6 +94,27 @@ describe.skipIf(!URL_)('the resource claim on a real Postgres', () => {
     expect(out.kind).toBe('started')
     expect(await db.tradecraftIngestionJob.findUnique({ where: { id: lost.id }, select: { status: true, errorCode: true } }))
       .toEqual({ status: 'failed', errorCode: 'agent_lost' })
+  })
+
+  test('two sweeps at once end a lost add once, free its claim and write its 1.x columns in the same transaction (TD-18)', async () => {
+    const { userId, resourceId } = await resource({ summary: 'kept' })
+    const lost = await db.tradecraftIngestionJob.create({ data: { userId, resourceId, kind: 'add', status: 'running', leaseUntil: new Date(Date.now() - 1_000) } })
+    await db.userTradecraftResource.update({ where: { id: resourceId }, data: { activeJobId: lost.id } })
+    const ended = await Promise.all([sweepLostJobs(userId), sweepLostJobs(userId)])
+    expect(ended.sort()).toEqual([0, 1])
+    expect(await db.tradecraftIngestionJob.findUnique({ where: { id: lost.id }, select: { status: true, errorCode: true } }))
+      .toEqual({ status: 'failed', errorCode: 'agent_lost' })
+    const row = await db.userTradecraftResource.findUnique({ where: { id: resourceId } })
+    expect(row).toMatchObject({ activeJobId: null, lastError: 'verify failed (agent_lost)', summary: 'kept' })
+    expect(row?.lastVerifiedAt).not.toBeNull()
+  })
+
+  test('a job the agent ended meanwhile is left as it ended, and so is its resource', async () => {
+    const { userId, resourceId } = await resource({ lastError: '' })
+    const done = await db.tradecraftIngestionJob.create({ data: { userId, resourceId, kind: 'refresh', status: 'running', leaseUntil: new Date(Date.now() - 1_000) } })
+    await db.tradecraftIngestionJob.update({ where: { id: done.id }, data: { status: 'succeeded' } })
+    expect(await sweepLostJobs(userId)).toBe(0)
+    expect((await db.userTradecraftResource.findUnique({ where: { id: resourceId } }))?.lastError).toBe('')
   })
 
   test("the lock is keyed by the account: another account's id claims nothing", async () => {
