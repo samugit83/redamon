@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   calls: [] as Array<{ method: string; url: string; body?: string; signal?: AbortSignal }>,
   send: null as null | ((body: string, signal?: AbortSignal) => Promise<Response>),
   threadFails: 0,
+  threadsGate: null as null | Promise<void>,
 }))
 
 vi.mock('@/components/ui', async (orig) => ({
@@ -46,7 +47,10 @@ async function router(input: RequestInfo | URL, init: RequestInit = {}): Promise
   if (!m) return json({ code: 'not_found' }, 404)
   const [, pid, rest = ''] = m
   if (rest === '/status') return json({ allowed: true, retentionDays: 30 })
-  if (rest === '/threads') return json({ threads: THREADS[pid] ?? [] })
+  if (rest === '/threads') {
+    if (h.threadsGate) await h.threadsGate
+    return json({ threads: THREADS[pid] ?? [] })
+  }
   if (rest === '/messages' && method === 'POST') return h.send ? h.send(String(init.body), init.signal ?? undefined) : json({ code: 'agent_unreachable' }, 502)
   const t = /^\/threads\/(\w+)(\/stop)?$/.exec(rest)
   if (t && t[2]) return json({ stopped: true })
@@ -91,6 +95,7 @@ beforeEach(() => {
   h.calls = []
   h.send = null
   h.threadFails = 0
+  h.threadsGate = null
   vi.stubGlobal('fetch', vi.fn(router))
   try { window.localStorage.clear() } catch { /* storage off */ }
 })
@@ -125,6 +130,25 @@ describe('project scoping', () => {
 })
 
 describe('sending', () => {
+  test('a message sent before the conversation list arrives stays a new conversation, and its answer runs on', async () => {
+    let release = () => {}
+    h.threadsGate = new Promise<void>((r) => { release = r })
+    let aborted = false
+    h.send = (_body, signal) => new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => { aborted = true; reject(new DOMException('aborted', 'AbortError')) })
+    })
+    window.localStorage.setItem('redamon.navigator.last.v1.alice.pA', 'tA')
+    mount('pA')
+    await typeAndSend('a quick first question')
+    await waitFor(() => expect(posts('/messages')).toHaveLength(1))
+    expect(JSON.parse(posts('/messages')[0].body!)).toMatchObject({ threadId: null })
+    release()
+    await waitFor(() => expect(h.calls.some((c) => c.method === 'GET' && c.url.endsWith('/threads'))).toBe(true))
+    await new Promise((r) => setTimeout(r, 200))
+    expect(h.calls.some((c) => c.method === 'GET' && c.url.endsWith('/threads/tA'))).toBe(false)
+    expect(aborted).toBe(false)
+  })
+
   test('the first send goes through the feature-model gate for navigator', async () => {
     mount('pA')
     await screen.findByText('answer in tA')

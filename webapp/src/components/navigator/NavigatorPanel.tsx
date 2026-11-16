@@ -122,8 +122,13 @@ export function NavigatorPanel({
   })
   const { open: openThread } = chat
 
-  // A project switch: open that project's last conversation, else its newest, else the Intro.
+  // A project switch: open that project's last conversation, else its newest, else the Intro. Any
+  // choice the person makes first (a send, a new conversation, one from History) wins: the list
+  // arrives later, and reopening then would put their message in another conversation, or abort it.
   const openedFor = useRef<string | null>(null)
+  const claimProject = useCallback(() => {
+    if (projectId) openedFor.current = projectId
+  }, [projectId])
   useEffect(() => {
     if (!projectId || !threads.data || openedFor.current === projectId) return
     openedFor.current = projectId
@@ -170,18 +175,20 @@ export function NavigatorPanel({
 
   const send = useCallback(async (text: string) => {
     if (!text.trim()) return
+    claimProject()
     setView('chat')
     setDraft('')
     await chat.send(text)
     void queryClient.invalidateQueries({ queryKey: ['navigator', projectId, 'status'] })
-  }, [chat, queryClient, projectId])
+  }, [chat, queryClient, projectId, claimProject])
 
   const newConversation = useCallback(() => {
+    claimProject()
     if (projectId) writeLast(userId, projectId, null)
     void openThread(null)
     setView('chat')
     inputRef.current?.focus()
-  }, [projectId, userId, openThread])
+  }, [projectId, userId, openThread, claimProject])
 
   const deleteThread = useCallback(async (tid: string) => {
     if (!projectId) return
@@ -246,7 +253,7 @@ export function NavigatorPanel({
             error={threads.error ? (threads.error as Error).message : null}
             activeId={chat.threadId}
             retentionDays={status.data?.retentionDays ?? null}
-            onOpen={(tid) => { if (projectId) writeLast(userId, projectId, tid); void openThread(tid); setView('chat') }}
+            onOpen={(tid) => { claimProject(); if (projectId) writeLast(userId, projectId, tid); void openThread(tid); setView('chat') }}
             onNew={newConversation}
             onDelete={(tid) => void deleteThread(tid)}
             onRetry={() => void threads.refetch()}
