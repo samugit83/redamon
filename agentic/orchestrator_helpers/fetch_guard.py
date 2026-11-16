@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-from typing import Tuple
+import json
+from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 import httpcore
@@ -197,11 +198,11 @@ def _rd_route(route):
         route.abort("blockedbyclient")
 page.route("**/*", _rd_route)
 try:
-    _rd_resp = page.goto({url}, wait_until="networkidle", timeout=30000)
+    _rd_resp = page.goto({url}, wait_until={wait_until}, timeout={timeout_ms})
 except Exception as _rd_exc:
     print("[ERROR] Navigation failed: " + str(_rd_exc).splitlines()[0])
 else:
-    _rd_hops = [page.url]
+{wait_for}    _rd_hops = [page.url]
     _rd_req = _rd_resp.request if _rd_resp is not None else None
     while _rd_req is not None:
         _rd_hops.append(_rd_req.url)
@@ -210,19 +211,71 @@ else:
     if _rd_bad:
         print("[BLOCKED] navigation reached a non-public address: " + _rd_bad[0])
     else:
-        print(page.content()[:40000])
+{clean}        print(page.content()[:{max_chars}])
 '''
 
 
-def guarded_browser_script(url: str) -> str:
+# The in-page cleaning measured in EX-2 (Tradecraft 2.0, §7 item 9): inline script and style
+# texts are emptied but the elements stay, so `script[src]` and every attribute marker
+# survive; svg, noscript and template go; comments, meta, link and anchors are never touched,
+# so type detection still sees its markers and the crawl every link. On a 1 MB page it
+# brought the HTML under 40,000 characters with the whole article. One line on purpose:
+# the MCP wrapper re-indents the script line by line.
+_CLEAN_JS = (
+    "() => { for (const s of document.querySelectorAll('script:not([src])')) s.textContent = ''; "
+    "for (const s of document.querySelectorAll('style')) s.textContent = ''; "
+    "for (const n of document.querySelectorAll('svg, noscript, template')) n.remove(); }"
+)
+_WAIT_UNTIL = ("load", "domcontentloaded", "networkidle", "commit")
+# The sandbox stops a script at 60 s (mcp/servers/playwright_server.py); the wait for an
+# element gets what the page load leaves of 55 s, keeping 5 s to start and send the page.
+_SCRIPT_BUDGET_MS = 55_000
+_MIN_WAIT_FOR_MS = 1_000
+
+
+def guarded_browser_script(
+    url: str,
+    *,
+    timeout_ms: int = 30000,
+    wait_until: str = "networkidle",
+    max_chars: int = 40000,
+    clean: bool = False,
+    wait_for: Optional[str] = None,
+) -> str:
     """execute_playwright ``script`` that renders ``url`` and returns its HTML,
-    refusing to return a page reached through an internal address."""
+    refusing to return a page reached through an internal address.
+
+    With no option the script is exactly the one 1.x tradecraft has always sent. ``clean``
+    runs the EX-2 cleaning before the page is cut at ``max_chars``; ``wait_for`` is a CSS
+    selector the page is given time to show (a page without it is still returned). Every
+    variant keeps the same address checks, and the cleaning runs only on a page that passed
+    them.
+    """
+    if wait_until not in _WAIT_UNTIL:
+        raise ValueError(f"wait_until must be one of {', '.join(_WAIT_UNTIL)}")
+    timeout_ms, max_chars = int(timeout_ms), int(max_chars)
+    if timeout_ms < 1 or max_chars < 1:
+        raise ValueError("timeout_ms and max_chars must be positive")
+    wait_block = ""
+    if wait_for:
+        wait_ms = max(_MIN_WAIT_FOR_MS, min(timeout_ms, _SCRIPT_BUDGET_MS - timeout_ms))
+        wait_block = (
+            "    try:\n"
+            f"        page.wait_for_selector({ascii(wait_for)}, timeout={wait_ms})\n"
+            "    except Exception:\n"
+            "        pass\n"
+        )
     # ascii() gives a literal with every non-ASCII character escaped, so the
-    # URL can neither break out of the string nor split the line when the MCP
-    # wrapper re-indents the script with str.splitlines().
+    # URL (or the selector) can neither break out of the string nor split the
+    # line when the MCP wrapper re-indents the script with str.splitlines().
     return _BROWSER_GUARD_SCRIPT.format(
         url=ascii(url),
         blocked_names=ascii(frozenset(_BLOCKED_HOSTNAMES)),
+        wait_until=json.dumps(wait_until),
+        timeout_ms=timeout_ms,
+        wait_for=wait_block,
+        clean=f"        page.evaluate({ascii(_CLEAN_JS)})\n" if clean else "",
+        max_chars=max_chars,
     )
 
 

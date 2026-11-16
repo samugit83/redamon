@@ -107,6 +107,20 @@ def request_headers(settings: EffectiveSettings, extra: Optional[Mapping[str, st
     return headers
 
 
+def render_options(settings: EffectiveSettings) -> dict[str, Any]:
+    """How every 2.0 browser render runs (§4.1): the page timeout, when the page counts as
+    loaded, the element to wait for, and the transfer limit, applied after the page was
+    cleaned in the browser (§7 item 9), so the limit spends itself on the article, not on
+    inline scripts and styles."""
+    return {
+        "timeout": float(settings.int("fetching.browserTimeoutSec")),
+        "wait_until": settings.str("fetching.browserWaitUntil"),
+        "max_chars": settings.int("fetching.browserMaxChars"),
+        "clean": True,
+        "wait_for": settings.str("fetching.waitForSelector") or None,
+    }
+
+
 def clean_page(html: str, *, body_selector: Optional[str] = None, remove: Sequence[str] = ()) -> str:
     """HTML to Markdown, the same function for ingestion and reading. With no selector and no
     removals it is exactly 1.x's ``html_to_markdown``; ``body_selector`` names the article
@@ -199,13 +213,7 @@ async def smart_fetch(url: str, settings: EffectiveSettings, *, github_token: Op
             return page
     if not (allow_browser and settings.bool("fetching.browserEnabled")):
         return page
-    rendered = await net.get_fetcher().render(
-        url,
-        timeout=float(settings.int("fetching.browserTimeoutSec")),
-        wait_until=settings.str("fetching.browserWaitUntil"),
-        max_chars=settings.int("fetching.browserMaxChars"),
-        wait_for=settings.str("fetching.waitForSelector") or None,
-    )
+    rendered = await net.get_fetcher().render(url, **render_options(settings))
     if rendered.error == "unsafe_address":
         # The browser saw the hop the address guard refuses: that wins over a thin tier 1.
         return FetchedPage(url=url, final_url=url, error="unsafe_address", tier=2)

@@ -96,7 +96,7 @@ def _dedupe(entries: list[Candidate], cap: int) -> tuple[list[Candidate], bool]:
     return out, False
 
 
-def _title_from_slug(url: str, *, strip_html: bool) -> str:
+def title_from_slug(url: str, *, strip_html: bool) -> str:
     slug = urllib.parse.urlsplit(url).path.strip("/").split("/")[-1] or url
     if strip_html:
         slug = slug.removesuffix(".html")
@@ -182,7 +182,7 @@ async def build_wiki(url: str, settings: EffectiveSettings, *, home_html: str = 
     urls, index_url = await _from_sitemaps(base, settings.list("type.wiki.sitemapUrls"), settings, blocking)
     if urls:
         urls = language_filter(urls, settings)
-        entries = [Candidate(u, _title_from_slug(u, strip_html=True), "sitemap", u) for u in urls]
+        entries = [Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u) for u in urls]
         entries, cut = _dedupe(entries, cap)
         return MapResult("mkdocs-wiki", entries, index_kind="sitemap",
                          index_url=urllib.parse.urljoin(base + "/", index_url), truncated=cut)
@@ -291,7 +291,7 @@ async def build_gitbook(url: str, settings: EffectiveSettings, *, home_html: str
     urls, index_url = await _from_sitemaps(base, settings.list("type.gitbook.sitemapUrls"), settings, blocking)
     if urls:
         urls = language_filter(urls, settings)
-        entries, cut = _dedupe([Candidate(u, _title_from_slug(u, strip_html=False), "sitemap", u) for u in urls], cap)
+        entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=False), "sitemap", u) for u in urls], cap)
         return MapResult("gitbook", entries, index_kind="sitemap",
                          index_url=urllib.parse.urljoin(base + "/", index_url), truncated=cut)
 
@@ -302,10 +302,7 @@ async def build_gitbook(url: str, settings: EffectiveSettings, *, home_html: str
         home_html, home_final_url = (page.text, page.final_url) if page.ok else ("", "")
     links = await blocking(_nav_links, home_html, home_final_url or base, selector)
     if not links and allow_browser and settings.bool("fetching.browserEnabled"):
-        rendered = await net.get_fetcher().render(
-            base, timeout=float(settings.int("fetching.browserTimeoutSec")),
-            wait_until=settings.str("fetching.browserWaitUntil"),
-            max_chars=settings.int("fetching.browserMaxChars"))
+        rendered = await net.get_fetcher().render(base, **fetch.render_options(settings))
         if rendered.html:
             links = await blocking(_nav_links, rendered.html, base, selector)
     entries, cut = _dedupe([Candidate(p, t, "nav", p) for t, p in links], menu_cap)

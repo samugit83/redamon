@@ -243,9 +243,6 @@ class GuardedFetcher:
         clean: bool = False,
         wait_for: Optional[str] = None,
     ) -> Rendered:
-        # wait_until, max_chars, clean and wait_for are fixed inside guarded_browser_script
-        # until the in-browser cleaning lands (T3.2); they are accepted so callers need
-        # no change then.
         problem = url_problem(url)
         if problem:
             _log_failure(problem, url)
@@ -261,7 +258,14 @@ class GuardedFetcher:
             # A host the resolver cannot even encode; get() answers the same.
             _log_failure("bad_url", url)
             return Rendered(url=url, html="", error="bad_url")
-        output, error = await self.run_browser_script(guarded_browser_script(url), timeout=timeout)
+        try:
+            script = guarded_browser_script(url, timeout_ms=int(timeout * 1000), wait_until=wait_until,
+                                            max_chars=max_chars, clean=clean, wait_for=wait_for)
+        except ValueError:
+            # An option outside what the script accepts (the settings' clamp keeps them inside).
+            _log_failure("browser_error", url)
+            return Rendered(url=url, html="", error="browser_error")
+        output, error = await self.run_browser_script(script, timeout=timeout)
         if error:
             _log_failure(error, url)
             return Rendered(url=url, html="", error=error)
