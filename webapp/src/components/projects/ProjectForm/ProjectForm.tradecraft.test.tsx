@@ -7,6 +7,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AlertProvider, ToastProvider } from '@/components/ui'
+import type { MyAccess } from '@/lib/authz/projectAccess'
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), refresh: vi.fn() }) }))
 vi.mock('next/dynamic', () => ({ default: () => () => null }))
@@ -55,10 +56,17 @@ afterEach(() => {
   window.history.replaceState({}, '', '/')
 })
 
-function draw() {
+// A Read + Write share without Manage: the project PUT lets it change the switches (project:settings).
+const EDITOR: MyAccess = {
+  level: 'write', via: 'share', owner: { name: 'Alice', email: 'alice@e2e.local' },
+  toggles: { rawData: true, runScans: false, useAgent: false, exploit: false, manage: false },
+}
+
+function draw(myAccess?: MyAccess) {
   const onSubmit = vi.fn(async (data: Record<string, unknown>) => ({ ...data, updatedAt: '2026-11-16T12:00:00.000Z' }))
   const initialData = {
     ...MINIMAL_DEFAULTS, id: 'p1', name: 'ACME lab', targetDomain: 'acme-lab.test', tradecraftOff: ['r2'], updatedAt: '2026-11-16T10:00:00.000Z',
+    ...(myAccess ? { myAccess } : {}),
   } as never
   render(
     <QueryClientProvider client={new QueryClient()}>
@@ -98,5 +106,17 @@ describe('ProjectForm and Tradecraft', () => {
     expect(sent.tradecraftOff).toEqual(['r1', 'r2'])
     expect(sent.updatedAt).toBe('2026-11-16T10:00:00.000Z')
     expect(posted).toEqual([{ projectId: 'p1' }])
+  })
+
+  test('permission: a Read + Write collaborator changes the switches in the form, as the drawer and the PUT allow (R-065)', async () => {
+    const { onSubmit } = draw(EDITOR)
+    fireEvent.click(screen.getByText('turn-off'))
+    await waitFor(() => expect(JSON.parse(screen.getByTestId('off').textContent!)).toEqual(['r1', 'r2']))
+    expect(screen.queryByText('Not changed')).toBeNull()
+    const update = screen.getByRole('button', { name: /Update Settings/ })
+    await waitFor(() => expect(update).toBeEnabled())
+    fireEvent.click(update)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect((onSubmit.mock.calls[0][0] as Record<string, unknown>).tradecraftOff).toEqual(['r1', 'r2'])
   })
 })

@@ -792,9 +792,12 @@ export function ProjectForm({
   // A collaborator's change their access does not reach (a gate loosened, the scope changed, the
   // owner's secret) is refused where it is made, with the reason (step 5.7); the project PUT would
   // refuse the whole save for it (step 5.1). Judged against the row as stored, as the PUT judges.
-  const changeRefusal = useCallback((changes: Record<string, unknown>): FieldChangeRefusal | null => fieldChangeRefusal(
-    serverRowRef.current ?? {}, formDataRef.current as unknown as Record<string, unknown>, changes, formAccess,
-  ), [formAccess])
+  // The tradecraft switches are no Project column: the PUT takes them out before it judges the
+  // settings classes, and the route's project:settings (Write) is all they need (§3.4, R-065).
+  const changeRefusal = useCallback((changes: Record<string, unknown>): FieldChangeRefusal | null => {
+    const { tradecraftOff: _switches, ...judged } = changes
+    return fieldChangeRefusal(serverRowRef.current ?? {}, formDataRef.current as unknown as Record<string, unknown>, judged, formAccess)
+  }, [formAccess])
   // One notice per field while the person keeps trying (a locked text box gets a key press each time).
   const refusalShownAt = useRef<Record<string, number>>({})
   const announceRefusal = (refusal: FieldChangeRefusal) => {
