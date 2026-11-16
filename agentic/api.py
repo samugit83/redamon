@@ -5035,7 +5035,9 @@ def _graph_exec_respond(final: str, params: dict) -> JSONResponse:
             content={"error": "result too large, narrow your query"},
         )
     except Exception as e:
-        logger.error(f"graph/exec failed: {e}")
+        # A Neo4j error quotes the query and can quote the value it failed on, and the query may
+        # be a model's (AI Navigator, MCP): the code and the class only.
+        logger.error("graph/exec failed code=%s class=%s", getattr(e, "code", None), type(e).__name__)
         return JSONResponse(status_code=500, content={"error": "graph query failed"})
 
 

@@ -46,12 +46,13 @@ async function agentFailure(resp: Response, context: string): Promise<never> {
   } catch {
     // Non-JSON body: nothing safe to quote.
   }
-  console.error(`[mcp] ${context} failed (${resp.status}):`, JSON.stringify(detail))
-
   // The agent's own error strings are already normalised (P0-3/P0-4), so the
   // two documented ones are quoted; anything else becomes a generic line.
   const known = typeof detail.error === 'string' ? detail.error : ''
   const stage = detail.stage === 'generate' || detail.stage === 'execute' ? detail.stage : null
+  // A refusal quotes the caller's query (a pattern, a name), which may be a model's: the caller
+  // gets it below, the log only the status and the stage.
+  console.error(`[mcp] ${context} failed status=${resp.status} stage=${stage ?? 'none'}`)
 
   if (stage === 'generate') {
     throw new McpToolError(
