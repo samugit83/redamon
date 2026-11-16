@@ -1,0 +1,127 @@
+.section {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sectionTitle {
+  font-weight: 600;
+}
+
+.sectionStatus {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.sectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.override {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.overrideHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.overrideToggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.inherited {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.grow {
+  flex: 1 1 220px;
+}
+
+.checkResult {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.checkFailed {
+  font-size: var(--text-xs);
+  color: var(--error, #c53030);
+}
+
+.presetList {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.presetGroup {
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+
+.presetItem {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.presetItem:hover,
+.presetItem:focus {
+  background: var(--bg-secondary);
+}
+
+.presetDesc {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}

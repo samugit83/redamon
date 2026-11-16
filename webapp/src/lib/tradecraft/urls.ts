@@ -14,15 +14,7 @@ export const USERINFO_REFUSED = "Put a site login in the resource's Access setti
 
 export type UrlCheck = { ok: true } | { ok: false; error: string; code?: 'userinfo_refused' }
 
-export function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64) || 'resource'
-}
+export { slugify } from './slug'
 
 export async function uniqueSlug(userId: string, base: string): Promise<string> {
   let slug = base

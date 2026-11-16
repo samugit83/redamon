@@ -57,7 +57,7 @@ describe('listResourcesV2', () => {
   test('no_sitemap: no map, no snapshot, no override in the answer', async () => {
     const list = await listResourcesV2('owner')
     expect(JSON.stringify(list)).not.toContain('MAPENTRY')
-    for (const key of ['sitemap', 'settingsSnapshot', 'overrides', 'settingsHash', 'activeJobId', 'generation']) expect(list[0]).not.toHaveProperty(key)
+    for (const key of ['sitemap', 'settingsSnapshot', 'settingsHash', 'activeJobId', 'generation']) expect(list[0]).not.toHaveProperty(key)
   })
 
   test('counts: kept entries of the live generation; a 1.x map counted as the 1.x list counts it', async () => {
@@ -94,5 +94,15 @@ describe('listResourcesV2', () => {
   test("resourceViewOf: another account's resource is null", async () => {
     expect(await resourceViewOf('owner', 'r-other')).toBeNull()
     expect(await listResourcesV2('nobody')).toEqual([])
+  })
+})
+
+describe('overrides in the view', () => {
+  test("the resource's own settings travel to its Edit form; an unreadable value reads as none", async () => {
+    h.db.rows('userTradecraftResource', { id: 'r-v1' })[0].overrides = { 'crawl.maxPages': 40 }
+    h.db.rows('userTradecraftResource', { id: 'r-v3' })[0].overrides = ['not', 'a', 'map']
+    const list = await listResourcesV2('owner')
+    expect(list.find(r => r.id === 'r-v1')!.overrides).toEqual({ 'crawl.maxPages': 40 })
+    expect(list.find(r => r.id === 'r-v3')!.overrides).toEqual({})
   })
 })

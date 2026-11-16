@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { Modal } from '@/components/ui/Modal/Modal'
 import { ModelPicker } from '@/components/shared/ModelPicker'
@@ -8,8 +8,32 @@ import { excludeLoop } from '@/lib/agentInTheLoop'
 import { useDirtyState } from '@/hooks/useDirtyState'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { toApiError } from '@/lib/apiError'
-import { tradecraftClient, type ResourceInput, type ResourceView, type SavedResource } from '@/lib/tradecraft/client'
+import type { CheckUrlResult } from '@/lib/tradecraft/agentContract'
+import {
+  tradecraftClient, type IngestionSettingsView, type ResourceInput, type ResourceView, type SavedResource,
+} from '@/lib/tradecraft/client'
+import { presetSettings, type TradecraftPreset } from '@/lib/tradecraft/presets'
+import { isValidValue, settingDef, specDefaults, type SettingValue } from '@/lib/tradecraft/settingsSpec'
+import { slugify } from '@/lib/tradecraft/slug'
+import { defaultStorageMode, forcedStorageMode } from '@/lib/tradecraft/storageModes'
+import { draftError, parseDraft } from '../dialog/draft'
+import { CheckUrlButton } from './CheckUrlButton'
+import { ContentSection } from './ContentSection'
+import { CveSection } from './CveSection'
+import { DocsSection } from './DocsSection'
+import { FetchingSection } from './FetchingSection'
+import { GithubSection } from './GithubSection'
+import type { FormContext } from './OverrideList'
+import { PdfSection } from './PdfSection'
+import { PresetPicker } from './PresetPicker'
+import { RefreshingSection } from './RefreshingSection'
+import { SiteTypeSection } from './SiteTypeSection'
+import { SummarySection } from './SummarySection'
+import { WebsiteSection } from './WebsiteSection'
+import { WikiSection } from './WikiSection'
+import { typeSectionOf } from './sections'
 import css from '../tradecraft.module.css'
+import fcss from './form.module.css'
 
 /** R-198: the model ingests; the agent's run uses its own model. */
 export const MODEL_HELP = 'Used to ingest this resource: crawl decisions, page triage and the summary. It is not used while the agent runs.'
@@ -26,50 +50,196 @@ interface Fields {
   enabled: boolean
   storageMode: 'live' | 'stored'
   githubToken: string
+  slug: string
+  forcedType: string
+  presetKey: string
 }
 
-/** The basic 2.0 resource form (§6.4): Name, URL, model, Enabled, Live or Stored, GitHub token. No cache lifetime. */
-export function ResourceFormV2({ userId, resource, onSaved, onCancel, onDirtyChange }: {
+interface Draft {
+  fields: Fields
+  overrides: Record<string, unknown>
+}
+
+type ListOverride = { mode: string; items?: unknown[]; text?: unknown }
+
+/** The inline error of one override as the form holds it, or ''. */
+export function overrideError(key: string, raw: unknown): string {
+  const def = settingDef(key)
+  if (!def) return 'Not a setting'
+  if (def.listMode) {
+    const o = raw as ListOverride
+    const inner = def.type === 'list' ? (o?.items ?? []).map(x => String(x).trim()).filter(Boolean) : o?.text
+    return isValidValue(def, inner) ? '' : `Must be ${def.type === 'list' ? `at most ${def.maxItems} items` : `at most ${def.maxLength} characters`}`
+  }
+  return draftError(def, raw)
+}
+
+/** The overrides as the server takes them: numbers parsed, list items trimmed. */
+export function overridesPayload(overrides: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, raw] of Object.entries(overrides)) {
+    const def = settingDef(key)
+    if (!def) continue
+    if (def.listMode && def.type === 'list') {
+      const o = raw as ListOverride
+      out[key] = { mode: o.mode, items: (o.items ?? []).map(x => String(x).trim()).filter(Boolean) }
+    } else if (def.listMode) {
+      out[key] = { mode: (raw as ListOverride).mode, text: (raw as ListOverride).text }
+    } else {
+      out[key] = parseDraft(def, raw)
+    }
+  }
+  return out
+}
+
+/**
+ * Pre-fills from Check URL what the type's fields would otherwise leave to a guess (§6.3): the CVE
+ * pattern it found, when none is set. Branches, folders and sitemaps are offered as suggestions.
+ */
+export function prefillFromCheck(result: CheckUrlResult, overrides: Record<string, unknown>): Record<string, unknown> {
+  if (!result.ok) return overrides
+  const next = { ...overrides }
+  if (result.cve_pattern && !Object.hasOwn(next, 'type.cve.pathPatterns')) next['type.cve.pathPatterns'] = [result.cve_pattern]
+  return next
+}
+
+/**
+ * The Add / Edit Resource form (§6.2): the basics always visible (Quick add, Name, Resource ID,
+ * URL with Check URL, model, Enabled, storage with its recommendation), then one collapsed section
+ * per stage with its status, the type's own section only for its type. `settings` is the account's
+ * ingestion settings (the inherited values, the default model and storage); without them the
+ * spec's defaults show.
+ */
+export function ResourceFormV2({ userId, resource, settings = null, onSaved, onCancel, onDirtyChange }: {
   userId: string
   resource: ResourceView | null
+  settings?: IngestionSettingsView | null
   onSaved: (saved: SavedResource) => void
   onCancel: () => void
   onDirtyChange?: (dirty: boolean) => void
 }) {
   const isEdit = !!resource
   const formId = useId()
-  const initial = useMemo<Fields>(() => ({
-    name: resource?.name ?? '',
-    url: resource?.url ?? '',
-    llmModel: resource?.llmModel ?? '',
-    enabled: resource?.enabled ?? true,
-    storageMode: resource?.storageMode === 'stored' ? 'stored' : 'live',
-    githubToken: '',
-  }), [resource])
-  const [f, setF] = useState<Fields>(initial)
+  const accountValues = useMemo<Record<string, SettingValue>>(() => settings?.values ?? specDefaults('ingestion'), [settings])
+  const initial = useMemo<Draft>(() => {
+    const forcedType = resource?.forcedType ?? ''
+    return {
+      fields: {
+        name: resource?.name ?? '',
+        url: resource?.url ?? '',
+        llmModel: resource?.llmModel ?? (typeof accountValues['summary.defaultModel'] === 'string' ? accountValues['summary.defaultModel'] as string : ''),
+        enabled: resource?.enabled ?? true,
+        storageMode: resource
+          ? (resource.storageMode === 'stored' ? 'stored' : 'live')
+          : defaultStorageMode(accountValues['storage.defaultMode'], forcedType),
+        githubToken: '',
+        slug: resource?.slug ?? '',
+        forcedType,
+        presetKey: '',
+      },
+      overrides: structuredClone(resource?.overrides ?? {}),
+    }
+  }, [resource, accountValues])
+  const [draft, setDraft] = useState<Draft>(initial)
+  const [slugEdited, setSlugEdited] = useState(false)
+  const [storageTouched, setStorageTouched] = useState(false)
+  const [check, setCheck] = useState<CheckUrlResult | null>(null)
+  const [checkRun, setCheckRun] = useState(0)
+  const [current, setCurrent] = useState<ResourceView | null>(resource)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
-  const { isDirty, setBaseline } = useDirtyState(f)
+  const { isDirty, setBaseline } = useDirtyState(draft)
   const { guardedNavigate } = useUnsavedChangesGuard(isDirty, { trackGlobal: false })
-  useEffect(() => { setF(initial); setBaseline(initial) }, [initial, setBaseline])
+  useEffect(() => { setDraft(initial); setBaseline(initial) }, [initial, setBaseline])
   useEffect(() => { onDirtyChange?.(isDirty) }, [isDirty, onDirtyChange])
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange])
+  useEffect(() => { setCurrent(resource) }, [resource])
 
-  const set = <K extends keyof Fields>(key: K, value: Fields[K]) => setF(prev => ({ ...prev, [key]: value }))
+  const f = draft.fields
+  const set = <K extends keyof Fields>(key: K, value: Fields[K]) => setDraft(prev => ({ ...prev, fields: { ...prev.fields, [key]: value } }))
+  const setOverride = useCallback((key: string, value: unknown) => setDraft(prev => {
+    const overrides = { ...prev.overrides }
+    if (value === undefined) delete overrides[key]
+    else overrides[key] = value
+    return { ...prev, overrides }
+  }), [])
   const urlChanged = isEdit && f.url.trim() !== resource!.url
+  const detectedType = check?.ok ? check.detected_type : (resource?.resourceType ?? '')
+  const effectiveType = f.forcedType || detectedType
+  const forcedMode = forcedStorageMode(f.forcedType || (check?.ok ? check.detected_type : ''))
+  const storageMode = forcedMode ?? f.storageMode
+  const errors = useMemo(() => {
+    const out: Record<string, string> = {}
+    for (const [k, raw] of Object.entries(draft.overrides)) {
+      const msg = overrideError(k, raw)
+      if (msg) out[k] = msg
+    }
+    return out
+  }, [draft.overrides])
+  const ctx: FormContext = { userId, inherited: accountValues, overrides: draft.overrides, setOverride, errors }
 
-  const submit = async () => {
+  const onName = (name: string) => setDraft(prev => ({
+    ...prev,
+    fields: { ...prev.fields, name, ...(!isEdit && !slugEdited ? { slug: name.trim() ? slugify(name) : '' } : {}) },
+  }))
+  const onUrl = (url: string) => {
+    set('url', url)
+    setCheck(null)
+  }
+  const onPreset = (preset: TradecraftPreset) => {
+    const carried = presetSettings(preset)
+    setDraft(prev => ({
+      fields: {
+        ...prev.fields, name: preset.name, url: preset.url, presetKey: preset.key, forcedType: carried.forcedType ?? '',
+        ...(!slugEdited ? { slug: slugify(preset.name) } : {}),
+      },
+      overrides: carried.overrides ?? {},
+    }))
+    setCheck(null)
+    // §6.3: Check URL runs by itself when a preset is picked.
+    setCheckRun(n => n + 1)
+  }
+  const onCheck = (result: CheckUrlResult | null) => {
+    setCheck(result)
+    if (!result?.ok) return
+    setDraft(prev => {
+      const fields = { ...prev.fields }
+      if (!isEdit && !storageTouched && accountValues['storage.defaultMode'] === 'recommended') fields.storageMode = result.recommended_storage
+      return { fields, overrides: prefillFromCheck(result, prev.overrides) }
+    })
+  }
+
+  const checkInput = isEdit && !urlChanged
+    ? { resourceId: resource!.id, forcedType: f.forcedType, overrides: overridesPayload(draft.overrides), ...(f.githubToken.trim() ? { githubTokenOverride: f.githubToken.trim() } : {}) }
+    : { url: f.url.trim(), forcedType: f.forcedType, overrides: overridesPayload(draft.overrides), ...(f.githubToken.trim() ? { githubTokenOverride: f.githubToken.trim() } : {}) }
+
+  const submit = async (reingest: boolean) => {
     if (!f.name.trim() || !f.url.trim()) return setError('Name and URL are required')
     if (!f.llmModel.trim()) return setError('Pick the model that ingests this resource')
+    if (Object.keys(errors).length > 0) return setError('Some settings are out of range: see the marked fields')
     setSubmitting(true)
     setError('')
+    const overrides = overridesPayload(draft.overrides)
     const input: ResourceInput = {
-      name: f.name.trim(), url: f.url.trim(), llmModel: f.llmModel.trim(), enabled: f.enabled, storageMode: f.storageMode,
+      name: f.name.trim(), url: f.url.trim(), llmModel: f.llmModel.trim(), enabled: f.enabled, storageMode,
       ...(f.githubToken.trim() ? { githubTokenOverride: f.githubToken.trim() } : {}),
+      ...(isEdit
+        ? { forcedType: f.forcedType, overrides }
+        : {
+            ...(slugEdited && f.slug ? { slug: f.slug } : {}),
+            ...(f.forcedType ? { forcedType: f.forcedType } : {}),
+            ...(Object.keys(overrides).length ? { overrides } : {}),
+            ...(f.presetKey ? { presetKey: f.presetKey } : {}),
+          }),
     }
     try {
       const saved = isEdit ? await tradecraftClient.update(userId, resource!.id, input) : await tradecraftClient.create(userId, input)
-      setBaseline(f)
+      setBaseline(draft)
+      // A new URL is ingested by the save itself; otherwise Save & re-ingest asks for a refresh.
+      if (isEdit && reingest && !urlChanged) {
+        const { job } = await tradecraftClient.refresh(userId, resource!.id)
+        return onSaved({ ...saved, job })
+      }
       onSaved(saved)
     } catch (e) {
       setError(toApiError(e, isEdit ? "Couldn't save the resource" : "Couldn't add the resource").message)
@@ -78,32 +248,65 @@ export function ResourceFormV2({ userId, resource, onSaved, onCancel, onDirtyCha
     }
   }
 
+  const typeSection = typeSectionOf(effectiveType)
+  const sitemapFound = check?.ok && check.index?.kind === 'sitemap' && check.index.url ? check.index.url : null
+  const docsIndexFound = check?.ok && check.index?.kind === 'searchindex' && check.index.url ? check.index.url : null
+  const busy = submitting
+
   return (
     <Modal
       isOpen={true}
       onClose={() => guardedNavigate(onCancel)}
       title={isEdit ? 'Edit Tradecraft Resource' : 'Add Tradecraft Resource'}
-      size="default"
+      size="large"
       closeOnOverlayClick={false}
       footer={
         <>
-          <button type="button" className="secondaryButton" onClick={() => guardedNavigate(onCancel)} disabled={submitting}>Cancel</button>
-          <button type="submit" form={formId} className="primaryButton" disabled={submitting || (isEdit && !isDirty)}>
-            {submitting && <Loader2 size={14} className={css.spin} />}
-            {isEdit ? (urlChanged ? 'Save & re-ingest' : 'Save changes') : 'Add & ingest'}
-          </button>
+          <button type="button" className="secondaryButton" onClick={() => guardedNavigate(onCancel)} disabled={busy}>Cancel</button>
+          {isEdit && !urlChanged && (
+            <button type="submit" form={formId} className="secondaryButton" disabled={busy || !isDirty}>
+              {busy && <Loader2 size={14} className={css.spin} />} Save
+            </button>
+          )}
+          {isEdit ? (
+            <button type="button" className="primaryButton" disabled={busy} onClick={() => submit(true)}>
+              {busy && <Loader2 size={14} className={css.spin} />} Save &amp; re-ingest
+            </button>
+          ) : (
+            <button type="submit" form={formId} className="primaryButton" disabled={busy}>
+              {busy && <Loader2 size={14} className={css.spin} />} Add &amp; ingest
+            </button>
+          )}
         </>
       }
     >
-      <form id={formId} onSubmit={e => { e.preventDefault(); submit() }} autoComplete="off" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        <div className="formGroup">
-          <label className="formLabel formLabelRequired" htmlFor={`${formId}-name`}>Name</label>
-          <input id={`${formId}-name`} className="textInput" value={f.name} onChange={e => set('name', e.target.value)} placeholder="HackTricks" />
+      <form id={formId} onSubmit={e => { e.preventDefault(); submit(false) }} autoComplete="off" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {!isEdit && <PresetPicker onPick={onPreset} />}
+        <div className={fcss.row}>
+          <div className={`formGroup ${fcss.grow}`}>
+            <label className="formLabel formLabelRequired" htmlFor={`${formId}-name`}>Name</label>
+            <input id={`${formId}-name`} className="textInput" value={f.name} onChange={e => onName(e.target.value)} placeholder="HackTricks" />
+          </div>
+          <div className={`formGroup ${fcss.grow}`}>
+            <label className="formLabel" htmlFor={`${formId}-slug`}>Resource ID</label>
+            {isEdit ? (
+              <input id={`${formId}-slug`} className="textInput" value={f.slug} readOnly aria-readonly="true" />
+            ) : (
+              <input
+                id={`${formId}-slug`} className="textInput" value={f.slug} placeholder="made from the name"
+                onChange={e => { setSlugEdited(true); set('slug', e.target.value.toLowerCase()) }}
+              />
+            )}
+            <span className={css.hint}>
+              {isEdit ? 'The agent names the resource and its pages with it: it cannot change.' : 'Lowercase letters, digits and dashes; it cannot change once added.'}
+            </span>
+          </div>
         </div>
         <div className="formGroup">
           <label className="formLabel formLabelRequired" htmlFor={`${formId}-url`}>URL</label>
-          <input id={`${formId}-url`} className="textInput" value={f.url} onChange={e => set('url', e.target.value)} placeholder="https://book.hacktricks.wiki" />
+          <input id={`${formId}-url`} className="textInput" value={f.url} onChange={e => onUrl(e.target.value)} placeholder="https://book.hacktricks.wiki" />
           {urlChanged && <span className={css.hint}>Saving a new URL ingests the resource again.</span>}
+          <CheckUrlButton userId={userId} input={checkInput} disabled={!f.url.trim()} runToken={checkRun} onResult={onCheck} />
         </div>
         <div className="formGroup">
           <label className="formLabel formLabelRequired">LLM model</label>
@@ -113,14 +316,24 @@ export function ResourceFormV2({ userId, resource, onSaved, onCancel, onDirtyCha
         <fieldset className={css.storageChoice} aria-label="Content storage">
           <legend className="formLabel">Content storage</legend>
           <label className={css.storageOption}>
-            <input type="radio" name={`${formId}-storage`} value="live" checked={f.storageMode === 'live'} onChange={() => set('storageMode', 'live')} />
+            <input
+              type="radio" name={`${formId}-storage`} value="live" checked={storageMode === 'live'} disabled={!!forcedMode}
+              onChange={() => { setStorageTouched(true); set('storageMode', 'live') }}
+            />
             <span><strong>Live</strong>. <span className={css.hint}>{LIVE_NOTE}</span></span>
           </label>
           <label className={css.storageOption}>
-            <input type="radio" name={`${formId}-storage`} value="stored" checked={f.storageMode === 'stored'} onChange={() => set('storageMode', 'stored')} />
+            <input
+              type="radio" name={`${formId}-storage`} value="stored" checked={storageMode === 'stored'} disabled={!!forcedMode}
+              onChange={() => { setStorageTouched(true); set('storageMode', 'stored') }}
+            />
             <span><strong>Stored</strong>. <span className={css.hint}>{STORED_WHY} {STORED_NOTE}</span></span>
           </label>
-          {isEdit && resource!.storageMode === 'stored' && f.storageMode === 'live' && (
+          {forcedMode && <span className={css.hint}>{forcedMode === 'stored' ? 'A PDF is always Stored.' : 'A CVE archive is always Live.'}</span>}
+          {!forcedMode && check?.ok && (
+            <span className={css.hint}>{check.recommended_storage === 'stored' ? 'Stored' : 'Live'} recommended for this site.</span>
+          )}
+          {isEdit && resource!.storageMode === 'stored' && storageMode === 'live' && (
             <span className={css.hint} role="note">Saving deletes the stored pages now.</span>
           )}
         </fieldset>
@@ -136,6 +349,19 @@ export function ResourceFormV2({ userId, resource, onSaved, onCancel, onDirtyCha
           <input type="checkbox" checked={f.enabled} onChange={e => set('enabled', e.target.checked)} />
           <span>Enabled (the agent sees enabled resources only)</span>
         </label>
+
+        <SiteTypeSection ctx={ctx} forcedType={f.forcedType} detectedType={detectedType} onForcedType={t => set('forcedType', t)} />
+        {typeSection === 'github' && <GithubSection ctx={ctx} github={check?.ok ? check.github : null} />}
+        {typeSection === 'cve' && <CveSection ctx={ctx} foundPattern={check?.ok ? check.cve_pattern : null} />}
+        {(typeSection === 'wiki' || typeSection === 'gitbook') && <WikiSection ctx={ctx} variant={typeSection} sitemapFound={sitemapFound} />}
+        {typeSection === 'docs' && <DocsSection ctx={ctx} indexFound={docsIndexFound} />}
+        {typeSection === 'pdf' && <PdfSection ctx={ctx} pages={check?.ok ? check.pdf_pages : null} />}
+        {typeSection === 'website' && <WebsiteSection ctx={ctx} sitemapFound={sitemapFound} />}
+        {!typeSection && <span className={css.hint}>Pick a type, or run Check URL, to see the options of the site&apos;s type.</span>}
+        <FetchingSection ctx={ctx} hasLogin={resource?.hasLogin ?? false} />
+        <ContentSection ctx={ctx} />
+        <SummarySection ctx={ctx} resource={current} onResource={setCurrent} onJob={() => undefined} />
+        <RefreshingSection ctx={ctx} />
         {error && <div className={css.failure} role="alert">{error}</div>}
       </form>
     </Modal>

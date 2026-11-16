@@ -7,6 +7,7 @@ import { fetchJson } from '@/lib/apiError'
 import type { JobView } from './jobs'
 import type { ResourceView } from './v2/list'
 import type { IngestionSettingsView } from './userSettings'
+import type { CheckUrlResult } from './agentContract'
 
 export type { IngestionSettingsView, JobView, ResourceView }
 
@@ -24,6 +25,24 @@ export interface ResourceInput {
   llmModel?: string
   githubTokenOverride?: string
   storageMode?: 'live' | 'stored'
+  slug?: string
+  forcedType?: string
+  overrides?: Record<string, unknown>
+  presetKey?: string
+}
+
+export interface CheckUrlInput {
+  url?: string
+  resourceId?: string
+  forcedType?: string
+  overrides?: Record<string, unknown>
+  githubTokenOverride?: string
+}
+
+export interface SummaryInput {
+  source?: 'generated' | 'manual'
+  text?: string
+  locked?: boolean
 }
 
 export interface SavedResource {
@@ -56,6 +75,16 @@ export const tradecraftClient = {
     fetchJson<{ success: true }>(one(userId, id), { method: 'DELETE' }, "Couldn't delete the resource"),
   refresh: (userId: string, id: string) =>
     fetchJson<{ job: JobView }>(`${one(userId, id)}/refresh`, { method: 'POST', headers: JSON_HEADERS, body: '{}' }, "Couldn't start the refresh"),
+  checkUrl: (userId: string, input: CheckUrlInput) =>
+    fetchJson<{ result: CheckUrlResult }>(`${resources(userId)}/check-url`, {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input),
+    }, 'Check URL failed'),
+  saveSummary: (userId: string, id: string, input: SummaryInput) =>
+    fetchJson<{ resource: ResourceView | null }>(`${one(userId, id)}/summary`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(input),
+    }, "Couldn't save the summary"),
+  regenerateSummary: (userId: string, id: string) =>
+    fetchJson<{ job: JobView }>(`${one(userId, id)}/summary/regenerate`, { method: 'POST', headers: JSON_HEADERS, body: '{}' }, "Couldn't start the summary job"),
   job: (userId: string, id: string) =>
     fetchJson<{ job: JobView | null }>(`${one(userId, id)}/jobs`, undefined, "Couldn't read the job"),
   cancel: (userId: string, id: string) =>

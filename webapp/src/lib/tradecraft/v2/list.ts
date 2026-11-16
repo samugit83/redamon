@@ -35,6 +35,8 @@ export interface ResourceView {
   priority: string
   /** 1: a 1.x map only; 2: converted from 1.x; 3: ingested by 2.0. */
   mapVersion: number
+  /** The resource's own settings (§6.1), for its Edit form; no secret is ever one. */
+  overrides: Record<string, unknown>
   summary: string
   summarySource: string
   summaryLocked: boolean
@@ -79,6 +81,7 @@ function view(row: ViewRow, extra: { entryCount: number; currentHash: string; jo
     hasLogin: row.hasLogin,
     priority: row.priority,
     mapVersion: row.mapVersion,
+    overrides: row.overrides && typeof row.overrides === 'object' && !Array.isArray(row.overrides) ? row.overrides as Record<string, unknown> : {},
     summary: row.summary,
     summarySource: row.summarySource,
     summaryLocked: row.summaryLocked,

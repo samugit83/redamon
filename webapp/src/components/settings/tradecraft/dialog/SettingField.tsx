@@ -68,7 +68,8 @@ export function SettingField({ def, value, error, inactiveHint, userId, onChange
   )
 }
 
-function Control({ id, def, value, labels, userId, onChange }: {
+/** The input of one setting by its spec type (the resource form reuses it for an override). */
+export function Control({ id, def, value, labels, userId, onChange }: {
   id: string; def: SettingDef; value: unknown; labels?: Record<string, string>; userId: string; onChange: (v: unknown) => void
 }) {
   if (MODEL_KEYS.has(def.key)) {

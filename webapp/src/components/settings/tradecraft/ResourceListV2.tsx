@@ -5,7 +5,7 @@ import { Plus } from 'lucide-react'
 import { useAlertModal, useToast } from '@/components/ui'
 import { actionFailedText, failureText } from '@/components/settings/failureText'
 import { ApiError } from '@/lib/apiError'
-import { JOB_POLL_MS, isRunning, tradecraftClient, type JobView, type ResourceView } from '@/lib/tradecraft/client'
+import { JOB_POLL_MS, isRunning, tradecraftClient, type IngestionSettingsView, type JobView, type ResourceView } from '@/lib/tradecraft/client'
 import { ResourceCard } from './ResourceCard'
 import { DeleteConfirm } from './DeleteConfirm'
 import { ResourceFormV2 } from './form/ResourceFormV2'
@@ -30,6 +30,9 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions }: {
   const [status, setStatus] = useState<Status>({ kind: 'loading' })
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [form, setForm] = useState<null | 'new' | ResourceView>(null)
+  // The account's ingestion settings: the form shows them as the inherited values and takes the
+  // default model and storage from them. Unreadable, the form shows the spec's defaults.
+  const [settings, setSettings] = useState<IngestionSettingsView | null>(null)
   const resourcesRef = useRef(resources)
   resourcesRef.current = resources
 
@@ -44,6 +47,13 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions }: {
   }, [userId])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    let live = true
+    tradecraftClient.getSettings(userId)
+      .then(s => { if (live) setSettings(s.ingestion ?? null) })
+      .catch(() => { if (live) setSettings(null) })
+    return () => { live = false }
+  }, [userId])
 
   const setJob = useCallback((id: string, job: JobView | null) => {
     setResources(prev => prev.map(r => (r.id === id ? { ...r, job } : r)))
@@ -133,6 +143,7 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions }: {
         <ResourceFormV2
           userId={userId}
           resource={form === 'new' ? null : form}
+          settings={settings}
           onDirtyChange={onDirtyChange}
           onCancel={() => setForm(null)}
           onSaved={saved => {
