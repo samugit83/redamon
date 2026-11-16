@@ -872,8 +872,8 @@ interface MoveResult {
  * `custom/<providerId>` model of the old owner's providers (set back to its default), the Jev provider,
  * the user attack-skill toggles (normalizeUserSkillToggles keeps only the new owner's skills), the old
  * owner's own Nuclei templates (an instance template stays) and the CypherFix GitHub token (a person's
- * credential never passes on). Tradecraft has no project column; target credentials stay with the
- * engagement.
+ * credential never passes on). Target credentials stay with the engagement. The project's tradecraft
+ * choices name the old owner's resources and are cleared by moveInPostgres (§3.4).
  */
 export async function clearedForNewOwner(tx: Tx, project: MovingProject, newOwnerId: string): Promise<{
   data: Record<string, unknown>; cleared: ClearedSetting[]
@@ -978,6 +978,12 @@ async function moveInPostgres(
     } as Prisma.ProjectUncheckedUpdateManyInput,
   })
   if (count !== 1) throw new MoveAborted('project_changed')
+
+  // Each choice names one of the old owner's resources: all of the new owner's start on (§3.4, R-068).
+  const { count: tradecraftChoices } = await tx.tradecraftProjectChoice.deleteMany({ where: { projectId } })
+  if (tradecraftChoices > 0) {
+    cleared.push({ field: 'tradecraftOff', label: 'Tradecraft resources of the previous owner turned off in this project' })
+  }
 
   await tx.projectCollaborator.deleteMany({ where: { projectId, userId: { in: [to, from] } } })
   if (offer.oldOwnerRole === 'co-owner') {

@@ -39,6 +39,7 @@ const DEFAULTS: Record<string, () => Row> = {
   userSettings: () => ({ githubAccessToken: '' }),
   project: () => ({}),
   user: () => ({}),
+  userAttackSkill: () => ({ description: null, content: '', quarantinedAt: null, lineageRootId: null, version: 1 }),
 }
 
 /** Unique keys per table, as `schema.prisma` declares them (the id is always one). */
@@ -240,6 +241,19 @@ export function createTradecraftDb(): TradecraftDb {
       create: async ({ data, select }: { data: Row; select?: Row }) => {
         fail(`${model}.create`)
         return project(insert(model, data), select)
+      },
+      createMany: async ({ data, skipDuplicates }: { data: Row[]; skipDuplicates?: boolean }) => {
+        fail(`${model}.createMany`)
+        let count = 0
+        for (const row of data) {
+          try {
+            insert(model, row)
+            count += 1
+          } catch (err) {
+            if (!(skipDuplicates && err instanceof PrismaError && err.code === 'P2002')) throw err
+          }
+        }
+        return { count }
       },
       update: async ({ where, data, select }: { where: Where; data: Row; select?: Row }) => {
         fail(`${model}.update`)

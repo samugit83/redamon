@@ -32,6 +32,7 @@ import { actorFields, auditActorOf } from '@/lib/auditActor'
 import { myAccessView, type ProjectAccess } from '@/lib/authz/projectAccess'
 import { rbacFlags } from '@/lib/authz/flags'
 import { classifyChange, riskSelect, settingsRefusal } from '@/lib/authz/settingsRisk'
+import { parseTradecraftOff, writeProjectChoices } from '@/lib/tradecraft/projectChoices'
 
 // Agent API, for the soft (LLM) guardrail on a scope edit. Mirrors the POST route.
 const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8080'
@@ -116,7 +117,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         // sweep time. A browser reads them through /node-filters instead.
         ...(isServiceCaller
           ? { nodeFilter: true, nodeFilterExemptions: { select: { label: true, nodeKey: true } } }
-          : {}),
+          // The form's tradecraft switches (§3.4): the owner's resources turned off here. The
+          // agent reads them through its run catalog, never from this row.
+          : { tradecraftChoices: { select: { resourceId: true } } }),
       }
     })
 
@@ -131,10 +134,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     // The auth profile carries the recorded/entered session: recon and the agent
     // get it whole, a browser only ever gets metadata + hasValue (write-only UI).
     const {
-      roeDocumentData: _binary, authProfile, nodeFilter, nodeFilterExemptions, ...rest
+      roeDocumentData: _binary, authProfile, nodeFilter, nodeFilterExemptions, tradecraftChoices, ...rest
     } = project as typeof project & {
       nodeFilter?: { mode: string; applyToScans: boolean; rules: unknown; revision: number } | null
       nodeFilterExemptions?: { label: string; nodeKey: string }[]
+      tradecraftChoices?: { resourceId: string }[]
     }
     const projectWithoutBinary = {
       ...rest,
@@ -218,7 +222,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       ? projectForCaller
       : isServiceCaller ? scanReadView(projectForCaller) : projectReadView(projectForCaller, access)
     const mine = access && rbacFlags().sharing ? { myAccess: myAccessView(access, project.user) } : {}
-    return NextResponse.json({ ...body, ...mine, ...skillOverridesField })
+    const tradecraft = isServiceCaller ? {} : { tradecraftOff: (tradecraftChoices ?? []).map(c => c.resourceId).sort() }
+    return NextResponse.json({ ...body, ...mine, ...tradecraft, ...skillOverridesField })
   } catch (error) {
     return internalError(error, 'Failed to fetch project')
   }
@@ -259,8 +264,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       userId, createdAt, updatedAt, user,
       authProfile: _authProfile,
       roeEnabled: _roeEnabledDerived,
+      tradecraftOff: rawTradecraftOff,
       ...rawUpdate
     } = body
+
+    // The project's tradecraft switches (§3.4) travel in the same save as the skill switches and
+    // commit in its transaction (R-064). Absent: the save leaves them as they are.
+    const tradecraftOff = rawTradecraftOff === undefined ? null : parseTradecraftOff(rawTradecraftOff)
+    if (rawTradecraftOff !== undefined && tradecraftOff === null) {
+      return NextResponse.json(
+        { error: 'tradecraftOff must be a list of resource ids', code: 'invalid_tradecraft_off' }, { status: 400 })
+    }
 
     // The form sends back the updatedAt of the row it is editing. Writing only
     // while it still matches is what stops a form left open from reverting,
@@ -609,7 +623,30 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     updateData.updatedById = eff.userId
     let project
-    if (expectedVersion) {
+    let tradecraftAfter: string[] | null = null
+    if (tradecraftOff) {
+      // The owner from the access the guard answered: the ids must name the owner's resources.
+      const written = await prisma.$transaction(async (tx) => {
+        if (expectedVersion) {
+          const { count } = await tx.project.updateMany({ where: { id, updatedAt: expectedVersion }, data: updateData })
+          if (count === 0) return null
+        } else {
+          await tx.project.update({ where: { id }, data: updateData })
+        }
+        const off = await writeProjectChoices(tx, {
+          projectId: id,
+          ownerId: auth.access!.project.userId,
+          off: tradecraftOff,
+          viewer: { personId: eff.userId, actorId: auth.actingAs ? auth.principal.id : null },
+        })
+        return { off, row: await tx.project.findUnique({ where: { id } }) }
+      })
+      if (!written) return NextResponse.json({ error: STALE_SAVE_MESSAGE, code: 'stale_save' }, { status: 409 })
+      stage = 'after_write'
+      if (!written.row) return NextResponse.json({ error: 'Project not found' }, { status: 404 })
+      project = written.row
+      tradecraftAfter = written.off
+    } else if (expectedVersion) {
       const { count } = await prisma.project.updateMany({
         where: { id, updatedAt: expectedVersion },
         data: updateData,
@@ -696,6 +733,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       ...projectReadView(projectWithoutBinary, auth.access),
       scopeGroups: resolveScopeGroups(project).groups,
       ...(hostnamePolicyMarked === undefined ? {} : { hostnamePolicyMarked }),
+      ...(tradecraftAfter ? { tradecraftOff: tradecraftAfter } : {}),
     })
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') {
