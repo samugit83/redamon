@@ -660,3 +660,14 @@ def test_rules_and_auto_crawl_without_a_model(tmp_path):
     write_site(bare, HOST, {"/": html("Home", [(f"{SITE}/a/", "a")]), "/a/": html("A")})
     outcome, _store, _ = _job_without_model(bare, SITE + "/", {"crawl.strategy": "auto"})
     assert (outcome.status, outcome.error_code) == ("failed", "model_unavailable")
+
+
+def test_a_cut_page_is_counted_in_the_report(tmp_path):
+    """Review finding 7: a plain page over fetch.PAGE_MAX_BYTES is cut, kept, and counted."""
+    from tradecraft.ingest import fetch
+
+    write_site(tmp_path, HOST, {"/": html("Home", [(f"{SITE}/big/", "big")]),
+                                "/big/": html("Big", body="x" * (fetch.PAGE_MAX_BYTES + 1000))})
+    outcome, store, _ = _job_without_model(tmp_path, SITE + "/", {"crawl.strategy": "rules"})
+    assert outcome.status == "succeeded" and len(store.live_entries("r1")) == 2
+    assert {"code": "page_too_large", "count": 1} in store.resources["r1"]["ingestion_report"]["errors"]

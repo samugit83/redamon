@@ -154,7 +154,7 @@ async def _estimate(count: int, urls: list[str], settings: EffectiveSettings, to
     cap = settings.int("storage.maxPageKb") * 1024
     sizes = []
     for url in urls[:SAMPLED_PAGES]:
-        resp = await fetch.fetch_raw(url, settings, github_token=token, max_bytes=cap * 4)
+        resp = await fetch.fetch_raw(url, settings, github_token=token, max_bytes=min(cap * 4, fetch.PAGE_MAX_BYTES))
         if not resp.ok:
             continue
         options = fetch.content_options(settings)
@@ -218,7 +218,8 @@ def _api(owner: str, repo: str, tail: str = "") -> str:
 
 
 async def _json(url: str, settings: EffectiveSettings, token: Optional[str]) -> Any:
-    resp = await fetch.fetch_raw(url, settings, github_token=token)
+    # A GitHub listing; the same bound as a sitemap, so no answer is read whole whatever its size.
+    resp = await fetch.fetch_raw(url, settings, github_token=token, max_bytes=int(constant("sitemapMaxBytes")))
     if resp.status != 200:
         return None
     try:

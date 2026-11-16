@@ -252,3 +252,63 @@ def test_heavy_page_whole():
     assert len(links) == LINKS
     # Without the cleaning, the same limit returns the head of the page and no article at all.
     assert "Paragraph 0" not in uncleaned.html and "<a href" not in uncleaned.html
+
+
+# --------------------------------------------------------------------------------------
+# Review finding 7: plain pages are read up to a size, cut and counted (R-230, R-112)
+# --------------------------------------------------------------------------------------
+
+def test_every_plain_page_fetch_is_capped(rec):
+    from tradecraft import check_url as cu
+    from tradecraft.contract import CheckUrlRequest
+
+    assert fetch.PAGE_MAX_BYTES == 1_000_000  # the ceiling EX-2 set for the browser's transfer
+    run(fetch.smart_fetch(WIKI, s(**{"fetching.browserBelowChars": 0})))
+    run(crawl.fetch_page_for(s())("https://blog.tc-fixture.test/"))
+    assert [kw["max_bytes"] for _u, kw in rec.gets] == [fetch.PAGE_MAX_BYTES, fetch.PAGE_MAX_BYTES]
+    rec.gets.clear()
+    run(cu.check_url(CheckUrlRequest(user_id="u1", url="https://github.com/tc-fixture/payloads")))
+    uncapped = [u for u, kw in rec.gets if kw.get("max_bytes") is None]
+    # Only the GitHub tree, read by the same builder as ingestion, has no cap of its own here.
+    assert all("/git/trees/" in u or u.endswith("/repos/tc-fixture/payloads") for u in uncapped), uncapped
+
+
+def _big_site(tmp_path):
+    host = "big.tc-fixture.test"
+    body = "<p>" + "x" * 1_500_000 + "</p>"
+    for path, text in {"/": f"<html><head><title>Big</title></head><body><main><a href='/b/'>b</a>{body}"
+                            f"<a href='/lost/'>after the cut</a></main></body></html>",
+                       "/b/": "<html><head><title>B</title></head><body><main><p>" + "y" * 600 + "</p></main></body></html>"}.items():
+        target = tmp_path / host / path.lstrip("/") / "index.html"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+    return tmp_path, f"https://{host}/"
+
+
+def test_an_oversized_page_is_cut_and_counted(tmp_path):
+    from tradecraft import clock
+    from tradecraft_doubles import FakeClock
+
+    root, url = _big_site(tmp_path)
+    fetcher = Recording(root)
+    with net.use_fetcher(fetcher), clock.use_clock(FakeClock()):
+        result = run(crawl.crawl(url, s(**{"crawl.strategy": "rules"})))
+    assert result.errors == {fetch.PAGE_TOO_LARGE: 1}
+    big = next(e for e in result.entries if e.url == url)
+    # What comes before the cut is read (the link to /b/), what comes after is not.
+    assert len(big.extra["html"]) <= fetch.PAGE_MAX_BYTES and [e.url for e in result.entries] == [url, url + "b/"]
+    assert not any("/lost/" in u for u, _kw in fetcher.gets)
+    assert all(kw["max_bytes"] == fetch.PAGE_MAX_BYTES for _u, kw in fetcher.gets)
+    with net.use_fetcher(Recording(root)):
+        page = run(fetch.smart_fetch(url, s()))
+    assert page.truncated and len(page.body) == fetch.PAGE_MAX_BYTES
+
+
+def test_a_capped_pdf_is_read_whole():
+    pdf = "https://files.tc-fixture.test/guide.pdf"
+    fetcher = Recording()
+    with net.use_fetcher(fetcher):
+        page = run(fetch.smart_fetch(pdf, s(), max_bytes=500))
+    full = (fetcher.site.root / "files.tc-fixture.test" / "guide.pdf").read_bytes()
+    assert page.is_pdf and not page.truncated and page.body == full and len(full) > 500
+    assert [kw.get("max_bytes") for _u, kw in fetcher.gets] == [500, None]

@@ -229,6 +229,8 @@ async def fetch_home(state: IngestState) -> None:
     state.home_problem = fetch.homepage_problem(home, state.settings)
     if state.home_problem:
         state.count_error(state.home_problem)
+    if home.truncated:
+        state.count_error(fetch.PAGE_TOO_LARGE)
 
 
 async def detect_type(state: IngestState) -> None:
@@ -324,6 +326,8 @@ async def _crawl(state: IngestState) -> None:
     state.llm_calls += result.llm_calls
     for reason, n in result.skipped.items():
         state.skipped[reason] = state.skipped.get(reason, 0) + n
+    for code, n in result.errors.items():
+        state.errors[code] += n
     if result.error_code:
         state.count_error(result.error_code)
         if not result.entries:

@@ -58,6 +58,8 @@ class CrawlFetch:
     final_url: str
     tier: int = 1
     error: str = ""
+    # The plain page was cut at fetch.PAGE_MAX_BYTES.
+    truncated: bool = False
 
 
 FetchPage = Callable[[str], Awaitable[CrawlFetch]]
@@ -84,6 +86,8 @@ class CrawlResult:
     skipped: dict = field(default_factory=_skips)
     # A job error code when a model call failed (budget, loop model, unavailable).
     error_code: str = ""
+    # Report error codes counted on the way (page_too_large), by code.
+    errors: dict = field(default_factory=dict)
 
     @property
     def llm_calls(self) -> int:
@@ -239,12 +243,13 @@ def fetch_page_for(settings: EffectiveSettings, *, allow_browser: bool = True) -
             # caller passes allow_browser=False then).
             rendered = await net.get_fetcher().render(url, **fetch.render_options(settings))
             return CrawlFetch(rendered.html, url, 2, "" if rendered.html else (rendered.error or "http_error"))
-        resp = await fetch.fetch_raw(url, settings, headers={"Accept": "text/html,application/xhtml+xml"})
+        resp = await fetch.fetch_raw(url, settings, headers={"Accept": "text/html,application/xhtml+xml"},
+                                     max_bytes=fetch.PAGE_MAX_BYTES)
         if resp.error in ("unsafe_address", "userinfo_refused", "bad_url"):
             return CrawlFetch("", url, 0, resp.error)
         html = resp.text if (resp.status == 200 and "html" in resp.content_type) else ""
         if html and len(html) >= settings.int("fetching.crawlBrowserBelowBytes"):
-            return CrawlFetch(html, resp.final_url or url, 1)
+            return CrawlFetch(html, resp.final_url or url, 1, truncated=resp.truncated)
         if not (allow_browser and settings.bool("fetching.browserEnabled")):
             return CrawlFetch(html, resp.final_url or url, 1 if html else 0, "" if html else (resp.error or "http_error"))
         rendered = await net.get_fetcher().render(url, **fetch.render_options(settings))
@@ -326,6 +331,7 @@ class _State:
     out_of_scope: set = field(default_factory=set)
     robots: set = field(default_factory=set)
     too_little: int = 0
+    too_large: int = 0
     starts: list = field(default_factory=list)
 
     def skip(self, reason: str, url: str) -> None:
@@ -673,6 +679,8 @@ async def _loop(state: _State, settings: EffectiveSettings, strategy: str, fetch
 
         for (current, depth), got in zip(batch, fetched):
             state.pages_fetched += 1
+            if got.truncated:
+                state.too_large += 1
             # A redirect target is the same page: never fetch it a second time.
             final = fetch.canonical_url(got.final_url or current)
             state.visited.add(final)
@@ -736,4 +744,5 @@ async def _loop(state: _State, settings: EffectiveSettings, strategy: str, fetch
                "strategy": strategy},
         skipped=state.skipped(),
         error_code=error_code,
+        errors={fetch.PAGE_TOO_LARGE: state.too_large} if state.too_large else {},
     )

@@ -25,7 +25,7 @@ from orchestrator_helpers.web_sources import (
     url_host,
 )
 from tradecraft import net
-from tradecraft.settings import EffectiveSettings, constant
+from tradecraft.settings import EffectiveSettings, constant, setting
 
 # Elements 1.x always drops before it looks for the article (web_sources.html_to_markdown).
 _NOISE_ELEMENTS = ("nav", "footer", "header", "aside", "script", "style", "form", "iframe")
@@ -33,6 +33,12 @@ _ARTICLE_SELECTORS = ("article", "main", ".md-content", "[role='main']", ".post-
 # The contract caps a URL at 2,048 characters; a longer one never becomes an entry. Counted
 # in UTF-8 bytes, which is what the unique b-tree on (resource_id, url) measures.
 MAX_URL_CHARS = 2048
+# A plain page is read up to the ceiling of the browser's transfer limit (EX-2: 1,000,000
+# characters came back intact), so a crawl's 8 parallel requests hold at most about 8 MB of
+# bodies, not 8 x net.HARD_MAX_BYTES. A longer page is cut and counted ``page_too_large``; a
+# PDF, which is read whole, is fetched again without this cap.
+PAGE_MAX_BYTES = int(setting("fetching.browserMaxChars")["ceiling"])
+PAGE_TOO_LARGE = "page_too_large"
 
 # net error code -> the job's error code (contract.ERROR_CODES).
 _NET_TO_JOB = {
@@ -193,12 +199,14 @@ Cleaner = Callable[[str], Awaitable[str]]
 
 
 async def smart_fetch(url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None,
-                      allow_browser: bool = True, cleaner: Optional[Cleaner] = None) -> FetchedPage:
+                      allow_browser: bool = True, cleaner: Optional[Cleaner] = None,
+                      max_bytes: Optional[int] = PAGE_MAX_BYTES) -> FetchedPage:
     """Tier 1, then the browser when tier 1's cleaned text is under the threshold or not text
     (and the browser is allowed).
 
     ``cleaner`` turns HTML into Markdown; a job passes one that runs ``clean_page`` on its
-    thread pool, and the default runs it here with the resource's content settings."""
+    thread pool, and the default runs it here with the resource's content settings. Tier 1
+    reads at most ``max_bytes``; a PDF cut there is read again whole (a PDF needs its end)."""
     target = rewrite_github_url(url)
     extra = {"Accept": "application/vnd.github.raw"} if url_host(target) == "api.github.com" else {}
     if cleaner is None:
@@ -209,7 +217,9 @@ async def smart_fetch(url: str, settings: EffectiveSettings, *, github_token: Op
 
     page = FetchedPage(url=url)
     if not settings.bool("fetching.alwaysBrowser") or not allow_browser:
-        resp = await fetch_raw(target, settings, github_token=github_token, headers=extra)
+        resp = await fetch_raw(target, settings, github_token=github_token, headers=extra, max_bytes=max_bytes)
+        if resp.truncated and ("application/pdf" in resp.content_type or resp.body[:5] == b"%PDF-"):
+            resp = await fetch_raw(target, settings, github_token=github_token, headers=extra)
         page = await _from_response(url, resp, cleaner)
         if page.error in ("unsafe_address", "userinfo_refused", "bad_url"):
             return page

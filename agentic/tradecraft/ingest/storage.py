@@ -75,6 +75,8 @@ async def _page_text(state: "IngestState", entry) -> tuple[str, str, dict]:
     if page.error or not (200 <= page.status < 300):
         state.store_download_failures += 1
         return "", page.error or "http_error", {}
+    if page.truncated:
+        state.count_error(fetch.PAGE_TOO_LARGE)
     return page.text, "", page.headers
 
 
