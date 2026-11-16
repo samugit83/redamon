@@ -117,6 +117,7 @@ import { GET as getThread, DELETE as deleteThread } from './projects/[projectId]
 import { GET as projectStatus } from './projects/[projectId]/status/route'
 import { clearNavigatorRunsForTests, navigatorRuns, setStopNotifierForTests } from '@/lib/navigator/runRegistry'
 import { __resetRateLimiter } from '@/lib/mcpAuth'
+import { requirePermission } from '@/lib/authz/guards'
 
 const P = 'cproject000000000000000001'
 const OTHER_P = 'cproject000000000000000002'
@@ -173,6 +174,19 @@ describe('the guard', () => {
     h.auth = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     expect((await postMessage(post({ text: 'hi' }), params())).status).toBe(401)
     expect((await listThreads(get(`/api/navigator/projects/${P}/threads`), params())).status).toBe(401)
+  })
+
+  test('a member without navigator:use: the guard\'s 403 passes through, nothing is read or started', async () => {
+    h.auth = NextResponse.json({ error: 'Forbidden', code: 'capability', permission: 'navigator:use' }, { status: 403 })
+    const res = await postMessage(post({ text: 'hi' }), params())
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ permission: 'navigator:use' })
+    expect(h.readModelFor).toEqual([])
+    expect(h.threads).toEqual([])
+    expect(h.agentBodies).toEqual([])
+    const asked = vi.mocked(requirePermission).mock.calls.at(-1)!
+    expect(asked[1]).toBe('navigator:use')
+    expect(asked[2]).toMatchObject({ projectId: P, allowOversight: false })
   })
 
   test('oversight or break-glass: 403 navigator_not_available', async () => {
