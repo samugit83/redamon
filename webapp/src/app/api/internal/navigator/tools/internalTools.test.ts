@@ -235,6 +235,14 @@ describe('the call', () => {
     expect(await named.json()).toMatchObject({ ok: false, code: 'invalid_args', message: expect.stringMatching(/rules of engagement/) })
     const computed = await call(token, 'run_cypher', { args: { cypher: 'MATCH (s:Secret) RETURN [k IN keys(s) | s[k]] LIMIT 5' } })
     expect(await computed.json()).toMatchObject({ ok: false, code: 'invalid_args' })
+    // The three forms the security review read values with through this route.
+    for (const cypher of [
+      'MATCH (s:Secret) RETURN [k IN keys(s) | properties(s)/**/[k]] AS v LIMIT 5',
+      'MATCH (s:Secret) WITH s, properties(s) AS limit RETURN [k IN keys(s) | limit[k]] AS v LIMIT 5',
+      'MATCH (s:Secret) RETURN s.\\u006datched_text AS v LIMIT 5',
+    ]) {
+      expect(await (await call(token, 'run_cypher', { args: { cypher } })).json()).toMatchObject({ ok: false, code: 'invalid_args' })
+    }
     expect(h.execCalls).toEqual([])
 
     // A whole node or a map comes back with the value withheld, even with no shape to recognise.
@@ -255,6 +263,18 @@ describe('the call', () => {
     const res = await call(token, 'run_cypher', { args: { cypher: 'MATCH (s:Secret) RETURN s.matched_text AS x LIMIT 5' } })
     expect(res.status).toBe(200)
     expect(await res.text()).toContain('wJalrXUtnFEMI')
+  })
+
+  test('with full access a \\uXXXX escape is still refused before the agent (it hid code from the tenant scoper)', async () => {
+    h.access = { project: { id: P, userId: 'owner' }, level: 'owner', toggles: { rawData: true }, via: 'owner' }
+    h.roe = 'full_access'
+    const { token } = start()
+    const res = await call(token, 'run_cypher', { args: {
+      cypher: "MATCH (s:Subdomain) RETURN 'x\\u0027 AS n UNION MATCH (m:Subdomain) RETURN m.name AS n //' AS n",
+    } })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false, code: 'invalid_args', message: expect.stringMatching(/escape/) })
+    expect(h.execCalls).toEqual([])
   })
 
   test('a row of another tenant in the result is discarded, never answered', async () => {

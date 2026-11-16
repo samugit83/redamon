@@ -23,7 +23,7 @@ import { navigatorEnabled } from '../switch'
 import { navigatorTool, navigatorTools, type NavigatorTool } from './registry'
 import { navigatorMcpContext } from './sessionContext'
 import { shapeToolResult } from './output'
-import { cypherSecretRefusal } from './secretGuard'
+import { cypherEscapeRefusal, cypherSecretRefusal } from './secretGuard'
 import { validateArgs } from './validate'
 
 export type ToolAnswer =
@@ -190,9 +190,11 @@ export async function runNavigatorTool(run: NavigatorRun, name: string, rawArgs:
   const extra = tool.check?.(parsed.args)
   if (extra) return refuse('invalid_args', 400, extra)
   const mask = await maskFor(run.projectId)
-  // A raw query could alias a secret value past the masking by name (RETURN s.matched_text AS x).
-  if (tool.name === 'run_cypher' && mask) {
-    const why = cypherSecretRefusal(String(parsed.args.cypher ?? ''))
+  // A raw query could alias a secret value past the masking by name (RETURN s.matched_text AS x);
+  // an escape is refused whatever the RoE (cypherEscapeRefusal).
+  if (tool.name === 'run_cypher') {
+    const cypher = String(parsed.args.cypher ?? '')
+    const why = mask ? cypherSecretRefusal(cypher) : cypherEscapeRefusal(cypher)
     if (why) return refuse('invalid_args', 400, why)
   }
 
