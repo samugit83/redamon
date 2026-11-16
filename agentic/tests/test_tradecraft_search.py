@@ -241,6 +241,15 @@ def test_term_groups_and_synonyms():
     assert len(synonyms.parse_user([f"a{i} = b{i}" for i in range(500)])) == synonyms.MAX_USER_SYNONYMS
 
 
+def test_every_one_of_the_two_hundred_user_pairs_expands():
+    """Review finding 1, secondary (R-412: at most 200 pairs): an "A = B" pair is one entry, since
+    every entry works both ways; it was two, so the cap kept only 100 pairs."""
+    user = synonyms.parse_user([f"alpha{i} = omega{i}" for i in range(synonyms.MAX_USER_SYNONYMS + 1)])
+    assert len(user) == synonyms.MAX_USER_SYNONYMS == 200
+    assert search.expand("alpha199", user) == ["omega199"] and search.expand("omega199", user) == ["alpha199"]
+    assert search.expand("alpha200", user) == []
+
+
 def test_user_synonyms_come_from_the_runs_search_settings():
     cat = catalog(("r1", "wiki", "normal"), search_settings={"synonyms": ["PATT = PayloadsAllTheThings"]})
     index = FakeIndex()

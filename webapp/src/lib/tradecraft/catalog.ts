@@ -23,6 +23,7 @@ import {
 import { effectiveSettings } from './effectiveSettings'
 import { hasStoredLogin } from './masking'
 import { LEGACY_SELECT, type LegacyResourceRow } from './resourceAccess'
+import { SETTINGS_CONSTANTS } from './settingsSpec'
 import { tradecraftV2Enabled } from './switch'
 
 export interface RunParties {
@@ -121,10 +122,19 @@ export async function legacyCatalog(parties: RunParties): Promise<RunCatalog> {
   return { v2: false, legacy: JSON.parse(JSON.stringify(legacy)) as LegacyResource[] }
 }
 
+/**
+ * The account's own synonym pairs (Q11 "My synonyms", TD-14) as stored, at most
+ * `maxUserSynonyms`: the agent's search expands them with the shipped list and skips any entry
+ * it cannot read.
+ */
+function userSynonyms(user: { synonyms?: unknown } | null): unknown[] {
+  return Array.isArray(user?.synonyms) ? user.synonyms.slice(0, SETTINGS_CONSTANTS.maxUserSynonyms) : []
+}
+
 export async function v2Catalog(parties: RunParties): Promise<RunCatalog> {
   const [rows, user] = await Promise.all([
     activeResourcesFor(parties),
-    prisma.tradecraftUserSettings.findUnique({ where: { userId: parties.ownerId }, select: { ingestion: true, search: true } }),
+    prisma.tradecraftUserSettings.findUnique({ where: { userId: parties.ownerId }, select: { ingestion: true, search: true, synonyms: true } }),
   ])
   const ownerRun = isOwnerRun(parties)
   // One row the contract refuses (a 1.x URL or token longer than 2.0 allows) is left out, not
@@ -141,7 +151,7 @@ export async function v2Catalog(parties: RunParties): Promise<RunCatalog> {
     owner_id: parties.ownerId,
     person_id: parties.personId,
     actor_id: parties.actorId,
-    search: effectiveSettings({ user, scope: 'search' }).values,
+    search: { ...effectiveSettings({ user, scope: 'search' }).values, synonyms: userSynonyms(user) },
     resources,
   })
 }

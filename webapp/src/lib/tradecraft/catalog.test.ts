@@ -110,7 +110,18 @@ describe('the 2.0 catalog', () => {
 
   test("the account's search settings", async () => {
     const c = await v2Catalog(OWNER_RUN) as V2
-    expect(c.search).toEqual(effectiveSettings({ user: { search: { 'search.results': 7 } }, scope: 'search' }).values)
+    expect(c.search).toEqual({ ...effectiveSettings({ user: { search: { 'search.results': 7 } }, scope: 'search' }).values, synonyms: [] })
+  })
+
+  test("the account's own synonyms travel with its search settings (R-340, R-412; S05 review finding 1)", async () => {
+    const settings = h.db.rows('tradecraftUserSettings', { userId: 'owner' })[0]
+    settings.synonyms = ['PATT = PayloadsAllTheThings', { term: 'TCX', expansions: ['tc example'] }]
+    expect((await v2Catalog(OWNER_RUN) as V2).search.synonyms).toEqual(['PATT = PayloadsAllTheThings', { term: 'TCX', expansions: ['tc example'] }])
+    // At most constants.maxUserSynonyms pairs, and only a list.
+    settings.synonyms = Array.from({ length: 250 }, (_, i) => `a${i} = b${i}`)
+    expect((await v2Catalog(OWNER_RUN) as V2).search.synonyms).toHaveLength(200)
+    settings.synonyms = { not: 'a list' }
+    expect((await v2Catalog(OWNER_RUN) as V2).search.synonyms).toEqual([])
   })
 
   test('the payload satisfies the contract after the JSON hop', async () => {

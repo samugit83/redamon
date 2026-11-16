@@ -42,8 +42,9 @@ def _clip(text: Any) -> str:
 
 
 def parse_user(raw: Any) -> list[Synonym]:
-    """The user's pairs from the run's search settings: a list of ``{term, expansions}`` or of
-    ``"A = B"`` strings; anything else is skipped. At most ``maxUserSynonyms`` entries."""
+    """The user's pairs from the run's search settings (``synonyms``, sent by the webapp's run
+    catalog): a list of ``{term, expansions}`` or of ``"A = B"`` strings; anything else is
+    skipped. At most ``maxUserSynonyms`` entries, one per pair: ``pairs`` reads each both ways."""
     out: list[Synonym] = []
     for item in raw if isinstance(raw, (list, tuple)) else ():
         if len(out) >= MAX_USER_SYNONYMS:
@@ -51,7 +52,7 @@ def parse_user(raw: Any) -> list[Synonym]:
         if isinstance(item, str) and "=" in item:
             a, b = (_clip(p) for p in item.split("=", 1))
             if a and b and a != b:
-                out += [Synonym(a, (b,)), Synonym(b, (a,))]
+                out.append(Synonym(a, (b,)))
         elif isinstance(item, dict):
             term = _clip(item.get("term"))
             expansions = tuple(e for e in (_clip(x) for x in item.get("expansions") or ()) if e and e != term)
