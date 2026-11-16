@@ -30,13 +30,15 @@ from tradecraft.contract import CheckUrlRequest, CheckUrlResult, GithubInfo, Ind
 from tradecraft.ingest import builders, crawl, fetch, robots
 from tradecraft.ingest.builders import Candidate
 from tradecraft.ingest.detect import WEBSITE, detect
-from tradecraft.settings import EffectiveSettings, constant, site_type_key
+from tradecraft.library import cve
+from tradecraft.settings import EffectiveSettings, constant
 
 logger = get_logger(__name__)
 
 MB = 1024 * 1024
 SAMPLED_PAGES = 3
-# The path patterns a CVE archive is probed with, in this order (§6.5).
+# The path patterns a CVE archive is probed with, in this order (§6.5); a lookup reads the
+# one proposed exactly the same way (``library.cve``).
 CVE_PATTERNS = (
     "{year}/{cve}.md", "{year}/{cve}.json", "{year}/{cve}/README.md",
     "{year}/{cve_lower}.md", "{year}/{cve_lower}.json", "{year}/{cve_lower}/README.md",
@@ -100,7 +102,7 @@ async def check_url(request: CheckUrlRequest) -> CheckUrlResult:
     elif site_type == WEBSITE:
         await _website(result, url, robots_txt, settings, token)
     else:
-        await _known(result, url, site_type, home, robots_txt, settings, token, allow_browser=not login)
+        await _known(result, url, site_type, home, settings, token, allow_browser=not login)
     result.detected_type = site_type
     result.recommended_storage = recommended_storage(site_type, result, settings)
     logger.info(f"[tradecraft] check_url code= type={site_type} entries={result.index.count if result.index else 0}")
@@ -195,13 +197,8 @@ async def _website(result: CheckUrlResult, url: str, robots_txt: robots.Robots, 
     result.estimated_bytes = await _estimate(len(entries), [e.url for e in entries], settings, token)
 
 
-async def _known(result: CheckUrlResult, url: str, site_type: str, home: fetch.FetchedPage, robots_txt: robots.Robots,
+async def _known(result: CheckUrlResult, url: str, site_type: str, home: fetch.FetchedPage,
                  settings: EffectiveSettings, token: Optional[str], *, allow_browser: bool) -> None:
-    short = site_type_key(site_type)
-    configured = f"type.{short}.sitemapUrls"
-    if short in ("wiki", "gitbook") and not settings.list(configured) and robots_txt.sitemaps:
-        # The sitemap robots.txt names comes before the one at the root.
-        settings = _with(settings, {configured: robots_txt.sitemaps[:10]})
     mapped = await builders.build_known(site_type, url, settings, github_token=token, home_html=home.html,
                                         home_final_url=home.final_url, allow_browser=allow_browser, blocking=_thread)
     kind = mapped.index_kind if mapped.entries else "none"
@@ -292,11 +289,12 @@ async def probe_cve_pattern(owner: str, repo: str, branch: str, root: Any, years
     """The first of ``CVE_PATTERNS`` under which a CVE id the archive names exists, or None."""
     ids = (await _cve_ids(owner, repo, root, years, settings, token))[:CVE_PROBE_IDS]
     for pattern in CVE_PATTERNS:
-        for cve in ids:
-            path = pattern.format(year=cve.split("-")[1], cve=cve, cve_lower=cve.lower())
-            raw = (f"https://raw.githubusercontent.com/{owner}/{repo}/{urllib.parse.quote(branch, safe='')}/"
-                   + "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/")))
-            resp = await fetch.fetch_raw(raw, settings, github_token=token, max_bytes=1024)
+        for cve_id in ids:
+            path = cve.pattern_path(pattern, cve_id)
+            if path is None:
+                continue
+            resp = await fetch.fetch_raw(cve.raw_url(owner, repo, branch, path), settings, github_token=token,
+                                         max_bytes=1024)
             if resp.status == 200:
                 return pattern
     return None

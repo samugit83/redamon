@@ -476,17 +476,19 @@ async def sitemap_page_urls(base: str, robots_txt: robots.Robots, settings: Effe
                             blocking: Blocking = inline) -> tuple[list[str], str]:
     """(page URLs, where they came from): the resource's own sitemap URLs
     (``type.website.sitemapUrls``, relative ones against the start URL), then the sitemaps
-    robots.txt names (at most ``sitemapMaxChildren`` of them), else ``/sitemap.xml``; each
-    within the mirror's limits (``builders.sitemap_urls``)."""
+    robots.txt names (at most ``sitemapMaxChildren`` of them), and ``/sitemap.xml`` only when
+    the resource names none (§6.5, as ``builders`` reads a wiki's); each within the mirror's
+    limits (``builders.sitemap_urls``)."""
     max_children = int(constant("sitemapMaxChildren"))
-    for source, named in (("configured", [urllib.parse.urljoin(base, u.strip())
-                                          for u in settings.list("type.website.sitemapUrls") if u.strip()]),
-                          ("robots", robots_txt.sitemaps)):
+    configured = [urllib.parse.urljoin(base, u.strip()) for u in settings.list("type.website.sitemapUrls") if u.strip()]
+    for source, named in (("configured", configured), ("robots", robots_txt.sitemaps)):
         urls: list[str] = []
         for sm in named[:max_children]:
             urls.extend(await builders.sitemap_urls(sm, settings, blocking=blocking))
         if urls:
             return urls, source
+    if configured:
+        return [], "configured"
     origin = robots.origin_of(base)
     return await builders.sitemap_urls(f"{origin}/sitemap.xml", settings, blocking=blocking), "sitemap.xml"
 

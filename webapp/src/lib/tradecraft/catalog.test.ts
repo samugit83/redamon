@@ -91,6 +91,23 @@ describe('the 2.0 catalog', () => {
     expect(c.resources.find(r => r.id === 'public')!.read_settings).toEqual({ 'fetching.requestTimeoutSec': 11 })
   })
 
+  test("a CVE archive's read settings carry its path patterns, branch and README fallback (T4.2, R-146)", async () => {
+    const patterns = ['{year}/{cve}.json', '{year}/{cve_lower}/README.md']
+    h.db.seed('userTradecraftResource', {
+      id: 'cves', userId: 'owner', name: 'cves', slug: 'cves', url: 'https://github.com/tc-fixture/cve', createdAt: T(5),
+      mapVersion: 3, resourceType: 'cve-poc-db', overrides: { 'type.cve.pathPatterns': patterns, 'type.cve.branch': 'trunk' },
+    })
+    const c = await v2Catalog(OWNER_RUN) as V2
+    const cves = c.resources.find(r => r.id === 'cves')!.read_settings
+    expect(cves).toMatchObject({ 'type.cve.pathPatterns': patterns, 'type.cve.branch': 'trunk', 'type.cve.readmeFallback': true,
+      'fetching.requestTimeoutSec': 42 })
+    // The values it was ingested with, when it has a snapshot; no other type carries them.
+    h.db.rows('userTradecraftResource', { id: 'cves' })[0].settingsSnapshot = { values: { 'type.cve.pathPatterns': ['{year}/{cve}.md'], 'type.github.branch': 'x' }, provenance: {} }
+    const again = await v2Catalog(OWNER_RUN) as V2
+    expect(again.resources.find(r => r.id === 'cves')!.read_settings).toEqual({ 'type.cve.pathPatterns': ['{year}/{cve}.md'] })
+    expect(Object.keys(again.resources.find(r => r.id === 'public')!.read_settings).some(k => k.startsWith('type.'))).toBe(false)
+  })
+
   test("the account's search settings", async () => {
     const c = await v2Catalog(OWNER_RUN) as V2
     expect(c.search).toEqual(effectiveSettings({ user: { search: { 'search.results': 7 } }, scope: 'search' }).values)

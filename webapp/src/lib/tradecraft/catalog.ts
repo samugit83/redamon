@@ -83,12 +83,16 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 const READ_KEY = /^(fetching|content)\./
+// A CVE archive is read through its path patterns, branch and README fallback (§6.5, T4.2):
+// the agent finds a CVE's file with them at every lookup.
+const CVE_READ_KEY = /^type\.cve\./
 
 /** The values a live read uses: those the resource was ingested with, else today's. */
-function readSettings(row: ActiveRow, user: { ingestion?: unknown } | null): Record<string, unknown> {
+function readSettings(row: ActiveRow, user: { ingestion?: unknown } | null, type: string): Record<string, unknown> {
   const snapshot = isPlainObject(row.settingsSnapshot) && isPlainObject(row.settingsSnapshot.values) ? row.settingsSnapshot.values : null
   const values = snapshot && Object.keys(snapshot).length > 0 ? snapshot : effectiveSettings({ user, resource: row.overrides }).values
-  return Object.fromEntries(Object.entries(values).filter(([k]) => READ_KEY.test(k)))
+  const read = (k: string) => READ_KEY.test(k) || (type === 'cve-poc-db' && CVE_READ_KEY.test(k))
+  return Object.fromEntries(Object.entries(values).filter(([k]) => read(k)))
 }
 
 function catalogEntry(row: ActiveRow, user: { ingestion?: unknown } | null, ownerRun: boolean): unknown {
@@ -105,7 +109,7 @@ function catalogEntry(row: ActiveRow, user: { ingestion?: unknown } | null, owne
     has_login: login,
     priority: (PRIORITIES as readonly string[]).includes(row.priority) ? row.priority : 'normal',
     map_version: row.mapVersion,
-    read_settings: readSettings(row, user),
+    read_settings: readSettings(row, user, type),
     github_token: row.githubTokenOverride || null,
     credentials: ownerRun && login ? (row.credentials ?? {}) : null,
   }

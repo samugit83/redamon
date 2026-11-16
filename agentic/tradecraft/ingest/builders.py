@@ -30,7 +30,7 @@ from orchestrator_helpers.web_sources import (
     split_github_url,
 )
 from tradecraft import net
-from tradecraft.ingest import fetch
+from tradecraft.ingest import fetch, robots
 from tradecraft.settings import EffectiveSettings, constant
 
 Blocking = Callable[..., Awaitable[Any]]
@@ -163,8 +163,15 @@ def _nav_links(html: str, page_url: str, selector: str) -> list[tuple[str, str]]
 
 async def _from_sitemaps(base: str, configured: list[str], settings: EffectiveSettings,
                          blocking: Blocking) -> tuple[list[str], str]:
-    for sm in configured or [f"{base}/sitemap.xml"]:
-        urls = await sitemap_urls(urllib.parse.urljoin(base + "/", sm), settings, blocking=blocking)
+    """The first sitemap that lists pages: the resource's own URLs (§6.5; they replace
+    ``/sitemap.xml`` at the resource's URL, which is read only when none is set), and the ones
+    a ``Sitemap:`` line of robots.txt names."""
+    named = [urllib.parse.urljoin(base + "/", sm.strip()) for sm in configured if sm.strip()]
+    named += (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
+    if not configured:
+        named.append(f"{base}/sitemap.xml")
+    for sm in dict.fromkeys(named):
+        urls = await sitemap_urls(sm, settings, blocking=blocking)
         if urls:
             return urls, sm
     return [], ""
@@ -184,8 +191,7 @@ async def build_wiki(url: str, settings: EffectiveSettings, *, home_html: str = 
         urls = language_filter(urls, settings)
         entries = [Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u) for u in urls]
         entries, cut = _dedupe(entries, cap)
-        return MapResult("mkdocs-wiki", entries, index_kind="sitemap",
-                         index_url=urllib.parse.urljoin(base + "/", index_url), truncated=cut)
+        return MapResult("mkdocs-wiki", entries, index_kind="sitemap", index_url=index_url, truncated=cut)
 
     resp = await fetch.fetch_raw(f"{base}/mkdocs.yml", settings)
     if resp.ok and resp.body:
@@ -292,8 +298,7 @@ async def build_gitbook(url: str, settings: EffectiveSettings, *, home_html: str
     if urls:
         urls = language_filter(urls, settings)
         entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=False), "sitemap", u) for u in urls], cap)
-        return MapResult("gitbook", entries, index_kind="sitemap",
-                         index_url=urllib.parse.urljoin(base + "/", index_url), truncated=cut)
+        return MapResult("gitbook", entries, index_kind="sitemap", index_url=index_url, truncated=cut)
 
     selector = settings.str("type.gitbook.menuSelector") or _GITBOOK_NAV
     menu_cap = min(cap, int(constant("navHarvestMaxEntries")["gitbook"]))
@@ -341,8 +346,28 @@ def _wanted_path(path: str, file_types: list[str], include: list[str], exclude: 
     return not under(exclude)
 
 
+def _is_readme(path: str) -> bool:
+    return path.rsplit("/", 1)[-1].lower().startswith("readme.")
+
+
+def folder_entries(paths: list[str]) -> list[str]:
+    """§6.5 "One entry per folder": a folder (not the root) with a README becomes one entry, its
+    README, standing for every file under it that no deeper README folder claims. Files under
+    no such folder stay one entry each. Order: the first file of each group."""
+    readme_dirs = {p.rsplit("/", 1)[0] for p in paths if "/" in p and _is_readme(p)}
+    out: list[str] = []
+    for p in paths:
+        parts = p.split("/")[:-1]
+        owner = next(("/".join(parts[:i]) for i in range(len(parts), 0, -1) if "/".join(parts[:i]) in readme_dirs), None)
+        entry = p if owner is None else next(q for q in paths if q.rsplit("/", 1)[0] == owner and _is_readme(q))
+        if entry not in out:
+            out.append(entry)
+    return out
+
+
 async def build_github(url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None) -> MapResult:
-    """The repository's tree through the GitHub API: one entry per text file."""
+    """The repository's tree through the GitHub API at ``type.github.branch`` (a branch or a
+    tag; the default branch when empty): one entry per text file, or per README folder."""
     parsed = split_github_url(url)
     if not parsed:
         return MapResult("github-repo", error="bad_url", note="github_url_unparsed")
@@ -365,14 +390,16 @@ async def build_github(url: str, settings: EffectiveSettings, *, github_token: O
     items = data.get("tree", []) if isinstance(data, dict) else []
     file_types = settings.list("knownTypes.githubFileTypes")
     include, exclude = settings.list("type.github.includeFolders"), settings.list("type.github.excludeFolders")
+    paths = [str(item.get("path", "")) for item in items if isinstance(item, dict) and item.get("type") == "blob"]
+    paths = [p for p in paths if _wanted_path(p, file_types, include, exclude)]
+    by_folder = settings.bool("type.github.folderEntries")
+    if by_folder:
+        paths = folder_entries(paths)
     entries = []
-    for item in items:
-        if not isinstance(item, dict) or item.get("type") != "blob":
-            continue
-        path = str(item.get("path", ""))
-        if not _wanted_path(path, file_types, include, exclude):
-            continue
-        title = " > ".join(seg.replace("_", " ").replace("-", " ") for seg in path.rsplit(".", 1)[0].split("/"))
+    for path in paths:
+        # A folder's entry is named after the folder; every other entry after its file (1.x).
+        name = path.rsplit("/", 1)[0] if by_folder and _is_readme(path) and "/" in path else path.rsplit(".", 1)[0]
+        title = " > ".join(seg.replace("_", " ").replace("-", " ") for seg in name.split("/"))
         encoded = "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/"))
         raw = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{encoded}"
         entries.append(Candidate(raw, title, "tree", path))
@@ -425,10 +452,32 @@ def _skip_set(text: str) -> set[int]:
     return out
 
 
+def _chapter_starts(reader: Any) -> list[tuple[int, str]]:
+    """(first page, title) of each top-level bookmark, in page order; [] when the PDF has none."""
+    starts: list[tuple[int, str]] = []
+    try:
+        outline = reader.outline
+    except Exception:
+        return []
+    for item in outline or []:
+        if isinstance(item, list):  # the children of the previous bookmark
+            continue
+        try:
+            page = reader.get_destination_page_number(item) + 1
+        except Exception:
+            continue
+        title = str(getattr(item, "title", "") or "").strip()[:200]
+        if page >= 1 and not any(page == p for p, _t in starts):
+            starts.append((page, title))
+    return sorted(starts)
+
+
 def pdf_pages(body: bytes, settings: EffectiveSettings) -> tuple[list[dict], int, str]:
     """(pages, total pages, error code) where each page is {page, first_line, text}: the
     pages from ``type.pdf.firstPage`` to ``lastPage`` (0 = the end) without ``skipPages``, at
-    most ``knownTypes.pdfMaxPages``. Blocking: run it through ``blocking``."""
+    most ``knownTypes.pdfMaxPages``. With ``type.pdf.mapBy`` = ``chapters`` and bookmarks, one
+    item per top-level bookmark instead: its first page, its title, the text of its pages.
+    Blocking: run it through ``blocking``."""
     if PdfReader is None or not body:
         return [], 0, "fetch_failed"
     try:
@@ -436,6 +485,35 @@ def pdf_pages(body: bytes, settings: EffectiveSettings) -> tuple[list[dict], int
         total = len(reader.pages)
     except Exception:
         return [], 0, "fetch_failed"
+    pages = _pages(reader, total, settings)
+    if settings.str("type.pdf.mapBy") == "chapters":
+        chapters = _chapters(reader, pages)
+        if chapters:
+            return chapters, total, ""
+    return pages, total, ""
+
+
+def _chapters(reader: Any, pages: list[dict]) -> list[dict]:
+    starts = _chapter_starts(reader)
+    if not starts:
+        return []
+    out: list[dict] = []
+    for i, (start, title) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else None
+        own = [p for p in pages if p["page"] >= start and (end is None or p["page"] < end)]
+        if not own:
+            continue
+        out.append({"page": own[0]["page"], "first_line": title or own[0]["first_line"],
+                    "text": "\n\n".join(p["text"] for p in own if p["text"])})
+    # Pages before the first bookmark keep an item of their own, so no page of the range is lost.
+    before = [p for p in pages if p["page"] < starts[0][0]]
+    if before:
+        out.insert(0, {"page": before[0]["page"], "first_line": before[0]["first_line"],
+                       "text": "\n\n".join(p["text"] for p in before if p["text"])})
+    return out
+
+
+def _pages(reader: Any, total: int, settings: EffectiveSettings) -> list[dict]:
     first = max(1, settings.int("type.pdf.firstPage"))
     last = settings.int("type.pdf.lastPage") or total
     skip = _skip_set(settings.str("type.pdf.skipPages"))
@@ -452,7 +530,7 @@ def pdf_pages(body: bytes, settings: EffectiveSettings) -> tuple[list[dict], int
             text = ""
         first_line = next((ln.strip()[:80] for ln in text.splitlines() if ln.strip()), "")
         pages.append({"page": n, "first_line": first_line, "text": text})
-    return pages, total, ""
+    return pages
 
 
 async def build_pdf(url: str, body: bytes, settings: EffectiveSettings, *, blocking: Blocking = inline) -> MapResult:
