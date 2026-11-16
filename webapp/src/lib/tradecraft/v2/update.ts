@@ -91,6 +91,12 @@ export async function updateResourceV2(input: {
         // Sections exist only for stored pages (R-335): they hold the same text.
         await tx.tradecraftEntry.updateMany({ where: { resourceId, storedText: { not: null } }, data: { storedText: null, storedBytes: 0 } })
         await tx.tradecraftSection.deleteMany({ where: { resourceId } })
+        // The report's stored counts described that text: kept, a later Live → Stored would not
+        // read as stale (staleness.ts) although nothing is stored.
+        const report = existing.ingestionReport
+        if (report && typeof report === 'object' && !Array.isArray(report) && 'stored' in report) {
+          data.ingestionReport = { ...report, stored: { pages: 0, bytes: 0, notStoredQuota: 0, notStoredSize: 0 } }
+        }
       }
       if (Object.keys(data).length > 0) await tx.userTradecraftResource.update({ where: { id: resourceId }, data })
     })

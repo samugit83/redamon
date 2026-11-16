@@ -258,6 +258,20 @@ describe('updateResourceV2', () => {
       expect(h.db.rows('tradecraftEntry', { resourceId: 'r1' })[0].storedText).toBeNull()
     })
 
+    test('Stored → Live → Stored: nothing is stored any more, so the resource is stale again (§6.13)', async () => {
+      ingestedCurrent()
+      stubAgent()
+      await view({ storageMode: 'live' })
+      expect(row().ingestionReport).toMatchObject({ visited: 5, kept: 5, stored: { pages: 0, bytes: 0, notStoredQuota: 0, notStoredSize: 0 } })
+      expect((await view({ storageMode: 'stored' }))).toMatchObject({ job: null, resource: { stale: true } })
+    })
+
+    test('a Stored ingestion the quota left without text stays current: Save & re-ingest could not clear the badge', async () => {
+      ingestedCurrent({ ingestionReport: { visited: 5, kept: 5, stored: { pages: 0, bytes: 0, notStoredQuota: 5, notStoredSize: 0 } } })
+      stubAgent()
+      expect((await view({})).resource.stale).toBe(false)
+    })
+
     test('the Resource ID is read-only: the same ID passes, another is refused and nothing is written (R-137)', async () => {
       stubAgent()
       expect((await update({ slug: 'wiki', name: 'Same id' })).status).toBe(200)
