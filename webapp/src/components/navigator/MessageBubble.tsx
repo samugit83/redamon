@@ -1,9 +1,9 @@
 /**
  * One AI Navigator message, rendered safely (plan §9.9): react-markdown + remark-gfm only, no raw
- * HTML and no dangerouslySetInnerHTML. A link becomes clickable only when it is a citation to the
- * RedAmon docs or the GitHub wiki, or the app's own AI Agent deep link; any other URL (target data
- * can carry links) shows as plain text. Images are never loaded. `[S#]` markers become chips that
- * open their citation; an unknown id stays plain text.
+ * HTML and no dangerouslySetInnerHTML. A link becomes clickable only when it is one of this
+ * answer's citations (an allowlisted RedAmon docs or GitHub wiki URL), or the app's own AI Agent
+ * deep link; any other URL (target data can carry links) shows as plain text. Images are never
+ * loaded. `[S#]` markers become chips that open their citation; an unknown id stays plain text.
  */
 'use client'
 
@@ -33,6 +33,9 @@ function textOf(children: React.ReactNode): string {
 
 export function markdownComponents(citations: readonly CitationView[]): Components {
   const byId = new Map(citations.map((c) => [c.id, c]))
+  // The allowlist covers any GitHub wiki page name, pages anyone with wiki access can write: a
+  // link is clickable only at a URL the server built from the index for this answer.
+  const backed = new Set(citations.flatMap((c) => [c.url, c.mirror_url]).filter((u) => citationUrlAllowed(u)))
   return {
     a: ({ href, children }) => {
       const to = typeof href === 'string' ? href : ''
@@ -45,7 +48,7 @@ export function markdownComponents(citations: readonly CitationView[]): Componen
           </a>
         )
       }
-      if (citationUrlAllowed(to)) {
+      if (backed.has(to)) {
         return <a href={to} target="_blank" rel="noopener noreferrer">{children}</a>
       }
       if (AGENT_LINK.test(to)) return <a href={to}>{children}</a>

@@ -55,6 +55,22 @@ describe('MessageBubble safety', () => {
     expect(screen.getByRole('link', { name: 'GitHub' }).getAttribute('href')).toBe(CIT.mirror_url)
   })
 
+  test('a docs or wiki link no citation of the answer backs is plain text', () => {
+    // The GitHub wiki allowlist covers any page name, so an injected answer could link a page
+    // someone else wrote there; only a URL the server built from the index is clickable.
+    const { container } = show(answer({ content:
+      '[read this](https://github.com/samugit83/redamon/wiki/Attacker-Page) and [docs](https://www.redamon.org/docs/scan-timeline)' }))
+    expect(container.querySelectorAll('a')).toHaveLength(0)
+    expect(container.textContent).toContain('read this (https://github.com/samugit83/redamon/wiki/Attacker-Page)')
+  })
+
+  test('a link to a URL one of the answer\'s citations backs stays clickable', () => {
+    const { container } = show(answer({ content: `[the schedule docs](${CIT.mirror_url})`, citations: [CIT] }))
+    const link = container.querySelector('.answerBody a, a')
+    expect(link?.getAttribute('href')).toBe(CIT.mirror_url)
+    expect(link?.textContent).toBe('the schedule docs')
+  })
+
   test('a forged citation URL renders no link at all', () => {
     const { container } = show(answer({ content: 'x [S1]', citations: [{ ...CIT, url: 'https://evil.example/' }] }))
     expect(container.querySelectorAll('a')).toHaveLength(0)
