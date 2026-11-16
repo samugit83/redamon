@@ -16,7 +16,7 @@ class ToolOutcome:
     ok: bool
     #: Built by code, shown in the trace; never a tool result.
     summary: str
-    #: Generated Cypher (or SQL), for the "How I got this" trace.
+    #: Generated Cypher, for the "How I got this" trace.
     detail: Optional[str] = None
     error_code: Optional[str] = None
 
