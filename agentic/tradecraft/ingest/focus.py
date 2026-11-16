@@ -195,6 +195,19 @@ def _labels(ids: Sequence[str], table: Sequence[Mapping[str, Any]]) -> str:
     return ", ".join(names.get(i, i) for i in ids if not i.startswith(USER_SKILL_PREFIX)) or "(any)"
 
 
+def focus_lines(focus: Focus) -> str:
+    """The owner's focus as prompt lines: the triage, the focus-aware crawl and the focused summary
+    read the same words."""
+    vocab = load_vocab()
+    return (
+        f"Topics: {_labels(focus.topics, vocab.topics)}\n"
+        f"  Content types: {_labels(focus.kinds, vocab.kinds)}\n"
+        f"  Keep: {focus.keep or '(not set)'}\n"
+        f"  Skip: {focus.skip or '(not set)'}\n"
+        f"  Strictness: {focus.strictness}: {_STRICTNESS_RULES.get(focus.strictness, '')}"
+    )
+
+
 def triage_prompt(items: Sequence[tuple[str, str]], focus: Optional[Focus], *, drop: bool) -> str:
     """One batch's prompt. The person's focus and the fixed lists are instructions; the titles and
     paths, written by the site, sit inside the untrusted block, one numbered line each."""
@@ -208,11 +221,7 @@ def triage_prompt(items: Sequence[tuple[str, str]], focus: Optional[Focus], *, d
             "autonomous pentest agent's library keeps only what fits. Judge each entry by its title and "
             "path only.\n\n"
             "The owner's focus:\n"
-            f"  Topics: {_labels(focus.topics, vocab.topics)}\n"
-            f"  Content types: {_labels(focus.kinds, vocab.kinds)}\n"
-            f"  Keep: {focus.keep or '(not set)'}\n"
-            f"  Skip: {focus.skip or '(not set)'}\n"
-            f"  Strictness: {focus.strictness}: {_STRICTNESS_RULES.get(focus.strictness, '')}\n\n"
+            f"  {focus_lines(focus)}\n\n"
             "For each entry answer keep, maybe or drop, a reason of at most 15 words, and its tags: the "
             "topics and content types below that fit it (none when none fits).\n"
         )
@@ -319,12 +328,17 @@ def pinned(entry: Any) -> bool:
     return bool(entry.extra.get("pinned")) or entry.source == "pin"
 
 
-def _drop(state: "IngestState", entry: Any, reason: str) -> None:
+def _drop(entry: Any, reason: str) -> None:
     entry.extra["status"] = "dropped"
     entry.extra["drop_reason"] = reason[:REASON_MAX]
     entry.extra["dropped_by"] = "focus"
     entry.extra["focus_decision"] = "drop"
-    state.skipped["outsideFocus"] = state.skipped.get("outsideFocus", 0) + 1
+
+
+def dropped_count(entries: Sequence[Any]) -> int:
+    """The report's ``skipped.outsideFocus``: the entries the focus dropped, here or in the
+    focus-aware crawl."""
+    return sum(1 for e in entries if e.extra.get("dropped_by") == "focus")
 
 
 async def select(state: "IngestState") -> "IngestState":
@@ -341,7 +355,7 @@ async def select(state: "IngestState") -> "IngestState":
             continue
         score, linked = presort_score(matchers, entry.title, entry.url)
         if focus.strictness == "strict" and matchers.any and not linked and not pinned(entry):
-            _drop(state, entry, PRESORT_DROP_REASON)
+            _drop(entry, PRESORT_DROP_REASON)
             continue
         entry.extra["focus_decision"] = "maybe"
         judged.append((score, entry))
@@ -370,7 +384,7 @@ async def select(state: "IngestState") -> "IngestState":
         entry.extra["focus_topics"] = list(verdict.topics)
         entry.extra["focus_kinds"] = list(verdict.kinds)
         if verdict.decision == "drop" and not pinned(entry):
-            _drop(state, entry, verdict.reason or MODEL_DROP_REASON)
+            _drop(entry, verdict.reason or MODEL_DROP_REASON)
         else:
             entry.extra["focus_decision"] = "keep" if verdict.decision == "drop" else verdict.decision
     for _ in range(result.invalid):
@@ -397,7 +411,7 @@ def report_counts(state: "IngestState") -> dict:
         counts["kept"] = sum(1 for e in state.entries if e.extra.get("status", "kept") == "kept")
         counts["maybe"] = sum(1 for e in decided if e.extra["focus_decision"] == "maybe"
                               and e.extra.get("status", "kept") == "kept")
-        counts["dropped"] = sum(1 for e in state.entries if e.extra.get("dropped_by") == "focus")
+        counts["dropped"] = dropped_count(state.entries)
     return counts
 
 

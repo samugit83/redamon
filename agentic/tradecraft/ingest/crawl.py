@@ -27,6 +27,15 @@ never retried after an exception (TD-20): an answer that is not JSON gets one st
 request, an error stops the crawl with its code. A kept page carries its HTML, so the pipeline
 stores it without a second download. The report counts skips by reason: ``excluded``,
 ``outOfScope``, ``tooLittleText``, ``robots`` (distinct URLs, except ``tooLittleText``).
+
+With a Focused ingestion focus (§6.14 step 4, T5.2) the model-guided crawl spends its budget on
+the focus: links are ranked by the focus's keywords (the relevant ones are offered and visited
+first, every strategy), and the one call per page also receives the focus and the start of the
+page's text (``constants.contentCheckChars``, inside an untrusted block) and answers, besides
+which links to follow, whether to keep the page. Keep and follow are separate decisions: a hub
+page is followed without being kept, and then stays in the map as a dropped entry with its
+reason. A page the model did not judge (no call was made on it, or the answer had no ``keep``)
+is left to the focus stage's title triage, so the focus costs no extra call (R-177).
 """
 
 from __future__ import annotations
@@ -325,6 +334,8 @@ def keep_reason(meta: dict[str, Any], settings: EffectiveSettings) -> str:
 
 
 _LOCAL_SUFFIXES = (".local", ".internal")
+# The start of a page's text the focus-aware crawl's call reads (§6.14 step 4).
+EXCERPT_CHARS = int(constant("contentCheckChars"))
 
 
 @dataclass
@@ -343,6 +354,28 @@ class _State:
     too_little: int = 0
     too_large: int = 0
     starts: list = field(default_factory=list)
+    # A Focused focus (``ingest.focus.Focus``) and its keyword matchers; None otherwise.
+    focus: Any = None
+    matchers: Any = None
+    # The model's keep decision on the page of its last answer: True, False or None (none given).
+    keep: Optional[bool] = None
+    keep_reason: str = ""
+    scores: dict = field(default_factory=dict)
+
+    def link_score(self, title: str, href: str) -> int:
+        if self.focus is None:
+            return 0
+        from tradecraft.ingest import focus as focus_mod
+        return focus_mod.presort_score(self.matchers, title, href)[0]
+
+    def enqueue(self, links: list[dict[str, str]], depth: int) -> None:
+        """Adds links to the frontier; with a focus the frontier stays ordered by their score
+        (map order among equals), so the relevant pages are visited first."""
+        for link in links:
+            self.scores[link["href"]] = self.link_score(link.get("title", ""), link["href"])
+            self.frontier.append((link["href"], depth))
+        if self.focus is not None:
+            self.frontier.sort(key=lambda item: -self.scores.get(item[0], 0))
 
     def skip(self, reason: str, url: str) -> None:
         if reason == "excluded":
@@ -362,10 +395,13 @@ class _State:
 def follow_candidates(meta: dict[str, Any], state: _State, settings: EffectiveSettings,
                       limit: Optional[int] = None) -> list[dict[str, str]]:
     """The page's links that pass the follow rules and were not seen, body links first when
-    ``crawl.preferBodyLinks`` is on; at most ``limit`` (the links offered to the model)."""
+    ``crawl.preferBodyLinks`` is on, then (with a focus) the ones that name it; at most ``limit``
+    (the links offered to the model)."""
     links = meta["links"]
     if settings.bool("crawl.preferBodyLinks"):
         links = [lk for lk in links if lk.get("body", True)] + [lk for lk in links if not lk.get("body", True)]
+    if state.focus is not None:
+        links = sorted(links, key=lambda lk: -state.link_score(lk.get("title", ""), lk.get("href") or ""))
     out: list[dict[str, str]] = []
     queued = {f for f, _d in state.frontier}
     for link in links:
@@ -416,6 +452,31 @@ Reply ONLY with JSON. Two valid shapes:
   {{"action": "follow", "indices": [1, 4, 7], "reason": "..."}}
 """
 _STRICT_SUFFIX = "\n\nReturn ONLY a single line of valid JSON. No prose, no fenced block."
+_FOCUS_REPLY = """\
+Reply ONLY with JSON. Two valid shapes:
+  {{"action": "stop", "keep": true, "reason": "..."}}
+  {{"action": "follow", "indices": [1, 4, 7], "keep": false, "reason": "..."}}
+"""
+_REPLY = """\
+Reply ONLY with JSON. Two valid shapes:
+  {{"action": "stop", "reason": "..."}}
+  {{"action": "follow", "indices": [1, 4, 7], "reason": "..."}}
+"""
+
+
+def _focus_block(state: _State) -> str:
+    """The owner's focus, and how keep and follow differ: the person's own words, outside the
+    untrusted blocks."""
+    from tradecraft.ingest import focus as focus_mod
+
+    f = state.focus
+    return (
+        "The owner's focus for this resource (keep only pages that fit it):\n"
+        f"  {focus_mod.focus_lines(f)}\n"
+        "Follow links likely to lead to pages that fit the focus first; a hub page that links to them is worth "
+        "following even when you would not keep it. Also decide whether the page just visited fits the focus "
+        '("keep": true or false), judged from its excerpt below, and say why in "reason".\n\n'
+    )
 
 
 class _ModelFailed(Exception):
@@ -431,12 +492,12 @@ def error_code_of(exc: BaseException) -> str:
 
 
 def build_prompt(state: _State, settings: EffectiveSettings, current: str, depth: int,
-                 candidates: list[dict[str, str]], hints: dict[str, Any]) -> str:
+                 candidates: list[dict[str, str]], hints: dict[str, Any], excerpt: str = "") -> str:
     sample = "\n".join(f"  - {e.title}" for e in state.entries[-10:]) or "  (none yet)"
     links_block = "\n".join(
         f"  {i + 1}. \"{c.get('title', '')[:80]}\" -> {urllib.parse.urlsplit(c['href']).path or c['href']}"
         for i, c in enumerate(candidates)) or "  (none)"
-    return _PROMPT_TEMPLATE.format(
+    prompt = _PROMPT_TEMPLATE.format(
         base=state.base, current=current, depth=depth,
         pages_remaining=max(0, settings.int("crawl.maxPages") - state.pages_fetched),
         calls_remaining=max(0, settings.int("crawl.maxLlmCalls") - state.llm_calls),
@@ -448,6 +509,24 @@ def build_prompt(state: _State, settings: EffectiveSettings, current: str, depth
         pagination=hints.get("pagination", False),
         tag_cloud=hints.get("tag_cloud", []),
     )
+    if state.focus is None:
+        return prompt
+    head = prompt[:-len(_REPLY.format())] if prompt.endswith(_REPLY.format()) else prompt
+    excerpt_block = wrap_untrusted(" ".join((excerpt or "").split())[:EXCERPT_CHARS], "WEB_CONTENT")
+    return (head + _focus_block(state) + "Excerpt of the page just visited:\n" + excerpt_block + "\n\n"
+            + _FOCUS_REPLY.format())
+
+
+def _parse_keep(content: str) -> Optional[bool]:
+    """The answer's ``keep`` when it is a JSON boolean; None otherwise (the page is then judged
+    by the title triage)."""
+    m = re.search(r"\{.*\}", content, re.DOTALL)
+    try:
+        data = json.loads(m.group(0)) if m else None
+    except ValueError:
+        return None
+    keep = data.get("keep") if isinstance(data, dict) else None
+    return keep if isinstance(keep, bool) else None
 
 
 def _parse_decision(content: str) -> Optional[tuple[str, list[int], str]]:
@@ -478,8 +557,11 @@ async def llm_decide(llm: Any, prompt: str, state: _State) -> tuple[str, list[in
                 resp = await llm.ainvoke(prompt + (_STRICT_SUFFIX if strict else ""))
         except Exception as exc:
             raise _ModelFailed(error_code_of(exc)) from exc
-        decision = _parse_decision(normalize_content(getattr(resp, "content", "") or "").strip())
+        content = normalize_content(getattr(resp, "content", "") or "").strip()
+        decision = _parse_decision(content)
         if decision is not None:
+            state.keep = _parse_keep(content) if state.focus is not None else None
+            state.keep_reason = decision[2]
             return decision
     return "parse_error", [], ""
 
@@ -590,9 +672,10 @@ def exclude_patterns(settings: EffectiveSettings) -> list[str]:
 
 async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[FetchPage] = None, llm: Any = None,
                 blocking: Blocking = inline, cancel_check: Optional[CancelCheck] = None,
-                progress: Optional[Progress] = None, allow_browser: bool = True) -> CrawlResult:
+                progress: Optional[Progress] = None, allow_browser: bool = True, focus: Any = None) -> CrawlResult:
     """``allow_browser`` is False for a resource with a login (§5): its pages are read with
-    plain HTTP only, whatever the browser settings say."""
+    plain HTTP only, whatever the browser settings say. ``focus`` is the resource's
+    ``ingest.focus.Focus``; only a Focused one with something to judge by changes the crawl."""
     fetch_page = fetch_page or fetch_page_for(settings, allow_browser=allow_browser)
     base = fetch.canonical_url(url)
     if not _host(base):
@@ -600,6 +683,9 @@ async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[F
     starts = start_pages(base, settings)
     state = _State(base=base, rules=FollowRules(settings, starts, exclude_patterns(settings)), started=clock.monotonic())
     state.starts = starts
+    if focus is not None and focus.filters:
+        from tradecraft.ingest import focus as focus_mod
+        state.focus, state.matchers = focus, focus_mod.keyword_matchers(focus)
     strategy = settings.str("crawl.strategy")
     respect_robots = settings.bool("crawl.respectRobots")
     robots_cache = robots.RobotsCache(settings)
@@ -637,11 +723,26 @@ async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[F
                        robots_cache if respect_robots else None)
 
 
+def _keep_or_drop(entry: Candidate, state: _State) -> None:
+    """The model's keep decision on the page its call was about. None leaves the page to the
+    title triage; a dropped page stays in the map's table with its reason (§6.14)."""
+    from tradecraft.ingest import focus as focus_mod
+
+    if state.keep is True:
+        entry.extra["focus_decision"] = "keep"
+    elif state.keep is False:
+        entry.extra.update(status="dropped", dropped_by="focus", focus_decision="drop",
+                           drop_reason=(" ".join(state.keep_reason.split()) or focus_mod.MODEL_DROP_REASON)
+                           [:focus_mod.REASON_MAX])
+
+
 async def _loop(state: _State, settings: EffectiveSettings, strategy: str, fetch_page: FetchPage, llm: Any,
                 blocking: Blocking, cancel_check: Optional[CancelCheck], progress: Optional[Progress],
                 robots_cache: Optional[robots.RobotsCache]) -> CrawlResult:
     state.frontier.extend((s, 0) for s in state.starts)
     starts = set(state.starts)
+    # The start pages are always visited: ahead of any link the focus ranks.
+    state.scores.update({s: 1 << 30 for s in starts})
     max_pages, max_calls = settings.int("crawl.maxPages"), settings.int("crawl.maxLlmCalls")
     budget, max_depth = settings.int("crawl.timeBudgetSec"), settings.int("crawl.maxDepth")
     map_cap = settings.int("knownTypes.maxMapEntries.website")
@@ -704,11 +805,13 @@ async def _loop(state: _State, settings: EffectiveSettings, strategy: str, fetch
                 continue
             meta = await blocking(page_meta, got.html, got.final_url or current)
             reason = keep_reason(meta, settings) or state.rules.verdict(current)
+            entry: Optional[Candidate] = None
             if reason:
                 state.skip(reason, current)
             elif len(state.entries) < map_cap:
-                state.entries.append(Candidate(current, meta["title"], "crawl", current,
-                                               {"html": got.html, "final_url": final, "tier": got.tier}))
+                entry = Candidate(current, meta["title"], "crawl", current,
+                                  {"html": got.html, "final_url": final, "tier": got.tier})
+                state.entries.append(entry)
             if stop_reason:
                 # A decision earlier in this batch ended the crawl: its other pages were already
                 # downloaded, so they are still kept, but nothing more is followed.
@@ -722,28 +825,29 @@ async def _loop(state: _State, settings: EffectiveSettings, strategy: str, fetch
             if depth + 1 > max_depth or not candidates:
                 continue
             if not guided:
-                state.frontier.extend((c["href"], depth + 1) for c in candidates)
+                state.enqueue(candidates, depth + 1)
                 continue
             if state.llm_calls >= max_calls:
                 continue
             try:
                 action, indices, why = await llm_decide(
-                    llm, build_prompt(state, settings, current, depth, candidates, meta["hints"]), state)
+                    llm, build_prompt(state, settings, current, depth, candidates, meta["hints"],
+                                      excerpt=meta.get("body_text", "")), state)
             except _ModelFailed as failed:
                 stop_reason, stopped_because, error_code = "llm_error", f"model error: {failed.code}", failed.code
                 continue
             if action == "parse_error":
                 stop_reason, stopped_because = "llm_parse_error", "llm json parse failure"
                 continue
+            if entry is not None and state.focus is not None:
+                _keep_or_drop(entry, state)
             if action == "stop":
                 if state.pages_fetched < ignore_stop_until:
                     logger.info(f"[tradecraft] crawl stop ignored at page {state.pages_fetched}")
                     continue
                 stop_reason, stopped_because = "llm_stop", why or "llm stop"
                 continue
-            for idx in indices:
-                if 1 <= idx <= len(candidates):
-                    state.frontier.append((candidates[idx - 1]["href"], depth + 1))
+            state.enqueue([candidates[idx - 1] for idx in indices if 1 <= idx <= len(candidates)], depth + 1)
 
     if not stop_reason:
         stop_reason, stopped_because = "frontier_empty", "frontier empty"

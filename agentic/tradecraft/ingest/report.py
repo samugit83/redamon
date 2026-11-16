@@ -61,7 +61,7 @@ async def build(state: "IngestState") -> "IngestState":
     state.report = IngestionReport(
         visited=state.visited,
         kept=kept,
-        skipped=dict(state.skipped),
+        skipped={**state.skipped, "outsideFocus": focus.dropped_count(state.entries)},
         stopReason=(crawl.report_stop_reason if crawl is not None else state.stop_reason)[:64],
         llmCalls=state.llm_calls,
         durationSec=round(max(0.0, clock.monotonic() - state.started), 1),

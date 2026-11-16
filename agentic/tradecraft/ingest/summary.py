@@ -8,6 +8,10 @@ pages, as in 1.x. The start page and the titles are wrapped as untrusted content
 A hand-written or locked summary is kept (no call is made). The call is made once: a failure
 keeps the previous summary and counts its error code in the report (TD-20, no retry).
 
+With a Focused ingestion focus (§6.14 step 5, T5.2) the same call describes the subset the focus
+kept ("SQL injection subset of <site>: payloads and filter bypasses"), from the kept pages'
+titles, so the agent does not look for pages that were dropped. No extra call is made.
+
 ``regenerate`` is the ``regenerate_summary`` job (§6.9, T4.1): the same call over the saved
 map's titles and the start page read again, with no crawl; only the summary is swapped in.
 """
@@ -34,7 +38,20 @@ logger = get_logger(__name__)
 PDF_SUMMARY_PAGES = 5
 
 
-def system_prompt(target_tokens: int, extra: str = "") -> str:
+def focus_instruction(focus: Any, kept: int) -> str:
+    """What the summary must say of a focused resource: only the subset its focus kept (a
+    Regenerate reads the saved map, which holds the kept pages only)."""
+    from tradecraft.ingest.focus import focus_lines
+
+    return (
+        f"This resource keeps only part of the site ({kept} pages), chosen by its owner's focus:\n"
+        f"  {focus_lines(focus)}\n"
+        "Describe that subset, not the whole site, and say so first (for example \"SQL injection subset of "
+        "<site>: payloads and filter bypasses\"), so the agent does not look here for pages that were left out."
+    )
+
+
+def system_prompt(target_tokens: int, extra: str = "", focus_line: str = "") -> str:
     low, high = max(50, target_tokens - 50), target_tokens + 50
     prompt = (
         "You are summarizing a security-knowledge website so an autonomous "
@@ -44,6 +61,8 @@ def system_prompt(target_tokens: int, extra: str = "") -> str:
         "it answers best. No marketing language. No first person.\n\n"
         + UNTRUSTED_OUTPUT_GUIDANCE
     )
+    if focus_line:
+        prompt += "\n\n" + focus_line
     if extra.strip():
         prompt += "\n\nInstructions from the person who added this resource:\n" + extra.strip()
     return prompt
@@ -89,8 +108,13 @@ async def summarize(state: "IngestState") -> "IngestState":
         return state
     if llm is None:
         return state
+    from tradecraft.ingest.focus import focus_of
+
+    focus = focus_of(state.request.resource.focus, s)
+    focus_line = focus_instruction(focus, len(titles)) if focus.filters else ""
     messages = [
-        {"role": "system", "content": system_prompt(s.int("summary.targetTokens"), s.str("summary.extraInstructions"))},
+        {"role": "system", "content": system_prompt(s.int("summary.targetTokens"), s.str("summary.extraInstructions"),
+                                                    focus_line)},
         {"role": "user", "content": user_message(state.url, state.site_type, body, titles,
                                                  s.int("summary.homepageChars"), s.int("summary.titles"))},
     ]

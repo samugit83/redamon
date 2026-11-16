@@ -311,7 +311,8 @@ async def _crawl(state: IngestState) -> None:
         await state.progress("build_map", done, total, "pages")
 
     result = await crawl.crawl(state.url, state.settings, llm=llm, blocking=state.blocking,
-                               cancel_check=state.ctx.is_cancelled, progress=progress)
+                               cancel_check=state.ctx.is_cancelled, progress=progress,
+                               focus=focus.focus_of(state.request.resource.focus, state.settings))
     if result.stop_reason == "cancelled":
         raise Cancelled()
     if model_error:
