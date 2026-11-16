@@ -369,3 +369,40 @@ def test_refresh_replaces(tmp_path):
     assert outcome.swapped and h.resource["generation"] == 4 and h.resource["summary"] == "second summary"
     assert {e["url"] for e in h.store.live_entries(RID)} == first
     assert all(e["generation"] == 4 for e in h.store.live_entries(RID))
+
+
+def test_a_failed_add_leaves_a_1x_error_card(tmp_path):
+    """M1 (TD-18, D-25): an add whose job fails under the default policy, run through the job
+    runner and this pipeline, leaves last_error and last_verified_at on the 1.x columns and the
+    map as it was, so the 1.x tab shows an error card after a switch-off, never "verifying..."."""
+    import functools
+    from tradecraft import jobs
+    from tradecraft.contract import JobStartBatch
+    from tradecraft_doubles import FakeClock
+
+    store = MemoryStore()
+    url = "https://down.tc-fixture.test/"
+    store.add_resource(OWNER, RID, url=url, storage_mode="live", sitemap={})
+    store.add_job(OWNER, RID, JID)
+    spec = json.loads(json.dumps(FIXTURE))
+    spec.update(job_id=JID, user_id=OWNER, actor_user_id=OWNER, resource_id=RID, settings={})
+    spec["resource"].update(url=url, storage_mode="live", model="openai/fake-small-model")
+    clock = FakeClock()
+    root = padded_sites(tmp_path)
+
+    async def build_llm(owner, model):
+        return PipelineModel()
+
+    async def go():
+        runner = jobs.JobRunner(store, instance="i", clock=clock, fetcher_factory=lambda: FixtureFetcher(root))
+        runner._entry = functools.partial(pipeline.run, store=store, run_blocking=runner.run_blocking,
+                                          build_llm=build_llm)
+        await runner.submit(JobStartBatch.model_validate({"jobs": [spec]}))
+        await asyncio.wait_for(runner._running[JID].task, timeout=10)
+        await runner.close()
+
+    asyncio.run(go())
+    r = store.resources[RID]
+    assert store.jobs[JID]["status"] == "failed" and store.jobs[JID]["error_code"] == "fetch_failed"
+    assert r["last_error"] == "fetch_failed" and r["last_verified_at"] == clock.now()
+    assert r["sitemap"] == {} and r["generation"] == 0 and r["active_job_id"] is None

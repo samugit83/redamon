@@ -166,7 +166,8 @@ STATEMENTS: dict[str, str] = {
         f"failed AS (UPDATE {J} j SET status = 'failed', error_code = %(code)s, finished_at = now(), "
         f"lease_until = NULL, updated_at = now() FROM expired x WHERE j.id = x.id AND j.user_id = x.user_id "
         f"RETURNING j.id, j.user_id, j.resource_id, j.target_generation), "
-        f"released AS (UPDATE {R} r SET active_job_id = NULL, updated_at = now() FROM failed f "
+        f"released AS (UPDATE {R} r SET active_job_id = NULL, last_error = %(code)s, last_verified_at = %(now)s, "
+        f"updated_at = now() FROM failed f "
         f"WHERE r.id = f.resource_id AND r.user_id = f.user_id AND r.active_job_id = f.id RETURNING r.id) "
         f"SELECT id, user_id, resource_id, target_generation FROM failed ORDER BY id"
     ),
@@ -185,9 +186,15 @@ STATEMENTS: dict[str, str] = {
         f"SELECT id, slug, url, resource_type, sitemap, map_version, storage_mode, has_login, generation "
         f"FROM {R} WHERE id = %(rid)s AND user_id = %(uid)s"
     ),
+    # A job that ends without a swap records its end as 1.x does after a verify: the error and
+    # the time, so a 1.x tab (switch off) shows an error card, never "verifying..." (TD-18).
     "set_last_error": (
-        f"UPDATE {R} SET last_error = %(code)s, updated_at = now() "
+        f"UPDATE {R} SET last_error = %(code)s, last_verified_at = %(at)s, updated_at = now() "
         f"WHERE id = %(rid)s AND user_id = %(uid)s AND active_job_id = %(job)s"
+    ),
+    "set_error_if_never_verified": (
+        f"UPDATE {R} SET last_error = %(code)s, last_verified_at = %(at)s, updated_at = now() "
+        f"WHERE id = %(rid)s AND user_id = %(uid)s AND active_job_id = %(job)s AND last_verified_at IS NULL"
     ),
     "swap_lock": (
         f"SELECT url, storage_mode, active_job_id, summary_locked, summary_source FROM {R} "
@@ -433,7 +440,8 @@ class Store:
 
     async def fail_expired_leases(self, now: datetime, error_code: str = "agent_restarted") -> list[dict]:
         """Fails every queued or running job whose lease expired (no lease counts as expired)
-        and releases their claims; returns them (id, user_id, resource_id, target_generation)."""
+        and releases their claims, recording the error and ``now`` on the 1.x columns of each
+        resource it releases; returns the jobs (id, user_id, resource_id, target_generation)."""
         return await self._all("expired_jobs", {"now": now, "code": error_code})
 
     async def begin_generation(self, user_id: str, resource_id: str, job_id: str) -> Optional[int]:
@@ -454,9 +462,18 @@ class Store:
         generation), or None when the resource is gone: one keyed read per lookup."""
         return await self._one("legacy_sitemap", {"uid": user_id, "rid": resource_id})
 
-    async def set_last_error(self, user_id: str, resource_id: str, job_id: str, code: str) -> bool:
+    async def set_last_error(self, user_id: str, resource_id: str, job_id: str, code: str, at: datetime) -> bool:
+        """The end of a job that swapped nothing, on the 1.x columns: ``last_error`` and
+        ``last_verified_at`` together (only while the claim names the job)."""
         return await self._count("set_last_error", {"uid": user_id, "rid": resource_id, "job": job_id,
-                                                    "code": code}) == 1
+                                                    "code": code, "at": at}) == 1
+
+    async def set_error_if_never_verified(self, user_id: str, resource_id: str, job_id: str, code: str,
+                                          at: datetime) -> bool:
+        """``set_last_error`` for a resource that was never verified (a first add): a cancelled
+        add must not read "verifying..." for ever, a cancelled refresh leaves a good resource as it is."""
+        return await self._count("set_error_if_never_verified", {"uid": user_id, "rid": resource_id, "job": job_id,
+                                                                 "code": code, "at": at}) == 1
 
     async def swap(self, user_id: str, resource_id: str, job_id: str, generation: int, expected_url: str,
                    expected_storage_mode: str, updates: Mapping[str, Any], *, status: str = "succeeded",

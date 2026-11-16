@@ -632,3 +632,90 @@ def test_the_same_start_twice_at_once_runs_once():
     assert first.accepted == second.accepted == ["both"]
     assert gate.started == ["both"] and queued["queued"] == {}
     assert [a for n, a in store.calls if n == "accept_job"] == [("u1", "both")]
+
+
+
+# --------------------------------------------------------------------------------------
+# M1: a job that ends without a swap leaves the 1.x columns as 1.x would after a verify
+# --------------------------------------------------------------------------------------
+
+def test_a_failed_job_records_the_1x_error_state():
+    """TD-18 / D-25: last_error and last_verified_at, so a 1.x tab (switch off) shows an error
+    card instead of "verifying..." for ever; the previous map and summary stay."""
+    store, clock = MemoryStore(), SteppedClock()
+
+    async def entry(ctx):
+        return JobOutcome(status="failed", error_code="fetch_failed")
+
+    batch = seed(store, job("first-add", resource="r-new"))
+    store.resources["r-new"].update(sitemap={"nav": []}, summary="")
+    assert store.resources["r-new"]["last_verified_at"] is None
+
+    async def go():
+        runner = runner_with(store, entry, clock=clock)
+        await runner.submit(batch)
+        await asyncio.wait_for(runner._running["first-add"].task, timeout=5)
+        await runner.close()
+
+    run(go())
+    r = store.resources["r-new"]
+    assert r["last_error"] == "fetch_failed" and r["last_verified_at"] == clock.now()
+    assert r["sitemap"] == {"nav": []} and r["active_job_id"] is None
+
+
+def test_a_refused_start_records_the_1x_error_state():
+    store, clock = MemoryStore(), SteppedClock()
+    batch = seed(store, job("loopy", model="loop/claude-code"))
+
+    async def go():
+        runner = runner_with(store, Gate(), clock=clock)
+        await runner.submit(batch)
+        await runner.close()
+
+    run(go())
+    r = store.resources["r-loopy"]
+    assert r["last_error"] == "loop_model_not_supported_here" and r["last_verified_at"] == clock.now()
+
+
+@pytest.mark.parametrize("verified_before", [False, True])
+def test_a_cancelled_job_marks_only_a_resource_never_verified(verified_before):
+    """A cancelled first add reads as an error card, not "verifying..."; a cancelled refresh of a
+    good resource leaves its 1.x state as it was."""
+    store, clock = MemoryStore(), SteppedClock()
+    earlier = datetime(2026, 11, 1, tzinfo=timezone.utc)
+
+    async def entry(ctx):
+        return JobOutcome(status="cancelled", error_code="cancelled")
+
+    batch = seed(store, job("running-c", resource="r-run"), job("queued-c", resource="r-queued"))
+    for rid in ("r-run", "r-queued"):
+        if verified_before:
+            store.resources[rid].update(last_verified_at=earlier, last_error="")
+
+    async def go():
+        runner = runner_with(store, entry, clock=clock, max_running=1)
+        await runner.submit(batch)
+        await runner.cancel_job("queued-c")  # still queued behind the running one
+        await asyncio.wait_for(runner._running["running-c"].task, timeout=5)
+        await runner.close()
+
+    run(go())
+    for rid in ("r-run", "r-queued"):
+        r = store.resources[rid]
+        if verified_before:
+            assert r["last_verified_at"] == earlier and r["last_error"] == "", rid
+        else:
+            assert r["last_verified_at"] == clock.now() and r["last_error"] == "cancelled", rid
+        assert r["active_job_id"] is None
+
+
+def test_a_job_recovered_at_boot_records_the_1x_error_state():
+    """The boot recovery (code agent_restarted) marks each resource whose claim it releases."""
+    store, clock = MemoryStore(), SteppedClock()
+    store.add_resource("u1", "r-lost")
+    store.add_job("u1", "r-lost", "lost-job", lease_until=None)
+    runner = runner_with(store, Gate(), clock=clock)
+    assert run(runner.recover()) == 1
+    r = store.resources["r-lost"]
+    assert r["last_error"] == "agent_restarted" and r["last_verified_at"] == clock.now()
+    assert r["active_job_id"] is None

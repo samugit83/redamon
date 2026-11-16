@@ -326,9 +326,10 @@ async def test_updated_at_moves(env):
     await s.set_job_stage(uid, jid, "build_map", {"done": 1, "total": 2, "unit": "pages"})
     job = (await env.sql("SELECT updated_at, stage, progress FROM tradecraft_ingestion_jobs WHERE id = %s", jid))[0]
     assert job["updated_at"] > old and job["stage"] == "build_map" and job["progress"]["done"] == 1
-    assert await s.set_last_error(uid, rid, jid, "fetch_failed")
-    res = (await env.sql("SELECT updated_at, last_error FROM user_tradecraft_resources WHERE id = %s", rid))[0]
-    assert res["updated_at"] > old and res["last_error"] == "fetch_failed"
+    assert await s.set_last_error(uid, rid, jid, "fetch_failed", datetime.now(timezone.utc))
+    res = (await env.sql("SELECT updated_at, last_error, last_verified_at FROM user_tradecraft_resources "
+                         "WHERE id = %s", rid))[0]
+    assert res["updated_at"] > old and res["last_error"] == "fetch_failed" and res["last_verified_at"] is not None
     await env.sql("UPDATE user_tradecraft_resources SET updated_at = %s WHERE id = %s", old, rid)
     assert await s.swap(uid, rid, jid, gen, URL, "stored", {}) == "swapped"
     res = (await env.sql("SELECT updated_at FROM user_tradecraft_resources WHERE id = %s", rid))[0]
@@ -444,3 +445,44 @@ async def test_nul_bytes_and_large_text_are_stored(env):
     assert await s.swap(uid, rid, jid, gen, URL, "stored", {}) == "swapped"
     entry = await s.entry_by_url(uid, rid, URL + "nul")
     assert entry["title"] == "ab" and entry["stored_text"] == "c" + big
+
+
+async def test_a_job_that_ends_without_a_swap_leaves_a_1x_error_state(env):
+    """M1 (TD-18, D-25): a failed add writes last_error and last_verified_at and nothing else of
+    the 1.x state; a cancel marks only a resource never verified; boot recovery marks the
+    resources whose claims it releases. A 1.x tab then shows an error card, never "verifying"."""
+    s = Store()
+    uid = await env.user()
+    when = datetime.now(timezone.utc).replace(microsecond=0)
+    # A failed first add.
+    rid = await env.resource(uid)
+    await env.sql("UPDATE user_tradecraft_resources SET sitemap = '{\"nav\": [1]}'::jsonb, summary = 'kept' "
+                  "WHERE id = %s", rid)
+    jid = await env.job(uid, rid)
+    await env.running(s, uid, rid, jid)
+    assert await s.set_last_error(uid, rid, jid, "fetch_failed", when)
+    row = (await env.sql("SELECT last_error, last_verified_at, sitemap, summary FROM user_tradecraft_resources "
+                         "WHERE id = %s", rid))[0]
+    assert row["last_error"] == "fetch_failed" and row["last_verified_at"] == when.replace(tzinfo=None)
+    assert row["sitemap"] == {"nav": [1]} and row["summary"] == "kept"
+    # A cancel: a never-verified resource is marked, a verified one keeps its state.
+    fresh = await env.resource(uid, url=URL + "fresh/")
+    jf = await env.job(uid, fresh)
+    assert await s.set_error_if_never_verified(uid, fresh, jf, "cancelled", when)
+    verified = await env.resource(uid, url=URL + "verified/")
+    before = datetime(2026, 1, 1)
+    await env.sql("UPDATE user_tradecraft_resources SET last_verified_at = %s, last_error = '' WHERE id = %s",
+                  before, verified)
+    jv = await env.job(uid, verified)
+    assert not await s.set_error_if_never_verified(uid, verified, jv, "cancelled", when)
+    rows = {r["id"]: r for r in await env.sql(
+        "SELECT id, last_error, last_verified_at FROM user_tradecraft_resources WHERE id = ANY(%s)", [fresh, verified])}
+    assert rows[fresh]["last_error"] == "cancelled" and rows[fresh]["last_verified_at"] is not None
+    assert rows[verified]["last_error"] == "" and rows[verified]["last_verified_at"] == before
+    # Boot recovery: the released resource carries the error and the time.
+    lost = await env.resource(uid, url=URL + "lost/")
+    await env.job(uid, lost, lease_until=None)
+    await s.fail_expired_leases(datetime.now(timezone.utc))
+    row = (await env.sql("SELECT last_error, last_verified_at, active_job_id FROM user_tradecraft_resources "
+                         "WHERE id = %s", lost))[0]
+    assert row["last_error"] == "agent_restarted" and row["last_verified_at"] is not None and row["active_job_id"] is None

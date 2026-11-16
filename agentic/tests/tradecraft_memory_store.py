@@ -170,7 +170,7 @@ class MemoryStore:
                 j.update(status="failed", error_code=error_code, lease_until=None)
                 r = self.resources.get(j["resource_id"])
                 if r and r["active_job_id"] == j["id"]:
-                    r["active_job_id"] = None
+                    r.update(active_job_id=None, last_error=error_code, last_verified_at=now)
                 out.append({"id": j["id"], "user_id": j["user_id"], "resource_id": j["resource_id"],
                             "target_generation": j["target_generation"]})
         return out
@@ -198,11 +198,19 @@ class MemoryStore:
         return {k: r.get(k) for k in ("id", "slug", "url", "resource_type", "sitemap", "map_version",
                                       "storage_mode", "has_login", "generation")}
 
-    async def set_last_error(self, user_id, resource_id, job_id, code):
+    async def set_last_error(self, user_id, resource_id, job_id, code, at):
         self._log("set_last_error", user_id, resource_id, job_id, code)
         r = self._res(user_id, resource_id)
         if r and r["active_job_id"] == job_id:
-            r["last_error"] = code
+            r.update(last_error=code, last_verified_at=at)
+            return True
+        return False
+
+    async def set_error_if_never_verified(self, user_id, resource_id, job_id, code, at):
+        self._log("set_error_if_never_verified", user_id, resource_id, job_id, code)
+        r = self._res(user_id, resource_id)
+        if r and r["active_job_id"] == job_id and r.get("last_verified_at") is None:
+            r.update(last_error=code, last_verified_at=at)
             return True
         return False
 

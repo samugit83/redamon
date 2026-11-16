@@ -172,6 +172,16 @@ def test_purge_spares_the_live_generation_and_a_running_job_target():
         assert "x.generation <> r.generation" in STATEMENTS[name]
 
 
+def test_a_job_ended_without_a_swap_records_the_1x_error_state():
+    """M1 (TD-18, D-25): every end without a swap writes last_error and last_verified_at in one
+    statement, as 1.x does after a verify, so a 1.x tab never shows "verifying..." for it."""
+    assert "last_error = %(code)s, last_verified_at = %(at)s" in STATEMENTS["set_last_error"]
+    never = STATEMENTS["set_error_if_never_verified"]
+    assert "last_error = %(code)s, last_verified_at = %(at)s" in never and never.endswith("AND last_verified_at IS NULL")
+    released = STATEMENTS["expired_jobs"].split("released AS")[1]
+    assert "active_job_id = NULL, last_error = %(code)s, last_verified_at = %(now)s" in released
+
+
 # --------------------------------------------------------------------------------------
 # The pool
 # --------------------------------------------------------------------------------------
@@ -452,7 +462,8 @@ def test_every_method_sends_only_keyed_statements():
         await s.begin_generation("u1", "r1", "j")
         await s.resource("u1", "r1")
         await s.legacy_sitemap("u1", "r1")
-        await s.set_last_error("u1", "r1", "j", "fetch_failed")
+        await s.set_last_error("u1", "r1", "j", "fetch_failed", WHEN)
+        await s.set_error_if_never_verified("u1", "r1", "j", "cancelled", WHEN)
         await s.swap("u1", "r1", "job-1", 2, "https://wiki.tc-fixture.test/", "stored", {"summary": "x"})
         await s.allocate_page_ids("u1", "r1", ["u"])
         await s.write_entries("u1", "r1", 2, [{"page_id": 1, "url": "u"}])

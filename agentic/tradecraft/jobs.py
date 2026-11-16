@@ -178,7 +178,7 @@ class JobRunner:
             code = "queue_full"
         if code:
             # The job is ours now: close it and release the claim rather than leave it to its lease.
-            await self.store.set_last_error(user, job.resource_id, job.job_id, code)
+            await self.store.set_last_error(user, job.resource_id, job.job_id, code, self._now())
             await self.store.finish_job(user, job.job_id, "failed", code)
             logger.info(f"[tradecraft] job {job.job_id} failed code={code}")
             return code
@@ -234,6 +234,7 @@ class JobRunner:
                 logger.info(f"[tradecraft] job {jid} dropped code=job_not_claimed")
                 return
             if running.cancel.is_set() or await self.store.cancel_requested(user, jid):
+                await self.store.set_error_if_never_verified(user, rid, jid, "cancelled", self._now())
                 await self.store.finish_job(user, jid, "cancelled", "cancelled")
                 logger.info(f"[tradecraft] job {jid} cancelled code=cancelled")
                 return
@@ -280,7 +281,9 @@ class JobRunner:
         await self.store.discard_generation(user, rid, generation)
         code = outcome.error_code or ("" if outcome.status == "succeeded" else "internal_error")
         if outcome.status == "failed":
-            await self.store.set_last_error(user, rid, jid, code)
+            await self.store.set_last_error(user, rid, jid, code, self._now())
+        elif outcome.status == "cancelled":
+            await self.store.set_error_if_never_verified(user, rid, jid, code, self._now())
         await self.store.finish_job(user, jid, outcome.status, code)
         logger.info(f"[tradecraft] job {jid} {outcome.status} code={code}")
 
@@ -339,11 +342,12 @@ class JobRunner:
         self._remove_queued(jid, user)
         logger.info(f"[tradecraft] job {jid} dropped code=agent_lost")
 
-    def _remove_queued(self, jid: str, user: str) -> bool:
-        """Takes a queued job out of its owner's queue; False when it was not queued here."""
+    def _remove_queued(self, jid: str, user: str) -> Optional[JobStartRequest]:
+        """Takes a queued job out of its owner's queue; None when it was not queued here."""
         queue = self._queues.get(user)
-        if queue is None or not any(j.job_id == jid for j in queue):
-            return False
+        removed = next((j for j in queue or () if j.job_id == jid), None)
+        if removed is None:
+            return None
         remaining = deque(j for j in queue if j.job_id != jid)
         if remaining:
             self._queues[user] = remaining
@@ -352,7 +356,7 @@ class JobRunner:
             if user in self._order:
                 self._order.remove(user)
         self._held.pop(jid, None)
-        return True
+        return removed
 
     # --- cancel -----------------------------------------------------------------------
 
@@ -379,8 +383,10 @@ class JobRunner:
         if running is not None:
             running.cancel.set()
             return
-        if not self._remove_queued(jid, user):
+        job = self._remove_queued(jid, user)
+        if job is None:
             return
+        await self.store.set_error_if_never_verified(user, job.resource_id, jid, "cancelled", self._now())
         await self.store.finish_job(user, jid, "cancelled", "cancelled")
         logger.info(f"[tradecraft] job {jid} cancelled code=cancelled")
 
