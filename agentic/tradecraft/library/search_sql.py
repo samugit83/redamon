@@ -70,11 +70,14 @@ STATEMENTS: dict[str, str] = {
         f"WHERE {KEYED_E} AND {FILTERS} AND %(q)s <%% e.title "
         f"ORDER BY rank DESC, e.page_id LIMIT %(limit)s"
     ),
-    # How much of the agent's need each candidate covers: its term groups found in the title,
-    # breadcrumb and headings (weights A and B), and found anywhere (the card or a section).
+    # How much of the agent's need each candidate covers: its term groups found in the title
+    # (weight A), in the title, breadcrumb and headings (A and B), and anywhere (the card or a
+    # section).
     "assess": (
         f"SELECT e.id, "
         f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0) AS total, "
+        f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0 "
+        f"AND ts_filter(e.search_vector, '{{a}}') @@ {GROUP}) AS title, "
         f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0 "
         f"AND ts_filter(e.search_vector, '{{a,b}}') @@ {GROUP}) AS strong, "
         f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0 AND (e.search_vector @@ {GROUP} "

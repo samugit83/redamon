@@ -108,6 +108,7 @@ class Candidate:
     section: Optional[str] = None
     entity_match: bool = False
     fuzzy: float = 0.0
+    title: float = 0.0
     strong: float = 0.0
     anywhere: float = 0.0
     snippet: str = ""
@@ -396,6 +397,7 @@ async def free_first_pass(owner_id: str, catalog: Any, query: str, *, resource: 
             got = coverage.get(cand.row["id"])
             total = int(got["total"]) if got else 0
             if total:
+                cand.title = int(got.get("title") or 0) / total
                 cand.strong = int(got["strong"]) / total
                 cand.anywhere = int(got["anywhere"]) / total
     return FirstPass(tuple(wordings), candidates, groups, cves)
@@ -447,15 +449,20 @@ async def _snippets(index: Any, owner_id: str, shown: Sequence[Candidate], group
             cand.section = cand.section or got.get("heading") or None
 
 
+def _order(cand: Candidate) -> tuple:
+    """Related pages, the ones that hold more of the need first: an exact CVE, then the share
+    of the need found anywhere on the page, then in its title, then in its title and headings;
+    among equals the fused rank with its boosts decides."""
+    return (not cand.entity_match, -round(cand.anywhere, 3), -round(cand.title, 3), -round(cand.strong, 3),
+            -cand.fuzzy, -cand.score, cand.row["page_id"])
+
+
 def verdict_of(candidates: Sequence[Candidate], strictness: str) -> tuple[str, list[Candidate]]:
     th = STRICTNESS.get(strictness, STRICTNESS["balanced"])
-    related = [c for c in candidates if is_related(c, th)]
+    related = sorted((c for c in candidates if is_related(c, th)), key=_order)
     if not related:
         return "NOT FOUND", []
-    strong = [c for c in related if is_strong(c, th)]
-    if strong:
-        return "FOUND", strong + [c for c in related if c not in strong]
-    return "RELATED", related
+    return ("FOUND" if any(is_strong(c, th) for c in related) else "RELATED"), related
 
 
 async def search(owner_id: str, catalog: Any, query: str, *, resource: Optional[str] = None,
