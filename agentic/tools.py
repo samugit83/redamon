@@ -2342,8 +2342,9 @@ class PhaseAwareToolExecutor:
         if tradecraft_tool:
             self._all_tools["tradecraft_lookup"] = tradecraft_tool
         # Tradecraft 2.0's own tools stay registered; runtime.py answers them only in a
-        # run whose catalog is 2.0, and the phase list offers them only then.
-        from tradecraft.agent_tools import registered_tools as _tradecraft_v2_tools
+        # run whose catalog is 2.0, and the phase list offers them only then. The stand-ins
+        # import the real tools when called, so building the executor imports no langchain.
+        from tradecraft.tool_proxies import registered_tools as _tradecraft_v2_tools
         self._all_tools.update(_tradecraft_v2_tools())
 
         # The captured-traffic corpus is reached ONLY through proxy_brain now

@@ -197,7 +197,27 @@ def test_registered_once_and_dispatched_like_lookup():
     source = (AGENTIC / "tools.py").read_text()
     assert 'elif tool_name in ("tradecraft_lookup", "tradecraft_search", "tradecraft_ask"):' in source
     assert "self._all_tools.update(_tradecraft_v2_tools())" in source
-    assert set(agent_tools.registered_tools()) == {"tradecraft_search"}
     assert agent_tools.V2_TOOLS["tradecraft_search"] is agent_tools.search_tool
     from mcp_registry import _builtin_tool_names
     assert {"tradecraft_lookup", "tradecraft_search", "tradecraft_ask"} <= _builtin_tool_names()
+
+
+def test_the_executor_registers_stand_ins_that_import_nothing_heavy():
+    """Building the executor imports no langchain or langgraph through tradecraft (the agent's
+    tests stub them before they build one); a stand-in calls the real tool when invoked."""
+    from tradecraft import tool_proxies
+    tree = ast.parse(Path(tool_proxies.__file__).read_text())
+    imported = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    imported |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+    assert imported <= {"__future__", "importlib", "typing"}
+    source = (AGENTIC / "tools.py").read_text()
+    assert "from tradecraft.tool_proxies import registered_tools as _tradecraft_v2_tools" in source
+    proxies = tool_proxies.registered_tools()
+    assert set(proxies) == {"tradecraft_search"} == set(tool_proxies.V2_TOOL_NAMES)
+
+    async def go():
+        with runtime.use_store(object()), runtime.use_index(Index()):
+            return await proxies["tradecraft_search"].ainvoke({"query": "x"})
+
+    # Not a 2.0 run: the stand-in answers what the real tool answers.
+    assert contextvars.Context().run(asyncio.run, go()) == agent_tools.SEARCH_NOT_AVAILABLE

@@ -1,6 +1,6 @@
 """The tools a 2.0 run calls (TD-10): ``tradecraft_lookup``, which keeps its name and its
 arguments and gains ``page``, ``section`` and ``part`` (Q8), and ``tradecraft_search`` (Q7.1),
-new. Both are registered once in the executor (``registered_tools``) and offered only to a run
+new. Both are registered once in the executor (as ``tool_proxies`` stand-ins) and offered only to a run
 whose catalog is 2.0 (the companion set in ``project_settings``); called in any other run, they
 answer that they are not available.
 
@@ -230,8 +230,3 @@ search_tool = tradecraft_search
 
 V2_TOOLS = {"tradecraft_lookup": lookup_tool, "tradecraft_search": search_tool}
 
-
-def registered_tools() -> dict:
-    """The 2.0 tools the executor registers once, whatever the run (T7.4 adds the librarian):
-    in a run whose catalog is not 2.0 they answer that they are not available."""
-    return {"tradecraft_search": search_tool}
