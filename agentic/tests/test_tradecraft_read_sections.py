@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import re
 import sys
 from pathlib import Path
 
@@ -168,6 +169,19 @@ def test_chars_per_read():
     assert section_line(read(lib, page=pid, section="Big"))["parts"] == 1
     clamped = read(lib, search={"reading.charsPerRead": 10_000_000}, page=pid, section="Big")
     assert section_line(clamped)["parts"] == 1
+
+
+def test_the_next_hint_of_a_heading_with_double_quotes_reads_on():
+    """Review finding 4: a hint writes a heading's double quotes as single ones; following it
+    answered NO_SECTION."""
+    heading = 'The "sleep" delays'
+    lib = Library().add("r1", "wiki", WIKI, mode="stored")
+    lib.entry("r1", UNION, f"## {heading}\n\n" + "\n\n".join(f"Paragraph {i} " + "x" * 480 for i in range(10)))
+    settings = {"reading.charsPerRead": 2000}
+    first = read(lib, search=settings, page=page_id(lib, "r1", UNION), section=heading)
+    hint = re.fullmatch(r'tradecraft_lookup\(page="([^"]+)", section="([^"]+)", part=2\)', header(first, "next"))
+    second = read(lib, search=settings, page=hint.group(1), section=hint.group(2), part=2)
+    assert not second.startswith("Error") and "Paragraph 4" in body(second)
 
 
 def test_old_page_id_after_readd():

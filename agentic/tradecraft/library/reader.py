@@ -288,10 +288,6 @@ async def _pdf_page_live(read: _Read, url: str, entry: dict, force_refresh: bool
     return None, "", "", UNREACHABLE_NOT_STORED.format(url=url, code=code, slug=read.slug)
 
 
-def _hint_value(text: str) -> str:
-    return _one_line(text).replace('"', "'")
-
-
 def render_section(page_id: str, crumbs: list[str], chosen: split.Section, sections: list[split.Section], part: int,
                    parts: int, source: str, text: str, note: str = "") -> str:
     """A read in Q8's shape, inside the untrusted envelope."""
@@ -304,8 +300,8 @@ def render_section(page_id: str, crumbs: list[str], chosen: split.Section, secti
     if note:
         lines.append(f"note: {_one_line(note)}")
     if part < parts:
-        lines.append(f'next: tradecraft_lookup(page="{page_id}", section="{_hint_value(split.section_name(chosen))}", '
-                     f"part={part + 1})")
+        heading = split.hint_value(split.section_name(chosen))
+        lines.append(f'next: tradecraft_lookup(page="{page_id}", section="{heading}", part={part + 1})')
     lines += ["---", text or ""]
     return wrap_untrusted(lines)
 

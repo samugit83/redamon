@@ -18,7 +18,7 @@ from langchain_core.tools import tool
 
 from agent_context import current_phase
 from tradecraft import runtime
-from tradecraft.library import reader, search
+from tradecraft.library import reader, search, split
 from tradecraft.library.types import (
     BROWSE_HEADER,
     BROWSE_LINE,
@@ -107,7 +107,8 @@ def render_search(query: str, answer: SearchAnswer, names: Mapping[str, str], un
     if answer.hits:
         top = answer.hits[0]
         section = top.section or (top.card.headings[0] if top.card.headings else "")
-        lines.append(READ_HINT.format(page_id=top.card.page_id, section=_clip(section, 60).replace('"', "'")))
+        # The whole heading: following a hint whose heading was cut answered NO_SECTION.
+        lines.append(READ_HINT.format(page_id=top.card.page_id, section=split.hint_value(section)))
     if answer.verdict == "NOT FOUND":
         lines += [SEARCH_TRIED.format(wordings=" | ".join(_clip(w, 80) for w in answer.wordings)), NOT_FOUND_ADVICE]
     elif answer.verdict == "RELATED":

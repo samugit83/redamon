@@ -98,6 +98,28 @@ def test_answer_format_size():
     assert result.startswith("<<<UNTRUSTED_TRADECRAFT_RESULT id=") and find_librarian_header(result) is None
 
 
+def test_the_read_hint_names_a_section_the_read_finds():
+    """Review finding 4 (R-371, Q8): the hint carries the whole heading, so following it reads
+    that section. A heading cut at 60 characters with "…", or one whose double quotes the hint
+    changed, answered NO_SECTION."""
+    import re
+
+    from tradecraft.library import split
+
+    long = "Exploiting time-based blind SQL injection on PostgreSQL with heavy queries"
+    quoted = 'The "sleep" and "benchmark" delays'
+    sections = split.split_markdown(f"# Intro\n\ntext\n\n## {long}\n\nbody one\n\n## {quoted}\n\nbody two\n")
+    for heading in (long, quoted):
+        result = call(catalog(), {"query": "pg sleep"}, Index({"sections_text": [row(1, section=heading)]}))
+        hint = next(line for line in lines_of(result) if line.startswith("read: "))
+        value = re.fullmatch(r'read: tradecraft_lookup\(page="patt:401", section="(.*)"\)', hint).group(1)
+        assert '"' not in value
+        chosen = split.pick_section(sections, value)
+        assert chosen is not None and chosen.heading == heading
+    # A hint already cut by an earlier answer still finds its section.
+    assert split.pick_section(sections, long[:59] + "…").heading == long
+
+
 def test_not_found_lists_the_wordings_tried():
     result = call(catalog(), {"query": "kerberoasting"}, Index())
     body = lines_of(result)

@@ -23,11 +23,23 @@ MAX_PART_CHARS = 38_000
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 _WORD = re.compile(r"[a-z0-9]+")
 
-__all__ = ["Section", "split_markdown", "section_name", "pick_section", "parts", "INTRO"]
+__all__ = ["Section", "split_markdown", "section_name", "pick_section", "parts", "hint_value", "INTRO"]
+# How a hint written by an older answer marked a heading it cut.
+_CUT = "…"
 
 
 def section_name(section: Section) -> str:
     return section.heading or INTRO
+
+
+def hint_value(heading: str) -> str:
+    """A heading as a hint writes it between double quotes (``section="..."``): whole, on one
+    line, its double quotes as single ones. ``pick_section`` reads it back to that section."""
+    return " ".join((heading or "").split()).replace('"', "'")
+
+
+def _key(text: str) -> str:
+    return hint_value(text).lower()
 
 
 def _words(text: str) -> set[str]:
@@ -35,18 +47,23 @@ def _words(text: str) -> set[str]:
 
 
 def pick_section(sections: Sequence[Section], wanted: Optional[str] = None, query: str = "") -> Optional[Section]:
-    """The section asked for (its heading or anchor, case-insensitive, else the first heading
-    that contains the words asked), or the one that best matches ``query`` (its words in the
-    heading count double), or the page's first section."""
+    """The section asked for (its heading or anchor, case-insensitive, double and single quotes
+    alike, else the first heading that contains the words asked, or that starts with a heading
+    cut with "…"), or the one that best matches ``query`` (its words in the heading count
+    double), or the page's first section."""
     if not sections:
         return None
     if wanted:
-        key = " ".join(wanted.split()).lower()
+        key = _key(wanted)
         for s in sections:
-            if key in (section_name(s).lower(), s.anchor):
+            if key in (_key(section_name(s)), s.anchor):
                 return s
         for s in sections:
-            if key and key in section_name(s).lower():
+            if key and key in _key(section_name(s)):
+                return s
+        prefix = key[:-len(_CUT)].rstrip() if key.endswith(_CUT) else ""
+        for s in sections:
+            if prefix and _key(section_name(s)).startswith(prefix):
                 return s
         return None
     asked = _words(query)
