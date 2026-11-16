@@ -57,19 +57,35 @@ let tc: TradecraftDb
 
 let tick = 0
 
+/** Prisma refuses an empty `select` (PrismaClientValidationError); the plugin double would answer it. */
+function refuseEmptySelect(args: unknown): void {
+  const select = (args as { select?: unknown } | undefined)?.select
+  if (select && typeof select === 'object' && Object.keys(select).length === 0) {
+    throw Object.assign(new Error('The select statement must select at least one field'), { name: 'PrismaClientValidationError' })
+  }
+}
+
 /**
- * The project delegate, answering `include: { tradecraftChoices }` from the tradecraft rows and
- * moving `updatedAt` on every update, as Prisma's @updatedAt does (the plugin double leaves it).
+ * The project delegate, answering `include: { tradecraftChoices }` from the tradecraft rows,
+ * moving `updatedAt` on every update, as Prisma's @updatedAt does (the plugin double leaves it),
+ * and refusing an empty `select` as Prisma does.
  */
 function projectDelegate(delegate: Record<string, unknown>, tcClient: Record<string, unknown>) {
+  const strict = (fn: (a: never) => Promise<unknown>) => (args: never) => {
+    refuseEmptySelect(args)
+    return fn(args)
+  }
   return new Proxy(delegate, {
     get: (d, op) => {
       if (op === 'update' || op === 'updateMany') {
-        return (args: { data: Record<string, unknown> } & Record<string, unknown>) =>
-          (d[op] as (a: unknown) => Promise<unknown>)({ ...args, data: { updatedAt: new Date(READ_AT.getTime() + ++tick * 1000), ...args.data } })
+        return strict((args: { data: Record<string, unknown> } & Record<string, unknown>) =>
+          (d[op] as (a: unknown) => Promise<unknown>)({ ...args, data: { updatedAt: new Date(READ_AT.getTime() + ++tick * 1000), ...args.data } }))
       }
-      if (op !== 'findUnique') return d[op as string]
-      return async (args: { include?: Record<string, unknown> } & Record<string, unknown>) => {
+      if (op !== 'findUnique') {
+        const f = d[op as string]
+        return typeof f === 'function' ? strict((f as (a: never) => Promise<unknown>).bind(d)) : f
+      }
+      return strict(async (args: { include?: Record<string, unknown> } & Record<string, unknown>) => {
         const { tradecraftChoices, ...include } = args.include ?? {}
         const row = await (d.findUnique as (a: unknown) => Promise<Record<string, unknown> | null>)({
           ...args, include: Object.keys(include).length ? include : undefined,
@@ -79,7 +95,7 @@ function projectDelegate(delegate: Record<string, unknown>, tcClient: Record<str
             .findMany({ where: { projectId: row.id }, select: { resourceId: true } })
         }
         return row
-      }
+      })
     },
   })
 }
@@ -227,6 +243,38 @@ describe('PUT saves the switches with the project', () => {
     expect(res.status).toBe(500)
     expect(project().name).toBe('p')
     expect((project().updatedAt as Date).getTime()).toBe(READ_AT.getTime())
+    expect(off()).toEqual(['r2'])
+  })
+
+  // The chat drawer's autosave sends only the fields it changed (AC-30): here no project column at
+  // all. The save still writes the choices, moves the version and names the change in the audit.
+  test.each([
+    ['the switches alone', { tradecraftOff: ['r1'] }],
+    ['the switches with the version (the drawer)', { tradecraftOff: ['r1'], updatedAt: READ_AT.toISOString() }],
+    ['the switches with the skill map sent back unchanged', { tradecraftOff: ['r1'], attackSkillConfig: { builtIn: { xss: true }, user: {} } }],
+  ])('a save with no project column, %s, is written (AC-30, R-064)', async (_name, body) => {
+    vi.mocked(writeAudit).mockClear()
+    const res = await put(body)
+    expect(res.status).toBe(200)
+    expect((await res.json()).tradecraftOff).toEqual(['r1'])
+    expect(off()).toEqual(['r1'])
+    expect((project().updatedAt as Date).getTime()).not.toBe(READ_AT.getTime())
+    expect(writeAudit).toHaveBeenCalledWith(expect.objectContaining({
+      before: { tradecraftOff: ['r2'] }, after: { changed: ['tradecraftOff'], values: { tradecraftOff: ['r1'] } },
+    }))
+  })
+
+  test("a Read + Write collaborator's drawer save of the switches alone is written", async () => {
+    as('collab-1')
+    const res = await put({ tradecraftOff: ['r1'], updatedAt: READ_AT.toISOString() })
+    expect(res.status).toBe(200)
+    expect(off()).toEqual(['r1'])
+  })
+
+  test('a save with no project column and an old version changes nothing (409)', async () => {
+    await (h.client.project as FakePrisma['project']).update({ where: { id: P }, data: { katanaDepth: 3 } })
+    const res = await put({ tradecraftOff: ['r1'], updatedAt: READ_AT.toISOString() })
+    expect(res.status).toBe(409)
     expect(off()).toEqual(['r2'])
   })
 

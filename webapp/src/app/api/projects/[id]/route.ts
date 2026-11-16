@@ -593,10 +593,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: guardError }, { status: 400 })
     }
 
-    // The values being replaced, for the fireteam audit and the save's own.
-    const before = (await prisma.project.findUnique({
+    // The values being replaced, for the fireteam audit and the save's own. A save of the tradecraft
+    // switches alone (the chat drawer's autosave) replaces no column, and Prisma refuses an empty select.
+    const replacedKeys = Object.keys(updateData)
+    const before = (replacedKeys.length === 0 ? {} : await prisma.project.findUnique({
       where: { id },
-      select: Object.fromEntries(Object.keys(updateData).map(k => [k, true])) as any,
+      select: Object.fromEntries(replacedKeys.map(k => [k, true])) as any,
     }) ?? {}) as Record<string, unknown>
 
     // A target list this save CHANGES needs project:rescope; one sent back as stored does not.
