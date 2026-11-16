@@ -12,7 +12,7 @@ const h = vi.hoisted(() => ({ db: null as unknown as TradecraftDb }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as never)[k] }) }))
 
 import {
-  INGESTION_SECTIONS, ingestionDefaults, readIngestionSettings, resetIngestionSettings, saveIngestionSettings,
+  INGESTION_SECTIONS, editRecipes, ingestionDefaults, readIngestionSettings, readRecipes, resetIngestionSettings, saveIngestionSettings,
 } from './userSettings'
 import { SETTINGS } from './settingsSpec'
 
@@ -158,4 +158,82 @@ test('isolated (AC-04): one account saving or resetting never changes another ac
   expect(stored('u2')).toEqual({ 'crawl.maxPages': 77 })
   expect((await readIngestionSettings('u2')).values['crawl.maxPages']).toBe(77)
   expect((await readIngestionSettings('u1')).values['crawl.maxPages']).toBe(200)
+})
+
+describe('focus recipes (§4.8 "My focus recipes", T5.5)', () => {
+  const add = (userId: string, recipe: Record<string, unknown>) => editRecipes(userId, { add: recipe })
+  const storedRecipes = (userId: string) => (h.db.rows('tradecraftUserSettings', { userId })[0]?.recipes ?? []) as Record<string, unknown>[]
+
+  test('an account starts with none; an added recipe is listed with its id', async () => {
+    expect(await readRecipes('u1')).toEqual([])
+    const r = await add('u1', { name: '  SQLi payloads ', topics: ['sql_injection'], kinds: ['payloads', 'bypasses'] })
+    expect(r).toMatchObject({ ok: true, recipes: [{ name: 'SQLi payloads', topics: ['sql_injection'], kinds: ['payloads', 'bypasses'] }] })
+    const [recipe] = await readRecipes('u1')
+    expect(recipe.id).toMatch(/^[A-Za-z0-9_-]{8,64}$/)
+    expect(storedRecipes('u1')).toEqual([recipe])
+  })
+
+  test('recipes_cap_50: the 50th recipe is saved, the 51st refused with nothing written', async () => {
+    for (let i = 0; i < 50; i++) expect((await add('u1', { name: `R${i}`, kinds: ['poc'] })).ok).toBe(true)
+    const r = await add('u1', { name: 'One too many', kinds: ['poc'] })
+    expect(r).toMatchObject({ ok: false, status: 409, code: 'recipe_cap' })
+    expect(storedRecipes('u1')).toHaveLength(50)
+  })
+
+  test('recipe_topics_validated: topics and kinds from the fixed lists, a name of 1-60 characters, something chosen', async () => {
+    for (const [why, recipe, field] of [
+      ['an unknown topic', { name: 'x', topics: ['sqli'] }, 'topics'],
+      ['an unknown kind', { name: 'x', kinds: ['tool'] }, 'kinds'],
+      ['no name', { name: '  ', kinds: ['poc'] }, 'name'],
+      ['a long name', { name: 'n'.repeat(61), kinds: ['poc'] }, 'name'],
+      ['a control character', { name: 'a\nb', kinds: ['poc'] }, 'name'],
+      ['nothing chosen', { name: 'Empty' }, 'topics'],
+      ['an unknown key', { name: 'x', kinds: ['poc'], skip: 'news' }, 'recipe'],
+    ] as const) {
+      expect(await add('u1', recipe as Record<string, unknown>), why).toMatchObject({ ok: false, status: 400, field })
+    }
+    expect(await add('u1', { name: 'n'.repeat(60), kinds: ['poc'] })).toMatchObject({ ok: true })
+    expect(storedRecipes('u1')).toHaveLength(1)
+  })
+
+  test('user_skill_topics_allowed and foreign_skill_refused: only the owner\'s own skills', async () => {
+    h.db.seed('userAttackSkill', { id: 'mine', userId: 'u1', name: 'Mine' })
+    h.db.seed('userAttackSkill', { id: 'theirs', userId: 'u2', name: 'Theirs' })
+    expect(await add('u1', { name: 'Mine', topics: ['user_skill:mine'] })).toMatchObject({ ok: true })
+    expect(await add('u1', { name: 'Theirs', topics: ['user_skill:theirs'] })).toMatchObject({ ok: false, status: 400, code: 'foreign_skill', field: 'topics' })
+    expect(storedRecipes('u1').map(r => r.name)).toEqual(['Mine'])
+  })
+
+  test('a name is unique per account (case and spaces aside); another account may reuse it', async () => {
+    await add('u1', { name: 'Web', kinds: ['poc'] })
+    expect(await add('u1', { name: ' web ', kinds: ['payloads'] })).toMatchObject({ ok: false, status: 409, code: 'recipe_name_taken' })
+    expect(await add('u2', { name: 'Web', kinds: ['payloads'] })).toMatchObject({ ok: true })
+  })
+
+  test('rename and delete by id; an unknown id is a 404; the other recipes stay', async () => {
+    await add('u1', { name: 'A', kinds: ['poc'] })
+    await add('u1', { name: 'B', kinds: ['writeups'] })
+    const [a, b] = await readRecipes('u1')
+    expect(await editRecipes('u1', { rename: { id: a.id, name: 'A2' } })).toMatchObject({ ok: true, recipes: [{ id: a.id, name: 'A2' }, { id: b.id, name: 'B' }] })
+    expect(await editRecipes('u1', { rename: { id: a.id, name: 'b' } })).toMatchObject({ ok: false, code: 'recipe_name_taken' })
+    expect(await editRecipes('u1', { rename: { id: 'nope', name: 'C' } })).toMatchObject({ ok: false, status: 404, code: 'recipe_not_found' })
+    expect(await editRecipes('u1', { delete: a.id })).toMatchObject({ ok: true, recipes: [{ id: b.id }] })
+    expect(await editRecipes('u1', { delete: a.id })).toMatchObject({ ok: false, status: 404 })
+    expect(await editRecipes('u2', { delete: b.id })).toMatchObject({ ok: false, status: 404 })
+    expect(storedRecipes('u1').map(r => r.name)).toEqual(['B'])
+  })
+
+  test('exactly one of add, rename, delete', async () => {
+    for (const body of [{}, { add: { name: 'x', kinds: ['poc'] }, delete: 'x' }, { replace: [] }, { delete: 7 }, { rename: { id: 'x' } }]) {
+      expect(await editRecipes('u1', body), JSON.stringify(body)).toMatchObject({ ok: false, status: 400 })
+    }
+  })
+
+  test('a malformed stored list reads as the valid recipes it holds; the ingestion values stay', async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'u1', ingestion: { 'crawl.maxPages': 9 }, recipes: [{ id: 'ok1', name: 'Kept', topics: ['xss'], kinds: [] }, 'junk', { name: 'no id' }] })
+    expect(await readRecipes('u1')).toEqual([{ id: 'ok1', name: 'Kept', topics: ['xss'], kinds: [] }])
+    await add('u1', { name: 'New', kinds: ['poc'] })
+    expect(stored('u1')).toEqual({ 'crawl.maxPages': 9 })
+    expect(storedRecipes('u1').map(r => r.name)).toEqual(['Kept', 'New'])
+  })
 })

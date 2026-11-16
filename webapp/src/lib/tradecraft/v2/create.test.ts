@@ -189,6 +189,26 @@ describe('createResourceV2', () => {
     expect(req.settings_snapshot.provenance['crawl.maxPages']).toBe('resource')
   })
 
+  test('the focus is stored and reaches the first job; its hash carries it (T5.5)', async () => {
+    const agent = stubAgent()
+    const focus = { mode: 'focused', recipe: 'web_payload_library', topics: ['xss'], kinds: ['payloads'], keep: 'XSS payloads', skip: '', skipMode: 'replace', strictness: 'loose' }
+    expect((await create({ ...BODY, focus })).status).toBe(201)
+    expect(resources()[0].focus).toEqual(focus)
+    const [req] = jobRequests(agent)
+    expect(req.resource.focus).toEqual(focus)
+    expect(req.settings_hash).not.toBe(effectiveSettings({}).hash)
+  })
+
+  test('foreign_skill_refused: a focus on another account\'s skill is a 400, nothing written', async () => {
+    h.db.seed('userAttackSkill', { id: 'theirs', userId: 'other', name: 'Theirs' })
+    const agent = stubAgent()
+    const res = await create({ ...BODY, focus: { mode: 'focused', topics: ['user_skill:theirs'] } })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ field: 'focus.topics', code: 'foreign_skill' })
+    expect(resources()).toEqual([])
+    expect(agent.calls).toEqual([])
+  })
+
   test('a user-only override is refused before anything is written', async () => {
     const agent = stubAgent()
     const res = await create({ ...BODY, overrides: { 'storage.userQuotaMb': 5 } })

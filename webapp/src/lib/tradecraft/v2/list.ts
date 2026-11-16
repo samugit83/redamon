@@ -14,7 +14,7 @@ import { isStale } from '../staleness'
 const VIEW_SELECT = {
   id: true, name: true, slug: true, url: true, enabled: true, resourceType: true, forcedType: true, storageMode: true,
   llmModel: true, githubTokenOverride: true, hasLogin: true, priority: true, mapVersion: true, generation: true,
-  summary: true, summarySource: true, summaryLocked: true, settingsHash: true, overrides: true, ingestionReport: true,
+  summary: true, summarySource: true, summaryLocked: true, settingsHash: true, overrides: true, ingestionReport: true, focus: true,
   lastVerifiedAt: true, lastRefreshedAt: true, lastError: true, createdAt: true, updatedAt: true,
 } satisfies Prisma.UserTradecraftResourceSelect
 

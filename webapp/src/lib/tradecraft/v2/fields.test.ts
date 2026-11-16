@@ -46,7 +46,9 @@ describe('parseResourceFields', () => {
     expect(parseResourceFields({ forcedType: 'wordpress' }, 'update').ok).toBe(false)
     expect(parseResourceFields({ credentials: null }, 'update')).toEqual({ ok: true, value: { credentials: null } })
     expect(parseResourceFields({ credentials: { cookie: 'x' } }, 'update')).toMatchObject({ ok: false, error: { field: 'credentials' } })
-    expect(parseResourceFields({ focus: { mode: 'focused' } }, 'update')).toMatchObject({ ok: false, error: { field: 'focus' } })
+    expect(parseResourceFields({ focus: { mode: 'focused' } }, 'update')).toMatchObject({ ok: true, value: { focus: { mode: 'focused', strictness: 'balanced' } } })
+    expect(parseResourceFields({ focus: { mode: 'focused', keep: 'k'.repeat(1001) } }, 'update')).toMatchObject({ ok: false, error: { field: 'focus.keep', code: 'bad_focus' } })
+    expect(parseResourceFields({ focus: {} }, 'update')).toEqual({ ok: true, value: { focus: {} } })
   })
 
   test('keys the server owns are ignored, never written', () => {

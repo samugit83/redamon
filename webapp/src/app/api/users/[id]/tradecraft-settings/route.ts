@@ -6,14 +6,14 @@ import { internalError } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { setTradecraftV2, tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 import {
-  readIngestionSettings, resetIngestionSettings, saveIngestionSettings, type SaveResult,
+  editRecipes, readIngestionSettings, readRecipes, resetIngestionSettings, saveIngestionSettings, type SaveResult,
 } from '@/lib/tradecraft/userSettings'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-const BAD_BODY = 'Body must be {"v2Enabled": boolean}, {"ingestion": {<key>: <value>}} or {"reset": "<section>" | "all"}'
+const BAD_BODY = 'Body must be {"v2Enabled": boolean}, {"ingestion": {<key>: <value>}}, {"reset": "<section>" | "all"} or {"recipes": {"add" | "rename" | "delete": ...}}'
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -38,7 +38,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
     if (!(await tradecraftV2Enabled(id))) return NextResponse.json({ v2Enabled: false })
-    return NextResponse.json({ v2Enabled: true, ingestion: await readIngestionSettings(id) })
+    const [ingestion, recipes] = await Promise.all([readIngestionSettings(id), readRecipes(id)])
+    return NextResponse.json({ v2Enabled: true, ingestion, recipes })
   } catch (error) {
     return internalError(error, 'Failed to read the Tradecraft settings')
   }
@@ -46,6 +47,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
 // PUT /api/users/[id]/tradecraft-settings
 //   Body, exactly one of: { v2Enabled: boolean } | { ingestion: { <key>: <value> } } | { reset: "<section>" | "all" }
+//     | { recipes: { add: { name, topics, kinds } } | { rename: { id, name } } | { delete: "<id>" } }
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
@@ -73,6 +75,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (typeof body.reset === 'string') {
       if (!(await tradecraftV2Enabled(id))) return V2_OFF()
       return settingsAnswer(await resetIngestionSettings(id, body.reset))
+    }
+    if (isPlainObject(body.recipes)) {
+      if (!(await tradecraftV2Enabled(id))) return V2_OFF()
+      const result = await editRecipes(id, body.recipes)
+      if (!result.ok) {
+        return NextResponse.json({ error: result.error, code: result.code, ...(result.field ? { field: result.field } : {}) }, { status: result.status })
+      }
+      return NextResponse.json({ v2Enabled: true, recipes: result.recipes })
     }
     return NextResponse.json({ error: BAD_BODY }, { status: 400 })
   } catch (error) {

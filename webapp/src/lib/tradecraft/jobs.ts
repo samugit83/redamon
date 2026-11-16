@@ -209,7 +209,7 @@ export function buildJobRequest(
     bulk_id: job.bulkId,
     settings: settings.values,
     settings_snapshot: { values: settings.values, provenance: settings.provenance },
-    settings_hash: ingestionHash(settings.hash, resource.forcedType),
+    settings_hash: ingestionHash(settings.hash, resource.forcedType, resource.focus),
     resource: {
       url: resource.url,
       slug: resource.slug,

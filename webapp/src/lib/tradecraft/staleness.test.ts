@@ -27,6 +27,22 @@ describe('isStale', () => {
     expect(isStale(row({ forcedType: 'gitbook', settingsHash: ingestionHash(HASH, 'gitbook') }), HASH, report({ pages: 5 }))).toBe(false)
   })
 
+  test('focus_change_is_stale (§6.13): a changed focus makes the resource stale; no focus keeps the plain hash', () => {
+    const focus = { mode: 'focused', topics: ['sql_injection'], kinds: [], keep: '', skip: '', skipMode: 'add', strictness: 'balanced' }
+    expect(ingestionHash(HASH, '', {})).toBe(HASH)
+    expect(ingestionHash(HASH, 'gitbook', {})).toBe(ingestionHash(HASH, 'gitbook'))
+    const withFocus = ingestionHash(HASH, '', focus)
+    expect(withFocus).toMatch(/^[0-9a-f]{16}$/)
+    expect(withFocus).not.toBe(HASH)
+    expect(isStale({ ...row({ settingsHash: withFocus }), focus }, HASH, report({ pages: 5 }))).toBe(false)
+    expect(isStale({ ...row({ settingsHash: withFocus }), focus: { ...focus, strictness: 'strict' } }, HASH, report({ pages: 5 }))).toBe(true)
+    expect(isStale({ ...row({ settingsHash: withFocus }), focus: {} }, HASH, report({ pages: 5 }))).toBe(true)
+    expect(isStale({ ...row(), focus }, HASH, report({ pages: 5 }))).toBe(true)
+    // The key order of a stored JSON object is not the focus.
+    const reordered = Object.fromEntries(Object.entries(focus).reverse())
+    expect(isStale({ ...row({ settingsHash: withFocus }), focus: reordered }, HASH, report({ pages: 5 }))).toBe(false)
+  })
+
   test('Stored after a Live ingestion: stale until an ingestion takes the Stored path', () => {
     expect(isStale(row(), HASH, report())).toBe(true)
     expect(isStale(row(), HASH, report({ pages: 5, bytes: 500 }))).toBe(false)

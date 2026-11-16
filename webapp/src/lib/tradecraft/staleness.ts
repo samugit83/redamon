@@ -9,15 +9,24 @@
  * stored counts go with it (`v2/update.ts`), so a later Live → Stored is stale again.
  *
  * The hash the job request carries is `ingestionHash`, so the one the agent writes at the swap
- * is compared with today's here. Auto (no forced type) keeps the plain settings hash, so the
- * resources ingested before the type joined it stay current.
+ * is compared with today's here. Auto (no forced type) and no focus keep the plain settings
+ * hash, so the resources ingested before the type or the focus joined it stay current; a focus
+ * (§6.13: "saved, and the resource is marked stale") joins it as its canonical JSON.
  */
 import type { IngestionReport } from './agentContract'
-import { sha256Hex } from './effectiveSettings'
+import { canonicalJson, sha256Hex } from './effectiveSettings'
 import { forcedStorageMode } from './storageModes'
 
-export function ingestionHash(settingsHash: string, forcedType: string): string {
-  return forcedType ? sha256Hex(`${settingsHash}|forced_type:${forcedType}`).slice(0, 16) : settingsHash
+function hasFocus(focus: unknown): boolean {
+  return !!focus && typeof focus === 'object' && !Array.isArray(focus) && Object.keys(focus).length > 0
+}
+
+export function ingestionHash(settingsHash: string, forcedType: string, focus?: unknown): string {
+  const parts = [
+    ...(forcedType ? [`forced_type:${forcedType}`] : []),
+    ...(hasFocus(focus) ? [`focus:${canonicalJson(focus)}`] : []),
+  ]
+  return parts.length > 0 ? sha256Hex([settingsHash, ...parts].join('|')).slice(0, 16) : settingsHash
 }
 
 /**
@@ -31,13 +40,13 @@ function tookStoredPath(report: IngestionReport): boolean {
 }
 
 export function isStale(
-  row: { settingsHash: string; forcedType: string; resourceType: string; storageMode: string },
+  row: { settingsHash: string; forcedType: string; resourceType: string; storageMode: string; focus?: unknown },
   currentSettingsHash: string,
   report: IngestionReport | null,
 ): boolean {
   // A resource 2.0 never ingested has no hash: it shows the "before 2.0" badge instead.
   if (row.settingsHash === '') return false
-  if (row.settingsHash !== ingestionHash(currentSettingsHash, row.forcedType)) return true
+  if (row.settingsHash !== ingestionHash(currentSettingsHash, row.forcedType, row.focus)) return true
   if (row.storageMode !== 'stored' || !report || report.kept === 0) return false
   // A CVE archive never stores text, whatever its row says.
   if (forcedStorageMode(row.forcedType || row.resourceType) === 'live') return false

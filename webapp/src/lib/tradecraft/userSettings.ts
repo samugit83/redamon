@@ -3,9 +3,14 @@
  * `TradecraftUserSettings.ingestion` holds only the keys a person changed, so a default the
  * spec changes later reaches every account that never touched it. The only writer of that
  * column; the merge with a resource's overrides is `effectiveSettings.ts`.
+ *
+ * Also the only writer of the account's focus recipes (`recipes`, §4.8 "My focus recipes").
  */
+import { randomUUID } from 'node:crypto'
 import prisma from '@/lib/prisma'
+import { MAX_USER_RECIPES, RECIPE_NAME_MAX, type UserRecipe } from './focus'
 import { lockTradecraftUserSettings } from './switch'
+import { foreignSkillTopics, validateKinds, validateTopics } from './v2/focusFields'
 import { effectiveSettings, canonicalJson } from './effectiveSettings'
 import {
   SECTIONS, SETTINGS, cloneValue, validateUserSettings, type SettingError, type SettingsValues,
@@ -113,4 +118,115 @@ export async function resetIngestionSettings(userId: string, section: string): P
     return stored
   })
   return { ok: true, view }
+}
+
+// --- focus recipes ------------------------------------------------------------------
+
+export type RecipeResult =
+  | { ok: true; recipes: UserRecipe[] }
+  | { ok: false; status: 400 | 404 | 409; code: string; field?: string; error: string }
+
+const RECIPE_ID = /^[A-Za-z0-9_-]{1,64}$/
+const CONTROL = /[\u0000-\u001f\u007f]/
+const RECIPE_KEYS: ReadonlySet<string> = new Set(['name', 'topics', 'kinds'])
+
+function recipesOf(stored: unknown): UserRecipe[] {
+  if (!Array.isArray(stored)) return []
+  return stored.flatMap((r): UserRecipe[] => {
+    if (!isPlainObject(r) || typeof r.id !== 'string' || !RECIPE_ID.test(r.id) || typeof r.name !== 'string') return []
+    const topics = Array.isArray(r.topics) ? r.topics.filter((t): t is string => typeof t === 'string') : []
+    const kinds = Array.isArray(r.kinds) ? r.kinds.filter((k): k is string => typeof k === 'string') : []
+    return [{ id: r.id, name: r.name, topics, kinds }]
+  })
+}
+
+/** The account's recipes, oldest first; a malformed entry is skipped, never an error. */
+export async function readRecipes(userId: string): Promise<UserRecipe[]> {
+  const row = await prisma.tradecraftUserSettings.findUnique({ where: { userId }, select: { recipes: true } })
+  return recipesOf(row?.recipes)
+}
+
+const refuse = (status: 400 | 404 | 409, code: string, error: string, field?: string): RecipeResult =>
+  ({ ok: false, status, code, error, ...(field ? { field } : {}) })
+
+function recipeName(input: unknown): { ok: true; name: string } | { ok: false; result: RecipeResult } {
+  const name = typeof input === 'string' ? input.trim() : ''
+  if (!name) return { ok: false, result: refuse(400, 'bad_recipe', 'A recipe needs a name', 'name') }
+  if (name.length > RECIPE_NAME_MAX) return { ok: false, result: refuse(400, 'bad_recipe', `A recipe name holds at most ${RECIPE_NAME_MAX} characters`, 'name') }
+  if (CONTROL.test(name)) return { ok: false, result: refuse(400, 'bad_recipe', 'A recipe name cannot hold a control character', 'name') }
+  return { ok: true, name }
+}
+
+const nameKey = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase()
+
+type RecipeEdit =
+  | { kind: 'add'; name: string; topics: string[]; kinds: string[] }
+  | { kind: 'rename'; id: string; name: string }
+  | { kind: 'delete'; id: string }
+
+const BAD_EDIT = 'Send exactly one of {"add": {name, topics, kinds}}, {"rename": {id, name}} or {"delete": "<id>"}'
+
+async function parseRecipeEdit(userId: string, input: unknown): Promise<{ ok: true; edit: RecipeEdit } | { ok: false; result: RecipeResult }> {
+  const keys = isPlainObject(input) ? Object.keys(input) : []
+  if (!isPlainObject(input) || keys.length !== 1) return { ok: false, result: refuse(400, 'bad_request', BAD_EDIT) }
+  if (isPlainObject(input.add)) {
+    const unknown = Object.keys(input.add).find(k => !RECIPE_KEYS.has(k))
+    if (unknown) return { ok: false, result: refuse(400, 'bad_recipe', `A recipe has no field ${unknown}`, 'recipe') }
+    const name = recipeName(input.add.name)
+    if (!name.ok) return name
+    const topics = validateTopics(input.add.topics, 'topics')
+    if (!topics.ok) return { ok: false, result: refuse(400, 'bad_recipe', topics.error, topics.field) }
+    const kinds = validateKinds(input.add.kinds, 'kinds')
+    if (!kinds.ok) return { ok: false, result: refuse(400, 'bad_recipe', kinds.error, kinds.field) }
+    if (topics.value.length === 0 && kinds.value.length === 0) {
+      return { ok: false, result: refuse(400, 'bad_recipe', 'Pick at least one topic or content type', 'topics') }
+    }
+    const foreign = await foreignSkillTopics(userId, topics.value)
+    if (foreign.length > 0) return { ok: false, result: refuse(400, 'foreign_skill', `Not one of your skills: ${foreign.join(', ')}`, 'topics') }
+    return { ok: true, edit: { kind: 'add', name: name.name, topics: topics.value, kinds: kinds.value } }
+  }
+  if (isPlainObject(input.rename) && typeof input.rename.id === 'string') {
+    const name = recipeName(input.rename.name)
+    if (!name.ok) return name
+    return { ok: true, edit: { kind: 'rename', id: input.rename.id, name: name.name } }
+  }
+  if (typeof input.delete === 'string') return { ok: true, edit: { kind: 'delete', id: input.delete } }
+  return { ok: false, result: refuse(400, 'bad_request', BAD_EDIT) }
+}
+
+/**
+ * Adds, renames or deletes one of the account's recipes, under the account's row lock so two
+ * tabs adding at once cannot pass the cap together or both take one name.
+ */
+export async function editRecipes(userId: string, input: unknown): Promise<RecipeResult> {
+  const parsed = await parseRecipeEdit(userId, input)
+  if (!parsed.ok) return parsed.result
+  const { edit } = parsed
+  return prisma.$transaction(async (tx) => {
+    await lockTradecraftUserSettings(tx, userId)
+    const row = await tx.tradecraftUserSettings.findUnique({ where: { userId }, select: { recipes: true } })
+    const recipes = recipesOf(row?.recipes)
+    const taken = (name: string, except?: string) => recipes.some(r => r.id !== except && nameKey(r.name) === nameKey(name))
+    let next: UserRecipe[]
+    if (edit.kind === 'add') {
+      if (recipes.length >= MAX_USER_RECIPES) return refuse(409, 'recipe_cap', `An account holds at most ${MAX_USER_RECIPES} recipes`)
+      if (taken(edit.name)) return refuse(409, 'recipe_name_taken', 'You already have a recipe with this name', 'name')
+      next = [...recipes, { id: randomUUID().replace(/-/g, ''), name: edit.name, topics: edit.topics, kinds: edit.kinds }]
+    } else {
+      const target = recipes.find(r => r.id === edit.id)
+      if (!target) return refuse(404, 'recipe_not_found', 'Recipe not found')
+      if (edit.kind === 'rename') {
+        if (taken(edit.name, edit.id)) return refuse(409, 'recipe_name_taken', 'You already have a recipe with this name', 'name')
+        next = recipes.map(r => (r.id === edit.id ? { ...r, name: edit.name } : r))
+      } else {
+        next = recipes.filter(r => r.id !== edit.id)
+      }
+    }
+    await tx.tradecraftUserSettings.upsert({
+      where: { userId },
+      create: { userId, recipes: next as unknown as object },
+      update: { recipes: next as unknown as object },
+    })
+    return { ok: true, recipes: next }
+  })
 }

@@ -13,6 +13,7 @@ import { startJob, startedJobFields, type JobActor } from '../jobs'
 import { SETTINGS_CONSTANTS } from '../settingsSpec'
 import { slugify, uniqueSlug } from '../urls'
 import { defaultStorageMode, fieldErrorResponse, forcedStorageMode, parseResourceFields, typeOptionsOf } from './fields'
+import { focusSkillRefusal } from './focusFields'
 import { resourceViewOf } from './list'
 
 export const MAX_RESOURCES_PER_USER: number = SETTINGS_CONSTANTS.maxResourcesPerUser
@@ -30,6 +31,8 @@ export async function createResourceV2(input: {
   const parsed = parseResourceFields(body, 'create')
   if (!parsed.ok) return fieldErrorResponse(parsed.error)
   const fields = parsed.value
+  const foreignSkill = await focusSkillRefusal(ownerId, fields.focus)
+  if (foreignSkill) return foreignSkill
 
   // The add job would send the account's GitHub token, which stays with the account while
   // someone acts as it (step 3.14): refused before anything is written, as in 1.x.
@@ -69,6 +72,7 @@ export async function createResourceV2(input: {
           githubTokenOverride: fields.githubTokenOverride ?? '',
           overrides: overrides as object,
           typeOptions: typeOptionsOf(overrides) as object,
+          focus: (fields.focus ?? {}) as object,
           presetKey: fields.presetKey ?? '',
         },
         select: { id: true },

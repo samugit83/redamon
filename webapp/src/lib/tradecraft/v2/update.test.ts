@@ -244,6 +244,30 @@ describe('updateResourceV2', () => {
       expect((await view({ overrides: {} })).resource.stale).toBe(false)
     })
 
+    test('focus (§6.13, T5.5): saved, stale, no ingestion; no focus again is current', async () => {
+      ingestedCurrent()
+      const agent = stubAgent()
+      const focus = { mode: 'focused', topics: ['sql_injection'], kinds: ['payloads'], keep: 'SQL injection payloads', skip: '', skipMode: 'add', strictness: 'strict' }
+      const body = await view({ focus })
+      expect(body).toMatchObject({ job: null, resource: { stale: true } })
+      expect(row().focus).toEqual(focus)
+      expect(agent.calls).toEqual([])
+      expect((await view({ focus: {} })).resource.stale).toBe(false)
+      expect(row().focus).toEqual({})
+    })
+
+    test('foreign_skill_refused: a focus naming a skill the owner does not have is a 400, nothing written', async () => {
+      h.db.seed('userAttackSkill', { id: 'mine', userId: 'owner', name: 'Mine' })
+      h.db.seed('userAttackSkill', { id: 'theirs', userId: 'other', name: 'Theirs' })
+      stubAgent()
+      const res = await update({ focus: { mode: 'focused', topics: ['user_skill:theirs'] }, name: 'Renamed' })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({ field: 'focus.topics', code: 'foreign_skill' })
+      expect(row()).toMatchObject({ name: 'Wiki', focus: {} })
+      expect((await update({ focus: { mode: 'focused', topics: ['user_skill:mine'] } })).status).toBe(200)
+      expect(row().focus).toMatchObject({ topics: ['user_skill:mine'] })
+    })
+
     test('Live → Stored: saved, stale until an ingestion stores the pages', async () => {
       ingestedCurrent({ storageMode: 'live', ingestionReport: { visited: 5, kept: 5 } })
       stubAgent()

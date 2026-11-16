@@ -15,6 +15,7 @@ import { isMaskedValue } from '../masking'
 import { presetByKey } from '../presets'
 import { validateOverrides, type ResourceOverrides } from '../settingsSpec'
 import { validateUrl } from '../urls'
+import type { Focus } from '../focus'
 import { validateFocus } from './focusFields'
 
 export interface ResourceFields {
@@ -28,7 +29,8 @@ export interface ResourceFields {
   forcedType?: '' | SiteType
   /** Only `null`, which removes the login: phase 6 (T6.5) lets a person set one. */
   credentials?: null
-  focus?: Record<string, never>
+  /** `{}` is no focus (Everything). The owner's skill topics are checked by the writer (`foreignSkillTopics`). */
+  focus?: Focus | Record<string, never>
   /** The Resource ID: chosen at creation, read-only afterwards (R-137). */
   slug?: string
   /** The whole override map: what the form sends replaces what is stored. */
@@ -114,7 +116,7 @@ export function parseResourceFields(body: Record<string, unknown>, mode: 'create
   }
   if (has('focus')) {
     const focus = validateFocus(body.focus)
-    if (!focus.ok) return bad('focus', focus.error)
+    if (!focus.ok) return bad(focus.field, focus.error, 'bad_focus')
     value.focus = focus.value
   }
   if (has('slug')) {

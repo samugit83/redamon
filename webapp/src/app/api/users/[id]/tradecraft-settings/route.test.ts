@@ -19,7 +19,7 @@ vi.stubEnv('INTERNAL_API_KEY', 'ik-test-tradecraft-0001')
 const h = vi.hoisted(() => ({
   auth: undefined as string | undefined,
   actAs: undefined as string | undefined,
-  rows: new Map<string, { v2Enabled: boolean; v2EnabledAt: Date | null; ingestion?: Record<string, unknown> }>(),
+  rows: new Map<string, { v2Enabled: boolean; v2EnabledAt: Date | null; ingestion?: Record<string, unknown>; recipes?: unknown }>(),
   audits: [] as Record<string, unknown>[],
   writes: [] as string[],
   reads: 0,
@@ -326,5 +326,46 @@ describe('the ingestion settings (T3.4)', () => {
     const r = await put('victim', { ingestion: { 'crawl.maxPages': 9 } }, { 'x-internal-key': 'ik-test-tradecraft-0001' })
     expect(r.status).toBe(401)
     expect(h.rows.get('victim')!.ingestion).toBeUndefined()
+  })
+})
+
+describe('the focus recipes (T5.5)', () => {
+  const on = () => h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
+  type Recipe = { id: string; name: string; topics: string[]; kinds: string[] }
+
+  test('GET lists them while 2.0 is on; PUT adds, renames and deletes one, answering the list', async () => {
+    on()
+    expect((await answer(await get('victim'))).body.recipes).toEqual([])
+    const added = await answer(await put('victim', { recipes: { add: { name: 'Web', topics: ['xss'], kinds: ['payloads'] } } }))
+    expect(added).toMatchObject({ status: 200, body: { v2Enabled: true, recipes: [{ name: 'Web', topics: ['xss'], kinds: ['payloads'] }] } })
+    const id = (added.body.recipes as Recipe[])[0].id
+    expect((await answer(await get('victim'))).body.recipes).toEqual(added.body.recipes)
+    expect((await answer(await put('victim', { recipes: { rename: { id, name: 'Web 2' } } }))).body.recipes).toMatchObject([{ id, name: 'Web 2' }])
+    expect((await answer(await put('victim', { recipes: { delete: id } }))).body.recipes).toEqual([])
+    expect(h.rows.get('victim')!.recipes).toEqual([])
+  })
+
+  test('a refused recipe answers its code, field and status; nothing written', async () => {
+    on()
+    const bad = await answer(await put('victim', { recipes: { add: { name: 'x', topics: ['sqli'] } } }))
+    expect(bad).toMatchObject({ status: 400, body: { code: 'bad_recipe', field: 'topics' } })
+    const missing = await answer(await put('victim', { recipes: { delete: 'nope' } }))
+    expect(missing).toMatchObject({ status: 404, body: { code: 'recipe_not_found' } })
+    expect(h.writes).toEqual([])
+  })
+
+  test('with 2.0 off: 404, nothing read or written; the internal key alone saves none', async () => {
+    expect(await answer(await put('victim', { recipes: { add: { name: 'x', kinds: ['poc'] } } })))
+      .toEqual({ status: 404, body: { error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' } })
+    on()
+    h.auth = undefined
+    expect((await put('victim', { recipes: { add: { name: 'x', kinds: ['poc'] } } }, { 'x-internal-key': 'ik-test-tradecraft-0001' })).status).toBe(401)
+    expect(h.writes).toEqual([])
+  })
+
+  test('recipes and another section at once is a 400', async () => {
+    on()
+    expect((await put('victim', { recipes: { delete: 'x' }, reset: 'all' })).status).toBe(400)
+    expect(h.writes).toEqual([])
   })
 })
