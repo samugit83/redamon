@@ -21,14 +21,18 @@ the weights, thresholds and merge stay internal (Q11, R-418).
 
 Every statement is in ``search_sql``: keyed by the owner and the catalog's resources, joined to
 each resource's live generation, the query text bound as a parameter only. Wordings 3 and 4 add
-only fixed vocabulary words (a topic, technology ids), never raw target text (Q12).
+only fixed vocabulary words (a topic, technology ids), never raw target text (Q12). The
+statements of one search, first pass or browse run in one read-only snapshot (D-46): they are
+tied together by entry ids, which a refresh's swap replaces, so each call reads the generation
+that was live when it started, and the next call the new one.
 """
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import dataclass, field
-from typing import Any, AsyncContextManager, Callable, Iterable, Mapping, Optional, Sequence
+from typing import Any, AsyncContextManager, AsyncIterator, Callable, Iterable, Mapping, Optional, Sequence
 
 from tradecraft import db
 from tradecraft.ingest import entities as entity_rules
@@ -114,19 +118,54 @@ class Candidate:
     snippet: str = ""
 
 
+# The first statement of a call's transaction: one snapshot for every statement after it, and
+# no write. READ COMMITTED, the pool's level, takes a snapshot per statement.
+SNAPSHOT = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+
+
 class LibraryIndex:
     """Runs the statements of ``search_sql`` on the page store's pool (a test passes its own
-    ``connect``, or replaces the whole index)."""
+    ``connect``, or replaces the whole index). ``snapshot()`` gives the same index on one
+    connection whose statements all read one snapshot."""
 
-    def __init__(self, connect: Optional[Callable[[], AsyncContextManager[Any]]] = None) -> None:
+    def __init__(self, connect: Optional[Callable[[], AsyncContextManager[Any]]] = None, *,
+                 conn: Any = None) -> None:
         self._connect = connect or db.connection
+        self._conn = conn
+
+    @contextlib.asynccontextmanager
+    async def snapshot(self) -> AsyncIterator["LibraryIndex"]:
+        if self._conn is not None:
+            yield self
+            return
+        async with self._connect() as conn:
+            await conn.execute(SNAPSHOT)
+            yield LibraryIndex(self._connect, conn=conn)
 
     async def rows(self, name: str, params: Mapping[str, Any]) -> list[dict]:
+        if self._conn is not None:
+            return await self._run(self._conn, name, params)
         async with self._connect() as conn:
-            if name in search_sql.PRELUDES:
-                await conn.execute(search_sql.PRELUDES[name], dict(params))
-            cur = await conn.execute(search_sql.STATEMENTS[name], dict(params))
-            return list(await cur.fetchall())
+            return await self._run(conn, name, params)
+
+    @staticmethod
+    async def _run(conn: Any, name: str, params: Mapping[str, Any]) -> list[dict]:
+        if name in search_sql.PRELUDES:
+            await conn.execute(search_sql.PRELUDES[name], dict(params))
+        cur = await conn.execute(search_sql.STATEMENTS[name], dict(params))
+        return list(await cur.fetchall())
+
+
+@contextlib.asynccontextmanager
+async def one_snapshot(index: Any) -> AsyncIterator[Any]:
+    """``index`` in one snapshot for the statements of one call; an index that has none (a
+    test's fake) as it is."""
+    opener = getattr(index, "snapshot", None)
+    if opener is None:
+        yield index
+        return
+    async with opener() as bound:
+        yield bound
 
 
 # --------------------------------------------------------------------------------------
@@ -383,15 +422,17 @@ async def free_first_pass(owner_id: str, catalog: Any, query: str, *, resource: 
     cves = frozenset(entity_rules.cve_ids(query))
     if not scope or not wordings:
         return FirstPass(tuple(wordings), [], groups, cves)
-    index = index or LibraryIndex()
     base = {"uid": owner_id, "rids": [r.id for r in scope], "topic": topic, "kind": kind, "tech": technology,
             "techs": [], "limit": PER_WORDING}
-    results = [(w, await _run_wording(index, w, base)) for w in wordings]
-    priorities = {r.id: getattr(r, "priority", "normal") for r in scope}
-    candidates = merge(results, priorities, session if use_session else None, cves)
+    async with one_snapshot(index or LibraryIndex()) as ix:
+        results = [(w, await _run_wording(ix, w, base)) for w in wordings]
+        priorities = {r.id: getattr(r, "priority", "normal") for r in scope}
+        candidates = merge(results, priorities, session if use_session else None, cves)
+        rows = []
+        if candidates and groups:
+            rows = await ix.rows("assess", {"uid": owner_id, "rids": base["rids"], "groups": groups,
+                                            "ids": [c.row["id"] for c in candidates]})
     if candidates and groups:
-        rows = await index.rows("assess", {"uid": owner_id, "rids": base["rids"], "groups": groups,
-                                           "ids": [c.row["id"] for c in candidates]})
         coverage = {r["id"]: r for r in rows}
         for cand in candidates:
             got = coverage.get(cand.row["id"])
@@ -473,13 +514,14 @@ async def search(owner_id: str, catalog: Any, query: str, *, resource: Optional[
                  session: Optional[Session] = None, settings: Optional[EffectiveSettings] = None,
                  index: Any = None) -> SearchAnswer:
     settings = _search_settings(catalog, settings)
-    fp = await free_first_pass(owner_id, catalog, query, resource=resource, topic=topic, kind=kind,
-                               technology=technology, session=session, settings=settings, index=index)
-    verdict, ranked = verdict_of(fp.candidates, settings.str("search.strictness"))
+    async with one_snapshot(index or LibraryIndex()) as ix:
+        fp = await free_first_pass(owner_id, catalog, query, resource=resource, topic=topic, kind=kind,
+                                   technology=technology, session=session, settings=settings, index=ix)
+        verdict, ranked = verdict_of(fp.candidates, settings.str("search.strictness"))
+        shown = ranked[:settings.int("search.results")]
+        if shown and fp.groups:
+            await _snippets(ix, owner_id, shown, fp.groups)
     by_id = {r.id: r for r in _resources(catalog)}
-    shown = ranked[:settings.int("search.results")]
-    if shown and fp.groups:
-        await _snippets(index or LibraryIndex(), owner_id, shown, fp.groups)
     hits = tuple(SearchHit(card=card_of(c.row, by_id[c.row["resource_id"]]), score=round(c.score, 6),
                            wordings_matched=len(c.wordings), section=c.section, snippet=c.snippet) for c in shown)
     return SearchAnswer(verdict=verdict, hits=hits, wordings=tuple(w.label for w in fp.wordings), total=len(ranked))
@@ -499,13 +541,17 @@ async def browse(owner_id: str, catalog: Any, resource: str, path: Optional[str]
                  index: Any = None) -> BrowseLevel:
     """One level of a resource's tree: its folders with counts and descriptions, then the pages
     at that level, at most ``BROWSE_LINES`` lines; the root also shows the resource's summary."""
-    from tradecraft.ingest.tree import topic_of_label
-
     res = _scope(catalog, resource)[0] if resource else None
     if res is None:
         raise SearchError("browsing needs a resource: tradecraft_search(resource=..., path=...)")
-    index = index or LibraryIndex()
     path = normalize_path(path)
+    async with one_snapshot(index or LibraryIndex()) as ix:
+        return await _browse(ix, owner_id, res, path)
+
+
+async def _browse(index: Any, owner_id: str, res: Any, path: str) -> BrowseLevel:
+    from tradecraft.ingest.tree import topic_of_label
+
     key = {"uid": owner_id, "rid": res.id}
     node = None
     if path:

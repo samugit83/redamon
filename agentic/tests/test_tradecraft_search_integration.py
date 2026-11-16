@@ -8,6 +8,7 @@ Runs through ``tooling/scripts/tradecraft_pg_testdb.sh agent``; skips without
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import uuid
@@ -22,8 +23,9 @@ PG_URL = os.environ.get("TRADECRAFT_PG_TEST_URL", "")
 pytestmark = pytest.mark.skipif(not PG_URL, reason="TRADECRAFT_PG_TEST_URL is not set (tradecraft_pg_testdb.sh agent)")
 
 from test_tradecraft_ingest_pipeline_integration import ingest, pg  # noqa: E402,F401
+from tradecraft import db  # noqa: E402
 from tradecraft.contract import V2Catalog  # noqa: E402
-from tradecraft.library import search  # noqa: E402
+from tradecraft.library import search, search_sql  # noqa: E402
 from tradecraft.store import Store  # noqa: E402
 from tradecraft_memory_store import padded_sites  # noqa: E402
 
@@ -256,3 +258,74 @@ async def test_search_after_swap(pg):
     after = await search.search(uid, cat, "swap")
     assert [h.card.title for h in after.hits] == ["New title after the swap"]
     assert (await search.search(uid, cat, "before refresh")).hits == ()
+
+
+class SwapMidCall:
+    """The page store's connections, with a refresh's swap committed on another connection just
+    before the statement ``before`` first runs, and the old generation purged: a swap that lands
+    in the middle of one search or browse (D-46)."""
+
+    def __init__(self, pg, rid, before):
+        self.pg, self.rid, self.before, self.swapped = pg, rid, before, False
+
+    @contextlib.asynccontextmanager
+    async def connect(self):
+        async with db.connection() as conn:
+            yield _SwapConn(conn, self)
+
+    async def swap(self):
+        self.swapped = True
+        await self.pg.sql("UPDATE user_tradecraft_resources SET generation = 2 WHERE id = %s", self.rid)
+        for table in ("tradecraft_sections", "tradecraft_entries"):
+            await self.pg.sql(f"DELETE FROM {table} WHERE resource_id = %s AND generation = 1", self.rid)
+
+
+class _SwapConn:
+    def __init__(self, conn, owner):
+        self._conn, self._owner = conn, owner
+
+    async def execute(self, query, params=None):
+        if not self._owner.swapped and query == search_sql.STATEMENTS[self._owner.before]:
+            await self._owner.swap()
+        return await self._conn.execute(query, params)
+
+
+def _refreshed(n, title, words):
+    return page(n, title=title, headings=[{"level": 2, "text": "Order by clause injection"}],
+                sections=[("Order by clause injection", f"Inject into the order by clause with a case expression, "
+                                                        f"{words}.")])
+
+
+@pytest.mark.parametrize("before", ["sections_text", "assess", "section_snippets"])
+async def test_a_swap_during_one_search_is_not_seen_by_it(pg, before):
+    """S05 review (second reviewer), D-46: the statements of one search are tied together by entry
+    ids, which differ in each generation; each ran in its own transaction, so a swap committing
+    between them gave NOT FOUND (no coverage for the old ids), a page twice, or a page without
+    its snippet. One search now reads one snapshot: the generation live when it started."""
+    uid = await pg.user()
+    res = await seed(pg, uid, [_refreshed(1, "Notes on databases", "old words")])
+    await seed(pg, uid, [_refreshed(1, "Notes on databases, revised", "new words")], rid=res["id"], generation=2)
+    cat = catalog(uid, res)
+    swap = SwapMidCall(pg, res["id"], before)
+    answer = await search.search(uid, cat, "order clause injection", index=search.LibraryIndex(swap.connect))
+    assert swap.swapped
+    assert answer.verdict == "FOUND"
+    assert [h.card.title for h in answer.hits] == ["Notes on databases"]
+    assert "old words" in answer.hits[0].snippet
+    # The next call reads the new generation.
+    after = await search.search(uid, cat, "order clause injection")
+    assert [h.card.title for h in after.hits] == ["Notes on databases, revised"] and "new words" in after.hits[0].snippet
+
+
+async def test_a_swap_during_one_browse_is_not_seen_by_it(pg):
+    """D-46 for browse: the level's page count and its pages come from one generation."""
+    uid = await pg.user()
+    res = await seed(pg, uid, [page(1, title="Old page")])
+    await seed(pg, uid, [page(n, title=f"New page {n}") for n in (1, 2, 3)], rid=res["id"], generation=2)
+    cat = catalog(uid, res)
+    swap = SwapMidCall(pg, res["id"], "pages_at")
+    level = await search.browse(uid, cat, res["slug"], "", index=search.LibraryIndex(swap.connect))
+    assert swap.swapped
+    assert level.page_count == 1 and [c.title for c in level.pages] == ["Old page"]
+    again = await search.browse(uid, cat, res["slug"], "")
+    assert again.page_count == 3 and len(again.pages) == 3
