@@ -1309,12 +1309,26 @@ def resolve_all_dns(domain: str, subdomains: list, max_workers: int = 20, record
 def _refresh_shared_resolvers(src: Path, shared: Path) -> None:
     """Keep the copy puredns reads from /tmp/redamon in step with the list the
     entrypoint refreshes weekly. Replaced atomically and never deleted, because
-    other scans may be reading it. Never raises."""
+    other scans may be reading it. Never raises.
+
+    Uses content hash comparison (not mtime) to handle cases where the shared
+    file was created/corrupted after the source's git commit date but has
+    different content. This prevents stale/corrupted resolver lists from being
+    kept just because they have a newer mtime than the source.
+    """
+    import hashlib
     try:
         if not src.is_file():
             return
-        if shared.is_file() and src.stat().st_mtime <= shared.stat().st_mtime:
-            return
+        if shared.is_file():
+            # Compare content hash instead of mtime.
+            # If content matches, no refresh needed regardless of mtime.
+            # If content differs, refresh even if shared has newer mtime.
+            src_hash = hashlib.sha256(src.read_bytes()).hexdigest()
+            shared_hash = hashlib.sha256(shared.read_bytes()).hexdigest()
+            if src_hash == shared_hash:
+                return
+            print(f"[!][Puredns] Shared resolver list content differs from source (hash mismatch); refreshing")
         # copy2 carries src's mtime over, which is what marks the copy current.
         _atomic_install(shared, lambda tmp: shutil.copy2(src, tmp))
     except OSError as e:
