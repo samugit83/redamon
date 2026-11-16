@@ -59,6 +59,12 @@ The user doc is the wiki page `AI-Navigator`; the developer notes are the AI Nav
 - **Threads are their author's alone.** `{id, projectId}` plus `ownsRow`, the same 404 for a missing,
   another person's or another project's thread; no manager, oversight or break-glass read; no
   route creates an empty thread.
+- **No secret value reaches the model unless the project's RoE says `full_access`.** Every result
+  goes through `shapeToolResult`, which withholds the properties in `SECRET_VALUE_KEYS` by name
+  before the secret-shape masker (a 40-character AWS secret has no shape), and `run_cypher` refuses
+  a query that names one or reads a property by a computed key
+  ([secretGuard.ts](../../webapp/src/lib/navigator/tools/secretGuard.ts)). A tool that returns a new
+  secret-bearing field adds it to `SECRET_VALUE_KEYS`.
 - **Never log message text, deltas, tool results or Cypher**, in the webapp or the agent: ids,
   codes and timings only (`test_navigator_logging.py`, `stream.test.ts`).
 
