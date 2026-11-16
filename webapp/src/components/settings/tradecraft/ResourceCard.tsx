@@ -3,12 +3,15 @@
 import { Loader2, Pencil, RotateCw, Square, Trash2 } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import { isRunning, jobLabel, relTime, type ResourceView } from '@/lib/tradecraft/client'
+import { useEnabledImpactConfirm } from './EnabledImpactAlert'
 import css from './tradecraft.module.css'
 
 export const STALE_TEXT = 'Ingested with older settings'
 export const LEGACY_TEXT = 'Ingested before 2.0: refresh for headings, descriptions and search inside pages'
 
 export interface ResourceCardProps {
+  /** The account: the Enabled alert reads its projects. */
+  userId: string
   resource: ResourceView
   /** A Refresh or a Cancel this card sent and the server has not answered yet. */
   busy?: boolean
@@ -20,8 +23,12 @@ export interface ResourceCardProps {
 }
 
 /** One 2.0 resource: its state, its job's stage, and Refresh, which becomes Cancel while a job runs (§4.7). */
-export function ResourceCard({ resource: r, busy = false, onRefresh, onCancel, onEdit, onDelete, onToggleEnabled }: ResourceCardProps) {
+export function ResourceCard({ userId, resource: r, busy = false, onRefresh, onCancel, onEdit, onDelete, onToggleEnabled }: ResourceCardProps) {
   const running = isRunning(r.job)
+  const confirmEnabled = useEnabledImpactConfirm(userId)
+  // A failed ingestion sets the 1.x verification time (TD-18): only a 2.0 swap, or a 1.x
+  // verify that found nothing wrong, is a refresh worth naming here.
+  const refreshedAt = r.lastRefreshedAt ?? (r.mapVersion === 1 && !r.lastError ? r.lastVerifiedAt : null)
   const report = r.report
   return (
     <div className={`${css.card} ${r.enabled ? '' : css.cardDisabled}`} data-testid={`tc-card-${r.id}`}>
@@ -39,7 +46,10 @@ export function ResourceCard({ resource: r, busy = false, onRefresh, onCancel, o
         )}
         {r.mapVersion === 2 && <span className={`${css.badge} ${css.badgeInfo}`}>{LEGACY_TEXT}</span>}
         <div className={css.cardActions}>
-          <Toggle checked={r.enabled} onChange={next => onToggleEnabled(r, next)} size="small" aria-label={`Enabled: ${r.name}`} />
+          <Toggle
+            checked={r.enabled} size="small" aria-label={`Enabled: ${r.name}`}
+            onChange={async next => { if (await confirmEnabled(r, next)) onToggleEnabled(r, next) }}
+          />
           {running ? (
             <button type="button" className="secondaryButton" onClick={() => onCancel(r)} disabled={busy || r.job?.cancelRequested}>
               <Square size={12} /> Cancel
@@ -67,7 +77,7 @@ export function ResourceCard({ resource: r, busy = false, onRefresh, onCancel, o
         <div className={css.failure} role="status">{jobLabel(r.job)}</div>
       )}
       <div className={css.meta}>
-        <span>Last refreshed {relTime(r.lastRefreshedAt ?? r.lastVerifiedAt)}</span>
+        <span>Last refreshed {relTime(refreshedAt)}</span>
         <span>{r.entryCount} {r.entryCount === 1 ? 'entry' : 'entries'}</span>
         {report && (
           <span data-testid="tc-report">

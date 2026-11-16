@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Plus, SlidersHorizontal } from 'lucide-react'
 import { TradecraftResourceForm } from '@/components/settings/TradecraftResourceForm'
 import type { TradecraftResource } from '@/components/settings/TradecraftResourceForm'
@@ -59,6 +60,8 @@ export function TradecraftTab({ userId, onDirtyChange }: TradecraftTabProps) {
 
 function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
   const toast = useToast()
+  // A project's "Edit in Global Settings" link (§3.4) names the resource to open.
+  const editId = useSearchParams()?.get('edit') ?? null
   const [configuring, setConfiguring] = useState(false)
   // A save changes which cards read as stale: the list is read again by mounting it anew.
   const [listKey, setListKey] = useState(0)
@@ -79,6 +82,7 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
         key={listKey}
         userId={userId}
         onDirtyChange={onDirtyChange}
+        initialEditId={editId}
         headerActions={
           <button type="button" className="secondaryButton" onClick={() => setConfiguring(true)}>
             <SlidersHorizontal size={14} /> Configure ingestion

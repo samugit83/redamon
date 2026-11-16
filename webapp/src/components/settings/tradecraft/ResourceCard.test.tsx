@@ -6,7 +6,7 @@ import { render, screen, cleanup, fireEvent, within } from '@testing-library/rea
 import { LEGACY_TEXT, ResourceCard, STALE_TEXT } from './ResourceCard'
 import { RESOURCE, job } from './__testing__/resourceView'
 
-const handlers = () => ({ onRefresh: vi.fn(), onCancel: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onToggleEnabled: vi.fn() })
+const handlers = () => ({ userId: 'user-1', onRefresh: vi.fn(), onCancel: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onToggleEnabled: vi.fn() })
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('ResourceCard', () => {
@@ -57,5 +57,18 @@ describe('ResourceCard', () => {
     cleanup()
     render(<ResourceCard resource={RESOURCE} {...handlers()} />)
     expect(screen.getByText('Last refreshed never')).toBeInTheDocument()
+  })
+
+  test('a failed ingestion is no refresh: its 1.x verification time is not shown as one; a clean 1.x verify is', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-16T10:00:00Z'))
+    render(<ResourceCard resource={{ ...RESOURCE, mapVersion: 1, lastVerifiedAt: '2026-11-16T09:59:30.000Z', lastError: 'fetch_failed' }} {...handlers()} />)
+    expect(screen.getByText('Last refreshed never')).toBeInTheDocument()
+    cleanup()
+    render(<ResourceCard resource={{ ...RESOURCE, mapVersion: 1, lastVerifiedAt: '2026-11-13T09:00:00.000Z', lastError: '' }} {...handlers()} />)
+    expect(screen.getByText('Last refreshed 3d ago')).toBeInTheDocument()
+    cleanup()
+    render(<ResourceCard resource={{ ...RESOURCE, mapVersion: 3, lastRefreshedAt: '2026-11-13T09:00:00.000Z', lastVerifiedAt: '2026-11-16T09:59:30.000Z', lastError: 'fetch_failed' }} {...handlers()} />)
+    expect(screen.getByText('Last refreshed 3d ago')).toBeInTheDocument()
   })
 })

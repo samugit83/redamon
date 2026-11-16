@@ -27,6 +27,7 @@ import { MAX_ENABLED_USER_SKILLS_PER_PROJECT, MAX_SKILLS_PER_USER, USER_SKILL_LI
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
 import { formatApiError, readApiError, toApiError } from '@/lib/apiError'
 import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
+import { TradecraftResourcesAccordion } from './TradecraftResourcesAccordion'
 import styles from '../ProjectForm.module.css'
 
 const LOAD_FAILED = 'Your skills could not be loaded'
@@ -46,6 +47,14 @@ interface AttackSkillsSectionProps {
   projectId?: string | null
   /** Opens the RoE tab; absent in the chat SettingsModal, which has no tabs. */
   onOpenRoe?: () => void
+  /** Inside the chat drawer: the Tradecraft accordion opens Global Settings in a new tab (§3.4). */
+  inDrawer?: boolean
+}
+
+/** The owner's tradecraft resources turned off in the project, as the project GET carries them (§3.4). */
+function tradecraftOffOf(data: FormData): string[] {
+  const off = (data as FormData & { tradecraftOff?: unknown }).tradecraftOff
+  return Array.isArray(off) ? off.filter((v): v is string => typeof v === 'string') : []
 }
 
 interface BuiltInSkillDef {
@@ -190,7 +199,7 @@ function getConfig(data: FormData): AttackSkillConfig {
   return DEFAULT_CONFIG
 }
 
-export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }: AttackSkillsSectionProps) {
+export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe, inDrawer = false }: AttackSkillsSectionProps) {
   const { userId } = useProject()
   const { alertError, alert: showAlert } = useAlertModal()
   // A collaborator's form (step 5.7): the toggles pick among the project OWNER's skills, listed by
@@ -708,6 +717,17 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe }:
           </div>
         )}
       </div>
+
+      {/* A new project has no choices yet: every resource is on in it (§3.4). */}
+      {savedProjectId && (
+        <TradecraftResourcesAccordion
+          projectId={savedProjectId}
+          offIds={tradecraftOffOf(data)}
+          // tradecraftOff is no Project column: it travels in the same save and the route writes it.
+          onChange={ids => (updateField as unknown as (field: 'tradecraftOff', value: string[]) => void)('tradecraftOff', ids)}
+          inDrawer={inDrawer}
+        />
+      )}
 
       {/* Outside the header: events from the portalled dialog bubble along the React tree,
           and a click there would collapse the section. */}

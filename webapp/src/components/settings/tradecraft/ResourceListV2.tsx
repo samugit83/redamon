@@ -19,10 +19,12 @@ type Status = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; text: s
  * The 2.0 resources of the account: cards, the basic form, and the job views read every 3 s while a job runs.
  * `headerActions` sit left of Add Resource and show exactly when it does (§3.1).
  */
-export function ResourceListV2({ userId, onDirtyChange, headerActions }: {
+export function ResourceListV2({ userId, onDirtyChange, headerActions, initialEditId = null }: {
   userId: string
   onDirtyChange: (dirty: boolean) => void
   headerActions?: ReactNode
+  /** A resource to open in its Edit form once the list is read (a project's "Edit in Global Settings"). */
+  initialEditId?: string | null
 }) {
   const { dangerConfirm } = useAlertModal()
   const toast = useToast()
@@ -47,6 +49,13 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions }: {
   }, [userId])
 
   useEffect(() => { load() }, [load])
+  const editOpened = useRef(false)
+  useEffect(() => {
+    if (!initialEditId || editOpened.current || status.kind !== 'ready') return
+    editOpened.current = true
+    const target = resources.find(r => r.id === initialEditId)
+    if (target) setForm(target)
+  }, [initialEditId, status.kind, resources])
   useEffect(() => {
     let live = true
     tradecraftClient.getSettings(userId)
@@ -169,6 +178,7 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions }: {
           {resources.map(r => (
             <ResourceCard
               key={r.id}
+              userId={userId}
               resource={r}
               busy={busy.has(r.id)}
               onRefresh={refresh}

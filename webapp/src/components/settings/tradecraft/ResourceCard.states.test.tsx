@@ -6,7 +6,7 @@ import { render, screen, cleanup } from '@testing-library/react'
 import { ResourceCard } from './ResourceCard'
 import { RESOURCE, job } from './__testing__/resourceView'
 
-const h = { onRefresh: vi.fn(), onCancel: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onToggleEnabled: vi.fn() }
+const h = { userId: 'user-1', onRefresh: vi.fn(), onCancel: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onToggleEnabled: vi.fn() }
 afterEach(cleanup)
 
 describe('ResourceCard states', () => {

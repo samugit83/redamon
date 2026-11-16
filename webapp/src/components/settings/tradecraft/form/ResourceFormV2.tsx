@@ -17,6 +17,7 @@ import { isValidValue, settingDef, specDefaults, type SettingValue } from '@/lib
 import { slugify } from '@/lib/tradecraft/slug'
 import { defaultStorageMode, forcedStorageMode } from '@/lib/tradecraft/storageModes'
 import { draftError, parseDraft } from '../dialog/draft'
+import { useEnabledImpactConfirm } from '../EnabledImpactAlert'
 import { CheckUrlButton } from './CheckUrlButton'
 import { ContentSection } from './ContentSection'
 import { CveSection } from './CveSection'
@@ -148,6 +149,7 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
   const [current, setCurrent] = useState<ResourceView | null>(resource)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const confirmEnabled = useEnabledImpactConfirm(userId)
   const { isDirty, setBaseline } = useDirtyState(draft)
   const { guardedNavigate } = useUnsavedChangesGuard(isDirty, { trackGlobal: false })
   useEffect(() => { setDraft(initial); setBaseline(initial) }, [initial, setBaseline])
@@ -217,6 +219,8 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
     if (!f.name.trim() || !f.url.trim()) return setError('Name and URL are required')
     if (!f.llmModel.trim()) return setError('Pick the model that ingests this resource')
     if (Object.keys(errors).length > 0) return setError('Some settings are out of range: see the marked fields')
+    // Enabled is the global switch: every project follows, after the alert (§3.4, R-140).
+    if (isEdit && f.enabled !== resource!.enabled && !(await confirmEnabled(resource!, f.enabled))) return
     setSubmitting(true)
     setError('')
     const overrides = overridesPayload(draft.overrides)

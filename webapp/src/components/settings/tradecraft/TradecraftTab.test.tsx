@@ -6,8 +6,9 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { ToastProvider } from '@/components/ui/Toast/Toast'
 
+const search = vi.hoisted(() => ({ value: 'tab=tradecraft' }))
 vi.mock('next/navigation', () => ({
-  useSearchParams: () => new URLSearchParams('tab=tradecraft'),
+  useSearchParams: () => new URLSearchParams(search.value),
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn(), prefetch: vi.fn() }),
   usePathname: () => '/settings',
 }))
@@ -39,6 +40,7 @@ const fetchMock = vi.fn()
 
 beforeEach(() => {
   vi.clearAllMocks()
+  search.value = 'tab=tradecraft'
   routes = { [`GET ${BASE}`]: { status: 200, body: [RES] } }
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const a = routes[`${init?.method ?? 'GET'} ${url}`] ?? { status: 200, body: [] }
@@ -224,6 +226,24 @@ describe('TradecraftTab and the 2.0 switch', () => {
     expect(await screen.findByText(/Saved: each resource uses the new settings/)).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: 'Configure ingestion' })).toBeNull()
     await waitFor(() => expect(calls('GET', BASE).length).toBeGreaterThan(listReads))
+  })
+
+  test('edit_link target: ?edit=<id> opens that resource\'s Edit form once the list is read (§3.4)', async () => {
+    search.value = 'tab=tradecraft&edit=r1'
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true } }
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    expect(await screen.findByRole('dialog', { name: 'Edit Tradecraft Resource' })).toBeInTheDocument()
+    expect((screen.getByPlaceholderText('HackTricks') as HTMLInputElement).value).toBe('Lab Wiki')
+  })
+
+  test('?edit= naming no resource of the account opens nothing', async () => {
+    search.value = 'tab=tradecraft&edit=nope'
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true } }
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    await screen.findByText('Stored')
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   test('a switch that cannot be read: the 1.x tab, without the switch', async () => {

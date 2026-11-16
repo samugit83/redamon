@@ -3,10 +3,12 @@ import type { Project } from '@prisma/client'
 import { useToast } from '@/components/ui'
 import { readApiError, toApiError } from '@/lib/apiError'
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
+import { postTradecraftCountsChanged } from '@/lib/tradecraft/channels'
 import { versionOf } from '@/lib/projectVersion'
 import { STALE_FIELD_NOTICE, isStaleSave } from '@/lib/projectFieldSave'
 
-export type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
+/** The project row as its GET answers it; `tradecraftOff` is the owner's resources turned off here (§3.4). */
+export type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'> & { tradecraftOff?: string[] }
 
 const SAVE_DEBOUNCE_MS = 500
 
@@ -92,6 +94,8 @@ export function useSettingsModal(projectId: string) {
             // Other windows of this project (the project form, another drawer) take the toggles.
             postUserSkillsChanged({ projectId })
           }
+          // The chat's counter badge reads its numbers again (§3.4).
+          if ('attackSkillConfig' in patch || 'tradecraftOff' in patch) postTradecraftCountsChanged({ projectId })
           return
         }
         const body = await res.json().catch(() => null)

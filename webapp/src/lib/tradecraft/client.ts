@@ -85,6 +85,8 @@ export const tradecraftClient = {
     }, "Couldn't save the summary"),
   regenerateSummary: (userId: string, id: string) =>
     fetchJson<{ job: JobView }>(`${one(userId, id)}/summary/regenerate`, { method: 'POST', headers: JSON_HEADERS, body: '{}' }, "Couldn't start the summary job"),
+  enabledImpact: (userId: string, id: string, next: boolean) =>
+    fetchJson<{ next: boolean; projects: number; turnedOffIn: number }>(`${one(userId, id)}/enabled-impact?next=${next}`, undefined, "Couldn't read which projects follow"),
   job: (userId: string, id: string) =>
     fetchJson<{ job: JobView | null }>(`${one(userId, id)}/jobs`, undefined, "Couldn't read the job"),
   cancel: (userId: string, id: string) =>
