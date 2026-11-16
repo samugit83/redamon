@@ -310,6 +310,8 @@ describe('messages', () => {
     expect(h.threads[0].userId).toBe('alice')
     expect(h.messages[0].actorId).toBe('admin')
     expect(h.agentBodies[0]).toMatchObject({ user_id: 'alice', actor_id: 'admin' })
+    // Q5: the acted account's model answers, never the admin's.
+    expect(h.readModelFor).toEqual(['alice'])
   })
 })
 

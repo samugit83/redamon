@@ -1,5 +1,5 @@
 /**
- * The AI Navigator tool callbacks (plan §7.7, §10.2 TB3 rows 10, 11, 12, 13, 29): the master key, a
+ * The AI Navigator tool callbacks (plan §7.7, §10.2 rows 5, 6, 9, 10, 11, 12, 13, 26, 29): the master key, a
  * live run's credential, every id from the run entry (never the body), and the fresh checks: the
  * person and the acting admin, every permission with the act-as intersection, the level, the owner's
  * policy, Root's switch, the tenant unchanged and the login still alive. A refusal is audited.
@@ -24,6 +24,9 @@ const h = vi.hoisted(() => ({
   actAsInForce: true,
   deviceRefusal: null as string | null,
   accessOpts: [] as unknown[],
+  accessSubjects: [] as string[],
+  execCalls: [] as Array<{ userId: string; projectId: string; cypher: string }>,
+  execResult: { records: [] } as { records: unknown[] },
 }))
 
 vi.mock('@/lib/prisma', () => ({ default: { project: { findUnique: async () => ({ roeSensitiveDataHandling: 'no_access' }) } } }))
@@ -40,7 +43,11 @@ vi.mock('@/lib/authz/can', () => ({
 }))
 vi.mock('@/lib/authz/projectAccess', async (orig) => ({
   ...(await orig<typeof import('@/lib/authz/projectAccess')>()),
-  projectAccess: async (_s: unknown, _p: string, opts: unknown) => { h.accessOpts.push(opts); return h.access },
+  projectAccess: async (s: { userId?: string; id?: string }, _p: string, opts: unknown) => {
+    h.accessSubjects.push(s.userId ?? s.id ?? '')
+    h.accessOpts.push(opts)
+    return h.access
+  },
 }))
 vi.mock('@/lib/navigator/switch', () => ({ navigatorEnabled: async () => h.enabled }))
 vi.mock('@/lib/authz/navigatorPolicy', async (orig) => ({
@@ -51,6 +58,13 @@ vi.mock('@/lib/authz/deviceSessions', () => ({ deviceSessionRefusal: async () =>
 vi.mock('@/lib/authz/actAs', () => ({ actAsBindingInForce: async () => h.actAsInForce }))
 vi.mock('@/lib/activationLock', () => ({ activationBusy: async () => false }))
 vi.mock('@/lib/audit', () => ({ writeAudit: async (e: Record<string, unknown>) => { h.audits.push(e) } }))
+vi.mock('@/lib/mcp/graphClient', async (orig) => ({
+  ...(await orig<typeof import('@/lib/mcp/graphClient')>()),
+  execCypher: async (userId: string, projectId: string, cypher: string) => {
+    h.execCalls.push({ userId, projectId, cypher })
+    return h.execResult
+  },
+}))
 vi.mock('@/lib/mcp/tools', async (orig) => ({
   ...(await orig<typeof import('@/lib/mcp/tools')>()),
   graphSummary: async (ctx: { token: { scopes: string[]; actingAs?: boolean } }, projectId: string) => {
@@ -106,6 +120,9 @@ beforeEach(() => {
   h.actAsInForce = true
   h.deviceRefusal = null
   h.accessOpts = []
+  h.accessSubjects = []
+  h.execCalls = []
+  h.execResult = { records: [] }
 })
 
 describe('who may call', () => {
@@ -183,6 +200,43 @@ describe('the call', () => {
     const res = await call(token, 'graph_summary')
     expect(await res.json()).toMatchObject({ ok: false, code })
     expect(h.handled).toEqual([])
+  })
+
+  test('raw Cypher on a Read share without Raw data is refused, says why, and never runs', async () => {
+    const { token } = start()
+    const res = await call(token, 'run_cypher', { args: { cypher: 'MATCH (s:Subdomain) RETURN s.name LIMIT 5' } })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ ok: false, code: 'tool_refused', message: expect.stringMatching(/Raw data & files/) })
+    expect(h.execCalls).toEqual([])
+  })
+
+  test('the query runs on the owner\'s tenant and the run\'s project; the person is the caller the limits count', async () => {
+    h.access = { project: { id: P, userId: 'owner' }, level: 'read', toggles: { rawData: true }, via: 'share' }
+    const { token } = start()
+    const res = await call(token, 'run_cypher', {
+      args: { cypher: 'MATCH (s:Subdomain) RETURN s.name LIMIT 5' }, projectId: 'cprojectOTHER000000000001', userId: 'mallory',
+    })
+    expect(res.status).toBe(200)
+    expect(h.execCalls).toEqual([{ userId: 'owner', projectId: P, cypher: 'MATCH (s:Subdomain) RETURN s.name LIMIT 5' }])
+    // The run's checks and mcpProjectAccess both ask for the person, never the owner, and the MCP
+    // context's token is the person's, so every rate bucket counts the person.
+    expect(h.accessSubjects.length).toBeGreaterThanOrEqual(2)
+    expect(new Set(h.accessSubjects)).toEqual(new Set(['alice']))
+    expect(h.canCalls.every((c) => c.who === 'alice')).toBe(true)
+  })
+
+  test('a row of another tenant in the result is discarded, never answered', async () => {
+    h.access = { project: { id: P, userId: 'owner' }, level: 'owner', toggles: { rawData: true }, via: 'owner' }
+    h.execResult = { records: [
+      { s: { _kind: 'node', labels: ['Subdomain'], properties: { name: 'a.example.test', user_id: 'owner', project_id: P } } },
+      { loot: { name: 'b.example.test', user_id: 'someone-else', project_id: 'cprojectOTHER000000000001' } },
+    ] }
+    const { token } = start()
+    const res = await call(token, 'run_cypher', { args: { cypher: 'MATCH (s:Subdomain) RETURN s LIMIT 5' } })
+    const text = await res.text()
+    expect(JSON.parse(text)).toMatchObject({ ok: false, code: 'tenant_violation' })
+    expect(text).not.toContain('b.example.test')
+    expect(text).not.toContain('a.example.test')
   })
 
   test('a revoked device session refuses', async () => {

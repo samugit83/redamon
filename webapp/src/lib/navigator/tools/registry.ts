@@ -169,14 +169,16 @@ const TOOLS: readonly NavigatorTool[] = [
     },
     description: 'What changed between two STORED scan versions: nodes added and removed per type. For "what changed ' +
       'since the last scan" compare the two newest versions from list_scan_versions. The live graph cannot be compared.',
+    // compareScanVersions trims a side, and a blank or `current` one means the live graph, which
+    // takes a snapshot slot version activation waits on: check and pass the trimmed value.
     check: (a) => {
       for (const side of ['from', 'to']) {
-        const v = str(a, side)
+        const v = str(a, side)?.trim()
         if (!v || v.toLowerCase() === 'current') return 'Compare two stored versions by id, from list_scan_versions; the live graph cannot be compared here.'
       }
       return null
     },
-    handler: (c, a) => compareScanVersions(c.mcp, c.projectId, { from: str(a, 'from'), to: str(a, 'to') }),
+    handler: (c, a) => compareScanVersions(c.mcp, c.projectId, { from: str(a, 'from')?.trim(), to: str(a, 'to')?.trim() }),
   },
   {
     name: 'recon_settings', route: 'records', permissions: ['recon:read'], mcpScopes: ['recon:read'], level: 'R',

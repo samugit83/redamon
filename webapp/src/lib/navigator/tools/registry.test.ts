@@ -8,6 +8,8 @@
  * @vitest-environment node
  */
 import { describe, test, expect, vi } from 'vitest'
+import { readdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
 
 class ProjectCheckReached extends Error {}
 
@@ -94,6 +96,23 @@ describe('the catalogue', () => {
     expect(both.ok && tool.check!(both.args)).toMatch(/stored versions/)
     const ok = validateArgs(tool.parameters, { from: 'v1', to: 'v2' })
     expect(ok.ok && tool.check!(ok.args)).toBeNull()
+  })
+
+  test.each([' current', 'current ', '\tcurrent', 'CURRENT', '   '])(
+    'compare_scan_versions: %j is the live graph to the MCP function (it trims), so it is refused', (side) => {
+      const tool = navigatorTool('compare_scan_versions')!
+      for (const args of [{ from: 'v1', to: side }, { from: side, to: 'v2' }]) {
+        const parsed = validateArgs(tool.parameters, args)
+        expect(parsed.ok && tool.check!(parsed.args)).toMatch(/stored versions/)
+      }
+    })
+
+  test('no Navigator module takes a graph snapshot slot (version activation waits on them)', () => {
+    const roots = ['src/lib/navigator', 'src/app/api/navigator', 'src/app/api/internal/navigator']
+    const files = roots.flatMap((r) => readdirSync(r, { recursive: true, encoding: 'utf8' })
+      .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f)).map((f) => path.join(r, f)))
+    expect(files.length).toBeGreaterThan(10)
+    for (const f of files) expect(readFileSync(f, 'utf8'), f).not.toMatch(/tryWithSnapshotSlot|captureGraphSnapshot|withSnapshotSlot/)
   })
 })
 

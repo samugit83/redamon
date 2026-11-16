@@ -22,6 +22,7 @@ import {
   readFeatureModel,
 } from './featureModels'
 import { AgentUnreachableError } from './agentFetch'
+import { FEATURE_IDS } from './llmFeatures'
 
 beforeEach(() => {
   mockFindUnique.mockReset()
@@ -107,6 +108,10 @@ describe('parseFeatureModelsPatch', () => {
     expect(plugin).toHaveProperty('error')
     expect(parseFeatureModelsPatch({ 'plugin:acme': 'gpt-5' }, { pluginFeatureIds: new Set(['plugin:acme']) }))
       .toEqual({ set: { 'plugin:acme': 'gpt-5' }, removed: [] })
+  })
+
+  test.each([...FEATURE_IDS])('Agent in the Loop is refused for %s', (id) => {
+    expect(parseFeatureModelsPatch({ [id]: 'loop/mcp' })).toHaveProperty('error')
   })
 })
 
