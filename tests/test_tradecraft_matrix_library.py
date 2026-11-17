@@ -103,7 +103,7 @@ def _sqlite_library() -> sqlite3.Connection:
     db.execute("INSERT INTO projects VALUES ('p-owner')")
     for user, rid, base in ((OWNER, "r-owner", 1), (OTHER, "r-other", 100)):
         db.execute("INSERT INTO user_tradecraft_resources VALUES (?, ?, 'hacktricks', 'https://example.invalid/', 2, "
-                   "'job-claim', 'ghp_fake_token_value', '{}', 0)", (rid, user))
+                   "'job-claim', 'ghp_fake_token_value', '{\"cookie\": \"session=never-in-a-snapshot\"}', 1)", (rid, user))
         db.execute("INSERT INTO tradecraft_page_ids VALUES (?, ?, 'https://example.invalid/a')", (base, rid))
         for gen in (1, 2):
             eid = base * 10 + gen
@@ -134,6 +134,9 @@ def test_the_snapshot_queries_read_the_owners_live_rows_only_without_claim_or_to
                 assert row["generation"] == 2  # the live generation only
         if table.name == "user_tradecraft_resources":
             assert rows[0]["active_job_id"] is None and rows[0]["github_token_override"] == ""
+            # No site login of any kind: cookies, headers and basic auth all live in this column.
+            assert rows[0]["credentials"] == "{}" and not rows[0]["has_login"]
+            assert "never-in-a-snapshot" not in json.dumps(rows)
             assert rows[0]["id"] == "r-owner"
 
 
@@ -269,13 +272,13 @@ def test_snapshot_writes_the_files_and_the_stamp(tmp_path):
 
 def test_snapshot_has_no_claim_and_no_job(tmp_path):
     folder = tmp_path / "library"
-    library.snapshot(FakePsql(out_lines=_stream()), "o@e2e.local", folder=folder, log=lambda s: None,
+    library.snapshot(FakePsql(out_lines=_stream()), library.LIBRARY_OWNER, folder=folder, log=lambda s: None,
                      commit="c1", code_hash="h1")
     before = sorted(p.name for p in folder.iterdir())
     # A running job refuses the snapshot, and the previous one stays as it was.
     fake = FakePsql(out_lines=_stream()[:3], code=3, err="tc_e2e_unfinished_job: the e2e owner has an unfinished ingestion job")
     logs = []
-    assert library.snapshot(fake, "o@e2e.local", folder=folder, log=logs.append, commit="c2", code_hash="h2") == library.EXIT_FAILED
+    assert library.snapshot(fake, library.LIBRARY_OWNER, folder=folder, log=logs.append, commit="c2", code_hash="h2") == library.EXIT_FAILED
     assert "unfinished ingestion job" in logs[-1] and "previous snapshot is kept" in logs[-1]
     assert sorted(p.name for p in folder.iterdir()) == before and library.read_stamp(folder)["commit"] == "c1"
     script = fake.scripts[0].decode()
@@ -288,7 +291,7 @@ def test_a_snapshot_missing_a_table_section_is_refused(tmp_path):
     stream = _stream()
     cut = [ln for ln in stream if not ln.startswith(library.MARK_B + b"tradecraft_user_settings")]
     logs = []
-    code = library.snapshot(FakePsql(out_lines=cut), "o@e2e.local", folder=tmp_path / "library", log=logs.append,
+    code = library.snapshot(FakePsql(out_lines=cut), library.LIBRARY_OWNER, folder=tmp_path / "library", log=logs.append,
                             commit="c", code_hash="h")
     assert code == library.EXIT_FAILED and not (tmp_path / "library").exists()
 
@@ -299,7 +302,7 @@ def test_a_snapshot_missing_a_table_section_is_refused(tmp_path):
 
 def _snapshot(tmp_path, owner=OWNER):
     folder = tmp_path / "library"
-    library.snapshot(FakePsql(out_lines=_stream(), owner=owner), "o@e2e.local", folder=folder, log=lambda s: None,
+    library.snapshot(FakePsql(out_lines=_stream(), owner=owner), library.LIBRARY_OWNER, folder=folder, log=lambda s: None,
                      commit="c", code_hash="h")
     return folder, library.read_stamp(folder)
 
@@ -359,7 +362,7 @@ def test_restore_streams_the_files_and_reports_success(tmp_path):
     folder, _ = _snapshot(tmp_path)
     fake = FakePsql()
     logs = []
-    assert library.restore(fake, "o@e2e.local", folder=folder, log=logs.append) == library.EXIT_OK
+    assert library.restore(fake, library.LIBRARY_OWNER, folder=folder, log=logs.append) == library.EXIT_OK
     sent = fake.scripts[0]
     data = (folder / "tradecraft_entries.copy").read_bytes()
     assert b"COPY tc_e2e_restore_tradecraft_entries" in sent and data in sent
@@ -372,10 +375,10 @@ def test_restore_refuses_a_changed_file_before_touching_the_database(tmp_path):
     (folder / "tradecraft_sections.copy").write_bytes(b"tampered\n")
     fake = FakePsql()
     logs = []
-    assert library.restore(fake, "o@e2e.local", folder=folder, log=logs.append) == library.EXIT_FAILED
+    assert library.restore(fake, library.LIBRARY_OWNER, folder=folder, log=logs.append) == library.EXIT_FAILED
     assert fake.scripts == [] and fake.queries == []
     assert "tradecraft_sections.copy does not match" in logs[-1]
-    assert library.restore(FakePsql(), "o@e2e.local", folder=tmp_path / "none", log=logs.append) == library.EXIT_NO_SNAPSHOT
+    assert library.restore(FakePsql(), library.LIBRARY_OWNER, folder=tmp_path / "none", log=logs.append) == library.EXIT_NO_SNAPSHOT
 
 
 def test_restore_refuses_a_column_the_database_no_longer_has(tmp_path):
@@ -383,7 +386,7 @@ def test_restore_refuses_a_column_the_database_no_longer_has(tmp_path):
     cols = {k: [c for c in v if c != "title"] for k, v in COLUMNS.items()}
     fake = FakePsql(columns=cols)
     logs = []
-    assert library.restore(fake, "o@e2e.local", folder=folder, log=logs.append) == library.EXIT_FAILED
+    assert library.restore(fake, library.LIBRARY_OWNER, folder=folder, log=logs.append) == library.EXIT_FAILED
     assert fake.scripts == [] and "no longer has title" in logs[-1]
 
 
@@ -391,7 +394,7 @@ def test_a_failed_restore_says_nothing_changed(tmp_path):
     folder, _ = _snapshot(tmp_path)
     logs = []
     fake = FakePsql(code=3, err="duplicate key value violates unique constraint")
-    assert library.restore(fake, "o@e2e.local", folder=folder, log=logs.append) == library.EXIT_FAILED
+    assert library.restore(fake, library.LIBRARY_OWNER, folder=folder, log=logs.append) == library.EXIT_FAILED
     assert "nothing changed" in logs[-1]
 
 
@@ -549,8 +552,16 @@ class FakeWebapp:
                 "hasLogin": "credentials" in body, "mapVersion": 3,
                 "entryCount": max(int(exp.get("min_entries", 1)), 1) + 5,
                 "report": {"stored": {"pages": int(exp.get("min_stored_pages") or 0) + 1}, "readiness": {"a": 80},
-                           "focus": {"mode": (spec.get("focus") or {}).get("mode", "everything")}},
+                           "focus": self._agent_focus(spec)},
                 "job": {"status": "queued", "stage": "", "progress": {}}, "_left": self.polls}
+
+    @staticmethod
+    def _agent_focus(spec):
+        """The report's focus as the agent writes it (ingest/focus.py): Tag only is "tag_only"."""
+        mode = (spec.get("focus") or {}).get("mode", "everything")
+        if mode == "everything":
+            return {}
+        return {"mode": {"tagOnly": "tag_only"}.get(mode, mode)}
 
     def call(self, method, path, body=None, *, headers=None, timeout=None):
         self.calls.append((method, path, body))
@@ -560,7 +571,11 @@ class FakeWebapp:
         if "/llm-providers/" in path and path.endswith("/test"):
             return R(200, {"ok": True})
         if path == "/api/models":
-            return R(200, self.models or {})
+            loop = {"Agent in the Loop": [{"id": "loop/claude-code"}]}
+            if not (body or {}).get("userId"):
+                return R(200, loop)  # the route's agent call gets providers: null
+            assert body["userId"] == "u-owner"
+            return R(200, {**loop, **(self.models or {})})
         if path.endswith("/settings") or path.endswith("/tradecraft-settings"):
             return R(200, {})
         if path.endswith("/check-url"):
@@ -682,3 +697,149 @@ def test_plan_starts_nothing(capsys):
     assert not seed.called and not popen.called
     out = capsys.readouterr().out
     assert out.count(": Check URL {") == 9 and out.count("focus preview") == 1 and "cookie=fake-session" in out
+
+
+# --------------------------------------------------------------------------------------
+# Only the e2e accounts, only folders this script made (the review of d277913c)
+# --------------------------------------------------------------------------------------
+
+def test_the_seed_refuses_any_address_but_the_e2e_accounts():
+    assert set(SCN["accounts"].values()) <= runner.E2E_ACCOUNTS
+    assert all(e.endswith("@e2e.local") for e in runner.E2E_ACCOUNTS) and len(runner.E2E_ACCOUNTS) == 3
+    ran = []
+
+    def fake_exec(argv, **kw):
+        ran.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout='TC_E2E_IDS={"owner": "u1"}\n', stderr="")
+
+    for emails in ({"owner": "alice@example.com"}, {"owner": "tc-e2e-owner@e2e.local", "ops": "admin@redamon.local"},
+                   {"owner": "TC-E2E-OWNER@e2e.local"}):
+        with pytest.raises(ValueError, match="not one of the synthetic e2e accounts"):
+            runner.seed_accounts(emails, report.Redactor(), run=fake_exec)
+    assert ran == []  # refused before the webapp container is reached
+    runner.seed_accounts({"owner": "tc-e2e-owner@e2e.local"}, report.Redactor(), run=fake_exec)
+    assert len(ran) == 1
+
+
+def test_snapshot_and_restore_take_the_e2e_owner_only(tmp_path):
+    folder, _ = _snapshot(tmp_path)
+    for email in ("alice@example.com", "tc-e2e-ops@e2e.local", "tc-e2e-collab@e2e.local", ""):
+        fake, logs = FakePsql(out_lines=_stream()), []
+        assert library.snapshot(fake, email, folder=tmp_path / "other", log=logs.append,
+                                commit="c", code_hash="h") == library.EXIT_FAILED
+        assert library.restore(fake, email, folder=folder, log=logs.append) == library.EXIT_FAILED
+        assert fake.queries == [] and fake.scripts == [] and all("refused" in m for m in logs)
+    assert not (tmp_path / "other").exists()
+    # A snapshot of another account's library is never restored, even into the e2e owner's.
+    stamp = json.loads((folder / library.STAMP).read_text())
+    stamp["owner_email"] = "alice@example.com"
+    (folder / library.STAMP).write_text(json.dumps(stamp))
+    fake, logs = FakePsql(), []
+    assert library.restore(fake, library.LIBRARY_OWNER, folder=folder, log=logs.append) == library.EXIT_FAILED
+    assert fake.queries == [] and fake.scripts == [] and "'alice@example.com''s library" in logs[-1]
+    # Nor a library under any other address, even with a stamp naming that address.
+    fake, logs = FakePsql(), []
+    assert library.restore(fake, "alice@example.com", folder=folder, log=logs.append) == library.EXIT_FAILED
+    assert fake.queries == [] and fake.scripts == [] and "is not the e2e library's owner" in logs[-1]
+    # No option names another account.
+    with pytest.raises(SystemExit):
+        library.main(["restore", "--owner-email", "alice@example.com"])
+
+
+def test_restore_writes_the_cards_fake_login_back(tmp_path):
+    folder, stamp = _snapshot(tmp_path)
+    stamp["resources"] = [{"slug": "ired-team"}, {"slug": "hacktricks"}]
+    sql = _sql(library.restore_parts(stamp, OWNER, folder, login_slug="ired-team"))
+    fake = json.dumps(library.FAKE_CREDENTIALS)
+    assert fake == '{"cookie": "cookie=fake-session", "headers": [], "basic_auth": null}'
+    update = (f"UPDATE user_tradecraft_resources SET credentials = '{fake}'::jsonb, has_login = true "
+              f"WHERE user_id = '{OWNER}' AND slug = 'ired-team';")
+    assert update in sql and sql.index("INSERT INTO user_tradecraft_resources") < sql.index(update) < sql.index("COMMIT;")
+    assert "tc_e2e_no_login_resource" in sql  # the snapshot has it: the restore fails without it
+    stamp["resources"] = [{"slug": "hacktricks"}]
+    assert "tc_e2e_no_login_resource" not in _sql(library.restore_parts(stamp, OWNER, folder, login_slug="ired-team"))
+    assert "SET credentials" not in _sql(library.restore_parts(stamp, OWNER, folder))
+    # The value is the card's, never one from a file: library.yaml may hold only that one.
+    other = json.loads(json.dumps(LIB))
+    other["fake_login"] = {"cookie": "session=a-real-one"}
+    assert any("fake_login" in p for p in library.library_problems(other))
+    # The command line restores with the login resource of scenarios.yaml.
+    with mock.patch.object(library, "restore", return_value=0) as restore:
+        assert library.main(["restore", "--dir", str(folder)]) == 0
+    assert restore.call_args.kwargs["login_slug"] == SCN["library"]["login_resource"]
+    assert restore.call_args.args[1] == library.LIBRARY_OWNER
+
+
+def _tree(root: Path, files: dict) -> None:
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+def _listing(root: Path) -> list:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+def test_snapshot_never_removes_a_folder_it_did_not_make(tmp_path):
+    lib_folder, _ = _snapshot(tmp_path / "e2e")
+    _tree(tmp_path / "e2e", {"runs/2026-11-17/report.md": "r", "library-build.json": "{}"})
+    _tree(tmp_path / "repo", {".git/HEAD": "ref", "README.md": "x", "_local/plan.md": "p"})
+    _tree(tmp_path / "mixed", {"tradecraft_entries.copy": "", "stamp.json": json.dumps({"format": 1, "tables": {}}),
+                               "notes.txt": "mine"})
+    (tmp_path / "empty").mkdir()
+    _tree(tmp_path / "x", {".library.new/notes.txt": "mine"})  # a leftover sibling that is not ours
+    before = _listing(tmp_path)
+    for folder in (tmp_path / "e2e", tmp_path / "repo", tmp_path / "mixed", tmp_path / "empty", tmp_path / "x" / "library",
+                   tmp_path / "e2e" / "library-build.json"):
+        fake, logs = FakePsql(out_lines=_stream()), []
+        code = library.snapshot(fake, library.LIBRARY_OWNER, folder=folder, log=logs.append, commit="c", code_hash="h")
+        assert code == library.EXIT_FAILED and "nothing was changed" in logs[-1], (folder, logs)
+        assert fake.queries == [] and fake.scripts == []
+    assert _listing(tmp_path) == before
+    # The checkout itself and its folders, read only: never a snapshot folder.
+    assert library.snapshot_folder_problem(REPO) and library.snapshot_folder_problem(REPO / "tooling")
+    # The guard holds at the removal too, whoever calls it.
+    with pytest.raises(RuntimeError):
+        library._remove(tmp_path / "repo")
+    with pytest.raises(RuntimeError):
+        library._swap_in(lib_folder, tmp_path / "mixed")
+    assert _listing(tmp_path) == before
+    # A snapshot folder it made is replaced, and nothing beside it is touched.
+    fake = FakePsql(out_lines=_stream())
+    assert library.snapshot(fake, library.LIBRARY_OWNER, folder=lib_folder, log=lambda s: None, commit="c2",
+                            code_hash="h") == library.EXIT_OK
+    assert library.read_stamp(lib_folder)["commit"] == "c2" and (tmp_path / "e2e" / "runs/2026-11-17/report.md").exists()
+
+
+# --------------------------------------------------------------------------------------
+# The models the account may pick; the agent's spelling of the focus (the review of d277913c)
+# --------------------------------------------------------------------------------------
+
+def test_model_ids_name_the_account_as_the_route_requires(capsys):
+    web = FakeWebapp(providers=[], models={"My provider": [{"id": "openai/gpt-x"}]})
+    assert library.model_ids(web, "u-owner") == ["openai/gpt-x"]
+    assert ("POST", "/api/models", {"userId": "u-owner"}) in web.calls
+    # An instance provider the install offers meets MC-9; so does the account's own.
+    offered = FakeWebapp(providers=[], models={"Shared": [{"id": "instance/p9/model-y"}]})
+    assert library.provider_problem(offered, "u-owner") is None
+    own = FakeWebapp(providers=[{"id": "p1"}], models={"Mine": [{"id": "anthropic/model-z"}]})
+    assert library.provider_problem(own, "u-owner") is None
+    assert any(c[1] == "/api/users/u-owner/llm-providers/p1/test" for c in own.calls)
+    with mock.patch.object(library, "_owner_session", return_value=(offered, "u-owner")):
+        assert library.main(["models"]) == library.EXIT_OK
+    assert capsys.readouterr().out.split() == ["instance/p9/model-y"]
+
+
+def test_the_focus_check_reads_the_agents_spelling():
+    source = (REPO / "agentic/tradecraft/ingest/focus.py").read_text(encoding="utf-8")
+    assert 'MODES = ("everything", "focused", "tag_only")' in source
+    assert library.AGENT_FOCUS_MODES == ("everything", "focused", "tag_only")
+    assert [library.focus_mode(m) for m in ("tagOnly", "tag_only", "Focused", "", None, "x")] == [
+        "tag_only", "tag_only", "focused", "everything", "everything", "everything"]
+    patt = next(s for s in LIB["resources"] if s["slug"] == "payloadsallthethings")
+    view = {"resourceType": "github-repo", "entryCount": 400, "storageMode": "stored", "hasLogin": False,
+            "report": {"stored": {"pages": 300}, "readiness": {"a": 1}, "focus": {"mode": "tag_only"}}}
+    assert all(c.ok for c in library.judge(patt, view, {"status": "succeeded"}))
+    wrong = dict(view, report={**view["report"], "focus": {}})
+    assert [c.name for c in library.judge(patt, wrong, {"status": "succeeded"}) if not c.ok] == ["focus_applied"]

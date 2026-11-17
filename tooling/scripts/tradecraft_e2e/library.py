@@ -19,11 +19,13 @@ then per resource runs Check URL, the focus preview where ``library.yaml`` asks 
 Add, waits for the jobs (two at a time, as the agent runs them) and judges each report. It
 resumes: a resource already built is judged again, never added twice.
 
-``snapshot`` copies that user's rows of every tradecraft table but the jobs, in one read-only
-transaction, with no claim and no GitHub token, plus a stamp (the commit, a hash of the
-ingestion code, the columns, row counts and checksums). ``restore`` deletes the user's
-tradecraft rows and copies the files back in one transaction, then moves the four
-autoincrement sequences past the restored ids. The snapshot holds third-party pages: it
+``snapshot`` copies the e2e owner's rows of every tradecraft table but the jobs, in one
+read-only transaction, with no claim, no GitHub token and no site login, plus a stamp (the
+commit, a hash of the ingestion code, the columns, row counts and checksums). ``restore``
+deletes that owner's tradecraft rows and copies the files back in one transaction, writes
+the card's fake login back on the S2/S3 resource, then moves the four autoincrement
+sequences past the restored ids. Both accept the e2e owner ``tc-e2e-owner@e2e.local`` only,
+and replace or remove only a folder they made. The snapshot holds third-party pages: it
 stays under ``_local/`` and is never committed (D-40).
 
 Standard library only, host Python 3. The database is reached through ``psql`` in its
@@ -66,10 +68,20 @@ STAMP_FORMAT = 1
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_STACK, EXIT_MC9, EXIT_NO_SNAPSHOT = 0, 1, 2, 3, 4, 5
 
+# The one account whose library this script builds, freezes and replaces: restore deletes a
+# whole library, so no other address is accepted, whatever scenarios.yaml says.
+LIBRARY_OWNER = "tc-e2e-owner@e2e.local"
+# The card's fake login of the S2/S3 resource. A snapshot holds no login at all; restore
+# writes this one back on that resource, in the shape the add stores (v2/fields.ts).
+FAKE_COOKIE = "cookie=fake-session"
+FAKE_CREDENTIALS = {"cookie": FAKE_COOKIE, "headers": [], "basic_auth": None}
+
 # agentContract.ts: SITE_TYPES, STORAGE_MODES, SLUG_RE, the focus modes (focus.ts).
 SITE_TYPES = ("mkdocs-wiki", "sphinx-docs", "gitbook", "github-repo", "cve-poc-db", "pdf", "agentic-crawl")
 STORAGE_MODES = ("live", "stored")
 FOCUS_MODES = ("everything", "focused", "tagOnly")
+# The same modes as the agent spells them in its report (ingest/focus.py MODES).
+AGENT_FOCUS_MODES = ("everything", "focused", "tag_only")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,199}$")
 JOB_ENDED = ("succeeded", "failed", "cancelled")
 # Check URL waits for the agent's 60 s deadline, the focus preview for its 120 s, each plus a margin.
@@ -109,9 +121,11 @@ _OWNED = "t.resource_id IN (SELECT o.id FROM user_tradecraft_resources o WHERE o
 _LIVE = "t.generation = (SELECT o.generation FROM user_tradecraft_resources o WHERE o.id = t.resource_id)"
 
 TABLES: tuple = (
-    # No claim (a restored library never holds one) and no GitHub token (the snapshot is a file).
+    # No claim (a restored library never holds one), and no secret: the snapshot is a file, so
+    # no GitHub token and no site login (cookies, headers, basic auth) reach it.
     Table("user_tradecraft_resources", "t.user_id = {owner}", owner_columns=("user_id",),
-          written={"active_job_id": "NULL", "github_token_override": "''"}),
+          written={"active_job_id": "NULL", "github_token_override": "''", "credentials": "'{}'",
+                   "has_login": "false"}),
     Table("tradecraft_page_ids", _OWNED, serial=True),
     # search_vector is filled by the BEFORE INSERT trigger of apply-tradecraft-search.mjs.
     Table("tradecraft_entries", "t.user_id = {owner} AND " + _LIVE, owner_columns=("user_id",),
@@ -141,6 +155,7 @@ ERROR_TEXT = {
     "tc_e2e_rows_differ": "a snapshot file did not load whole",
     "tc_e2e_no_search_vector": "the search trigger did not fill the restored rows (apply-tradecraft-search.mjs)",
     "tc_e2e_no_sequence": "a restored table has no autoincrement sequence",
+    "tc_e2e_no_login_resource": "the login resource of S2 and S3 did not get its fake login",
 }
 
 
@@ -209,7 +224,19 @@ def sequence_sql(table: str) -> str:
 Part = Union[str, Path]
 
 
-def restore_parts(stamp: Mapping, owner_id: str, folder: Path) -> list:
+def login_sql(owner_id: str, slug: str, required: bool) -> str:
+    """The card's fake login on the S2/S3 resource, which the snapshot holds without one; when
+    the snapshot has that resource, the restore fails unless it got it."""
+    o, s = runner.lit(owner_id), runner.lit(slug)
+    sql = (f"UPDATE user_tradecraft_resources SET credentials = {runner.lit(json.dumps(FAKE_CREDENTIALS))}::jsonb, "
+           f"has_login = true WHERE user_id = {o} AND slug = {s};\n")
+    if required:
+        sql += (f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM user_tradecraft_resources WHERE user_id = {o} AND slug = {s} "
+                "AND has_login) THEN RAISE EXCEPTION 'tc_e2e_no_login_resource'; END IF; END $$;\n")
+    return sql
+
+
+def restore_parts(stamp: Mapping, owner_id: str, folder: Path, login_slug: Optional[str] = None) -> list:
     """The restore as one script for ``psql -f -``: SQL text, and the snapshot's files where a
     ``COPY ... FROM STDIN`` reads its rows. One transaction from BEGIN to COMMIT; with
     ``ON_ERROR_STOP`` any error ends psql before COMMIT, and nothing changes."""
@@ -242,6 +269,9 @@ def restore_parts(stamp: Mapping, owner_id: str, folder: Path) -> list:
                 parts.append(f"UPDATE {temp} SET {qi(col)} = {o} WHERE {qi(col)} = {runner.lit(old)};\n")
         where = f" WHERE {table.keep_if}" if table.keep_if else ""
         parts.append(f"INSERT INTO {table.name} ({cols}) SELECT {cols} FROM {temp} r{where};\n")
+    if login_slug:
+        restored = {str(r.get("slug")) for r in stamp.get("resources") or [] if isinstance(r, dict)}
+        parts.append(login_sql(owner_id, login_slug, required=login_slug in restored))
     parts += [sequence_sql(t.name) for t in TABLES if t.serial]
     parts.append(
         "DO $$ BEGIN IF EXISTS (SELECT 1 FROM tradecraft_entries WHERE user_id = " + o + " AND search_vector IS NULL) "
@@ -469,19 +499,70 @@ class Splitter:
         self._finish()
 
 
-def _private_dir(path: Path) -> None:
+SNAPSHOT_FILES = frozenset({STAMP} | {f"{t.name}.copy" for t in TABLES})
+
+
+def snapshot_folder_problem(folder: Path, *, stamp_required: bool = True) -> Optional[str]:
+    """Why ``folder`` may not be replaced or removed, or None. Only a folder this script made may
+    be: absent, or holding nothing but a snapshot's files (the snapshot itself also its stamp).
+    A parent folder, a checkout or any other folder is refused, whatever ``--dir`` names."""
+    if not os.path.lexists(folder):
+        return None
+    if folder.is_symlink() or not folder.is_dir():
+        return f"{folder} is not a folder this script made (a file or a link): nothing was changed"
+    foreign = sorted(p.name for p in folder.iterdir() if p.name not in SNAPSHOT_FILES or p.is_symlink() or not p.is_file())
+    if foreign:
+        more = ", ..." if len(foreign) > 5 else ""
+        return f"{folder} holds what a snapshot never writes ({', '.join(foreign[:5])}{more}): nothing was changed"
+    if stamp_required:
+        stamp = read_stamp(folder)
+        if not stamp or stamp.get("format") != STAMP_FORMAT or not isinstance(stamp.get("tables"), dict):
+            return f"{folder} holds no stamp of this script: not a snapshot folder, nothing was changed"
+    return None
+
+
+def _work_folders(folder: Path) -> tuple:
+    return folder.parent / f".{folder.name}.new", folder.parent / f".{folder.name}.old"
+
+
+def folders_problem(folder: Path) -> Optional[str]:
+    """The snapshot folder and its two working siblings, all checked before anything is written."""
+    new, old = _work_folders(folder)
+    return (snapshot_folder_problem(folder) or snapshot_folder_problem(new, stamp_required=False)
+            or snapshot_folder_problem(old, stamp_required=False))
+
+
+def _remove(path: Path, *, stamp_required: bool = False) -> None:
+    """Removes a folder only when it is one this script made (checked again at the removal)."""
+    problem = snapshot_folder_problem(path, stamp_required=stamp_required)
+    if problem:
+        raise RuntimeError(problem)
     shutil.rmtree(path, ignore_errors=True)
+
+
+def _private_dir(path: Path) -> None:
+    _remove(path)
     path.mkdir(parents=True, mode=0o700)
 
 
 def _swap_in(new: Path, target: Path) -> None:
     """The new snapshot replaces the old one only once it is whole."""
-    old = target.parent / f".{target.name}.old"
-    shutil.rmtree(old, ignore_errors=True)
-    if target.exists():
+    _, old = _work_folders(target)
+    _remove(old)
+    if os.path.lexists(target):
+        problem = snapshot_folder_problem(target)
+        if problem:
+            raise RuntimeError(problem)
         target.rename(old)
     new.rename(target)
-    shutil.rmtree(old, ignore_errors=True)
+    _remove(old)
+
+
+def library_owner_problem(email: str) -> Optional[str]:
+    """Snapshot and restore read or replace one library only: the e2e owner's."""
+    if email != LIBRARY_OWNER:
+        return f"{email!r} is not the e2e library's owner {LIBRARY_OWNER}: no other account's library is read or replaced"
+    return runner.e2e_account_problem(email)
 
 
 def now_iso() -> str:
@@ -490,6 +571,11 @@ def now_iso() -> str:
 
 def snapshot(psql: Psql, owner_email: str, *, folder: Path = SNAPSHOT_DIR, log: Callable[[str], None] = print,
              commit: Optional[str] = None, code_hash: Optional[str] = None) -> int:
+    # Both before the database is read and before anything on disk is touched.
+    problem = library_owner_problem(owner_email) or folders_problem(folder)
+    if problem:
+        log(f"snapshot: refused: {problem}")
+        return EXIT_FAILED
     owner_id = owner_id_of(psql, owner_email)
     if not owner_id:
         log(f"snapshot: no account {owner_email}: build the library first")
@@ -500,14 +586,14 @@ def snapshot(psql: Psql, owner_email: str, *, folder: Path = SNAPSHOT_DIR, log: 
         log(f"snapshot: the database has no {', '.join(missing)}: is the plan's schema pushed?")
         return EXIT_FAILED
     summary = library_summary(psql, owner_id)
-    new = folder.parent / f".{folder.name}.new"
+    new, _ = _work_folders(folder)
     _private_dir(new)
     splitter = Splitter(new)
     code, err = psql.run([snapshot_script(columns, owner_id).encode()], on_line=splitter.line)
     splitter.close()
     absent = [t.name for t in TABLES if t.name not in splitter.meta]
     if code != 0 or splitter.problem or absent:
-        shutil.rmtree(new, ignore_errors=True)
+        _remove(new)
         why = err or splitter.problem or f"no rows section for {', '.join(absent)}"
         log(f"snapshot: refused, the previous snapshot is kept: {why}")
         return EXIT_FAILED
@@ -534,11 +620,20 @@ def snapshot(psql: Psql, owner_email: str, *, folder: Path = SNAPSHOT_DIR, log: 
     return EXIT_OK
 
 
-def restore(psql: Psql, owner_email: str, *, folder: Path = SNAPSHOT_DIR, log: Callable[[str], None] = print) -> int:
+def restore(psql: Psql, owner_email: str, *, folder: Path = SNAPSHOT_DIR, log: Callable[[str], None] = print,
+            login_slug: Optional[str] = None) -> int:
+    """``login_slug``: the resource that gets the card's fake login back (S2, S3)."""
+    problem = library_owner_problem(owner_email)
+    if problem:
+        log(f"restore: refused: {problem}")
+        return EXIT_FAILED
     stamp = read_stamp(folder)
     if stamp is None:
         log(f"restore: no snapshot in {folder}: build the library and snapshot it first")
         return EXIT_NO_SNAPSHOT
+    if stamp.get("owner_email") != owner_email:
+        log(f"restore: refused: the snapshot is {stamp.get('owner_email')!r}'s library, not {owner_email!r}'s")
+        return EXIT_FAILED
     if stamp.get("format") != STAMP_FORMAT:
         log(f"restore: the snapshot's format {stamp.get('format')!r} is not {STAMP_FORMAT}: snapshot again")
         return EXIT_FAILED
@@ -557,7 +652,7 @@ def restore(psql: Psql, owner_email: str, *, folder: Path = SNAPSHOT_DIR, log: C
             log(f"restore: {table.name} no longer has {', '.join(gone)}: rebuild the library")
             return EXIT_FAILED
     started = time.monotonic()
-    code, err = psql.run(stream_parts(restore_parts(stamp, owner_id, folder)))
+    code, err = psql.run(stream_parts(restore_parts(stamp, owner_id, folder, login_slug)))
     if code != 0:
         log(f"restore: failed, nothing changed (exit {code}): {err}")
         return EXIT_FAILED
@@ -602,8 +697,8 @@ def library_problems(lib: Any) -> list:
             problems.append(f"{slug}: focus.mode is one of {', '.join(FOCUS_MODES)}")
         if spec.get("preview") and focus.get("mode") not in ("focused", "tagOnly"):
             problems.append(f"{slug}: a focus preview needs a Focused or Tag only focus")
-    if not isinstance((lib.get("fake_login") or {}).get("cookie"), str):
-        problems.append("library.yaml has no fake_login.cookie")
+    if lib.get("fake_login") != {"cookie": FAKE_COOKIE}:
+        problems.append(f"library.yaml's fake_login is the card's fake value only: {{cookie: {FAKE_COOKIE}}}")
     return problems
 
 
@@ -679,6 +774,14 @@ def preview_body(spec: Mapping, model: str, entries: Sequence[Mapping]) -> dict:
             "entries": [{"url": e["url"], "title": str(e.get("title", ""))[:300]} for e in entries[:PREVIEW_ENTRIES]]}
 
 
+def focus_mode(raw: Any) -> str:
+    """A focus mode as the agent spells it (``ingest/focus.py`` ``mode_of``): the form and the
+    database write ``tagOnly``, the agent's report ``tag_only``."""
+    key = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    key = "tag_only" if key == "tagonly" else key
+    return key if key in AGENT_FOCUS_MODES else "everything"
+
+
 def judge(spec: Mapping, view: Mapping, job: Optional[Mapping]) -> list:
     """The build's checks on one resource: its job, type, map size, storage, readiness, login
     and focus (counts and names only)."""
@@ -702,9 +805,9 @@ def judge(spec: Mapping, view: Mapping, job: Optional[Mapping]) -> list:
     if exp["type"] != "cve-poc-db":
         readiness = rep.get("readiness") or {}
         out.append(report.CheckResult("readiness", bool(readiness), json.dumps(readiness, sort_keys=True)))
-    mode = (spec.get("focus") or {}).get("mode", "everything")
+    mode = focus_mode((spec.get("focus") or {}).get("mode"))
     if mode != "everything":
-        got = (rep.get("focus") or {}).get("mode")
+        got = focus_mode((rep.get("focus") or {}).get("mode"))
         out.append(report.CheckResult("focus_applied", got == mode, json.dumps(rep.get("focus") or {}, sort_keys=True)))
     return out
 
@@ -741,10 +844,11 @@ class Outcome:
         return self
 
 
-def model_ids(http: runner.Http) -> list:
+def model_ids(http: runner.Http, uid: str) -> list:
     """The model ids the account may pick (its own providers' and any instance provider's),
-    without Agent in the Loop's."""
-    res = http.call("POST", "/api/models", {}, timeout=90)
+    without Agent in the Loop's. The route lists them only for a body naming the account
+    (``api/models/route.ts``); it reads the signed-in person's, whatever the id says."""
+    res = http.call("POST", "/api/models", {"userId": uid}, timeout=90)
     groups = res.data if res.ok and isinstance(res.data, dict) else {}
     ids = []
     for items in groups.values():
@@ -762,7 +866,7 @@ def provider_problem(http: runner.Http, uid: str) -> Optional[str]:
     if own:
         test = http.call("POST", f"/api/users/{uid}/llm-providers/{own[0].get('id')}/test", {}, timeout=120)
         return None if test.ok else f"the account's model provider test answered {test.status} {test.code}"
-    if model_ids(http):
+    if model_ids(http, uid):
         return None
     return "the account has no model provider (MC-9: a person adds one acting as it; nothing copies a key)"
 
@@ -949,6 +1053,10 @@ def _write_private(path: Path, data: Any) -> None:
 # --------------------------------------------------------------------------------------
 
 def _owner_session(scn: Mapping, redact: report.Redactor, log: runner.Log) -> tuple:
+    """The e2e owner signed in, after the seed (which refuses any address but the e2e accounts)."""
+    problem = library_owner_problem(scn["accounts"]["owner"])
+    if problem:
+        raise ValueError(problem)
     env = runner.read_env(REPO / ".env", redact)
     stack = runner.Stack(env, redact, log)
     if not runner._wait_http(stack.webapp + "/api/health", 10):
@@ -987,6 +1095,9 @@ def cmd_build(lib: Mapping, scn: Mapping, model: str, log: runner.Log, redact: r
     started = now_iso()
     try:
         http, uid = _owner_session(scn, redact, log)
+    except ValueError as exc:
+        log(f"build: refused: {exc}")
+        return EXIT_USAGE
     except (ConnectionError, RuntimeError) as exc:
         log(f"build: {exc}")
         return EXIT_STACK
@@ -994,7 +1105,7 @@ def cmd_build(lib: Mapping, scn: Mapping, model: str, log: runner.Log, redact: r
     if problem:
         log(f"build: pending (MC-9): {problem}")
         return EXIT_MC9
-    ids = model_ids(http)
+    ids = model_ids(http, uid)
     if ids and model not in ids:
         log(f"build: warning: {model} is not among the {len(ids)} models the e2e owner's providers list")
     builder = Builder(lib, scn, http, uid, model, log)
@@ -1037,7 +1148,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("command", choices=("plan", "models", "build", "snapshot", "restore", "status"))
     ap.add_argument("--model", default="", help="build: the model of every resource and the librarian, one the "
                     "e2e owner's provider serves")
-    ap.add_argument("--owner-email", default="", help="snapshot/restore: the account (default: scenarios.yaml's owner)")
     ap.add_argument("--dir", default=str(SNAPSHOT_DIR), help="snapshot/restore/status: the snapshot folder")
     ap.add_argument("--pg-container", default=runner.POSTGRES_CONTAINER, help="snapshot/restore: the Postgres container")
     ap.add_argument("--pg-user", default="", help="snapshot/restore: the database user (default: the container's)")
@@ -1049,7 +1159,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     scn = runner.load_scenarios()
     lib = load_library()
     folder = Path(args.dir)
-    owner_email = args.owner_email or scn["accounts"]["owner"]
+    # Only the e2e owner's library: snapshot and restore refuse any other address.
+    owner_email = LIBRARY_OWNER
     if args.command == "plan":
         return cmd_plan(lib, scn, args.model or "<model>", out=lambda s: print(redact(s)))
     if args.command == "status":
@@ -1059,17 +1170,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         try:
             if args.command == "snapshot":
                 return snapshot(psql, owner_email, folder=folder, log=log)
-            return restore(psql, owner_email, folder=folder, log=log)
+            return restore(psql, owner_email, folder=folder, log=log, login_slug=scn["library"]["login_resource"])
         except (RuntimeError, OSError) as exc:
             log(f"{args.command}: {type(exc).__name__}: {exc}")
             return EXIT_FAILED
     if args.command == "models":
         try:
-            http, _ = _owner_session(scn, redact, log)
+            http, uid = _owner_session(scn, redact, log)
+        except ValueError as exc:
+            log(f"models: refused: {exc}")
+            return EXIT_USAGE
         except (ConnectionError, RuntimeError) as exc:
             log(f"models: {exc}")
             return EXIT_STACK
-        for mid in model_ids(http):
+        for mid in model_ids(http, uid):
             print(redact(mid))
         return EXIT_OK
     if not args.model:

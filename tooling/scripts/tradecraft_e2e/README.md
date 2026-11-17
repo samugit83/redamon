@@ -86,23 +86,31 @@ readiness line, the login and the focus. It resumes: a resource already built is
 again, one whose job failed is deleted and added again, one not in `library.yaml` is
 deleted. The record, counts only, goes to `_local/tradecraft-e2e/library-build.json`.
 
-`snapshot` refuses while the owner has a running job. In one read-only transaction it copies
-the owner's rows of every tradecraft table but the jobs, the live generation only, with no
-claim (`active_job_id` empty) and no GitHub token, into `_local/tradecraft-e2e/library/`
-(private files), with `stamp.json`: the plan commit, a hash of `agentic/tradecraft/ingest/`,
-the columns, row counts and checksums. A failed snapshot leaves the previous one in place.
+`snapshot` and `restore` act on one library only, the e2e owner's (`tc-e2e-owner@e2e.local`):
+no option names another account, and restore refuses a snapshot of any other. `snapshot`
+refuses while the owner has a running job. In one read-only transaction it copies the
+owner's rows of every tradecraft table but the jobs, the live generation only, with no claim
+(`active_job_id` empty), no GitHub token and no site login (cookies, headers and basic auth
+are left out), into `_local/tradecraft-e2e/library/` (private files), with `stamp.json`: the
+plan commit, a hash of `agentic/tradecraft/ingest/`, the columns, row counts and checksums.
+It replaces only a folder it made (its stamp and its files, nothing else), so a wrong
+`--dir` is refused with nothing removed; a failed snapshot leaves the previous one in place.
 `restore` checks every file against the stamp first, then in one transaction deletes the
-owner's tradecraft rows (a running job refuses it), copies the files back, moves the rows
-to the owner's id of today when the account was made again, leaves out the choices of
-projects that are gone, moves the four autoincrement sequences past the restored ids, and
-checks that the search trigger filled every row. Any error rolls the whole restore back.
+owner's tradecraft rows (a running job refuses it), copies the files back, writes the card's
+fake login (`cookie=fake-session`) back on the S2/S3 resource, moves the rows to the owner's
+id of today when the account was made again, leaves out the choices of projects that are
+gone, moves the four autoincrement sequences past the restored ids, and checks that the
+search trigger filled every row. Any error rolls the whole restore back.
 The preflight warns when the ingestion code changed since the stamp: build the library
 again then.
 
-`snapshot` and `restore` take `--pg-container`, `--pg-user`, `--pg-db`, `--dir` and
-`--owner-email` to run on another database, such as a session's copy on the plan's
-disposable Postgres (`tooling/scripts/tradecraft_pg_testdb.sh`). The snapshot holds
-third-party pages: it stays under `_local/` and is never committed.
+`--pg-container`, `--pg-user`, `--pg-db` and `--dir` point `snapshot` and `restore` at a test
+copy: a session's database on the plan's disposable Postgres
+(`tooling/scripts/tradecraft_pg_testdb.sh`) and a snapshot folder of its own. They never
+change whose library is read or replaced: the e2e owner's only. The seed of the e2e
+accounts (`runner.seed_accounts`, which `build`, `models` and the matrix call) refuses any
+address but the three synthetic `@e2e.local` accounts. The snapshot holds third-party
+pages: it stays under `_local/` and is never committed.
 
 ## What one run does
 

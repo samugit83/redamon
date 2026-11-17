@@ -773,12 +773,27 @@ class Account:
     id: str = ""
 
 
+# The only accounts the matrix and the library tooling may create, sign in as, snapshot or
+# restore, whatever scenarios.yaml says: the seed resets a password and a role, and restore
+# replaces a whole library, so a real person's address must never reach them.
+E2E_ACCOUNTS = frozenset({"tc-e2e-owner@e2e.local", "tc-e2e-collab@e2e.local", "tc-e2e-ops@e2e.local"})
+
+
+def e2e_account_problem(email: str) -> Optional[str]:
+    if email not in E2E_ACCOUNTS:
+        return f"{email!r} is not one of the synthetic e2e accounts ({', '.join(sorted(E2E_ACCOUNTS))})"
+    return None
+
+
 def seed_accounts(emails: Mapping[str, str], redact: report.Redactor, run: Exec = subprocess.run,
                   container: str = WEBAPP_CONTAINER) -> dict[str, Account]:
     """Creates or updates the synthetic e2e accounts with fresh random passwords (kept in
     memory, scrubbed from every output) and Tradecraft 2.0 on. Their libraries, settings and
     model providers are left as they are. The script goes to node on stdin, so no value
-    reaches a command line."""
+    reaches a command line. Any other address is refused before anything runs."""
+    refused = [p for p in (e2e_account_problem(e) for e in emails.values()) if p]
+    if refused:
+        raise ValueError("; ".join(refused))
     accounts = {k: Account(k, e, secrets.token_urlsafe(24)) for k, e in emails.items()}
     redact.add(*(a.password for a in accounts.values()))
     payload = json.dumps([{"key": a.key, "email": a.email, "password": a.password, "name": f"Tradecraft E2E {a.key}"}
@@ -2022,7 +2037,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     stack = Stack(env, redact, log)
     db = Db()
     docker = labs.Docker(REPO, log=log)
-    accounts = seed_accounts(scn["accounts"], redact)
+    try:
+        accounts = seed_accounts(scn["accounts"], redact)
+    except ValueError as exc:
+        log(f"refused: {exc}")
+        return 2
     sessions = {k: stack.session(a.email, a.password) for k, a in accounts.items()}
     logs_dir = Path(args.agent_logs) if args.agent_logs else (agent_logs_dir() or LOGS_DIR)
     ctx = Context(scn=scn, env=env, redact=redact, log=log, stack=stack, db=db, docker=docker, accounts=accounts,
