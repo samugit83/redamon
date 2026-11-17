@@ -611,9 +611,12 @@ password or GitHub token reads `"set"`. Errors are `{error, code}`; a write that
 | `GET /api/internal/agent/tradecraft/catalog` | The run catalog, for the agent only (the internal key, checked in the route; the owner read from the project row) |
 
 A project's per-resource switches travel in the project's own `GET`/`PUT` as `tradecraftOff` (needs
-`project:settings`). Add, refresh, Check URL, the focus preview, Read now and the Map view's page text are refused while
-an administrator acts as the account on a resource with a site login (`use_site_logins`), and every change of a login
-too (`change_site_logins`).
+`project:settings`). Every write route answers 403 `own_account_only` to an administrator acting as an account that can sign in
+(`requireAccountWrite`; no `act_as.refused` row). With `RBAC_PERMISSIONS_ENABLED` on, a resource with a site login also
+refuses, while an administrator acts as the account, the reads that would show its page text or send its login (View,
+Read now: 403 `not_while_acting_as`, `use_site_logins`, an `act_as.refused` row), the Map view lists only its titles and
+URLs, and on a passwordless managed account the writes that would use or change the login are refused the same way
+(`use_site_logins`, `change_site_logins`). With that switch off, none of these act-as refusals applies.
 
 ---
 

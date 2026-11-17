@@ -112,7 +112,7 @@ A new provider is fully integrated when **every one** of the following works wit
 - [ ] Text-to-Cypher (graph view "ask the graph" + redagraph MCP tool) uses your provider.
 - [ ] The **inbound** MCP server's `query_graph` answers on a project whose model points at your provider. Mint a token in Global Settings -> MCP Server with `recon:read`, then call `query_graph` with a `question` (not a `cypher`). Same `/graph/nl-query` -> `_build_cypher_manager` -> `setup_llm` path as "ask the graph", so an unrecognised prefix in `parse_model_provider` breaks it for **every external agent at once** - and they are told `Could not turn that question into a query. Try rephrasing it.`, which sends them rewriting a question that was never the problem.
 - [ ] CypherFix Triage + CodeFix WebSocket orchestrators use your provider when `cypherfixLlmModel` (or fallback `agentOpenaiModel`) points at it.
-- [ ] Tradecraft uses your provider: an ingestion job (Add or Refresh a resource whose model is on it), Check URL, the focus preview and the librarian (`tradecraft_ask`, on the *Tradecraft librarian* model), all built through `build_llm_from_providers` (`agentic/tradecraft/models.py`, `agent_tools._build_model`).
+- [ ] Tradecraft uses your provider: an ingestion job (Add or Refresh a resource whose model is on it), the focus preview and the librarian (`tradecraft_ask`, on the *Tradecraft librarian* model), all built through `build_llm_from_providers` (`agentic/tradecraft/models.py`, `agent_tools._build_model`).
 
 If any one of these silently falls back to OpenAI/Anthropic, you have missed a kwarg in `setup_llm()` call sites - see [§4.9](#49-agentic---propagate-the-new-api-key-kwarg-into-every-call-site).
 

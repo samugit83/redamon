@@ -452,7 +452,7 @@ sequenceDiagram
 
     Webapp->>PG: resource row, job row, claim
     Webapp->>Agent: POST /tradecraft/v2/jobs
-    Agent->>Site: fetch pages (address guard on every hop)
+    Agent->>Site: fetch pages (plain requests guarded per hop, the browser by its guard script)
     Agent->>PG: new generation (entries, sections, tree), then swap
     Run->>Webapp: GET /api/internal/agent/tradecraft/catalog
     Run->>PG: tradecraft_search / tradecraft_lookup (keyed by owner)

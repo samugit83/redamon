@@ -228,7 +228,10 @@ Each resource is a card in **Global Settings → Tradecraft**:
 - the name, Resource ID, type, Live or Stored, Enabled;
 - while a job runs, its **stage** (fetching, building the map, storing, tagging, summarising…) and **Cancel** in place
   of Refresh;
-- the last result: a short report line, **Report** for the full ingestion report, an error in words with **Retry**;
+- the last successful ingestion's report as a short line (pages visited and kept, why the crawl stopped), which opens
+  into the full report; a failed or cancelled job reads `Failed (<error code>): the previous version is kept` or
+  `Cancelled: the previous version is kept` (the codes are under [Operating it](#operating-it)), and **Refresh** tries
+  again;
 - **Ingested with older settings** when the resource's live version was built with other settings, another forced type,
   another focus or another login shape than it has today; its next refresh applies them;
 - **Ingested before 2.0: refresh for headings, descriptions and search inside pages** on a resource converted from 1.x;
@@ -412,9 +415,16 @@ authentication** (form → Access). The rules (`webapp/src/lib/tradecraft/v2/fie
   owner and no administrator acts as them. In a project shared with others it shows to them as *Owner only*, locked,
   and only the owner's own session changes its project choice. Its pages are read only within its map (a kept entry,
   or a pin on its own host).
-- **Act-as.** While an administrator acts as the account, the login is masked, cannot be changed (`change_site_logins`)
-  and is not used (`use_site_logins`: Add, Refresh, Save & re-ingest, Check URL, the focus preview, Read now and the
-  Map view's page text); the GitHub token keeps its own refusal (`use_github_token`).
+- **Act-as.** While an administrator acts as the account, the login stays masked, and a run they start never gets the
+  resource (above). What else holds depends on the account and on `RBAC_PERMISSIONS_ENABLED`:
+
+  | | Account that can sign in (has a password) | Passwordless managed account |
+  |---|---|---|
+  | Writes: Add, Edit, Refresh, Save & re-ingest, Check URL, the focus preview, Save & refresh all, curation, a change of the login | refused, 403 `own_account_only` (the account's own data is written only by the account), no `act_as.refused` row, whatever the switch | allowed; with the permissions switch on, a write that would use the login is refused (403 `not_while_acting_as`, `use_site_logins`) and a change of the login too (`change_site_logins`), each with an `act_as.refused` row |
+  | Reads of a login resource: View (its stored page text), Read now, the Map view | with the permissions switch on: View and Read now refused (`use_site_logins`, `act_as.refused`), the Map view titles and URLs only | the same |
+  | The same reads with `RBAC_PERMISSIONS_ENABLED` off | allowed: the admin reads the stored page text, runs Read now (which sends the login) and sees the whole map | the same, and the writes above use and change the login too |
+
+  The GitHub token keeps its own refusal (`use_github_token`).
 - **Audited.** Adding, changing or removing a login writes `tradecraft.credentials_changed` with the names of what
   changed, never a value.
 - Check URL and the focus preview accept the login being typed, before it is saved.
@@ -460,8 +470,9 @@ project**. A project can only turn a resource off: a row of `tradecraft_project_
 - **Turning a resource on or off in Global Settings** (Enabled) resets every project's choice for it, after an alert
   that names the projects it changes (`enabled-impact`).
 - **Who sees what.** The owner sees every resource with its details; an administrator acting as the owner sees the
-  same, but no text of a resource with a login; anyone else who reads the project (a collaborator, oversight,
-  break-glass) sees names and on/off only, and a resource with a login as *Owner only*.
+  same except the summary of a resource with a login (its URL, report, focus, ingested-with settings and last error
+  still show, and **Pages** lists its page titles and URLs); anyone else who reads the project (a collaborator,
+  oversight, break-glass) sees names and on/off only, and a resource with a login as *Owner only*.
 - **An ownership transfer** clears the project's choices (the resources were the old owner's).
 - **The Tool Matrix** row of `tradecraft_lookup` carries a note: `tradecraft_search` and `tradecraft_ask` follow its
   phases.
@@ -636,19 +647,23 @@ Map versions: `1` written by 1.x, `2` converted, `3` ingested by 2.0.
 **The old page-cache volume.** `./redamon.sh update` (and so `tooling/deploy/single-host/deploy.sh`) runs
 `_old_page_cache_volume_remove_once` once, after the stack was recreated and is healthy: it deletes the
 `redamon_tradecraft_cache` Docker volume, where 1.x kept its downloaded pages. Its content was derived and disposable;
-2.0 never read it, nothing else mounts it, and `.env` is not touched. A volume still in use only warns, and the next
-update tries again. It then writes the marker `.tradecraft-cache-removed` at the repository root (gitignored), so it
-runs once. To keep the volume, `touch .tradecraft-cache-removed` at the repository root before updating; to keep a
+2.0 never read it, nothing else mounts it, and `.env` is not touched. Then it writes the marker
+`.tradecraft-cache-removed` at the repository root (gitignored), so it runs once. A volume still in use only warns and
+writes no marker; the removal runs again at the next update **that brings changes** (an update with nothing to pull
+stops at "Already up to date" before it). To remove it by hand once no container uses it:
+`docker volume rm redamon_tradecraft_cache`, then `touch .tradecraft-cache-removed` at the repository root. To keep the volume, `touch .tradecraft-cache-removed` at the repository root before updating; to keep a
 copy, back it up first:
 
 ```bash
 docker run --rm -v redamon_tradecraft_cache:/v -v "$PWD":/b alpine tar czf /b/tradecraft_cache.tgz -C /v .
 ```
 
-**Rolling back** to 7.8.0: its `db push` drops the new tables and columns, and with them the stored pages, the
-settings, the project choices, the curations and the jobs (the downgrade report of
-`webapp/scripts/rbac-upgrade-preview.mjs` names every one). The 1.x columns it reads are current, because every 2.0
-ingestion writes them.
+**Rolling back** to 7.8.0: its `db push` drops the eight new tables and the 18 new columns, and with them the stored
+pages, the settings, the project choices, the curations and the jobs. The 1.x columns it reads are current, because every
+2.0 ingestion writes them. The downgrade report (`node scripts/rbac-upgrade-preview.mjs --downgrade` in the webapp
+container) targets **7.7.2**, not 7.8.0: its Tradecraft lines (each table and column with its rows) are what a roll-back to
+7.8.0 loses too, but its RBAC tables and columns, the accounts whose rights change, the accounts that cannot sign in and
+the revoked sessions are 7.7.2's and do not apply to 7.8.0.
 
 ---
 
@@ -659,7 +674,7 @@ ingestion writes them.
 `[tradecraft] convert resource=<id> code=…`, `[tradecraft] coverage code=…`. The webapp logs `[tradecraft-search]`
 when it installs the search triggers at start.
 
-**Error codes** (a job's `errorCode`, shown in words on the card): `fetch_failed`, `blocked_private_address`,
+**Error codes** (a job's `errorCode`, shown as it is on the card, `Failed (<code>)`): `fetch_failed`, `blocked_private_address`,
 `homepage_http_error`, `thin_homepage`, `llm_budget_exhausted`, `loop_model_not_supported_here`, `model_unavailable`,
 `agent_restarted`, `agent_lost`, `agent_unreachable`, `cancelled`, `resource_deleted`, `resource_changed`,
 `quota_reached`, `timeout`, `job_running`, `userinfo_refused`, `job_not_claimed`, `queue_full`, `bad_url`,
