@@ -168,7 +168,7 @@ An account holds at most **200 resources** (`constants.maxResourcesPerUser`). Sa
 | What the database keeps | the map and the cards (titles, headings when known, descriptions, tags), no page text | the map, the cards and the cleaned text of each page, split by headings into sections |
 | A read | downloads the page from the site at each read (`source: live`) | returns the stored copy (`source: stored copy from <date>`); a page past the storage limits is read live (`source: live (not stored)`) |
 | Search | cards only | cards and the text of every stored section |
-| A refresh | builds the map again | builds the map again and downloads only the pages that changed (incremental refresh) |
+| A refresh | builds the map again | builds the map again and stores again only the pages that changed (incremental refresh) |
 
 The **default is Live** (`storage.defaultMode`): it keeps no copy of a third-party site unless the person chooses to.
 Two types are fixed: a **PDF is always Stored** (its pages are read once from the document), a **CVE archive is never
