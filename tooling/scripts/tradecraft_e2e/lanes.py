@@ -104,15 +104,17 @@ def longest_first(runs: Iterable[Run]) -> list[Run]:
 
 
 class Scheduler:
-    """Which run a free lane starts next. ``next_run`` is asked whenever a lane is free; it
-    returns None when nothing may start now (the budget, or a mode change waiting for the
-    runs of the old mode)."""
+    """Which run a free lane starts next. ``next_run`` is asked whenever a lane is free, with
+    the time since the matrix started (its preflight included); it returns None when nothing
+    may start now: the budget guard has passed, no waiting run could end within the budget
+    (``end_by_sec``), or a mode change waits for the runs of the old mode."""
 
-    def __init__(self, runs: Iterable[Run], *, start_until_sec: float):
+    def __init__(self, runs: Iterable[Run], *, start_until_sec: float, end_by_sec: Optional[float] = None):
         self.pending: list[Run] = longest_first(runs)
         self.running: dict[str, Run] = {}
         self.mode: Optional[str] = None
         self.start_until_sec = start_until_sec
+        self.end_by_sec = end_by_sec
 
     def _wanted_mode(self) -> Optional[str]:
         active = {r.mode for r in self.running.values() if r.mode != MODE_ANY}
@@ -133,6 +135,9 @@ class Scheduler:
         # together and the change comes as early as it can; after the last change, longest first.
         if any(r.mode not in (mode, MODE_ANY) for r in self.pending):
             allowed.sort(key=lambda r: r.mode == MODE_ANY)
+        if self.end_by_sec is not None:
+            # A run's cap bounds its whole lane time: one that could end after the budget never starts.
+            allowed = [r for r in allowed if elapsed_sec + r.cap_sec <= self.end_by_sec]
         choice = (allowed or [None])[0]
         if choice is None:
             return None
@@ -156,18 +161,19 @@ class Scheduler:
         return list(self.pending)
 
 
-def simulate(runs: Iterable[Run], lanes: int, *, start_until_sec: float,
-             duration: Optional[Callable[[Run], float]] = None) -> Timeline:
+def simulate(runs: Iterable[Run], lanes: int, *, start_until_sec: float, end_by_sec: Optional[float] = None,
+             offset_sec: float = 0.0, duration: Optional[Callable[[Run], float]] = None) -> Timeline:
     """The schedule the live runner would follow when every run takes ``duration(run)``
-    seconds (default: its cap, the worst case)."""
+    seconds of its lane (default: its cap, the worst case), the lanes starting
+    ``offset_sec`` after the matrix (the preflight)."""
     if lanes < 1:
         raise ValueError("at least one lane")
     took = duration or (lambda r: r.cap_sec)
-    sched = Scheduler(runs, start_until_sec=start_until_sec)
+    sched = Scheduler(runs, start_until_sec=start_until_sec, end_by_sec=end_by_sec)
     timeline = Timeline()
-    free_at = [0.0] * lanes
+    free_at = [float(offset_sec)] * lanes
     ends: list[tuple[float, int, Run]] = []
-    now = 0.0
+    now = float(offset_sec)
     while True:
         started = False
         for lane in range(lanes):
@@ -199,8 +205,28 @@ def simulate(runs: Iterable[Run], lanes: int, *, start_until_sec: float,
     return timeline
 
 
-def worst_case(runs: Sequence[Run], lanes: int, *, start_until_sec: float) -> Timeline:
-    return simulate(runs, lanes, start_until_sec=start_until_sec)
+@dataclass(frozen=True)
+class Budget:
+    """The matrix's clock, all from its start (the preflight included): no run starts after
+    ``start_until_sec``, none that could end after ``end_by_sec`` (the total less the time to
+    collect the results), and the lanes expect to start ``preflight_sec`` in."""
+    start_until_sec: float
+    end_by_sec: float
+    preflight_sec: float
+    total_sec: float
+
+
+def budget(scn: Mapping) -> Budget:
+    b = scn["budget"]
+    total = float(b["total_min"]) * 60
+    return Budget(start_until_sec=float(b["start_until_min"]) * 60, end_by_sec=total - float(b["collect_min"]) * 60,
+                  preflight_sec=float(b["preflight_min"]) * 60, total_sec=total)
+
+
+def worst_case(runs: Sequence[Run], lanes: int, plan: Budget, *, preflight_sec: Optional[float] = None) -> Timeline:
+    """Every run at its cap (a run's whole lane time), the lanes starting after the preflight."""
+    return simulate(runs, lanes, start_until_sec=plan.start_until_sec, end_by_sec=plan.end_by_sec,
+                    offset_sec=plan.preflight_sec if preflight_sec is None else preflight_sec)
 
 
 # --------------------------------------------------------------------------------------

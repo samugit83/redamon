@@ -213,6 +213,28 @@ def listed_resources(prompts: Sequence[str]) -> set[str]:
 # Checks
 # --------------------------------------------------------------------------------------
 
+def run_evidence(trace: Mapping) -> Optional[str]:
+    """Why the trace shows no agent run, or None. Every check below assumes the run happened
+    and its log was read: with no log every hint check would hold on nothing, and with no
+    model decision a "made no tradecraft call" would hold for a run that never ran."""
+    if not trace.get("log_read"):
+        return f"the session's agent log was not found ({trace.get('log_path') or 'no path'})"
+    if not trace.get("prompts"):
+        return "the session's agent log holds no full system prompt: its first turn was not logged"
+    if not int((trace.get("events") or {}).get("iterations") or 0):
+        return "the agent made no model decision (no decision in the session's event log)"
+    return None
+
+
+def loop_evidence(trace: Mapping) -> Optional[str]:
+    """The same for an Agent in the Loop run, whose model calls the driver answered."""
+    if not trace.get("loop_prompts"):
+        return "the Agent in the Loop driver received no step"
+    if "think: tradecraft_ask" not in (trace.get("driver") or []):
+        return "the driver never reached a think step to call tradecraft_ask"
+    return None
+
+
 def _norm(text: str) -> str:
     return " ".join((text or "").split()).lower()
 

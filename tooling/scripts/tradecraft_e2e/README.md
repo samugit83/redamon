@@ -26,20 +26,26 @@ Standard library only, host Python 3. Unit tests (no stack):
 ```bash
 python3 tooling/scripts/tradecraft_e2e/runner.py --dry-run                 # the plan; starts nothing
 flock "<PLAN>/run/heavy.lock" python3 tooling/scripts/tradecraft_e2e/runner.py --lanes 7 --model <model id>
-python3 tooling/scripts/tradecraft_e2e/runner.py --only L3-A-1 --only L4-A-1 --lanes 2   # the pilot
+python3 tooling/scripts/tradecraft_e2e/runner.py --only L3-A-1 --only L4-A-1 --lanes 2 --model <model id>   # the pilot
 ```
 
-`--only` takes a run id (`L3-A-1`), a lab (`L3`: its arm runs and the single checks on it),
-an arm (`A`, `B`, `A_search`, `single`), a lab and arm (`L3-A`) or a single check (`S4`); it
-skips the layer-1 checks. `--no-build`, `--no-restore` and `--no-layer1` skip those steps.
+`--model` is required for a run: the agent model of every run's project, one the e2e owner's
+provider serves. `--only` takes a run id (`L3-A-1`), a lab (`L3`: its arm runs and the single
+checks on it), an arm (`A`, `B`, `A_search`, `single`), a lab and arm (`L3-A`) or a single check
+(`S4`); it skips the layer-1 checks. `--no-build`, `--no-restore` and `--no-layer1` skip those
+steps. `--agent-logs` names the agent's session-log folder; by default it is the source of the
+agent container's `/app/logs` mount (the checkout the stack runs from), and the preflight stops
+when that folder holds no session log.
 The report goes to `_local/tradecraft-e2e/runs/<date>/report.md`, one JSON file per run beside
 it (the trace the checks read); nothing under `_local/` is committed.
 
 **Before the first run (MC-9, MC-10):** the library is built and snapshotted (`library.py`,
 T10.2); the e2e owner and ops accounts each have a model provider (add one acting as them:
 the runner never copies a key); the RBAC sharing and permissions switches, Agent in the Loop
-and the MCP server are on for S2, S3 and S4 (a check whose switch is off is reported
-"skipped: switch off"); the host can hold `--lanes` lab instances and agent sessions.
+and the MCP server are on for S2, S3 and S4 (a check whose switch is off in `.env` is reported
+"skipped: switch off"; any other refusal while setting a check up, such as a share refused by
+policy or a refused step-up password, fails it with its reason); the host can hold `--lanes`
+lab instances and agent sessions.
 
 ## What one run does
 
@@ -56,13 +62,17 @@ and the MCP server are on for S2, S3 and S4 (a check whose switch is off is repo
    offered. A run that still asks for an approval is approved, and the run file says so.
 3. Sends the scenario's prompt over the agent's chat socket, as the drawer does (a ticket
    from `/api/agent/ws-ticket`, then `init` and `query`), answers approvals and questions,
-   and stops the run at its cap (40 minutes; 20 for a single check).
+   and stops the run before its cap. The cap (40 minutes; 20 for a single check) bounds the
+   run's whole lane time: the agent gets what is left of it after the lab started, less
+   `budget.teardown_reserve_min` for the stop, the trace and the teardown.
 4. Reads the trace: the conversation's `tool_complete` and `assistant_message` rows, the
    session's agent log (`agentic/logs/agent.<session>.log`: the full first prompt, the
    `[tradecraft] hint` lines; `.events.jsonl`: iterations and tokens), the owner's
    page-store row counts before and after, and the cards of every page the run touched.
 5. Judges the oracle and the checks, removes the project and the lab instance, writes the
-   run's JSON file.
+   run's JSON file. A run whose agent run did not happen (the question never sent, the socket
+   lost, a failed query, no session log, no logged first prompt, no model decision) is a run
+   error, never judged and never a pass.
 
 Arm A-search needs the owner's Librarian use at "Search only", every other agent run at
 "Agent decides": it is one setting of the owner's account. The scheduler therefore runs the
@@ -91,10 +101,12 @@ start is "not run: budget" and the matrix is incomplete, which fails it.
 
 ## The 5-hour budget
 
-`--dry-run` prints the worst-case schedule (every run at its cap) for the chosen `--lanes`:
-with 7 lanes the 42 runs take 4 h, plus the 20-minute preflight and the collection, under the
-owner's 5 hours. With fewer lanes the worst case no longer fits, and the dry run says how many
-runs the budget guard would leave out.
+The budget counts from the start of the matrix, its preflight included (the restore and the
+lab builds): no run starts after 4:20, and none whose cap could end after the total less the
+collection (4:40). `--dry-run` prints the worst-case schedule (every run at its cap) for the
+chosen `--lanes`: with 7 lanes, a 20-minute preflight, 4 h of lanes and the 20-minute collection
+make 4 h 40 min, under the owner's 5 hours. A longer preflight or fewer lanes leave runs out,
+reported "not run: budget", and the matrix then fails as incomplete.
 
 ## Secrets
 

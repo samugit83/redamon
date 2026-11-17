@@ -32,7 +32,8 @@ from tooling.scripts.tradecraft_e2e import checks, labs, lanes, oracles, report,
 
 SCN = runner.load_scenarios()
 RUNS = lanes.plan_runs(SCN)
-START_UNTIL = float(SCN["budget"]["start_until_min"]) * 60
+PLAN = lanes.budget(SCN)
+START_UNTIL = PLAN.start_until_sec
 ENVELOPE = "<<<UNTRUSTED_TRADECRAFT_RESULT id=0123abcd>>>"
 END = "<<<END_UNTRUSTED_TRADECRAFT_RESULT id=0123abcd>>>"
 
@@ -61,11 +62,15 @@ def test_the_matrix_has_42_runs():
 
 
 def test_scheduler_fits_42_runs_in_4h_with_7_lanes():
-    timeline = lanes.worst_case(RUNS, 7, start_until_sec=START_UNTIL)
+    # From the matrix's start: the preflight, then every run at its cap, which bounds its whole
+    # lane time (lab start, health wait, the agent, the stop, the trace and the teardown).
+    timeline = lanes.worst_case(RUNS, 7, PLAN)
     assert len(timeline.slots) == 42 and not timeline.not_run
-    assert timeline.makespan <= 4 * 3600
-    # Preflight and collection around the lanes stay under the owner's 5 hours.
-    assert timeline.makespan + (20 + 20) * 60 <= float(SCN["budget"]["total_min"]) * 60
+    assert min(s.start for s in timeline.slots) == PLAN.preflight_sec == 20 * 60
+    assert timeline.makespan - PLAN.preflight_sec <= 4 * 3600
+    # The preflight, the lanes and the collection stay under the owner's 5 hours.
+    assert timeline.makespan <= PLAN.end_by_sec == (300 - 20) * 60
+    assert PLAN.total_sec == 300 * 60
     assert timeline.lanes_used() == 7
     # Never more runs at once than lanes.
     for t in range(0, int(timeline.makespan), 60):
@@ -79,13 +84,13 @@ def test_scheduler_longest_first():
     assert [s.run.id for s in sorted(timeline.slots, key=lambda s: s.start)] == ["r3", "r1", "r5", "r2", "r0", "r4"]
     # In the real matrix, once the A-search runs are under way, L1 and L5 of arm B (the
     # longest expected) start before every shorter run.
-    full = lanes.worst_case(RUNS, 7, start_until_sec=START_UNTIL)
+    full = lanes.worst_case(RUNS, 7, PLAN)
     first_b = sorted((s for s in full.slots if s.run.arm == "B"), key=lambda s: (s.start, s.lane))
     assert {s.run.lab for s in first_b[:6]} == {"L1", "L5"}
 
 
 def test_scheduler_keeps_one_owner_mode_at_a_time():
-    timeline = lanes.worst_case(RUNS, 7, start_until_sec=START_UNTIL)
+    timeline = lanes.worst_case(RUNS, 7, PLAN)
     assert [m for _, m in timeline.mode_changes] == [lanes.MODE_SEARCH_ONLY, lanes.MODE_AGENT]
     switch = timeline.mode_changes[1][0]
     for slot in timeline.slots:
@@ -96,10 +101,12 @@ def test_scheduler_keeps_one_owner_mode_at_a_time():
 
 
 def test_budget_guard_marks_not_run():
-    timeline = lanes.worst_case(RUNS, 3, start_until_sec=START_UNTIL)
+    timeline = lanes.worst_case(RUNS, 3, PLAN)
     assert timeline.not_run, "three lanes cannot hold the worst case"
     assert all(reason == lanes.NOT_RUN_BUDGET for _, reason in timeline.not_run)
     assert all(s.start < START_UNTIL for s in timeline.slots)
+    # No run is started that could end after the total less the collection.
+    assert all(s.end <= PLAN.end_by_sec for s in timeline.slots)
     assert len(timeline.slots) + len(timeline.not_run) == 42
     # The report names them and the matrix is incomplete, never silently shortened (D-39).
     results = report.not_run_results([r for r, _ in timeline.not_run])
@@ -107,6 +114,35 @@ def test_budget_guard_marks_not_run():
     assert not verdict
     complete = next(g for g in gates if g.name == "complete")
     assert complete.ok is False and results[0].run_id in complete.detail
+
+
+def test_a_long_preflight_spends_the_budget():
+    # The preflight is part of the 5 hours: a slow restore or lab build leaves fewer runs, all
+    # reported, none ending after the budget.
+    timeline = lanes.worst_case(RUNS, 7, PLAN, preflight_sec=90 * 60)
+    assert timeline.not_run and all(reason == lanes.NOT_RUN_BUDGET for _, reason in timeline.not_run)
+    assert all(s.end <= PLAN.end_by_sec for s in timeline.slots)
+    assert lanes.worst_case(RUNS, 7, PLAN, preflight_sec=5 * 3600).slots == []
+
+
+def test_run_matrix_counts_the_budget_from_the_matrix_start():
+    deadlines = []
+
+    def fake_run(ctx, run, lane, address, deadline):
+        deadlines.append((run.id, deadline))
+        return report.RunResult(run.id, run.arm, run.lab, run.n, run.check, status=report.PASS, oracle=True)
+
+    ctx = mock.Mock(scn=SCN, log=lambda m: None)
+    picked = lanes.select(RUNS, ["L1-A"])
+    now = 50_000.0
+    with mock.patch.object(runner, "set_owner_mode"):
+        # The preflight took 4 h 1 min: a 40-minute run would end after 4:40, so none starts.
+        late = runner.run_matrix(ctx, picked, 2, run_fn=fake_run, clock=lambda: now,
+                                 started_at=now - (4 * 3600 + 60), poll_sec=0.01)
+        assert deadlines == [] and {r.status for r in late} == {report.NOT_RUN}
+        # Started on time, each run gets the deadline of its cap from its own start.
+        runner.run_matrix(ctx, picked, 2, run_fn=fake_run, clock=lambda: now, started_at=now - 600, poll_sec=0.01)
+    assert sorted(deadlines) == [(r.id, now + r.cap_sec) for r in sorted(picked, key=lambda r: r.id)]
 
 
 def test_run_matrix_lanes_and_budget_guard_with_a_fake_clock():
@@ -120,7 +156,7 @@ def test_run_matrix_lanes_and_budget_guard_with_a_fake_clock():
     started, peak, active = [], [0], set()
     lock = threading.Lock()
 
-    def fake_run(ctx, run, lane, address):
+    def fake_run(ctx, run, lane, address, deadline):
         with lock:
             started.append(run.id)
             active.add(lane)
@@ -134,8 +170,8 @@ def test_run_matrix_lanes_and_budget_guard_with_a_fake_clock():
     with mock.patch.object(runner, "set_owner_mode") as set_mode:
         results = runner.run_matrix(ctx, picked, 2, run_fn=fake_run, clock=clock, poll_sec=0.01)
     assert peak[0] <= 2
-    # A run starts only at a look before 4:20 (the first look is the start itself).
-    assert 0 < len(started) <= sum(1 for t in seen[1:] if t < START_UNTIL)
+    # A run starts only at a look from which its cap ends by 4:40 (the first look is the start).
+    assert 0 < len(started) <= sum(1 for t in seen[1:] if t + 40 * 60 <= PLAN.end_by_sec)
     not_run = [r for r in results if r.status == report.NOT_RUN]
     assert not_run and all(r.reason == lanes.NOT_RUN_BUDGET for r in not_run)
     assert len(started) + len(not_run) == len(picked) == len(results)
@@ -146,7 +182,7 @@ def test_run_matrix_lanes_and_budget_guard_with_a_fake_clock():
 def test_a_failed_mode_change_is_an_error_never_a_run_in_the_wrong_mode():
     ran = []
 
-    def fake_run(ctx, run, lane, address):
+    def fake_run(ctx, run, lane, address, deadline):
         ran.append(run.id)
         return report.RunResult(run.id, run.arm, run.lab, run.n, run.check, status=report.PASS, oracle=True)
 
@@ -157,6 +193,179 @@ def test_a_failed_mode_change_is_an_error_never_a_run_in_the_wrong_mode():
     assert ran == []
     assert {r.run_id: (r.status, r.reason) for r in results} == {
         r.id: (report.ERROR, "setting answered 500") for r in picked}
+
+
+# --------------------------------------------------------------------------------------
+# A run counts only when it happened (review findings 1-3), with the stack mocked out
+# --------------------------------------------------------------------------------------
+
+GOOD_TRACE = {"tool_calls": [], "answers": ["nothing found"], "prompts": ["| **execute_curl** | HTTP |"],
+              "log_read": True, "log_path": "agent.session_x.log", "events": {"iterations": 3}, "hints": [],
+              "page_store": {"before": {"entries": 1}, "after": {"entries": 1}}, "pages": {}}
+ON = {"RBAC_SHARING_ENABLED": "true", "RBAC_SHARING_WRITE_ENABLED": "true", "RBAC_PERMISSIONS_ENABLED": "true",
+      "AGENT_IN_THE_LOOP_ENABLED": "true", "MCP_SERVER_ENABLED": "true"}
+
+
+def _ctx(tmp_path, env=None):
+    redact = report.Redactor()
+    sessions = {"owner": (mock.Mock(), "u-owner"), "collaborator": (mock.Mock(), "u-collab"), "ops": (mock.Mock(), "u-ops")}
+    accounts = {k: runner.Account(k, f"tc-e2e-{k}@e2e.local", f"fake-pass-{k}-0001") for k in ("owner", "collaborator")}
+    docker = mock.Mock()
+    docker.exec.return_value = subprocess.CompletedProcess([], 0, "", "")
+    return runner.Context(scn=SCN, env=runner.Env(env or {}), redact=redact, log=lambda m: None,
+                          stack=mock.Mock(redact=redact), db=mock.Mock(), docker=docker, accounts=accounts,
+                          sessions=sessions, model="test/model", out_dir=tmp_path, logs_dir=tmp_path / "logs")
+
+
+def _attack(ctx, run_id, outcome, trace, deadline_in=1200.0):
+    run = next(r for r in RUNS if r.id == run_id)
+    chat = mock.Mock(return_value=outcome)
+    with mock.patch.object(runner, "_wait_http", return_value=True), \
+            mock.patch.object(runner.Stack, "create_project", return_value="p1"), \
+            mock.patch.object(runner, "apply_phase_map"), \
+            mock.patch.object(runner.Stack, "update_project", return_value=runner.Response(200, {})), \
+            mock.patch.object(runner.Stack, "delete_project", return_value=runner.Response(200, {})), \
+            mock.patch.object(runner, "page_store_counts", return_value={"entries": 1}), \
+            mock.patch.object(runner, "wait_until_idle", return_value=True), \
+            mock.patch.object(runner, "build_trace", return_value=dict(trace)), \
+            mock.patch.object(runner, "run_chat", chat):
+        deadline = runner.time.monotonic() + deadline_in
+        result = runner.run_attack(ctx, run, 0, lanes.addressing(SCN, 7), deadline)
+    return result, chat, deadline
+
+
+def _outcome(**kw):
+    out = runner.ChatOutcome("session_x", ended=kw.pop("ended", "complete"), question_sent=kw.pop("sent", True))
+    for k, v in kw.items():
+        setattr(out, k, v)
+    return out
+
+
+@pytest.mark.parametrize("outcome, trace, reason", [
+    (_outcome(sent=False, ended="disconnected"), GOOD_TRACE, "never sent"),
+    (_outcome(ended="error", error_code="query_failed"), GOOD_TRACE, "ended: error (query_failed)"),
+    (_outcome(ended="disconnected"), GOOD_TRACE, "ended: disconnected"),
+    (_outcome(), {**GOOD_TRACE, "log_read": False}, "log was not found"),
+    (_outcome(), {**GOOD_TRACE, "prompts": []}, "no full system prompt"),
+    (_outcome(), {**GOOD_TRACE, "events": {}}, "no model decision"),
+])
+def test_a_single_check_whose_run_did_not_happen_is_a_run_error(tmp_path, outcome, trace, reason):
+    # S5's only check ("no tradecraft call") holds on any run that made no call: it must not
+    # pass for a run that never ran, failed, or left no log to read.
+    result, _, _ = _attack(_ctx(tmp_path), "S5", outcome, trace)
+    assert result.status == report.ERROR and reason in result.reason
+    assert not report.pass_rules([result])[0]
+
+
+def test_a_single_check_whose_run_happened_is_judged(tmp_path):
+    result, chat, deadline = _attack(_ctx(tmp_path), "S5", _outcome(), GOOD_TRACE)
+    assert result.status == report.PASS and [c.name for c in result.checks] == ["no_tradecraft_call"]
+    # The run's cap bounds its whole lane time: the agent gets the deadline less the teardown reserve.
+    cap = chat.call_args.kwargs["cap_sec"]
+    assert 1200 - 300 - 5 <= cap <= 1200 - 300
+
+
+def test_an_arm_run_whose_log_was_not_read_is_a_run_error(tmp_path):
+    # Without the log every hint check would hold on nothing (review finding 3).
+    ctx = _ctx(tmp_path)
+    result, chat, _ = _attack(ctx, "L1-A-1", _outcome(), {**GOOD_TRACE, "log_read": False, "prompts": [], "hints": []})
+    assert result.status == report.ERROR and "log was not found" in result.reason and result.checks == []
+    wait = ctx.docker.up.call_args.kwargs["wait_sec"]
+    assert wait <= 1200 - 300 and chat.call_args.kwargs["cap_sec"] <= 1200 - 300
+    ctx.docker.down.assert_called_once()
+
+
+def test_s2_is_skipped_only_when_sharing_is_off(tmp_path):
+    ctx = _ctx(tmp_path, env={"RBAC_SHARING_ENABLED": "true"})
+    result, chat, _ = _attack(ctx, "S2", _outcome(), GOOD_TRACE)
+    assert result.status == report.SKIPPED and result.reason == f"{report.SKIP_SWITCH_OFF} (RBAC_SHARING_WRITE_ENABLED)"
+    ctx.docker.up.assert_not_called()
+    assert report.pass_rules([result])[1][0].ok is None
+
+
+def test_s2_a_refused_share_with_sharing_on_is_a_failure(tmp_path):
+    ctx = _ctx(tmp_path, env=ON)
+    ctx.sessions["owner"][0].call.return_value = runner.Response(429, {"code": "rate_limited"})
+    result, chat, _ = _attack(ctx, "S2", _outcome(), GOOD_TRACE)
+    assert result.status == report.FAIL and "429 rate_limited" in result.reason
+    assert [(c.name, c.ok) for c in result.checks] == [("share_with_collaborator", False)]
+    chat.assert_not_called()
+    assert report.pass_rules([result])[1][0].ok is False
+
+
+def test_s3_a_refused_act_as_with_permissions_on_is_a_failure(tmp_path):
+    off = runner.run_acting(_ctx(tmp_path), next(r for r in RUNS if r.id == "S3"), runner.time.monotonic() + 1200)
+    assert off.status == report.SKIPPED and off.reason.startswith(report.SKIP_SWITCH_OFF)
+    ctx = _ctx(tmp_path, env=ON)
+    admin = mock.Mock()
+    admin.call.return_value = runner.Response(403, {"code": "step_up_failed"})
+    admin.cookies = {}
+    ctx.stack.session.return_value = (admin, "u-admin")
+    with mock.patch.object(runner.Stack, "create_project", return_value="p1"), \
+            mock.patch.object(runner, "apply_phase_map"), \
+            mock.patch.object(runner.Stack, "delete_project", return_value=runner.Response(200, {})):
+        result = runner.run_acting(ctx, next(r for r in RUNS if r.id == "S3"), runner.time.monotonic() + 1200)
+    assert result.status == report.FAIL and "403 step_up_failed" in result.reason
+    assert report.pass_rules([result])[1][0].ok is False
+
+
+def test_s4_a_refused_driver_token_with_the_loop_on_is_a_failure(tmp_path):
+    off = runner.run_loop(_ctx(tmp_path), next(r for r in RUNS if r.id == "S4"), runner.time.monotonic() + 1200)
+    assert off.status == report.SKIPPED and off.reason.startswith(report.SKIP_SWITCH_OFF)
+    ctx = _ctx(tmp_path, env=ON)
+    ctx.sessions["owner"][0].call.return_value = runner.Response(403, {"code": "token_quota"})
+    result = runner.run_loop(ctx, next(r for r in RUNS if r.id == "S4"), runner.time.monotonic() + 1200)
+    assert result.status == report.FAIL and "403 token_quota" in result.reason
+    assert report.pass_rules([result])[1][0].ok is False
+
+
+def test_run_evidence_and_loop_evidence():
+    assert checks.run_evidence(GOOD_TRACE) is None
+    assert "not found" in checks.run_evidence({**GOOD_TRACE, "log_read": False})
+    assert checks.loop_evidence({"loop_prompts": ["p"], "driver": ["classify", "think: tradecraft_ask"]}) is None
+    assert "no step" in checks.loop_evidence({"loop_prompts": [], "driver": []})
+    assert "never reached" in checks.loop_evidence({"loop_prompts": ["p"], "driver": ["declined think"]})
+
+
+def test_the_trace_reads_the_agents_own_log_folder(tmp_path):
+    db = mock.Mock()
+    db.json.return_value = []
+    missing = runner.build_trace(db, "session_x", "u1", before=None, logs_dir=tmp_path / "elsewhere")
+    assert missing["log_read"] is False and "not found" in checks.run_evidence(missing)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "agent.session_x.log").write_text("2026-11-17 05:00:00 | INFO     | m | f | hello\n")
+    found = runner.build_trace(db, "session_x", "u1", before=None, logs_dir=logs)
+    assert found["log_read"] is True and found["log_path"].endswith("agent.session_x.log")
+
+    mounts = json.dumps([{"Destination": "/app/data", "Source": "/x"},
+                         {"Destination": "/app/logs", "Source": "/srv/stack/agentic/logs"}])
+    inspect = mock.Mock(return_value=subprocess.CompletedProcess([], 0, stdout=mounts, stderr=""))
+    assert runner.agent_logs_dir(run=inspect) == Path("/srv/stack/agentic/logs")
+    assert inspect.call_args.args[0][:2] == ["docker", "inspect"]
+    assert runner.agent_logs_dir(run=mock.Mock(return_value=subprocess.CompletedProcess([], 1, "", ""))) is None
+    assert "does not exist" in runner.logs_dir_problem(tmp_path / "elsewhere")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert "holds no session log" in runner.logs_dir_problem(empty)
+    assert runner.logs_dir_problem(logs) is None
+
+
+def test_a_run_needs_a_model_chosen_for_it(capsys):
+    with mock.patch.object(runner, "seed_accounts", side_effect=AssertionError("nothing is seeded")):
+        assert runner.main(["--only", "L3-A-1"]) == 2
+    assert "--model is required" in capsys.readouterr().out
+
+
+def test_the_two_new_labs_defaults_clash_with_no_other_lab():
+    addresses: dict[str, set] = {}
+    for f in (REPO / "testing" / "guinea_pigs").glob("*/docker-compose*.yml"):
+        for m in re.finditer(r"ipv4_address:\s*(\S+)", f.read_text(errors="replace")):
+            value = re.sub(r"\$\{[A-Z_]+:-([^}]*)\}", r"\1", m.group(1)).strip("\"'")
+            addresses.setdefault(value, set()).add(f.parent.name)
+    for lab in ("tc_sqli_pg_waf", "tc_ssrf_metadata"):
+        mine = [a for a, owners in addresses.items() if lab in owners]
+        assert mine and all(addresses[a] == {lab} for a in mine), {a: addresses[a] for a in mine}
 
 
 def test_only_filter():
@@ -217,7 +426,7 @@ def test_override_ports_unique_per_lane():
                 assert parsed["networks"][net]["name"].startswith(inst.project)
     assert len(seen_ports) == 7 and len(seen_ips) == 7
     assert not set(seen_ports) & _published_defaults()
-    fixed_lab_ips = {"172.28.0.91", "172.28.0.92", "172.28.0.93", "172.28.0.94", "172.28.0.95"}
+    fixed_lab_ips = {f"172.28.0.{n}" for n in range(91, 99)}
     assert not set(seen_ips) & fixed_lab_ips
     with pytest.raises(ValueError):
         address.ip(7)
@@ -572,9 +781,25 @@ def test_pass_rules():
     with_b = cell + [_res(f"L1-B-{n}", "B", "L1", n, oracle=False) for n in (1, 2, 3)]
     assert report.pass_rules(with_b)[0]  # arm B is a measurement, never a gate
 
-    skipped = report.RunResult("S2", "single", "L2", 1, "S2", status=report.SKIPPED, reason="switch off")
+    skipped = report.RunResult("S2", "single", "L2", 1, "S2", status=report.SKIPPED,
+                               reason=f"{report.SKIP_SWITCH_OFF} (RBAC_SHARING_ENABLED)")
     ok, gates = report.pass_rules(cell + [skipped])
     assert ok and next(g for g in gates if g.name == "single S2").ok is None
+    # Only a switch that is off may skip a check (MC-10): any other skip fails its gate.
+    refused = report.RunResult("S2", "single", "L2", 1, "S2", status=report.SKIPPED, reason="the share answered 429")
+    ok, gates = report.pass_rules(cell + [refused])
+    assert not ok and next(g for g in gates if g.name == "single S2").ok is False
+
+    # A run error never counts as a success, whatever its oracle read.
+    errored = cell[:2] + [report.RunResult("L1-A-3", "A", "L1", 3, status=report.ERROR, oracle=True,
+                                           reason="the agent run ended: error")]
+    errored[1] = _res("L1-A-2", "A", "L1", 2, oracle=False)
+    ok, gates = report.pass_rules(errored)
+    assert not ok and gates[0].detail == "oracle 1/3; run errors: L1-A-3"
+    single_error = report.RunResult("S5", "single", None, 1, "S5", status=report.ERROR,
+                                    checks=[report.CheckResult("no_tradecraft_call", True)], reason="never sent")
+    assert report.settle(single_error).status == report.ERROR
+    assert not report.pass_rules(cell + [single_error])[0]
 
     failed_single = _res("S5", "single", None, 1, ok=False, check="S5", oracle=None)
     assert not report.pass_rules(cell + [failed_single])[0]
@@ -864,6 +1089,24 @@ def test_run_chat_stops_the_run_at_the_cap():
     assert out.ended == "cap" and got == [{"type": "stop", "payload": {}}]
 
 
+def test_run_chat_a_failed_query_ends_the_run_as_an_error():
+    def script(conn, recv, send):
+        recv()
+        send({"type": "connected", "payload": {}})
+        recv()
+        # websocket_api.py marks it recoverable, but the run does not go on.
+        send({"type": "error", "payload": {"code": "query_failed", "recoverable": True}})
+
+    client, t = _fake_agent(script)
+    http = mock.Mock()
+    http.call.return_value = runner.Response(200, {"ticket": "fake-ticket-0004-abcdef"})
+    out = runner.run_chat(_chat_stack(), http, "u1", "p1", "go", cap_sec=60,
+                          socket_factory=lambda url: runner.WebSocket(url, connect=lambda a, timeout: client))
+    t.join(timeout=5)
+    assert (out.ended, out.error_code, out.question_sent) == ("error", "query_failed", True)
+    assert runner.run_problem(out, GOOD_TRACE) == "the agent run ended: error (query_failed)"
+
+
 def test_run_chat_reconnects_and_sees_a_run_that_ended_meanwhile():
     sockets = []
 
@@ -946,7 +1189,8 @@ def test_dry_run_starts_nothing(capsys):
             mock.patch.object(socket, "create_connection", side_effect=AssertionError("no network in a dry run")):
         assert runner.dry_run(SCN, RUNS, 7, runner.Env({})) == 0
     out = capsys.readouterr().out
-    assert "42 runs on 7 lanes" in out and "worst case (every run at its cap): 4.00 h" in out
+    assert "42 runs on 7 lanes" in out
+    assert "lanes 4.00 h, the matrix 4.67 h of the 5.00 h budget (preflight 20 min, collection 20 min)" in out
     assert "would be 'not run: budget'" not in out
     assert out.count(" | ") >= 42 * 3
 

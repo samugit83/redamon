@@ -9,9 +9,14 @@
 version: 1
 
 budget:
+  # All from the start of the matrix, its preflight included.
   total_min: 300           # the owner's 5 hours
-  start_until_min: 260     # 4:20 after the lanes start: the budget guard starts no run after it
-  preflight_min: 20
+  start_until_min: 260     # 4:20: the budget guard starts no run after it
+  collect_min: 20          # the report after the lanes: no run starts that could end later than total - collect
+  preflight_min: 20        # expected; the guard counts the real one
+  # A run's cap bounds its whole lane time (lab start, the agent, teardown): the agent gets
+  # what is left of it less this reserve for stopping the run, reading the trace and the teardown.
+  teardown_reserve_min: 5
 
 lanes:
   default: 7

@@ -214,8 +214,10 @@ class Docker:
         return self._run(argv, cwd=str(self.repo / spec.folder), env=self._env({}), timeout=timeout, check=True,
                          capture_output=True, text=True)
 
-    def up(self, inst: Instance) -> subprocess.CompletedProcess:
-        return self.compose(inst, "up", "-d", "--no-build", "--wait", "--wait-timeout", str(UP_TIMEOUT_SEC))
+    def up(self, inst: Instance, wait_sec: int = UP_TIMEOUT_SEC) -> subprocess.CompletedProcess:
+        wait_sec = max(10, int(wait_sec))
+        return self.compose(inst, "up", "-d", "--no-build", "--wait", "--wait-timeout", str(wait_sec),
+                            timeout=wait_sec + 60)
 
     def down(self, inst: Instance) -> subprocess.CompletedProcess:
         return self.compose(inst, "down", "-v", "--remove-orphans", "--timeout", "10", check=False, timeout=180)

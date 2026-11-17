@@ -15,8 +15,8 @@ holds them. Nothing here starts, stops or rebuilds a container of the stack: the
 creates lab projects named ``tc-e2e-*`` and reads the stack's database and logs.
 
   python3 tooling/scripts/tradecraft_e2e/runner.py --dry-run            # the plan, no stack
-  python3 tooling/scripts/tradecraft_e2e/runner.py --lanes 7            # the full matrix
-  python3 tooling/scripts/tradecraft_e2e/runner.py --only L3-A-1 --only L4-A-1 --lanes 2
+  python3 tooling/scripts/tradecraft_e2e/runner.py --lanes 7 --model <id>   # the full matrix
+  python3 tooling/scripts/tradecraft_e2e/runner.py --only L3-A-1 --only L4-A-1 --lanes 2 --model <id>
 """
 from __future__ import annotations
 
@@ -874,6 +874,9 @@ def apply_phase_map(http: Http, project_id: str, phases: Sequence[str]) -> None:
 AUTO_ANSWER = ("No person is available during this automated test run. Proceed on your own with the most "
                "reasonable choice, within the target and scope already given.")
 END_TYPES = {"task_complete", "stopped"}
+# Error frames after which the run does not go on, though marked recoverable (websocket_api.py):
+# the query itself failed, for example on a model the owner's provider does not serve.
+RUN_FAILED_CODES = {"query_failed", "fatal_error"}
 
 
 @dataclass
@@ -881,6 +884,7 @@ class ChatOutcome:
     session_id: str
     ended: str = "running"  # complete | stopped | error | cap | disconnected
     error_code: str = ""
+    question_sent: bool = False
     approvals: list[str] = field(default_factory=list)
     rate_limit_waits: int = 0
     frames: dict = field(default_factory=dict)
@@ -948,7 +952,7 @@ def run_chat(stack: Stack, http: Http, person_id: str, project_id: str, question
             payload = msg.get("payload") or {}
             if kind == "connected" and not sent:
                 ws.send_json({"type": "query", "payload": {"question": question}})
-                sent = True
+                sent = out.question_sent = True
             elif kind == "connected" and payload.get("agent_running") is False:
                 # A reconnect after the run ended: its last frames went to the closed socket.
                 out.ended = "complete"
@@ -967,7 +971,7 @@ def run_chat(stack: Stack, http: Http, person_id: str, project_id: str, question
                 out.approvals.append("question")
             elif kind == "rate_limit_wait":
                 out.rate_limit_waits += 1
-            elif kind == "error" and payload.get("recoverable") is False:
+            elif kind == "error" and (payload.get("recoverable") is False or payload.get("code") in RUN_FAILED_CODES):
                 out.ended, out.error_code = "error", str(payload.get("code", ""))
             elif kind in END_TYPES and sent:
                 out.ended = "complete" if kind == "task_complete" else "stopped"
@@ -1094,10 +1098,14 @@ def drive_loop(driver: LoopDriver, ask_args: Mapping, *, target_ip: str, timeout
 # The trace of a run
 # --------------------------------------------------------------------------------------
 
-def session_log_text(session_id: str, logs_dir: Path = LOGS_DIR) -> str:
+def session_log_path(session_id: str, logs_dir: Path) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)[:120]
-    base = logs_dir / f"agent.{safe}.log"
-    rotated = sorted(logs_dir.glob(f"agent.{safe}.log.*"), key=lambda p: -int(p.suffix[1:]) if p.suffix[1:].isdigit() else 0)
+    return logs_dir / f"agent.{safe}.log"
+
+
+def session_log_text(session_id: str, logs_dir: Path = LOGS_DIR) -> str:
+    base = session_log_path(session_id, logs_dir)
+    rotated = sorted(logs_dir.glob(f"{base.name}.*"), key=lambda p: -int(p.suffix[1:]) if p.suffix[1:].isdigit() else 0)
     text = ""
     for path in [*rotated, base]:
         try:
@@ -1126,6 +1134,21 @@ def session_events(session_id: str, logs_dir: Path = LOGS_DIR) -> dict:
     return {"iterations": iterations, "tokens_in": tokens_in, "tokens_out": tokens_out}
 
 
+def agent_logs_dir(run: Exec = subprocess.run, container: str = AGENT_CONTAINER) -> Optional[Path]:
+    """The host folder the agent writes its session logs to: the source of its ``/app/logs``
+    mount, which is the checkout the stack runs from, not necessarily the runner's."""
+    done = run(["docker", "inspect", "--format", "{{json .Mounts}}", container], capture_output=True, text=True,
+               check=False, timeout=30)
+    try:
+        mounts = json.loads(done.stdout or "[]")
+    except ValueError:
+        return None
+    for mount in mounts or []:
+        if isinstance(mount, dict) and mount.get("Destination") == "/app/logs" and mount.get("Source"):
+            return Path(mount["Source"])
+    return None
+
+
 def conversation_rows(db: Db, session_id: str) -> list[dict]:
     return db.json("SELECT m.type, m.data FROM chat_messages m JOIN conversations c ON c.id = m.conversation_id "
                    f"WHERE c.session_id = {lit(session_id)} ORDER BY m.sequence_num")
@@ -1144,7 +1167,7 @@ def trace_from_rows(rows: Sequence[Mapping]) -> dict:
     return {"tool_calls": calls, "answers": answers}
 
 
-def wait_until_idle(db: Db, session_id: str, seconds: float = 90) -> bool:
+def wait_until_idle(db: Db, session_id: str, seconds: float = 60) -> bool:
     until = time.monotonic() + seconds
     while time.monotonic() < until:
         rows = db.json(f"SELECT agent_running FROM conversations WHERE session_id = {lit(session_id)}")
@@ -1157,6 +1180,7 @@ def wait_until_idle(db: Db, session_id: str, seconds: float = 90) -> bool:
 def build_trace(db: Db, session_id: str, owner_id: str, *, before: Optional[dict], logs_dir: Path = LOGS_DIR) -> dict:
     trace = trace_from_rows(conversation_rows(db, session_id))
     log_text = session_log_text(session_id, logs_dir)
+    trace["log_read"], trace["log_path"] = bool(log_text), str(session_log_path(session_id, logs_dir))
     trace["prompts"] = checks.prompts_from_log(log_text)
     trace["hints"], trace["hint_reads"] = checks.hints_from_log(log_text)
     trace.update({"events": session_events(session_id, logs_dir), "session_id": session_id})
@@ -1166,6 +1190,17 @@ def build_trace(db: Db, session_id: str, owner_id: str, *, before: Optional[dict
     picked = {p.page_id for r in results for p in r.picks}
     trace["pages"] = page_cards(db, owner_id, named, with_text=picked) if named else {}
     return trace
+
+
+def run_problem(outcome: ChatOutcome, trace: Mapping, *, loop: bool = False) -> Optional[str]:
+    """Why an agent run did not happen, or None: then, and only then, its checks are judged.
+    A run error never counts as a pass."""
+    if not outcome.question_sent:
+        return "the question was never sent: the agent's socket never connected" + (
+            f" ({outcome.error_code})" if outcome.error_code else "")
+    if outcome.ended in ("error", "disconnected"):
+        return f"the agent run ended: {outcome.ended}" + (f" ({outcome.error_code})" if outcome.error_code else "")
+    return checks.loop_evidence(trace) if loop else checks.run_evidence(trace)
 
 
 # --------------------------------------------------------------------------------------
@@ -1185,8 +1220,21 @@ class Context:
     sessions: dict  # key -> (Http, user id)
     model: str
     out_dir: Path
+    logs_dir: Path = LOGS_DIR
     resource_ids: dict = field(default_factory=dict)  # slug -> id
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    @property
+    def reserve_sec(self) -> float:
+        return float(self.scn["budget"].get("teardown_reserve_min", 5)) * 60
+
+
+def time_left(deadline: float, reserve: float = 0.0) -> float:
+    """Seconds until ``deadline`` (a ``time.monotonic`` value) less ``reserve``."""
+    return deadline - time.monotonic() - reserve
+
+
+MIN_AGENT_SEC = 60
 
 
 def _instance(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddressing) -> labs.Instance:
@@ -1224,23 +1272,48 @@ def _tradecraft_off(ctx: Context, resources: Any) -> list[str]:
     return []
 
 
-def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddressing) -> report.RunResult:
+def _switches_off(env: Env, *keys: str) -> Optional[str]:
+    off = [k for k in keys if not env.flag(k)]
+    return f"{report.SKIP_SWITCH_OFF} ({', '.join(off)})" if off else None
+
+
+def _refused(result: report.RunResult, name: str, res: Response, what: str) -> report.RunResult:
+    """A setup step the stack refused, with its switch on: a failure with its reason (MC-10)."""
+    result.status = report.FAIL
+    result.reason = f"{what} was refused: {res.status} {res.code}".rstrip()
+    result.checks = [report.CheckResult(name, False, result.reason)]
+    return result
+
+
+def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddressing,
+               deadline: float) -> report.RunResult:
     """One run of arm A, B or A-search, or the single checks S1, S2 and S5 (an agent run on
-    a project of the owner's, or of a collaborator's share)."""
+    a project of the owner's, or of a collaborator's share). ``deadline`` bounds the run's
+    whole lane time: the agent gets what is left of it less the teardown reserve."""
     result = report.RunResult(run_id=run.id, arm=run.arm, lab=run.lab, n=run.n, check=run.check, lane=lane,
                               started_at=now_iso(), status=report.ERROR)
     single = ctx.scn["singles"].get(run.check or "", {})
     arm = ctx.scn["arms"].get(run.arm, {})
-    inst = _instance(ctx, run, lane, address) if run.lab else None
     owner_http, owner_id = ctx.sessions["owner"]
+    reserve = ctx.reserve_sec
+    collaborator = single.get("as") == "collaborator"
+    if collaborator:
+        skipped = _switches_off(ctx.env, "RBAC_SHARING_ENABLED", "RBAC_SHARING_WRITE_ENABLED")
+        if skipped:
+            result.status, result.reason = report.SKIPPED, skipped
+            return result
+    inst = _instance(ctx, run, lane, address) if run.lab else None
     project_id = None
     trace: dict = {"api": []}
     t0 = time.monotonic()
     try:
         if inst:
-            ctx.docker.up(inst)
+            if time_left(deadline, reserve) < MIN_AGENT_SEC:
+                result.reason = "no time left in the run's cap to start its lab"
+                return result
+            ctx.docker.up(inst, wait_sec=int(min(labs.UP_TIMEOUT_SEC, time_left(deadline, reserve))))
             problem = oracles.after_up(inst.spec, inst, ctx.docker)
-            if problem or not _wait_http(inst.local_url, 120):
+            if problem or not _wait_http(inst.local_url, min(120.0, max(5.0, time_left(deadline, reserve)))):
                 result.reason = problem or "the lab never answered"
                 return result
         prompt = oracles.prompt_for(inst.spec, inst) if inst else " ".join(str(single.get("prompt", "")).split())
@@ -1256,21 +1329,24 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
                 result.reason = f"turning resources off answered {res.status} {res.code}"
                 return result
         chat_http, chat_id = owner_http, owner_id
-        if single.get("as") == "collaborator":
+        if collaborator:
             collab_http, collab_id = ctx.sessions["collaborator"]
             res = owner_http.call("POST", f"/api/projects/{project_id}/collaborators",
                                   {"email": ctx.accounts["collaborator"].email, "access": "write", "useAgent": True})
             trace["api"].append({"name": "share_with_collaborator", "status": res.status, "code": res.code})
-            if res.status == 404 or not res.ok:
-                result.status, result.reason = report.SKIPPED, f"skipped: switch off (share answered {res.status} {res.code})"
-                return result
+            if not res.ok:
+                return _refused(result, "share_with_collaborator", res, "the share with the collaborator")
             chat_http, chat_id = collab_http, collab_id
         before = page_store_counts(ctx.db, owner_id)
-        outcome = run_chat(ctx.stack, chat_http, chat_id, project_id, prompt, cap_sec=run.cap_sec)
+        cap = time_left(deadline, reserve)
+        if cap < MIN_AGENT_SEC:
+            result.reason = "no time left in the run's cap for the agent"
+            return result
+        outcome = run_chat(ctx.stack, chat_http, chat_id, project_id, prompt, cap_sec=cap)
         result.cap_reached = outcome.ended == "cap"
         result.approvals_given = len(outcome.approvals)
-        wait_until_idle(ctx.db, outcome.session_id)
-        trace.update(build_trace(ctx.db, outcome.session_id, owner_id, before=before))
+        wait_until_idle(ctx.db, outcome.session_id, seconds=min(60.0, max(5.0, time_left(deadline))))
+        trace.update(build_trace(ctx.db, outcome.session_id, owner_id, before=before, logs_dir=ctx.logs_dir))
         trace["outcome"] = outcome.__dict__
         ev = trace.get("events") or {}
         result.iterations, result.tokens_in, result.tokens_out = ev.get("iterations"), ev.get("tokens_in"), ev.get("tokens_out")
@@ -1278,14 +1354,16 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
             o = oracles.judge(inst.spec, inst, answers=trace["answers"],
                               tool_outputs=[c.get("output", "") for c in trace["tool_calls"]], docker=ctx.docker)
             result.oracle, result.oracle_detail = o.ok, o.detail + (" (seen in a tool output)" if o.seen_in_tool_output else "")
+        problem = run_problem(outcome, trace)
+        if problem:
+            result.status, result.reason = report.ERROR, problem
+            return result
         if run.arm == "single":
             result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=single)
         else:
             result.checks = checks.arm_checks(run.arm, trace, expected_pages=inst.spec.expected_pages if inst else [],
                                               cfg=ctx.scn, prompt=prompt)
         result.status = report.FAIL
-        if outcome.ended in ("error", "disconnected"):
-            result.reason = f"the run ended: {outcome.ended} {outcome.error_code}".strip()
         return report.settle(result)
     except Exception as exc:  # a run's failure is its own; the matrix goes on
         result.status, result.reason = report.ERROR, f"{type(exc).__name__}: {exc}"
@@ -1300,10 +1378,14 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
         result.trace_file = str(report.write_run_file(ctx.out_dir, result, trace, ctx.redact))
 
 
-def run_acting(ctx: Context, run: lanes.Run) -> report.RunResult:
+def run_acting(ctx: Context, run: lanes.Run, deadline: float) -> report.RunResult:
     """S3: the administrator of ``.env`` acts as the owner."""
     result = report.RunResult(run_id=run.id, arm=run.arm, lab=None, n=1, check=run.check, started_at=now_iso(),
                               status=report.ERROR)
+    skipped = _switches_off(ctx.env, "RBAC_PERMISSIONS_ENABLED")
+    if skipped:
+        result.status, result.reason = report.SKIPPED, skipped
+        return result
     single = ctx.scn["singles"][run.check]
     owner_http, owner_id = ctx.sessions["owner"]
     trace: dict = {"api": []}
@@ -1312,9 +1394,6 @@ def run_acting(ctx: Context, run: lanes.Run) -> report.RunResult:
     admin_id = ""
     t0 = time.monotonic()
     try:
-        if not ctx.env.flag("RBAC_PERMISSIONS_ENABLED"):
-            result.status, result.reason = report.SKIPPED, "skipped: switch off (RBAC_PERMISSIONS_ENABLED)"
-            return result
         admin, admin_id = ctx.stack.session(ctx.env.get("UI_LOGIN_USERNAME"), ctx.env.get("UI_LOGIN_PASSWORD"))
         fields = project_fields(ctx.scn, target_ip=None, model=ctx.model)
         phases = fields.pop("_tradecraft_phases", None)
@@ -1325,8 +1404,7 @@ def run_acting(ctx: Context, run: lanes.Run) -> report.RunResult:
                                                       "stepUpPassword": ctx.env.get("UI_LOGIN_PASSWORD")})
         trace["api"].append({"name": "act_as", "status": res.status, "code": res.code})
         if not res.ok:
-            result.status, result.reason = report.SKIPPED, f"skipped: act-as answered {res.status} {res.code}"
-            return result
+            return _refused(result, "act_as", res, "acting as the owner")
         for value in admin.cookies.values():
             ctx.redact.add(value)
         since = now_iso()
@@ -1345,10 +1423,15 @@ def run_acting(ctx: Context, run: lanes.Run) -> report.RunResult:
                            f"AND on_behalf_of_user_id = {lit(owner_id)} AND created_at >= {lit(since)}::timestamptz")
         trace["audit"] = {"act_as_refused": int(rows[0]["n"]) if rows else 0}
         outcome = run_chat(ctx.stack, admin, owner_id, project_id, " ".join(str(single["prompt"]).split()),
-                           cap_sec=run.cap_sec)
+                           cap_sec=max(MIN_AGENT_SEC, time_left(deadline, ctx.reserve_sec)))
         result.cap_reached = outcome.ended == "cap"
-        wait_until_idle(ctx.db, outcome.session_id)
-        trace.update({k: v for k, v in build_trace(ctx.db, outcome.session_id, owner_id, before=None).items() if k != "api"})
+        wait_until_idle(ctx.db, outcome.session_id, seconds=min(60.0, max(5.0, time_left(deadline))))
+        trace.update({k: v for k, v in build_trace(ctx.db, outcome.session_id, owner_id, before=None,
+                                                   logs_dir=ctx.logs_dir).items() if k != "api"})
+        problem = run_problem(outcome, trace)
+        if problem:
+            result.status, result.reason = report.ERROR, problem
+            return result
         result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=single)
         result.status = report.FAIL
         return report.settle(result)
@@ -1372,25 +1455,26 @@ def _any_page_id(db: Db, resource_id: str) -> str:
     return f"{rows[0]['slug']}:{rows[0]['id']}" if rows else "none:1"
 
 
-def run_loop(ctx: Context, run: lanes.Run) -> report.RunResult:
+def run_loop(ctx: Context, run: lanes.Run, deadline: float) -> report.RunResult:
     """S4: an Agent in the Loop run, its model calls answered by ``LoopDriver``."""
     result = report.RunResult(run_id=run.id, arm=run.arm, lab=None, n=1, check=run.check, started_at=now_iso(),
                               status=report.ERROR)
+    skipped = _switches_off(ctx.env, "AGENT_IN_THE_LOOP_ENABLED", "MCP_SERVER_ENABLED")
+    if skipped:
+        result.status, result.reason = report.SKIPPED, skipped
+        return result
     single = ctx.scn["singles"][run.check]
     owner_http, owner_id = ctx.sessions["owner"]
     trace: dict = {"api": []}
     project_id = token_id = None
     t0 = time.monotonic()
     try:
-        if not (ctx.env.flag("AGENT_IN_THE_LOOP_ENABLED") and ctx.env.flag("MCP_SERVER_ENABLED")):
-            result.status, result.reason = report.SKIPPED, "skipped: switch off (Agent in the Loop or the MCP server)"
-            return result
         res = owner_http.call("POST", f"/api/users/{owner_id}/mcp-tokens", {
             "name": f"tc-e2e loop driver {secrets.token_hex(3)}", "scopes": ["recon:read", "agent:loop"],
             "profile": "agent_in_the_loop", "expiresInDays": 30, "password": ctx.accounts["owner"].password})
-        if res.status != 201 or not isinstance(res.data, dict):
-            result.status, result.reason = report.SKIPPED, f"skipped: the driver token answered {res.status} {res.code}"
-            return result
+        trace["api"].append({"name": "driver_token", "status": res.status, "code": res.code})
+        if res.status != 201 or not isinstance(res.data, dict) or not res.data.get("plaintext"):
+            return _refused(result, "driver_token", res, "the Agent in the Loop driver token")
         token = str(res.data.get("plaintext") or "")
         token_id = str((res.data.get("token") or {}).get("id") or "")
         ctx.redact.add(token)
@@ -1402,17 +1486,22 @@ def run_loop(ctx: Context, run: lanes.Run) -> report.RunResult:
         session_id = new_session_id()
         driver = LoopDriver(ctx.stack.webapp, token, session_id)
         did: list[str] = []
+        cap = max(MIN_AGENT_SEC, time_left(deadline, ctx.reserve_sec))
         worker = threading.Thread(target=lambda: did.extend(drive_loop(driver, single["ask"], target_ip="192.0.2.10",
-                                                                         timeout=run.cap_sec)), daemon=True)
+                                                                         timeout=cap)), daemon=True)
         worker.start()
-        outcome = run_chat(ctx.stack, owner_http, owner_id, project_id, str(single["prompt"]), cap_sec=run.cap_sec,
+        outcome = run_chat(ctx.stack, owner_http, owner_id, project_id, str(single["prompt"]), cap_sec=cap,
                            session_id=session_id)
-        worker.join(timeout=120)
+        worker.join(timeout=max(5.0, min(120.0, time_left(deadline))))
         result.cap_reached = outcome.ended == "cap"
-        wait_until_idle(ctx.db, session_id)
-        trace.update(build_trace(ctx.db, session_id, owner_id, before=None))
+        wait_until_idle(ctx.db, session_id, seconds=min(60.0, max(5.0, time_left(deadline))))
+        trace.update(build_trace(ctx.db, session_id, owner_id, before=None, logs_dir=ctx.logs_dir))
         trace["loop_prompts"] = driver.prompts
         trace["driver"] = did
+        problem = run_problem(outcome, trace, loop=True)
+        if problem:
+            result.status, result.reason = report.ERROR, problem
+            return result
         result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=single)
         result.status = report.FAIL
         return report.settle(result)
@@ -1442,6 +1531,9 @@ def run_address_guard(ctx: Context, run: lanes.Run, address: lanes.LaneAddressin
         answer = (res.data or {}).get("result") if isinstance(res.data, dict) else None
         trace["api"].append({"name": "check_url_lab_address", "status": res.status,
                              "code": (answer or {}).get("error_code") or res.code, "ok": (answer or {}).get("ok")})
+        if res.status == 0:
+            result.reason = f"the webapp was not reached ({res.error})"
+            return result
         result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=ctx.scn["singles"][run.check])
         result.status = report.FAIL
         return report.settle(result)
@@ -1451,15 +1543,15 @@ def run_address_guard(ctx: Context, run: lanes.Run, address: lanes.LaneAddressin
         result.trace_file = str(report.write_run_file(ctx.out_dir, result, trace, ctx.redact))
 
 
-def run_one(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddressing) -> report.RunResult:
+def run_one(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddressing, deadline: float) -> report.RunResult:
     single = ctx.scn["singles"].get(run.check or "", {})
     if run.check == "S6":
         return run_address_guard(ctx, run, address, lane)
     if single.get("aitl"):
-        return run_loop(ctx, run)
+        return run_loop(ctx, run, deadline)
     if single.get("as") == "admin_acting":
-        return run_acting(ctx, run)
-    return run_attack(ctx, run, lane, address)
+        return run_acting(ctx, run, deadline)
+    return run_attack(ctx, run, lane, address, deadline)
 
 
 def set_owner_mode(ctx: Context, mode: str) -> None:
@@ -1470,22 +1562,27 @@ def set_owner_mode(ctx: Context, mode: str) -> None:
     ctx.log(f"owner's Librarian use set to {mode}")
 
 
-def run_matrix(ctx: Context, runs: Sequence[lanes.Run], lane_count: int,
-               run_fn: Callable[[Context, lanes.Run, int, lanes.LaneAddressing], report.RunResult] = run_one,
-               clock: Callable[[], float] = time.monotonic, poll_sec: float = 5.0) -> list[report.RunResult]:
-    """The lanes: whenever a lane is free the scheduler picks its next run; no run starts
-    after the budget guard, and the ones left are reported ``not run: budget``."""
-    budget = ctx.scn["budget"]
-    sched = lanes.Scheduler(runs, start_until_sec=float(budget["start_until_min"]) * 60)
+RunFn = Callable[[Context, lanes.Run, int, lanes.LaneAddressing, float], report.RunResult]
+
+
+def run_matrix(ctx: Context, runs: Sequence[lanes.Run], lane_count: int, run_fn: RunFn = run_one,
+               clock: Callable[[], float] = time.monotonic, poll_sec: float = 5.0,
+               started_at: Optional[float] = None) -> list[report.RunResult]:
+    """The lanes: whenever a lane is free the scheduler picks its next run. The budget is
+    counted from ``started_at``, the start of the whole matrix (its preflight included): no run
+    starts after the guard, nor one whose cap could end after the total less the collection;
+    the ones left are reported ``not run: budget``. Each run gets the deadline of its cap."""
+    plan = lanes.budget(ctx.scn)
+    sched = lanes.Scheduler(runs, start_until_sec=plan.start_until_sec, end_by_sec=plan.end_by_sec)
     address = lanes.addressing(ctx.scn, lane_count)
     results: list[report.RunResult] = []
     busy: dict[int, threading.Thread] = {}
     done_lock = threading.Lock()
-    start = clock()
+    start = clock() if started_at is None else started_at
 
-    def work(lane: int, run: lanes.Run) -> None:
+    def work(lane: int, run: lanes.Run, deadline: float) -> None:
         try:
-            res = run_fn(ctx, run, lane, address)
+            res = run_fn(ctx, run, lane, address, deadline)
         except Exception as exc:  # noqa: BLE001 - one run's crash is that run's error
             res = report.RunResult(run.id, run.arm, run.lab, run.n, run.check, status=report.ERROR,
                                    reason=type(exc).__name__, lane=lane)
@@ -1501,7 +1598,8 @@ def run_matrix(ctx: Context, runs: Sequence[lanes.Run], lane_count: int,
             free = [ln for ln in range(lane_count) if ln not in busy]
             progressed = False
             for lane in free:
-                run = sched.next_run(clock() - start)
+                now = clock()
+                run = sched.next_run(now - start)
                 if run is None:
                     break
                 mode = sched.needs_mode(run)
@@ -1516,7 +1614,8 @@ def run_matrix(ctx: Context, runs: Sequence[lanes.Run], lane_count: int,
                         progressed = True
                         continue
                     sched.mode_set(mode)
-                thread = threading.Thread(target=work, args=(lane, run), name=f"lane-{lane}", daemon=True)
+                thread = threading.Thread(target=work, args=(lane, run, now + run.cap_sec), name=f"lane-{lane}",
+                                          daemon=True)
                 busy[lane] = thread
                 thread.start()
                 progressed = True
@@ -1529,7 +1628,6 @@ def run_matrix(ctx: Context, runs: Sequence[lanes.Run], lane_count: int,
     return results
 
 
-# --------------------------------------------------------------------------------------
 # Layer-1 checks (beside the lanes) and the preflight
 # --------------------------------------------------------------------------------------
 
@@ -1550,13 +1648,13 @@ for item in q["questions"]:
 
 
 def retrieval_check(ctx: Context, project_id: str, questions: Sequence[Mapping],
-                    run: Exec = subprocess.run) -> report.CheckResult:
+                    run: Exec = subprocess.run, timeout: float = 900) -> report.CheckResult:
     """The 30 retrieval questions on the owner's restored library, read-only: each one's
     expected page must be among its search results."""
     _, owner_id = ctx.sessions["owner"]
     payload = json.dumps({"project_id": project_id, "person_id": owner_id, "questions": [q["q"] for q in questions]})
     done = run(["docker", "exec", "-i", "-w", "/app", AGENT_CONTAINER, "python", "-c", RETRIEVAL_SCRIPT],
-               input=payload, capture_output=True, text=True, timeout=900, check=False)
+               input=payload, capture_output=True, text=True, timeout=timeout, check=False)
     outputs = {}
     for line in (done.stdout or "").splitlines():
         if line.startswith("TC_E2E_RESULT="):
@@ -1574,8 +1672,8 @@ def retrieval_check(ctx: Context, project_id: str, questions: Sequence[Mapping],
     return report.CheckResult("retrieval_questions", ok, detail if done.returncode == 0 else f"exit {done.returncode}")
 
 
-def _job_done(http: Http, uid: str, rid: str, seconds: float) -> Optional[dict]:
-    until = time.monotonic() + seconds
+def _job_done(http: Http, uid: str, rid: str, seconds: float, deadline: Optional[float] = None) -> Optional[dict]:
+    until = time.monotonic() + seconds if deadline is None else min(time.monotonic() + seconds, deadline)
     while time.monotonic() < until:
         res = http.call("GET", f"/api/users/{uid}/tradecraft-resources/{rid}/jobs")
         job = (res.data or {}).get("job") if isinstance(res.data, dict) else None
@@ -1585,7 +1683,7 @@ def _job_done(http: Http, uid: str, rid: str, seconds: float) -> Optional[dict]:
     return None
 
 
-def ops_checks(ctx: Context) -> list[report.CheckResult]:
+def ops_checks(ctx: Context, deadline: float) -> list[report.CheckResult]:
     """On the ops account's own resource: an incremental refresh (AC-18), Cancel mid-refresh
     keeps the previous version (AC-33), the stale badge after a settings change, and delete
     leaves no row (AC-42). Never on the owner's library."""
@@ -1599,11 +1697,11 @@ def ops_checks(ctx: Context) -> list[report.CheckResult]:
     if not res.ok or not rid:
         return [report.CheckResult("ops_resource_added", False, f"add answered {res.status} {res.code}")]
     try:
-        first = _job_done(http, uid, rid, 1800)
+        first = _job_done(http, uid, rid, 1800, deadline)
         out.append(report.CheckResult("ops_resource_added", bool(first and first.get("status") == "succeeded"),
                                       (first or {}).get("status", "no job end")))
         res = http.call("POST", f"{base}/{rid}/refresh", {})
-        second = _job_done(http, uid, rid, 1800)
+        second = _job_done(http, uid, rid, 1800, deadline)
         rep = json.dumps((second or {}).get("report") or {})
         out.append(report.CheckResult("incremental_refresh", bool(second and second.get("status") == "succeeded"
                                                                   and re.search(r"unchanged|not_modified|incremental", rep)),
@@ -1614,7 +1712,7 @@ def ops_checks(ctx: Context) -> list[report.CheckResult]:
         http.call("POST", f"{base}/{rid}/refresh", {})
         time.sleep(5)
         http.call("DELETE", f"{base}/{rid}/jobs")
-        third = _job_done(http, uid, rid, 600)
+        third = _job_done(http, uid, rid, 600, deadline)
         gen = ctx.db.json(f"SELECT generation FROM user_tradecraft_resources WHERE id = {lit(rid)}")
         entries2 = ctx.db.json(f"SELECT count(*) AS n FROM tradecraft_entries WHERE resource_id = {lit(rid)}")
         kept = bool(gen and gen[0]["generation"] == gen1 and entries1 == entries2)
@@ -1639,7 +1737,8 @@ def ops_checks(ctx: Context) -> list[report.CheckResult]:
     return out
 
 
-def layer1(ctx: Context) -> list[report.CheckResult]:
+def layer1(ctx: Context, deadline: float) -> list[report.CheckResult]:
+    """The layer-1 checks, within ``deadline`` (a ``time.monotonic`` value: the budget's end)."""
     out: list[report.CheckResult] = []
     owner_http, _ = ctx.sessions["owner"]
     project_id = None
@@ -1647,14 +1746,15 @@ def layer1(ctx: Context) -> list[report.CheckResult]:
         fields = project_fields(ctx.scn, target_ip=None, model=ctx.model)
         fields.pop("_tradecraft_phases", None)
         project_id = Stack.create_project(owner_http, f"tc-e2e layer1 {secrets.token_hex(3)}", fields)
-        out.append(retrieval_check(ctx, project_id, ctx.scn["layer1"]["retrieval"]))
+        out.append(retrieval_check(ctx, project_id, ctx.scn["layer1"]["retrieval"],
+                                   timeout=max(30.0, min(900.0, time_left(deadline)))))
     except Exception as exc:
         out.append(report.CheckResult("retrieval_questions", False, f"{type(exc).__name__}: {exc}"))
     finally:
         if project_id:
             Stack.delete_project(owner_http, project_id)
     try:
-        out += ops_checks(ctx)
+        out += ops_checks(ctx, deadline)
     except Exception as exc:
         out.append(report.CheckResult("ops_checks", False, f"{type(exc).__name__}: {exc}"))
     return out
@@ -1683,6 +1783,16 @@ def mem_available_gb() -> Optional[float]:
     return None
 
 
+def logs_dir_problem(logs_dir: Path) -> Optional[str]:
+    """The agent's session logs are the trace's prompts and hints: without them every run would
+    be a run error, so the matrix does not start."""
+    if not logs_dir.is_dir():
+        return f"the agent's log folder {logs_dir} does not exist (pass --agent-logs)"
+    if not any(logs_dir.glob("agent.*.log")):
+        return f"the agent's log folder {logs_dir} holds no session log: it is not the one the agent writes to"
+    return None
+
+
 def preflight(ctx: Context, runs: Sequence[lanes.Run], *, restore: bool, build: bool) -> list[str]:
     """What must hold before the lanes start; returns the problems (empty: go)."""
     problems: list[str] = []
@@ -1690,6 +1800,9 @@ def preflight(ctx: Context, runs: Sequence[lanes.Run], *, restore: bool, build: 
     for name, url in (("webapp", stack.webapp + "/api/health"), ("agent", stack.agent_http + "/health")):
         if not _wait_http(url, 10):
             problems.append(f"the {name} does not answer")
+    problem = logs_dir_problem(ctx.logs_dir)
+    if problem:
+        problems.append(problem)
     stamp = snapshot_stamp()
     if stamp is None:
         problems.append("no library snapshot (_local/tradecraft-e2e/library/stamp.json): build it with T10.2's library.py")
@@ -1762,9 +1875,9 @@ def preflight(ctx: Context, runs: Sequence[lanes.Run], *, restore: bool, build: 
 def dry_run(scn: dict, runs: Sequence[lanes.Run], lane_count: int, env: Env, *, out=print) -> int:
     """The plan of a matrix run, with nothing started: the runs and their checks, the lab
     instances lane 0 would get (overrides generated and parsed back), the worst-case schedule
-    for ``--lanes``, and which ``.env`` keys are present (names only)."""
-    budget = scn["budget"]
-    start_until = float(budget["start_until_min"]) * 60
+    for ``--lanes`` from the matrix's start (start times in minutes, the preflight included),
+    and which ``.env`` keys are present (names only)."""
+    plan = lanes.budget(scn)
     address = lanes.addressing(scn, lane_count)
     specs = oracles.specs(scn)
     out(f"Tradecraft 2.0 matrix: {len(runs)} runs on {lane_count} lanes (dry run: no stack, no Docker, no network)")
@@ -1783,10 +1896,13 @@ def dry_run(scn: dict, runs: Sequence[lanes.Run], lane_count: int, env: Env, *, 
             parsed = load_yaml(labs.override_yaml(spec, base, inst, network=scn["lanes"]["network"]).replace(" !override", "").replace(" !reset", ""))
             line += f"; override services {', '.join(parsed['services'])}"
         out(line)
-    timeline = lanes.worst_case(runs, lane_count, start_until_sec=start_until)
-    out(f"  worst case (every run at its cap): {timeline.makespan / 3600:.2f} h of lanes, "
-        f"{(timeline.makespan + float(budget.get('preflight_min', 20)) * 60) / 3600:.2f} h with the preflight; "
-        f"budget guard at {start_until / 3600:.2f} h; owner mode changes: "
+    timeline = lanes.worst_case(runs, lane_count, plan)
+    collect = plan.total_sec - plan.end_by_sec
+    out(f"  worst case (every run at its cap, which bounds its whole lane time): lanes "
+        f"{(timeline.makespan - plan.preflight_sec) / 3600:.2f} h, the matrix "
+        f"{(timeline.makespan + collect) / 3600:.2f} h of the {plan.total_sec / 3600:.2f} h budget "
+        f"(preflight {plan.preflight_sec / 60:.0f} min, collection {collect / 60:.0f} min); no run starts after "
+        f"{plan.start_until_sec / 3600:.2f} h nor ends after {plan.end_by_sec / 3600:.2f} h; owner mode changes: "
         + (", ".join(f"{m} at {t / 60:.0f} min" for t, m in timeline.mode_changes) or "none"))
     if timeline.not_run:
         out(f"  with {lane_count} lanes {len(timeline.not_run)} runs would be '{lanes.NOT_RUN_BUDGET}' in the worst case: "
@@ -1818,7 +1934,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--lanes", type=int, default=None, help="parallel lanes (default: scenarios.yaml, 7)")
     ap.add_argument("--only", action="append", default=[], help="a run id, lab, arm, lab-arm or single check; repeatable")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit; starts nothing")
-    ap.add_argument("--model", default="", help="the agent model of every run's project (default: the webapp's default)")
+    ap.add_argument("--model", default="", help="the agent model of every run's project (required for a run): "
+                    "one the e2e owner's provider serves")
+    ap.add_argument("--agent-logs", default="", help="the host folder of the agent's session logs "
+                    "(default: the source of the agent container's /app/logs mount)")
     ap.add_argument("--no-restore", action="store_true", help="do not restore the library snapshot first")
     ap.add_argument("--no-build", action="store_true", help="do not build the lab images in the preflight")
     ap.add_argument("--no-layer1", action="store_true", help="skip the layer-1 checks")
@@ -1836,7 +1955,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     if args.dry_run:
         return dry_run(scn, runs, lane_count, env, out=lambda s: print(redact(s)))
+    if not args.model:
+        log("--model is required: the agent model every run's project uses, one the e2e owner's provider serves")
+        return 2
 
+    # The budget counts from here: the preflight is part of the 5 hours.
+    matrix_start = time.monotonic()
+    plan = lanes.budget(scn)
     stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
     out_dir = RUNS_DIR / stamp
     stack = Stack(env, redact, log)
@@ -1844,8 +1969,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     docker = labs.Docker(REPO, log=log)
     accounts = seed_accounts(scn["accounts"], redact)
     sessions = {k: stack.session(a.email, a.password) for k, a in accounts.items()}
+    logs_dir = Path(args.agent_logs) if args.agent_logs else (agent_logs_dir() or LOGS_DIR)
     ctx = Context(scn=scn, env=env, redact=redact, log=log, stack=stack, db=db, docker=docker, accounts=accounts,
-                  sessions=sessions, model=args.model or "claude-opus-4-6", out_dir=out_dir)
+                  sessions=sessions, model=args.model, out_dir=out_dir, logs_dir=logs_dir)
     started = now_iso()
     problems = preflight(ctx, runs, restore=not args.no_restore, build=not args.no_build)
     if problems:
@@ -1854,13 +1980,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 3
     layer1_results: list[report.CheckResult] = []
     layer1_thread = None
+    end_by = matrix_start + plan.end_by_sec
     if not args.no_layer1 and not args.only:
-        layer1_thread = threading.Thread(target=lambda: layer1_results.extend(layer1(ctx)), daemon=True)
+        layer1_thread = threading.Thread(target=lambda: layer1_results.extend(layer1(ctx, end_by)), daemon=True)
         layer1_thread.start()
-    t0 = time.monotonic()
-    results = run_matrix(ctx, runs, lane_count)
+    results = run_matrix(ctx, runs, lane_count, started_at=matrix_start)
     if layer1_thread:
-        layer1_thread.join(timeout=3600)
+        layer1_thread.join(timeout=max(0.0, time_left(end_by)))
+        if layer1_thread.is_alive():
+            layer1_results = list(layer1_results) + [report.CheckResult(
+                "layer1_finished", False, "the layer-1 checks did not finish within the budget")]
     try:
         set_owner_mode(ctx, str((scn.get("owner_search") or {}).get("librarian.use", "agent")))
     except RuntimeError as exc:
@@ -1869,9 +1998,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                                        expected=[r.id for r in runs])
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                             check=False).stdout.strip()
-    timeline = lanes.worst_case(runs, lane_count, start_until_sec=float(scn["budget"]["start_until_min"]) * 60)
+    timeline = lanes.worst_case(runs, lane_count, plan)
     meta = {"started": started, "finished": now_iso(), "commit": commit, "model": ctx.model, "lanes": lane_count,
-            "projected_worst_case": f"{timeline.makespan / 3600:.2f} h", "wall_clock": f"{(time.monotonic() - t0) / 3600:.2f} h"}
+            "projected_worst_case": f"{timeline.makespan / 3600:.2f} h from the start, preflight included",
+            "wall_clock": f"{(time.monotonic() - matrix_start) / 3600:.2f} h"}
     text = report.render(results=results, gates=gates, verdict=verdict, meta=meta, gain_table=report.gain(results),
                          durations={r.run_id: r.seconds for r in results if r.seconds}, redact=redact)
     path = report.write_report(out_dir, text)
