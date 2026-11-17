@@ -19,7 +19,7 @@ and a real model, so it is never part of the unit gate.
 | `library.py`, `library.yaml` | The library build, snapshot and restore (T10.2, S15) |
 
 Standard library only, host Python 3. Unit tests (no stack):
-`docker run --rm -v "$PWD:/repo" -w /repo -e PYTHONPATH=/repo --entrypoint python redamon-agent:latest -m pytest tests/test_tradecraft_matrix_runner.py`.
+`docker run --rm -v "$PWD:/repo" -w /repo -e PYTHONPATH=/repo --entrypoint python redamon-agent:latest -m pytest tests/test_tradecraft_matrix_runner.py tests/test_tradecraft_matrix_library.py`.
 
 ## Run it
 
@@ -46,6 +46,62 @@ and the MCP server are on for S2, S3 and S4 (a check whose switch is off in `.en
 "skipped: switch off"; any other refusal while setting a check up, such as a share refused by
 policy or a refused step-up password, fails it with its reason); the host can hold `--lanes`
 lab instances and agent sessions.
+
+## The library (`library.py`, `library.yaml`)
+
+Every agent run reads the same library: the e2e owner's nine resources, added from the
+default presets through the product's own routes, frozen in a snapshot that the preflight
+restores before each matrix run. Stored resources answer from their copy, so only the CVE
+archive (Live) needs the internet during a run.
+
+| Resource | Type | Storage and settings |
+|---|---|---|
+| `hacktricks` | MkDocs wiki | Live (the card pass) |
+| `payloadsallthethings` | GitHub repository | Stored from the archive; focus Tag only |
+| `claude-bughunter` | GitHub repository | Stored; Focused on SQL injection and SSRF × payloads and bypasses, Balanced; the focus preview runs first |
+| `web-hacking-techniques-index` | Website | Stored; Auto (its sitemap) |
+| `hexbrain-payloads` | Website | Stored; Auto; `/payloads/*`, inside the folder |
+| `web-hacking-techniques-archive-github` | GitHub repository | Live (the same archive twice) |
+| `trickest-cve` | CVE archive | Live; the path pattern Check URL finds |
+| `mitmproxy-docs` | Sphinx docs | Live |
+| `ired-team` | GitBook | Live, with the fake login `cookie=fake-session` (S2, S3) |
+
+```bash
+python3 tooling/scripts/tradecraft_e2e/library.py plan --model <id>    # what build would send; starts nothing
+python3 tooling/scripts/tradecraft_e2e/library.py models               # the model ids the e2e owner may pick
+flock "<PLAN>/run/heavy.lock" python3 tooling/scripts/tradecraft_e2e/library.py build --model <id>
+python3 tooling/scripts/tradecraft_e2e/library.py snapshot
+python3 tooling/scripts/tradecraft_e2e/library.py restore              # the preflight runs it
+python3 tooling/scripts/tradecraft_e2e/library.py status               # the stamp; warns when ingestion changed
+```
+
+`build` (about 1.5-2.5 h, the internet and the model: MC-9) signs in as the e2e owner and
+stops with exit 4 when the account has no model provider (a person adds one acting as it;
+nothing copies a key). It sets the librarian model and the search settings of
+`scenarios.yaml`'s `owner_search`, then per resource runs Check URL, the focus preview where
+`library.yaml` asks, and Add, keeps two add jobs in flight (the agent runs two at a time),
+and judges each report: the job, the type, the map size, the storage, the stored pages, the
+readiness line, the login and the focus. It resumes: a resource already built is judged
+again, one whose job failed is deleted and added again, one not in `library.yaml` is
+deleted. The record, counts only, goes to `_local/tradecraft-e2e/library-build.json`.
+
+`snapshot` refuses while the owner has a running job. In one read-only transaction it copies
+the owner's rows of every tradecraft table but the jobs, the live generation only, with no
+claim (`active_job_id` empty) and no GitHub token, into `_local/tradecraft-e2e/library/`
+(private files), with `stamp.json`: the plan commit, a hash of `agentic/tradecraft/ingest/`,
+the columns, row counts and checksums. A failed snapshot leaves the previous one in place.
+`restore` checks every file against the stamp first, then in one transaction deletes the
+owner's tradecraft rows (a running job refuses it), copies the files back, moves the rows
+to the owner's id of today when the account was made again, leaves out the choices of
+projects that are gone, moves the four autoincrement sequences past the restored ids, and
+checks that the search trigger filled every row. Any error rolls the whole restore back.
+The preflight warns when the ingestion code changed since the stamp: build the library
+again then.
+
+`snapshot` and `restore` take `--pg-container`, `--pg-user`, `--pg-db`, `--dir` and
+`--owner-email` to run on another database, such as a session's copy on the plan's
+disposable Postgres (`tooling/scripts/tradecraft_pg_testdb.sh`). The snapshot holds
+third-party pages: it stays under `_local/` and is never committed.
 
 ## What one run does
 
