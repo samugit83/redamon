@@ -301,6 +301,7 @@ async def build_map(state: IngestState) -> None:
     else:
         await _crawl(state)
     _drop_unstorable_urls(state)
+    _docs_start_page_only(state)
     _homepage_fallback(state)
 
 
@@ -423,11 +424,34 @@ async def _crawl_instead(state: IngestState, reading_started: float) -> None:
 _MODEL_ERRORS = ("model_unavailable", "llm_budget_exhausted", "loop_model_not_supported_here")
 
 
+# A docs map that held nothing but its start page (counted in the report).
+DOCS_START_PAGE_ONLY = "docs_start_page_only"
+
+
+def _docs_start_page_only(state: IngestState) -> None:
+    """A docs map is never its start page alone: a docs site whose index, sitemaps and crawl gave
+    no other page is a failed refresh, so the previous version stays under the default policy and
+    a first add fails instead of keeping a one-page map. The code says why: ``timeout`` when the
+    time budget ran out, else ``fetch_failed`` (no page found)."""
+    if state.site_type != "sphinx-docs" or state.map_error:
+        return
+    is_start = builders.same_page_as(state.url)
+    if any(not is_start(e.url) for e in state.entries if e.extra.get("status", "kept") == "kept"):
+        return
+    timed_out = state.stop_reason == _TIME_SPENT or (state.crawl is not None and state.crawl.stop_reason == "time_budget")
+    state.entries = []
+    state.map_error = "timeout" if timed_out else "fetch_failed"
+    state.count_error(DOCS_START_PAGE_ONLY)
+    logger.info(f"[tradecraft] job {state.request.job_id} build_map code={state.map_error} note={DOCS_START_PAGE_ONLY}")
+
+
 def _homepage_fallback(state: IngestState) -> None:
     """1.x: an empty map of a site whose start page answered gets that page as its only entry
-    (never for a PDF or a CVE archive, which are never listed this way)."""
+    (never for a PDF or a CVE archive, which are never listed this way, nor for a docs site,
+    whose map is never its start page alone)."""
     home = state.home
-    if state.entries or state.site_type in ("pdf", "cve-poc-db") or home is None or state.map_error in _MODEL_ERRORS:
+    if (state.entries or state.site_type in ("pdf", "cve-poc-db", "sphinx-docs") or home is None
+            or state.map_error in _MODEL_ERRORS):
         return
     if not (0 < home.status < 400) or len(home.text or "") < _FALLBACK_MIN_CHARS:
         return

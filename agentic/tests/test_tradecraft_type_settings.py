@@ -37,18 +37,21 @@ class Job:
     """One ingestion job of resource ``r1`` with the request's ``settings``."""
 
     def __init__(self, root, url, settings=None, *, mode="live", store=None, model=None, forced_type="",
-                 credentials=None, fetcher=None):
+                 credentials=None, fetcher=None, job_id=JID, target=1):
         self.store = store or MemoryStore()
         self.fetcher = fetcher or FixtureFetcher(root)
         self.model = model or PipelineModel()
         spec = json.loads(json.dumps(FIXTURE))
-        spec.update(job_id=JID, user_id=OWNER, actor_user_id=OWNER, resource_id=RID, settings=dict(settings or {}))
+        spec.update(job_id=job_id, user_id=OWNER, actor_user_id=OWNER, resource_id=RID, settings=dict(settings or {}))
         spec["resource"].update(url=url, storage_mode=mode, model="openai/fake-small-model", forced_type=forced_type)
         spec["secrets"] = {"github_token": None, "credentials": credentials}
         self.request = JobStartRequest.model_validate(spec)
-        self.store.add_resource(OWNER, RID, url=url, storage_mode=mode, generation=0)
-        self.store.add_job(OWNER, RID, JID, status="running")
-        self.store.jobs[JID]["target_generation"] = 1
+        # A refresh of a resource a first job already ingested keeps its row and live generation.
+        if RID not in self.store.resources:
+            self.store.add_resource(OWNER, RID, url=url, storage_mode=mode, generation=0)
+        self.store.add_job(OWNER, RID, job_id, status="running")
+        self.store.jobs[job_id]["target_generation"] = target
+        self.target = target
         self.state = None
 
     def run(self, is_cancelled=None):
@@ -62,8 +65,8 @@ class Job:
             pass
 
         # As the job runner does (jobs.py): the request's values, clamped by the agent's spec.
-        ctx = JobContext(request=self.request, settings=EffectiveSettings(self.request.settings), target_generation=1,
-                         is_cancelled=is_cancelled or no, set_stage=stage)
+        ctx = JobContext(request=self.request, settings=EffectiveSettings(self.request.settings),
+                         target_generation=self.target, is_cancelled=is_cancelled or no, set_stage=stage)
         seen = {}
         original = pipeline.detect_type
 
@@ -488,17 +491,18 @@ def test_the_docs_sitemap_reading_stops_on_cancel_and_on_the_time_budget(tmp_pat
     assert not [u for u, _ in fetcher.requests if u.endswith("/maps/b.xml")]
 
     # The crawl's time budget (180 s) bounds the reading too: the clock passes it after one file. The
-    # budget is spent, so no crawl starts a fresh one (as Auto's own reading stops): the start page
-    # is all the map holds, and the report says why.
+    # budget is spent, so no crawl starts a fresh one (as Auto's own reading stops), and a docs map
+    # is never its start page alone: this first add fails, with the reason.
     fake = FakeClock()
     root, host, url, inside = versioned_docs(tmp_path / "time", maps)
     fetcher = _Signals(root, lambda: fake.advance(200))
     job = Job(root, url, fetcher=fetcher, model=PipelineModel(follow=3))
     with clock.use_clock(fake):
-        assert job.run().status == "succeeded"
+        outcome = job.run()
+    assert outcome.status == "failed" and outcome.error_code == "timeout" and not outcome.swapped
     assert not [u for u, _ in fetcher.requests if u.endswith(("/maps/b.xml", f"{host}/sitemap.xml"))]
-    assert job.state.crawl is None and job.urls() == [url]
-    assert job.report.stopReason == "docs: no search index, time budget"
+    assert job.state.crawl is None and job.urls() == []
+    assert job.state.stop_reason == "docs: no search index, time budget"
 
 
 def test_the_docs_crawl_hand_off_keeps_the_docs_map_limit(tmp_path):
@@ -589,3 +593,38 @@ def test_the_time_budget_covers_the_docs_reading_and_its_crawl(tmp_path):
         job.run()
     assert job.state.crawl.stop_reason == "time_budget"
     assert [e.url for e in job.state.crawl.entries if e.url in pages] == pages[:3]
+
+
+def test_a_docs_refresh_left_with_its_start_page_fails_and_keeps_the_previous_map(tmp_path):
+    """A docs map is never its start page alone: a refresh whose reading ran out of time with
+    nothing in the folder fails ("timeout", which the card shows as "Failed (timeout): the previous
+    version is kept"), and with refreshing.onFailure at keep the map stays as it was. With replace,
+    the empty result goes in, and its report says why."""
+    from tradecraft import clock
+    from tradecraft_doubles import FakeClock
+
+    for policy in ("keep", "replace"):
+        root, host, url, inside = versioned_docs(tmp_path / policy, ["/maps/a.xml", "/maps/b.xml"])
+        index = root / host / "docs" / "searchindex.js"
+        index.write_text("Search.setIndex(" + json.dumps({"docnames": ["install", "usage"],
+                                                           "titles": ["Install", "Usage"]}) + ")")
+        store = MemoryStore()
+        first = Job(root, url, {"refreshing.onFailure": policy}, store=store)
+        assert first.run().status == "succeeded"
+        good = sorted(first.urls())
+        assert good == sorted(inside)
+
+        index.write_text("Search.setIndex({broken")
+        fake = FakeClock()
+        refresh = Job(root, url, {"refreshing.onFailure": policy}, store=store, job_id="job-2", target=2,
+                      fetcher=_Signals(root, lambda: fake.advance(200)))
+        with clock.use_clock(fake):
+            outcome = refresh.run()
+        assert outcome.status == "failed" and outcome.error_code == "timeout", policy
+        assert refresh.state.stop_reason == "docs: no search index, time budget"
+        if policy == "keep":
+            assert not outcome.swapped and sorted(refresh.urls()) == good
+        else:
+            assert outcome.swapped and refresh.urls() == []
+            assert refresh.report.stopReason == "docs: no search index, time budget"
+            assert "docs_start_page_only" in error_codes(refresh) and refresh.resource["last_error"] == "timeout"
