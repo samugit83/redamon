@@ -12,7 +12,7 @@ Failures never raise: a ``Response``/``Rendered`` carries a fixed ``error`` code
 (see ``ERRORS``), never page text, so callers can report it and the job's
 ``errorCode`` stays a closed set.
 
-``stream`` is ``get`` for a body read as it arrives (a repository archive, T6.6's EX-4): the
+``stream`` is ``get`` for a body read as it arrives (a repository archive, T6.3, EX-4): the
 same hops, guard, headers and ceilings, with the body handed over chunk by chunk; ``get`` reads
 it whole through the same path.
 """

@@ -71,7 +71,7 @@ TREE_WRITE = (
     ("path", "text", REQUIRED), ("parent_path", "text", REQUIRED), ("label", "text", REQUIRED),
     ("page_count", "int", 0), ("description", "text", ""), ("kind", "text", "folder"),
 )
-# An unchanged page of an incremental refresh (T6.6's R-342, T6.2) is copied forward: its text and
+# An unchanged page of an incremental refresh (T6.2, R-342) is copied forward: its text and
 # what was measured of it come from the live generation, every other column from this refresh's
 # card (a rename, a focus decision, new tags), its ETag and Last-Modified from this refresh's
 # answer when it sent one.
