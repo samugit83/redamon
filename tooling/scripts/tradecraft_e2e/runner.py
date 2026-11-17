@@ -2092,16 +2092,19 @@ def compare_baked(tip: Mapping[str, str], differences: Mapping[str, str], image:
 # stdin, and every Python file /app holds from the agent's folders (to see a stale one).
 AGENT_FILES_SCRIPT = r"""
 import hashlib, json, pathlib, sys
-want = json.load(sys.stdin)
+ask = json.load(sys.stdin)
+want = ask["paths"]
 def blob(p):
     try:
         data = p.read_bytes()
     except OSError:
         return None
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
-root = pathlib.Path("/app")
+root = pathlib.Path(ask.get("root", "/app"))
 files = {at: blob(root / at) for at in want}
-skip = ("knowledge_base/", "logs/", "kb_data/")
+# Runtime data, not code: a chat project's workspace and the CypherFix sandbox may hold Python
+# files of their own (agent-workspace is gitignored, yet COPY agentic/ bakes it).
+skip = ("knowledge_base/", "logs/", "kb_data/", "agent-workspace/", "codefix-work/")
 py = [p.relative_to(root).as_posix() for p in root.rglob("*.py")
       if "__pycache__" not in p.parts and not p.relative_to(root).as_posix().startswith(skip)]
 print(json.dumps({"files": files, "py": py}))
@@ -2145,6 +2148,28 @@ def tree_differences(commit: str, prefixes: Sequence[str], run: Optional[Exec] =
     return {p: blobs.get(p, "") for p in paths if blobs.get(p, "") != tip.get(p, "")}
 
 
+def shared_file_check(path: str, base: str, tip: str, run: Optional[Exec] = None, root: Path = REPO) -> dict:
+    """A shared file's working copy against the plan: whether it holds every line the plan's own
+    diff (``base`` → ``tip``) adds, by reverse-applying that diff without context, and how many
+    hunks it has besides (another session's). Counts only."""
+    run = run or subprocess.run
+    patch = run(["git", "-C", str(root), "diff", "-U0", base, tip, "--", path], capture_output=True, text=True,
+                check=False, timeout=60).stdout or ""
+    if not (root / path).is_file():
+        return {"plan_lines": False, "extra_hunks": 0}
+    if patch.strip():
+        done = run(["git", "-C", str(root), "apply", "--check", "-R", "--unidiff-zero", "-"], input=patch,
+                   capture_output=True, text=True, check=False, timeout=60)
+        present = done.returncode == 0
+    else:
+        present = True
+    shown = run(["git", "-C", str(root), "show", f"{tip}:{path}"], capture_output=True, text=True, check=False, timeout=60)
+    extra = run(["git", "-C", str(root), "diff", "--no-index", "-U0", "--", "-", str(root / path)],
+                input=shown.stdout if shown.returncode == 0 else "", capture_output=True, text=True, check=False, timeout=60)
+    hunks = sum(1 for line in (extra.stdout or "").splitlines() if line.startswith("@@"))
+    return {"plan_lines": present, "extra_hunks": hunks}
+
+
 def image_ids(run: Optional[Exec] = None) -> dict:
     """{agent, webapp}: the running containers' image ids, or "not checked" when they cannot be read."""
     try:
@@ -2170,8 +2195,9 @@ def record_build(phase: str, run: Optional[Exec] = None, path: Path = BUILD_RECO
                     timeout=60).stdout or "").strip()
         changed = run(["git", "-C", str(REPO), "diff", "--name-only", base, tip, "--", *prefixes], capture_output=True,
                       text=True, check=False, timeout=120).stdout or ""
+        shared = {f: shared_file_check(f, base, tip, run) for f in sorted(differences) if f in SHARED_FILES}
         record = {"format": 1, "tip": tip, "base": base, "recorded_at": now_iso(), "differences": differences,
-                  "plan_files": sorted(changed.split()), "complete": False}
+                  "plan_files": sorted(changed.split()), "shared_checks": shared, "complete": False}
     else:
         record = json.loads(path.read_text(encoding="utf-8"))
         record.update(images=image_ids(run), completed_at=now_iso(),
@@ -2220,8 +2246,15 @@ def verify_code(record: Optional[Mapping], run: Optional[Exec] = None, *, deep: 
                         + ", ".join(outside[:6]) + ("…" if len(outside) > 6 else "") if plan
                         else "the build record names no plan file: rerun run/s15/rebuild.sh")
     shared = sorted(p for p in differences if p in SHARED_FILES)
+    checks_ = record.get("shared_checks") or {}
+    # A shared file may carry another session's lines, never lack the plan's own.
+    missing = [p for p in shared if not (checks_.get(p) or {}).get("plan_lines")]
+    if missing:
+        problems.append(f"the images' copy of {', '.join(missing)} lacks lines of plan {tip[:8]}'s own diff "
+                        "(or was not checked): not the plan's code")
+    named = [f"{p} (+{(checks_.get(p) or {}).get('extra_hunks', '?')} hunks of another session)" for p in shared]
     other = sorted(p for p in differences if p not in plan and p not in SHARED_FILES)
-    lines["known_hunks"] = (", ".join(shared) or "none") + (
+    lines["known_hunks"] = (", ".join(named) or "none") + (
         f"; outside the plan's files, {len(other)} files of the checkout's own work ({', '.join(other[:5])}"
         f"{'…' if len(other) > 5 else ''})" if other else "")
     images = image_ids(run)
@@ -2236,7 +2269,8 @@ def verify_code(record: Optional[Mapping], run: Optional[Exec] = None, *, deep: 
             tip_map = tip_files(tip, [p for p, _ in AGENT_BAKED], run)
             asked = sorted({baked_path(p) for p in list(tip_map) + list(record.get("differences") or {})} - {None})
             done = run(["docker", "exec", "-i", AGENT_CONTAINER, "python", "-c", AGENT_FILES_SCRIPT],
-                       input=json.dumps(asked), capture_output=True, text=True, check=False, timeout=120)
+                       input=json.dumps({"root": "/app", "paths": asked}), capture_output=True, text=True, check=False,
+                       timeout=120)
             got = json.loads((done.stdout or "").strip().splitlines()[-1]) if done.returncode == 0 else None
         except (OSError, ValueError, IndexError, subprocess.SubprocessError):
             got = None

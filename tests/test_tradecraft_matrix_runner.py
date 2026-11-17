@@ -1425,6 +1425,7 @@ def test_retrieval_looks_cve_questions_up_and_searches_the_rest():
 
 TIP = "3765744a" + "0" * 32
 RECORD = {"format": 1, "tip": TIP, "complete": True, "differences": {"agentic/api.py": "f" * 40},
+          "shared_checks": {"agentic/api.py": {"plan_lines": True, "extra_hunks": 1}},
           "plan_files": ["agentic/api.py", "agentic/tradecraft/ingest/detect.py", "agentic/settings_spec.json"],
           "images": {"agent": "sha256:439168511321" + "a" * 52, "webapp": "sha256:6af9db065740" + "b" * 52}}
 TIP_TREE = {"agentic/api.py": "1" * 40, "agentic/tradecraft/ingest/detect.py": "2" * 40, "agentic/tests/test_x.py": "3" * 40,
@@ -1449,7 +1450,7 @@ def _stack(*, tip=TIP, tree=TIP_TREE, files=None, py=None, images=None, exec_fai
         if argv[:3] == ["docker", "exec", "-i"]:
             if exec_fails:
                 return subprocess.CompletedProcess(argv, 1, "", "no such container")
-            asked = json.loads(kw["input"])
+            asked = json.loads(kw["input"])["paths"]
             return subprocess.CompletedProcess(argv, 0, json.dumps({"files": {a: image.get(a) for a in asked}, "py": py_files}), "")
         raise AssertionError(argv)
     return run
@@ -1468,13 +1469,17 @@ def test_what_the_agent_image_bakes():
 def test_the_code_check_passes_only_on_the_recorded_code():
     assert runner.verify_code(RECORD, run=_stack())[0] == []
     problems, lines = runner.verify_code(RECORD, run=_stack())
-    assert lines["known_hunks"] == "agentic/api.py" and lines["agent_code"].startswith("4 baked files compared, all plan 3765744a")
+    assert lines["known_hunks"] == "agentic/api.py (+1 hunks of another session)"
+    assert lines["agent_code"].startswith("4 baked files compared, all plan 3765744a")
     # The checkout's own work outside the plan's files is allowed, and named.
     other = dict(RECORD, differences={**RECORD["differences"], "agentic/navigator/tooling.py": "7" * 40})
     problems, lines = runner.verify_code(other, run=_stack(files={"navigator/tooling.py": "7" * 40},
                                                             py=["api.py", "tradecraft/ingest/detect.py", "graph_db/tenant_filter.py",
                                                                 "navigator/tooling.py"]))
     assert problems == [] and "1 files of the checkout's own work (agentic/navigator/tooling.py)" in lines["known_hunks"]
+    # A shared file whose copy lacks the plan's own lines, or was never checked, is not the plan's code.
+    for shared in ({"agentic/api.py": {"plan_lines": False, "extra_hunks": 2}}, {}):
+        assert runner.verify_code(dict(RECORD, shared_checks=shared), run=_stack())[0]
     cases = {
         "no record": (None, _stack()),
         "an unfinished record": (dict(RECORD, complete=False), _stack()),
@@ -1496,6 +1501,68 @@ def test_the_code_check_passes_only_on_the_recorded_code():
     assert runner.verify_code(RECORD, run=_stack(images={"agent": "sha256:" + "c" * 64, "webapp": RECORD["images"]["webapp"]}),
                               deep=False)[0]
     assert runner.verify_code(RECORD, run=_stack(tip="9f00aa11" + "0" * 32), deep=False)[0]
+
+
+def _git(root, *args, input=None):
+    return subprocess.run(["git", "-C", str(root), *args], input=input, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_a_shared_file_must_hold_the_plans_own_lines(tmp_path):
+    # feature_models.py is shared with another session: its copy may carry that session's lines,
+    # never lack the plan's one line (tradecraft_section_picker -> tradecraft_librarian).
+    root = tmp_path / "repo"
+    (root / "agentic").mkdir(parents=True)
+    _git(tmp_path, "init", "-q", str(root))
+    for k, v in (("user.email", "t@e2e.invalid"), ("user.name", "t"), ("commit.gpgsign", "false")):
+        _git(root, "config", k, v)
+    f = root / "agentic" / "feature_models.py"
+    head = 'FEATURE_IDS = (\n    "triage",\n    "codefix",\n'
+    tail = '    "report_narratives",\n    "multi_mute",\n)\n'
+    f.write_text(head + '    "tradecraft_section_picker",\n' + tail)
+    _git(root, "add", "."); _git(root, "commit", "-qm", "base")
+    base = _git(root, "rev-parse", "HEAD")
+    f.write_text(head + '    "tradecraft_librarian",\n' + tail)
+    _git(root, "commit", "-qam", "the plan")
+    tip = _git(root, "rev-parse", "HEAD")
+    path = "agentic/feature_models.py"
+    assert runner.shared_file_check(path, base, tip, root=root) == {"plan_lines": True, "extra_hunks": 0}
+    f.write_text(head + '    "tradecraft_librarian",\n' + tail + 'OTHER_SESSION = True\n')
+    assert runner.shared_file_check(path, base, tip, root=root) == {"plan_lines": True, "extra_hunks": 1}
+    f.write_text(head + '    "tradecraft_section_picker",\n' + tail + 'OTHER_SESSION = True\n')
+    assert runner.shared_file_check(path, base, tip, root=root)["plan_lines"] is False
+    f.unlink()
+    assert runner.shared_file_check(path, base, tip, root=root)["plan_lines"] is False
+
+
+def test_the_stale_file_scan_skips_runtime_data(tmp_path):
+    # COPY agentic/ bakes the gitignored agent-workspace (a chat project's notes); a Python file
+    # there is data, not a stale module, and must not refuse every preflight.
+    app = tmp_path / "app"
+    for rel, text in (("tradecraft/ingest/detect.py", "X = 1\n"), ("agent-workspace/p1/notes/sqlmap_eval.py", "print(1)\n"),
+                      ("codefix-work/repo/setup.py", "\n"), ("logs/old.py", "\n"), ("orchestrator_helpers/stale.py", "\n")):
+        (app / rel).parent.mkdir(parents=True, exist_ok=True)
+        (app / rel).write_text(text)
+    done = subprocess.run([sys.executable, "-c", runner.AGENT_FILES_SCRIPT],
+                          input=json.dumps({"root": str(app), "paths": ["tradecraft/ingest/detect.py", "gone.py"]}),
+                          capture_output=True, text=True, check=True)
+    got = json.loads(done.stdout)
+    assert sorted(got["py"]) == ["orchestrator_helpers/stale.py", "tradecraft/ingest/detect.py"]
+    assert got["files"]["gone.py"] is None and len(got["files"]["tradecraft/ingest/detect.py"]) == 40
+    diff = runner.compare_baked({"agentic/tradecraft/ingest/detect.py": got["files"]["tradecraft/ingest/detect.py"]}, {},
+                                got["files"], got["py"])
+    assert diff["differing"] == [] and diff["extra"] == ["orchestrator_helpers/stale.py"]
+
+
+def test_only_the_cve_readers_readme_answer_is_renamed():
+    # A forced section_path is rendered as the section title verbatim (reader._page): an ordinary
+    # README read of PayloadsAllTheThings keeps its own words, so L2's expected page still matches.
+    reader = _agent("tradecraft.library.reader")
+    out = reader.render("payloadsallthethings",
+                        "https://raw.githubusercontent.com/swisskyrepo/PayloadsAllTheThings/master/Server%20Side%20Request%20Forgery/README.md",
+                        "Server Side Request Forgery/README.md", "stored copy from 2026-11-17", "SSRF text")
+    res = checks.parse_result("tradecraft_lookup", out)
+    assert res.pages[0].page_id == "payloadsallthethings:Server Side Request Forgery/README.md"
+    assert checks.matches({}, res.pages[0], {"resource": "payloadsallthethings", "path": ["server side request forgery"]})
 
 
 def test_an_end_probe_that_fails_never_loses_the_report():

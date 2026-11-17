@@ -50,7 +50,9 @@ _READ_SOURCE = re.compile(r"^source: (?P<source>.*)$")
 # entry, read live by CVE id, and the other lookups of a page that has no ID.
 _LIVE_RESOURCE = re.compile(rf"^resource: (?P<slug>{_SLUG})$")
 _LIVE_FIELD = re.compile(r"^(?P<key>url|section_title|source|note): (?P<value>.*)$")
-README_FALLBACK = re.compile(r"\(repository README; no |/README\.md$|^repository README$")
+# The CVE reader's title when the archive has no entry and the repository README names the CVE
+# (library/reader.py _cve): that README, never the CVE's page. Every other live read keeps its title.
+README_FALLBACK = re.compile(r"\(repository README; no ")
 STORED_SOURCE = re.compile(r"^stored copy from \S+")
 _LOG_RECORD = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:,\d+)? \| \S+\s* \| [^|]*\| [^|]*\| ?(?P<msg>.*)$")
 _PROMPT_START = re.compile(r"^--- FULL SYSTEM PROMPT \(\d+ chars")
@@ -147,12 +149,11 @@ def parse_result(tool: str, output: str) -> TcResult:
             if f:
                 fields[f["key"]] = f["value"]
         title = fields.get("section_title", "")
-        if README_FALLBACK.search(title):
-            # A CVE the archive has no entry for, answered from the repository's README: that page,
-            # never the CVE's (library/reader.py _cve).
+        readme = bool(README_FALLBACK.search(title))
+        if readme:
             title = "repository README"
         page = f"{live['slug']}:{title or fields.get('url', '')}"
-        path = " ".join(v for v in (title, fields.get("url", "")) if v and not README_FALLBACK.search(v))
+        path = title if readme else " ".join(v for v in (title, fields.get("url", "")) if v)
         read = Read(page, path, title or None, fields.get("source", ""), "\n".join(lines[text_at:]))
         return TcResult(tool, "read", pages=[PageRef(page, path)], read=read, body=body)
     m = _READ_PAGE.match(first)
