@@ -152,7 +152,7 @@ def classify_probe(url: str, probe) -> str:
     if _magic_archive(probe.head):
         return "archive"
     if is_html(ct, probe.head):
-        from orchestrator_helpers.tradecraft_lookup import detect_type
+        from tradecraft.ingest.detect import detect_type
         text = probe.head.decode("utf-8", "replace")
         tc_type = detect_type(probe.final_url or url, text, probe.status)
         return "docs-site" if tc_type in ("mkdocs-wiki", "sphinx-docs", "gitbook") else "website"

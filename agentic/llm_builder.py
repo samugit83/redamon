@@ -1,7 +1,7 @@
 """Build an LLM for one user and one exact model.
 
 Used by every "Models by feature" caller: the RoE parse, report narratives and
-command whisperer endpoints, Multi mute, and the tradecraft section picker. Two
+command whisperer endpoints, Multi mute, and the tradecraft librarian. Two
 things differ from the older `_build_llm_with_model_for_user` in `api.py`, which
 keeps serving the recon planners unchanged:
 

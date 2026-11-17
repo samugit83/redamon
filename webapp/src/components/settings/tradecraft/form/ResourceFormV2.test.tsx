@@ -69,7 +69,8 @@ describe('ResourceFormV2', () => {
     fill()
     fireEvent.click(screen.getByRole('button', { name: 'Add & ingest' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalled())
-    expect(sent()).not.toHaveProperty('cacheTtlSec')
+    // No cache lifetime under any name: none of the sent keys speaks of a cache or a TTL.
+    expect(Object.keys(sent()).filter(k => /cache|ttl/i.test(k))).toEqual([])
   })
 
   test('edit: a new URL says it re-ingests; the token is sent only when typed', async () => {

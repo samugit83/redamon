@@ -14,7 +14,6 @@ export type FeatureId =
   | 'triage'
   | 'codefix'
   | 'command_whisperer'
-  | 'tradecraft_section_picker'
   | 'tradecraft_librarian'
   | 'report_narratives'
   | 'multi_mute'
@@ -117,14 +116,6 @@ export const LLM_FEATURES: readonly LlmFeature[] = [
     description: 'Answers questions about RedAmon and your projects in the AI Navigator chat.',
     hint: 'Needs a model that can call tools. A mid-size model is enough.',
     alsoEditedIn: ['AI Navigator (asked on your first message)'],
-    excludeModelPrefixes: [],
-  },
-  {
-    id: 'tradecraft_section_picker',
-    label: 'Tradecraft section picker',
-    description: 'Picks which page of a Tradecraft resource the agent reads.',
-    hint: 'The smallest model is enough: it answers with one number. Not set: pages are picked by text match.',
-    alsoEditedIn: ['Tradecraft resource form'],
     excludeModelPrefixes: [],
   },
   {

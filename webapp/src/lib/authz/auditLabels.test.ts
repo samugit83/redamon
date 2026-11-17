@@ -175,6 +175,10 @@ function templateExpansions(): Record<string, string[] | { family: string }> {
 const WRITTEN_LATER: Readonly<Record<string, string>> = {
   'scan_schedule.confirmed': 'step 5.5: the owner confirms a paused schedule (schedules/[scheduleId]/confirm)',
 }
+// Actions no code writes any more whose rows stay in the audit log: they keep their label.
+const WRITTEN_BEFORE: Readonly<Record<string, string>> = {
+  'tradecraft.v2_switched': 'the Tradecraft 2.0 preview switch, removed at the cut-over (Tradecraft 2.0 T9.3)',
+}
 
 const found = readActions(productionFiles().map(file => ({ file, source: readFileSync(file, 'utf8') })))
 
@@ -211,12 +215,14 @@ describe('audit action labels (step 4.13, UI-08, AU-09)', () => {
     expect([...found.indirect].sort()).toEqual(Object.keys(INDIRECT_WRITERS).sort())
   })
 
-  test('no label for an action nothing writes, except the ones a later step writes', () => {
+  test('no label for an action nothing writes, except the ones a later step writes or an earlier release wrote', () => {
     const expanded = new Set(Object.values(templateExpansions()).flatMap(e => (Array.isArray(e) ? e : [])))
     const stale = Object.keys(AUDIT_ACTION_LABELS)
-      .filter(a => !found.actions.has(a) && !expanded.has(a) && !(a in WRITTEN_LATER)).sort()
+      .filter(a => !found.actions.has(a) && !expanded.has(a) && !(a in WRITTEN_LATER) && !(a in WRITTEN_BEFORE)).sort()
     expect(stale).toEqual([])
-    for (const a of Object.keys(WRITTEN_LATER)) expect(AUDIT_ACTION_LABELS[a], a).toBeDefined()
+    for (const a of [...Object.keys(WRITTEN_LATER), ...Object.keys(WRITTEN_BEFORE)]) expect(AUDIT_ACTION_LABELS[a], a).toBeDefined()
+    // An action written before is written by nothing now: the list never hides a live writer.
+    for (const a of Object.keys(WRITTEN_BEFORE)) expect(found.actions.has(a), a).toBe(false)
   })
 
   test('the feed\'s spec rows: share changes, oversight, break-glass and acting as have their group', () => {

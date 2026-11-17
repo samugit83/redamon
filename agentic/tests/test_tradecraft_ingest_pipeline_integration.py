@@ -1,10 +1,12 @@
 """The 2.0 ingestion end to end on Postgres (T1.8): job runner, pipeline and page store.
 
-``test_defaults_match_1x`` (AC-01, R-005) runs 1.x ``verify_resource`` and a 2.0 job with the
-default settings on the same fixture site, through the same ``FixtureFetcher`` and the same
-scripted model: the same type, at least as many map entries, a summary. The fixture start
-pages carry an article here (``padded_sites``): the generated ones are thin, which makes 1.x
-type every site as a website.
+``test_defaults_match_1x`` (AC-01, R-005) runs a 2.0 job with the default settings on each
+fixture site and compares it with what 1.x ``verify_resource`` gave on the same site, through
+the same ``FixtureFetcher`` and the same scripted model: the same type, at least as many map
+entries, a summary. 1.x left with the cut-over (T9.2); its results are frozen in
+``fixtures/tradecraft_legacy/oracle_1x.json`` (recorded by S13 from the 1.x code just before it
+was deleted). The fixture start pages carry an article here (``padded_sites``): the generated
+ones are thin, which makes 1.x type every site as a website.
 
 Runs through ``tooling/scripts/tradecraft_pg_testdb.sh agent``; skips without
 ``TRADECRAFT_PG_TEST_URL``.
@@ -32,76 +34,19 @@ pytestmark = pytest.mark.skipif(not PG_URL, reason="TRADECRAFT_PG_TEST_URL is no
 import psycopg  # noqa: E402
 from psycopg.rows import dict_row  # noqa: E402
 
-from orchestrator_helpers import tradecraft_crawl as legacy_crawl  # noqa: E402
-from orchestrator_helpers import tradecraft_lookup as legacy  # noqa: E402
 from tradecraft import db, jobs  # noqa: E402
 from tradecraft.contract import JobStartBatch  # noqa: E402
-from tradecraft.ingest import fetch, pipeline  # noqa: E402
+from tradecraft.ingest import pipeline  # noqa: E402
 from tradecraft.store import Store  # noqa: E402
 from tradecraft_doubles import FixtureFetcher  # noqa: E402
 from tradecraft_memory_store import PipelineModel, padded_sites  # noqa: E402
 
 FIXTURE = json.loads((Path(__file__).resolve().parent / "fixtures" / "tradecraft_contract" /
                       "JobStartBatch.valid.json").read_text())["jobs"][0]
-LEGACY_BOUNDS = {"max_pages": 30, "max_llm_calls": 20, "time_budget_sec": 180, "max_depth": 3}
-
-
-class _HttpxAnswer:
-    def __init__(self, resp):
-        self.status_code, self.headers, self.text = resp.status, dict(resp.headers), resp.text
-
-    def json(self):
-        return json.loads(self.text)
-
-
-def legacy_on(monkeypatch, fetcher):
-    """1.x's fetch tiers, crawl fetch, GitHub client and URL check, on ``fetcher``."""
-
-    async def tier1(url, *, timeout=30, github_token="", expect_text=True):
-        url = legacy._rewrite_github_url(url)
-        r = await fetcher.get(url)
-        if r.error:
-            return legacy.FetchResult(text="", content_type="", status=0, tier=1)
-        if "application/pdf" in r.content_type or r.body[:5] == b"%PDF-":
-            return legacy.FetchResult(text="", content_type="application/pdf", status=r.status, tier=1,
-                                      raw_bytes=r.body, final_url=r.final_url)
-        text = legacy._html_to_markdown(r.text) if (expect_text and "html" in r.content_type) else r.text
-        return legacy.FetchResult(text=text, content_type=r.content_type, status=r.status, tier=1,
-                                  raw_bytes=r.text.encode(), final_url=r.final_url)
-
-    async def tier2(url, mcp_manager):
-        rendered = await fetcher.render(url)
-        if not rendered.html:
-            return legacy.FetchResult(text="", content_type="", status=0, tier=2)
-        return legacy.FetchResult(text=legacy._html_to_markdown(rendered.html), content_type="text/html",
-                                  status=200, tier=2, raw_bytes=rendered.html.encode())
-
-    async def crawl_fetch(url, mcp_manager, *, tier1_threshold_bytes=4000):
-        r = await fetcher.get(url)
-        html = r.text if (r.status == 200 and "html" in r.content_type) else ""
-        if html and len(html) >= tier1_threshold_bytes:
-            return html, 1, r.final_url
-        rendered = await fetcher.render(url)
-        return (rendered.html, 2, url) if rendered.html else ("", 0, url)
-
-    class Client:
-        def __init__(self, *args, headers=None, **kwargs):
-            self._headers = headers or {}
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def get(self, url):
-            return _HttpxAnswer(await fetcher.get(url, headers=self._headers))
-
-    monkeypatch.setattr(legacy, "fetch_tier1", tier1)
-    monkeypatch.setattr(legacy, "fetch_tier2", tier2)
-    monkeypatch.setattr(legacy, "validate_url", lambda url: (True, ""))
-    monkeypatch.setattr(legacy.httpx, "AsyncClient", Client)
-    monkeypatch.setattr(legacy_crawl, "_crawl_fetch", crawl_fetch)
+# What 1.x verify_resource gave on each padded fixture site (bounds 30 pages, 20 model calls,
+# 180 s, depth 3): its type, whether it wrote a summary, how many map entries, a CVE archive's metadata.
+LEGACY = json.loads((Path(__file__).resolve().parent / "fixtures" / "tradecraft_legacy" / "oracle_1x.json")
+                    .read_text())["verify_resource"]
 
 
 @pytest.fixture
@@ -192,16 +137,11 @@ SITES = [
 @pytest.mark.parametrize("url,expected_type", SITES)
 async def test_defaults_match_1x(pg, tmp_path, monkeypatch, url, expected_type):
     root = padded_sites(tmp_path)
-    legacy_on(monkeypatch, FixtureFetcher(root))
-    old = await legacy.verify_resource(url, llm=PipelineModel(), mcp_manager=None, bounds=LEGACY_BOUNDS)
-    assert old["resource_type"] == expected_type and old["summary"]
-    old_entries = {fetch.canonical_url(e["path"]) if e["path"].startswith("http") else e["path"]
-                   for e in legacy._sitemap_entries(old["sitemap"])}
-    if "pages" in old["sitemap"]:
-        old_entries = {p["page"] for p in old["sitemap"]["pages"]}
-    # Not a vacuous comparison: 1.x lists every site but the CVE archive (never listed).
-    assert bool(old_entries) == (expected_type != "cve-poc-db") or url.endswith(".pdf")
-    assert url.endswith(".pdf") is False or len(old_entries) == 3
+    old = LEGACY[url]
+    assert old["resource_type"] == expected_type and old["has_summary"]
+    # Not a vacuous comparison: 1.x listed every site but the CVE archive (never listed).
+    assert bool(old["entries"]) == (expected_type != "cve-poc-db") or url.endswith(".pdf")
+    assert url.endswith(".pdf") is False or old["entries"] == 3
 
     uid, rid, job, _model = await ingest(pg, root, url)
     assert job["status"] == "succeeded", job["error_code"]
@@ -210,9 +150,9 @@ async def test_defaults_match_1x(pg, tmp_path, monkeypatch, url, expected_type):
     assert res["summary"] and res["map_version"] == 3 and res["generation"] >= 1
     live = await pg.sql("SELECT url FROM tradecraft_entries WHERE resource_id = %s AND generation = %s",
                         rid, res["generation"])
-    assert len(live) >= len(old_entries)
+    assert len(live) >= old["entries"]
     if old["resource_type"] == "cve-poc-db":
-        assert res["sitemap"] == {k: old["sitemap"][k] for k in ("owner", "repo", "branch")}
+        assert res["sitemap"] == old["cve_meta"]
 
 
 async def test_stored_row_content(pg, tmp_path):

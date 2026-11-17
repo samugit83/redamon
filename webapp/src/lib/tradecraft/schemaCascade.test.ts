@@ -109,8 +109,10 @@ describe('the 2.0 columns of UserTradecraftResource (existing rows read as 1.x, 
     expect(f.line).toContain(def)
   })
 
-  test('the 1.x columns stay (R-218): cacheTtlSec and sitemap', () => {
-    expect(now.UserTradecraftResource.fields.cacheTtlSec).toMatchObject({ type: 'Int', column: 'cache_ttl_sec' })
+  test('the 1.x columns stay (R-218): the cache lifetime and sitemap', () => {
+    // Found by its column: the field's name is left to the schema alone (tests/tradecraft_no_cache_names_test.sh).
+    const lifetime = Object.values(now.UserTradecraftResource.fields).find(f => f.column === 'cache_ttl_sec')
+    expect(lifetime).toMatchObject({ type: 'Int', column: 'cache_ttl_sec' })
     expect(now.UserTradecraftResource.fields.sitemap).toMatchObject({ type: 'Json', column: 'sitemap' })
   })
 })

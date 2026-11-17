@@ -257,34 +257,6 @@ export const ReadNowResult = z.object({
 
 // --- the run catalog (webapp -> agent) ----------------------------------------------
 
-/** A 1.x row: exactly the 7.7.2 columns, read with an explicit select so no 2.0 column travels. */
-export const LegacyResource = z.object({
-  id: z.string(),
-  userId: z.string(),
-  name: z.string(),
-  slug: z.string(),
-  url: z.string(),
-  enabled: z.boolean(),
-  resourceType: z.string(),
-  summary: z.string(),
-  sitemap: z.json(),
-  crawlStoppedBecause: z.string(),
-  crawlStats: z.json(),
-  llmModel: z.string(),
-  githubTokenOverride: z.string(),
-  cacheTtlSec: z.number().int(),
-  lastVerifiedAt: z.string().nullable(),
-  lastRefreshedAt: z.string().nullable(),
-  lastError: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-}).strict()
-
-/** The columns LegacyResource names, for the catalog's explicit Prisma select. */
-export const LEGACY_RESOURCE_COLUMNS = Object.keys(LegacyResource.shape) as (keyof typeof LegacyResource.shape)[]
-
-export const LegacyCatalog = z.object({ v2: z.literal(false), legacy: z.array(LegacyResource) }).strict()
-
 export const CatalogResource = z.object({
   id,
   slug,
@@ -316,7 +288,8 @@ export const V2Catalog = z.object({
   'a resource with a login is listed only in its owner\'s own runs',
 )
 
-export const RunCatalog = z.union([LegacyCatalog, V2Catalog])
+// Since the cut-over (T9.3) the run catalog has one shape: the 1.x payload left with the 1.x path.
+export const RunCatalog = V2Catalog
 
 export type Credentials = z.infer<typeof Credentials>
 export type Secrets = z.infer<typeof Secrets>
@@ -332,7 +305,6 @@ export type PreviewRequest = z.infer<typeof PreviewRequest>
 export type PreviewResult = z.infer<typeof PreviewResult>
 export type ReadNowRequest = z.infer<typeof ReadNowRequest>
 export type ReadNowResult = z.infer<typeof ReadNowResult>
-export type LegacyResource = z.infer<typeof LegacyResource>
 export type CatalogResource = z.infer<typeof CatalogResource>
 export type V2Catalog = z.infer<typeof V2Catalog>
 export type RunCatalog = z.infer<typeof RunCatalog>
@@ -340,6 +312,6 @@ export type RunCatalog = z.infer<typeof RunCatalog>
 /** Every top-level schema by its name in the fixtures (`<Name>.valid.json`, invalid.json's `model`). */
 export const CONTRACT_SCHEMAS = {
   JobStartBatch, JobStartRequest, JobStartAnswer, CancelAnswer, UserCancelAnswer, ConvertAnswer, JobProgress, IngestionReport,
-  CheckUrlRequest, CheckUrlResult, PreviewRequest, PreviewResult, ReadNowRequest, ReadNowResult, LegacyCatalog, V2Catalog,
+  CheckUrlRequest, CheckUrlResult, PreviewRequest, PreviewResult, ReadNowRequest, ReadNowResult, V2Catalog,
   CatalogResource, Credentials, Secrets,
 } as const

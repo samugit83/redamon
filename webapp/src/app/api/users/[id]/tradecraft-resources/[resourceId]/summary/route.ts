@@ -7,7 +7,6 @@ import { requireSelfPermission } from '@/lib/authz/selfService'
 import { auditActor } from '@/lib/auditActor'
 import { SUMMARY_SOURCES } from '@/lib/tradecraft/agentContract'
 import { lockOwnResource } from '@/lib/tradecraft/resourceAccess'
-import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 import { resourceViewOf } from '@/lib/tradecraft/v2/list'
 
 interface RouteParams {
@@ -38,9 +37,6 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (selfRefused) return selfRefused
     const actor = await auditActor()
     if (!actor.actorId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    if (!(await tradecraftV2Enabled(id))) {
-      return NextResponse.json({ error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' }, { status: 404 })
-    }
 
     const parsed = await readJsonBody(request)
     if (parsed instanceof NextResponse) return parsed

@@ -235,7 +235,8 @@ def test_the_executor_registers_stand_ins_that_import_nothing_heavy():
     source = (AGENTIC / "tools.py").read_text()
     assert "from tradecraft.tool_proxies import registered_tools as _tradecraft_v2_tools" in source
     proxies = tool_proxies.registered_tools()
-    assert set(proxies) == {"tradecraft_search", "tradecraft_ask"} == set(tool_proxies.V2_TOOL_NAMES)
+    # tradecraft_lookup joined them at the cut-over (T9.2): the 1.x tool is gone.
+    assert set(proxies) == {"tradecraft_lookup", "tradecraft_search", "tradecraft_ask"} == set(tool_proxies.V2_TOOL_NAMES)
 
     async def go():
         with runtime.use_store(object()), runtime.use_index(Index()):

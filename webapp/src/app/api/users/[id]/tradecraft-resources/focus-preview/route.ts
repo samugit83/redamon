@@ -12,7 +12,6 @@ import { AGENT_ROUTES, PreviewRequest, PreviewResult, WEBAPP_TIMEOUTS_MS } from 
 import { effectiveSettings } from '@/lib/tradecraft/effectiveSettings'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
 import { SETTINGS_CONSTANTS } from '@/lib/tradecraft/settingsSpec'
-import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 import { validateUrl } from '@/lib/tradecraft/urls'
 import { validateFocus, withOwnSkillTopics } from '@/lib/tradecraft/v2/focusFields'
 
@@ -113,7 +112,6 @@ async function preview(request: NextRequest, id: string): Promise<NextResponse> 
   // The preview spends the account's model: a person asks for it, never the internal key alone.
   const actor = await auditActor()
   if (!actor.actorId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (!(await tradecraftV2Enabled(id))) return failure(404, 'tradecraft_v2_off', 'Tradecraft 2.0 is off for this account')
 
   const parsedBody = await readJsonBody(request)
   if (parsedBody instanceof NextResponse) return parsedBody

@@ -22,7 +22,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 describe('the tradecraft row of the Tool Matrix', () => {
   test('matrix_row_text: it names the three tradecraft tools; the other two have no row', async () => {
     const updateField = vi.fn()
-    render(<ToolMatrixSection data={{ agentToolPhaseMap: { tradecraft_lookup: ['informational'] } } as never} updateField={updateField} tradecraftV2 />)
+    render(<ToolMatrixSection data={{ agentToolPhaseMap: { tradecraft_lookup: ['informational'] } } as never} updateField={updateField} />)
     const note = await screen.findByTestId('tool-row-note-tradecraft_lookup')
     expect(note).toHaveTextContent(TOOL_ROW_NOTES.tradecraft_lookup)
     for (const tool of ['tradecraft_lookup', 'tradecraft_search', 'tradecraft_ask']) expect(note.parentElement).toHaveTextContent(tool)
@@ -35,13 +35,8 @@ describe('the tradecraft row of the Tool Matrix', () => {
     expect(updateField).toHaveBeenCalledWith('agentToolPhaseMap', { tradecraft_lookup: ['informational', 'exploitation'] })
   })
 
-  test('switch off (R-I5): no note, the row reads as before', async () => {
-    for (const props of [{}, { tradecraftV2: false }]) {
-      render(<ToolMatrixSection data={{ agentToolPhaseMap: { tradecraft_lookup: ['informational'] } } as never} updateField={vi.fn()} {...props} />)
-      await screen.findByText('tradecraft_lookup')
-      expect(screen.queryByTestId('tool-row-note-tradecraft_lookup')).toBeNull()
-      expect(screen.queryByText(/tradecraft_ask/)).toBeNull()
-      cleanup()
-    }
+  test('every account sees the note: the 2.0 switch left at the cut-over (T9.3)', async () => {
+    render(<ToolMatrixSection data={{ agentToolPhaseMap: { tradecraft_lookup: ['informational'] } } as never} updateField={vi.fn()} />)
+    expect(await screen.findByTestId('tool-row-note-tradecraft_lookup')).toHaveTextContent(TOOL_ROW_NOTES.tradecraft_lookup)
   })
 })

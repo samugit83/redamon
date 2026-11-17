@@ -1,9 +1,7 @@
 /**
- * Every tradecraft resource route in both states of the account's Tradecraft 2.0 switch: the
- * switch read from its real row, Prisma the in-memory double, the agent a `fetch` double.
- *  - switch off: today's behaviour, except that Refresh and Verify answers are masked (U1, R-152),
- *    a login in a URL is refused, and no answer, browser or internal, carries a 2.0 column (D-44);
- *  - switch on: the 2.0 modules, whose writes start background jobs answered at once (R-097).
+ * Every tradecraft resource route, on the 2.0 modules only since the cut-over (T9.3: the switch,
+ * the 1.x paths and the agent's unmasked internal list are gone): Prisma the in-memory double, the
+ * agent a `fetch` double. Writes start background jobs answered at once (R-097).
  *
  * @vitest-environment node
  */
@@ -27,7 +25,6 @@ vi.mock('@/lib/session', () => ({
 vi.mock('@/lib/auditActor', () => ({ auditActor: vi.fn(async () => h.actor) }))
 
 import { setNowForTests } from '@/lib/authz/clock'
-import { LEGACY_RESOURCE_COLUMNS } from '@/lib/tradecraft/agentContract'
 import { USERINFO_REFUSED } from '@/lib/tradecraft/urls'
 import * as list from './route'
 import * as one from './[resourceId]/route'
@@ -46,10 +43,9 @@ function req(path: string, method = 'GET', body?: unknown): NextRequest {
     ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   })
 }
-const setSwitch = (on: boolean) => h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: on })
 const row = () => h.db.rows('userTradecraftResource', { id: 'r1' })[0]
-const legacyVerifyAnswer = { summary: 's', resource_type: 'mkdocs-wiki', sitemap: { nav: [] }, crawl_stopped_because: '', crawl_stats: {}, last_error: '' }
-const agent1x = (path: string, body: unknown) => (path === '/tradecraft/verify' ? json(legacyVerifyAnswer) : json({ accepted: (body as { jobs?: { job_id: string }[] })?.jobs?.map(j => j.job_id) ?? [], refused: [] }, 202))
+// The agent queues every job it is sent.
+const agent1x = (_path: string, body: unknown) => json({ accepted: (body as { jobs?: { job_id: string }[] })?.jobs?.map(j => j.job_id) ?? [], refused: [] }, 202)
 
 beforeEach(() => {
   h.db = createTradecraftDb()
@@ -73,104 +69,7 @@ beforeEach(() => {
 })
 afterEach(() => { setNowForTests(null); vi.restoreAllMocks() })
 
-/** Every answer of the 1.x routes, with the switch off. */
-async function legacyAnswers(): Promise<[string, unknown][]> {
-  stubAgent(agent1x)
-  const out: [string, unknown][] = []
-  out.push(['GET list (browser)', await (await list.GET(req(''), P)).json()])
-  h.internal = true
-  out.push(['GET list (internal)', await (await list.GET(req('?internal=true'), P)).json()])
-  out.push(['GET one (internal)', await (await one.GET(req('/r1'), PR)).json()])
-  h.internal = false
-  out.push(['GET one (browser)', await (await one.GET(req('/r1'), PR)).json()])
-  out.push(['PUT', await (await one.PUT(req('/r1', 'PUT', { name: 'Wiki 2' }), PR)).json()])
-  out.push(['refresh', await (await refreshRoute.POST(req('/r1/refresh', 'POST'), PR)).json()])
-  out.push(['verify', await (await verifyRoute.POST(req('/r1/verify', 'POST', {}), PR)).json()])
-  out.push(['POST', await (await list.POST(req('?skipVerify=true', 'POST', { name: 'New', url: 'https://new.example.test/', llmModel: 'gpt-4o' }), P)).json()])
-  return out
-}
-
-describe('switch off: the 1.x routes', () => {
-  test('switch_off_answers_only_1x_columns: no answer, browser or internal, names a 2.0 column (D-44)', async () => {
-    setSwitch(false)
-    const allowed = new Set<string>(LEGACY_RESOURCE_COLUMNS)
-    for (const [name, answer] of await legacyAnswers()) {
-      const rows = (Array.isArray(answer) ? answer : [answer]) as Record<string, unknown>[]
-      expect(rows.length, name).toBeGreaterThan(0)
-      for (const r of rows) expect(Object.keys(r).filter(k => !allowed.has(k)), name).toEqual([])
-      expect(JSON.stringify(answer), name).not.toMatch(/fake-session|abcdef0123456789|"crawl\.maxPages"/)
-    }
-  })
-
-  test('an account without a switch row is off', async () => {
-    stubAgent(agent1x)
-    const answer = await (await list.GET(req(''), P)).json()
-    expect(answer[0]).toHaveProperty('sitemap')
-    expect(answer[0]).not.toHaveProperty('entryCount')
-  })
-
-  test.each([
-    ['refresh', () => refreshRoute.POST(req('/r1/refresh', 'POST'), PR)],
-    ['verify', () => verifyRoute.POST(req('/r1/verify', 'POST', {}), PR)],
-  ])('refresh_answer_masked_switch_off (%s): the GitHub token is masked as the other answers mask it (U1, R-152)', async (_name, call) => {
-    setSwitch(false)
-    const agent = stubAgent(agent1x)
-    const res = await call()
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.githubTokenOverride).toBe('••••••••7777')
-    expect(JSON.stringify(body)).not.toContain(TOKEN)
-    expect(agent.calls[0].body).toMatchObject({ github_token: TOKEN })
-  })
-
-  test('switch_off_unchanged: Refresh still calls the 1.x verify and waits for it', async () => {
-    setSwitch(false)
-    const agent = stubAgent(agent1x)
-    await refreshRoute.POST(req('/r1/refresh', 'POST'), PR)
-    expect(agent.calls.map(c => c.path)).toEqual(['/tradecraft/verify'])
-    expect(row().summary).toBe('s')
-    expect(h.db.rows('tradecraftIngestionJob')).toHaveLength(0)
-  })
-
-  test('userinfo_refused (switch off): on add, and on an edit of the URL', async () => {
-    setSwitch(false)
-    const add = await list.POST(req('?skipVerify=true', 'POST', { name: 'X', url: 'https://u:p@x.example.test/', llmModel: 'gpt-4o' }), P)
-    expect(add.status).toBe(400)
-    expect(await add.json()).toEqual({ error: USERINFO_REFUSED, code: 'userinfo_refused' })
-    const edit = await one.PUT(req('/r1', 'PUT', { url: 'https://u:p@wiki.example.test/' }), PR)
-    expect(edit.status).toBe(400)
-    expect(row().url).toBe('https://wiki.example.test/')
-  })
-})
-
-describe("the agent's 1.x list names no person: a resource with a login stays out (R-155)", () => {
-  test.each([false, true])('switch %s', async (on) => {
-    setSwitch(on)
-    h.internal = true
-    const internal = await (await list.GET(req('?internal=true'), P)).json()
-    expect(internal.map((r: { id: string }) => r.id)).toEqual(['r2'])
-    expect(JSON.stringify(internal)).not.toMatch(/fake-session|7777/)
-    h.internal = false
-    if (!on) expect((await (await list.GET(req(''), P)).json()).map((r: { id: string }) => r.id)).toEqual(['r1', 'r2'])
-  })
-})
-
-describe('M1: an account that turned 2.0 off sees a lost 2.0 add as failed, not "verifying" (TD-18)', () => {
-  test('the 1.x list ends the lost job and answers the error with a verification time', async () => {
-    setSwitch(false)
-    Object.assign(row(), { lastVerifiedAt: null, lastError: '', activeJobId: 'j-lost' })
-    h.db.seed('tradecraftIngestionJob', { id: 'j-lost', userId: 'owner', resourceId: 'r1', kind: 'add', status: 'running', leaseUntil: new Date('2026-11-16T09:59:00Z') })
-    stubAgent(agent1x)
-    const listed = (await (await list.GET(req(''), P)).json()) as Record<string, unknown>[]
-    const r1 = listed.find(r => r.id === 'r1')!
-    expect(r1).toMatchObject({ lastError: 'verify failed (agent_lost)', lastVerifiedAt: '2026-11-16T10:00:00.000Z' })
-    expect(h.db.rows('tradecraftIngestionJob', { id: 'j-lost' })[0]).toMatchObject({ status: 'failed', errorCode: 'agent_lost' })
-  })
-})
-
-describe('switch on: the 2.0 modules', () => {
-  beforeEach(() => setSwitch(true))
-
+describe('the 2.0 modules', () => {
   test.each([
     ['refresh', () => refreshRoute.POST(req('/r1/refresh', 'POST'), PR)],
     ['verify', () => verifyRoute.POST(req('/r1/verify', 'POST', {}), PR)],
@@ -191,16 +90,17 @@ describe('switch on: the 2.0 modules', () => {
     expect(text).not.toMatch(/ghp_|fake-session|7777/)
   })
 
-  test('the browser gets the 2.0 list; the agent\'s internal 1.x fetch still gets the 1.x rows, 1.x columns only', async () => {
+  test('every caller gets the masked 2.0 list: the internal key and ?internal=true no longer unmask (T9.3)', async () => {
     stubAgent(agent1x)
     const browser = await (await list.GET(req(''), P)).json()
     expect(browser[0]).toMatchObject({ id: 'r1', githubTokenOverride: 'set', hasLogin: true, mapVersion: 3, stale: true })
     expect(browser[0]).not.toHaveProperty('sitemap')
     h.internal = true
     const internal = await (await list.GET(req('?internal=true'), P)).json()
-    expect(internal.map((r: { id: string }) => r.id)).toEqual(['r2'])
-    expect(Object.keys(internal[0]).sort()).toEqual([...LEGACY_RESOURCE_COLUMNS].sort())
-    expect(internal[0].githubTokenOverride).toBe('ghp_BLOG_fake_8888')
+    expect(internal).toEqual(browser)
+    expect(JSON.stringify(internal)).not.toMatch(/ghp_|fake-session|7777|8888/)
+    const one1 = await (await one.GET(req('/r1'), PR)).json()
+    expect(JSON.stringify(one1)).not.toMatch(/ghp_|fake-session|7777/)
   })
 
   test('GET one: the 2.0 view; 404 for a resource of another account', async () => {
@@ -223,7 +123,7 @@ describe('switch on: the 2.0 modules', () => {
     expect(h.db.rows('userTradecraftResource', { id: resource.id })).toHaveLength(0)
   })
 
-  test('userinfo_refused (switch on)', async () => {
+  test('userinfo_refused', async () => {
     const res = await list.POST(req('', 'POST', { name: 'X', url: 'https://u:p@x.example.test/', llmModel: 'gpt-4o' }), P)
     expect(res.status).toBe(400)
     expect(await res.json()).toMatchObject({ field: 'url', code: 'userinfo_refused', error: USERINFO_REFUSED })
@@ -252,9 +152,8 @@ describe('switch on: the 2.0 modules', () => {
   })
 })
 
-describe('both states: the guards run first', () => {
-  test.each([true, false])('a refused account rule stops every route before any read (switch %s)', async (on) => {
-    setSwitch(on)
+describe('the guards run first', () => {
+  test('a refused account rule stops every route before any read', async () => {
     h.denied = NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     const agent = stubAgent(agent1x)
     const before = h.db.calls.length

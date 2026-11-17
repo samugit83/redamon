@@ -1,6 +1,7 @@
 /**
- * GET/PUT /api/users/[id]/tradecraft-settings: the account's Tradecraft 2.0 switch and, while
- * it is on, the account's ingestion settings (Configure ingestion, T3.4).
+ * GET/PUT /api/users/[id]/tradecraft-settings: the account's ingestion, search and recipe settings
+ * (Configure ingestion T3.4, Configure search T7.2) and the Save & refresh all offer (T9.1). The 2.0
+ * switch left at the cut-over (T9.3): every answer says `v2Enabled: true`, and no body sets it.
  *
  * The real session helpers run over signed tokens, so the account rule is the one every
  * `/api/users/[id]/**` write follows (requireUserAccess, HD-23): the account itself writes,
@@ -144,13 +145,15 @@ afterEach(() => {
 })
 
 describe('GET /api/users/[id]/tradecraft-settings', () => {
-  test('the account reads its switch, off without a row; the ingestion section only while on', async () => {
-    expect(await answer(await get('victim'))).toEqual({ status: 200, body: { v2Enabled: false } })
-    h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
-    const on = await answer(await get('victim'))
-    expect(on.status).toBe(200)
-    expect(on.body.v2Enabled).toBe(true)
-    expect(Object.keys(on.body.ingestion as object).sort()).toEqual(['changed', 'defaults', 'values'])
+  test('every account reads its settings, with or without a row, whatever an old switch row says (T9.3)', async () => {
+    for (const row of [undefined, { v2Enabled: false, v2EnabledAt: null }, { v2Enabled: true, v2EnabledAt: new Date() }]) {
+      h.rows.clear()
+      if (row) h.rows.set('victim', row)
+      const r = await answer(await get('victim'))
+      expect(r.status).toBe(200)
+      expect(r.body.v2Enabled).toBe(true)
+      expect(Object.keys(r.body.ingestion as object).sort()).toEqual(['changed', 'defaults', 'values'])
+    }
   })
 
   test('get_requires_self_permission', async () => {
@@ -171,27 +174,14 @@ describe('GET /api/users/[id]/tradecraft-settings', () => {
 })
 
 describe('PUT /api/users/[id]/tradecraft-settings', () => {
-  test('put_writes_and_answers_new_value', async () => {
-    expect(await answer(await put('victim', { v2Enabled: true }))).toEqual({ status: 200, body: { v2Enabled: true } })
-    expect(h.rows.get('victim')!.v2Enabled).toBe(true)
-    expect(h.audits).toEqual([expect.objectContaining({
-      action: 'tradecraft.v2_switched', actorId: 'victim', targetType: 'user', targetId: 'victim',
-      after: { v2Enabled: true },
-    })])
-    expect(vi.mocked(requireSelfPermission).mock.calls.at(-1)!.slice(1)).toEqual(['victim', 'self:tradecraft'])
-    expect(await answer(await get('victim'))).toMatchObject({ status: 200, body: { v2Enabled: true } })
-    expect(await answer(await put('victim', { v2Enabled: false }))).toEqual({ status: 200, body: { v2Enabled: false } })
-    expect(h.audits).toHaveLength(2)
-  })
-
   test.each([
-    ['a string', { v2Enabled: 'true' }],
-    ['a number', { v2Enabled: 1 }],
-    ['null', { v2Enabled: null }],
+    ['the switch of the 2.0 era', { v2Enabled: true }],
+    ['the switch turned off', { v2Enabled: false }],
+    ['an offer answer that is not true', { bulkRefreshOffered: 'true' }],
     ['an empty body', {}],
-    ['an unknown key', { v2Enabled: true, ingestion: {} }],
+    ['two keys', { v2Enabled: true, ingestion: {} }],
     ['an array', [true]],
-  ])('put_refuses_non_boolean: %s is a 400 with a fixed message, nothing written', async (_name, body) => {
+  ])('a body naming no section is a 400 with a fixed message, nothing written: %s', async (_name, body) => {
     const r = await answer(await put('victim', body))
     expect(r.status).toBe(400)
     expect(r.body.error).toMatch(/^Body must be/)
@@ -208,7 +198,7 @@ describe('PUT /api/users/[id]/tradecraft-settings', () => {
   test('put_refused_while_acting_as_account_that_signs_in', async () => {
     h.auth = await createToken('admin-1', 'admin')
     h.actAs = await createActAsToken('admin-1', 'victim')
-    const r = await answer(await put('victim', { v2Enabled: true }))
+    const r = await answer(await put('victim', { bulkRefreshOffered: true }))
     expect(r.status).toBe(403)
     expect(r.body.code).toBe('own_account_only')
     expect(h.writes).toEqual([])
@@ -217,21 +207,21 @@ describe('PUT /api/users/[id]/tradecraft-settings', () => {
 
   test('an admin on another account, not acting, is refused too', async () => {
     h.auth = await createToken('admin-1', 'admin')
-    const r = await answer(await put('victim', { v2Enabled: true }))
+    const r = await answer(await put('victim', { bulkRefreshOffered: true }))
     expect(r.status).toBe(403)
     expect(h.writes).toEqual([])
   })
 
-  test('an admin acting as a passwordless managed account writes, audited as the admin on its behalf', async () => {
+  test('an admin acting as a passwordless managed account writes', async () => {
     h.auth = await createToken('admin-1', 'admin')
     h.actAs = await createActAsToken('admin-1', 'managed')
-    expect((await put('managed', { v2Enabled: true })).status).toBe(200)
-    expect(h.audits[0]).toMatchObject({ actorId: 'admin-1', onBehalfOfUserId: 'managed', targetId: 'managed' })
+    expect((await put('managed', { bulkRefreshOffered: true })).status).toBe(200)
+    expect(h.rows.get('managed')!.bulkRefreshOfferedAt).toBeInstanceOf(Date)
   })
 
-  test('the internal key never flips a switch: no person, no write', async () => {
+  test('the internal key answers no offer: no person, no write', async () => {
     h.auth = undefined
-    const r = await put('victim', { v2Enabled: true }, { 'x-internal-key': 'ik-test-tradecraft-0001' })
+    const r = await put('victim', { bulkRefreshOffered: true }, { 'x-internal-key': 'ik-test-tradecraft-0001' })
     expect(r.status).toBe(401)
     expect(h.writes).toEqual([])
   })
@@ -240,7 +230,7 @@ describe('PUT /api/users/[id]/tradecraft-settings', () => {
     h.readError = Object.assign(new Error('connection to db-host:5432 failed for user secret_user'), { code: 'P1001' })
     const g = await answer(await get('victim'))
     expect(g).toEqual({ status: 500, body: { error: 'Failed to read the Tradecraft settings', code: 'P1001' } })
-    const p = await answer(await put('victim', { v2Enabled: true }))
+    const p = await answer(await put('victim', { bulkRefreshOffered: true }))
     expect(p).toEqual({ status: 500, body: { error: 'Failed to save the Tradecraft settings', code: 'P1001' } })
     expect(JSON.stringify([g, p])).not.toContain('secret_user')
   })
@@ -309,13 +299,11 @@ describe('the ingestion settings (T3.4)', () => {
     expect(bad.body.code).toBe('invalid_settings')
   })
 
-  test('switch_off_404: with 2.0 off the section neither reads nor writes', async () => {
-    for (const body of [{ ingestion: { 'crawl.maxPages': 120 } }, { reset: 'all' }]) {
-      const r = await answer(await put('victim', body))
-      expect(r).toEqual({ status: 404, body: { error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' } })
-    }
-    expect(h.writes).toEqual([])
-    expect((await answer(await get('victim'))).body).toEqual({ v2Enabled: false })
+  test('an account whose old switch row was off saves too: the switch left at the cut-over (T9.3)', async () => {
+    h.rows.set('victim', { v2Enabled: false, v2EnabledAt: null })
+    const r = await answer(await put('victim', { ingestion: { 'crawl.maxPages': 120 } }))
+    expect(r.status).toBe(200)
+    expect(h.rows.get('victim')!.ingestion).toEqual({ 'crawl.maxPages': 120 })
   })
 
   test.each([
@@ -370,9 +358,7 @@ describe('the focus recipes (T5.5)', () => {
     expect(h.writes).toEqual([])
   })
 
-  test('with 2.0 off: 404, nothing read or written; the internal key alone saves none', async () => {
-    expect(await answer(await put('victim', { recipes: { add: { name: 'x', kinds: ['poc'] } } })))
-      .toEqual({ status: 404, body: { error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' } })
+  test('the internal key alone saves none', async () => {
     on()
     h.auth = undefined
     expect((await put('victim', { recipes: { add: { name: 'x', kinds: ['poc'] } } }, { 'x-internal-key': 'ik-test-tradecraft-0001' })).status).toBe(401)
@@ -454,11 +440,7 @@ describe('the search settings (Configure search, T7.2)', () => {
     expect(h.rows.get('victim')!.synonyms).toEqual([{ term: 'a', expansions: ['b'] }])
   })
 
-  test('with 2.0 off: 404, nothing written; the internal key alone saves none; another account is refused', async () => {
-    for (const body of [{ search: { 'search.results': 9 } }, { reset: 'search' }]) {
-      expect((await answer(await put('victim', body))).status).toBe(404)
-    }
-    expect(h.writes).toEqual([])
+  test('the internal key alone saves none; another account is refused', async () => {
     on()
     h.auth = undefined
     expect((await put('victim', { search: { 'search.results': 9 } }, { 'x-internal-key': 'ik-test-tradecraft-0001' })).status).toBe(401)
@@ -470,30 +452,7 @@ describe('the search settings (Configure search, T7.2)', () => {
   })
 })
 
-describe('the conversion of 1.x resources (T9.1)', () => {
-  test('switch_on_triggers_convert: turning 2.0 on asks the agent to convert the account; off asks nothing', async () => {
-    expect(await answer(await put('victim', { v2Enabled: true }))).toEqual({ status: 200, body: { v2Enabled: true } })
-    expect(h.convertCalls).toEqual(['/tradecraft/v2/users/victim/convert'])
-    expect(await answer(await put('victim', { v2Enabled: false }))).toEqual({ status: 200, body: { v2Enabled: false } })
-    expect(h.convertCalls).toHaveLength(1)
-  })
-
-  test('the conversion is best effort: a refusing or unreachable agent never fails the switch', async () => {
-    h.convertAnswer = { status: 503, body: { error_code: 'internal_error' } }
-    expect(await answer(await put('victim', { v2Enabled: true }))).toEqual({ status: 200, body: { v2Enabled: true } })
-    h.rows.get('victim')!.v2Enabled = false
-    h.convertAnswer = 'unreachable'
-    expect(await answer(await put('victim', { v2Enabled: true }))).toEqual({ status: 200, body: { v2Enabled: true } })
-    expect(h.rows.get('victim')!.v2Enabled).toBe(true)
-    expect(h.convertCalls).toHaveLength(2)
-  })
-
-  test('a request the switch refuses asks for no conversion', async () => {
-    h.auth = undefined
-    expect((await put('victim', { v2Enabled: true })).status).toBe(401)
-    expect(h.convertCalls).toEqual([])
-  })
-
+describe('the Save & refresh all offer after the conversion (T9.1)', () => {
   test('offer_once: offered while a converted resource exists and the person never answered; either answer ends it', async () => {
     h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
     expect((await answer(await get('victim'))).body.offerBulkRefresh).toBe(false)
@@ -507,12 +466,19 @@ describe('the conversion of 1.x resources (T9.1)', () => {
     expect(h.rows.get('victim')!.bulkRefreshOfferedAt).toBe(at)
   })
 
-  test('the answer needs 2.0 on, a person and the account; anything but true is a 400', async () => {
-    expect((await answer(await put('victim', { bulkRefreshOffered: true }))).status).toBe(404)
-    h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
+  test('an account with no settings row answers too; only true is an answer; another account is refused', async () => {
+    h.converted = 1
+    expect((await answer(await get('victim'))).body.offerBulkRefresh).toBe(true)
     expect((await answer(await put('victim', { bulkRefreshOffered: false }))).status).toBe(400)
-    expect((await answer(await put('victim', { bulkRefreshOffered: true }, {}))).status).toBe(200)
+    expect((await answer(await put('victim', { bulkRefreshOffered: true }))).status).toBe(200)
+    expect((await answer(await get('victim'))).body.offerBulkRefresh).toBe(false)
     h.auth = await createToken('admin-1', 'admin')
     expect((await put('victim', { bulkRefreshOffered: true })).status).toBe(403)
+  })
+
+  test('nothing here asks the agent: the boot sweep converts every account (T9.2)', async () => {
+    await get('victim')
+    await put('victim', { bulkRefreshOffered: true })
+    expect(h.convertCalls).toEqual([])
   })
 })

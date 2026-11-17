@@ -56,8 +56,7 @@ class TestFixtureFetcherRender(RenderContractSuite):
 CONNECTING_MODULES = (
     "aiohttp", "asyncpg", "http.client", "httpcore", "httpx", "psycopg", "psycopg2",
     "psycopg_pool", "requests", "socket", "urllib.request", "urllib3", "websockets",
-    "orchestrator_helpers.fetch_guard", "orchestrator_helpers.tradecraft_lookup",
-    "orchestrator_helpers.tradecraft_crawl",
+    "orchestrator_helpers.fetch_guard",
 )
 
 # Every module of agentic/tradecraft/ allowed to open a connection, and why.

@@ -1,11 +1,9 @@
 """Map builders (T1.6): on every fixture site, at least as many distinct entries as the 1.x
-builder finds on the same fixture, with every cap read from the settings.
+builder found on the same fixture, with every cap read from the settings.
 
-``legacy_on_fixtures`` points the 1.x fetch tiers and its GitHub HTTP client at the same
-``FixtureFetcher``, so both versions read exactly the same pages. (1.x ``verify_resource``
-itself would call every fixture start page "thin": they hold under 500 characters of text,
-so it would type them all as a website; the type is compared in
-``test_tradecraft_ingest_detect.py`` and the whole run in T1.8's pipeline tests.)
+The 1.x builders left with the cut-over (T9.2); what they found on these fixture sites, read
+through the same ``FixtureFetcher``, is frozen in ``fixtures/tradecraft_legacy/oracle_1x.json``
+(recorded by S13 from the 1.x code just before it was deleted), so the comparison stands.
 """
 
 from __future__ import annotations
@@ -19,84 +17,22 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from orchestrator_helpers import tradecraft_lookup as legacy  # noqa: E402
 from tradecraft import net  # noqa: E402
 from tradecraft.ingest import builders, fetch  # noqa: E402
 from tradecraft.settings import EffectiveSettings  # noqa: E402
 from tradecraft_doubles import FixtureFetcher, run  # noqa: E402
 
 TOKEN = "ghp_fake_token_for_tests"
-
-
-class _HttpxAnswer:
-    def __init__(self, resp):
-        self.status_code = resp.status
-        self.headers = dict(resp.headers)
-        self.text = resp.text
-        self.content = resp.body
-        self.url = resp.final_url
-
-    def json(self):
-        return json.loads(self.text)
-
-
-def legacy_on_fixtures(monkeypatch, fetcher):
-    """Run 1.x's fetch tiers and GitHub client on ``fetcher``."""
-
-    async def tier1(url, *, timeout=30, github_token="", expect_text=True):
-        url = legacy._rewrite_github_url(url)
-        r = await fetcher.get(url)
-        if r.error:
-            return legacy.FetchResult(text="", content_type="", status=0, tier=1,
-                                      blocked=r.error if r.error == "unsafe_address" else "")
-        if "application/pdf" in r.content_type or r.body[:5] == b"%PDF-":
-            return legacy.FetchResult(text="", content_type="application/pdf", status=r.status, tier=1,
-                                      raw_bytes=r.body, final_url=r.final_url)
-        text = r.text
-        if expect_text and "html" in r.content_type:
-            text = legacy._html_to_markdown(text)
-        return legacy.FetchResult(text=text, content_type=r.content_type, status=r.status, tier=1,
-                                  raw_bytes=r.text.encode(), final_url=r.final_url)
-
-    async def tier2(url, mcp_manager):
-        rendered = await fetcher.render(url)
-        if not rendered.html:
-            return legacy.FetchResult(text="", content_type="", status=0, tier=2)
-        return legacy.FetchResult(text=legacy._html_to_markdown(rendered.html), content_type="text/html",
-                                  status=200, tier=2, raw_bytes=rendered.html.encode())
-
-    class Client:
-        def __init__(self, *args, headers=None, **kwargs):
-            self._headers = headers or {}
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        async def get(self, url):
-            return _HttpxAnswer(await fetcher.get(url, headers=self._headers))
-
-    monkeypatch.setattr(legacy, "fetch_tier1", tier1)
-    monkeypatch.setattr(legacy, "fetch_tier2", tier2)
-    monkeypatch.setattr(legacy.httpx, "AsyncClient", Client)
+# What 1.x's builders found on each fixture site (URLs resolved as 1.x reads them).
+ORACLE = json.loads((Path(__file__).resolve().parent / "fixtures" / "tradecraft_legacy" / "oracle_1x.json")
+                    .read_text())["builders"]
 
 
 @pytest.fixture
-def fixtures(monkeypatch):
+def fixtures():
     fetcher = FixtureFetcher()
-    legacy_on_fixtures(monkeypatch, fetcher)
     with net.use_fetcher(fetcher):
         yield fetcher
-
-
-def legacy_urls(sitemap, base):
-    """The distinct URLs a 1.x map names (paths resolved as 1.x reads them)."""
-    out = set()
-    for e in legacy._sitemap_entries(sitemap):
-        out.add(fetch.canonical_url(builders._join(base, e["path"])))
-    return out
 
 
 def s(**values):
@@ -109,10 +45,9 @@ def s(**values):
 
 def test_wiki_matches_1x(fixtures):
     url = "https://wiki.tc-fixture.test/"
-    old = run(legacy._build_sitemap_mkdocs(url))
     new = run(builders.build_wiki(url, s()))
     assert new.type == "mkdocs-wiki" and new.index_kind == "sitemap"
-    old_urls = legacy_urls(old, url)
+    old_urls = set(ORACLE["wiki"]["urls"])
     assert old_urls and len(new.entries) >= len(old_urls)
     assert old_urls <= {e.url for e in new.entries}
     assert all(e.source == "sitemap" and e.title for e in new.entries)
@@ -120,30 +55,28 @@ def test_wiki_matches_1x(fixtures):
 
 def test_docs_matches_1x(fixtures):
     url = "https://docs.tc-fixture.test/"
-    old = run(legacy._build_sitemap_sphinx(url))
     new = run(builders.build_docs(url, s()))
-    old_urls = legacy_urls(old, url)
+    old_urls = set(ORACLE["docs"]["urls"])
     assert old_urls and {e.url for e in new.entries} >= old_urls
-    assert new.meta["indexUrl"] == old["indexUrl"] and new.index_kind == "searchindex"
+    assert new.meta["indexUrl"] == ORACLE["docs"]["indexUrl"] and new.index_kind == "searchindex"
     titles = {e.title for e in new.entries}
-    assert {e["title"] for e in old["nav"]} <= titles
+    assert set(ORACLE["docs"]["titles"]) <= titles
 
 
 def test_gitbook_matches_1x(fixtures):
     url = "https://book.tc-fixture.test/"
-    old = run(legacy._build_sitemap_gitbook(url))
     new = run(builders.build_gitbook(url, s()))
-    old_urls = legacy_urls(old, url)
+    old_urls = set(ORACLE["gitbook"]["urls"])
     assert old_urls and {e.url for e in new.entries} >= old_urls
 
 
 def test_github_matches_1x(fixtures):
     url = "https://github.com/tc-fixture/payloads"
-    old = run(legacy._build_sitemap_github_repo(url, github_token=TOKEN))
+    old = ORACLE["github"]
     new = run(builders.build_github(url, s(), github_token=TOKEN))
     assert not new.error and new.meta == {"owner": "tc-fixture", "repo": "payloads", "branch": old["branch"]}
-    assert {e["path"] for e in old["tree"]} == {e.path for e in new.entries}
-    assert {e["title"] for e in old["tree"]} == {e.title for e in new.entries}
+    assert set(old["paths"]) == {e.path for e in new.entries}
+    assert set(old["titles"]) == {e.title for e in new.entries}
     # The entry URL is what a read fetches: the raw file.
     assert all(e.url.startswith("https://raw.githubusercontent.com/tc-fixture/payloads/main/") for e in new.entries)
     # The token went only to GitHub's API host.
@@ -153,16 +86,15 @@ def test_github_matches_1x(fixtures):
 
 def test_cve_matches_1x(fixtures):
     url = "https://github.com/tc-fixture/cve"
-    old = run(legacy._build_sitemap_cve_poc_db(url))
     new = run(builders.build_known("cve-poc-db", url, s()))
     assert new.type == "cve-poc-db" and not new.retype and new.entries == []
-    assert new.meta == {k: old[k] for k in ("owner", "repo", "branch")}
+    assert new.meta == ORACLE["cve"]
 
 
 def test_cve_without_year_folders_is_retyped(fixtures):
     url = "https://github.com/tc-fixture/payloads"
-    old = run(legacy._build_sitemap_cve_poc_db(url))
-    assert old.get("_no_year_dirs") is True
+    # 1.x saw the same thing: the repository has no year folders.
+    assert ORACLE["cve_on_a_repo_without_year_folders"] == {"no_year_dirs": True}
     new = run(builders.build_known("cve-poc-db", url, s()))
     assert new.retype == "github-repo" and new.type == "github-repo" and new.entries
 
@@ -170,10 +102,11 @@ def test_cve_without_year_folders_is_retyped(fixtures):
 def test_pdf_pages(fixtures):
     url = "https://files.tc-fixture.test/guide.pdf"
     body = run(fixtures.get(url)).body
-    meta, texts, err = legacy._extract_pdf_pages(body)
+    old = ORACLE["pdf"]
+    texts = old["texts"]
     result = run(builders.build_pdf(url, body, s()))
-    assert not err and not result.error
-    assert len(result.entries) == len(meta) == 3
+    assert not old["error"] and not result.error
+    assert len(result.entries) == old["pages"] == 3
     assert [e.extra["page"] for e in result.entries] == [1, 2, 3]
     assert [e.extra["text"] for e in result.entries] == texts
     assert result.entries[0].url == url + "#page=1" and result.entries[0].source == "pdf"

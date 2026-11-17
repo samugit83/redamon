@@ -52,7 +52,8 @@ export function useProjectTradecraft(projectId: string | null): { load: Load; re
   return { load, reload: useCallback(() => setToken(t => t + 1), []) }
 }
 
-/** Whether the project's owner has 2.0 on: the tab and the drawer window take the new name. */
+/** Whether the project's tradecraft view has loaded: the tab and the drawer window then take the
+ * new name (every view is 2.0 since the cut-over, T9.3; a form with no project keeps the old one). */
 export function useTradecraftV2(projectId: string | null): boolean {
   const { load } = useProjectTradecraft(projectId)
   return load.kind === 'ready' && load.view.v2

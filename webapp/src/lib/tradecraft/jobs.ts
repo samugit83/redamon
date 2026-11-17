@@ -105,7 +105,7 @@ export async function latestJob(ownerId: string, resourceId: string): Promise<Jo
 
 type EndedJob = Pick<TradecraftIngestionJob, 'id' | 'kind' | 'resourceId'>
 
-/** The 1.x `lastError` of a job that ended without a swap, in the 1.x format (agentLastError.ts). */
+/** The 1.x `lastError` of a job that ended without a swap, in the format 1.x wrote it (TD-18: a roll-back reads it). */
 export function legacyErrorText(kind: string, code: string, upstreamStatus?: number): string {
   const action = kind === 'add' ? 'verify' : 'refresh'
   if (code === 'cancelled') return `${action} cancelled`

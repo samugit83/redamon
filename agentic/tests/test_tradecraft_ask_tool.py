@@ -515,7 +515,7 @@ def test_registry_entry():
 
 def test_registered_as_a_stand_in():
     assert "tradecraft_ask" in tool_proxies.V2_TOOL_NAMES
-    assert set(tool_proxies.registered_tools()) == {"tradecraft_search", "tradecraft_ask"}
+    assert set(tool_proxies.registered_tools()) == {"tradecraft_lookup", "tradecraft_search", "tradecraft_ask"}
 
 
 def test_dispatch_single_and_plan(monkeypatch):

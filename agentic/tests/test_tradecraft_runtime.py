@@ -37,7 +37,11 @@ def v2_catalog(**over):
 
 
 def legacy_catalog():
-    return json.loads((FIXTURES / "LegacyCatalog.valid.json").read_text())
+    """The 1.x run payload a webapp of the switch era answered (``{"v2": false, "legacy": rows}``):
+    since the cut-over (T9.2) no catalog, so it binds nothing."""
+    return {"v2": False, "legacy": [{"id": "res_fake_0001", "userId": "user_owner_fake", "name": "Fake wiki",
+                                     "slug": "fake-wiki", "url": "https://wiki.example.invalid/", "enabled": True,
+                                     "resourceType": "mkdocs-wiki", "summary": "A synthetic wiki.", "sitemap": {}}]}
 
 
 def in_fresh_context(fn, *args):
@@ -85,15 +89,18 @@ def test_registry_entry_wraps_the_summaries():
     assert "cache" not in desc.lower()
 
 
-def test_v2_entries_replace_a_1x_entry():
+def test_a_run_binds_its_own_entries_once():
+    """A second run of the session replaces the first one's entries (T9.2: the 1.x entry and its
+    swap are gone, the run's entries are the only tradecraft entries)."""
     def go():
-        tr.swap_tradecraft_entry({"purpose": "old", "when_to_use": "w", "args_format": "a", "description": "1.x"})
+        tr.swap_tradecraft_v2_entries({"tradecraft_lookup": {"purpose": "old", "when_to_use": "w", "args_format": "a",
+                                                             "description": "an earlier run"}})
         runtime.bind_run_catalog(v2_catalog())
         reg = tr.visible_registry()
         return reg["tradecraft_lookup"]["description"], list(reg).count("tradecraft_lookup")
 
     desc, count = in_fresh_context(go)
-    assert desc != "1.x" and count == 1
+    assert desc != "an earlier run" and count == 1
 
 
 def test_actor_from_run_actor():
@@ -178,10 +185,13 @@ def test_no_get_setting_for_catalog():
 
 def test_the_executor_routes_a_2x_run_to_the_2x_tool():
     tools_src = (TRADECRAFT_DIR.parent / "tools.py").read_text()
-    # T2.6 widened the branch to the 2.0 tools that share it (TD-10).
+    # T2.6 widened the branch to the 2.0 tools that share it (TD-10); since the cut-over (T9.2)
+    # every one of them is the registered 2.0 stand-in, so the branch calls it as it is.
     branch = tools_src[tools_src.index('elif tool_name in ("tradecraft_lookup", "tradecraft_search", "tradecraft_ask"):'):]
     branch = branch[:branch.index("elif tool_name ==", 10)]
-    assert "await (v2_tool_for(tool_name) or active_tool).ainvoke(tool_args)" in branch
+    assert "output = await active_tool.ainvoke(tool_args)" in branch
+    from tradecraft.tool_proxies import V2_TOOL_NAMES
+    assert V2_TOOL_NAMES == ("tradecraft_lookup", "tradecraft_search", "tradecraft_ask")
 
 
 # --------------------------------------------------------------------------------------
@@ -228,38 +238,39 @@ def fetch_with(catalog_answer, legacy_answer=None, actor=None):
     return contextvars.Context().run(go), calls
 
 
-def test_settings_carry_a_v2_catalog_and_no_1x_rows():
+def test_settings_carry_the_catalog():
     settings, calls = fetch_with(_Resp(200, v2_catalog()),
                                  actor=RunActor(user_id="owner-1", tenant_id="owner-1", project_id="proj-1", session_id="s"))
-    assert settings["TRADECRAFT_CATALOG"]["v2"] is True and settings["TRADECRAFT_RESOURCES"] == []
+    assert settings["TRADECRAFT_CATALOG"]["v2"] is True and settings["TRADECRAFT_V2"] is True
+    assert "TRADECRAFT_RESOURCES" not in settings
     catalog_call = [c for c in calls if "/tradecraft/catalog" in c[0]][0]
     assert catalog_call[1] == {"projectId": "proj-1", "personId": "owner-1"}
     assert not any("/tradecraft-resources" in c[0] for c in calls)
 
 
-def test_settings_carry_the_1x_rows_while_the_switch_is_off():
+def test_a_1x_payload_binds_nothing():
+    """T9.2: a webapp that still answers the 1.x rows (mid-deployment) gives the run no catalog:
+    the 1.x path is gone, so the run goes on without the tradecraft tools."""
     settings, _ = fetch_with(_Resp(200, legacy_catalog()))
-    assert settings["TRADECRAFT_CATALOG"]["v2"] is False
-    assert settings["TRADECRAFT_RESOURCES"] == legacy_catalog()["legacy"]
+    assert settings["TRADECRAFT_CATALOG"] is None and settings["TRADECRAFT_V2"] is False
 
 
 def test_unknown_project_404_never_falls_back():
-    """D-53: the route's own 404 carries a code; the unfiltered 1.x list is never asked."""
+    """D-53: the route's own 404 binds nothing, and the unfiltered list is never asked."""
     settings, calls = fetch_with(_Resp(404, {"code": "project_not_found"}))
-    assert settings["TRADECRAFT_CATALOG"] == {"v2": False, "legacy": []}
-    assert settings["TRADECRAFT_RESOURCES"] == []
+    assert settings["TRADECRAFT_CATALOG"] is None and settings["TRADECRAFT_V2"] is False
     assert not any("/tradecraft-resources" in c[0] for c in calls)
 
 
-def test_an_older_webapp_is_asked_the_1x_way():
+def test_an_older_webapp_is_never_asked_the_1x_way():
+    """T9.2: the page-404 fallback to the 1.x list (and its unmasked internal GET) is gone."""
     rows = legacy_catalog()["legacy"]
     settings, calls = fetch_with(_Resp(404, None, "<html>This page could not be found</html>"),
                                  legacy_answer=_Resp(200, rows))
-    assert settings["TRADECRAFT_CATALOG"] == {"v2": False, "legacy": rows}
-    assert settings["TRADECRAFT_RESOURCES"] == rows
-    assert any("/api/users/owner-1/tradecraft-resources?internal=true" in c[0] for c in calls)
+    assert settings["TRADECRAFT_CATALOG"] is None and settings["TRADECRAFT_V2"] is False
+    assert not any("/tradecraft-resources" in c[0] for c in calls)
 
 
 def test_a_failed_catalog_fetch_leaves_no_resource():
     settings, _ = fetch_with(_Resp(502, None, "bad gateway"))
-    assert settings["TRADECRAFT_CATALOG"] is None and settings["TRADECRAFT_RESOURCES"] == []
+    assert settings["TRADECRAFT_CATALOG"] is None and settings["TRADECRAFT_V2"] is False

@@ -12,7 +12,6 @@ import { AGENT_ROUTES, Credentials, ReadNowRequest, ReadNowResult, SLUG_RE, WEBA
 import { readSettings } from '@/lib/tradecraft/catalog'
 import { hasStoredLogin } from '@/lib/tradecraft/masking'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
-import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string; pageId: string }>
@@ -23,7 +22,6 @@ const READ_FAILED = 'Read now failed'
 function failure(status: number, code: string, error: string, extra: Record<string, unknown> = {}): NextResponse {
   return NextResponse.json({ error, code, ...extra }, { status })
 }
-const V2_OFF = () => failure(404, 'tradecraft_v2_off', 'Tradecraft 2.0 is off for this account')
 const PAGE_NOT_FOUND = () => failure(404, 'page_not_found', 'Page not found')
 
 /** `<slug>:<n>`, the page ID the agent and the Map view show; n is a `tradecraft_page_ids` row. */
@@ -70,7 +68,6 @@ async function open(request: NextRequest, p: RouteParams['params'], { person }: 
     const actor = await auditActor()
     if (!actor.actorId) return { res: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
   }
-  if (!(await tradecraftV2Enabled(id))) return { res: V2_OFF() }
   // The text of a resource with a login is the private content §6.6 protects, and Read now would
   // also send the login: neither while an administrator acts as the account (R-161).
   const loginRefused = await loginUseRefusal({ ownerId: id, resourceId })

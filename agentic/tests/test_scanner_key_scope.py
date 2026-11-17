@@ -38,7 +38,9 @@ MASTER_LIST = [
     ("GET", "/files"),
     ("POST", "/models"),
     ("POST", "/llm-provider/test"),
-    ("POST", "/tradecraft/verify"),
+    # The 1.x /tradecraft/verify left at the cut-over (T9.2). Its 2.0 successors live on an
+    # included router this list's lookup does not walk: test_ghsa_8whg_master_key_fail_closed.py
+    # holds their master gate, test_tradecraft_api.py their llm limits.
     ("POST", "/guardrail/check-target"),
     ("POST", "/graph/nl-query"),
     ("GET", "/graph/schema-doc"),
@@ -156,7 +158,7 @@ class MasterListTests(_Keys):
                         self.assertIn(GATE_503, r.text)
 
     def test_billed_routes_keep_the_llm_limits(self):
-        for path in ("/models", "/llm-provider/test", "/tradecraft/verify",
+        for path in ("/models", "/llm-provider/test",
                      "/guardrail/check-target", "/graph/nl-query"):
             with self.subTest(path=path):
                 self.assertIn(llm_guard.require_internal_auth, _guard_calls(_route("POST", path)))

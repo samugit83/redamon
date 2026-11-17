@@ -9,17 +9,24 @@
  * `search` and of `synonyms` (Q11 "My synonyms", user only).
  */
 import { randomUUID } from 'node:crypto'
+import type { Prisma } from '@prisma/client'
 import prisma from '@/lib/prisma'
-import { agentFetch } from '@/lib/agentFetch'
 import { now } from '@/lib/authz/clock'
-import { AGENT_ROUTES, ConvertAnswer } from './agentContract'
 import { MAX_USER_RECIPES, RECIPE_NAME_MAX, type UserRecipe } from './focus'
-import { lockTradecraftUserSettings } from './switch'
 import { foreignSkillTopics, validateKinds, validateTopics } from './v2/focusFields'
 import { effectiveSettings, canonicalJson } from './effectiveSettings'
 import {
   SECTIONS, SETTINGS, SETTINGS_CONSTANTS, cloneValue, validateUserSettings, type SettingError, type SettingsValues,
 } from './settingsSpec'
+
+/**
+ * Serializes the writers of one account's `TradecraftUserSettings` row until the transaction
+ * ends. A row lock cannot do it: the row may not exist yet. Every writer of the row takes it
+ * first, so a read inside the transaction sees the last committed value.
+ */
+export async function lockTradecraftUserSettings(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`tradecraft_user_settings:${userId}`}))`
+}
 
 const USER_KEYS = SETTINGS.filter(s => s.scope === 'ingestion' && s.level !== 'resource')
 const USER_KEY_SET: ReadonlySet<string> = new Set(USER_KEYS.map(s => s.key))
@@ -381,32 +388,7 @@ async function writeSearch(
   })
 }
 
-// --- the conversion of 1.x resources (T9.1) ---------------------------------------------
-
-const CONVERT_TIMEOUT_MS = 10_000
-
-/**
- * Asks the agent to convert the account's 1.x resources (§7.2), after 2.0 is turned on; answers
- * how many it queued, or null when it did not answer. Best effort: the conversion is idempotent
- * and the agent's boot sweep converts what a missed call left, so a refusal or an unreachable
- * agent is logged, never an error of the switch.
- */
-export async function startConversion(userId: string): Promise<number | null> {
-  try {
-    const resp = await agentFetch(AGENT_ROUTES.convert(userId), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-    }, { timeoutMs: CONVERT_TIMEOUT_MS })
-    if (!resp.ok) {
-      console.error(`[tradecraft] convert_refused status=${resp.status}`)
-      return null
-    }
-    const answer = ConvertAnswer.safeParse(await resp.json().catch(() => null))
-    return answer.success ? answer.data.queued : null
-  } catch {
-    console.error('[tradecraft] convert_unreachable')
-    return null
-  }
-}
+// --- the Save & refresh all offer after the conversion (T9.1) ----------------------------
 
 /**
  * Records the person's answer to the Save & refresh all offer (§7.2: it is offered once), whichever

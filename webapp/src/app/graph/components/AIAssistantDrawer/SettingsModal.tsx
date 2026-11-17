@@ -32,8 +32,8 @@ export function SettingsModal({
   // Suggested LHOST for the Agent Behaviour form (issue #180). Fetch only while the
   // agent modal is open; refetches each open so it tracks the last `redamon.sh up`.
   const detectedHostIp = useDetectedHostIp(settingsModal === 'agent')
-  // The window takes the new name only when the project owner has Tradecraft 2.0 on (§3.4).
-  const tradecraftV2 = useTradecraftV2(settingsModal === 'attack' || settingsModal === 'toolmatrix' ? projectId ?? null : null)
+  // The window takes the new name once the project's tradecraft view has loaded (§3.4).
+  const tradecraftV2 = useTradecraftV2(settingsModal === 'attack' ? projectId ?? null : null)
   if (!settingsModal) return null
 
   return (
@@ -52,7 +52,7 @@ export function SettingsModal({
             settingsModal === 'agent' ? (
               <AgentBehaviourSection data={projectFormData} updateField={updateProjectField} detectedHostIp={detectedHostIp} />
             ) : settingsModal === 'toolmatrix' ? (
-              <ToolMatrixSection data={projectFormData} updateField={updateProjectField} tradecraftV2={tradecraftV2} />
+              <ToolMatrixSection data={projectFormData} updateField={updateProjectField} />
             ) : (
               <AttackSkillsSection data={projectFormData} updateField={updateProjectField} projectId={projectId} inDrawer />
             )

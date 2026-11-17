@@ -70,13 +70,11 @@ describe('SettingsModal and Tradecraft', () => {
     expect(vi.mocked(fetch).mock.calls.some(c => c[0] === '/api/projects/p1/tradecraft')).toBe(false)
   })
 
-  test('the Tool Matrix window: the tradecraft row\'s note with 2.0 on only (T7.5, R-I5)', async () => {
-    draw(true, 'toolmatrix')
-    expect(await screen.findByTestId('tool-row-note-tradecraft_lookup')).toHaveTextContent('tradecraft_search and tradecraft_ask')
-    cleanup()
-    draw(false, 'toolmatrix')
-    await screen.findByText('tradecraft_lookup')
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(c => c[0] === '/api/projects/p1/tradecraft')).toBe(true))
-    expect(screen.queryByTestId('tool-row-note-tradecraft_lookup')).toBeNull()
+  test('the Tool Matrix window: the tradecraft row\'s note for every project (T7.5; the switch left at T9.3)', async () => {
+    for (const v2 of [true, false]) {
+      draw(v2, 'toolmatrix')
+      expect(await screen.findByTestId('tool-row-note-tradecraft_lookup')).toHaveTextContent('tradecraft_search and tradecraft_ask')
+      cleanup()
+    }
   })
 })

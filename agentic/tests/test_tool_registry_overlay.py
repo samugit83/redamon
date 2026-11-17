@@ -2,7 +2,9 @@
 Tier 3 / Stage 5: the per-project `tradecraft_lookup` system-prompt catalog is
 bound to the current session via a ContextVar overlay instead of mutating the
 global TOOL_REGISTRY (which raced -> one project's catalog leaked into another's
-prompt).
+prompt). Since the cut-over (T9.2) the overlay holds the run's tradecraft entries
+({tool name: entry}, `swap_tradecraft_v2_entries`); the helpers below bind one
+`tradecraft_lookup` entry, as the 1.x swap/pop did, so every check is unchanged.
 
 Proves:
   - PARITY: with no overlay, visible_registry() IS the global TOOL_REGISTRY (the
@@ -22,10 +24,18 @@ os.environ.setdefault("WEBAPP_API_URL", "http://fake-webapp")
 
 from prompts import tool_registry as tr
 from prompts.tool_registry import (
-    visible_registry, swap_tradecraft_entry, pop_tradecraft_entry,
-    TOOL_REGISTRY, _tradecraft_overlay,
+    visible_registry, swap_tradecraft_v2_entries,
+    TOOL_REGISTRY, _tradecraft_v2_overlay as _tradecraft_overlay,
 )
 from prompts.base import _get_visible_tools
+
+
+def swap_tradecraft_entry(entry):
+    swap_tradecraft_v2_entries({"tradecraft_lookup": entry})
+
+
+def pop_tradecraft_entry():
+    swap_tradecraft_v2_entries(None)
 
 _TC = {"purpose": "P", "when_to_use": "W",
        "args_format": '"resource_id": "x"', "description": "D"}

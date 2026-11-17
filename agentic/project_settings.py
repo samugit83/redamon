@@ -171,18 +171,6 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
     'NGROK_TUNNEL_ENABLED': False,
     'CHISEL_TUNNEL_ENABLED': False,
 
-    # Tradecraft Lookup tool
-    # (Output truncation is delegated to the global TOOL_OUTPUT_MAX_CHARS so
-    # tradecraft results follow the same cap as every other tool.)
-    'TRADECRAFT_TOOL_ENABLED': True,
-    'TRADECRAFT_FETCH_TIMEOUT': 30,
-    'TRADECRAFT_DEFAULT_TTL_SEC': 86400,
-    'TRADECRAFT_TIER2_THRESHOLD_BYTES': 800,
-    'TRADECRAFT_CRAWL_MAX_PAGES': 30,
-    'TRADECRAFT_CRAWL_MAX_LLM_CALLS': 20,
-    'TRADECRAFT_CRAWL_TIME_BUDGET_SEC': 180,
-    'TRADECRAFT_CRAWL_MAX_DEPTH': 3,
-
     # Agent Limits
     'MAX_ITERATIONS': 100,
     'EXECUTION_TRACE_MEMORY_STEPS': 100,
@@ -828,11 +816,10 @@ def fetch_agent_settings(project_id: str, webapp_url: str, *,
             logger.warning(f"Failed to fetch user settings: {e}")
             settings['USER_SETTINGS'] = {}
 
-        # The run's tradecraft catalog. While the owner's Tradecraft 2.0 switch is off
-        # the webapp answers the 1.x rows unchanged; a webapp older than the route
-        # (a 404 page with no JSON code, mid-deployment) is asked the 1.x way. The
-        # route's own 404 for an unknown project carries a code and must not fall
-        # back, or the 1.x list would skip every 2.0 rule.
+        # The run's tradecraft catalog (TD-9): the resources the run may read, never their maps,
+        # which the library reads from Postgres. An unknown project (the route's own
+        # `project_not_found`) and a catalog that cannot be read bind none: the run goes on
+        # without the tradecraft tools.
         try:
             from tradecraft.runtime import catalog_query
             tc_resp = requests.get(
@@ -841,33 +828,18 @@ def fetch_agent_settings(project_id: str, webapp_url: str, *,
                 headers=INTERNAL_HEADERS,
                 timeout=10,
             )
-            try:
-                tc_code = tc_resp.json().get('code') if tc_resp.status_code == 404 else None
-            except ValueError:
-                tc_code = None
-            if tc_resp.status_code == 404 and tc_code == 'project_not_found':
-                catalog = {'v2': False, 'legacy': []}
-            elif tc_resp.status_code == 404:
-                tc_resp = requests.get(
-                    f"{webapp_url.rstrip('/')}/api/users/{user_id}/tradecraft-resources?internal=true",
-                    headers=INTERNAL_HEADERS,
-                    timeout=10,
-                )
-                tc_resp.raise_for_status()
-                catalog = {'v2': False, 'legacy': tc_resp.json()}
-            else:
-                tc_resp.raise_for_status()
-                catalog = tc_resp.json()
+            tc_resp.raise_for_status()
+            catalog = tc_resp.json()
+            if not (isinstance(catalog, dict) and catalog.get('v2') is True):
+                catalog = None
             settings['TRADECRAFT_CATALOG'] = catalog
-            settings['TRADECRAFT_V2'] = bool(catalog.get('v2'))
-            settings['TRADECRAFT_ASK'] = bool(catalog.get('v2')) and (catalog.get('search') or {}).get('librarian.use', 'agent') == 'agent'
-            settings['TRADECRAFT_RESOURCES'] = [] if catalog.get('v2') else catalog.get('legacy', [])
+            settings['TRADECRAFT_V2'] = catalog is not None
+            settings['TRADECRAFT_ASK'] = catalog is not None and (catalog.get('search') or {}).get('librarian.use', 'agent') == 'agent'
         except Exception as e:
-            logger.warning(f"Failed to fetch tradecraft resources: {e}")
+            logger.warning(f"Failed to fetch the tradecraft catalog: {type(e).__name__}")
             settings['TRADECRAFT_CATALOG'] = None
             settings['TRADECRAFT_V2'] = False
             settings['TRADECRAFT_ASK'] = False
-            settings['TRADECRAFT_RESOURCES'] = []
 
         # If selected model is custom/, extract its specific config
         model_id = settings.get('OPENAI_MODEL', '')

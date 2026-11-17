@@ -33,10 +33,11 @@ async function openDialog(page: import('@playwright/test').Page) {
   return dialog
 }
 
-test('the switch: Tradecraft 2.0 (preview) is on, and the three resources show as 2.0 cards', async ({ page }) => {
+test('the 2.0 library for every account: no preview switch, and the three resources show as 2.0 cards', async ({ page }) => {
   await openTab(page)
-  await expect(page.getByRole('switch', { name: 'Tradecraft 2.0 (preview)' })).toHaveAttribute('aria-checked', 'true')
   for (const id of [seed.TC_WIKI_ID, seed.TC_BLOG_ID, seed.TC_DISABLED_ID]) await expect(card(page, id)).toBeVisible()
+  // The switch left at the cut-over (T9.3): the tab is 2.0 whatever the account's old row says.
+  await expect(page.getByRole('switch', { name: /Tradecraft 2\.0/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /Configure ingestion/ })).toBeVisible()
 })
 

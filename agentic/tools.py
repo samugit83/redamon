@@ -2219,8 +2219,8 @@ TOOL_DEADLINES_S: Dict[str, float] = {
         # MSF_RUN_TIMEOUT, plus up to 10 min queued behind the single console lock.
         "metasploit_console": 2400,
         # In-process tools: bounded by their own HTTP/LLM timeouts, which can
-        # chain (query_graph retries Cypher generation; tradecraft may run an
-        # LLM section picker before its fetch).
+        # chain (query_graph retries Cypher generation; a tradecraft read may fall
+        # back to the browser after its plain fetch).
         "query_graph": 540,
         "graph_schema": 60,
         "graph_summary": 120,
@@ -2302,7 +2302,6 @@ class PhaseAwareToolExecutor:
         web_search_tool: Optional[callable] = None,
         shodan_tool: Optional[callable] = None,
         google_dork_tool: Optional[callable] = None,
-        tradecraft_tool: Optional[callable] = None,
         graph_schema_tool: Optional[callable] = None,
         graph_summary_tool: Optional[callable] = None,
     ):
@@ -2338,12 +2337,9 @@ class PhaseAwareToolExecutor:
         if google_dork_tool:
             self._all_tools["google_dork"] = google_dork_tool
 
-        # Register Tradecraft Lookup tool (conditional on enabled resources)
-        if tradecraft_tool:
-            self._all_tools["tradecraft_lookup"] = tradecraft_tool
-        # Tradecraft 2.0's own tools stay registered; runtime.py answers them only in a
-        # run whose catalog is 2.0, and the phase list offers them only then. The stand-ins
-        # import the real tools when called, so building the executor imports no langchain.
+        # The Tradecraft tools stay registered; runtime.py answers them only in a run whose
+        # catalog is bound, and the phase list offers them only then. The stand-ins import
+        # the real tools when called, so building the executor imports no langchain.
         from tradecraft.tool_proxies import registered_tools as _tradecraft_v2_tools
         self._all_tools.update(_tradecraft_v2_tools())
 
@@ -2424,18 +2420,6 @@ class PhaseAwareToolExecutor:
             self._all_tools["shodan"] = tool
         else:
             self._all_tools.pop("shodan", None)
-
-    def update_tradecraft_tool(self, tool: Optional[callable]) -> None:
-        """Replace or remove the Tradecraft Lookup tool.
-
-        Called from `_apply_project_settings()` whenever the user's
-        tradecraft resource catalog changes. None -> tool unregistered
-        (zero enabled resources).
-        """
-        if tool:
-            self._all_tools["tradecraft_lookup"] = tool
-        else:
-            self._all_tools.pop("tradecraft_lookup", None)
 
     def set_wpscan_api_token(self, token: str) -> None:
         """Store WPScan API token for auto-injection into execute_wpscan args."""
@@ -2792,11 +2776,9 @@ class PhaseAwareToolExecutor:
                 # orchestrator analyzer via the webapp internal lane.
                 output = await active_tool.ainvoke(tool_args.get("args", ""))
             elif tool_name in ("tradecraft_lookup", "tradecraft_search", "tradecraft_ask"):
-                # Pass the structured args through. The tool function picks them up
-                # by name (resource_id, query, cve_id, section_path, force_refresh).
-                # A run whose owner has Tradecraft 2.0 on reads through the 2.0 library.
-                from tradecraft.runtime import v2_tool_for
-                output = await (v2_tool_for(tool_name) or active_tool).ainvoke(tool_args)
+                # Pass the structured args through: the tool picks them up by name (page,
+                # section, part, resource_id, query, cve_id, ...).
+                output = await active_tool.ainvoke(tool_args)
             elif tool_name == "execute_wpscan":
                 # Inject WPScan API token if configured and not already in args.
                 # Read from the task-isolated settings at use-time (not a shared

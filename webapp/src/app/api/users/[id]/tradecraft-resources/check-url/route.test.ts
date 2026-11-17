@@ -157,7 +157,7 @@ describe('Check URL', () => {
     expect(agent.calls).toEqual([])
   })
 
-  test('guards: the account rule, self:tradecraft, a person, 2.0 on', async () => {
+  test('guards: the account rule, self:tradecraft, a person', async () => {
     const agent = checkUrlAgent()
     h.denied = NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     expect((await post({ url: 'https://wiki.tc-fixture.test/' })).status).toBe(403)
@@ -165,8 +165,6 @@ describe('Check URL', () => {
     h.person = null
     expect((await post({ url: 'https://wiki.tc-fixture.test/' })).status).toBe(401)
     h.person = 'owner'
-    h.db.tables.tradecraftUserSettings[0].v2Enabled = false
-    expect(await answer(await post({ url: 'https://wiki.tc-fixture.test/' }))).toMatchObject({ status: 404, body: { code: 'tradecraft_v2_off' } })
     expect(agent.calls).toEqual([])
   })
 

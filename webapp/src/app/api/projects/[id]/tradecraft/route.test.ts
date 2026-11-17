@@ -79,9 +79,11 @@ describe('GET /api/projects/[id]/tradecraft', () => {
     expect(h.db.calls).toEqual([])
   })
 
-  test('v2 off: the tab and the drawer stay as they were', async () => {
+  test('an owner whose old switch row is off gets the 2.0 view too: the switch left at the cut-over (T9.3)', async () => {
+    const on = await get()
     h.db.tables.tradecraftUserSettings[0].v2Enabled = false
-    expect(await get()).toEqual({ status: 200, body: { v2: false, viewerIsOwner: true, resources: [], counts: null } })
+    expect(await get()).toEqual(on)
+    expect(on.body.v2).toBe(true)
   })
 
   test('the owner: every resource of the owner, oldest first, with the switch state and read-only details', async () => {

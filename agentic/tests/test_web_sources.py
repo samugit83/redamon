@@ -4,27 +4,21 @@ from __future__ import annotations
 import io
 import unittest
 
-from orchestrator_helpers import tradecraft_lookup as tl
 from orchestrator_helpers import web_sources as ws
+from tradecraft.ingest import builders, crawl, fetch
 
 
 class SharedObjects(unittest.TestCase):
     def test_tradecraft_names_are_the_shared_objects(self):
-        pairs = {
-            "_GITHUB_TOKEN_HOSTS": "GITHUB_TOKEN_HOSTS",
-            "_url_host": "url_host",
-            "_is_github_token_url": "is_github_token_url",
-            "_rewrite_github_url": "rewrite_github_url",
-            "_split_github_url": "split_github_url",
-            "_prefer_english": "prefer_english",
-            "_html_to_markdown": "html_to_markdown",
-            "_extract_pdf_pages": "extract_pdf_pages",
-            "PDF_MAX_PAGES": "PDF_MAX_PAGES",
-            "parse_sitemap_xml": "parse_sitemap_xml",
-            "resolve_link": "resolve_link",
-        }
-        for old, new in pairs.items():
-            self.assertIs(getattr(tl, old), getattr(ws, new), old)
+        # Tradecraft 1.x re-exported these under its own names until the cut-over (T9.2); its 2.0
+        # modules import the shared objects themselves.
+        pairs = [
+            (fetch, "url_host"), (fetch, "is_github_token_url"), (fetch, "rewrite_github_url"),
+            (fetch, "html_to_markdown"), (builders, "split_github_url"), (builders, "prefer_english"),
+            (builders, "parse_sitemap_xml"), (builders, "resolve_link"), (crawl, "resolve_link"),
+        ]
+        for module, name in pairs:
+            self.assertIs(getattr(module, name), getattr(ws, name), f"{module.__name__}.{name}")
 
 
 class GithubUrls(unittest.TestCase):

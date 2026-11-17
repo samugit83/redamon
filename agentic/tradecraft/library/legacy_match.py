@@ -1,11 +1,10 @@
 """Today's title match over a resource's 1.x map (R-217), and its path resolution.
 
-A port of 1.x's lexical matcher (Jaccard plus substring, top 30), the optional section picker
-model, and ``_resolve_path_for_resource``. Phase 1 reads every resource this way: an
-unconverted one (``mapVersion`` 1) from the map 1.x wrote, a 2.0 one from the 1.x map its
-ingestion also writes (TD-18). Search (phase 2) replaces it for 2.0 resources.
-
-The page titles are shown to the picker model as untrusted content: they come from the site.
+A port of 1.x's lexical matcher (Jaccard plus substring) and ``_resolve_path_for_resource``.
+An unconverted resource (``mapVersion`` 1) is read this way until the conversion (T9.1) reaches
+it, and a converted one when the free first pass finds nothing, from the 1.x map every 2.0
+ingestion keeps current (TD-18). The section picker model that 1.x could ask among the top
+matches left with the cut-over (R-401): the best lexical match is the answer.
 """
 
 from __future__ import annotations
@@ -14,17 +13,8 @@ import re
 import urllib.parse
 from typing import Any, Optional
 
-from agent_in_the_loop.purpose import llm_purpose
-from logging_config import get_logger
-from orchestrator_helpers.json_utils import normalize_content
 from orchestrator_helpers.web_sources import split_github_url
-from prompt_safety import UNTRUSTED_OUTPUT_GUIDANCE, wrap_untrusted
 
-logger = get_logger(__name__)
-
-TOP_CANDIDATES = 30
-CLEAR_WINNER = 0.6
-SMALL_MAP = 5
 _KNOWN_EXTENSIONS = (".html", ".htm", ".md", ".txt", ".rst", ".pdf", ".json", ".yaml", ".yml", ".xml")
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -67,41 +57,14 @@ def sitemap_entries(sitemap: Any) -> list[dict]:
     return []
 
 
-async def pick(query: str, entries: list[dict], *, picker: Any = None, resource_name: str = "") -> Optional[dict]:
-    """The entry that best answers ``query``: the top lexical match, or the picker model's
-    choice among the top 30 when the map is large and no entry clearly wins."""
+def pick(query: str, entries: list[dict]) -> Optional[dict]:
+    """The entry that best answers ``query`` by words alone (no model: the section picker left
+    with 1.x, R-401), or None when no entry shares a word with it."""
     if not entries:
         return None
     qt = tokens(query)
-    scored = sorted(((rank_score(qt, e), e) for e in entries), key=lambda x: x[0], reverse=True)
-    top = scored[:TOP_CANDIDATES]
-    if picker is None:
-        return top[0][1] if top[0][0] > 0 else None
-    if len(entries) <= SMALL_MAP or top[0][0] >= CLEAR_WINNER:
-        return top[0][1]
-    lines = [f"  {i}. {(e.get('title') or e.get('path') or '')[:80]}  ->  {(e.get('path') or '')[:80]}"
-             for i, (_s, e) in enumerate(top, 1)]
-    prompt = "\n".join([
-        "You pick the single most relevant page for a tradecraft query.",
-        f"Reply with ONLY the number (1-{len(top)}). No prose.",
-        "",
-        UNTRUSTED_OUTPUT_GUIDANCE,
-        "",
-        f'Query: "{query}"',
-        f"Pages from {resource_name}:",
-        wrap_untrusted("\n".join(lines), "WEB_CONTENT"),
-        "Answer with just the number.",
-    ])
-    try:
-        with llm_purpose("tradecraft_librarian", step="section_picker"):
-            resp = await picker.ainvoke(prompt)
-        m = re.search(r"\d+", normalize_content(getattr(resp, "content", str(resp))).strip())
-        if m and 0 <= int(m.group(0)) - 1 < len(top):
-            return top[int(m.group(0)) - 1][1]
-    except Exception as exc:
-        # No retry (TD-20): the lexical winner stands.
-        logger.warning(f"[tradecraft] section picker error={type(exc).__name__}")
-    return top[0][1]
+    best = max(entries, key=lambda e: rank_score(qt, e))
+    return best if rank_score(qt, best) > 0 else None
 
 
 def find_in_sitemap(entries: list[dict], needle_text: str) -> Optional[dict]:

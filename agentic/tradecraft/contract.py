@@ -386,36 +386,6 @@ class ReadNowResult(_Model):
 
 # --- the run catalog (webapp -> agent) ----------------------------------------------
 
-class LegacyResource(_Model):
-    """A 1.x row: exactly the 7.7.2 columns of user_tradecraft_resources, so no 2.0 column
-    (credentials above all) travels on the 1.x path."""
-
-    id: str
-    userId: str
-    name: str
-    slug: str
-    url: str
-    enabled: bool
-    resourceType: str
-    summary: str
-    sitemap: Any
-    crawlStoppedBecause: str
-    crawlStats: Any
-    llmModel: str
-    githubTokenOverride: str
-    cacheTtlSec: int
-    lastVerifiedAt: Optional[str]
-    lastRefreshedAt: Optional[str]
-    lastError: str
-    createdAt: str
-    updatedAt: str
-
-
-class LegacyCatalog(_Model):
-    v2: Literal[False]
-    legacy: list[LegacyResource]
-
-
 class CatalogResource(_Model):
     id: IdStr
     slug: SlugStr
@@ -461,14 +431,14 @@ class V2Catalog(_Model):
         return self
 
 
-RunCatalog = Union[LegacyCatalog, V2Catalog]
+# Since the cut-over (T9.2) the run catalog has one shape: the 1.x payload (``{"v2": false,
+# "legacy": [...]}``) left with the 1.x path.
+RunCatalog = V2Catalog
 
 
 def parse_catalog(data: Any) -> RunCatalog:
     """The catalog as the webapp sent it; raises pydantic.ValidationError otherwise."""
-    if isinstance(data, dict) and data.get("v2") is True:
-        return V2Catalog.model_validate(data)
-    return LegacyCatalog.model_validate(data)
+    return V2Catalog.model_validate(data)
 
 
 # --- the pipeline's entry (implemented by T1.8) ---------------------------------------
@@ -513,6 +483,6 @@ MODELS: dict[str, type[_Model]] = {
     for m in (
         JobStartBatch, JobStartRequest, JobStartAnswer, CancelAnswer, UserCancelAnswer, ConvertAnswer, JobProgress,
         IngestionReport, CheckUrlRequest, CheckUrlResult, PreviewRequest, PreviewResult, ReadNowRequest,
-        ReadNowResult, LegacyCatalog, V2Catalog, CatalogResource, Credentials, Secrets,
+        ReadNowResult, V2Catalog, CatalogResource, Credentials, Secrets,
     )
 }

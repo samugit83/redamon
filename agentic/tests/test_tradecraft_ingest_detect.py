@@ -1,5 +1,7 @@
-"""Site-type detection (T1.6): with the default settings, the same answer as 1.x's
-``detect_type`` on every fixture site; the archive threshold and the detectors are settings.
+"""Site-type detection (T1.6): with the default settings, the same answer 1.x's ``detect_type``
+gave on every fixture site (the expected types below, which 1.x answered until the cut-over
+deleted it); ``detect_type`` keeps its signature for the workspace importer (T9.2); the archive
+threshold and the detectors are settings.
 """
 
 from __future__ import annotations
@@ -12,9 +14,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from orchestrator_helpers import tradecraft_lookup as legacy  # noqa: E402
 from tradecraft import net  # noqa: E402
-from tradecraft.ingest.detect import detect  # noqa: E402
+from tradecraft.ingest.detect import detect, detect_type  # noqa: E402
 from tradecraft.settings import EffectiveSettings  # noqa: E402
 from tradecraft_doubles import FixtureFetcher, run  # noqa: E402
 
@@ -35,7 +36,7 @@ def test_same_type_as_1x(url, expected):
         resp = run(fetcher.get(url))
     assert resp.status == 200
     html = resp.text
-    assert legacy.detect_type(url, html, resp.status) == expected
+    assert detect_type(url, html, resp.status) == expected
     assert detect(url, html, resp.status, EffectiveSettings()) == expected
 
 
@@ -46,14 +47,14 @@ def _cve_body(n):
 def test_cve_archive_threshold_is_a_setting():
     url = "https://github.com/tc-fixture/notes"
     assert detect(url, _cve_body(21), 200, EffectiveSettings()) == "cve-poc-db"
-    assert legacy.detect_type(url, _cve_body(21), 200) == "cve-poc-db"
+    assert detect_type(url, _cve_body(21), 200) == "cve-poc-db"
     assert detect(url, _cve_body(20), 200, EffectiveSettings()) == "github-repo"
     assert detect(url, _cve_body(21), 200, EffectiveSettings({"detection.cveArchiveThreshold": 50})) == "github-repo"
 
 
 def test_a_repository_named_for_one_cve_is_a_repository():
     for url in ("https://github.com/tc-fixture/CVE-2024-1234-poc", "https://github.com/tc-fixture/cve-2021-0001"):
-        assert detect(url, "", 200, EffectiveSettings()) == legacy.detect_type(url, "", 200) == "github-repo"
+        assert detect(url, "", 200, EffectiveSettings()) == detect_type(url, "", 200) == "github-repo"
 
 
 def test_a_detector_turned_off_is_skipped():

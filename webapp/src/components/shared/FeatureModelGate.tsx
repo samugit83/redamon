@@ -348,10 +348,12 @@ export interface EnsureFeatureModelOptions extends PluginFeatureText {
   force?: boolean
   message?: string
   /**
-   * Offer, first and preselected, the model this other feature runs on (the Tradecraft
-   * librarian's gate offers the section picker's, Q10). Saved only when the person confirms.
+   * Offer, first and preselected, the model saved under this other key of the person's
+   * `featureModels` (the Tradecraft librarian's gate offers the 1.x section picker's, Q10: the
+   * picker left Models by feature at the cut-over, R-401, but a model saved for it stays in the
+   * map). Saved only when the person confirms.
    */
-  suggestFrom?: GateFeatureId
+  suggestFrom?: string
   /** The words for where the suggestion comes from. */
   suggestedFrom?: string
 }

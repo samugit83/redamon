@@ -23,8 +23,8 @@ stays Live: its pages are read live, as before, until a person refreshes it.
 
 Idempotent (D-35): one unfinished ``convert`` job per account (an advisory lock serializes two starts
 at once, from two copies or a switch-on during the boot sweep), and a converted resource no longer
-needs it. Triggers: the webapp after the switch is turned on, and the agent's boot sweep
-(``boot_sweep``).
+needs it. Trigger: the agent's boot sweep (``boot_sweep``), for every account, since the
+cut-over removed the switch whose turn-on also asked for it (the route stays, idempotent).
 """
 
 from __future__ import annotations
@@ -98,10 +98,8 @@ STATEMENTS: dict[str, str] = {
         f"WHERE id = %(rid)s AND user_id = %(uid)s AND active_job_id = %(job)s"
     ),
     "account_ingestion": f"SELECT ingestion FROM {US} WHERE user_id = %(uid)s",
-    "sweep_users": (
-        f"SELECT s.user_id FROM {US} s WHERE s.v2_enabled "
-        f"AND EXISTS (SELECT 1 FROM {R} r WHERE r.user_id = s.user_id) ORDER BY s.user_id"
-    ),
+    # Every account with a resource: since the cut-over every account has 2.0 (OQ-16).
+    "sweep_users": f"SELECT DISTINCT user_id FROM {R} ORDER BY user_id",
 }
 
 # Statements that cannot be keyed by one owner, and why (as store.UNKEYED_STATEMENTS).
@@ -470,8 +468,8 @@ async def sweep_users(store: Any) -> list[str]:
 
 
 async def boot_sweep(runner: Any) -> int:
-    """At the agent's start: the conversion of every account with 2.0 on that has a resource to
-    convert. Returns how many resources were queued; never raises."""
+    """At the agent's start: the conversion of every account that has a resource to convert.
+    Returns how many resources were queued; never raises."""
     total = 0
     try:
         users = await sweep_users(runner.store)

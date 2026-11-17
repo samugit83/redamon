@@ -13,7 +13,6 @@ import {
 } from '@/lib/tradecraft/agentContract'
 import { effectiveSettings } from '@/lib/tradecraft/effectiveSettings'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
-import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 import {
   applyCredentials, fieldErrorResponse, hasCredentials, parseResourceFields, typeOptionsOf, type StoredCredentials,
 } from '@/lib/tradecraft/v2/fields'
@@ -56,7 +55,6 @@ async function check(request: NextRequest, id: string): Promise<NextResponse> {
   if (selfRefused) return selfRefused
   const actor = await auditActor()
   if (!actor.actorId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (!(await tradecraftV2Enabled(id))) return failure(404, 'tradecraft_v2_off', 'Tradecraft 2.0 is off for this account')
 
   const parsedBody = await readJsonBody(request)
   if (parsedBody instanceof NextResponse) return parsedBody

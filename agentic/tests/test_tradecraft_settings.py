@@ -54,7 +54,8 @@ def test_enums_strings_lists_and_bools():
 
 
 def test_unknown_keys_dropped():
-    assert clamp({"crawl.cacheTtlSec": 3600, "TRADECRAFT_DEFAULT_TTL_SEC": 1, "crawl.maxPages": 10}) == {"crawl.maxPages": 10}
+    # Keys no spec entry names (an old release's, or a typo) are dropped, never passed on.
+    assert clamp({"crawl.lifetimeSec": 3600, "TRADECRAFT_SOMETHING_SEC": 1, "crawl.maxPages": 10}) == {"crawl.maxPages": 10}
 
 
 def test_effective_settings_fills_defaults_and_types():

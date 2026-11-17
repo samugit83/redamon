@@ -123,13 +123,13 @@ async def ingest(pg, root, uid, name, url, mode, site_type):
 
 
 def legacy_ranked(sitemap: dict, rtype: str, base: str, query: str) -> list[str]:
-    """Today's matcher (``tradecraft_lookup._pick_section`` without a picker): its ranked URLs."""
-    from orchestrator_helpers import tradecraft_lookup as legacy
+    """Today's matcher (1.x's ``_pick_section`` without a picker, ported as ``legacy_match``):
+    its ranked URLs."""
     from tradecraft.ingest import fetch
     from tradecraft.library import legacy_match
 
-    qt = legacy._tokens(query)
-    scored = sorted(((legacy._rank_score(qt, e), e) for e in legacy._sitemap_entries(sitemap)),
+    qt = legacy_match.tokens(query)
+    scored = sorted(((legacy_match.rank_score(qt, e), e) for e in legacy_match.sitemap_entries(sitemap)),
                     key=lambda x: x[0], reverse=True)
     return [fetch.canonical_url(legacy_match.resolve_path(rtype, base, sitemap, e["path"]))
             for score, e in scored[:5] if score > 0]

@@ -4,14 +4,13 @@ Two concurrent runs of different owners on the same model id each get the client
 built with their owner's key (the single `orchestrator.llm` slot is gone: clients
 are cached by model id, provider fingerprint and owner), every search tool reads
 the key of the run it serves at call time, an empty key means none (never the
-previous run's), and the GitHub token of the tradecraft tool is per run too. The
-out-of-run routes (/guardrail/check-target, /tradecraft/verify) build their own
-per-user client.
+previous run's), and the GitHub token of the tradecraft tool is per run too (since the
+cut-over, T9.2, it travels in each run's own catalog). The out-of-run route
+(/guardrail/check-target) builds its own per-user client.
 """
 import asyncio
 import contextvars
 import os
-import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -344,7 +343,6 @@ class SearchKeysPerRun(unittest.TestCase):
         orch._web_search_manager = WebSearchToolManager()
         orch._shodan_manager = ShodanToolManager()
         orch._google_dork_manager = GoogleDorkToolManager()
-        orch._tradecraft_manager = None
         orch.tool_executor = None
         settings = _owner_settings("owner-a", "sk-A", tavilyApiKey="tvly-A", shodanApiKey="shodan-A",
                                    serpApiKey="serp-A", githubAccessToken="ghp-A")
@@ -373,56 +371,45 @@ class NoSharedKeyPath(unittest.TestCase):
 
 
 class GitHubTokenPerRun(unittest.TestCase):
+    """Since the cut-over (T9.2) the token is the one each run's own catalog carries (the webapp
+    puts the resource's own token there before the account's: ``catalog.test.ts``): two runs at
+    once each read with theirs, and a run with none sends none."""
+
     def test_github_token_per_run(self):
-        from orchestrator_helpers import tradecraft_lookup as tl
-        manager = tl.TradecraftLookupManager(cache_root=tempfile.mkdtemp(prefix="tc-run-token-"))
-        resource = {"id": "r1", "slug": "pocs", "name": "PoCs", "url": "https://github.com/x/pocs",
-                    "enabled": True, "resourceType": "cve-poc-db", "sitemap": {}}
+        from tradecraft import runtime
+        from tradecraft.library import cve, reader
+        from tradecraft_memory_store import MemoryStore
+
+        store = MemoryStore()
         tokens = []
 
-        async def fake_lookup(cve, sitemap, github_token=""):
-            tokens.append(github_token)
+        async def fake_lookup(cve_id, sitemap, settings, github_token=None):
+            tokens.append(github_token or "")
             return "poc body", "https://github.com/x/pocs/blob/main/poc.py", None
 
-        async def run(token, barrier):
-            ps._settings_ctx.set({**ps.DEFAULT_AGENT_SETTINGS,
-                                  "USER_SETTINGS": {"githubAccessToken": token} if token else {}})
-            manager.set_resources([resource])
-            await barrier.wait()
-            await manager._invoke(resource_id="pocs", query="q", cve_id="CVE-2024-0001",
-                                  section_path=None, force_refresh=True)
+        def catalog(owner, token):
+            store.add_resource(owner, f"r-{owner}", url="https://github.com/x/pocs", slug="pocs",
+                               resource_type="cve-poc-db", map_version=2)
+            return {"v2": True, "owner_id": owner, "person_id": owner, "actor_id": None, "search": {},
+                    "resources": [{"id": f"r-{owner}", "slug": "pocs", "name": "PoCs", "url": "https://github.com/x/pocs",
+                                   "type": "cve-poc-db", "storage_mode": "live", "map_version": 2,
+                                   "github_token": token}]}
+
+        async def run(owner, token, barrier):
+            runtime.bind_run_catalog(catalog(owner, token))
+            with runtime.use_store(store):
+                await barrier.wait()
+                return await reader.lookup(resource_id="pocs", cve_id="CVE-2024-0001")
 
         async def main():
             barrier = asyncio.Barrier(3)
-            await asyncio.gather(run("ghp-A", barrier), run("ghp-B", barrier), run("", barrier))
+            return await asyncio.gather(*(asyncio.create_task(run(o, t, barrier), context=contextvars.Context())
+                                          for o, t in (("A", "ghp-A"), ("B", "ghp-B"), ("C", None))))
 
-        self.addCleanup(ps._settings_ctx.set, None)
-        with mock.patch.object(tl, "_cve_lookup_detailed", fake_lookup):
-            asyncio.run(main())
+        with mock.patch.object(cve, "lookup", fake_lookup):
+            answers = asyncio.run(main())
+        self.assertTrue(all("poc body" in a for a in answers))
         self.assertEqual(sorted(tokens), ["", "ghp-A", "ghp-B"])
-
-    def test_a_resources_own_token_still_wins(self):
-        from orchestrator_helpers import tradecraft_lookup as tl
-        manager = tl.TradecraftLookupManager(cache_root=tempfile.mkdtemp(prefix="tc-run-token-"))
-        resource = {"id": "r1", "slug": "pocs", "name": "PoCs", "url": "https://github.com/x/pocs",
-                    "enabled": True, "resourceType": "cve-poc-db", "sitemap": {},
-                    "githubTokenOverride": "ghp-resource"}
-        tokens = []
-
-        async def fake_lookup(cve, sitemap, github_token=""):
-            tokens.append(github_token)
-            return "poc body", "https://github.com/x/pocs/blob/main/poc.py", None
-
-        async def run():
-            ps._settings_ctx.set({**ps.DEFAULT_AGENT_SETTINGS, "USER_SETTINGS": {"githubAccessToken": "ghp-A"}})
-            manager.set_resources([resource])
-            await manager._invoke(resource_id="pocs", query="q", cve_id="CVE-2024-0001",
-                                  section_path=None, force_refresh=True)
-
-        self.addCleanup(ps._settings_ctx.set, None)
-        with mock.patch.object(tl, "_cve_lookup_detailed", fake_lookup):
-            asyncio.run(run())
-        self.assertEqual(tokens, ["ghp-resource"])
 
 
 class _Tag:
@@ -464,24 +451,6 @@ class OutOfRunRoutesBuildTheirOwnClient(unittest.TestCase):
                 self.api.GuardrailRequest(target_domain="example.com", user_id="owner-b")))
         self.assertEqual(out, {"allowed": True, "reason": "LLM not configured, guardrail skipped"})
         check.assert_not_awaited()
-
-    def test_tradecraft_verify_without_a_model_builds_the_users_client(self):
-        captured = {}
-
-        async def fake_verify(url, *, github_token, force, llm, mcp_manager, bounds):
-            captured["llm"] = llm.source
-            return {"summary": "", "resource_type": "agentic-crawl", "sitemap": {},
-                    "crawl_stopped_because": "", "crawl_stats": {}, "last_error": ""}
-
-        orch = mock.MagicMock(_initialized=True, llm=_Tag("another-owners-run"), _mcp_manager=None)
-        with mock.patch.object(self.api, "orchestrator", orch), \
-                mock.patch("orchestrator_helpers.tradecraft_lookup.verify_resource", fake_verify), \
-                mock.patch("orchestrator_helpers.tradecraft_lookup.validate_url", return_value=(True, "")), \
-                mock.patch.object(self.api, "_build_llm_for_user", side_effect=lambda uid: _Tag(f"user:{uid}")):
-            asyncio.run(self.api.tradecraft_verify(self.api.TradecraftVerifyRequest(
-                url="https://docs.example.test/", user_id="owner-b")))
-        self.assertEqual(captured["llm"], "user:owner-b")
-
 
 
 class _Providers:

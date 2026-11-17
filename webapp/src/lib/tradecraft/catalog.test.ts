@@ -10,9 +10,9 @@ import { createTradecraftDb, type TradecraftDb } from './__testing__/tradecraftD
 const h = vi.hoisted(() => ({ db: null as unknown as TradecraftDb }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as Record<string | symbol, unknown>)[k] }) }))
 
-import { LEGACY_RESOURCE_COLUMNS, LegacyCatalog, V2Catalog, type V2Catalog as V2 } from './agentContract'
+import { V2Catalog, type V2Catalog as V2 } from './agentContract'
 import { effectiveSettings } from './effectiveSettings'
-import { activeResourcesFor, isOwnerRun, legacyCatalog, runCatalog, v2Catalog } from './catalog'
+import { activeResourcesFor, isOwnerRun, runCatalog, v2Catalog } from './catalog'
 
 const T = (n: number) => new Date(Date.parse('2026-11-16T10:00:00Z') + n * 1000)
 const OWNER_RUN = { ownerId: 'owner', projectId: 'p1', personId: 'owner', actorId: null }
@@ -129,41 +129,15 @@ describe('the 2.0 catalog', () => {
   })
 })
 
-describe('the 1.x payload (switch off)', () => {
-  test("runCatalog follows the owner's switch", async () => {
+describe('one catalog for every account (T9.3: the switch and the 1.x payload are gone)', () => {
+  test('runCatalog is the 2.0 catalog whatever the account\'s old switch row says', async () => {
     expect((await runCatalog(OWNER_RUN)).v2).toBe(true)
     h.db.rows('tradecraftUserSettings', { userId: 'owner' })[0].v2Enabled = false
-    expect((await runCatalog(OWNER_RUN)).v2).toBe(false)
-  })
-
-  test('legacy_payload_has_no_2x_column: a row with a login set carries the 1.x columns only (D-44)', async () => {
-    const c = await legacyCatalog(OWNER_RUN)
-    expect(LegacyCatalog.safeParse(c).success).toBe(true)
-    if (c.v2) throw new Error('expected the 1.x payload')
-    expect(c.legacy.map(r => r.id)).toEqual(['public', 'private', 'disabled', 'off-in-p1'])
-    for (const r of c.legacy) expect(Object.keys(r).sort()).toEqual([...LEGACY_RESOURCE_COLUMNS].sort())
-    expect(JSON.stringify(c)).not.toMatch(/fake-session|fake-key|hasLogin|credentials/)
-  })
-})
-
-describe('logins in the 1.x payload (switch off): the same rule (R-119, R-153, R-155)', () => {
-  test.each([
-    ["the owner's own run", { personId: 'owner', actorId: null }, true],
-    ["a collaborator's run", { personId: 'collab', actorId: null }, false],
-    ['the owner, acted on by an administrator', { personId: 'owner', actorId: 'admin-1' }, false],
-    ['no person given', { personId: null, actorId: null }, false],
-  ])('%s', async (_name, who, listsLogin) => {
-    h.db.rows('tradecraftUserSettings', { userId: 'owner' })[0].v2Enabled = false
-    const c = await runCatalog({ ...OWNER_RUN, ...who })
-    if (c.v2) throw new Error('expected the 1.x payload')
-    expect(c.legacy.map(r => r.id).includes('private')).toBe(listsLogin)
-    expect(c.legacy.map(r => r.id)).toEqual(expect.arrayContaining(['public', 'disabled', 'off-in-p1']))
+    expect(await runCatalog(OWNER_RUN)).toEqual(await v2Catalog(OWNER_RUN))
   })
 
   test('a login the flag missed (credentials stored, hasLogin false) counts as a login', async () => {
     h.db.rows('userTradecraftResource', { id: 'private' })[0].hasLogin = false
-    const c = await legacyCatalog({ ...OWNER_RUN, personId: 'collab' })
-    expect(JSON.stringify(c)).not.toContain('"private"')
     const v2 = await v2Catalog({ ...OWNER_RUN, personId: 'collab' }) as V2
     expect(v2.resources.map(r => r.id)).toEqual(['public'])
   })

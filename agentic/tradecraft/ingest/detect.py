@@ -1,4 +1,5 @@
-"""The site type of a resource from its start page (port of 1.x ``detect_type``).
+"""The site type of a resource from its start page (port of 1.x ``detect_type``; ``detect_type``
+below keeps 1.x's signature for the workspace importer).
 
 The same rules in the same order: a CVE archive, a GitHub repository, MkDocs or mdBook,
 Sphinx or Docusaurus, GitBook, else a website for the crawl. The archive threshold is
@@ -64,3 +65,9 @@ def detect(url: str, raw_html: str, status: int, settings: EffectiveSettings) ->
     if "gitbook" in enabled and ("gitbook.io" in host or any(m in body_lc for m in _GITBOOK_MARKERS)):
         return "gitbook"
     return WEBSITE
+
+
+def detect_type(url: str, body: str, status: int = 200) -> str:
+    """``detect`` with the default settings: 1.x's signature and answer, for the workspace
+    importer, which tells a docs site from a website by it (``workspace_import/detect.py``)."""
+    return detect(url, body, status, EffectiveSettings({}))

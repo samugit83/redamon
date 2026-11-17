@@ -1,9 +1,9 @@
-"""The Tradecraft 2.0 binding of one chat run (master plan TD-9, TD-10).
+"""The Tradecraft binding of one chat run (master plan TD-9, TD-10).
 
 At run start the orchestrator hands ``bind_run_catalog`` the catalog the webapp answered for
-this run. A 2.0 catalog is bound to the run's task, in this module's own context variable and
-nowhere else, together with the run's registry entries; a 1.x payload (or none) clears both,
-and the 1.x manager serves the run as before.
+this run. It is bound to the run's task, in this module's own context variable and nowhere
+else, together with the run's registry entries; no catalog (or one that does not parse)
+clears both, and the run has no tradecraft tool.
 
 The catalog carries secrets (a GitHub token, and the owner's logins in the owner's own run),
 so every tradecraft module reads it only through ``bound_catalog()``: never through
@@ -32,10 +32,10 @@ _coverage: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("trad
 
 
 def bind_run_catalog(catalog: Any) -> bool:
-    """Binds a 2.0 catalog, its coverage counts (Q5, when ``prompt.coverageMap`` is on) and its
-    registry entries to the current task; True when bound. A 1.x payload, None, or a catalog that
-    does not parse clears the 2.0 binding (False)."""
-    from prompts.tool_registry import pop_tradecraft_entry, swap_tradecraft_v2_entries
+    """Binds the run's catalog, its coverage counts (Q5, when ``prompt.coverageMap`` is on) and
+    its registry entries to the current task; True when bound. None, a payload that is no
+    catalog, or a catalog that does not parse clears the binding (False)."""
+    from prompts.tool_registry import swap_tradecraft_v2_entries
     from tradecraft import overlay
 
     parsed: Optional[V2Catalog] = None
@@ -49,9 +49,6 @@ def bind_run_catalog(catalog: Any) -> bool:
     _coverage.set(coverage)
     swap_tradecraft_v2_entries(overlay.build_entries(parsed, coverage) if parsed is not None else None)
     if parsed is not None:
-        # A 1.x entry left in this task (an earlier run of the session) must not show beside
-        # the 2.0 entries, nor in their place when the 2.0 list is empty.
-        pop_tradecraft_entry()
         _bind_browser_fetcher()
         logger.info(f"[tradecraft] run catalog bound resources={len(parsed.resources)}")
     return parsed is not None
@@ -84,7 +81,7 @@ def _bind_browser_fetcher() -> None:
 
 
 def bound_catalog() -> Optional[V2Catalog]:
-    """The run's 2.0 catalog, or None outside a 2.0 run's task."""
+    """The run's catalog, or None outside a run's task."""
     return _catalog.get()
 
 
@@ -93,7 +90,8 @@ def v2_active() -> bool:
 
 
 def v2_tool_for(name: str) -> Any:
-    """The 2.0 implementation of tool ``name`` when this run is a 2.0 run, else None."""
+    """The tool ``name`` as this run reads it when a catalog is bound, else None (the executor's
+    stand-in answers "not available" then)."""
     if not v2_active():
         return None
     from tradecraft.agent_tools import V2_TOOLS
@@ -154,24 +152,3 @@ def use_index(index: Any) -> Iterator[Any]:
         yield index
     finally:
         _index.reset(token)
-
-
-def section_picker() -> Any:
-    """The owner's "Tradecraft section picker" model for this run, or None (text match).
-
-    Read from the settings bound to the run's task only, as 1.x builds it; a loop model is
-    refused by the builder."""
-    import project_settings as _ps
-
-    settings = _ps._settings_ctx.get() or {}
-    user_settings = settings.get("USER_SETTINGS") or {}
-    try:
-        from feature_models import feature_model
-        model = feature_model(user_settings, "tradecraft_section_picker")
-        if not model:
-            return None
-        from llm_builder import build_llm_from_providers
-        return build_llm_from_providers(model, settings.get("USER_LLM_PROVIDERS") or [])
-    except Exception as exc:
-        logger.warning(f"[tradecraft] section picker unavailable error={type(exc).__name__}")
-        return None

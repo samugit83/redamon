@@ -128,6 +128,25 @@ describe('ResourceListV2 jobs', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Tagging pages')
     expect(screen.getByText(/job_running/)).toBeInTheDocument()
   })
+
+  // U-13, U-62: moved from the 1.x tab's tests (page.errors.test.tsx) when the cut-over removed it (T9.3).
+  test('a refresh the agent could not start names the cause, its code and the statuses', async () => {
+    routes[`POST ${BASE}/r1/refresh`] = { status: 502, body: { error: 'The agent could not start the refresh', code: 'agent_unreachable', upstreamStatus: 503 } }
+    await renderList()
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
+    await flush()
+    await flush()
+    expect(screen.getByText('Refresh failed: The agent could not start the refresh (agent_unreachable · HTTP 502 · upstream HTTP 503)')).toBeInTheDocument()
+  })
+
+  test('a refused delete names the code', async () => {
+    routes[`DELETE ${BASE}/r1`] = { status: 500, body: { error: 'Failed to delete tradecraft resource', code: 'P2024' } }
+    await renderList()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Lab Wiki' }))
+    await flush()
+    await flush()
+    expect(screen.getByText('Delete failed: Failed to delete tradecraft resource (P2024 · HTTP 500)')).toBeInTheDocument()
+  })
 })
 
 describe('ResourceListV2 delete and add', () => {

@@ -123,18 +123,8 @@ def test_args_compat():
     assert header(fallback, "page") == f"{page_id(lib, 'r1', KERBEROAST)} · wiki" and "kerberoast text" in fallback
 
 
-class Picker:
-    """The owner's section picker model: a read on a converted resource never asks it."""
-
-    def __init__(self):
-        self.calls = 0
-
-    async def ainvoke(self, prompt):
-        self.calls += 1
-        return type("Answer", (), {"content": "2"})()
-
-
-# More than legacy_match.SMALL_MAP entries, so today's lookup would ask the picker model.
+# More than the five entries above which 1.x asked its section picker model (gone since the
+# cut-over, R-401): the title match alone picks the page.
 BIG_MAP = {"nav": [{"title": t, "path": u} for t, u in PAGES.items()] +
            [{"title": f"Filler {i}", "path": f"{WIKI}filler/{i}/"} for i in range(6)]}
 
@@ -143,13 +133,10 @@ def test_a_first_pass_miss_reads_one_section_without_the_picker(monkeypatch):
     """Review finding 3 (T2.5, R-380, AC-66): on a converted resource a query the first pass does
     not find falls back to today's title match with no model, and the answer is one section of
     the page it picks, recorded as seen; never the whole page. A PDF the same way."""
-    picker = Picker()
-    monkeypatch.setattr(runtime, "section_picker", lambda: picker)
     lib = Library().add("r1", "wiki", WIKI, mode="stored", sitemap=BIG_MAP, read_settings=no_browser())
     lib.entry("r1", UNION, PAGE).entry("r1", KERBEROAST, "## How\n\nkerberoast text\n\n## Other\n\nmore words")
     state = {"session_id": "s1", "current_objective_index": 0}
     answer = read(lib, state=state, index=FirstPass([]), resource_id="wiki", query="kerberoasting how")
-    assert picker.calls == 0
     assert header(answer, "page") == f"{page_id(lib, 'r1', KERBEROAST)} · wiki" and header(answer, "url") is None
     assert section_line(answer)["section"] == "How" and "more words" not in body(answer)
     assert state["tradecraft_seen_pages"] == [page_id(lib, "r1", KERBEROAST)]
@@ -160,7 +147,7 @@ def test_a_first_pass_miss_reads_one_section_without_the_picker(monkeypatch):
     for n in range(1, 9):
         pdf.entry("r2", f"{pdf_url}#page={n}", f"stored text of page {n}")
     answer = read(pdf, index=FirstPass([]), resource_id="guide", query="kerberos tickets")
-    assert picker.calls == 0 and pdf.requested() == []
+    assert pdf.requested() == []
     assert header(answer, "page") == f"{page_id(pdf, 'r2', f'{pdf_url}#page=4', 'guide')} · guide"
     assert body(answer).strip() == "stored text of page 4"
 

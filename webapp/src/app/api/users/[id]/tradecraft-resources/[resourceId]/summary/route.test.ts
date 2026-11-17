@@ -84,13 +84,11 @@ describe('PUT summary', () => {
     expect(row().summary).toBe('Generated text.')
   })
 
-  test("another account's resource: 404; 2.0 off: 404 tradecraft_v2_off; no person: 401", async () => {
+  test("another account's resource: 404; no person: 401", async () => {
     expect((await put({ text: 'x' }, 'r-x')).status).toBe(404)
     h.person = null
     expect((await put({ text: 'x' })).status).toBe(401)
     h.person = 'owner'
-    h.db.tables.tradecraftUserSettings[0].v2Enabled = false
-    expect(await answer(await put({ text: 'x' }))).toMatchObject({ status: 404, body: { code: 'tradecraft_v2_off' } })
     expect(row().summary).toBe('Generated text.')
   })
 
@@ -148,10 +146,8 @@ describe('POST summary/regenerate', () => {
     expect(agent.calls).toEqual([])
   })
 
-  test("another account's resource: 404; 2.0 off: 404", async () => {
+  test("another account's resource: 404", async () => {
     stubAgent()
     expect((await regenerate('r-x')).status).toBe(404)
-    h.db.tables.tradecraftUserSettings[0].v2Enabled = false
-    expect(await answer(await regenerate())).toMatchObject({ status: 404, body: { code: 'tradecraft_v2_off' } })
   })
 })

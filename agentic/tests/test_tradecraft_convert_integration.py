@@ -302,12 +302,17 @@ async def test_a_dead_conversions_claim_is_taken(pg, runner):
     assert (await pg.row(rid))["map_version"] == 2
 
 
-async def test_the_sweep_converts_only_accounts_with_2_0_on(pg, runner):
+async def test_the_sweep_converts_every_account(pg, runner):
+    """Since the cut-over (T9.2) every account has 2.0: the boot sweep converts each one, its
+    old switch row (on, off, or none) aside."""
     on, off = await pg.user(v2=True), await pg.user(v2=False)
-    r_on, r_off = await pg.legacy(on, WIKI, WIKI_MAP), await pg.legacy(off, WIKI, WIKI_MAP)
+    bare = f"tc-u-{uuid.uuid4().hex[:12]}"
+    await pg.sql("INSERT INTO users (id, name, email, updated_at) VALUES (%s, 'No row', %s, now())", bare,
+                 f"{bare}@example.test")
+    pg.users.append(bare)
+    rows = [await pg.legacy(u, WIKI, WIKI_MAP) for u in (on, off, bare)]
     await jobs_sweep(runner)
-    assert (await pg.row(r_on))["map_version"] == 2
-    assert (await pg.row(r_off))["map_version"] == 1
+    assert [(await pg.row(r))["map_version"] for r in rows] == [2, 2, 2]
 
 
 async def test_a_map_written_during_the_conversion_is_not_lost(pg, runner, monkeypatch):

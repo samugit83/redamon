@@ -1893,22 +1893,8 @@ async def get_host_ip():
 
 
 # =============================================================================
-# TRADECRAFT — Verify endpoint for the per-user knowledge resource catalog
+# Out-of-run model clients (the guardrail)
 # =============================================================================
-
-class TradecraftVerifyRequest(BaseModel):
-    url: str
-    user_id: Optional[str] = None      # used to load the user's LLM provider keys
-    github_token: Optional[str] = None
-    force: bool = False
-    # Per-resource model override. When set, the verify endpoint builds a
-    # provider-agnostic LLM for THIS model (resolving the user's provider
-    # keys) instead of the user's default model. Decouples tradecraft
-    # ingestion from the agent's current chat model and from project-load
-    # order (fixes the "agent reverted to default Anthropic after restart"
-    # 401 path).
-    model: Optional[str] = None
-
 
 def _pick_custom_provider(user_providers: list, model_name: str) -> Optional[dict]:
     """Return the custom-provider record that should serve this request, if any.
@@ -1923,14 +1909,13 @@ def _pick_custom_provider(user_providers: list, model_name: str) -> Optional[dic
     return custom_provider_or_fallback(user_providers, model_name)
 
 
-# The model of a user's out-of-run client (the guardrail, a tradecraft verify with
-# no model). Never get_settings()['OPENAI_MODEL']: outside a run that is whichever
-# project any owner loaded last, possibly a loop model or a provider this user
-# has no key for, and the check would then be skipped.
+# The model of a user's out-of-run client (the guardrail). Never get_settings()['OPENAI_MODEL']:
+# outside a run that is whichever project any owner loaded last, possibly a loop model or a
+# provider this user has no key for, and the check would then be skipped.
 DEFAULT_OUT_OF_RUN_MODEL = _DEFAULT_AGENT_SETTINGS.get('OPENAI_MODEL', 'claude-opus-4-6')
 
 
-def _build_llm_for_user(user_id: Optional[str], purpose: str = "tradecraft verify"):
+def _build_llm_for_user(user_id: Optional[str], purpose: str = "out-of-run client"):
     """Build an LLM for a non-project endpoint by loading the user's providers
     via the internal webapp API: the default model on the user's own keys. Falls
     back to env-based providers when user_id is missing or the lookup fails.
@@ -2000,80 +1985,6 @@ def _build_llm_for_user(user_id: Optional[str], purpose: str = "tradecraft verif
         aws_bearer_token=(bedrock_p or {}).get("awsBearerToken"),
         aws_region=(bedrock_p or {}).get("awsRegion") or "us-east-1",
     )
-
-
-# Authenticated because it fetches a caller-chosen URL from inside the agent's
-# network and spends the named user's LLM keys (CVE-2026-111323).
-@app.post("/tradecraft/verify", tags=["Tradecraft"], dependencies=[Depends(require_configured_master_auth), Depends(require_internal_auth)])
-async def tradecraft_verify(body: TradecraftVerifyRequest):
-    """
-    Fetch a tradecraft resource URL, detect its type, build a sitemap, and
-    LLM-summarize its scope. Called by the webapp `/api/users/{id}/tradecraft-resources/{rid}/verify` route.
-    """
-    from orchestrator_helpers.tradecraft_lookup import verify_resource
-    from project_settings import DEFAULT_AGENT_SETTINGS
-
-    if not orchestrator or not orchestrator._initialized:
-        return JSONResponse(
-            {"error": "Agent not initialized"}, status_code=503
-        )
-    # SSRF / scheme validation runs BEFORE LLM setup so a private-IP probe
-    # never wakes the LLM client. verify_resource also re-validates internally,
-    # but failing fast here keeps the path symmetric with the webapp guard.
-    from orchestrator_helpers.tradecraft_lookup import validate_url
-    ok, err = validate_url(body.url)
-    if not ok:
-        return {
-            "summary": "",
-            "resource_type": "agentic-crawl",
-            "sitemap": {},
-            "crawl_stopped_because": "",
-            "crawl_stats": {},
-            "last_error": err,
-        }
-    # Resolve the LLM used for crawl decisions + summary, always from the named
-    # user's own providers (RBAC T17), never a chat run's client:
-    #   1. If the request specifies a per-resource model, build a provider-
-    #      agnostic LLM for THAT model from the user's saved providers.
-    #      (Same path the 5 recon AI classifiers use.) This is the normal
-    #      path — the webapp always sends a model now that the field is
-    #      required at create/edit time.
-    #   2. Otherwise (back-compat for direct API callers and old rows
-    #      written before this column existed), _build_llm_for_user.
-    try:
-        if body.model:
-            llm = _build_llm_with_model_for_user(body.model, body.user_id)
-        else:
-            llm = _build_llm_for_user(body.user_id)
-    except LoopModelNotSupportedHere:
-        return _loop_model_refusal(body.model or "")
-    except Exception as e:
-        logger.error(f"tradecraft verify: cannot set up LLM: {e}")
-        return JSONResponse(
-            {"error": f"LLM not configured: {e}"}, status_code=503
-        )
-    bounds = {
-        "max_pages": DEFAULT_AGENT_SETTINGS.get("TRADECRAFT_CRAWL_MAX_PAGES", 30),
-        "max_llm_calls": DEFAULT_AGENT_SETTINGS.get("TRADECRAFT_CRAWL_MAX_LLM_CALLS", 20),
-        "time_budget_sec": DEFAULT_AGENT_SETTINGS.get("TRADECRAFT_CRAWL_TIME_BUDGET_SEC", 180),
-        "max_depth": DEFAULT_AGENT_SETTINGS.get("TRADECRAFT_CRAWL_MAX_DEPTH", 3),
-    }
-    mcp_manager = getattr(orchestrator, "_mcp_manager", None)
-    try:
-        result = await verify_resource(
-            body.url,
-            github_token=body.github_token or "",
-            force=body.force,
-            llm=llm,
-            mcp_manager=mcp_manager,
-            bounds=bounds,
-        )
-        return result
-    except Exception as exc:
-        logger.error(f"tradecraft verify failed: {exc}")
-        return JSONResponse(
-            {"error": str(exc)}, status_code=500
-        )
 
 
 @app.get("/mcp/manifest", tags=["MCP"], dependencies=[Depends(require_configured_master_auth)])

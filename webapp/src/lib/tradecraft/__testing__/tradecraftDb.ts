@@ -15,7 +15,7 @@ type Where = Record<string, unknown>
 const DEFAULTS: Record<string, () => Row> = {
   userTradecraftResource: () => ({
     enabled: true, resourceType: 'agentic-crawl', summary: '', sitemap: {}, crawlStoppedBecause: '', crawlStats: {},
-    llmModel: '', githubTokenOverride: '', cacheTtlSec: 0, lastVerifiedAt: null, lastRefreshedAt: null, lastError: '',
+    llmModel: '', githubTokenOverride: '', lastVerifiedAt: null, lastRefreshedAt: null, lastError: '',
     storageMode: 'live', forcedType: '', overrides: {}, typeOptions: {}, focus: {}, credentials: {}, hasLogin: false,
     summarySource: 'generated', summaryLocked: false, settingsSnapshot: {}, settingsHash: '', ingestionReport: {},
     mapVersion: 1, legacyMapHash: '', generation: 0, activeJobId: null, priority: 'normal', presetKey: '',

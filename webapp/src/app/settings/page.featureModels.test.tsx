@@ -114,22 +114,14 @@ async function tile(id: string) {
 }
 
 describe('Models by feature section', () => {
-  test('the Tradecraft librarian tile shows only with Tradecraft 2.0 on (T7.1, R-I5): eleven tiles then, ten with it off', async () => {
-    const answers = fetchMock.getMockImplementation()!
-    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => (url === '/api/users/user-1/tradecraft-settings'
-      ? json(200, { v2Enabled: true })
-      : answers(url, init)))
-    renderPage()
-    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(11))
-    expect(document.querySelector('[data-feature="tradecraft_librarian"]')).not.toBeNull()
-    cleanup()
-    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => (url === '/api/users/user-1/tradecraft-settings'
-      ? json(200, { v2Enabled: false })
-      : answers(url, init)))
+  test('every account has the Tradecraft librarian tile and none has the 1.x section picker\'s (T9.3, R-401): ten tiles', async () => {
     renderPage()
     await tile('triage')
     await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(10))
-    expect(document.querySelector('[data-feature="tradecraft_librarian"]')).toBeNull()
+    expect(document.querySelector('[data-feature="tradecraft_librarian"]')).not.toBeNull()
+    expect(document.querySelector('[data-feature="tradecraft_section_picker"]')).toBeNull()
+    // The grid no longer asks for the account's 2.0 switch.
+    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/tradecraft-settings'))).toBe(false)
   })
 
   test('ten tiles from ONE /api/models call, with their saved state', async () => {

@@ -12,12 +12,12 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-V2_TOOL_NAMES = ("tradecraft_search", "tradecraft_ask")
+V2_TOOL_NAMES = ("tradecraft_lookup", "tradecraft_search", "tradecraft_ask")
 
 
 class LazyTool:
-    """Answers ``ainvoke`` with the real tool of the same name; in a run whose catalog is not
-    2.0 that tool says it is not available."""
+    """Answers ``ainvoke`` with the real tool of the same name; in a run with no catalog bound
+    that tool says it is not available."""
 
     def __init__(self, name: str) -> None:
         self.name = name

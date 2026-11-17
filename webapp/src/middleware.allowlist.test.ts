@@ -55,6 +55,8 @@ describe('the tradecraft run catalog: one GET for the agent', () => {
     ['GET', '/api/internal/agent/tradecraft/catalog/extra', false],
     ['GET', '/api/internal/agent/tradecraft', false],
     ['GET', '/api/internal/agent/tradecraft/catalog/../../../users/x/settings', false],
+    // The 1.x run fetch's unmasked list left at the cut-over (T9.3): the key opens it no more.
+    ['GET', '/api/users/abc/tradecraft-resources', false],
   ])('%s %s → %s', (method, path, allowed) => {
     expect(internalKeyRouteAllowed(method, path)).toBe(allowed)
     expect(scannerKeyRouteAllowed(method, path)).toBe(false)

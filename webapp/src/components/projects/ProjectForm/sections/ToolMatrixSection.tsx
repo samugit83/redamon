@@ -107,11 +107,9 @@ function ToolPhaseHeader() {
 interface ToolMatrixSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
-  /** The project owner has Tradecraft 2.0 on: the row notes of its tools show (off, the matrix is as before). */
-  tradecraftV2?: boolean
 }
 
-export function ToolMatrixSection({ data, updateField, tradecraftV2 = false }: ToolMatrixSectionProps) {
+export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
   const { userId } = useProject()
   // A collaborator's form (step 5.7): the agent runs with the project OWNER's keys, tradecraft and
@@ -336,7 +334,7 @@ export function ToolMatrixSection({ data, updateField, tradecraftV2 = false }: T
                 <div key={tool.id} className={styles.toolPhaseRow}>
                   <span className={styles.toolPhaseName}>
                     {tool.label}
-                    {tradecraftV2 && TOOL_ROW_NOTES[tool.id] && (
+                    {TOOL_ROW_NOTES[tool.id] && (
                       <span className={styles.sectionDescription} data-testid={`tool-row-note-${tool.id}`} style={{ display: 'block', margin: 0, fontSize: 'var(--text-xs)' }}>
                         {TOOL_ROW_NOTES[tool.id]}
                       </span>

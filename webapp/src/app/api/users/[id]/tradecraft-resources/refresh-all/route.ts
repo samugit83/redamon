@@ -10,7 +10,6 @@ import { auditActor } from '@/lib/auditActor'
 import { SETTINGS_CONSTANTS } from '@/lib/tradecraft/settingsSpec'
 import { jobActorOf, startBulkJobs, type JobView } from '@/lib/tradecraft/jobs'
 import { hasStoredLogin } from '@/lib/tradecraft/masking'
-import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -40,9 +39,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (selfRefused) return selfRefused
     const actor = jobActorOf(await auditActor())
     if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    if (!(await tradecraftV2Enabled(id))) {
-      return NextResponse.json({ error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' }, { status: 404 })
-    }
     const parsed = await readJsonBody(request)
     if (parsed instanceof NextResponse) return parsed
     const raw = parsed.body.resourceIds

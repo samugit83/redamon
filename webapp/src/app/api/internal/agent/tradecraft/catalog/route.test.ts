@@ -1,6 +1,7 @@
 /**
  * GET /api/internal/agent/tradecraft/catalog: the internal key checked in the route, the owner
- * from the project row, the coded 404, and the 1.x payload identical to the 1.x internal GET.
+ * from the project row, the coded 404, and one 2.0 catalog for every account (T9.3: the switch
+ * and the 1.x payload are gone).
  *
  * @vitest-environment node
  */
@@ -18,7 +19,6 @@ vi.mock('@/lib/authz/selfService', () => import('@/lib/authz/__testing__/routeGu
 vi.mock('next/headers', () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: 'a-session-cookie' }) })) }))
 
 import { GET } from './route'
-import { GET as legacyGet } from '@/app/api/users/[id]/tradecraft-resources/route'
 
 const KEY = { 'x-internal-key': 'ik-test-catalog-0001' }
 const get = (query: string, headers: Record<string, string> = KEY) =>
@@ -65,31 +65,18 @@ describe('catalog route', () => {
     expect(await (await get('?personId=owner')).json()).toEqual({ error: 'projectId is required', code: 'project_required' })
   })
 
-  test.each([false, true])('no person (a request outside a run), switch %s: an answer without the login resource (R-155)', async (on) => {
-    h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: on })
+  test.each([false, true, null])('no person (a request outside a run), old switch row %s: the 2.0 catalog without the login resource (R-155)', async (on) => {
+    if (on !== null) h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: on })
     const res = await get('?projectId=p1')
     expect(res.status).toBe(200)
     const body = await res.json()
-    const ids = (on ? body.resources : body.legacy).map((r: { id: string }) => r.id)
-    expect(ids).toEqual(['r2'])
-    if (on) expect(body).toMatchObject({ v2: true, person_id: null })
-    else expect(body.v2).toBe(false)
+    expect(body.resources.map((r: { id: string }) => r.id)).toEqual(['r2'])
+    expect(body).toMatchObject({ v2: true, person_id: null })
+    expect(body).not.toHaveProperty('legacy')
     expect(JSON.stringify(body)).not.toMatch(/fake-session|ghp_fake_1/)
   })
 
-  test('legacy_payload_identical_switch_off: the rows the 1.x internal GET answers, byte for byte', async () => {
-    const catalog = await (await get('?projectId=p1&personId=collab')).json()
-    const legacy = await (await legacyGet(
-      new NextRequest('http://webapp.test/api/users/owner/tradecraft-resources?internal=true', { headers: KEY }),
-      { params: Promise.resolve({ id: 'owner' }) },
-    )).json()
-    expect(catalog.v2).toBe(false)
-    expect(catalog.legacy.map((r: { id: string }) => r.id)).toEqual(['r2'])
-    expect(JSON.stringify(catalog.legacy)).toBe(JSON.stringify(legacy))
-    expect(JSON.stringify(catalog)).not.toContain('fake-session')
-  })
-
-  test("switch on, a collaborator's run: the login resource is not listed", async () => {
+  test("a collaborator's run: the login resource is not listed", async () => {
     h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
     const body = await (await get('?projectId=p1&personId=collab')).json()
     expect(body).toMatchObject({ v2: true, person_id: 'collab' })
@@ -103,9 +90,10 @@ describe('catalog route', () => {
     expect(body.resources.map((r: { id: string }) => r.id)).toEqual(['r2'])
   })
 
-  test("switch off, the owner's own run: the 1.x payload lists the login resource, the others' runs do not", async () => {
-    expect((await (await get('?projectId=p1&personId=owner')).json()).legacy.map((r: { id: string }) => r.id)).toEqual(['r1', 'r2'])
-    expect((await (await get('?projectId=p1&personId=collab')).json()).legacy.map((r: { id: string }) => r.id)).toEqual(['r2'])
+  test("an old switch row off changes nothing: the owner's own run lists the login resource, the others' runs do not", async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: false })
+    expect((await (await get('?projectId=p1&personId=owner')).json()).resources.map((r: { id: string }) => r.id)).toEqual(['r1', 'r2'])
+    expect((await (await get('?projectId=p1&personId=collab')).json()).resources.map((r: { id: string }) => r.id)).toEqual(['r2'])
   })
 
   test('a database failure answers its code', async () => {

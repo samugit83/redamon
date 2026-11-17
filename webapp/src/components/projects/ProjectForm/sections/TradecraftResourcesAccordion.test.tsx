@@ -171,11 +171,4 @@ describe('TradecraftResourcesAccordion', () => {
     expect(screen.queryByRole('button', { name: /Details of/ })).toBeNull()
     expect(screen.getByTestId('tradecraft-active-count')).toHaveTextContent('1 of 2 active in this project')
   })
-
-  test('label_unchanged_when_v2_off: with the owner\'s switch off there is no accordion', async () => {
-    view = VIEW({ v2: false, resources: [] })
-    const { container } = draw()
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled())
-    await waitFor(() => expect(container.querySelector('[data-testid="tradecraft-accordion"]')).toBeNull())
-  })
 })

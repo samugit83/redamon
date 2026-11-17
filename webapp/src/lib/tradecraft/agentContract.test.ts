@@ -72,17 +72,11 @@ describe('the rules', () => {
     expect(r.success).toBe(true)
   })
 
-  test('RunCatalog takes either shape', () => {
-    expect(c.RunCatalog.safeParse(read('LegacyCatalog.valid.json')).success).toBe(true)
+  test('RunCatalog is the 2.0 catalog only: the 1.x payload left at the cut-over (T9.3)', () => {
     expect(c.RunCatalog.safeParse(read('V2Catalog.valid.json')).success).toBe(true)
     expect(c.RunCatalog.safeParse({ v2: 'yes' }).success).toBe(false)
-  })
-
-  test('the legacy columns are the 7.7.2 columns of user_tradecraft_resources, relation aside', () => {
-    const release = JSON.parse(readFileSync(path.join(REPO, 'webapp/src/lib/authz/__fixtures__/schema-7.7.2-fields.json'), 'utf8'))
-    const fields = Object.entries(release.models.UserTradecraftResource.fields as Record<string, { type: string }>)
-      .filter(([, f]) => f.type !== 'User').map(([name]) => name)
-    expect([...c.LEGACY_RESOURCE_COLUMNS].sort()).toEqual(fields.sort())
+    expect(c.RunCatalog.safeParse({ v2: false, legacy: [] }).success).toBe(false)
+    expect('LegacyCatalog' in c.CONTRACT_SCHEMAS).toBe(false)
   })
 
   test('the deadlines and the webapp timeouts (D-52)', () => {

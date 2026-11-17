@@ -138,7 +138,7 @@ describe('Save & refresh all', () => {
     expect(agent.calls).toEqual([])
   })
 
-  test('the guards: refused access, no person, 2.0 off', async () => {
+  test('the guards: refused access, no person', async () => {
     stubAgent()
     h.denied = NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     expect((await post({ resourceIds: ['a'] })).status).toBe(403)
@@ -146,8 +146,6 @@ describe('Save & refresh all', () => {
     h.person = null
     expect((await post({ resourceIds: ['a'] })).status).toBe(401)
     h.person = 'owner'
-    h.db.rows('tradecraftUserSettings', { userId: 'owner' })[0].v2Enabled = false
-    expect(await answer(await post({ resourceIds: ['a'] }))).toMatchObject({ status: 404, body: { code: 'tradecraft_v2_off' } })
     expect(jobs()).toEqual([])
   })
 })

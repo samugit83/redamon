@@ -23,7 +23,7 @@ import {
 } from './llmFeatures'
 
 describe('registry', () => {
-  test('the eleven features, in the grid order', () => {
+  test('the ten features, in the grid order (the 1.x section picker left at the cut-over, R-401)', () => {
     expect(FEATURE_IDS).toEqual([
       'triage',
       'codefix',
@@ -33,7 +33,6 @@ describe('registry', () => {
       'preset_generator',
       'command_whisperer',
       'navigator',
-      'tradecraft_section_picker',
       'tradecraft_librarian',
       'skill_metadata',
     ])
@@ -46,7 +45,6 @@ describe('registry', () => {
       'Recon preset generator',
       'Command whisperer',
       'AI Navigator',
-      'Tradecraft section picker',
       'Tradecraft librarian',
       'Skill names & descriptions',
     ])

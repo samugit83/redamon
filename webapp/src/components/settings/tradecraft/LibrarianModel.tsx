@@ -7,7 +7,8 @@ import { modelAllowedForFeature } from '@/lib/llmFeatures'
 import tc from './tradecraft.module.css'
 
 export const LIBRARIAN_FEATURE = 'tradecraft_librarian' as const
-/** Q10: the gate and the banner offer the section picker's model first, as a suggestion the person confirms. */
+/** Q10: the gate and the banner offer first the model the person saved for the 1.x section picker
+ * (still in their `featureModels` after the cut-over), as a suggestion the person confirms. */
 export const LIBRARIAN_SUGGESTION = { suggestFrom: 'tradecraft_section_picker', suggestedFrom: 'your Tradecraft section picker model' } as const
 
 /** The gate for an Add or an Enabled turned on (`tradecraftClient.create` / `update`). */

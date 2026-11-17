@@ -27,9 +27,9 @@ it. When the first pass finds nothing, today's title match over the resource's 1
 every 2.0 ingestion keeps current (TD-18, R-217), picks the page with no model (the section
 picker is not used on such a resource), and the read is still one section. An unconverted
 resource, a forced ``section_path`` and a run without a search index keep today's title match
-and today's whole-page answer; the page they return is recorded as seen too when it is an
-entry of the store (page IDs name entries). A CVE archive is read live, a CVE at a time; a PDF
-page from the store.
+(no model: the section picker left with 1.x, R-401) and today's whole-page answer; the page they
+return is recorded as seen too when it is an entry of the store (page IDs name entries). A CVE
+archive is read live, a CVE at a time; a PDF page from the store.
 """
 
 from __future__ import annotations
@@ -185,15 +185,12 @@ async def lookup(*, resource_id: str = "", query: str = "", cve_id: Optional[str
 # A page of a site
 # --------------------------------------------------------------------------------------
 
-async def _pick_url(read: _Read, query: str, section_path: Optional[str], *,
-                    use_picker: bool = True) -> tuple[str, str]:
+async def _pick_url(read: _Read, query: str, section_path: Optional[str]) -> tuple[str, str]:
     rtype = read.row.get("resource_type") or read.resource.type
     base = read.row.get("url") or read.resource.url
     if section_path:
         return legacy_match.resolve_path(rtype, base, read.sitemap, section_path), section_path
-    entries = legacy_match.sitemap_entries(read.sitemap)
-    picker = runtime.section_picker() if use_picker and len(entries) > legacy_match.SMALL_MAP else None
-    picked = await legacy_match.pick(query, entries, picker=picker, resource_name=read.resource.name or read.slug)
+    picked = legacy_match.pick(query, legacy_match.sitemap_entries(read.sitemap))
     if picked is None:
         return base, "(homepage)"
     path = picked.get("path") or ""
@@ -299,13 +296,13 @@ async def _title_pick(read: _Read, query: str) -> Optional[tuple[str, str]]:
     """(page ID, URL) of the page today's title match picks with no model: a PDF's best page,
     else a site's best page or its start page; None when that page is not an entry."""
     if isinstance(read.sitemap.get("pages"), list) and read.sitemap.get("pages"):
-        picked = await legacy_match.pick(query, _pdf_entries(read))
+        picked = legacy_match.pick(query, _pdf_entries(read))
         number = re.search(r"page=(\d+)", picked["path"]) if picked else None
         if number is None:
             return None
         url = f"{fetch.canonical_url(read.row.get('url') or read.resource.url)}#page={number.group(1)}"
     else:
-        target, _title = await _pick_url(read, query, None, use_picker=False)
+        target, _title = await _pick_url(read, query, None)
         url = fetch.canonical_url(target)
     entry = await read.store.entry_by_url(read.owner, read.resource.id, url)
     if entry is None or entry.get("page_id") is None:
@@ -449,9 +446,7 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
             return "Error: section_path for PDF must be 'page=N' or just an integer."
         number = int(m.group(1))
     else:
-        entries = _pdf_entries(read)
-        picker = runtime.section_picker() if len(entries) > legacy_match.SMALL_MAP else None
-        picked = await legacy_match.pick(query, entries, picker=picker, resource_name=read.resource.name or read.slug)
+        picked = legacy_match.pick(query, _pdf_entries(read))
         if picked is None:
             return f"PDF '{read.slug}': no page matched query={query!r}."
         number = int(re.search(r"page=(\d+)", picked["path"]).group(1))

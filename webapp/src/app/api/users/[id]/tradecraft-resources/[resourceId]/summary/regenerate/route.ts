@@ -8,7 +8,6 @@ import { auditActor } from '@/lib/auditActor'
 import { loginUseRefusal } from '@/lib/tradecraft/actAs'
 import { jobActorOf, jobStartResponse, startJob } from '@/lib/tradecraft/jobs'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
-import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
@@ -27,9 +26,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (selfRefused) return selfRefused
     const actor = jobActorOf(await auditActor())
     if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    if (!(await tradecraftV2Enabled(id))) {
-      return NextResponse.json({ error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' }, { status: 404 })
-    }
 
     const resource = await loadOwnResource(id, resourceId)
     if (!resource) return NextResponse.json({ error: 'Resource not found' }, { status: 404 })

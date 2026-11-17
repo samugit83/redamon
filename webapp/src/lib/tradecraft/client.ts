@@ -156,12 +156,6 @@ export interface SavedResource {
 }
 
 export const tradecraftClient = {
-  getSwitch: (userId: string) =>
-    fetchJson<{ v2Enabled: boolean }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, undefined, "Couldn't read the Tradecraft 2.0 switch"),
-  setSwitch: (userId: string, v2Enabled: boolean) =>
-    fetchJson<{ v2Enabled: boolean }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
-      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ v2Enabled }),
-    }, "Couldn't change the Tradecraft 2.0 switch"),
   getSettings: (userId: string) =>
     fetchJson<{ v2Enabled: boolean; ingestion?: IngestionSettingsView; recipes?: UserRecipe[]; search?: SearchSettingsView; offerBulkRefresh?: boolean }>(
       `/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, undefined, "Couldn't read your ingestion settings"),

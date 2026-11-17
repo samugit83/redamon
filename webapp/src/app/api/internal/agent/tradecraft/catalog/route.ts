@@ -11,9 +11,9 @@ import { runCatalog } from '@/lib/tradecraft/catalog'
  * run starts. The key is checked here: the middleware allowlist is not the control while
  * INTERNAL_KEY_ALLOWLIST_ENFORCE is off, and a session or the scanner key reads nothing. The
  * owner comes from the project row, never from the query. An unknown project answers its own
- * coded 404, which the agent tells apart from an older webapp's page 404 (that one falls back to
- * the 1.x route; this one must not, D-53). Without a person (a request outside a run, R-155) it
- * answers as for anyone but the owner: no resource with a login.
+ * coded 404, and the run then has no catalog (D-53; since the cut-over no 404 falls back to a
+ * 1.x list, T9.2). Without a person (a request outside a run, R-155) it answers as for anyone
+ * but the owner: no resource with a login.
  */
 export async function GET(request: NextRequest) {
   if (!isInternalRequest(request)) {

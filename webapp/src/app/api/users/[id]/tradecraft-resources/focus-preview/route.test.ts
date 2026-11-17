@@ -210,7 +210,7 @@ describe('the focus preview', () => {
     expect(writes()).toEqual([])
   })
 
-  test('the guards: the account rule, self:tradecraft, a person, 2.0 on', async () => {
+  test('the guards: the account rule, self:tradecraft, a person', async () => {
     const agent = previewAgent()
     h.denied = NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     expect((await post({ focus: FOCUS, entries: ENTRIES, llmModel: 'gpt-4o' })).status).toBe(403)
@@ -218,8 +218,6 @@ describe('the focus preview', () => {
     h.person = null
     expect((await post({ focus: FOCUS, entries: ENTRIES, llmModel: 'gpt-4o' })).status).toBe(401)
     h.person = 'owner'
-    h.db.rows('tradecraftUserSettings')[0].v2Enabled = false
-    expect(await answer(await post({ focus: FOCUS, entries: ENTRIES, llmModel: 'gpt-4o' }))).toMatchObject({ status: 404, body: { code: 'tradecraft_v2_off' } })
     expect(vi.mocked(requireSelfPermission).mock.calls.at(-1)!.slice(1)).toEqual(['owner', 'self:tradecraft'])
     expect(agent.calls).toEqual([])
   })

@@ -105,18 +105,6 @@ def test_defaults_byte_identical():
     assert fetch_guard.guarded_browser_script(hostile) == today(hostile)
 
 
-def test_1x_callers_send_the_default_script():
-    """The 1.x tradecraft modules call the script with the URL alone, so they keep today's script."""
-    root = Path(fetch_guard.__file__).resolve().parent
-    calls = []
-    for name in ("tradecraft_lookup.py", "tradecraft_crawl.py"):
-        tree = ast.parse((root / name).read_text(encoding="utf-8"))
-        calls += [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-                  and getattr(n.func, "id", getattr(n.func, "attr", "")) == "guarded_browser_script"]
-    assert len(calls) == 2
-    assert all(len(c.args) == 1 and not c.keywords for c in calls)
-
-
 def _clean_selectors():
     """(selector, action) pairs of the cleaning JavaScript, read from its source."""
     pairs = re.findall(r"querySelectorAll\('([^']+)'\)\) (?:s|n)(\.textContent = ''|\.remove\(\))", fetch_guard._CLEAN_JS)

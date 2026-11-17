@@ -20,7 +20,6 @@ import { isOwnerRun } from './catalog'
 import { lastRefreshedOf } from './client'
 import { hasStoredLogin } from './masking'
 import { choiceChangeable, type ChoiceViewer } from './projectChoices'
-import { tradecraftV2Enabled } from './switch'
 import { listResourcesV2, type ResourceView } from './v2/list'
 import type { IngestionReport } from './agentContract'
 
@@ -69,12 +68,11 @@ export interface ProjectLibrarian {
 }
 
 export interface ProjectTradecraftView {
-  /** The project owner's Tradecraft 2.0 switch: false leaves the tab and the drawer as they were. */
-  v2: boolean
+  /** Always true since the cut-over (T9.3): kept so a client of the switch era reads 2.0. */
+  v2: true
   viewerIsOwner: boolean
   /** The owner's account, for the owner's own read-only Pages (§3.4); only the owner gets it. */
   ownerId?: string
-  /** With 2.0 on only. */
   librarian?: ProjectLibrarian
   resources: ProjectResourceRow[]
   counts: ActiveCounts | null
@@ -93,8 +91,6 @@ export async function projectTradecraftView(opts: {
   viewerIsOwner: boolean
 }): Promise<ProjectTradecraftView> {
   const { projectId, ownerId, viewer, viewerIsOwner } = opts
-  if (!(await tradecraftV2Enabled(ownerId))) return { v2: false, viewerIsOwner, resources: [], counts: null }
-
   const [rows, choices, project, views, search, librarianModel] = await Promise.all([
     prisma.userTradecraftResource.findMany({ where: { userId: ownerId }, orderBy: { createdAt: 'asc' }, select: DETAIL_SELECT }),
     prisma.tradecraftProjectChoice.findMany({ where: { projectId }, select: { resourceId: true } }),

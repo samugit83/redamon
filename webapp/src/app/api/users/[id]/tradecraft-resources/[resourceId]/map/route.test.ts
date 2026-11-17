@@ -99,9 +99,9 @@ describe('GET map', () => {
     expect((await answer(await get())).body.entries[0].description).toBe('A one-line description')
   })
 
-  test('with 2.0 off: 404, nothing read', async () => {
+  test('an account whose old switch row is off reads its map: the switch left at the cut-over (T9.3)', async () => {
     h.db.rows('tradecraftUserSettings')[0].v2Enabled = false
-    expect(await answer(await get())).toMatchObject({ status: 404, body: { code: 'tradecraft_v2_off' } })
+    expect((await answer(await get())).status).toBe(200)
   })
 })
 
@@ -114,13 +114,11 @@ describe('POST map', () => {
     expect(h.db.rows('tradecraftCuration', { resourceId: 'r1', blocked: true })).toHaveLength(2)
   })
 
-  test("another account's resource: 404, nothing written; a person is needed; 2.0 off is a 404", async () => {
+  test("another account's resource: 404, nothing written; a person is needed", async () => {
     expect((await post({ op: 'pin', url: 'https://x.example.test/a' }, 'theirs')).status).toBe(404)
     h.person = null
     expect((await post({ op: 'pin', url: 'https://wiki.example.test/a' })).status).toBe(401)
     h.person = 'owner'
-    h.db.rows('tradecraftUserSettings')[0].v2Enabled = false
-    expect((await post({ op: 'pin', url: 'https://wiki.example.test/a' })).status).toBe(404)
     expect(h.db.rows('tradecraftCuration')).toEqual([])
   })
 })

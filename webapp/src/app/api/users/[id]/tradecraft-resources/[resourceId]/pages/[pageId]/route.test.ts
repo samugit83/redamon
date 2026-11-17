@@ -151,13 +151,11 @@ describe('Read now', () => {
     expect(await answer(await post('wiki:412'))).toMatchObject({ status: 502, body: { code: 'internal_error' } })
   })
 
-  test('the guards: a person, 2.0 on', async () => {
+  test('the guards: a person', async () => {
     const agent = readAgent()
     h.person = null
     expect((await post('wiki:412')).status).toBe(401)
     h.person = 'owner'
-    h.db.rows('tradecraftUserSettings')[0].v2Enabled = false
-    expect(await answer(await post('wiki:412'))).toMatchObject({ status: 404, body: { code: 'tradecraft_v2_off' } })
     expect(agent.calls).toEqual([])
   })
 })

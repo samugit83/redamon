@@ -8,13 +8,11 @@ import { auditActor } from '@/lib/auditActor'
 import { MAP_PAGE_SIZE, MAP_STATUSES, curate, isMapCursor, readMap, titlesAndUrlsOnly, type MapStatus } from '@/lib/tradecraft/curation'
 import { hasStoredLogin } from '@/lib/tradecraft/masking'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
-import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
 }
 
-const V2_OFF = () => NextResponse.json({ error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' }, { status: 404 })
 const NOT_FOUND = () => NextResponse.json({ error: 'Resource not found' }, { status: 404 })
 const bad = (field: string, error: string) => NextResponse.json({ error, code: 'bad_request', field }, { status: 400 })
 
@@ -34,7 +32,6 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (notOwn) return notOwn
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
-    if (!(await tradecraftV2Enabled(id))) return V2_OFF()
     const sp = request.nextUrl.searchParams
     const status = sp.get('status') ?? 'kept'
     if (!(MAP_STATUSES as readonly string[]).includes(status)) return bad('status', `status is one of ${MAP_STATUSES.join(', ')}`)
@@ -73,7 +70,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (selfRefused) return selfRefused
     const actor = await auditActor()
     if (!actor.actorId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    if (!(await tradecraftV2Enabled(id))) return V2_OFF()
     const parsed = await readJsonBody(request)
     if (parsed instanceof NextResponse) return parsed
     const row = await loadOwnResource(id, resourceId)

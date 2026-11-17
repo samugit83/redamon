@@ -134,13 +134,14 @@ def test_routes():
     assert c.ROUTES["jobs"] == "/tradecraft/v2/jobs"
 
 
-def test_parse_catalog_dispatches_on_v2():
+def test_parse_catalog_reads_the_2_0_catalog_only():
+    """Since the cut-over (T9.2) the 1.x payload is no catalog: it is refused like any bad one."""
     v2 = json.loads((FIXTURES / "V2Catalog.valid.json").read_text())
-    legacy = json.loads((FIXTURES / "LegacyCatalog.valid.json").read_text())
     assert isinstance(c.parse_catalog(v2), c.V2Catalog)
-    assert isinstance(c.parse_catalog(legacy), c.LegacyCatalog)
-    with pytest.raises(ValidationError):
-        c.parse_catalog({"v2": "yes"})
+    for bad in ({"v2": "yes"}, {"v2": False, "legacy": []}):
+        with pytest.raises(ValidationError):
+            c.parse_catalog(bad)
+    assert not hasattr(c, "LegacyCatalog") and "LegacyCatalog" not in c.MODELS
 
 
 def test_the_owner_run_carries_logins_and_a_collaborator_run_does_not():
