@@ -716,3 +716,30 @@ def test_a_focused_docs_crawl_whose_pages_the_focus_dropped_is_a_usable_map(tmp_
     assert set(pages) <= set(entries) and all(entries[p]["status"] == "dropped" for p in pages)
     assert job.report.kept == 0 and job.report.skipped.outsideFocus >= len(pages)
     assert "docs_start_page_only" not in error_codes(job)
+
+
+def test_a_github_refresh_whose_api_fails_keeps_the_tree(tmp_path):
+    """A GitHub repository whose API call fails (rate limited 403, not found 404) used to get the
+    homepage fallback and succeed with the homepage alone, replacing its tree under keep. It is a
+    failed refresh, "fetch_failed" (the job runner records it, and the card reads "Failed
+    (fetch_failed): the previous version is kept"), and the tree stays. A first add under keep fails
+    the same way and writes nothing to the resource."""
+    repo = "https://github.com/tc-fixture/payloads"
+    for status in (403, 404):
+        root = padded_sites(tmp_path / str(status))
+        store = MemoryStore()
+        assert Job(root, repo, store=store).run().status == "succeeded"
+        tree = sorted(e["url"] for e in store.live_entries(RID))
+        assert tree and all(u.startswith("https://raw.githubusercontent.com/tc-fixture/payloads/") for u in tree)
+
+        (root / "api.github.com" / "_status.json").write_text(json.dumps({"/repos/tc-fixture/payloads": status}))
+        refresh = Job(root, repo, store=store, job_id="job-2", target=2)
+        outcome = refresh.run()
+        assert outcome.status == "failed" and outcome.error_code == "fetch_failed" and not outcome.swapped, status
+        assert sorted(refresh.urls()) == tree
+
+        fresh = MemoryStore()
+        outcome = Job(root, repo, store=fresh, job_id="job-3").run()
+        assert outcome.status == "failed" and outcome.error_code == "fetch_failed" and not outcome.swapped, status
+        row = fresh.resources[RID]
+        assert fresh.entries == [] and row["generation"] == 0 and row["sitemap"] == {} and row["ingestion_report"] == {}
