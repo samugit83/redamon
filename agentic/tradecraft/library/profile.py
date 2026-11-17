@@ -8,10 +8,11 @@ chose this design (the R-420 card correction). Before it is searched (``query_of
 addresses and bare numbers go: they name the target, never a technique.
 
 The facts are structured: the skill's topic (a built-in skill is a vocabulary topic) and its
-label, the phase, the target's technologies as vocabulary ids, CVE ids as the CVE pattern finds
-them in recon data, in the agent's findings and in the target's tool results, the finding types
-of the agent's fixed list, and whether the last target tool ran or failed. A tool result adds a
-pattern-checked CVE id and its success flag only: its text never becomes a query.
+label, the phase, the target's technologies as vocabulary ids, the CVE ids a finding confirmed
+(the newest ``MAX_CVES``: a scan listing hundreds would otherwise fix the set), the finding types
+of the agent's fixed list, and whether the last target tool ran or failed. A CVE id that recon or
+a scan only listed is no fact: it would fill the block with pages off the agent's goal. A tool
+result adds its success flag only: its text never becomes a query.
 
 ``target_info`` and the findings are written from the model's reading of tool output, so they
 are target-influenced too: a technology is kept only when the vocabulary knows it, a CVE id only
@@ -33,7 +34,6 @@ from tradecraft.vocab import load_vocab
 MAX_TECHS = 30
 MAX_CVES = 50
 MAX_RESULTS = 50
-RESULT_CHARS = 20_000
 GOAL_CHARS = 300
 SKILL_CHARS = 120
 
@@ -50,6 +50,9 @@ FINDING_TYPES = frozenset({
     "information_disclosure", "data_exfiltration", "lateral_movement", "persistence_established",
     "denial_of_service_success", "social_engineering_success", "remote_code_execution", "session_hijacked",
 })
+# The finding types that say a vulnerability is real: the CVE ids such a finding names are searched.
+CONFIRMING = FINDING_TYPES - {"service_identified", "configuration_found", "exploit_module_found",
+                              "defense_detected", "information_disclosure"}
 OUTCOMES = ("", "ok", "failed")
 
 # Characters that hide or reorder text: controls other than whitespace (C0 and C1), bidi
@@ -112,6 +115,16 @@ def _strings(value: Any, cap: int) -> tuple[str, ...]:
 
 def _get(obj: Any, key: str) -> Any:
     return obj.get(key) if isinstance(obj, Mapping) else getattr(obj, key, None)
+
+
+def _newest(items: Iterable[str], cap: int) -> tuple[str, ...]:
+    """The last ``cap`` distinct items, each where it was seen last: an id named again is newest."""
+    out: list[str] = []
+    for item in items:
+        if item in out:
+            out.remove(item)
+        out.append(item)
+    return tuple(out[-cap:])
 
 
 def _union(first: Iterable[str], then: Iterable[str], cap: int) -> tuple[str, ...]:
@@ -189,28 +202,20 @@ def build(state: Mapping[str, Any], previous: Optional[Focus]) -> Focus:
     target = state.get("target_info") or {}
     techs = technologies_of(_get(target, "technologies") or [])
     cves: list[str] = []
-    for value in _get(target, "vulnerabilities") or []:
-        if isinstance(value, str):
-            cves += entity_rules.cve_ids(value)
     findings: list[str] = []
+    # The findings are the session's whole memory, oldest first: read again at every think.
     for finding in state.get("chain_findings_memory") or []:
         if not isinstance(finding, Mapping):
             continue
         if finding.get("finding_type") in FINDING_TYPES:
             findings.append(finding["finding_type"])
-        for value in finding.get("related_cves") or []:
-            if isinstance(value, str):
-                cves += entity_rules.cve_ids(value)
+        if finding.get("finding_type") in CONFIRMING:
+            for value in finding.get("related_cves") or []:
+                if isinstance(value, str):
+                    cves += entity_rules.cve_ids(value)
     checked = set(previous.results) if previous else set()
     results = new_results(state)
-    attempts: list[bool] = []
-    for ident, tool, output, ran in results:
-        if ident in checked:
-            continue
-        if tool not in NOT_TARGET:
-            cves += entity_rules.cve_ids(output[:RESULT_CHARS])
-        if _is_attempt(tool):
-            attempts.append(ran)
+    attempts = [ran for ident, tool, _output, ran in results if ident not in checked and _is_attempt(tool)]
     outcome = ("ok" if all(attempts) else "failed") if attempts else (previous.outcome if previous else "")
     return Focus(
         goal=goal_of(state),
@@ -218,7 +223,7 @@ def build(state: Mapping[str, Any], previous: Optional[Focus]) -> Focus:
         skill=one_line(str(state.get("attack_path_type") or ""))[:SKILL_CHARS],
         phase=str(state.get("current_phase") or "informational"),
         technologies=_union(previous.technologies if previous else (), techs, MAX_TECHS),
-        cves=_union(previous.cves if previous else (), cves, MAX_CVES),
+        cves=_newest(cves, MAX_CVES),
         findings=tuple(sorted(set(previous.findings if previous else ()) | set(findings))),
         outcome=outcome,
         results=tuple(ident for ident, _t, _o, _r in results) or (previous.results if previous else ()),

@@ -65,7 +65,8 @@ def test_each_fact(caplog):
         "skill": {"attack_path_type": "xss"},
         "phase": {"current_phase": "post_exploitation"},
         "technology": {"target_info": {"technologies": ["PostgreSQL 14", "nginx 1.25"], "vulnerabilities": []}},
-        "cve": {"target_info": {"technologies": ["PostgreSQL 14"], "vulnerabilities": ["CVE-2024-23897"]}},
+        "cve+finding": {"chain_findings_memory": [{"finding_type": "vulnerability_confirmed",
+                                                   "related_cves": ["CVE-2024-23897"]}]},
         "finding": {"chain_findings_memory": [{"finding_type": "vulnerability_confirmed", "title": "x"}]},
         "outcome": {"_current_step": {"step_id": "st-1", "tool_name": "execute_curl", "success": False,
                                       "tool_output": "connection refused"}},
@@ -73,12 +74,12 @@ def test_each_fact(caplog):
     with caplog.at_level(logging.INFO):
         for expected, change in cases.items():
             assert think({**st, **change}, caplog)[2] == expected, expected
-        # A CVE id in a target's tool result is a fact (and the run's first attempt ran: "ok");
-        # a finding's related CVE ids too.
+        # A CVE id in a target's tool result is no fact (only the run's first attempt ran: "ok"), nor
+        # one a finding names without confirming it.
         assert think({**st, "_current_step": {"step_id": "st-2", "tool_name": "execute_nuclei", "success": True,
-                                              "tool_output": "[CVE-2021-44228] matched"}}, caplog)[2] == "cve+outcome"
+                                              "tool_output": "[CVE-2021-44228] matched"}}, caplog)[2] == "outcome"
         assert think({**st, "chain_findings_memory": [{"finding_type": "custom",
-                                                       "related_cves": ["CVE-2022-0001"]}]}, caplog)[2] == "cve"
+                                                       "related_cves": ["CVE-2022-0001"]}]}, caplog)[2] is None
 
 
 def test_what_is_no_fact(caplog):
@@ -89,7 +90,8 @@ def test_what_is_no_fact(caplog):
                                                         "tool_output": "HTTP/1.1 200 OK"}}, caplog)
         assert reasons == "outcome"
         # A name the vocabulary does not know, a finding type off the list, a tool result's text.
-        for change in ({"target_info": {"technologies": ["PostgreSQL 14.2", "AcmeServer 9"], "vulnerabilities": []}},
+        for change in ({"target_info": {"technologies": ["PostgreSQL 14.2", "AcmeServer 9"],
+                                        "vulnerabilities": ["CVE-2024-0007"]}},
                        {"chain_findings_memory": [{"finding_type": "custom", "title": "pwned"},
                                                   {"finding_type": "made_up_type"}]},
                        {"_current_step": {"step_id": "st-1", "tool_name": "execute_curl", "success": True,
@@ -108,7 +110,7 @@ def test_one_search_when_several_facts_change_together(caplog):
                                    "todo_list": [todo("Steal the admin session", "in_progress")],
                                    "target_info": {"technologies": ["PostgreSQL", "MySQL"],
                                                    "vulnerabilities": ["CVE-2024-1111"]}}, caplog, index=index)
-    assert reasons == "goal+skill+phase+technology+cve"
+    assert reasons == "goal+skill+phase+technology"
     assert len([r for r in caplog.records if "library_now refresh=" in r.getMessage()]) == 1
     assert len(pages_of(note)) <= 3
 
