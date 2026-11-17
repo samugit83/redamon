@@ -375,3 +375,32 @@ def test_a_docs_index_that_lists_pages_is_used_as_before(tmp_path):
     assert job.resource["sitemap"]["indexUrl"] == "https://docs.tc-fixture.test/searchindex.js"
     assert job.resource["crawl_stats"] == {}
     assert not [u for u, _ in job.fetcher.requests if u.endswith(("/sitemap.xml", "/robots.txt"))]
+
+
+def test_a_translated_wiki_keeps_its_english_pages_within_the_sitemap_budget(tmp_path, monkeypatch):
+    """A translated wiki: robots.txt names an index on another host with one child per language
+    (``/<lang>/sitemap.xml``, alphabetical, English fourth). The byte budget holds two children:
+    the English one is read first, so the map is English, not the first two languages."""
+    from tradecraft.ingest import builders
+
+    host, maps = "polyglot.tc-fixture.test", "polyglot-maps.tc-fixture.test"
+    langs = ("af", "de", "el", "en", "fr")
+    children = {lang: urlset([f"https://{host}/{lang}/topic-{i}/" for i in range(6)]) for lang in langs}
+    index = ('<?xml version="1.0"?><sitemapindex>'
+             + "".join(f"<sitemap><loc>https://{maps}/{lang}/sitemap.xml</loc></sitemap>" for lang in langs)
+             + "</sitemapindex>")
+    root = site(tmp_path, host, {"/": mkdocs_home(), "/robots.txt": f"Sitemap: https://{maps}/sitemap.xml\n"})
+    site(root, maps, {"/sitemap.xml": index, **{f"/{lang}/sitemap.xml": text for lang, text in children.items()}})
+    real = builders.constant
+    room = len(index) + 2 * len(children["af"]) + len(children["af"]) // 2
+    monkeypatch.setattr(builders, "constant", lambda name: room if name == "sitemapMaxBytes" else real(name))
+
+    def languages(**values):
+        job = Job(root, f"https://{host}/", values)
+        assert job.run().status == "succeeded"
+        assert job.resource["resource_type"] == "mkdocs-wiki"
+        return sorted({u.split("/")[3] for u in job.urls()})
+
+    assert languages() == ["en"]
+    assert languages(**{"knownTypes.language": "preferred", "knownTypes.preferredLanguage": "fr"}) == ["fr"]
+    assert languages(**{"knownTypes.language": "all"}) == ["af", "de"]

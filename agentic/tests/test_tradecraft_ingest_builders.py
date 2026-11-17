@@ -306,3 +306,118 @@ def test_parsing_goes_through_blocking(fixtures):
     body = run(fixtures.get("https://files.tc-fixture.test/guide.pdf")).body
     run(builders.build_pdf("https://files.tc-fixture.test/guide.pdf", body, s(), blocking=recording))
     assert "parse_sitemap_xml" in calls and "pdf_pages" in calls
+
+
+# --------------------------------------------------------------------------------------
+# A sitemap index of per-language copies, read within the byte budget
+# --------------------------------------------------------------------------------------
+
+POLY = "polyglot.tc-fixture.test"
+POLY_MAPS = "polyglot-maps.tc-fixture.test"
+LANGS = ("af", "de", "el", "en", "fr")
+
+
+def _poly_files(child_url):
+    """robots.txt names an index on another host listing one child per language, alphabetically,
+    as a translated wiki publishes them: English comes fourth."""
+    children = {lang: child_url(lang) for lang in LANGS}
+    index = ('<?xml version="1.0"?><sitemapindex>'
+             + "".join(f"<sitemap><loc>{u}</loc></sitemap>" for u in children.values()) + "</sitemapindex>")
+    files = {POLY: {"robots.txt": f"Sitemap: https://{POLY_MAPS}/sitemap.xml\n", "index.html": "<html></html>"},
+             POLY_MAPS: {"sitemap.xml": index}}
+    for lang, url in children.items():
+        pages = [f"https://{POLY}/{lang}/topic-{i}/" for i in range(6)]
+        files[POLY_MAPS][url.split(POLY_MAPS + "/", 1)[1]] = _urlset(pages)
+    return files, index, len(files[POLY_MAPS][children["af"].split(POLY_MAPS + "/", 1)[1]])
+
+
+def _poly_site(tmp_path, child_url):
+    files, index, child = _poly_files(child_url)
+    for host, host_files in files.items():
+        fetcher = _site(tmp_path, host, host_files)
+    return fetcher, len(index), child
+
+
+def _budget(monkeypatch, nbytes):
+    real = builders.constant
+    monkeypatch.setattr(builders, "constant", lambda name: nbytes if name == "sitemapMaxBytes" else real(name))
+
+
+def _langs(entries):
+    return sorted({e.url.split("/")[3] for e in entries})
+
+
+def test_a_per_language_index_is_read_in_the_preferred_language_first(tmp_path, monkeypatch):
+    """The budget holds the index and two children: read in the listed order, it was spent on
+    af and de before English, and the language filter then had no English to keep."""
+    index_url = f"https://{POLY_MAPS}/sitemap.xml"
+    for n, shape in enumerate((lambda lang: f"https://{POLY_MAPS}/{lang}/sitemap.xml",
+                               lambda lang: f"https://{POLY_MAPS}/sitemap-{lang}.xml")):
+
+        def build(url, **values):
+            fetcher, index, child = _poly_site(tmp_path / f"shape{n}", shape)
+            _budget(monkeypatch, index + 2 * child + child // 2)
+            with net.use_fetcher(fetcher):
+                result = run(builders.build_wiki(url, s(**values)))
+            return result, [u for u, _ in fetcher.requests if u.startswith(f"https://{POLY_MAPS}/") and u != index_url]
+
+        auto, read = build(f"https://{POLY}/")
+        assert _langs(auto.entries) == ["en"] and len(auto.entries) == 6 and auto.index_kind == "sitemap"
+        assert read == [shape("en")]
+        french, _ = build(f"https://{POLY}/", **{"knownTypes.language": "preferred", "knownTypes.preferredLanguage": "fr"})
+        assert _langs(french.entries) == ["fr"]
+        german_folder, _ = build(f"https://{POLY}/de/")
+        assert _langs(german_folder.entries) == ["de"]
+        # A two-letter folder that names no language of the index leaves English first.
+        other_folder, read = build(f"https://{POLY}/go/")
+        assert _langs(other_folder.entries) == ["en"] and read == [shape("en")]
+        # "all" keeps the listed order, and the budget still stops it after two children.
+        every, read = build(f"https://{POLY}/", **{"knownTypes.language": "all"})
+        assert _langs(every.entries) == ["af", "de"] and read == [shape(lang) for lang in ("af", "de", "el")]
+
+
+def test_the_preferred_language_never_lifts_the_budget(tmp_path, monkeypatch):
+    fetcher, index, child = _poly_site(tmp_path, lambda lang: f"https://{POLY_MAPS}/{lang}/sitemap.xml")
+    # Room for the index and half a child: the English child is cut, so nothing is read, and no
+    # other language is read after it.
+    _budget(monkeypatch, index + child // 2)
+    with net.use_fetcher(fetcher):
+        budget = builders.SitemapBudget()
+        urls = run(builders.sitemap_urls(f"https://{POLY_MAPS}/sitemap.xml", s(), budget=budget, languages=["en"]))
+    assert urls == [] and budget.stopped == "sitemap_limit"
+    children = [u for u, _ in fetcher.requests if u.startswith(f"https://{POLY_MAPS}/") and u != f"https://{POLY_MAPS}/sitemap.xml"]
+    assert children == [f"https://{POLY_MAPS}/en/sitemap.xml"]
+
+
+def test_the_other_languages_are_read_when_the_preferred_child_lists_nothing(tmp_path):
+    fetcher, _index, _child = _poly_site(tmp_path, lambda lang: f"https://{POLY_MAPS}/{lang}/sitemap.xml")
+    (tmp_path / POLY_MAPS / "en" / "sitemap.xml").unlink()
+    with net.use_fetcher(fetcher):
+        urls = run(builders.sitemap_urls(f"https://{POLY_MAPS}/sitemap.xml", s(), languages=["en"]))
+    assert sorted({u.split("/")[3] for u in urls}) == ["af", "de", "el", "fr"]
+
+
+def test_language_children():
+    maps = [f"https://m.tc-fixture.test/{lang}/sitemap.xml" for lang in ("af", "de", "en", "en-us")]
+    assert builders.language_children(maps, ["en"]) == (maps[2:], maps[:2])
+    assert builders.language_children(maps, []) == (maps, [])
+    assert builders.language_children(maps, ["pt"]) == (maps, [])
+    # The first language the index has wins: a folder's language, else English.
+    assert builders.language_children(maps, ["de", "en"]) == ([maps[1]], [maps[0]] + maps[2:])
+    assert builders.language_children(maps, ["go", "en"]) == (maps[2:], maps[:2])
+    # Not per-language: one tag only, or few children tagged; the order is kept.
+    one = [f"https://m.tc-fixture.test/wp/sitemap-{k}.xml" for k in ("posts", "pages")]
+    assert builders.language_children(one, ["en"]) == (one, [])
+    few = ["https://m.tc-fixture.test/sitemap-en.xml", "https://m.tc-fixture.test/sitemap-de.xml"] + [
+        f"https://m.tc-fixture.test/posts-{i}.xml" for i in range(4)]
+    assert builders.language_children(few, ["en"]) == (few, [])
+    # Untagged children of a per-language index are read with the preferred ones.
+    mixed = ["https://m.tc-fixture.test/sitemap_fr.xml", "https://m.tc-fixture.test/sitemap_en.xml",
+             "https://m.tc-fixture.test/images.xml"]
+    assert builders.language_children(mixed, ["en"]) == (mixed[1:], mixed[:1])
+    assert builders.preferred_languages("https://w.tc-fixture.test/", s()) == ["en"]
+    assert builders.preferred_languages("https://w.tc-fixture.test/en/", s()) == ["en"]
+    assert builders.preferred_languages("https://w.tc-fixture.test/fr/guide/", s()) == ["fr", "en"]
+    assert builders.preferred_languages("https://w.tc-fixture.test/fr/", s(**{"knownTypes.language": "all"})) == []
+    assert builders.preferred_languages("https://w.tc-fixture.test/", s(**{
+        "knownTypes.language": "preferred", "knownTypes.preferredLanguage": "DE"})) == ["de"]

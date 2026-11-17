@@ -19,7 +19,7 @@ import json
 import re
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Sequence
 
 from orchestrator_helpers.web_sources import (
     _LANG_RE,
@@ -131,6 +131,57 @@ def language_filter(urls: list[str], settings: EffectiveSettings) -> list[str]:
     return keep if keep and tagged > 0.4 * len(urls) else urls
 
 
+def preferred_languages(start_url: str, settings: EffectiveSettings) -> list[str]:
+    """The languages an index of per-language sitemaps is read in, the first the index has
+    wins: none under ``all`` (the listed order); the person's language under ``preferred``;
+    under ``auto`` the language of the resource's own folder (``/fr/``), then English. The budget
+    then goes to the copies the map keeps, not to pages ``language_filter`` would drop; a
+    two-letter folder that names no child (``/go/``) leaves English first."""
+    mode = settings.str("knownTypes.language")
+    if mode == "all":
+        return []
+    if mode == "preferred":
+        return [settings.str("knownTypes.preferredLanguage").strip().lower() or "en"]
+    m = _LANG_RE.match(urllib.parse.urlsplit(start_url).path or "/")
+    folder = m.group(1).lower() if m else ""
+    return [folder, "en"] if folder and folder != "en" else ["en"]
+
+
+_LANG_CODE_RE = re.compile(r"[a-z]{2}(?:-[a-z]{2})?")
+
+
+def _child_language(loc: str) -> str:
+    """The language a child sitemap of an index is for: a folder named by a language code
+    (``/af/sitemap.xml``), else a two-letter part of its file name (``sitemap-af.xml``)."""
+    try:
+        path = (urllib.parse.urlsplit(loc).path or "/").lower()
+    except ValueError:
+        return ""
+    *folders, name = path.split("/")
+    for seg in folders:
+        if _LANG_CODE_RE.fullmatch(seg):
+            return seg
+    return next((t for t in re.split(r"[-_.]", name) if len(t) == 2 and t.isascii() and t.isalpha() and t != "gz"), "")
+
+
+def language_children(locs: list[str], languages: list[str]) -> tuple[list[str], list[str]]:
+    """(the children of a sitemap index to read first, the ones read only when those list
+    nothing). An index of per-language copies (two languages or more, over 40% of its children
+    tagged, as ``prefer_english`` judges URLs) is read in the first of ``languages`` it has,
+    with its untagged children; any other index, or one with none of them, in its own order. A
+    translated wiki lists its languages alphabetically, and the byte budget ran out on the first
+    ones before the language the filter keeps."""
+    if not languages:
+        return locs, []
+    tags = [_child_language(loc).split("-")[0] for loc in locs]
+    tagged = [t for t in tags if t]
+    want = next((lang.split("-")[0] for lang in languages if lang.split("-")[0] in tagged), "")
+    if len(set(tagged)) < 2 or len(tagged) <= 0.4 * len(locs) or not want:
+        return locs, []
+    return ([loc for loc, t in zip(locs, tags) if t in ("", want)],
+            [loc for loc, t in zip(locs, tags) if t not in ("", want)])
+
+
 Stop = Callable[[], Awaitable[str]]
 
 
@@ -160,10 +211,12 @@ class SitemapBudget:
 
 
 async def iter_sitemap_urls(url: str, settings: EffectiveSettings, *, budget: SitemapBudget,
-                            blocking: Blocking = inline, depth: Optional[int] = None) -> AsyncIterator[list[str]]:
+                            blocking: Blocking = inline, depth: Optional[int] = None,
+                            languages: Sequence[str] = ()) -> AsyncIterator[list[str]]:
     """The page URLs of a sitemap or sitemap index, one urlset at a time, so a reader can stop
     as soon as it has enough: two levels, ``sitemapMaxChildren`` children of an index, within
-    ``budget``. Parsing goes through ``blocking`` (off the event loop in a job)."""
+    ``budget``. With ``languages``, an index of per-language copies is read in the first of them
+    it has first (``language_children``). Parsing goes through ``blocking`` (off the event loop in a job)."""
     depth = constant("sitemapMaxDepth") if depth is None else depth
     if depth <= 0 or not await budget.allow():
         return
@@ -174,21 +227,31 @@ async def iter_sitemap_urls(url: str, settings: EffectiveSettings, *, budget: Si
         return
     kind, locs = await blocking(parse_sitemap_xml, resp.text)
     if kind == "index":
-        for loc in locs[: int(constant("sitemapMaxChildren"))]:
-            async for batch in iter_sitemap_urls(loc, settings, budget=budget, blocking=blocking, depth=depth - 1):
-                yield batch
-            if budget.stopped:
-                return
+        first, later = language_children(locs, list(languages))
+        left = int(constant("sitemapMaxChildren"))
+        listed = False
+        for group in (first, later):
+            if listed:
+                break
+            for loc in group[:left]:
+                left -= 1
+                async for batch in iter_sitemap_urls(loc, settings, budget=budget, blocking=blocking, depth=depth - 1,
+                                                     languages=languages):
+                    listed = listed or bool(batch)
+                    yield batch
+                if budget.stopped:
+                    return
     elif kind == "urlset":
         yield list(locs)
 
 
 async def sitemap_urls(url: str, settings: EffectiveSettings, *, blocking: Blocking = inline,
-                       depth: Optional[int] = None, budget: Optional[SitemapBudget] = None) -> list[str]:
+                       depth: Optional[int] = None, budget: Optional[SitemapBudget] = None,
+                       languages: Sequence[str] = ()) -> list[str]:
     """Every page URL of a sitemap or sitemap index, within ``budget`` (a fresh one when none)."""
     urls: list[str] = []
     async for batch in iter_sitemap_urls(url, settings, budget=budget or SitemapBudget(), blocking=blocking,
-                                         depth=depth):
+                                         depth=depth, languages=languages):
         urls.extend(batch)
     return urls
 
@@ -211,18 +274,21 @@ def _nav_links(html: str, page_url: str, selector: str) -> list[tuple[str, str]]
     return out
 
 
-async def _from_sitemaps(base: str, configured: list[str], settings: EffectiveSettings,
-                         blocking: Blocking, keep: Optional[Callable[[str], bool]] = None) -> tuple[list[str], str]:
+async def _from_sitemaps(url: str, configured: list[str], settings: EffectiveSettings, blocking: Blocking,
+                         keep: Optional[Callable[[str], bool]] = None) -> tuple[list[str], str]:
     """The first sitemap that lists pages (that ``keep`` accepts, when given): the resource's own
     URLs (§6.5; they replace ``/sitemap.xml`` at the resource's URL, which is read only when none
-    is set), and the ones a ``Sitemap:`` line of robots.txt names."""
+    is set), and the ones a ``Sitemap:`` line of robots.txt names. An index of per-language
+    copies is read in the language the map will keep first (``preferred_languages``)."""
+    base = url.rstrip("/")
     named = [urllib.parse.urljoin(base + "/", sm.strip()) for sm in configured if sm.strip()]
     named += (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
     if not configured:
         named.append(f"{base}/sitemap.xml")
     budget = SitemapBudget()
+    languages = preferred_languages(url, settings)
     for sm in dict.fromkeys(named):
-        urls = await sitemap_urls(sm, settings, blocking=blocking, budget=budget)
+        urls = await sitemap_urls(sm, settings, blocking=blocking, budget=budget, languages=languages)
         if keep is not None:
             urls = [u for u in urls if keep(u)]
         if urls or budget.stopped:
@@ -259,7 +325,7 @@ async def build_wiki(url: str, settings: EffectiveSettings, *, home_html: str = 
     """sitemap.xml, else mkdocs.yml's nav, else the links of the rendered menu."""
     base = url.rstrip("/")
     cap = settings.int("knownTypes.maxMapEntries.wiki")
-    urls, index_url = await _from_sitemaps(base, settings.list("type.wiki.sitemapUrls"), settings, blocking)
+    urls, index_url = await _from_sitemaps(url, settings.list("type.wiki.sitemapUrls"), settings, blocking)
     if urls:
         urls = language_filter(urls, settings)
         entries = [Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u) for u in urls]
@@ -343,7 +409,7 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
             return MapResult("sphinx-docs", entries, meta={"indexUrl": idx_url}, index_kind="searchindex",
                              index_url=idx_url, truncated=cut, report_stop=_docs_stop("searchindex", entries, cut))
 
-    urls, sitemap_url = await _from_sitemaps(base, [], settings, blocking, keep=in_start_folder(url))
+    urls, sitemap_url = await _from_sitemaps(url, [], settings, blocking, keep=in_start_folder(url))
     entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u)
                             for u in language_filter(urls, settings)], cap)
     start = fetch.canonical_url(url)
@@ -387,7 +453,7 @@ async def build_gitbook(url: str, settings: EffectiveSettings, *, home_html: str
     succeeded; here the plain page is read first and the browser only when it has none)."""
     base = url.rstrip("/")
     cap = settings.int("knownTypes.maxMapEntries.gitbook")
-    urls, index_url = await _from_sitemaps(base, settings.list("type.gitbook.sitemapUrls"), settings, blocking)
+    urls, index_url = await _from_sitemaps(url, settings.list("type.gitbook.sitemapUrls"), settings, blocking)
     if urls:
         urls = language_filter(urls, settings)
         entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=False), "sitemap", u) for u in urls], cap)
