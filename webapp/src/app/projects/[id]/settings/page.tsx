@@ -1,6 +1,5 @@
 'use client'
 
-import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { ProjectForm } from '@/components/projects'
 import { useProjectById, useUpdateProject } from '@/hooks/useProjects'
@@ -80,15 +79,11 @@ export default function ProjectSettingsPage() {
 
   return (
     <div className={styles.container}>
-      {showActivity && (
-        <nav className={styles.pageLinks} aria-label="Project pages">
-          <Link href={`/projects/${encodeURIComponent(projectId)}/activity`}>Activity</Link>
-        </nav>
-      )}
       <ProjectForm
         mode="edit"
         initialData={project}
         projectIdFromRoute={projectId}
+        activityHref={showActivity ? `/projects/${encodeURIComponent(projectId)}/activity` : undefined}
         onSubmit={handleSubmit}
         onSaveAndStay={handleSaveAndStay}
         onCancel={handleCancel}

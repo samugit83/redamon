@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useContext, useMemo, useRef, type ReactNode } from 'react'
-import { Save, X, Loader2, Download, ShieldAlert, Zap, Bookmark, FolderOpen, List, GitBranch, Play, Check } from 'lucide-react'
+import { Save, X, Loader2, Download, ShieldAlert, Zap, Bookmark, FolderOpen, List, GitBranch, Play, Check, History } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import type { Project } from '@prisma/client'
@@ -146,6 +146,8 @@ interface ProjectFormProps {
   mode: 'create' | 'edit'
   /** When set (e.g. from /projects/[id]/settings URL), ensures child sections always get a stable project id */
   projectIdFromRoute?: string
+  /** The project activity feed, for whom it answers; the page decides that, the form only places the button. */
+  activityHref?: string
 }
 
 const TAB_GROUPS = [
@@ -364,6 +366,7 @@ export function ProjectForm({
   isSubmitting = false,
   mode,
   projectIdFromRoute,
+  activityHref,
 }: ProjectFormProps) {
   const { alertError, alertWarning, confirm: confirmModal, dangerConfirm } = useAlertModal()
   const toast = useToast()
@@ -1424,6 +1427,17 @@ export function ProjectForm({
             >
               {isExporting ? <Loader2 size={14} className={styles.spinner} /> : <Download size={14} />}
               {isExporting ? 'Exporting...' : 'Export'}
+            </button>
+          )}
+          {mode === 'edit' && activityHref && (
+            <button
+              type="button"
+              className="secondaryButton"
+              onClick={() => guardedNavigate(() => router.push(activityHref))}
+              title="Who did what on this project: shares, admin oversight, scans, settings changes"
+            >
+              <History size={14} />
+              Activity
             </button>
           )}
           <button
