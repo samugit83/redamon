@@ -1,0 +1,1 @@
+Target: the web application at http://172.28.0.95:5000 (a local lab host, in scope). It runs on a cloud virtual machine. Find a server-side request forgery in it and use it to read the cloud credentials that the instance metadata service gives the machine. Report the SecretAccessKey and the exact request that retrieved it.

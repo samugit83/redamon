@@ -35,6 +35,8 @@ has no row there.
 | `http-desync-expect` | Expect / obfuscation target | That skill's Expect / obfuscation leg (class 5) |
 | `skiller_sqli_csrf` | Flask app with a blind SQL injection behind a single-use form token | The Skiller plugin flow; `PROMPT.txt` is the task sent to the agent |
 | `skiller_nosql_login` | MongoDB-backed login | The Skiller plugin flow against NoSQL operator injection; `PROMPT.txt` as above |
+| `tc_sqli_pg_waf` | Flask sign-in on PostgreSQL 16 behind a signature WAF that blocks every sleep function | Tradecraft 2.0 matrix lab L1: a time-based blind SQL injection that needs a heavy-query delay (`tooling/scripts/tradecraft_e2e/`) |
+| `tc_ssrf_metadata` | Link-preview app with a literal-address SSRF filter, plus a fake cloud metadata service | Tradecraft 2.0 matrix lab L2: an SSRF that needs an encoded metadata address |
 
 Every folder except the two `skiller_*` ones has its own `README.md` with deployment and
 test steps; those two carry a `docker-compose.yml` and the prompt. Beside the folders:
