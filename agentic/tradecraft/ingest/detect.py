@@ -37,8 +37,12 @@ _SPHINX_COMPANIONS = (
 # A generator meta naming none of these is another tool's page, whatever Sphinx-like file it loads.
 _SPHINX_GENERATORS = ("docutils", "sphinx", "docusaurus")
 _DOCUSAURUS_MARKERS = ('name="generator" content="docusaurus', "docusaurus.config")
-_ATTR_RE = re.compile(r"""([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
-# A generator meta sits near the top of the head: these bounds keep reading a hostile page linear.
+# A name starts only where a run of name characters starts: tried from every position of a long
+# run, the pattern backtracks the whole run each time (quadratic in the tag, about 13 s on a page at
+# the cap, on the job's event loop).
+_ATTR_RE = re.compile(r"""(?<![a-z-])([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
+# A generator meta sits near the top of the head: with the anchored name, these bounds keep reading
+# a hostile page linear.
 _MAX_META_TAGS = 1000
 _MAX_META_TAG_CHARS = 2000
 _GITBOOK_MARKERS = (

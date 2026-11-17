@@ -130,6 +130,22 @@ def test_generator_metas_are_read_in_one_bounded_pass():
     assert generators('<meta name="generator" content="' + "x" * 3000 + '">') == []
 
 
+def test_a_hostile_homepage_at_the_page_cap_is_detected_in_well_under_a_second():
+    """Tags at the length bound filling the 1,000,000-byte page cap with one run of attribute-name
+    letters, of hyphens, or a quoted value never closed: an attribute pattern retried from every
+    position of such a run took about 13 s here, on the job's event loop. A bound on the work,
+    not a measure of the clock: the scan is linear and takes milliseconds."""
+    import time
+
+    for why, inner in {"letters": "a" * 1990, "hyphens": "-" * 1990,
+                       "unclosed value": "a" * 900 + '="' + "b" * 1000}.items():
+        tags = f"<meta {inner}>" * (1_000_000 // (len(inner) + 7))
+        page = f"<html><head>{tags}</head><body><p>{'x' * 500}</p></body></html>"
+        started = time.perf_counter()
+        assert detect("https://x.tc-fixture.test/", page, 200, EffectiveSettings()) == "agentic-crawl", why
+        assert time.perf_counter() - started < 1.0, why
+
+
 def test_markers_live_in_the_raw_html_not_the_markdown():
     # The mdBook marker is a comment: cleaning drops it, so detection reads the raw page.
     html = "<!-- Book generated using mdBook --><html><body><p>hi</p></body></html>"
