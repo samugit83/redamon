@@ -692,6 +692,38 @@ def test_a_read_page_never_comes_back_in_a_later_block():
     assert checks.read_pages(recorded_trace()) == {"payloadsallthethings:412"}
 
 
+def test_a_lookup_by_section_path_reads_the_page_at_its_url():
+    # reader._page prints a lookup by section path in the resource:/url: shape with the URL as asked,
+    # and marks read the entry stored at its canonical URL: that is a read of the block's page.
+    reader = _agent("tradecraft.library.reader")
+    url = "https://book.hacktricks.wiki/en/pentesting-web/sql-injection/index.html"
+    asked = "HTTPS://Book.HackTricks.wiki:443/en/pentesting-web/sql-injection/index.html#union-based"
+
+    def with_read(read_url, slug="hacktricks"):
+        trace = recorded_trace()
+        trace["pages"]["hacktricks:77"]["url"] = url
+        trace["tool_calls"].append({"tool": "tradecraft_lookup", "success": True,
+                                    "args": {"resource": slug, "section_path": "SQL injection › Union based"},
+                                    "output": reader.render(slug, read_url, "Union based", "live", "UNION SELECT")})
+        return trace
+
+    trace = with_read(asked)
+    assert "hacktricks:77" in checks.read_pages(trace)
+    got = _arm_a(trace)["no_read_page_shown_again"]
+    assert got.ok is False and got.detail == "hacktricks:77 (read, never marked read)"
+    # Another page's URL, or the same URL in another resource, is not that page.
+    assert "hacktricks:77" not in checks.read_pages(with_read(url.replace("sql-injection", "xss")))
+    assert "hacktricks:77" not in checks.read_pages(with_read(url, slug="hacktricks-cloud"))
+
+
+def test_the_runners_canonical_url_is_the_agents():
+    fetch = _agent("tradecraft.ingest.fetch")
+    for url in ("HTTPS://Example.COM:443/a/B?x=1#frag", "http://example.com:80", "http://example.com:8080/x",
+                "https://example.com./p", "http://[::1]:80/x", "https://[2001:db8::1]:8443/y?z", "not a url",
+                "http://example.com:99999/", "  https://example.com/a  ", "https://example.com"):
+        assert checks.canonical_url(url) == fetch.canonical_url(url), url
+
+
 def test_one_search_round_per_think():
     # Library now searches at most once a think: more rounds than thinks is a broken count.
     got = _arm_a(recorded_trace())["one_search_round_per_think"]
@@ -1992,10 +2024,15 @@ def test_a_renamed_or_spaced_plan_file_is_still_a_plan_file(tmp_path):
     # holds it carries the plan's removed lines. A path with a space is one name, not two.
     old_body = "".join(f"LINE_{i} = {i}\n" for i in range(20))
     spaced = "agentic/my module.py"
+    # git quotes a non-ASCII name (core.quotePath) unless asked for NUL-separated output.
+    accented = "agentic/café.py"
     root, base, tip = _repo_with_plan(
-        tmp_path, {"agentic/old_name.py": old_body, spaced: "A = 1\n"},
-        {"agentic/new_name.py": old_body + "ADDED = 1\n", spaced: "A = 1\nPLAN = 2\n"},
+        tmp_path, {"agentic/old_name.py": old_body, spaced: "A = 1\n", accented: "C = 1\n"},
+        {"agentic/new_name.py": old_body + "ADDED = 1\n", spaced: "A = 1\nPLAN = 2\n", accented: "C = 1\nD = 2\n"},
         moves=[("agentic/old_name.py", "agentic/new_name.py")])
+    tree = runner.tip_files(tip, ["agentic/"], root=root)
+    assert accented in tree and spaced in tree and "agentic/new_name.py" in tree
+    (root / accented).write_text("C = 1\nD = 2\n")  # the tip's copy: no difference
     # The checkout holds the base: the old file is still there; the tip's new one is made, and the
     # spaced file lacks the plan's line.
     (root / "agentic" / "new_name.py").write_text(old_body + "ADDED = 1\n")
@@ -2003,7 +2040,7 @@ def test_a_renamed_or_spaced_plan_file_is_still_a_plan_file(tmp_path):
     with mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
         runner.record_build("before", path=path, root=root)
     rec = json.loads(path.read_text())
-    assert {"agentic/old_name.py", "agentic/new_name.py", spaced} <= set(rec["plan_files"])
+    assert {"agentic/old_name.py", "agentic/new_name.py", spaced, accented} <= set(rec["plan_files"])
     assert set(rec["differences"]) == {"agentic/old_name.py", spaced}
     assert rec["shared_checks"]["agentic/old_name.py"]["removed_absent"] is False
     assert rec["shared_checks"][spaced]["added_present"] is False

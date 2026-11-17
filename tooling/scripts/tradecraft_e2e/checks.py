@@ -21,6 +21,7 @@ The text formats parsed here are the agent's (``agentic/tradecraft/library/types
 from __future__ import annotations
 
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Optional, Sequence
 
@@ -104,6 +105,10 @@ class Read:
     section: Optional[str]
     source: str
     text: str
+    # A read in the reader's resource:/url: shape (a live read, or a lookup by section path): its
+    # resource and the URL it printed, which name the page it read when no page ID is printed.
+    resource: str = ""
+    url: str = ""
 
 
 @dataclass
@@ -175,7 +180,8 @@ def parse_result(tool: str, output: str) -> TcResult:
             title = "repository README"
         page = f"{live['slug']}:{title or fields.get('url', '')}"
         path = title if readme else " ".join(v for v in (title, fields.get("url", "")) if v)
-        read = Read(page, path, title or None, fields.get("source", ""), "\n".join(lines[text_at:]))
+        read = Read(page, path, title or None, fields.get("source", ""), "\n".join(lines[text_at:]),
+                    resource=live["slug"], url=fields.get("url", ""))
         return TcResult(tool, "read", pages=[PageRef(page, path)], read=read, body=body)
     m = _READ_PAGE.match(first)
     if m:
@@ -396,11 +402,37 @@ def check_library_now(trace: Mapping, planted: Sequence[str], prompt: str) -> li
     ]
 
 
+def canonical_url(url: str) -> str:
+    """The URL a page is stored under, as the agent writes it (``ingest.fetch.canonical_url``):
+    scheme and host lowercased, default port and fragment dropped, path and query as written."""
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+        scheme = parts.scheme.lower()
+        hostname = (parts.hostname or "").lower().rstrip(".")
+        port = parts.port
+    except ValueError:
+        return url
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+        host = f"{host}:{port}"
+    return urllib.parse.urlunsplit((scheme, host, parts.path or "/", parts.query, ""))
+
+
 def read_pages(trace: Mapping) -> set:
     """The pages the run read, as the agent counts them (run_state.record_seen): a lookup's page
-    and the librarian's picks; a search's results are not read."""
+    and the librarian's picks; a search's results are not read. A lookup the reader prints in the
+    resource:/url: shape (by section path) marks the stored entry at its canonical URL: it counts
+    as a read of each page of that resource whose card has that URL."""
     results = tradecraft_results(trace)
-    return {r.read.page_id for r in results if r.read} | {p.page_id for r in results for p in r.picks}
+    pages = {r.read.page_id for r in results if r.read} | {p.page_id for r in results for p in r.picks}
+    by_url: dict = {}
+    for page, card in (trace.get("pages") or {}).items():
+        if (card or {}).get("url"):
+            by_url.setdefault((page.rsplit(":", 1)[0], card["url"]), set()).add(page)
+    for r in results:
+        if r.read and r.read.url:
+            pages |= by_url.get((r.read.resource, canonical_url(r.read.url)), set())
+    return pages
 
 
 def in_blocks(trace: Mapping, slug: str) -> list[str]:
