@@ -1,7 +1,7 @@
 /**
  * Global Settings → LLM Providers → "Models by feature".
  *
- * The grid shares ONE /api/models call across its eleven pickers (each call
+ * The grid shares ONE /api/models call across its ten pickers (each call
  * makes the agent list every provider's models). Each change saves only its
  * own key. And the API Keys save must never carry `featureModels`: a stale
  * copy riding that save would put back models changed since the page loaded.
@@ -114,10 +114,28 @@ async function tile(id: string) {
 }
 
 describe('Models by feature section', () => {
-  test('eleven tiles from ONE /api/models call, with their saved state', async () => {
+  test('the Tradecraft librarian tile shows only with Tradecraft 2.0 on (T7.1, R-I5): eleven tiles then, ten with it off', async () => {
+    const answers = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => (url === '/api/users/user-1/tradecraft-settings'
+      ? json(200, { v2Enabled: true })
+      : answers(url, init)))
+    renderPage()
+    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(11))
+    expect(document.querySelector('[data-feature="tradecraft_librarian"]')).not.toBeNull()
+    cleanup()
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => (url === '/api/users/user-1/tradecraft-settings'
+      ? json(200, { v2Enabled: false })
+      : answers(url, init)))
+    renderPage()
+    await tile('triage')
+    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(10))
+    expect(document.querySelector('[data-feature="tradecraft_librarian"]')).toBeNull()
+  })
+
+  test('ten tiles from ONE /api/models call, with their saved state', async () => {
     renderPage()
     const triage = await tile('triage')
-    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(11))
+    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(10))
     expect(calls('/api/models')).toHaveLength(1)
     expect(JSON.parse((calls('/api/models')[0][1] as RequestInit).body as string)).toEqual({ userId: 'user-1' })
 
@@ -135,7 +153,7 @@ describe('Models by feature section', () => {
     modelsAnswer = () => new Promise(() => {})
     renderPage()
     await screen.findByText('Models by feature')
-    expect(await screen.findAllByTestId('feature-model-skeleton')).toHaveLength(11)
+    expect(await screen.findAllByTestId('feature-model-skeleton')).toHaveLength(10)
     expect(document.querySelector('[data-feature]')).toBeNull()
   })
 
@@ -161,8 +179,8 @@ describe('Models by feature section', () => {
     const pluginNotice = () => screen.getByText(/Plugin items could not be loaded \(HTTP 404\)/).closest('[role="alert"]') as HTMLElement
     await waitFor(() => expect(within(pluginNotice()).getByRole('button', { name: /Retry/ })).toBeInTheDocument())
     const featureRetries = () => screen.queryAllByRole('button', { name: /Retry/ }).filter(b => !pluginNotice().contains(b))
-    expect(featureRetries()).toHaveLength(11)
-    expect(screen.getAllByRole('button', { name: /Retry/ })).toHaveLength(12)
+    expect(featureRetries()).toHaveLength(10)
+    expect(screen.getAllByRole('button', { name: /Retry/ })).toHaveLength(11)
     expect(screen.queryByText('Choose a model')).toBeNull()
 
     modelsAnswer = async () => ({ status: 200, body: MODELS })

@@ -14,7 +14,8 @@ import {
 import { getDisplayName } from '@/app/graph/components/AIAssistantDrawer/modelUtils'
 import { ApiError, fetchJson, formatApiError, toApiError } from '@/lib/apiError'
 import { forbiddenPermission } from '@/components/auth/ForbiddenNotice'
-import { LLM_FEATURES, isPluginFeatureId, modelAllowedForFeature, type PluginFeatureId } from '@/lib/llmFeatures'
+import { LLM_FEATURES, isPluginFeatureId, modelAllowedForFeature, type LlmFeature, type PluginFeatureId } from '@/lib/llmFeatures'
+import { tradecraftClient } from '@/lib/tradecraft/client'
 import { isLoopModel } from '@/lib/agentInTheLoop'
 import styles from './FeatureModelsSection.module.css'
 
@@ -89,7 +90,18 @@ export function FeatureModelsSection({ userId, providersCount, providersLoading 
   const [plugins, setPlugins] = useState<PluginFeature[]>([])
   const [pluginsError, setPluginsError] = useState<ApiError | null>(null)
   const [pluginsGeneration, setPluginsGeneration] = useState(0)
+  const [tradecraftV2, setTradecraftV2] = useState(false)
   const noProviders = !providersLoading && providersCount === 0
+
+  // The librarian works only on Tradecraft 2.0 resources: its tile shows once the account has 2.0
+  // on, so with the switch off Models by feature is unchanged (R-I5). A failed read keeps it hidden.
+  useEffect(() => {
+    if (!userId) return
+    let live = true
+    tradecraftClient.getSwitch(userId).then(r => { if (live) setTradecraftV2(r.v2Enabled === true) }).catch(() => undefined)
+    return () => { live = false }
+  }, [userId])
+  const features: readonly LlmFeature[] = tradecraftV2 ? LLM_FEATURES : LLM_FEATURES.filter(f => f.id !== 'tradecraft_librarian')
 
   useEffect(() => {
     if (!userId) return
@@ -164,7 +176,7 @@ export function FeatureModelsSection({ userId, providersCount, providersLoading 
   const loading = !noProviders && (providersLoading || savedState === 'loading' || modelsState === 'loading')
 
   const tiles: TileFeature[] = [
-    ...LLM_FEATURES.map(f => ({ ...f, allowed: (id: string) => modelAllowedForFeature(f.id, id) })),
+    ...features.map(f => ({ ...f, allowed: (id: string) => modelAllowedForFeature(f.id, id) })),
     ...plugins.map(p => ({
       id: p.featureId, label: p.label, description: p.description, plugin: true,
       allowed: (id: string) => !isLoopModel(id),
@@ -183,7 +195,7 @@ export function FeatureModelsSection({ userId, providersCount, providersLoading 
         <div className={styles.empty}>Add an LLM provider above to choose models for these features</div>
       ) : loading ? (
         <div className={styles.grid} aria-busy="true" aria-label="Loading models by feature">
-          {LLM_FEATURES.map(f => (
+          {features.map(f => (
             <div key={f.id} className={`${styles.tile} ${styles.tileSkeleton}`} data-testid="feature-model-skeleton">
               <span className={`${styles.skel} ${styles.skelTitle}`} />
               <span className={`${styles.skel} ${styles.skelLine}`} />
