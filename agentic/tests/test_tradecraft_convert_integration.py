@@ -86,6 +86,9 @@ class Pg:
     async def row(self, rid):
         return (await self.sql("SELECT * FROM user_tradecraft_resources WHERE id = %s", rid))[0]
 
+    async def row_of(self, table, key):
+        return (await self.sql(f"SELECT * FROM {table} WHERE id = %s", key))[0]
+
     async def entries(self, rid, generation=None):
         rows = await self.sql("SELECT e.* FROM tradecraft_entries e JOIN user_tradecraft_resources r ON r.id = e.resource_id "
                               "WHERE e.resource_id = %s AND e.generation = COALESCE(%s, r.generation) ORDER BY e.page_id",
@@ -133,10 +136,10 @@ async def test_every_shape_converts(pg, runner):
                             rtype="agentic-crawl", slug="blog")
     cves = await pg.legacy(uid, "https://github.com/acme/cves", {"owner": "acme", "repo": "cves", "branch": "main"},
                            rtype="cve-poc-db", slug="cves")
-    empty = await pg.legacy(uid, "https://other.tc-fixture.test/", {}, rtype="agentic-crawl", slug="other")
+    empty_nav = await pg.legacy(uid, "https://other.tc-fixture.test/", {"nav": []}, rtype="agentic-crawl", slug="other")
 
     assert await converted(runner, uid) == 5
-    for rid in (wiki, repo, links, cves, empty):
+    for rid in (wiki, repo, links, cves, empty_nav):
         row = await pg.row(rid)
         assert row["map_version"] == 2 and row["active_job_id"] is None and row["storage_mode"] == "live"
         assert row["legacy_map_hash"] == legacy_map.map_hash(row["sitemap"])
@@ -154,7 +157,8 @@ async def test_every_shape_converts(pg, runner):
     assert (await pg.entries(repo))[0]["breadcrumb"] == ["SQL Injection"]
     assert [e["url"] for e in await pg.entries(links)] == ["https://blog.tc-fixture.test/xss"]
     assert await pg.entries(cves) == []
-    assert [e["title"] for e in await pg.entries(empty)] == ["other.tc-fixture.test (homepage)"]
+    # A 1.x map with no entry: the start page, the page 1.x read for it.
+    assert [e["title"] for e in await pg.entries(empty_nav)] == ["other.tc-fixture.test (homepage)"]
     # Nothing was downloaded, and the account's one convert job ended.
     assert runner.fetcher.requests == []
     [job] = await pg.jobs(uid, "convert")
@@ -335,3 +339,130 @@ async def test_a_map_written_during_the_conversion_is_not_lost(pg, runner, monke
     monkeypatch.setattr(convert, "_derive_and_write", real)
     assert await converted(runner, uid) == 1
     assert [e["title"] for e in await pg.entries(rid)] == ["Kerberoasting"]
+
+
+async def test_a_row_with_no_1x_map_is_never_converted(pg, runner):
+    """Review finding 3: a resource added through 2.0 and never ingested (an add that failed, was
+    cancelled or saved with skipVerify) and a 1.x row never verified both have no 1.x map: neither
+    becomes a "(homepage)" legacy card, nor offers Save & refresh all."""
+    uid = await pg.user()
+    added = await pg.legacy(uid, "https://docs.tc-fixture.test/", {}, rtype="agentic-crawl", slug="added")
+    assert await converted(runner, uid) == 0
+    row = await pg.row(added)
+    assert (row["map_version"], row["generation"]) == (1, 0)
+    assert await pg.entries(added) == [] and await pg.jobs(uid, "convert") == []
+
+
+async def refreshed_meanwhile(pg, rid, sitemap):
+    """What a 2.0 Refresh leaves: a new live generation with a page, map version 3, and the 1.x map
+    it writes, identical to the one 1.x wrote (TD-18)."""
+    row = await pg.row(rid)
+    gen = row["generation"] + 1
+    store = Store()
+    url = row["url"].rstrip("/") + "/refreshed"
+    ids = await store.allocate_page_ids(row["user_id"], rid, [url])
+    await store.write_entries(row["user_id"], rid, gen, [{"page_id": ids[url], "url": url, "title": "From the refresh"}])
+    await pg.sql("UPDATE user_tradecraft_resources SET generation = %s, map_version = 3, legacy_map_hash = %s, "
+                 "sitemap = %s::jsonb WHERE id = %s", gen, legacy_map.map_hash(sitemap), json.dumps(sitemap), rid)
+    return gen
+
+
+async def test_a_refresh_that_finished_before_the_claim_is_kept(pg, runner, monkeypatch):
+    """Review finding 5 (= second review, finding 1): a 2.0 Refresh that finishes between the
+    conversion's start and its claim, with a 1.x map identical to the old one (a CVE archive's
+    always is), is never converted over: its generation, version and pages stay."""
+    uid = await pg.user()
+    cve_map = {"owner": "acme", "repo": "cves", "branch": "main"}
+    wiki = await pg.legacy(uid, WIKI, WIKI_MAP)
+    cves = await pg.legacy(uid, "https://github.com/acme/cves", cve_map, rtype="cve-poc-db", slug="cves")
+    real_claim = convert.claim
+    refreshed = {}
+
+    async def claim_after_a_refresh(store, user_id, row, job_id):
+        if row["id"] not in refreshed:
+            refreshed[row["id"]] = await refreshed_meanwhile(pg, row["id"], row["sitemap"])
+        return await real_claim(store, user_id, row, job_id)
+
+    monkeypatch.setattr(convert, "claim", claim_after_a_refresh)
+    assert await converted(runner, uid) == 2
+    for rid in (wiki, cves):
+        row = await pg.row(rid)
+        assert (row["map_version"], row["generation"], row["active_job_id"]) == (3, refreshed[rid], None)
+        assert [e["title"] for e in await pg.entries(rid)] == ["From the refresh"]
+    monkeypatch.setattr(convert, "claim", real_claim)
+    assert await converted(runner, uid) == 0, "nothing is left to convert"
+
+
+async def test_a_row_read_before_a_change_is_never_claimed(pg, runner):
+    """The claim's guard: a row whose generation moved since it was read is not claimed (and the
+    swap's own guard holds the same pair whatever writes the row afterwards)."""
+    uid = await pg.user()
+    rid = await pg.legacy(uid, WIKI, WIKI_MAP)
+    [row] = await convert.resources_to_convert(Store(), uid)
+    stale = dict(row, generation=row["generation"] - 1)
+    jid = await convert.open_job(Store(), uid, runner.instance, runner.lease_until())
+    assert await convert.convert_titles(runner, uid, jid, stale, {}) == "resource_changed"
+    assert (await pg.row(rid))["map_version"] == 1
+
+
+async def test_a_conversion_cut_by_a_fast_restart_resumes(pg, runner):
+    """Review finding 2: the previous process died mid-conversion and the agent is back within the
+    lease; the boot sweep skips the account, and the recovery one lease later fails the dead job
+    and sweeps again."""
+    uid = await pg.user()
+    rid = await pg.legacy(uid, WIKI, WIKI_MAP)
+    dead = f"tc-j-{uuid.uuid4().hex[:12]}"
+    live = datetime.now(timezone.utc) + timedelta(seconds=60)
+    await pg.sql("INSERT INTO tradecraft_ingestion_jobs (id, user_id, kind, status, lease_until, owner_instance) "
+                 "VALUES (%s, %s, 'convert', 'running', %s, 'agent-dead')", dead, uid, live)
+    await pg.sql("UPDATE user_tradecraft_resources SET active_job_id = %s WHERE id = %s", dead, rid)
+    assert await converted(runner, uid) == 0, "the dead process's lease is still live"
+    await pg.sql("UPDATE tradecraft_ingestion_jobs SET lease_until = now() - interval '1 second' WHERE id = %s", dead)
+    assert await jobs.recover_and_sweep(runner)
+    await settle(runner)
+    assert (await pg.row(rid))["map_version"] == 2
+    assert (await pg.row_of("tradecraft_ingestion_jobs", dead))["error_code"] == "agent_restarted"
+
+
+async def test_a_resource_deleted_during_the_conversion_stops_only_itself(pg, runner, monkeypatch):
+    """Review finding 2: deleting one resource releases its claim (the webapp's cancelJob for the
+    account's conversion, T9.1) and the conversion goes on with the others."""
+    uid = await pg.user()
+    first = await pg.legacy(uid, WIKI, WIKI_MAP, slug="a")
+    second = await pg.legacy(uid, "https://blog.tc-fixture.test/", {"links": [{"title": "Post", "path": "p"}]},
+                             rtype="agentic-crawl", slug="b")
+    ordered = sorted([first, second])
+    real = convert._derive_and_write
+
+    async def deleted_meanwhile(state):
+        await real(state)
+        if state.resource_id == ordered[0]:
+            await pg.sql("UPDATE user_tradecraft_resources SET active_job_id = NULL WHERE id = %s", ordered[0])
+            await pg.sql("DELETE FROM user_tradecraft_resources WHERE id = %s", ordered[0])
+
+    monkeypatch.setattr(convert, "_derive_and_write", deleted_meanwhile)
+    assert await converted(runner, uid) == 2
+    assert await pg.sql("SELECT 1 FROM user_tradecraft_resources WHERE id = %s", ordered[0]) == []
+    assert (await pg.row(ordered[1]))["map_version"] == 2
+    [job] = await pg.jobs(uid, "convert")
+    assert (job["status"], job["cancel_requested"]) == ("succeeded", False)
+
+
+async def test_an_interrupted_conversion_is_not_recorded_as_succeeded(pg, runner, monkeypatch):
+    """Review finding 6: the agent stopping mid-conversion leaves the job running for its lease to
+    run out (recovery then fails it with agent_restarted), never "succeeded"."""
+    uid = await pg.user()
+    await pg.legacy(uid, WIKI, WIKI_MAP)
+    stuck = asyncio.Event()
+
+    async def never_ends(*_a, **_k):
+        await stuck.wait()
+
+    monkeypatch.setattr(convert, "convert_one", never_ends)
+    assert await convert.start(runner, uid) == 1
+    await asyncio.sleep(0.2)
+    for task in [t for t in runner._background if t.get_name().startswith("tradecraft-convert")]:
+        task.cancel()
+    await settle(runner)
+    [job] = await pg.jobs(uid, "convert")
+    assert job["status"] == "running" and job["error_code"] == ""

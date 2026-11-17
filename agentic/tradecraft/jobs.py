@@ -483,16 +483,17 @@ class JobRunner:
             logger.info(f"[tradecraft] job {row['id']} failed code=agent_restarted")
         return len(failed)
 
-    def schedule_second_recovery(self) -> None:
-        """A job of the previous process whose lease was still live at boot is failed once it
-        runs out, so its card does not read "running" until someone clicks Refresh."""
+    def schedule_recovery(self, retries: int = 0) -> None:
+        """Recovery once more, one lease period later: a job of the previous process whose lease
+        was still live at boot is failed once it runs out, so its card does not read "running"
+        until someone clicks Refresh, and the conversion sweep runs again for what such a job held
+        (a conversion cut by a restart faster than its lease, T9.1). When the store could not be
+        reached, again, at most ``retries`` more times."""
 
         async def later():
             await tc_clock.sleep(self.lease_sec + self.renew_sec)
-            try:
-                await self.recover()
-            except Exception as exc:
-                logger.warning(f"[tradecraft] second recovery failed error={type(exc).__name__}")
+            if not await recover_and_sweep(self) and retries > 0:
+                self.schedule_recovery(retries - 1)
 
         self._spawn(later, "tradecraft-recover")
 
@@ -529,19 +530,37 @@ def set_runner_for_tests(runner: Optional[JobRunner]) -> None:
     _runner = runner
 
 
-async def recover_on_boot() -> None:
-    """Called once from the agent's start-up. Never raises: a store that cannot be reached
-    (no DATABASE_URL in a hand-run agent) leaves recovery to the next start. Then the boot
-    sweep converts the accounts' unconverted resources in the background (T9.1): after the
-    recovery, so a conversion that died with the previous process holds no claim any more."""
-    runner = get_runner()
+# Recoveries retried while the store cannot be reached at boot, one lease period apart (about 13
+# minutes): on the first start of an upgrade the agent can come up before the webapp's start-up
+# has pushed the schema the store reads.
+BOOT_RECOVERY_RETRIES = 10
+
+
+async def recover_and_sweep(runner: "JobRunner", *, background_sweep: bool = False) -> bool:
+    """Fails the expired jobs, then runs the conversion sweep (T9.1): after the recovery, so a
+    conversion that died with the previous process holds no claim any more. False, and no
+    sweep, when the store cannot be reached. Never raises."""
     try:
         count = await runner.recover()
-        logger.info(f"[tradecraft] boot recovery failed {count} job(s) code=agent_restarted")
+        logger.info(f"[tradecraft] recovery failed {count} job(s) code=agent_restarted")
     except Exception as exc:
-        logger.warning(f"[tradecraft] boot recovery skipped error={type(exc).__name__}")
-        return
-    runner.schedule_second_recovery()
+        logger.warning(f"[tradecraft] recovery skipped error={type(exc).__name__}")
+        return False
     from tradecraft import convert  # it imports the pipeline's stages: only once the agent runs
 
-    runner.spawn(lambda: convert.boot_sweep(runner), "tradecraft-convert-sweep")
+    if background_sweep:
+        runner.spawn(lambda: convert.boot_sweep(runner), "tradecraft-convert-sweep")
+    else:
+        await convert.boot_sweep(runner)
+    return True
+
+
+async def recover_on_boot() -> None:
+    """Called once from the agent's start-up; never raises. Recovery and the conversion sweep run
+    now (the sweep in the background), and once more a lease period later; when the store cannot
+    be reached (the webapp has not pushed the schema yet, or no DATABASE_URL in a hand-run agent),
+    again every lease period, at most ``BOOT_RECOVERY_RETRIES`` times."""
+    runner = get_runner()
+    ok = await recover_and_sweep(runner, background_sweep=True)
+    # Each later recovery is itself the first of the retries it may still make.
+    runner.schedule_recovery(0 if ok else BOOT_RECOVERY_RETRIES - 1)

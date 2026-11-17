@@ -1,19 +1,22 @@
 """Converting an account's 1.x resources to 2.0 without crawling (phase 9, T9.1; §7.2, D-26, D-35).
 
 ``start(runner, user_id)`` opens one ``convert`` job for the account and converts, one resource at a
-time in the background, every resource that needs it: one never converted (``map_version`` 1), or
-one whose 1.x ``sitemap`` no longer has the hash its last 2.0 write recorded (a 1.x Refresh made while
-the switch was off, D-26). It answers how many resources it queued.
+time in the background, every resource that needs it: one 1.x wrote a map for and never converted
+(``map_version`` 1 and a 1.x ``sitemap``; a row added through 2.0 and never ingested has none, and
+is left to its first refresh), or one whose 1.x ``sitemap`` no longer has the hash its last 2.0 write
+recorded (a 1.x Refresh made while the switch was off, D-26). It answers how many it queued.
 
 Each resource is claimed like any job (a conditional update of ``active_job_id``): a resource whose
-claim names an unfinished job is skipped, and the next sweep converts it. The conversion writes a
+claim names an unfinished job is skipped, and the next sweep converts it; so is one whose live
+generation or map version moved since the list was read (a 2.0 Refresh finished meanwhile, whose
+1.x map may be identical: a CVE archive's always is). The conversion writes a
 new generation from the 1.x map alone: every entry of every 1.x shape (``nav``, ``tree``, ``links``,
 a PDF's ``pages``; a CVE archive's ``{owner, repo, branch}`` has none) becomes an entry with a page
 ID, a title-only card (``source = "legacy"``), the rules' tags and its entities, and the person's
 curations (blocks, pins, renames) apply as at any refresh. Nothing is downloaded and no model is
 called. The swap sets ``map_version`` 2 and ``legacy_map_hash`` only while the claim, the URL, the
-storage mode and the 1.x map are still the ones converted, so a write that raced it is never lost;
-``storage_mode`` stays (Live).
+storage mode, the 1.x map, the generation and the map version are still the ones converted, so a
+write that raced it is never lost; ``storage_mode`` stays (Live).
 
 A PDF (its map lists ``pages``) gets a ``pdf_convert`` job of its own: the document is downloaded
 once, the pages its 1.x map lists are stored within the account's quota, and it becomes Stored
@@ -22,13 +25,17 @@ reads a secret column, so it cannot send one), is converted from its titles like
 stays Live: its pages are read live, as before, until a person refreshes it.
 
 Idempotent (D-35): one unfinished ``convert`` job per account (an advisory lock serializes two starts
-at once, from two copies or a switch-on during the boot sweep), and a converted resource no longer
-needs it. Trigger: the agent's boot sweep (``boot_sweep``), for every account, since the
-cut-over removed the switch whose turn-on also asked for it (the route stays, idempotent).
+at once, from two copies), and a converted resource no longer needs it. Triggers: the agent's boot
+sweep (``boot_sweep``) for every account, run again one lease period after boot (a conversion cut by
+a restart faster than its lease resumes then) and retried while the store cannot be reached
+(``jobs.recover_on_boot``); the route stays, idempotent. Deleting or cancelling one resource releases
+that resource's claim only (the webapp's ``cancelJob``); an agent that stops mid-conversion leaves the
+job for recovery to fail (``agent_restarted``), never "succeeded".
 """
 
 from __future__ import annotations
 
+import asyncio
 import urllib.parse
 import uuid
 from typing import Any, Optional
@@ -57,7 +64,7 @@ _EVERY_PAGE = {"type.pdf.mapBy": "pages", "type.pdf.firstPage": 1, "type.pdf.las
 R, J, E, T, US = (sc.TABLE_RESOURCES, sc.TABLE_JOBS, sc.TABLE_ENTRIES, sc.TABLE_TREE, sc.TABLE_USER_SETTINGS)
 UNFINISHED = "('queued','running')"
 CANDIDATE_COLUMNS = ("id", "slug", "name", "url", "resource_type", "sitemap", "map_version", "legacy_map_hash",
-                     "storage_mode", "has_login", "active_job_id")
+                     "storage_mode", "has_login", "active_job_id", "generation")
 
 STATEMENTS: dict[str, str] = {
     "candidates": f"SELECT {', '.join(CANDIDATE_COLUMNS)} FROM {R} WHERE user_id = %(uid)s ORDER BY id",
@@ -72,11 +79,14 @@ STATEMENTS: dict[str, str] = {
         f"%(instance)s, %(until)s, now(), now())"
     ),
     # A free resource, or one whose claim names a job that ended (a conversion whose agent died);
-    # never one an unfinished job holds. Returns the generation to write: above every number the
-    # resource has used, as begin_generation does for a job.
+    # never one an unfinished job holds, and only while its live generation and map version are
+    # still those read when the conversion started: a 2.0 Refresh that finished in between (its
+    # 1.x map can be identical: a CVE archive's always is) is never converted over. Returns the
+    # generation to write: above every number the resource has used, as begin_generation does.
     "claim": (
         f"UPDATE {R} r SET active_job_id = %(job)s, updated_at = now() "
-        f"WHERE r.id = %(rid)s AND r.user_id = %(uid)s AND (r.active_job_id IS NULL OR NOT EXISTS "
+        f"WHERE r.id = %(rid)s AND r.user_id = %(uid)s AND r.generation = %(was_gen)s "
+        f"AND r.map_version = %(was_version)s AND (r.active_job_id IS NULL OR NOT EXISTS "
         f"(SELECT 1 FROM {J} j WHERE j.id = r.active_job_id AND j.user_id = r.user_id AND j.status IN {UNFINISHED})) "
         f"RETURNING GREATEST(r.generation, "
         f"COALESCE((SELECT max(j2.target_generation) FROM {J} j2 WHERE j2.user_id = r.user_id AND j2.resource_id = r.id), 0), "
@@ -91,7 +101,13 @@ STATEMENTS: dict[str, str] = {
         f"UPDATE {R} SET generation = %(gen)s, active_job_id = NULL, map_version = %(version)s, "
         f"legacy_map_hash = %(hash)s, storage_mode = %(mode)s, updated_at = now() "
         f"WHERE id = %(rid)s AND user_id = %(uid)s AND active_job_id = %(job)s AND url = %(url)s "
-        f"AND storage_mode = %(was_mode)s AND sitemap = %(sitemap)s::jsonb"
+        f"AND storage_mode = %(was_mode)s AND sitemap = %(sitemap)s::jsonb "
+        f"AND generation = %(was_gen)s AND map_version = %(was_version)s"
+    ),
+    # Why a claim was refused: the resource is gone, another job holds it, or it changed.
+    "claim_state": (
+        f"SELECT EXISTS (SELECT 1 FROM {J} j WHERE j.id = r.active_job_id AND j.user_id = r.user_id "
+        f"AND j.status IN {UNFINISHED}) AS held FROM {R} r WHERE r.id = %(rid)s AND r.user_id = %(uid)s"
     ),
     "release": (
         f"UPDATE {R} SET active_job_id = NULL, updated_at = now() "
@@ -174,10 +190,18 @@ def legacy_candidates(resource_type: str, url: str, sitemap: Any) -> tuple[str, 
     return site_type, out
 
 
+def has_legacy_map(sitemap: Any) -> bool:
+    """A 1.x map: what a 1.x verify wrote (any shape, a CVE archive's metadata included). A row
+    added through 2.0 has none until its first ingestion swaps one in, and neither has a 1.x row
+    that was never verified: both are read as 1.x read them (the start page) until a refresh."""
+    return isinstance(sitemap, dict) and bool(sitemap)
+
+
 def needs_conversion(row: dict) -> bool:
-    """Never converted, or its 1.x map changed since the last 2.0 write (D-26)."""
+    """A 1.x resource with its 1.x map, never converted; or a converted or 2.0 one whose 1.x map
+    changed since the last 2.0 write (D-26)."""
     if int(row.get("map_version") or 1) < sc.MAP_VERSION_CONVERTED:
-        return True
+        return has_legacy_map(row.get("sitemap"))
     return row.get("legacy_map_hash") != legacy_map.map_hash(row.get("sitemap") or {})
 
 
@@ -235,11 +259,19 @@ async def open_job(store: Any, user_id: str, instance: str, until: Any, *, resou
     return job_id
 
 
-async def claim(store: Any, user_id: str, resource_id: str, job_id: str) -> Optional[int]:
-    """The generation to write when the resource was claimed for ``job_id``; None when another
-    job holds it or it is gone."""
-    row = await _one(store, "claim", {"uid": user_id, "rid": resource_id, "job": job_id})
-    return None if row is None else int(row["target"])
+async def claim(store: Any, user_id: str, row: dict, job_id: str) -> tuple[Optional[int], str]:
+    """(the generation to write, "") when the resource was claimed for ``job_id`` as it was read;
+    else (None, why): ``resource_deleted``, ``job_running`` (another job holds it), or
+    ``resource_changed`` (a refresh made it something else since it was read)."""
+    got = await _one(store, "claim", {"uid": user_id, "rid": row["id"], "job": job_id,
+                                      "was_gen": int(row.get("generation") or 0),
+                                      "was_version": int(row.get("map_version") or 1)})
+    if got is not None:
+        return int(got["target"]), ""
+    state = await _one(store, "claim_state", {"uid": user_id, "rid": row["id"]})
+    if state is None:
+        return None, "resource_deleted"
+    return None, ("job_running" if state["held"] else "resource_changed")
 
 
 async def account_values(store: Any, user_id: str) -> dict:
@@ -298,7 +330,8 @@ async def _swap(runner: Any, user_id: str, job_id: str, row: dict, generation: i
     swapped = await _count(runner.store, "swap", {
         "uid": user_id, "rid": row["id"], "job": job_id, "gen": generation, "version": sc.MAP_VERSION_CONVERTED,
         "hash": legacy_map.map_hash(row.get("sitemap") or {}), "mode": storage_mode, "url": row["url"],
-        "was_mode": row["storage_mode"], "sitemap": _json(row.get("sitemap") or {})}) == 1
+        "was_mode": row["storage_mode"], "sitemap": _json(row.get("sitemap") or {}),
+        "was_gen": int(row.get("generation") or 0), "was_version": int(row.get("map_version") or 1)}) == 1
     if swapped:
         try:
             await runner.store.purge_old_generations(user_id, row["id"])
@@ -315,9 +348,9 @@ async def _give_up(runner: Any, user_id: str, job_id: str, row: dict, generation
 async def convert_titles(runner: Any, user_id: str, job_id: str, row: dict, values: dict) -> str:
     """Converts one resource from its 1.x map under the claim of ``job_id``; returns "" when its
     new generation is live, else why not (a code, logged)."""
-    generation = await claim(runner.store, user_id, row["id"], job_id)
+    generation, refused = await claim(runner.store, user_id, row, job_id)
     if generation is None:
-        return "job_running"
+        return refused
     try:
         state = _state(runner, job_id, CONVERT, user_id, row, {**values, **_NO_MODEL}, generation, row["storage_mode"])
         state.site_type, state.entries = legacy_candidates(row.get("resource_type") or WEBSITE, row["url"],
@@ -344,9 +377,9 @@ async def convert_pdf(runner: Any, user_id: str, row: dict, values: dict) -> str
     runner.hold(job_id, user_id)
     code = "internal_error"
     try:
-        generation = await claim(store, user_id, row["id"], job_id)
+        generation, refused = await claim(store, user_id, row, job_id)
         if generation is None:
-            code = "job_running"
+            code = refused
             return code
         await _count(store, "set_target", {"uid": user_id, "job": job_id, "gen": generation})
         settings_values = {**values, **_NO_MODEL, **_EVERY_PAGE}
@@ -383,11 +416,17 @@ async def convert_pdf(runner: Any, user_id: str, row: dict, values: dict) -> str
         if not swapped:
             await _give_up(runner, user_id, job_id, row, generation)
         return code
+    except asyncio.CancelledError:
+        code = None  # the agent is stopping: recovery fails the job with agent_restarted
+        raise
     finally:
-        code = code if not code or code in ERROR_CODES else "internal_error"
-        await store.finish_job(user_id, job_id, "failed" if code else "succeeded", code)
         runner.release_hold(job_id)
-        logger.info(f"[tradecraft] job {job_id} {'failed' if code else 'succeeded'} code={code}")
+        if code is None:
+            logger.info(f"[tradecraft] job {job_id} interrupted code=agent_restarted")
+        else:
+            code = code if not code or code in ERROR_CODES else "internal_error"
+            await store.finish_job(user_id, job_id, "failed" if code else "succeeded", code)
+            logger.info(f"[tradecraft] job {job_id} {'failed' if code else 'succeeded'} code={code}")
 
 
 async def convert_one(runner: Any, user_id: str, job_id: str, row: dict, values: dict) -> str:
@@ -444,16 +483,22 @@ async def _run(runner: Any, user_id: str, job_id: str, todo: list[dict]) -> None
             else:
                 done += 1
             logger.info(f"[tradecraft] convert resource={row['id']} code={result}")
+    except asyncio.CancelledError:
+        # The agent is stopping: the job is left running for its lease to run out, and the next
+        # start's recovery fails it with agent_restarted (never "succeeded"); the sweep after it
+        # converts the rest.
+        runner.release_hold(job_id)
+        logger.info(f"[tradecraft] job {job_id} interrupted code=agent_restarted converted={done} skipped={skipped}")
+        raise
     except Exception as exc:
         status, code = "failed", "internal_error"
         logger.warning(f"[tradecraft] job {job_id} failed code=internal_error error={type(exc).__name__}")
-    finally:
-        try:
-            await store.finish_job(user_id, job_id, status, code)
-        except Exception as exc:
-            logger.warning(f"[tradecraft] job {job_id} not closed error={type(exc).__name__}")
-        runner.release_hold(job_id)
-        logger.info(f"[tradecraft] job {job_id} {status} code={code} converted={done} skipped={skipped}")
+    try:
+        await store.finish_job(user_id, job_id, status, code)
+    except Exception as exc:
+        logger.warning(f"[tradecraft] job {job_id} not closed error={type(exc).__name__}")
+    runner.release_hold(job_id)
+    logger.info(f"[tradecraft] job {job_id} {status} code={code} converted={done} skipped={skipped}")
 
 
 async def convert_user(user_id: str) -> int:

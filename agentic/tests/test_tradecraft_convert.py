@@ -148,3 +148,74 @@ def test_every_statement_but_the_sweep_is_keyed_by_the_owner():
             continue
         # An insert names the owner as its user_id value.
         assert ("user_id = %(uid)s" in sql) or (sql.startswith("INSERT") and "%(uid)s" in sql), name
+
+
+def test_has_legacy_map_tells_1x_rows_from_2_0_adds():
+    """Review finding 3: only a 1.x map makes a map-version-1 row a conversion's; a 2.0 add never
+    ingested (and a 1.x row never verified) has none."""
+    assert not convert.needs_conversion({"map_version": 1, "sitemap": {}, "legacy_map_hash": ""})
+    assert not convert.needs_conversion({"map_version": 1, "sitemap": None, "legacy_map_hash": ""})
+    assert convert.needs_conversion({"map_version": 1, "sitemap": {"nav": []}, "legacy_map_hash": ""})
+    assert convert.needs_conversion({"map_version": 1, "sitemap": {"owner": "o", "repo": "r", "branch": "main"},
+                                     "legacy_map_hash": ""})
+
+
+def _boot(store, monkeypatch, sweeps):
+    from tradecraft import jobs
+    from tradecraft_doubles import FakeClock
+
+    async def sweep(_runner):
+        sweeps.append(1)
+        return 0
+
+    monkeypatch.setattr(convert, "boot_sweep", sweep)
+    runner = jobs.JobRunner(store, instance="i", clock=FakeClock())
+    jobs.set_runner_for_tests(runner)
+
+    async def go():
+        await jobs.recover_on_boot()
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if all(t.done() for t in runner._background):
+                break
+        await runner.close()
+
+    try:
+        asyncio.run(go())
+    finally:
+        jobs.set_runner_for_tests(None)
+
+
+class _Store:
+    def __init__(self, failures):
+        self.failures, self.calls = failures, 0
+
+    async def fail_expired_leases(self, now, code="agent_restarted"):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise OSError('relation "tradecraft_ingestion_jobs" does not exist')
+        return []
+
+
+def test_boot_retries_until_the_schema_exists_then_sweeps(monkeypatch):
+    """Review finding 2: the agent up before the webapp's db push retries its recovery one lease
+    period apart, and converts once the store answers."""
+    store, sweeps = _Store(failures=3), []
+    _boot(store, monkeypatch, sweeps)
+    assert (store.calls, len(sweeps)) == (4, 1)
+
+
+def test_boot_sweeps_again_one_lease_later(monkeypatch):
+    """Review finding 2: a restart faster than the lease left the dead conversion's job live at
+    boot; the recovery one lease later fails it and the sweep runs again."""
+    store, sweeps = _Store(failures=0), []
+    _boot(store, monkeypatch, sweeps)
+    assert (store.calls, len(sweeps)) == (2, 2)
+
+
+def test_boot_retries_are_bounded(monkeypatch):
+    from tradecraft import jobs
+
+    store, sweeps = _Store(failures=1000), []
+    _boot(store, monkeypatch, sweeps)
+    assert (store.calls, sweeps) == (1 + jobs.BOOT_RECOVERY_RETRIES, [])

@@ -327,6 +327,19 @@ describe('cancel is a database flag', () => {
     expect(agent.calls).toHaveLength(0)
   })
 
+  test("the account's conversion (T9.1): a cancel or a delete of one resource releases that resource only", async () => {
+    h.db.seed('userTradecraftResource', { id: 'r2', userId: 'owner', name: 'Blog', slug: 'blog', url: 'https://blog.example.test/' })
+    h.db.seed('tradecraftIngestionJob', { id: 'j-convert', userId: 'owner', resourceId: null, kind: 'convert', status: 'running', leaseUntil: new Date(T0 + 60_000) })
+    resource().activeJobId = 'j-convert'
+    h.db.rows('userTradecraftResource', { id: 'r2' })[0].activeJobId = 'j-convert'
+    const agent = stubAgent()
+    expect(await cancelJob('owner', 'r1')).toEqual({ found: true, job: null })
+    expect(resource().activeJobId).toBeNull()
+    expect(h.db.rows('userTradecraftResource', { id: 'r2' })[0].activeJobId).toBe('j-convert')
+    expect(job('j-convert')).toMatchObject({ status: 'running', cancelRequested: false })
+    expect(agent.calls).toHaveLength(0)
+  })
+
   test('nothing running: found, no job; another account: not found', async () => {
     stubAgent()
     expect(await cancelJob('owner', 'r1')).toEqual({ found: true, job: null })

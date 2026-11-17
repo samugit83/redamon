@@ -460,6 +460,13 @@ export async function cancelJob(ownerId: string, resourceId: string): Promise<{ 
     const row = await tx.userTradecraftResource.findUnique({ where: { id: resourceId }, select: { activeJobId: true } })
     const job = row?.activeJobId ? await tx.tradecraftIngestionJob.findUnique({ where: { id: row.activeJobId } }) : null
     if (!job || !isUnfinished(job.status)) return { job: null, notify: false }
+    if (job.kind === 'convert' && job.resourceId === null) {
+      // The account's conversion (T9.1) holds this resource among others: a cancel or a delete of this
+      // one releases its claim only. The conversion goes on with the rest; its swap of this resource
+      // fails on the lost claim, and a later sweep converts what is still 1.x.
+      await tx.userTradecraftResource.updateMany({ where: { id: resourceId, userId: ownerId, activeJobId: job.id }, data: { activeJobId: null } })
+      return { job: null, notify: false }
+    }
     if (leaseLive(job, at)) {
       return { job: await tx.tradecraftIngestionJob.update({ where: { id: job.id }, data: { cancelRequested: true } }), notify: true }
     }
