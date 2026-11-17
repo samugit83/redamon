@@ -39,16 +39,18 @@ def untrusted_block(desc):
 
 
 def test_decision_guide():
-    entries = overlay.build_entries(catalog(2))
+    entries = overlay.build_entries(catalog(2, **{"librarian.use": "search_only"}))
     for name in ("tradecraft_lookup", "tradecraft_search"):
         desc = entries[name]["description"]
         assert "How to choose" in desc
         assert "don't call; use web_search" in desc
         assert "tradecraft_lookup(page=...)" in desc and "tradecraft_search, then tradecraft_lookup" in desc
-        # The librarian is not in this run yet: no line sends the agent to it.
+        # Search only: the librarian is not in this run, and no line sends the agent to it.
         assert "tradecraft_ask" not in desc
-    with_ask = overlay.lookup_entry(catalog(2), has_ask=True)["description"]
-    assert '("WAF blocks SLEEP") ... tradecraft_ask' in with_ask
+    # Agent decides (the default): the librarian's branch (T7.4).
+    for name, entry in overlay.build_entries(catalog(2)).items():
+        if name != "tradecraft_ask":
+            assert '("WAF blocks SLEEP") ... tradecraft_ask' in entry["description"]
 
 
 def test_auto_list():

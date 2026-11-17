@@ -94,6 +94,17 @@ class RunCollector:
             self._counts[kind] += 1
             return self._counts[kind]
 
+    def incr_within(self, kind: str, limit: int) -> Optional[int]:
+        """``incr`` only while the count is below ``limit``: the new count, or None at the limit.
+        One step under the lock, so asks or hints started at once never pass the limit together."""
+        if kind not in COUNTERS:
+            raise ValueError(f"unknown counter {kind!r}: one of {', '.join(COUNTERS)}")
+        with self._lock:
+            if self._counts[kind] >= limit:
+                return None
+            self._counts[kind] += 1
+            return self._counts[kind]
+
     def log_hint(self, entry: Mapping[str, Any]) -> None:
         """A hint note given (its checkpoint, page IDs, whether one was read later)."""
         with self._lock:

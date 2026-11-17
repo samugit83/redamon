@@ -12,8 +12,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-# T7.4 adds the librarian here.
-V2_TOOL_NAMES = ("tradecraft_search",)
+V2_TOOL_NAMES = ("tradecraft_search", "tradecraft_ask")
 
 
 class LazyTool:

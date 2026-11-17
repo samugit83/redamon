@@ -1,23 +1,32 @@
 """The tools a 2.0 run calls (TD-10): ``tradecraft_lookup``, which keeps its name and its
-arguments and gains ``page``, ``section`` and ``part`` (Q8), and ``tradecraft_search`` (Q7.1),
-new. Both are registered once in the executor (as ``tool_proxies`` stand-ins) and offered only to a run
-whose catalog is 2.0 (the companion set in ``project_settings``); called in any other run, they
+arguments and gains ``page``, ``section`` and ``part`` (Q8), ``tradecraft_search`` (Q7.1), and
+``tradecraft_ask`` (Q9), the librarian. They are registered once in the executor (as ``tool_proxies``
+stand-ins) and offered only to a run whose catalog is 2.0 (the companion set in ``project_settings``),
+the librarian only while its owner's Librarian use is Agent decides; called in any other run, they
 answer that they are not available.
 
-Search knows the attack session from structured run data only (Q12): the current skill's topic,
-the phase, and the target's technologies as vocabulary ids. The executor nodes bind it with
-``bind_session(state)`` next to the run state, before the tools run.
+Search and the librarian know the attack session from structured run data only (Q12): the
+current skill's topic, the phase, the target's technologies as vocabulary ids, and its CVE ids
+as the CVE pattern finds them. The executor nodes bind it with ``bind_session(state)`` next to the
+run state, before the tools run.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
-from typing import Any, Mapping, Optional
+from dataclasses import replace
+from typing import Any, Mapping, Optional, Union
 
 from langchain_core.tools import tool
 
 from agent_context import current_phase
-from tradecraft import runtime
+from logging_config import get_logger
+from tradecraft import librarian, overlay, run_state, runtime
+from tradecraft.ingest import entities as entity_rules
+from tradecraft.ingest.crawl import error_code_of
+from tradecraft.librarian import graph as librarian_graph
+from tradecraft.librarian.tools import Found, LibraryTools, narrowed
 from tradecraft.library import reader, search, split
 from tradecraft.library.types import (
     BROWSE_HEADER,
@@ -31,9 +40,12 @@ from tradecraft.library.types import (
     format_search_header,
     wrap_untrusted,
 )
+from tradecraft.settings import EffectiveSettings
 from tradecraft.vocab import load_vocab
 
-SEARCH_NOT_AVAILABLE = ("Error: tradecraft_search is not available in this run (its Tradecraft library is not "
+logger = get_logger(__name__)
+
+SEARCH_NOT_AVAILABLE =("Error: tradecraft_search is not available in this run (its Tradecraft library is not "
                         "2.0); use tradecraft_lookup.")
 NEEDS_QUERY = ("Error: give tradecraft_search a query, or a resource (and a path) to browse, e.g. "
                'tradecraft_search(resource="patt", path="").')
@@ -47,8 +59,26 @@ UNCONVERTED = ("Not searchable until converted to 2.0 (read with tradecraft_look
 HIT_PATH_CHARS = 110
 HIT_TEXT_CHARS = 90
 
+ASK_NOT_AVAILABLE = ("Error: tradecraft_ask is not available in this run (its Tradecraft library is not 2.0, or "
+                     "its owner chose Search only); use tradecraft_search.")
+NEEDS_NEED = ('Error: give tradecraft_ask a need in a sentence, e.g. '
+              'tradecraft_ask(need="the WAF blocks SLEEP; another way to cause a delay on PostgreSQL").')
+ASK_LIMIT = ("Error: this run already asked the librarian {limit} times, its limit (Questions per agent run). "
+             "Read the pages found so far with tradecraft_lookup, or use tradecraft_search.")
+LIBRARY_TIMEOUT = "Error: the library did not answer within {secs} s; use tradecraft_search."
+LIBRARY_ERROR = "Error: the library could not be searched (internal_error); use tradecraft_search."
+OUTSIDE_RUN = "the librarian runs only inside an agent run: these are the plain search results"
+MODEL_UNAVAILABLE = "the librarian model could not be used ({code}): these are the plain search results"
+HARD_TIME_UP = "the time limit of {secs} s was reached: these are the plain search results"
+# Seconds past the librarian's own stop for the free first pass and building the model; with the
+# highest time limit (120 s) the whole call stays under the executor's 150 s for the tool.
+ASK_GRACE_SEC = 5.0
+MAX_SESSION_CVES = 20
+
 _session: contextvars.ContextVar[Optional[search.Session]] = contextvars.ContextVar(
     "tradecraft_search_session", default=None)
+_session_cves: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "tradecraft_session_cves", default=())
 
 
 def _get(obj: Any, key: str) -> Any:
@@ -67,9 +97,23 @@ def session_from_state(state: Mapping[str, Any]) -> search.Session:
                           technologies=search.technologies_of(technologies))
 
 
+def session_cves(state: Mapping[str, Any]) -> tuple[str, ...]:
+    """The target's CVE ids from its structured recon data. ``vulnerabilities`` also holds free
+    descriptions written from tool output, so only what the CVE pattern matches is kept."""
+    found: list[str] = []
+    for value in _get(state.get("target_info") or {}, "vulnerabilities") or []:
+        if not isinstance(value, str):
+            continue
+        for cve in entity_rules.cve_ids(value):
+            if cve not in found:
+                found.append(cve)
+    return tuple(found[:MAX_SESSION_CVES])
+
+
 def bind_session(state: Mapping[str, Any]) -> search.Session:
     session = session_from_state(state)
     _session.set(session)
+    _session_cves.set(session_cves(state))
     return session
 
 
@@ -169,6 +213,146 @@ async def run_search(*, query: str = "", resource: Optional[str] = None, topic: 
 
 
 # --------------------------------------------------------------------------------------
+# The librarian (Q9.2): limit, session data, free first pass, then the sub-graph
+# --------------------------------------------------------------------------------------
+
+def _library_tools(owner_id: str, catalog: Any, *, session: Optional[search.Session],
+                   settings: EffectiveSettings) -> Any:
+    return LibraryTools(owner_id, catalog, session=session, settings=settings)
+
+
+def _build_model(model_id: str, providers: list) -> Any:
+    from llm_builder import build_llm_from_providers
+    return build_llm_from_providers(model_id, providers)
+
+
+def _hard_limit_sec(settings: EffectiveSettings) -> float:
+    return settings.int("librarian.timeLimitSec") + librarian_graph.HARD_STOP_GRACE_SEC + ASK_GRACE_SEC
+
+
+def _loop_run(settings: Mapping[str, Any]) -> bool:
+    """Whether this run is driven by Agent in the Loop. The librarian's own model never is (its
+    builder refuses a loop model), so the run is asked: its main model, the project's model id, or
+    a live loop scope of the session."""
+    from agent_context import current_llm, current_log_session_id
+    from agent_in_the_loop import is_loop_llm, is_loop_model
+
+    if is_loop_llm(current_llm.get()) or is_loop_model(settings.get("OPENAI_MODEL")):
+        return True
+    try:
+        from agent_in_the_loop.broker import get_broker
+        return get_broker().scope_for_session(current_log_session_id.get()) is not None
+    except Exception:
+        # Unknown: no model call, as in a loop run.
+        return True
+
+
+def librarian_model() -> tuple[Any, str]:
+    """(the owner's "Tradecraft librarian" model, "") for this run, or (None, why not).
+
+    Read from the settings bound to the run's task only, never ``get_setting``, whose fallback
+    outside a run is the last project loaded (R-405); a run's USER_SETTINGS and providers are its
+    project owner's (Q10 "Shared projects"). No run state bound means no per-run limit can hold,
+    so no model is built then either."""
+    import project_settings as _ps
+    from feature_models import feature_model
+
+    settings = _ps._settings_ctx.get()
+    if settings is None or run_state.current() is None:
+        return None, OUTSIDE_RUN
+    if _loop_run(settings):
+        return None, librarian_graph.LOOP_RUN
+    model_id = feature_model(settings.get("USER_SETTINGS") or {}, "tradecraft_librarian")
+    if not model_id:
+        return None, librarian_graph.NO_MODEL
+    try:
+        return _build_model(model_id, settings.get("USER_LLM_PROVIDERS") or []), ""
+    except Exception as exc:
+        code = error_code_of(exc)
+        logger.warning(f"[tradecraft] librarian model unavailable code={code}")
+        return None, MODEL_UNAVAILABLE.format(code=code)
+
+
+def _scope_of(scope: Any) -> tuple[str, ...]:
+    """Slugs from a list, or from one string of slugs separated by commas or spaces."""
+    items = scope.replace(",", " ").split() if isinstance(scope, str) else (scope or [])
+    out: list[str] = []
+    for item in items:
+        slug = str(item).strip().strip("`'\"")
+        if slug and slug not in out:
+            out.append(slug)
+    return tuple(out[:20])
+
+
+def ranked_first_pass(found: Found, collector: Optional[run_state.RunCollector], cves: tuple[str, ...]) -> Found:
+    """The free first pass with the pages about the target's CVEs first and the pages this run
+    already read or was suggested last (Q9.3): a boost, never a filter."""
+    wanted = set(cves)
+
+    def key(card: Any) -> tuple[bool, bool]:
+        seen = collector.has_seen(card.page_id) if collector is not None else False
+        return seen, not (wanted & set(card.entities or ()))
+
+    return Found(found.verdict, tuple(sorted(found.cards, key=key)))
+
+
+def _with_reason(answer: Any, reason: str) -> Any:
+    """The answer with ``reason`` as the line that says why the plain results answer: it replaces
+    the sub-graph's "no model" line, which it also writes for a model the tool did not pass."""
+    if not reason or reason == librarian_graph.NO_MODEL:
+        return answer
+    notes = tuple(n for n in answer.notes if n != librarian_graph.NO_MODEL)
+    return replace(answer, notes=notes + (reason,))
+
+
+async def run_ask(*, need: str, context: str = "", want: str = "any", scope: Any = None) -> str:
+    catalog = runtime.bound_catalog()
+    if catalog is None or not overlay.has_ask(catalog):
+        return ASK_NOT_AVAILABLE
+    need = " ".join(str(need or "").split())
+    if not need:
+        return NEEDS_NEED
+    settings = EffectiveSettings(catalog.search or {}, scope="search")
+    collector = run_state.current()
+    if collector is not None:
+        limit = settings.int("librarian.questionsPerRun")
+        if collector.incr_within("ask", limit) is None:
+            return ASK_LIMIT.format(limit=limit)
+    request = librarian.Request(need=need, context=" ".join(str(context or "").split()),
+                                want=str(want or "any").strip().lower(), scope=_scope_of(scope))
+    session = current_session()
+    tools = _library_tools(catalog.owner_id, narrowed(catalog, request.scope)[0], session=session,
+                           settings=settings)
+    kwargs = dict(owner_id=catalog.owner_id, person_id=catalog.person_id, catalog=catalog, session=session,
+                  settings=settings, tools=tools)
+    first: Optional[Found] = None
+
+    async def go() -> Any:
+        nonlocal first
+        first = ranked_first_pass(await tools.search(need), collector, _session_cves.get())
+        found = first.verdict != "NOT FOUND" and bool(first.cards)
+        llm, reason = librarian_model() if found else (None, "")
+        return _with_reason(await librarian.ask(request, llm=llm, first=first, **kwargs), reason)
+
+    secs = settings.int("librarian.timeLimitSec")
+    try:
+        answer = await asyncio.wait_for(go(), timeout=_hard_limit_sec(settings))
+    except asyncio.TimeoutError:
+        if first is None:
+            logger.warning("[tradecraft] ask code=timeout step=first_pass")
+            return LIBRARY_TIMEOUT.format(secs=secs)
+        logger.warning("[tradecraft] ask code=timeout")
+        answer = _with_reason(await librarian.ask(request, llm=None, first=first, **kwargs),
+                              HARD_TIME_UP.format(secs=secs))
+    except Exception as exc:
+        logger.warning(f"[tradecraft] ask code=internal_error error={type(exc).__name__}")
+        return LIBRARY_ERROR
+    if collector is not None:
+        collector.record_seen(p.page_id for p in answer.picks)
+    return librarian.render(answer)
+
+
+# --------------------------------------------------------------------------------------
 # The tools
 # --------------------------------------------------------------------------------------
 
@@ -226,8 +410,28 @@ async def tradecraft_search(
                             path=path)
 
 
+@tool
+async def tradecraft_ask(
+    need: str,
+    context: str = "",
+    want: str = "any",
+    scope: Optional[Union[list[str], str]] = None,
+) -> str:
+    """Ask the Tradecraft librarian for a vague need: it searches the library, reads the
+    promising sections and answers up to three checked pages with exact excerpts.
+
+    Args:
+        need: what you need, in a sentence (e.g. "the WAF blocks SLEEP; another delay on PostgreSQL")
+        context: what you know (the parameter, what works, what is blocked)
+        want: payload, methodology, poc or any
+        scope: resource slugs to limit it to (e.g. ["patt", "hacktricks"])
+    """
+    return await run_ask(need=need, context=context or "", want=want or "any", scope=scope)
+
+
 lookup_tool = tradecraft_lookup
 search_tool = tradecraft_search
+ask_tool = tradecraft_ask
 
-V2_TOOLS = {"tradecraft_lookup": lookup_tool, "tradecraft_search": search_tool}
+V2_TOOLS = {"tradecraft_lookup": lookup_tool, "tradecraft_search": search_tool, "tradecraft_ask": ask_tool}
 
