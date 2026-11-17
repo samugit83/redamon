@@ -310,7 +310,7 @@ STATEMENTS: dict[str, str] = {
     ),
     "in_map": (
         f"SELECT EXISTS (SELECT 1 FROM {E} e {_live('e')} "
-        f"WHERE e.user_id = %(uid)s AND e.resource_id = %(rid)s AND e.url = %(url)s) AS found"
+        f"WHERE e.user_id = %(uid)s AND e.resource_id = %(rid)s AND e.url = %(url)s AND e.status = 'kept') AS found"
     ),
     "curation": (
         f"SELECT {_cols(sc.CURATIONS, 'c')} FROM {C} c JOIN {R} r ON r.id = c.resource_id "
@@ -319,20 +319,30 @@ STATEMENTS: dict[str, str] = {
     # --- curation at ingestion (T6.6) ----------------------------------------------------
     "curation_rows": (
         f"SELECT c.url, c.pinned, c.blocked, c.renamed_title, c.restored_from_drop FROM {C} c "
-        f"JOIN {R} r ON r.id = c.resource_id WHERE r.user_id = %(uid)s AND c.resource_id = %(rid)s"
+        f"JOIN {R} r ON r.id = c.resource_id WHERE r.user_id = %(uid)s AND c.resource_id = %(rid)s "
+        f"ORDER BY c.url, c.id"
     ),
-    # A page blocked while the job ran: its text and sections leave the job's generation, as the
-    # Map view's block took them from the generations that existed when it was made.
+    # Pages blocked while the job ran (the URLs as the curation names them, read after the
+    # job's writes): their sections and text leave the job's generation, whatever the Map
+    # view's block already emptied (it reached only the rows that existed when it was made).
     "clear_blocked": (
-        f"WITH b AS (SELECT e.id, e.stored_bytes FROM {E} e JOIN {R} r ON r.id = e.resource_id AND r.user_id = e.user_id "
-        f"JOIN {C} c ON c.resource_id = e.resource_id AND c.url = e.url AND c.blocked "
+        f"WITH b AS (SELECT e.id, e.url FROM {E} e JOIN {R} r ON r.id = e.resource_id AND r.user_id = e.user_id "
         f"WHERE e.user_id = %(uid)s AND e.resource_id = %(rid)s AND e.generation = %(gen)s "
-        f"AND (e.stored_text IS NOT NULL OR e.stored_bytes > 0)), "
+        f"AND e.url = ANY(%(urls)s::text[])), "
         f"gone AS (DELETE FROM {S} x USING b WHERE x.entry_id = b.id AND x.user_id = %(uid)s "
         f"AND x.resource_id = %(rid)s RETURNING x.id), "
         f"cleared AS (UPDATE {E} e SET stored_text = NULL, stored_bytes = 0, updated_at = now() FROM b "
-        f"WHERE e.id = b.id AND e.user_id = %(uid)s AND e.resource_id = %(rid)s RETURNING b.stored_bytes) "
-        f"SELECT count(*)::int AS pages, COALESCE(sum(stored_bytes), 0)::bigint AS bytes FROM cleared"
+        f"WHERE e.id = b.id AND e.user_id = %(uid)s AND e.resource_id = %(rid)s "
+        f"AND (e.stored_text IS NOT NULL OR e.stored_bytes > 0) RETURNING e.id) "
+        f"SELECT b.url FROM b"
+    ),
+    # Pages pinned or restored while the job ran, which its focus dropped: kept in the generation
+    # the job made live (only while it is still the live one).
+    "restore_pinned": (
+        f"UPDATE {E} e SET status = 'kept', drop_reason = '', updated_at = now() FROM {R} r "
+        f"WHERE r.id = e.resource_id AND r.user_id = e.user_id AND e.user_id = %(uid)s AND e.resource_id = %(rid)s "
+        f"AND e.generation = %(gen)s AND r.generation = %(gen)s AND e.status = 'dropped' "
+        f"AND e.url = ANY(%(urls)s::text[]) RETURNING e.url"
     ),
     "lookup_page_id": (
         f"SELECT p.resource_id, p.url FROM {P} p JOIN {R} r ON r.id = p.resource_id "
@@ -711,8 +721,9 @@ class Store:
         return await self._one("entry_by_page_id", {"uid": user_id, "page": page_id})
 
     async def in_map(self, user_id: str, resource_id: str, url: str) -> bool:
-        """Whether ``url`` is an entry of the resource's live map (kept or dropped: both came
-        from the site's own index)."""
+        """Whether ``url`` is a kept entry of the resource's live map (a pin is kept): the pages a
+        resource with a login may be read at (§5). A page the focus dropped is outside it: the
+        target's own page could otherwise steer a read, with the login, to any page the index lists."""
         row = await self._one("in_map", {"uid": user_id, "rid": resource_id, "url": url})
         return bool(row and row["found"])
 
@@ -723,11 +734,22 @@ class Store:
         """The resource's curation rows (url, pinned, blocked, renamed_title, restored_from_drop)."""
         return await self._all("curation_rows", {"uid": user_id, "rid": resource_id})
 
-    async def clear_blocked(self, user_id: str, resource_id: str, generation: int) -> tuple[int, int]:
-        """Empties the stored text and sections of the blocked URLs in ``generation`` (a job's
-        own, after its write); returns (pages, bytes) it cleared."""
-        row = await self._one("clear_blocked", {"uid": user_id, "rid": resource_id, "gen": generation})
-        return (int(row["pages"]), int(row["bytes"])) if row else (0, 0)
+    async def clear_blocked(self, user_id: str, resource_id: str, generation: int, urls: Sequence[str]) -> list[str]:
+        """Deletes the sections and empties the stored text of ``urls`` (blocked) in ``generation``
+        (a job's own, after its write); returns the URLs it found there."""
+        if not urls:
+            return []
+        rows = await self._all("clear_blocked", {"uid": user_id, "rid": resource_id, "gen": generation,
+                                                  "urls": list(urls)})
+        return [r["url"] for r in rows]
+
+    async def restore_pinned(self, user_id: str, resource_id: str, generation: int, urls: Sequence[str]) -> list[str]:
+        """Keeps the dropped entries of ``urls`` (pinned) in ``generation`` while it is live; returns them."""
+        if not urls:
+            return []
+        rows = await self._all("restore_pinned", {"uid": user_id, "rid": resource_id, "gen": generation,
+                                                   "urls": list(urls)})
+        return [r["url"] for r in rows]
 
     # --- page IDs (library.page_ids.PageIdStore) ---------------------------------------
 

@@ -419,11 +419,7 @@ async def write(state: IngestState) -> None:
     if state.tree:
         await st.write_tree(owner, rid, gen, state.tree)
     # A block the person made while the job ran (T6.6): its text leaves this generation too.
-    pages, size = await st.clear_blocked(owner, rid, gen)
-    if pages:
-        state.stored_counts["pages"] = max(0, state.stored_counts["pages"] - pages)
-        state.stored_counts["bytes"] = max(0, state.stored_counts["bytes"] - size)
-        logger.info(f"[tradecraft] job {state.request.job_id} curation code=blocked_during_job pages={pages}")
+    await curation.block_late(state)
 
 
 def swap_updates(state: IngestState, failure: str) -> dict:
@@ -460,6 +456,7 @@ async def swap(state: IngestState, failure: str) -> JobOutcome:
         state.owner_id, state.resource_id, req.job_id, state.generation, req.resource.url,
         req.resource.storage_mode, swap_updates(state, failure), status=status, error_code=code)
     if answer == "swapped":
+        await curation.restore_late(state)
         return JobOutcome(status=status, error_code=code, report=state.report, swapped=True)
     code = {"gone": "resource_deleted", "changed": "resource_changed", "lost": "agent_lost"}[answer]
     return JobOutcome(status="failed", error_code=code, report=state.report)

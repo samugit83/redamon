@@ -101,6 +101,14 @@ def test_login_map_only():
     assert out.error_code == "outside_map" and fetcher.requests == []
 
 
+def test_a_dropped_entry_is_outside_a_login_map():
+    """S10 review 2, finding 2: Read now sends a login only to a kept page of the map."""
+    store = _store(login=True, urls=(UNION,))
+    store.entries[0]["status"] = "dropped"
+    out, fetcher = run(store, _request(credentials=LOGIN))
+    assert out.error_code == "outside_map" and fetcher.requests == []
+
+
 def test_the_login_flag_is_the_stores():
     # A request that carries a login for a resource the store says has none sends no login.
     out, fetcher = run(_store(login=False), _request(credentials=LOGIN))

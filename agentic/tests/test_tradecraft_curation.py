@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tradecraft.ingest import storage  # noqa: E402
+from tradecraft.ingest import curation, storage  # noqa: E402
 from tradecraft_doubles import FAKE_COOKIE  # noqa: E402
 from tradecraft_job_harness import RID, JobHarness  # noqa: E402
 from tradecraft_memory_store import padded_sites  # noqa: E402
@@ -146,8 +146,9 @@ def test_a_pin_must_be_an_entry_url(tmp_path):
     h.store.curate(RID, "https://WIKI.tc-fixture.test:443/sqli/pinned-elsewhere/", pinned=True)
     h.refresh()
     pins = {e["url"] for e in h.live() if e["source"] == "pin"}
-    # Only the last, read as its canonical URL, is a URL an entry may hold.
-    assert pins == {WIKI + "sqli/pinned-elsewhere/"}
+    # A fragment is not a page: that pin joins as its page (the Map view accepts it too); the
+    # last joins under its canonical URL; the others are no URL an entry may hold.
+    assert pins == {WIKI + "page", WIKI + "sqli/pinned-elsewhere/"}
 
 
 def test_no_pins_on_a_pdf(tmp_path):
@@ -167,3 +168,128 @@ def test_a_curation_of_another_resource_is_not_read(tmp_path):
     h.refresh()
     assert UNION in h.live_by_url()
     assert ("curation_rows", ("u1", RID)) in h.store.calls
+
+
+# --------------------------------------------------------------------------------------
+# The review's cases (S10 R-F2)
+# --------------------------------------------------------------------------------------
+
+def test_a_block_made_during_the_writes_takes_its_sections(tmp_path):
+    """Review 2, finding 1: the Map view's block lands after the job wrote the entry (text emptied)
+    and before it wrote the sections: those sections must not survive the swap."""
+    h = _wiki(tmp_path)
+    store = h.store
+    original = store.write_sections
+
+    async def block_then_write(user_id, resource_id, generation, sections):
+        # What curation.ts block() does: the row, then the text of every stored generation.
+        store.curate(RID, UNION, blocked=True)
+        for e in store.entries:
+            if e["url"] == UNION:
+                store.sections = [x for x in store.sections if x["entry_id"] != e["id"]]
+                e["stored_text"], e["stored_bytes"] = None, 0
+        return await original(user_id, resource_id, generation, sections)
+
+    store.write_sections = block_then_write
+    h.settings["storage.incremental"] = False  # the page is stored again, its sections written apart
+    h.refresh()
+    assert ("clear_blocked" in store.names()) and store.writes
+    gen = h.row["generation"]
+    ids = {e["id"] for e in store.entries if e["url"] == UNION and e["generation"] == gen}
+    assert ids and not [x for x in store.sections if x["entry_id"] in ids]
+    assert UNION not in h.live_by_url() or not h.live_by_url()[UNION]["stored_text"]
+    report = h.row["ingestion_report"]
+    stored = [e for e in h.live() if e["stored_text"]]
+    assert report["stored"]["pages"] == len(stored)
+    assert UNION not in {e["path"] for e in h.row["sitemap"]["nav"]}
+
+
+def test_a_restore_made_during_the_refresh_survives_its_swap(tmp_path, monkeypatch):
+    """Review 2, finding 4: the restore lands after curation.apply read the rows."""
+    focus = {"mode": "focused", "topics": ["xss"], "strictness": "strict"}
+    h = _wiki(tmp_path, resource={"focus": focus})
+    assert h.live_by_url()[UNION]["status"] == "dropped"
+    original = storage.store
+
+    async def restore_meanwhile(state):
+        out = await original(state)
+        h.store.curate(RID, UNION, pinned=True, restored_from_drop=True)
+        for e in h.live():
+            if e["url"] == UNION:
+                e["status"], e["drop_reason"] = "kept", ""
+        return out
+
+    monkeypatch.setattr(storage, "store", restore_meanwhile)
+    h.refresh()
+    assert h.live_by_url()[UNION]["status"] == "kept"
+    monkeypatch.setattr(storage, "store", original)
+    h.refresh()
+    assert h.live_by_url()[UNION]["status"] == "kept" and h.live_by_url()[UNION]["stored_text"]
+
+
+PDF = "https://files.tc-fixture.test/guide.pdf"
+
+
+def test_pdf_page_blocks_and_renames_survive(tmp_path):
+    """Review 2, finding 3: a PDF page's curation names it with its #page=N."""
+    h = JobHarness(tmp_path, PDF)
+    h.run()
+    pages = sorted(e["url"] for e in h.live())
+    assert PDF + "#page=2" in pages and PDF + "#page=3" in pages
+    h.store.curate(RID, PDF + "#page=2", blocked=True)
+    h.store.curate(RID, PDF + "#page=3", renamed_title="Appendix")
+    for _ in range(2):
+        h.refresh()
+        live = h.live_by_url()
+        assert PDF + "#page=2" not in live
+        assert live[PDF + "#page=3"]["title"] == "Appendix" and live[PDF + "#page=3"]["title_source"] == "renamed"
+
+
+def test_the_reader_refuses_a_blocked_pdf_page():
+    import asyncio
+
+    from tradecraft.contract import CatalogResource, V2Catalog
+    from tradecraft.library import reader
+    from tradecraft_memory_store import MemoryStore
+
+    store = MemoryStore()
+    store.add_resource("u1", RID, url=PDF, slug="guide", storage_mode="stored")
+    store.curate(RID, PDF + "#page=2", blocked=True)
+    resource = CatalogResource(id=RID, slug="guide", name="guide", url=PDF, type="pdf", storage_mode="stored",
+                               map_version=3)
+    catalog = V2Catalog(v2=True, owner_id="u1", person_id="u1", resources=[resource])
+    read = reader._Read(catalog, resource, {"url": PDF, "storage_mode": "stored"}, store)
+    assert "blocked" in asyncio.run(reader._refusal(read, PDF + "#page=2"))
+    assert asyncio.run(reader._refusal(read, PDF + "#page=3")) == ""
+
+
+def test_a_block_wins_whatever_the_row_order():
+    """Review 1, finding 4: a pin typed in another form and a later block of the entry merge to
+    a block, in either order; a rename on the entry's own URL wins."""
+    pin = {"url": "https://WIKI.tc-fixture.test", "pinned": True, "blocked": False, "renamed_title": "Typed",
+           "restored_from_drop": False}
+    block = {"url": WIKI, "pinned": False, "blocked": True, "renamed_title": "Own", "restored_from_drop": False}
+    for rows in ([pin, block], [block, pin]):
+        cur = curation.merged(rows)
+        assert list(cur) == [WIKI]
+        assert cur[WIKI].blocked and not cur[WIKI].keeps and cur[WIKI].renamed == "Own"
+
+
+def test_a_pin_typed_in_another_form_and_a_block_drop_the_page(tmp_path):
+    h = _wiki(tmp_path)
+    h.store.curate(RID, "https://WIKI.tc-fixture.test:443", pinned=True)
+    h.store.curate(RID, WIKI, blocked=True)
+    h.refresh()
+    assert WIKI not in h.live_by_url()
+
+
+def test_restored_from_drop_alone_is_no_pin(tmp_path):
+    """Review 1, finding 4: block then unblock clears the pin and leaves restoredFromDrop; the page
+    is the focus's again."""
+    focus = {"mode": "focused", "topics": ["xss"], "strictness": "strict"}
+    h = _wiki(tmp_path, resource={"focus": focus})
+    h.store.curate(RID, UNION, pinned=False, blocked=False, restored_from_drop=True)
+    h.store.curate(RID, EXTRA, pinned=False, restored_from_drop=True)
+    h.refresh()
+    assert h.live_by_url()[UNION]["status"] == "dropped"
+    assert EXTRA not in h.live_by_url()

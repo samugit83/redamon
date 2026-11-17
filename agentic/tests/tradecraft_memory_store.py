@@ -376,7 +376,8 @@ class MemoryStore:
         return None
 
     async def in_map(self, user_id, resource_id, url):
-        return await self.entry_by_url(user_id, resource_id, url) is not None
+        entry = await self.entry_by_url(user_id, resource_id, url)
+        return entry is not None and entry.get("status", "kept") == "kept"
 
     async def curation(self, user_id, resource_id, url):
         if self._res(user_id, resource_id) is None:
@@ -391,8 +392,9 @@ class MemoryStore:
         if self._res(user_id, resource_id) is None:
             return []
         keys = ("url", "pinned", "blocked", "renamed_title", "restored_from_drop")
+        rows = [c for c in self.curations if c["resource_id"] == resource_id]
         return [{k: c.get(k, False if k in ("pinned", "blocked", "restored_from_drop") else None) for k in keys}
-                for c in self.curations if c["resource_id"] == resource_id]
+                for c in sorted(rows, key=lambda c: (c["url"], str(c.get("id", ""))))]
 
     def curate(self, resource_id, url, **flags):
         """Seeds or updates the curation row of ``url`` (a test's Map view)."""
@@ -404,18 +406,29 @@ class MemoryStore:
         row.update(flags)
         return row
 
-    async def clear_blocked(self, user_id, resource_id, generation):
-        self._log("clear_blocked", user_id, resource_id, generation)
-        blocked = {c["url"] for c in self.curations if c["resource_id"] == resource_id and c.get("blocked")}
-        pages = size = 0
+    async def clear_blocked(self, user_id, resource_id, generation, urls):
+        self._log("clear_blocked", user_id, resource_id, generation, tuple(urls))
+        found = []
         for e in self.entries:
             if (e["user_id"] == user_id and e["resource_id"] == resource_id and e["generation"] == generation
-                    and e["url"] in blocked and (e.get("stored_text") is not None or e.get("stored_bytes"))):
-                pages += 1
-                size += e.get("stored_bytes") or 0
+                    and e["url"] in set(urls)):
+                found.append(e["url"])
                 e["stored_text"], e["stored_bytes"] = None, 0
                 self.sections = [x for x in self.sections if x["entry_id"] != e["id"]]
-        return pages, size
+        return found
+
+    async def restore_pinned(self, user_id, resource_id, generation, urls):
+        self._log("restore_pinned", user_id, resource_id, generation, tuple(urls))
+        r = self._res(user_id, resource_id)
+        if r is None or r["generation"] != generation:
+            return []
+        found = []
+        for e in self.entries:
+            if (e["resource_id"] == resource_id and e["generation"] == generation and e.get("status") == "dropped"
+                    and e["url"] in set(urls)):
+                e["status"], e["drop_reason"] = "kept", ""
+                found.append(e["url"])
+        return found
 
     async def lookup_page_id(self, owner_id, page_number):
         for (rid, url), n in self.page_ids.items():

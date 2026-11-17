@@ -205,7 +205,8 @@ async def _refusal(read: _Read, url: str) -> str:
     problem = net.url_problem(url)
     if problem:
         return BAD_URL.format(url=url, code=problem)
-    canonical = fetch.canonical_url(url)
+    # The entry's own URL: a PDF page keeps its "#page=N", which names a page of its own.
+    canonical = fetch.page_url(url)
     curation = await read.store.curation(read.owner, read.resource.id, canonical)
     if curation and curation.get("blocked"):
         return BLOCKED.format(url=url, slug=read.slug)

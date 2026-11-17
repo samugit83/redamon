@@ -108,6 +108,17 @@ def canonical_url(url: str) -> str:
     return urllib.parse.urlunsplit((scheme, host, parts.path or "/", parts.query, ""))
 
 
+_PDF_PAGE_FRAGMENT = re.compile(r"page=\d+")
+
+
+def page_url(url: str) -> str:
+    """The URL an entry of the map is stored under: ``canonical_url``, keeping a PDF page's
+    ``#page=N``, the only fragment an entry holds (any other fragment is not a page)."""
+    base, sep, fragment = (url or "").strip().partition("#")
+    canonical = canonical_url(base)
+    return f"{canonical}#{fragment}" if sep and _PDF_PAGE_FRAGMENT.fullmatch(fragment) else canonical
+
+
 def entry_url_ok(url: str) -> bool:
     return bool(url) and len(url.encode("utf-8", "replace")) <= MAX_URL_CHARS and not net.url_problem(url)
 

@@ -158,14 +158,63 @@ async def test_clear_blocked_on_the_jobs_generation(pg):
                 for u in (UNION, ERROR)])
             await store.write_sections(uid, rid, gen, [{"entry_id": entries[ids[u]], "ord": 0, "level": 1,
                                                         "text": "section"} for u in (UNION, ERROR)])
-        await pg.curate(rid, UNION, blocked=True)
-    assert await store.clear_blocked(a, ra, 2) == (1, 100)
+    # The Map view's block emptied ERROR's text in generation 2 before the job wrote its sections
+    # (S10 review 2, finding 1): its sections must go all the same.
+    await pg.sql("UPDATE tradecraft_entries SET stored_text = NULL, stored_bytes = 0 "
+                 "WHERE resource_id = %s AND generation = 2 AND url = %s", ra, ERROR)
+    assert sorted(await store.clear_blocked(a, ra, 2, [UNION, ERROR])) == sorted([UNION, ERROR])
     rows = await pg.sql("SELECT e.resource_id, e.generation, e.url, e.stored_text IS NULL AS cleared, "
                         "(SELECT count(*) FROM tradecraft_sections s WHERE s.entry_id = e.id) AS sections "
                         "FROM tradecraft_entries e WHERE e.resource_id = ANY(%s)", [ra, rb])
     cleared = {(r["resource_id"], r["generation"], r["url"]) for r in rows if r["cleared"]}
-    assert cleared == {(ra, 2, UNION)}
+    assert cleared == {(ra, 2, UNION), (ra, 2, ERROR)}
     assert all(r["sections"] == (0 if (r["resource_id"], r["generation"], r["url"]) in cleared else 1) for r in rows)
-    # Twice is nothing more; another owner names no row of this resource.
-    assert await store.clear_blocked(a, ra, 2) == (0, 0)
-    assert await store.clear_blocked(b, ra, 1) == (0, 0)
+    # Twice finds the rows and changes nothing more; another owner names no row of this resource.
+    assert sorted(await store.clear_blocked(a, ra, 2, [UNION])) == [UNION]
+    assert await store.clear_blocked(b, ra, 1, [UNION]) == []
+    assert await store.clear_blocked(a, ra, 2, []) == []
+
+
+async def test_restore_pinned_keeps_only_the_live_generation(pg):
+    store = Store()
+    a, b = await pg.user(), await pg.user()
+    ra = await pg.resource(a, generation=2)
+    ids = await store.allocate_page_ids(a, ra, [UNION, ERROR])
+    for gen in (1, 2):
+        await store.write_entries(a, ra, gen, [{"page_id": ids[u], "url": u, "status": "dropped",
+                                                "drop_reason": "outside the focus"} for u in (UNION, ERROR)])
+    assert await store.restore_pinned(a, ra, 2, [UNION]) == [UNION]
+    rows = {(r["generation"], r["url"]): r for r in await pg.sql(
+        "SELECT generation, url, status, drop_reason FROM tradecraft_entries WHERE resource_id = %s", ra)}
+    assert (rows[(2, UNION)]["status"], rows[(2, UNION)]["drop_reason"]) == ("kept", "")
+    assert rows[(2, ERROR)]["status"] == "dropped" and rows[(1, UNION)]["status"] == "dropped"
+    # Not the live generation, another owner, nothing named: nothing written.
+    assert await store.restore_pinned(a, ra, 1, [UNION]) == []
+    assert await store.restore_pinned(b, ra, 2, [ERROR]) == []
+    assert await store.restore_pinned(a, ra, 2, []) == []
+
+
+async def test_curation_rows_come_in_one_order(pg):
+    store = Store()
+    a = await pg.user()
+    ra = await pg.resource(a)
+    for url in (WIKI + "b/", WIKI + "a/", "https://WIKI.tc-fixture.test"):
+        await pg.curate(ra, url, pinned=True)
+    # One order on every read (the merge does not depend on it, but a log or a test may).
+    first = [r["url"] for r in await store.curation_rows(a, ra)]
+    assert len(first) == 3
+    for _ in range(3):
+        assert [r["url"] for r in await store.curation_rows(a, ra)] == first
+
+
+async def test_in_map_is_the_kept_map(pg):
+    """S10 review 2, finding 2: a resource with a login reads only kept entries of its live map."""
+    store = Store()
+    a = await pg.user()
+    ra = await pg.resource(a, generation=1)
+    ids = await store.allocate_page_ids(a, ra, [UNION, ERROR])
+    await store.write_entries(a, ra, 1, [{"page_id": ids[UNION], "url": UNION, "status": "kept"},
+                                         {"page_id": ids[ERROR], "url": ERROR, "status": "dropped"}])
+    assert await store.in_map(a, ra, UNION) is True
+    assert await store.in_map(a, ra, ERROR) is False
+    assert await store.in_map(await pg.user(), ra, UNION) is False

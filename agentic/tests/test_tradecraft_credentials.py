@@ -246,13 +246,13 @@ def test_no_login_value_in_browser_script(tmp_path, monkeypatch):
 OWNER = "user_owner_fake"
 
 
-def _read_live(fetcher, *, credentials, settings=None, url=WIKI + "sqli/union-based/"):
+def _read_live(fetcher, *, credentials, settings=None, url=WIKI + "sqli/union-based/", status="kept"):
     store = MemoryStore()
     store.add_resource(OWNER, "r1", url=WIKI, slug="wiki", storage_mode="live", map_version=3,
                        resource_type="mkdocs-wiki", has_login=credentials is not None,
                        sitemap={"nav": [{"title": "Union based", "path": url}]})
     store.entries.append({"id": 1, "user_id": OWNER, "resource_id": "r1", "generation": 0, "page_id": 1, "url": url,
-                          "title": "Union based", "stored_text": None, "stored_bytes": 0})
+                          "title": "Union based", "stored_text": None, "stored_bytes": 0, "status": status})
     store.page_ids[("r1", url)] = 1
     catalog = {"v2": True, "owner_id": OWNER, "person_id": OWNER, "actor_id": None, "search": {},
                "resources": [{"id": "r1", "slug": "wiki", "name": "wiki", "url": WIKI, "type": "mkdocs-wiki",
@@ -276,6 +276,16 @@ def test_live_read_carries_the_login_and_never_the_browser():
     plain = FixtureFetcher()
     _read_live(plain, credentials=None, settings=ALWAYS)
     assert plain.browser.renders and not any(carries_login(h) for _u, h in plain.requests)
+
+
+def test_a_dropped_page_of_a_login_resource_is_never_read():
+    """S10 review 2, finding 2: a page the focus dropped is not the map a login may read (§5)."""
+    f = FixtureFetcher()
+    out = _read_live(f, credentials=LOGIN, status="dropped")
+    assert "only the pages of its map" in out and f.requests == []
+    # Without a login the same dropped page is read live, as before (no login travels).
+    plain = FixtureFetcher()
+    assert "Union" in _read_live(plain, credentials=None, status="dropped") and plain.requests
 
 
 def test_a_read_outside_lookup_carries_the_login_too():

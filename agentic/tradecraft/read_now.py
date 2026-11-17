@@ -6,8 +6,8 @@ and the resource's secrets; the agent checks everything again against the store,
 
 1. the resource is gone for this owner                     -> ``resource_deleted``, no request
 2. the page is blocked                                     -> ``page_blocked``, no request
-3. the resource has a login (the store's flag) and the URL is neither an entry of its live map
-   nor a pin on its own host                                -> ``outside_map``, no request
+3. the resource has a login (the store's flag) and the URL is neither a kept entry of its live
+   map nor a pin on its own host                            -> ``outside_map``, no request
 4. otherwise the page is downloaded through the reader's live read (``reader.live_page``: the
    same settings, the same cleaning, plain HTTP only with a login, the login only on the
    resource's own host) and its text is answered; a PDF page is read from the document.
@@ -47,8 +47,8 @@ def _answer(code: str) -> ReadNowResult:
 
 
 async def _may_read(store: Any, owner: str, rid: str, url: str, row: dict, curation: Optional[dict]) -> bool:
-    """A resource with a login reads only its map (§5): an entry of the live generation, or a pin
-    the person added on the resource's own host that no refresh has listed yet."""
+    """A resource with a login reads only its map (§5): a kept entry of the live generation, or a
+    pin the person added on the resource's own host that no refresh has listed yet."""
     if await store.in_map(owner, rid, url):
         return True
     pinned = bool(curation and (curation.get("pinned") or curation.get("restored_from_drop")))
@@ -78,9 +78,7 @@ async def read_now(request: ReadNowRequest, *, store: Any = None) -> ReadNowResu
     row = await store.legacy_sitemap(owner, rid)
     if row is None:
         return _answer("resource_deleted")
-    canonical = fetch.canonical_url(url)
-    if "#page=" in url:
-        canonical = fetch.canonical_url(url.split("#", 1)[0]) + "#" + url.split("#", 1)[1]
+    canonical = fetch.page_url(url)
     curation = await store.curation(owner, rid, canonical)
     if curation and curation.get("blocked"):
         return _answer("page_blocked")
