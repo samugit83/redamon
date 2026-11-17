@@ -13,6 +13,11 @@ the report and read live later:
 
 A page the crawl already downloaded is not downloaded again; a PDF page's text comes from the
 document. A page that cannot be read is not stored and its error code is counted.
+
+Incremental refresh (T6.2): a page ``incremental.plan`` marked with its stored copy
+(``extra["reuse"]``) is asked for with that copy's validators, and is unchanged when the site
+answers 304 or its text has the copy's fingerprint. An unchanged page is counted as stored but
+not kept here: the write copies it forward from the live generation (``extra["unchanged"]``).
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
+from logging_config import get_logger
 from tradecraft import clock
 from tradecraft.ingest import fetch, github_archive, titles
 from tradecraft.settings import constant
@@ -29,7 +35,13 @@ from tradecraft.settings import constant
 if TYPE_CHECKING:
     from tradecraft.ingest.pipeline import IngestState
 
+logger = get_logger(__name__)
+
 MB = 1024 * 1024
+# entry.extra keys of an incremental refresh: the live copy incremental.plan found, and the
+# decision that the page did not change.
+REUSE = "reuse"
+UNCHANGED = "unchanged"
 
 
 @dataclass
@@ -55,30 +67,56 @@ def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def conditional_headers(row: dict) -> dict[str, str]:
+    """The stored copy's validators for a conditional request; {} when it has none. A value with
+    a line break never travels (it was written by a site, and would add a header line)."""
+    headers = {}
+    for name, column in (("If-None-Match", "etag"), ("If-Modified-Since", "last_modified")):
+        value = str(row.get(column) or "").strip()
+        if value and not any(c in value for c in "\r\n\x00"):
+            headers[name] = value
+    return headers
+
+
 def stores_text(site_type: str, storage_mode: str) -> bool:
     if site_type == "cve-poc-db":
         return False
     return site_type == "pdf" or storage_mode == "stored"
 
 
-async def _page_text(state: "IngestState", entry) -> tuple[str, str, dict]:
-    """(Markdown text, error code, response headers) of one kept entry."""
+async def _page_text(state: "IngestState", entry) -> tuple[str, str, dict, bool]:
+    """(Markdown text, error code, response headers, not modified) of one kept entry."""
     if "text" in entry.extra:  # a PDF page
-        return entry.extra["text"] or "", "", {}
+        return entry.extra["text"] or "", "", {}, False
     if "html" in entry.extra:  # the crawl's own download
-        return await state.clean(entry.extra["html"]), "", {}
+        return await state.clean(entry.extra["html"]), "", {}, False
+    reuse = entry.extra.get(REUSE)
     # §5: a resource with a login never uses the browser, "always use the browser" included.
     page = await fetch.smart_fetch(entry.url, state.settings, github_token=state.github_token,
-                                   allow_browser=not fetch.has_login(state.request.secrets), cleaner=state.clean)
+                                   allow_browser=not fetch.has_login(state.request.secrets), cleaner=state.clean,
+                                   headers=conditional_headers(reuse) if reuse else None)
     state.visited += 1
+    if page.status == 304 and reuse:
+        return "", "", page.headers, True
     state.store_downloads += 1
     if page.error or not (200 <= page.status < 300):
         state.store_download_failures += 1
-        return "", page.error or "http_error", {}
+        return "", page.error or "http_error", {}, False
     if page.truncated:
         state.count_error(fetch.PAGE_TOO_LARGE)
     titles.collect(state, entry, html=page.html, text=page.text, content_type=page.content_type)
-    return page.text, "", page.headers
+    return page.text, "", page.headers, False
+
+
+def _carry(state: "IngestState", entry, headers: dict) -> None:
+    """The page did not change: the write copies it forward. Its new validators, when the site
+    sent some, replace the copy's; a real title it had stays (no download gave a new one)."""
+    entry.extra[UNCHANGED] = True
+    entry.extra["validators"] = {"etag": _header(headers, "etag"), "last_modified": _header(headers, "last-modified")}
+    row = entry.extra[REUSE]
+    if titles.wants_stored(state, entry) and row.get("title_source") == "real" and row.get("title"):
+        entry.title = row["title"]
+        entry.extra["title_source"] = "real"
 
 
 async def store(state: "IngestState") -> "IngestState":
@@ -97,7 +135,7 @@ async def store(state: "IngestState") -> "IngestState":
     kept = [e for e in state.entries if e.extra.get("status", "kept") == "kept"]
     # A Stored repository's files from one archive download (T6.3); what it misses is downloaded below.
     from_archive = await github_archive.prefetch(state, kept)
-    total, stored = 0, 0
+    total, stored, unchanged = 0, 0, 0
     for i, entry in enumerate(kept):
         await state.check_cancelled()
         if stored >= max_pages or total >= max_resource:
@@ -106,6 +144,8 @@ async def store(state: "IngestState") -> "IngestState":
         if total >= room:
             state.stored_counts["notStoredQuota"] += 1
             continue
+        reuse = entry.extra.get(REUSE)
+        not_modified = False
         if entry.url in from_archive:
             text, cut = from_archive.pop(entry.url)
             error, headers = "", {}
@@ -113,14 +153,17 @@ async def store(state: "IngestState") -> "IngestState":
                 state.count_error(fetch.PAGE_TOO_LARGE)
             titles.collect(state, entry, text=text, content_type="text/markdown")
         else:
-            text, error, headers = await _page_text(state, entry)
+            text, error, headers, not_modified = await _page_text(state, entry)
         if error:
             state.count_error(error)
             continue
-        if not text.strip():
-            continue
-        text, truncated = cut_utf8(text, max_page_bytes)
-        size = len(text.encode("utf-8"))
+        if not_modified:
+            size = int(reuse.get("stored_bytes") or 0)
+        else:
+            if not text.strip():
+                continue
+            text, truncated = cut_utf8(text, max_page_bytes)
+            size = len(text.encode("utf-8"))
         if total + size > max_resource:
             state.stored_counts["notStoredSize"] += 1
             continue
@@ -129,14 +172,22 @@ async def store(state: "IngestState") -> "IngestState":
             continue
         total += size
         stored += 1
-        state.texts[entry.url] = StoredPage(text=text, bytes=size, text_hash=text_hash(text),
-                                            fetched_at=clock.now(), truncated=truncated,
-                                            etag=_header(headers, "etag"),
-                                            last_modified=_header(headers, "last-modified"))
+        digest = "" if not_modified else text_hash(text)
+        if not_modified or (reuse and digest == reuse.get("text_hash")):
+            _carry(state, entry, headers)
+            unchanged += 1
+        else:
+            state.texts[entry.url] = StoredPage(text=text, bytes=size, text_hash=digest,
+                                                fetched_at=clock.now(), truncated=truncated,
+                                                etag=_header(headers, "etag"),
+                                                last_modified=_header(headers, "last-modified"))
         await state.progress("store", i + 1, len(kept), "pages")
     state.stored_counts["pages"] = stored
     state.stored_counts["bytes"] = total
     titles.finish(state)
+    if state.previous:
+        logger.info(f"[tradecraft] job {state.request.job_id} incremental code= unchanged={unchanged} "
+                    f"stored={stored - unchanged}")
     return state
 
 

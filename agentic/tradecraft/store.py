@@ -71,6 +71,16 @@ TREE_WRITE = (
     ("path", "text", REQUIRED), ("parent_path", "text", REQUIRED), ("label", "text", REQUIRED),
     ("page_count", "int", 0), ("description", "text", ""), ("kind", "text", "folder"),
 )
+# An unchanged page of an incremental refresh (T6.6's R-342, T6.2) is copied forward: its text and
+# what was measured of it come from the live generation, every other column from this refresh's
+# card (a rename, a focus decision, new tags), its ETag and Last-Modified from this refresh's
+# answer when it sent one.
+CARRIED_FROM_PREVIOUS = ("size_chars", "stored_text", "stored_bytes", "text_hash", "fetched_at")
+CARRY_WRITE = tuple(c for c in ENTRY_WRITE if c[0] not in CARRIED_FROM_PREVIOUS)
+# What a refresh needs of the live generation's stored pages to decide what changed: never the text.
+REFRESH_BASIS = ("page_id", "url", "title", "title_source", "text_hash", "etag", "last_modified", "fetched_at",
+                 "stored_bytes", "headings", "description", "description_source", "topics", "kinds", "technologies",
+                 "entities", "generation")
 # Rows per bulk statement, and a byte budget so a batch of large stored pages stays small.
 WRITE_BATCH_ROWS = 500
 WRITE_BATCH_BYTES = 8 * 1024 * 1024
@@ -246,6 +256,33 @@ STATEMENTS: dict[str, str] = {
         f"SELECT r.id, r.user_id, %(gen)s, {_cols(_names(TREE_WRITE), 'x')} FROM {R} r "
         f"CROSS JOIN jsonb_to_recordset(%(rows)s::jsonb) AS x({_recordset(TREE_WRITE)}) "
         f"WHERE r.id = %(rid)s AND r.user_id = %(uid)s RETURNING id"
+    ),
+    # --- incremental refresh (T6.2) -------------------------------------------------------
+    "refresh_basis": (
+        f"SELECT {_cols(REFRESH_BASIS, 'e')} FROM {E} e {_live('e')} "
+        f"WHERE e.user_id = %(uid)s AND e.resource_id = %(rid)s AND e.stored_text IS NOT NULL AND e.text_hash <> ''"
+    ),
+    "copy_forward_entries": (
+        f"INSERT INTO {E} (user_id, resource_id, generation, {', '.join(_names(CARRY_WRITE))}, "
+        f"{', '.join(CARRIED_FROM_PREVIOUS)}) "
+        f"SELECT r.user_id, r.id, %(gen)s, "
+        + ", ".join(f"COALESCE(NULLIF(x.{n}, ''), o.{n})" if n in ("etag", "last_modified") else f"x.{n}"
+                    for n in _names(CARRY_WRITE))
+        + f", {_cols(CARRIED_FROM_PREVIOUS, 'o')} FROM {R} r "
+        f"CROSS JOIN jsonb_to_recordset(%(rows)s::jsonb) AS x({_recordset(CARRY_WRITE)}) "
+        f"JOIN {E} o ON o.user_id = r.user_id AND o.resource_id = r.id AND o.generation = %(from)s "
+        f"AND o.page_id = x.page_id AND o.url = x.url "
+        f"WHERE r.id = %(rid)s AND r.user_id = %(uid)s AND %(gen)s::int <> %(from)s::int RETURNING id, page_id"
+    ),
+    "copy_forward_sections": (
+        f"INSERT INTO {S} (resource_id, user_id, generation, {', '.join(_names(SECTION_WRITE))}) "
+        f"SELECT s.resource_id, s.user_id, %(gen)s, n.id, s.ord, s.heading, s.level, s.anchor, s.text, s.chars "
+        f"FROM {S} s JOIN {E} o ON o.id = s.entry_id AND o.user_id = s.user_id AND o.resource_id = s.resource_id "
+        f"AND o.generation = %(from)s "
+        f"JOIN {E} n ON n.user_id = o.user_id AND n.resource_id = o.resource_id AND n.generation = %(gen)s "
+        f"AND n.page_id = o.page_id "
+        f"WHERE s.user_id = %(uid)s AND s.resource_id = %(rid)s AND s.generation = %(from)s "
+        f"AND o.page_id = ANY(%(pages)s::int[])"
     ),
     # --- storage totals ----------------------------------------------------------------
     "user_stored_bytes": (
@@ -575,6 +612,38 @@ class Store:
     async def write_tree(self, user_id: str, resource_id: str, generation: int,
                          nodes: Sequence[Mapping[str, Any]]) -> int:
         return len(await self._write("write_tree", TREE_WRITE, user_id, resource_id, generation, nodes))
+
+    # --- incremental refresh (T6.2) -------------------------------------------------------
+
+    async def refresh_basis(self, user_id: str, resource_id: str) -> list[dict]:
+        """The live generation's stored pages as a refresh compares them (``REFRESH_BASIS``: their
+        fingerprint, validators, date and derived columns, never the text)."""
+        return await self._all("refresh_basis", {"uid": user_id, "rid": resource_id})
+
+    async def copy_forward(self, user_id: str, resource_id: str, from_generation: int, to_generation: int,
+                           cards: Sequence[Mapping[str, Any]]) -> dict[int, int]:
+        """Copies unchanged pages from ``from_generation`` into the job's ``to_generation``: each
+        entry (its text and measures from the old row, the rest from ``cards``) and then its
+        sections, one keyed statement each per batch. Returns {page_id: new entry id}."""
+        out: dict[int, int] = {}
+        for batch in _batches(_rows_for(CARRY_WRITE, cards)):
+            params = {"uid": user_id, "rid": resource_id, "gen": to_generation, "from": from_generation,
+                      "rows": _json(batch)}
+            try:
+                async with self._connect() as conn:
+                    cur = await conn.execute(STATEMENTS["copy_forward_entries"], params)
+                    got = list(await cur.fetchall())
+                    await conn.execute(STATEMENTS["copy_forward_sections"], {
+                        **params, "pages": [int(r["page_id"]) for r in got]})
+            except db.ForeignKeyViolation as exc:
+                raise ResourceGone(resource_id) from exc
+            if len(got) != len(batch):
+                if not await self.resource(user_id, resource_id):
+                    raise ResourceGone(resource_id)
+                raise ValueError(f"copy_forward: {len(batch) - len(got)} rows name no page of generation "
+                                 f"{from_generation}")
+            out.update({int(r["page_id"]): int(r["id"]) for r in got})
+        return out
 
     # --- storage totals ----------------------------------------------------------------
 

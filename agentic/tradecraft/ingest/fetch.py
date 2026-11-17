@@ -325,15 +325,20 @@ Cleaner = Callable[[str], Awaitable[str]]
 
 async def smart_fetch(url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None,
                       allow_browser: bool = True, cleaner: Optional[Cleaner] = None,
-                      max_bytes: Optional[int] = PAGE_MAX_BYTES) -> FetchedPage:
+                      max_bytes: Optional[int] = PAGE_MAX_BYTES,
+                      headers: Optional[Mapping[str, str]] = None) -> FetchedPage:
     """Tier 1, then the browser when tier 1's cleaned text is under the threshold or not text
     (and the browser is allowed).
 
     ``cleaner`` turns HTML into Markdown; a job passes one that runs ``clean_page`` on its
     thread pool, and the default runs it here with the resource's content settings. Tier 1
-    reads at most ``max_bytes``; a PDF cut there is read again whole (a PDF needs its end)."""
+    reads at most ``max_bytes``; a PDF cut there is read again whole (a PDF needs its end).
+    ``headers`` go with tier 1 (an incremental refresh's validators): a 304 answer is returned as
+    it is, never rendered."""
     target = rewrite_github_url(url)
-    extra = {"Accept": "application/vnd.github.raw"} if url_host(target) == "api.github.com" else {}
+    extra = dict(headers or {})
+    if url_host(target) == "api.github.com":
+        extra["Accept"] = "application/vnd.github.raw"
     if cleaner is None:
         options = content_options(settings)
 
@@ -348,7 +353,7 @@ async def smart_fetch(url: str, settings: EffectiveSettings, *, github_token: Op
         if resp.truncated and ("application/pdf" in resp.content_type or resp.body[:5] == b"%PDF-"):
             resp = await fetch_raw(target, settings, github_token=github_token, headers=extra)
         page = await _from_response(url, resp, cleaner)
-        if page.error in ("unsafe_address", "userinfo_refused", "bad_url"):
+        if page.error in ("unsafe_address", "userinfo_refused", "bad_url") or page.status == 304:
             return page
         if page.is_pdf:
             return page

@@ -107,7 +107,8 @@ async def tag(state: "IngestState") -> "IngestState":
         card["topics"] = _merged(_merged(card.get("topics"), judged.get("focus_topics") or ()), found.topics)
         card["kinds"] = _merged(_merged(card.get("kinds"), judged.get("focus_kinds") or ()), found.kinds)
         card["technologies"] = _merged(card.get("technologies"), found.technologies)
-        if not card["topics"]:
+        # An unchanged page of an incremental refresh (T6.2) was judged by the model last time.
+        if not card["topics"] and not card.get("_carried"):
             untagged.append(card)
     if untagged and state.settings.str("focus.tagEveryPage") == "rules_model":
         await tag_by_model(state, untagged)

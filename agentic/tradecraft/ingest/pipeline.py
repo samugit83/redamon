@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from logging_config import get_logger
 from tradecraft import clock
+from tradecraft import store as store_mod
 from tradecraft.contract import JobContext, JobOutcome, JobProgress
 from tradecraft.ingest import (
     builders,
@@ -390,17 +391,24 @@ async def write(state: IngestState) -> None:
         return
     st, owner, rid, gen = state.store, state.owner_id, state.resource_id, state.generation
     page_ids = await st.allocate_page_ids(owner, rid, [c["url"] for c in state.cards])
-    rows = []
+    previous = incremental.previous_generation(state)
+    rows, carried = [], []
     for card in state.cards:
         row = dict(card)
         row["page_id"] = page_ids[card["url"]]
+        if row.pop("_carried", False) and previous is not None and row.get("status", "kept") == "kept":
+            # Unchanged (T6.2): the text, its measures and its sections come from the live generation.
+            carried.append({k: v for k, v in row.items() if k not in store_mod.CARRIED_FROM_PREVIOUS})
+            continue
         stored = state.texts.get(card["url"])
         if stored is not None:
             row.update(stored_text=stored.text, stored_bytes=stored.bytes, text_hash=stored.text_hash,
                        size_chars=len(stored.text), fetched_at=stored.fetched_at.isoformat(),
                        etag=stored.etag, last_modified=stored.last_modified)
         rows.append(row)
-    entry_ids = await st.write_entries(owner, rid, gen, rows)
+    entry_ids = await st.write_entries(owner, rid, gen, rows) if rows else {}
+    if carried:
+        entry_ids.update(await st.copy_forward(owner, rid, previous, gen, carried))
     section_rows = []
     for url, secs in state.sections.items():
         entry_id = entry_ids.get(page_ids.get(url))

@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional
 
 from tradecraft.library.page_ids import PageIdRow
-from tradecraft.store import (ENTRY_WRITE, SECTION_WRITE, SUMMARY_COLUMNS, SWAP_COLUMNS, TREE_WRITE, ResourceGone,
-                              _rows_for, summary_is_kept)
+from tradecraft.store import (CARRIED_FROM_PREVIOUS, CARRY_WRITE, ENTRY_WRITE, REFRESH_BASIS, SECTION_WRITE,
+                              SUMMARY_COLUMNS, SWAP_COLUMNS, TREE_WRITE, ResourceGone, _rows_for, summary_is_kept)
 
 UNFINISHED = ("queued", "running")
 
@@ -290,6 +290,36 @@ class MemoryStore:
             self.tree.append(dict(row, id=next(self._ids), user_id=user_id, resource_id=resource_id,
                                   generation=generation))
         return len(rows)
+
+    # --- incremental refresh (T6.2) -------------------------------------------------------
+
+    async def refresh_basis(self, user_id, resource_id):
+        self._log("refresh_basis", user_id, resource_id)
+        return [{k: copy.deepcopy(e.get(k)) for k in REFRESH_BASIS} for e in self.entries
+                if e["user_id"] == user_id and e["resource_id"] == resource_id and self._live(e)
+                and e.get("stored_text") is not None and e.get("text_hash")]
+
+    async def copy_forward(self, user_id, resource_id, from_generation, to_generation, cards):
+        self._check(user_id, resource_id)
+        rows = _rows_for(CARRY_WRITE, cards)
+        self._log("copy_forward", user_id, resource_id, from_generation, to_generation, [r["page_id"] for r in rows])
+        out = {}
+        for row in rows:
+            old = next((e for e in self.entries if e["user_id"] == user_id and e["resource_id"] == resource_id
+                        and e["generation"] == from_generation and e["page_id"] == row["page_id"]
+                        and e["url"] == row["url"]), None)
+            if old is None or to_generation == from_generation:
+                raise ValueError("copy_forward: a row names no page of the generation")
+            entry = dict(row, id=next(self._ids), user_id=user_id, resource_id=resource_id, generation=to_generation)
+            for k in CARRIED_FROM_PREVIOUS:
+                entry[k] = old.get(k)
+            for k in ("etag", "last_modified"):
+                entry[k] = row.get(k) or old.get(k, "")
+            self.entries.append(entry)
+            out[row["page_id"]] = entry["id"]
+            for sec in [x for x in self.sections if x["entry_id"] == old["id"]]:
+                self.sections.append(dict(sec, id=next(self._ids), entry_id=entry["id"], generation=to_generation))
+        return out
 
     # --- totals and purge -------------------------------------------------------------
 

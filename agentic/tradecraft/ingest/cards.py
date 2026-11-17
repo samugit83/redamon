@@ -159,6 +159,10 @@ async def build(state: "IngestState") -> "IngestState":
     for entry in state.entries:
         card = _base_card(entry)
         card["breadcrumb"] = breadcrumb_for(entry.url, entry.path, entry.source, state.site_type, state.url)
+        if entry.extra.get("unchanged"):
+            # An unchanged page of an incremental refresh (T6.2): what its text gave is the stored
+            # copy's; the write copies the text and sections forward.
+            card.update(_carried(entry))
         html = entry.extra.get("html")
         if html:
             _apply_facts(card, await state.blocking(page_facts, html), title=False)
@@ -173,6 +177,17 @@ async def build(state: "IngestState") -> "IngestState":
     state.cards = cards
     await card_pass(state)
     return state
+
+
+_CARRIED = ("headings", "description", "description_source", "topics", "kinds", "technologies", "entities")
+
+
+def _carried(entry: Any) -> dict:
+    row = entry.extra.get("reuse") or {}
+    out = {k: row[k] for k in _CARRIED if row.get(k)}
+    out.update({k: v for k, v in (entry.extra.get("validators") or {}).items() if v})
+    out["_carried"] = True
+    return out
 
 
 def card_pass_applies(state: "IngestState") -> bool:
