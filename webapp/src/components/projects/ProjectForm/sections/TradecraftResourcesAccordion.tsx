@@ -1,8 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { BookOpen, ChevronDown, ChevronRight, ExternalLink, Lock } from 'lucide-react'
+import { BookOpen, ChevronDown, ChevronRight, ExternalLink, List, Lock } from 'lucide-react'
 import { Toggle } from '@/components/ui/Toggle/Toggle'
+import { IngestionReport } from '@/components/settings/tradecraft/IngestionReport'
+import { MapView } from '@/components/settings/tradecraft/MapView'
 import { ApiError, fetchJson, toApiError } from '@/lib/apiError'
 import { relTime } from '@/lib/tradecraft/client'
 import { canonicalJson } from '@/lib/tradecraft/effectiveSettings'
@@ -76,6 +78,7 @@ export function TradecraftResourcesAccordion({ projectId, offIds, onChange, inDr
   const { load, reload } = useProjectTradecraft(projectId)
   const [open, setOpen] = useState(true)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [pagesOf, setPagesOf] = useState<ProjectResourceRow | null>(null)
   const linkProps: Record<string, string> = inDrawer ? { target: '_blank', rel: 'noopener noreferrer' } : {}
 
   if (load.kind === 'ready' && !load.view.v2) return null
@@ -156,13 +159,21 @@ export function TradecraftResourcesAccordion({ projectId, offIds, onChange, inDr
                         </button>
                       )}
                     </div>
-                    {r.details && expanded === r.id && <Details row={r} linkProps={linkProps} />}
+                    {r.details && expanded === r.id && (
+                      <Details row={r} linkProps={linkProps} onPages={view?.ownerId ? () => setPagesOf(r) : undefined} />
+                    )}
                   </li>
                 ))}
               </ul>
             </>
           )}
         </div>
+      )}
+      {pagesOf?.details && view?.ownerId && (
+        <MapView
+          userId={view.ownerId} readOnly onClose={() => setPagesOf(null)}
+          resource={{ id: pagesOf.id, name: pagesOf.name, url: pagesOf.details.url, storageMode: pagesOf.storageMode ?? 'live' }}
+        />
       )}
     </div>
   )
@@ -196,7 +207,7 @@ export function ingestedWithRows(values: Record<string, unknown>): { key: string
     })
 }
 
-function Details({ row, linkProps }: { row: ProjectResourceRow; linkProps: Record<string, string> }) {
+function Details({ row, linkProps, onPages }: { row: ProjectResourceRow; linkProps: Record<string, string>; onPages?: () => void }) {
   const d = row.details!
   const report = d.report
   const ingestedWith = ingestedWithRows(d.ingestedWith)
@@ -212,10 +223,7 @@ function Details({ row, linkProps }: { row: ProjectResourceRow; linkProps: Recor
       {report && (
         <>
           <dt>Report</dt>
-          <dd>
-            {report.visited} visited, {report.kept} kept, {report.llmCalls} LLM calls, {Math.round(report.durationSec)} s
-            {report.stopReason ? `, stopped: ${report.stopReason}` : ''}
-          </dd>
+          <dd><IngestionReport report={report} /></dd>
         </>
       )}
       <dt>Ingested with</dt>
@@ -234,7 +242,11 @@ function Details({ row, linkProps }: { row: ProjectResourceRow; linkProps: Recor
       <dt>Login</dt><dd>{d.hasLogin ? 'Has a login' : 'No login'}</dd>
       {d.lastError && <><dt>Last error</dt><dd>{d.lastError}</dd></>}
       <dt />
-      <dd><a href={editInGlobalHref(row.id)} {...linkProps}><ExternalLink size={12} /> Edit in Global Settings</a></dd>
+      <dd style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        {/* The Map view, read-only (§3.4): its routes answer the account's own content only. */}
+        {onPages && <button type="button" className="secondaryButton" onClick={onPages}><List size={12} /> Pages</button>}
+        <a href={editInGlobalHref(row.id)} {...linkProps}><ExternalLink size={12} /> Edit in Global Settings</a>
+      </dd>
     </dl>
   )
 }

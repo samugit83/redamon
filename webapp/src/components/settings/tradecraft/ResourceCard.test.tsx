@@ -59,6 +59,17 @@ describe('ResourceCard', () => {
     expect(screen.getByText('Last refreshed never')).toBeInTheDocument()
   })
 
+  test('map_button: Map opens the resource\'s Map view (§6.10); the card shows the full report (§3.3)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ entries: [], total: 0, nextCursor: null }), { status: 200 })))
+    render(<ResourceCard resource={{ ...RESOURCE, report: { visited: 40, kept: 31, stopReason: 'max_pages', llmCalls: 3, durationSec: 9 } as never }} {...handlers()} />)
+    expect(screen.getByTestId('tc-report')).toHaveTextContent('40 visited, 31 kept, 3 LLM calls, 9 s, stopped: max_pages')
+    expect(screen.getByTestId('tc-report-full')).toHaveTextContent('the page limit (max_pages)')
+    fireEvent.click(screen.getByRole('button', { name: 'Map of Lab Wiki' }))
+    expect(await screen.findByText('No pages in the map yet: refresh the resource to build it.')).toBeInTheDocument()
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/users/user-1/tradecraft-resources/r1/map?status=kept', undefined)
+    vi.unstubAllGlobals()
+  })
+
   test('a failed ingestion is no refresh: its 1.x verification time is not shown as one; a clean 1.x verify is', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-11-16T10:00:00Z'))

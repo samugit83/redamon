@@ -7,10 +7,46 @@ import { fetchJson } from '@/lib/apiError'
 import type { JobView } from './jobs'
 import type { ResourceView } from './v2/list'
 import type { IngestionSettingsView } from './userSettings'
-import type { CheckUrlResult, PreviewResult } from './agentContract'
+import type { CheckUrlResult, PreviewResult, ReadNowResult } from './agentContract'
 import type { Focus, UserRecipe } from './focus'
+import type { MapEntryView, MapPage, MapStatus } from './curation'
 
-export type { IngestionSettingsView, JobView, ResourceView, UserRecipe }
+export type { IngestionSettingsView, JobView, MapEntryView, MapPage, MapStatus, ReadNowResult, ResourceView, UserRecipe }
+
+export interface MapQueryInput {
+  query?: string
+  status?: MapStatus
+  tag?: string
+  cursor?: string | null
+}
+
+/** One Map view operation (§6.10), as the map route takes it. */
+export type CurateOp =
+  | { op: 'pin'; url: string }
+  | { op: 'block'; urls: string[] }
+  | { op: 'block'; matching: { query?: string; status?: 'kept' | 'dropped'; tag?: string }; expectedCount: number }
+  | { op: 'unblock'; urls: string[] }
+  | { op: 'rename'; url: string; title: string }
+  | { op: 'restore'; url: string }
+
+/** View page: the stored text with the time it was fetched, or "not stored". */
+export interface PageTextView {
+  pageId: string
+  url: string
+  title: string
+  blocked: boolean
+  stored: boolean
+  text: string
+  fetchedAt: string | null
+  storageMode: string
+}
+
+const PAGE_ID_RE = /^[a-z0-9][a-z0-9-]{0,199}:[1-9][0-9]{0,9}$/
+/** A page ID in a path: `<slug>:<n>` is URL-safe as it is, and the route reads the colon literally. */
+function pagePath(pageId: string): string {
+  if (!PAGE_ID_RE.test(pageId)) throw new Error('Not a page ID')
+  return pageId
+}
 
 /** How often a card's job view is read while its job runs. */
 export const JOB_POLL_MS = 3000
@@ -114,6 +150,23 @@ export const tradecraftClient = {
     fetchJson<{ job: JobView | null }>(`${one(userId, id)}/jobs`, undefined, "Couldn't read the job"),
   cancel: (userId: string, id: string) =>
     fetchJson<{ job: JobView | null }>(`${one(userId, id)}/jobs`, { method: 'DELETE' }, "Couldn't cancel the job"),
+  map: (userId: string, id: string, q: MapQueryInput = {}) => {
+    const sp = new URLSearchParams()
+    if (q.query) sp.set('query', q.query)
+    if (q.status) sp.set('status', q.status)
+    if (q.tag) sp.set('tag', q.tag)
+    if (q.cursor) sp.set('cursor', q.cursor)
+    const qs = sp.toString()
+    return fetchJson<MapPage>(`${one(userId, id)}/map${qs ? `?${qs}` : ''}`, undefined, "Couldn't read the map")
+  },
+  curate: (userId: string, id: string, op: CurateOp) =>
+    fetchJson<{ op: string; count: number }>(`${one(userId, id)}/map`, {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(op),
+    }, "Couldn't change the map"),
+  page: (userId: string, id: string, pageId: string) =>
+    fetchJson<PageTextView>(`${one(userId, id)}/pages/${pagePath(pageId)}`, undefined, "Couldn't read the page"),
+  readNow: (userId: string, id: string, pageId: string) =>
+    fetchJson<{ result: ReadNowResult }>(`${one(userId, id)}/pages/${pagePath(pageId)}`, { method: 'POST' }, 'Read now failed'),
 }
 
 export function isRunning(job: Pick<JobView, 'status'> | null | undefined): boolean {

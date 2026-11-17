@@ -59,6 +59,8 @@ export interface ProjectTradecraftView {
   /** The project owner's Tradecraft 2.0 switch: false leaves the tab and the drawer as they were. */
   v2: boolean
   viewerIsOwner: boolean
+  /** The owner's account, for the owner's own read-only Pages (§3.4); only the owner gets it. */
+  ownerId?: string
   resources: ProjectResourceRow[]
   counts: ActiveCounts | null
 }
@@ -130,5 +132,5 @@ export async function projectTradecraftView(opts: {
     { ownerId, projectId, personId: viewer.personId, actorId: viewer.actorId },
     project?.attackSkillConfig ?? null,
   )
-  return { v2: true, viewerIsOwner, resources, counts }
+  return { v2: true, viewerIsOwner, ...(viewerIsOwner ? { ownerId } : {}), resources, counts }
 }

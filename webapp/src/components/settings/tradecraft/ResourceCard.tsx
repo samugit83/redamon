@@ -1,9 +1,12 @@
 'use client'
 
-import { Loader2, Pencil, RotateCw, Square, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { List, Loader2, Pencil, RotateCw, Square, Trash2 } from 'lucide-react'
 import { Toggle } from '@/components/ui'
 import { isRunning, jobLabel, lastRefreshedOf, relTime, type ResourceView } from '@/lib/tradecraft/client'
 import { useEnabledImpactConfirm } from './EnabledImpactAlert'
+import { IngestionReport } from './IngestionReport'
+import { MapView } from './MapView'
 import css from './tradecraft.module.css'
 
 export const STALE_TEXT = 'Ingested with older settings'
@@ -22,8 +25,12 @@ export interface ResourceCardProps {
   onToggleEnabled: (r: ResourceView, next: boolean) => void
 }
 
-/** One 2.0 resource: its state, its job's stage, and Refresh, which becomes Cancel while a job runs (§4.7). */
+/**
+ * One 2.0 resource: its state, its job's stage, Refresh, which becomes Cancel while a job runs
+ * (§4.7), the Map view (§6.10) and the full ingestion report (§3.3).
+ */
 export function ResourceCard({ userId, resource: r, busy = false, onRefresh, onCancel, onEdit, onDelete, onToggleEnabled }: ResourceCardProps) {
+  const [mapOpen, setMapOpen] = useState(false)
   const running = isRunning(r.job)
   const confirmEnabled = useEnabledImpactConfirm(userId)
   const refreshedAt = lastRefreshedOf(r)
@@ -57,6 +64,9 @@ export function ResourceCard({ userId, resource: r, busy = false, onRefresh, onC
               {busy ? <Loader2 size={12} className={css.spin} /> : <RotateCw size={12} />} Refresh
             </button>
           )}
+          <button type="button" className="secondaryButton" onClick={() => setMapOpen(true)} aria-label={`Map of ${r.name}`}>
+            <List size={12} /> Map
+          </button>
           <button type="button" className="iconButton" onClick={() => onEdit(r)} aria-label={`Edit ${r.name}`} disabled={running}>
             <Pencil size={14} />
           </button>
@@ -77,12 +87,9 @@ export function ResourceCard({ userId, resource: r, busy = false, onRefresh, onC
       <div className={css.meta}>
         <span>Last refreshed {relTime(refreshedAt)}</span>
         <span>{r.entryCount} {r.entryCount === 1 ? 'entry' : 'entries'}</span>
-        {report && (
-          <span data-testid="tc-report">
-            {report.visited} visited, {report.kept} kept{report.stopReason ? `, stopped: ${report.stopReason}` : ''}
-          </span>
-        )}
       </div>
+      {report && <IngestionReport report={report} testId="tc-report" />}
+      {mapOpen && <MapView userId={userId} resource={r} onClose={() => setMapOpen(false)} />}
     </div>
   )
 }
