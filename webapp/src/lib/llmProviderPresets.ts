@@ -61,6 +61,11 @@ export const OPENAI_COMPAT_PRESETS: LlmProviderPreset[] = [
     baseUrl: '',
     description: 'Enter a custom base URL',
   },
+  {
+    name: 'TeapotRouter',
+    baseUrl: 'https://api.teapotrouter.com/v1',
+    description: 'TeapotRouter cloud gateway',
+  },
 ]
 
 export const PROVIDER_TYPES = [
