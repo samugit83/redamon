@@ -45,8 +45,7 @@ def test_decision_guide():
         assert "How to choose" in desc
         assert "don't call; use web_search" in desc
         assert "tradecraft_lookup(page=...)" in desc and "tradecraft_search, then tradecraft_lookup" in desc
-        # Library now (owner decision 2026-11-17): the block names the pages that fit the step.
-        assert '"Library now" or an earlier result names a page that fits your step' in desc
+        assert "a page shown in your prompt or an earlier result fits your step" in desc
         # Search only: the librarian is not in this run, and no line sends the agent to it.
         assert "tradecraft_ask" not in desc
     # Agent decides (the default): the librarian's branch (T7.4), with no trigger tied to a topic.
@@ -54,9 +53,11 @@ def test_decision_guide():
         assert not re.search(r"WAF|SLEEP|blocks", entry["description"]), name
         if name != "tradecraft_ask":
             assert "you cannot tell what fits, or search shows only related pages ... tradecraft_ask" in entry["description"]
-    # Hints off: no Library now block in this run, so the guide does not name one.
-    for entry in overlay.build_entries(catalog(2, **{"hints.enabled": False})).values():
-        assert "Library now" not in entry["description"]
+    # Fireteam members read these entries too and never get a Library now block (R-425): no
+    # entry names it, with hints on or off; the main agent's rule says how to read a block's page.
+    for hints_on in (True, False):
+        for entry in overlay.build_entries(catalog(2, **{"hints.enabled": hints_on})).values():
+            assert "Library now" not in entry["description"]
 
 
 def test_auto_list():
