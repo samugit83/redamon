@@ -191,7 +191,7 @@ export function PhaseIndicatorBar({
       })()}
 
       {tradecraft.v2 && tradecraft.counts && (
-        <ActiveCountsBadge counts={tradecraft.counts} onOpen={() => setSettingsModal('attack')} />
+        <ActiveCountsBadge counts={tradecraft.counts} librarianWarning={tradecraft.librarianWarning} onOpen={() => setSettingsModal('attack')} />
       )}
 
       {attackPathType && (currentPhase === 'informational' || currentPhase === 'exploitation' || currentPhase === 'post_exploitation') && (
@@ -378,7 +378,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
  * resources active in this project for the person chatting, a dimmed 0 for an empty group; the
  * tooltip names them; a click opens the Agent Skills & Tradecraft window.
  */
-export function ActiveCountsBadge({ counts, onOpen }: { counts: ActiveCounts; onOpen: () => void }) {
+export function ActiveCountsBadge({ counts, onOpen, librarianWarning = '' }: { counts: ActiveCounts; onOpen: () => void; librarianWarning?: string }) {
   const { builtIn, user, tradecraft } = counts
   const dim = (n: number): React.CSSProperties => (n === 0 ? { opacity: 0.4 } : {})
   const notActive = [
@@ -411,6 +411,7 @@ export function ActiveCountsBadge({ counts, onOpen }: { counts: ActiveCounts; on
                 : `${tradecraft.ownerOnlyHidden} owner-only resources are not used in your chats`}
             </div>
           )}
+          {librarianWarning && <div className={styles.skillTooltipItem} data-testid="active-counts-librarian">{librarianWarning}</div>}
           <div className={styles.skillTooltipItem}>Click to change them</div>
         </div>
       }

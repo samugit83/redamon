@@ -9,6 +9,7 @@ import { JOB_POLL_MS, isRunning, tradecraftClient, type IngestionSettingsView, t
 import { ResourceCard } from './ResourceCard'
 import { DeleteConfirm } from './DeleteConfirm'
 import { ResourceFormV2 } from './form/ResourceFormV2'
+import { useLibrarianGate } from './LibrarianModel'
 import css from './tradecraft.module.css'
 
 const LOAD_FAILED = "Couldn't load your tradecraft resources"
@@ -30,6 +31,7 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions, initialEd
 }) {
   const { dangerConfirm } = useAlertModal()
   const toast = useToast()
+  const librarianGate = useLibrarianGate()
   const [resources, setResources] = useState<ResourceView[]>([])
   const [status, setStatus] = useState<Status>({ kind: 'loading' })
   const [busy, setBusy] = useState<Set<string>>(new Set())
@@ -137,7 +139,7 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions, initialEd
   const toggleEnabled = async (r: ResourceView, next: boolean) => {
     setResources(prev => prev.map(x => (x.id === r.id ? { ...x, enabled: next } : x)))
     try {
-      await tradecraftClient.update(userId, r.id, { enabled: next })
+      await tradecraftClient.update(userId, r.id, { enabled: next }, librarianGate)
     } catch (e) {
       toast.error(actionFailedText('Toggle', e))
       load()

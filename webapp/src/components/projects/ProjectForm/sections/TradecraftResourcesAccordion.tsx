@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { BookOpen, ChevronDown, ChevronRight, ExternalLink, List, Lock } from 'lucide-react'
+import { AlertTriangle, BookOpen, ChevronDown, ChevronRight, ExternalLink, List, Lock } from 'lucide-react'
 import { Toggle } from '@/components/ui/Toggle/Toggle'
 import { IngestionReport } from '@/components/settings/tradecraft/IngestionReport'
 import { MapView } from '@/components/settings/tradecraft/MapView'
@@ -58,6 +58,20 @@ export function useTradecraftV2(projectId: string | null): boolean {
   return load.kind === 'ready' && load.view.v2
 }
 
+export const LIBRARIAN_NOT_SET = 'Librarian model not set'
+export const OWNER_LIBRARIAN_NOT_SET = "The owner hasn't chosen a librarian model"
+
+/**
+ * The accordion header's and the counter badge's warning (Q10 "Moments without a model"): the
+ * owner reads "Librarian model not set", anyone else that the owner has not chosen one; nothing
+ * with a model, or with "Search only".
+ */
+export function librarianWarning(view: Pick<ProjectTradecraftView, 'viewerIsOwner' | 'librarian'> | null | undefined): string {
+  const l = view?.librarian
+  if (!l || l.use !== 'agent' || l.set) return ''
+  return view!.viewerIsOwner ? LIBRARIAN_NOT_SET : OWNER_LIBRARIAN_NOT_SET
+}
+
 export function isActiveHere(r: ProjectResourceRow, off: ReadonlySet<string>): boolean {
   return r.enabledGlobally && !r.ownerOnly && !off.has(r.id)
 }
@@ -101,6 +115,7 @@ export function TradecraftResourcesAccordion({ projectId, offIds, onChange, inDr
           <BookOpen size={16} />
           Tradecraft Resources
           {view && <span className={styles.badgeActive} data-testid="tradecraft-active-count">{active} of {resources.length} active in this project</span>}
+          {view && <LibrarianHeader view={view} />}
         </h2>
         <ChevronDown size={16} className={`${styles.sectionIcon} ${open ? styles.sectionIconOpen : ''}`} />
       </div>
@@ -177,6 +192,18 @@ export function TradecraftResourcesAccordion({ projectId, offIds, onChange, inDr
       )}
     </div>
   )
+}
+
+/** The librarian model read-only (Q10 "One value, shown in three places"), or its warning. */
+function LibrarianHeader({ view }: { view: ProjectTradecraftView }) {
+  const warning = librarianWarning(view)
+  if (warning) {
+    return <span className={styles.sectionDescription} role="note" data-testid="tradecraft-librarian" style={{ margin: 0 }}><AlertTriangle size={12} /> {warning}</span>
+  }
+  if (view.viewerIsOwner && view.librarian?.use === 'agent' && view.librarian.model) {
+    return <span className={styles.sectionDescription} data-testid="tradecraft-librarian" style={{ margin: 0 }}>Librarian model: {view.librarian.model}</span>
+  }
+  return null
 }
 
 const SPEC_ORDER = new Map(SETTINGS.map((s, i) => [s.key, i]))

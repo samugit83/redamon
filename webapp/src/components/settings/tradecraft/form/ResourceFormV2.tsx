@@ -20,6 +20,7 @@ import { defaultStorageMode, forcedStorageMode } from '@/lib/tradecraft/storageM
 import { draftError, parseDraft } from '../dialog/draft'
 import { useEnabledImpactConfirm } from '../EnabledImpactAlert'
 import { AccessSection, accessDraftOf, accessError, credentialsPayload, type AccessDraft } from './AccessSection'
+import { useLibrarianGate } from '../LibrarianModel'
 import { CheckUrlButton } from './CheckUrlButton'
 import { ContentSection } from './ContentSection'
 import { CveSection } from './CveSection'
@@ -159,6 +160,7 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const confirmEnabled = useEnabledImpactConfirm(userId)
+  const librarianGate = useLibrarianGate()
   const { isDirty, setBaseline } = useDirtyState(draft)
   const { guardedNavigate } = useUnsavedChangesGuard(isDirty, { trackGlobal: false })
   useEffect(() => { setDraft(initial); setBaseline(initial) }, [initial, setBaseline])
@@ -261,7 +263,9 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
           }),
     }
     try {
-      const saved = isEdit ? await tradecraftClient.update(userId, resource!.id, input) : await tradecraftClient.create(userId, input)
+      const saved = isEdit
+        ? await tradecraftClient.update(userId, resource!.id, input, librarianGate)
+        : await tradecraftClient.create(userId, input, librarianGate)
       setBaseline(draft)
       // A new URL is ingested by the save itself; otherwise Save & re-ingest asks for a refresh.
       if (isEdit && reingest && !urlChanged) {

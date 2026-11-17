@@ -169,3 +169,24 @@ describe('GET /api/projects/[id]/tradecraft', () => {
     expect(r.body).toEqual({ error: "Could not read the project's tradecraft resources", code: 'P1001' })
   })
 })
+
+describe('the librarian model in the accordion and the badge (Q10, T7.5; R-403, R-404)', () => {
+  test('the owner reads the model; anyone else only whether one is set; Search only needs none', async () => {
+    h.db.seed('userSettings', { userId: OWNER, featureModels: { tradecraft_librarian: 'openai/gpt-4o-mini' } })
+    expect((await get()).body.librarian).toEqual({ use: 'agent', set: true, model: 'openai/gpt-4o-mini' })
+    expect((await get()).body.ownerId).toBe(OWNER)
+    as({ person: 'collab-1', via: 'share' })
+    const collab = (await get()).body
+    expect(collab.librarian).toEqual({ use: 'agent', set: true, model: null })
+    expect(collab).not.toHaveProperty('ownerId')
+    expect(JSON.stringify(collab)).not.toContain('gpt-4o-mini')
+  })
+
+  test('none chosen, or one the librarian may not use, reads as not set; the use follows Configure search', async () => {
+    expect((await get()).body.librarian).toEqual({ use: 'agent', set: false, model: null })
+    h.db.seed('userSettings', { userId: OWNER, featureModels: { tradecraft_librarian: 'loop/mcp' } })
+    expect((await get()).body.librarian).toMatchObject({ set: false, model: null })
+    h.db.rows('tradecraftUserSettings', { userId: OWNER })[0].search = { 'librarian.use': 'search_only' }
+    expect((await get()).body.librarian).toMatchObject({ use: 'search_only' })
+  })
+})

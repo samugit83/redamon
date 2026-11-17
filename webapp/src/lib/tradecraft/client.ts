@@ -3,7 +3,7 @@
  * `readApiError` (its message carries the code and the HTTP status), so a screen shows why.
  * The view types come from the server modules as types only: nothing server-side is bundled.
  */
-import { fetchJson } from '@/lib/apiError'
+import { ApiError, fetchJson, readApiError, toApiError } from '@/lib/apiError'
 import type { JobView } from './jobs'
 import type { ResourceView } from './v2/list'
 import type { IngestionSettingsView, SearchSettingsView, SynonymPair } from './userSettings'
@@ -52,6 +52,28 @@ function pagePath(pageId: string): string {
 export const JOB_POLL_MS = 3000
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
+
+/**
+ * Runs a request through the feature-model gate (`useFeatureModelGate().fetchWithFeatureModel`):
+ * a `model_required` answer opens it, and once a model is chosen the request runs once more.
+ */
+export type GatedFetch = (doFetch: () => Promise<Response>) => Promise<Response>
+
+async function gatedJson<T>(url: string, init: RequestInit, fallback: string, gate?: GatedFetch): Promise<T> {
+  if (!gate) return fetchJson<T>(url, init, fallback)
+  let res: Response
+  try {
+    res = await gate(() => fetch(url, init))
+  } catch (err) {
+    throw toApiError(err, fallback)
+  }
+  if (!res.ok) throw await readApiError(res, fallback)
+  try {
+    return await res.json() as T
+  } catch {
+    throw new ApiError({ reason: fallback, status: res.status, code: 'invalid_json' })
+  }
+}
 const resources = (userId: string) => `/api/users/${encodeURIComponent(userId)}/tradecraft-resources`
 const one = (userId: string, id: string) => `${resources(userId)}/${encodeURIComponent(id)}`
 
@@ -156,10 +178,12 @@ export const tradecraftClient = {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ search }),
     }, "Couldn't save your search settings"),
   list: (userId: string) => fetchJson<ResourceView[]>(resources(userId), undefined, "Couldn't load your tradecraft resources"),
-  create: (userId: string, input: ResourceInput) =>
-    fetchJson<SavedResource>(resources(userId), { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) }, "Couldn't add the resource"),
-  update: (userId: string, id: string, input: ResourceInput) =>
-    fetchJson<SavedResource>(one(userId, id), { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(input) }, "Couldn't save the resource"),
+  // Add, and Enabled turned on, need the librarian model while Librarian use is "Agent decides"
+  // (Q10): with `gate`, a `model_required` answer opens the gate and the save runs once more.
+  create: (userId: string, input: ResourceInput, gate?: GatedFetch) =>
+    gatedJson<SavedResource>(resources(userId), { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) }, "Couldn't add the resource", gate),
+  update: (userId: string, id: string, input: ResourceInput, gate?: GatedFetch) =>
+    gatedJson<SavedResource>(one(userId, id), { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(input) }, "Couldn't save the resource", gate),
   remove: (userId: string, id: string) =>
     fetchJson<{ success: true }>(one(userId, id), { method: 'DELETE' }, "Couldn't delete the resource"),
   refresh: (userId: string, id: string) =>

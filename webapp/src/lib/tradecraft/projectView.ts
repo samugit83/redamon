@@ -12,7 +12,10 @@
  * access check answered them, never from the request.
  */
 import prisma from '@/lib/prisma'
+import { readFeatureModel } from '@/lib/featureModels'
+import { modelAllowedForFeature } from '@/lib/llmFeatures'
 import { activeCounts, type ActiveCounts } from './activeCounts'
+import { effectiveSettings } from './effectiveSettings'
 import { isOwnerRun } from './catalog'
 import { lastRefreshedOf } from './client'
 import { hasStoredLogin } from './masking'
@@ -55,12 +58,24 @@ export interface ProjectResourceRow {
   details?: ProjectResourceDetails
 }
 
+/** The owner's librarian model, as the accordion header and the counter badge say it (Q10). */
+export interface ProjectLibrarian {
+  /** Librarian use (Q11): with "Search only" no model is needed, so nothing is missing. */
+  use: string
+  /** A usable model is chosen. */
+  set: boolean
+  /** The model, for the owner only (null for anyone else, and when none is set). */
+  model: string | null
+}
+
 export interface ProjectTradecraftView {
   /** The project owner's Tradecraft 2.0 switch: false leaves the tab and the drawer as they were. */
   v2: boolean
   viewerIsOwner: boolean
   /** The owner's account, for the owner's own read-only Pages (§3.4); only the owner gets it. */
   ownerId?: string
+  /** With 2.0 on only. */
+  librarian?: ProjectLibrarian
   resources: ProjectResourceRow[]
   counts: ActiveCounts | null
 }
@@ -80,12 +95,20 @@ export async function projectTradecraftView(opts: {
   const { projectId, ownerId, viewer, viewerIsOwner } = opts
   if (!(await tradecraftV2Enabled(ownerId))) return { v2: false, viewerIsOwner, resources: [], counts: null }
 
-  const [rows, choices, project, views] = await Promise.all([
+  const [rows, choices, project, views, search, librarianModel] = await Promise.all([
     prisma.userTradecraftResource.findMany({ where: { userId: ownerId }, orderBy: { createdAt: 'asc' }, select: DETAIL_SELECT }),
     prisma.tradecraftProjectChoice.findMany({ where: { projectId }, select: { resourceId: true } }),
     prisma.project.findUnique({ where: { id: projectId }, select: { attackSkillConfig: true } }),
     viewerIsOwner ? listResourcesV2(ownerId) : Promise.resolve([] as ResourceView[]),
+    prisma.tradecraftUserSettings.findUnique({ where: { userId: ownerId }, select: { search: true } }),
+    readFeatureModel(ownerId, 'tradecraft_librarian'),
   ])
+  const librarianSet = !!librarianModel && modelAllowedForFeature('tradecraft_librarian', librarianModel)
+  const librarian: ProjectLibrarian = {
+    use: String(effectiveSettings({ user: search, scope: 'search' }).values['librarian.use']),
+    set: librarianSet,
+    model: viewerIsOwner && librarianSet ? librarianModel : null,
+  }
   const off = new Set(choices.map(c => c.resourceId))
   const byId = new Map(views.map(v => [v.id, v]))
   const ownerRun = isOwnerRun({ ownerId, personId: viewer.personId, actorId: viewer.actorId })
@@ -132,5 +155,5 @@ export async function projectTradecraftView(opts: {
     { ownerId, projectId, personId: viewer.personId, actorId: viewer.actorId },
     project?.attackSkillConfig ?? null,
   )
-  return { v2: true, viewerIsOwner, ...(viewerIsOwner ? { ownerId } : {}), resources, counts }
+  return { v2: true, viewerIsOwner, ...(viewerIsOwner ? { ownerId } : {}), librarian, resources, counts }
 }

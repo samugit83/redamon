@@ -12,6 +12,7 @@ import { Wrench, ChevronDown, ChevronRight, Copy, Check, Loader2, CheckCircle2, 
 import { ExternalLink } from '@/components/ui'
 import { isHttpUrl } from '@/lib/url-utils'
 import { copyText } from '@/lib/copyText'
+import { parseLibrarianTrail, trailDetail, trailText } from '@/lib/tradecraft/librarianTrail'
 import styles from './ToolExecutionCard.module.css'
 import type { ToolExecutionItem } from './AgentTimeline'
 
@@ -41,6 +42,7 @@ interface ToolExecutionCardProps {
 export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApiKey, onAddApiKey, onApprove, onReject, onStop }: ToolExecutionCardProps) {
   const [copied, setCopied] = useState(false)
   const [duration, setDuration] = useState(0)
+  const [trailOpen, setTrailOpen] = useState(false)
   // The tool process itself is still going. A finished tool whose card is
   // still 'running' is waiting for the agent's analysis, not for the tool.
   const toolRunning = item.status === 'running' && !item.finished
@@ -116,6 +118,11 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
         return styles.statusError
     }
   }
+
+  // Q9.5: the librarian's trail, read from its result's header once the tool has returned.
+  const trail = item.tool_name === 'tradecraft_ask' && !toolRunning && item.status !== 'pending_approval'
+    ? parseLibrarianTrail(item.output_chunks.join(''))
+    : null
 
   // Render tool arguments as key-value pairs
   const renderToolArgs = () => {
@@ -198,6 +205,19 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
         {!isExpanded && (
           <div className={styles.argsPreview}>
             {renderToolArgs()}
+          </div>
+        )}
+        {trail && (
+          <div className={styles.argsPreview} data-testid="librarian-trail">
+            <button
+              type="button" className={styles.copyButton} aria-expanded={trailOpen}
+              onClick={(e) => { e.stopPropagation(); setTrailOpen(o => !o) }}
+              style={{ width: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              {trailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              {trailText(trail)}
+            </button>
+            {trailOpen && <span className={styles.argValue} data-testid="librarian-trail-detail">{trailDetail(trail)}</span>}
           </div>
         )}
       </div>

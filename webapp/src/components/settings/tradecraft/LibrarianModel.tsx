@@ -6,6 +6,15 @@ import { toApiError } from '@/lib/apiError'
 import tc from './tradecraft.module.css'
 
 export const LIBRARIAN_FEATURE = 'tradecraft_librarian' as const
+/** Q10: the gate and the banner offer the section picker's model first, as a suggestion the person confirms. */
+export const LIBRARIAN_SUGGESTION = { suggestFrom: 'tradecraft_section_picker', suggestedFrom: 'your Tradecraft section picker model' } as const
+
+/** The gate for an Add or an Enabled turned on (`tradecraftClient.create` / `update`). */
+export function useLibrarianGate(): (doFetch: () => Promise<Response>) => Promise<Response> {
+  const gate = useFeatureModelGate()
+  return doFetch => gate.fetchWithFeatureModel(LIBRARIAN_FEATURE, doFetch, {}, LIBRARIAN_SUGGESTION)
+}
+
 export const NO_LIBRARIAN_TEXT = 'No librarian model: the agent can only use plain search on your resources'
 
 export type LibrarianModelState =
@@ -27,7 +36,7 @@ export function useLibrarianModel(userId: string): { state: LibrarianModelState;
       .catch(e => { if (live) setState({ kind: 'error', text: toApiError(e, "Couldn't read your librarian model").message }) })
     return () => { live = false }
   }, [userId, gate.savedVersion])
-  return { state, choose: () => void gate.ensureFeatureModel(LIBRARIAN_FEATURE, { force: true }) }
+  return { state, choose: () => void gate.ensureFeatureModel(LIBRARIAN_FEATURE, { force: true, ...LIBRARIAN_SUGGESTION }) }
 }
 
 /** "Librarian model: <name> (change)", the line above the resource list and in Configure search. */
