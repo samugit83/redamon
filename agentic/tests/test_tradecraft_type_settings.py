@@ -494,3 +494,18 @@ def test_the_docs_sitemap_reading_stops_on_cancel_and_on_the_time_budget(tmp_pat
         assert job.run().status == "succeeded"
     assert not [u for u, _ in fetcher.requests if u.endswith("/maps/b.xml")]
     assert set(inside) <= set(job.urls())
+
+
+def test_the_docs_crawl_hand_off_keeps_the_docs_map_limit(tmp_path):
+    """The crawl a docs site is handed to stops at the docs map's limit (here its minimum, 100),
+    not at the website's (2,000) or the crawl's page limit (200)."""
+    host = "big-docs.tc-fixture.test"
+    url = f"https://{host}/"
+    pages = [f"{url}page-{i}.html" for i in range(120)]
+    head = '<meta name="generator" content="Docutils 0.20.1: https://docutils.sourceforge.io/" />'
+    files = {"/": docs_page("Big docs", pages, head), "/searchindex.js": "Search.setIndex({broken"}
+    files.update({p.split(host, 1)[1]: docs_page(p.rsplit("/", 1)[-1], pages) for p in pages})
+    job = Job(site(tmp_path, host, files), url, {"crawl.strategy": "rules", "knownTypes.maxMapEntries.docs": 100})
+    assert job.run().status == "succeeded"
+    assert job.resource["resource_type"] == "sphinx-docs" and len(job.urls()) == 100
+    assert job.report.stopReason == "docs: no search index or sitemap, crawl (max_map_entries)"

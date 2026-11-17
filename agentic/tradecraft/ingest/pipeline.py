@@ -397,11 +397,13 @@ async def _crawl_instead(state: IngestState) -> None:
     The docs builder has just read the site's sitemaps, in one budget and inside the resource's
     folder: Auto would read them again on a fresh budget and take the pages outside that folder,
     so the hand-off crawls model-guided instead (what Auto does with no usable sitemap), and stays
-    in the folder."""
+    in the folder. Its map is a docs map: the crawl stops at the docs limit, not the website's."""
     state.stop_reason = _CRAWL_INSTEAD
-    strategy = state.settings.str("crawl.strategy")
-    await _crawl(state, EffectiveSettings({**state.settings.values, "crawl.stayInFolder": True,
-                                           "crawl.strategy": "llm" if strategy == "auto" else strategy}))
+    s = state.settings
+    strategy = s.str("crawl.strategy")
+    await _crawl(state, EffectiveSettings({
+        **s.values, "crawl.stayInFolder": True, "crawl.strategy": "llm" if strategy == "auto" else strategy,
+        "knownTypes.maxMapEntries.website": s.int("knownTypes.maxMapEntries.docs")}))
     if state.crawl is not None:
         state.stop_reason = f"{_CRAWL_INSTEAD} ({state.crawl.stop_reason})"
 
