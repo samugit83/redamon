@@ -523,6 +523,32 @@ def test_a_page_read_leaves_the_block():
     assert updates["tradecraft_hint_count"] == 2
 
 
+def test_a_page_read_never_comes_back_on_one_shared_library():
+    """R-365 / AC-73 as the owner's Library now decision keeps it: a page the agent READ never
+    comes back, whatever the goal; one shown and not read may come back for another step (the
+    relaxation recorded under the decision of 2026-11-17). One library answers every goal here."""
+    index = library(n=20)
+    st, read_so_far, shown_unread = state(), [], []
+
+    async def read(st, page):
+        collector = run_state.bind(st)
+        collector.record_seen([page])
+        return collector.drain()
+
+    for goal in ("Probe the login form", "Confirm a time based delay", "Dump the users table", "Read the config file",
+                 "Escalate to the database owner", "Write a web shell"):
+        st = {**st, "todo_list": [todo(goal, "in_progress")]}
+        note, updates = now(st, index=index)
+        st = {**st, **updates}
+        pages = pages_of(note)
+        assert pages and not set(pages) & set(read_so_far), (goal, pages, read_so_far)
+        shown_unread += pages[1:]
+        read_so_far.append(pages[0])
+        st = {**st, **contextvars.Context().run(asyncio.run, read(st, pages[0]))}
+    # The library answers every goal alike: pages shown and not read do come back.
+    assert len(shown_unread) > len(set(shown_unread))
+
+
 # --------------------------------------------------------------------------------------
 # Planted CVE ids (AC-74)
 # --------------------------------------------------------------------------------------
