@@ -1281,6 +1281,45 @@ def test_ops_checks_an_incremental_refresh_needs_the_agents_count():
     assert inc.ok is False and "no incremental line of this job" in inc.detail
 
 
+def test_a_cve_lookup_is_read_as_its_page():
+    # The reader renders a CVE archive's entry without a page ID (reader.render); before, the
+    # parser saw nothing in it, so L3's expected page could never be found, whatever the agent did.
+    reader = _agent("tradecraft.library.reader")
+    out = reader.render("trickest-cve", "https://raw.githubusercontent.com/trickest/cve/main/2021/CVE-2021-41773.md",
+                        "CVE-2021-41773", "live", "# CVE-2021-41773\nPoC text")
+    res = checks.parse_result("tradecraft_lookup", out)
+    assert res.kind == "read" and [p.page_id for p in res.pages] == ["trickest-cve:CVE-2021-41773"]
+    assert checks.matches({}, res.pages[0], {"resource": "trickest-cve", "path": ["cve-2021-41773"]})
+    assert not checks.matches({}, res.pages[0], {"resource": "trickest-cve", "path": ["cve-2021-42013"]})
+    assert res.read.section == "CVE-2021-41773" and res.read.source == "live" and "PoC text" in res.read.text
+    trace = {"tool_calls": [{"tool": "tradecraft_lookup", "output": out}]}
+    assert checks.check_expected_page(trace, [{"resource": "trickest-cve", "path": ["cve-2021-41773"]}]).ok
+    assert checks.check_reads(trace, 12000).ok
+
+
+def test_retrieval_looks_cve_questions_up_and_searches_the_rest():
+    questions = [{"q": "ssrf payloads", "expect": {"resource": "hexbrain-payloads", "path": ["ssrf"]}},
+                 {"q": "CVE-2021-41773", "cve": True, "expect": {"resource": "trickest-cve", "path": ["cve-2021-41773"]}}]
+    assert sum(1 for q in SCN["layer1"]["retrieval"] if q.get("cve")) == 3 and len(SCN["layer1"]["retrieval"]) == 30
+    reader = _agent("tradecraft.library.reader")
+    sent = {}
+
+    def fake(argv, **kw):
+        sent.update(json.loads(kw["input"]))
+        assert "agent_tools.reader.lookup(resource_id=item[\"resource\"], cve_id=item[\"cve_id\"])" in argv[-1]
+        cve = reader.render("trickest-cve", "https://raw.githubusercontent.com/trickest/cve/main/2021/CVE-2021-41773.md",
+                            "CVE-2021-41773", "live", "PoC")
+        rows = [{"q": "ssrf payloads", "output": ""}, {"q": "CVE-2021-41773", "output": cve}]
+        return subprocess.CompletedProcess(argv, 0, stdout="".join(f"TC_E2E_RESULT={json.dumps(r)}\n" for r in rows), stderr="")
+
+    import types
+    ctx = types.SimpleNamespace(sessions={"owner": (None, "u-owner")})
+    got = runner.retrieval_check(ctx, "p1", questions, run=fake)
+    assert sent["questions"] == [{"q": "ssrf payloads"},
+                                 {"q": "CVE-2021-41773", "cve_id": "CVE-2021-41773", "resource": "trickest-cve"}]
+    assert got.ok is False and got.detail == "1/2 found; missed: ssrf payloads"
+
+
 def test_the_report_names_the_plan_commit_the_stack_runs():
     answers = {"refs/heads/feature/tradecraft-2.0": "3765744a\n", "HEAD": "58a5e733\n"}
 
@@ -1300,6 +1339,12 @@ def test_only_layer1_runs_the_layer1_checks_alone(capsys):
     assert runner.main(["--only", "layer1", "--dry-run"]) == 0
     assert "the layer-1 checks alone (30 retrieval questions" in capsys.readouterr().out
     assert runner.main(["--only", "L9-Z", "--dry-run"]) == 2
+    # A full matrix plans every run (and its layer-1 checks); a cell's re-run plans that cell.
+    capsys.readouterr()
+    assert runner.main(["--dry-run"]) == 0
+    assert "42 runs on 7 lanes" in capsys.readouterr().out
+    assert runner.main(["--only", "L3-A", "--only", "layer1", "--dry-run"]) == 0
+    assert "3 runs on 7 lanes" in capsys.readouterr().out
 
 
 def test_dry_run_starts_nothing(capsys):

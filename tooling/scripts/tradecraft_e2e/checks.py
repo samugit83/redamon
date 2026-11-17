@@ -46,6 +46,10 @@ _EXCERPT = re.compile(r'^\s+excerpt: "(?P<text>.*)"$')
 _READ_PAGE = re.compile(rf"^page: (?P<page>{_PAGE}) · (?P<path>.*)$")
 _READ_SECTION = re.compile(r"^section: (?P<section>.*) \(part (?P<part>\d+) of (?P<parts>\d+)\) · other sections: ")
 _READ_SOURCE = re.compile(r"^source: (?P<source>.*)$")
+# A read the reader renders without a page ID (reader.render, "Q1.2's shape"): a CVE archive's
+# entry, read live by CVE id, and the other lookups of a page that has no ID.
+_LIVE_RESOURCE = re.compile(rf"^resource: (?P<slug>{_SLUG})$")
+_LIVE_FIELD = re.compile(r"^(?P<key>url|section_title|source|note): (?P<value>.*)$")
 STORED_SOURCE = re.compile(r"^stored copy from \S+")
 _LOG_RECORD = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:,\d+)? \| \S+\s* \| [^|]*\| [^|]*\| ?(?P<msg>.*)$")
 _PROMPT_START = re.compile(r"^--- FULL SYSTEM PROMPT \(\d+ chars")
@@ -130,6 +134,22 @@ def parse_result(tool: str, output: str) -> TcResult:
             if m:
                 pages.append(PageRef(m["page"], m["rest"].split(" — ")[0].strip()))
         return TcResult(tool, "search", pages=pages, body=body)
+    live = _LIVE_RESOURCE.match(first)
+    if live:
+        fields: dict = {}
+        text_at = len(lines)
+        for i, line in enumerate(lines[1:], 1):
+            if line == "---":
+                text_at = i + 1
+                break
+            f = _LIVE_FIELD.match(line)
+            if f:
+                fields[f["key"]] = f["value"]
+        title = fields.get("section_title", "")
+        page = f"{live['slug']}:{title or fields.get('url', '')}"
+        path = " ".join(v for v in (title, fields.get("url", "")) if v)
+        read = Read(page, path, title or None, fields.get("source", ""), "\n".join(lines[text_at:]))
+        return TcResult(tool, "read", pages=[PageRef(page, path)], read=read, body=body)
     m = _READ_PAGE.match(first)
     if m:
         section = source = None

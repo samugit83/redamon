@@ -408,17 +408,57 @@ def test_the_stamp_check_warns_when_ingestion_code_changed(tmp_path):
     (root / "pipeline.py").write_text("STAGES = 1\n")
     (root / "__pycache__").mkdir()
     (root / "__pycache__" / "pipeline.cpython-311.pyc").write_bytes(b"\0")
+    tree = lambda: (library.ingest_hash(root), "the working tree")  # noqa: E731
     stamp = {"commit": "0123456789abcdef", "ingest_hash": library.ingest_hash(root)}
-    assert library.stamp_warning(stamp, root) is None
+    assert library.stamp_warning(stamp, root, current=tree) is None
     (root / "__pycache__" / "other.pyc").write_bytes(b"\1")
-    assert library.stamp_warning(stamp, root) is None  # bytecode is not code
+    assert library.stamp_warning(stamp, root, current=tree) is None  # bytecode is not code
     (root / "pipeline.py").write_text("STAGES = 2\n")
-    warning = library.stamp_warning(stamp, root)
-    assert warning and "changed since the library was built" in warning and "0123456789ab" in warning
+    warning = library.stamp_warning(stamp, root, current=tree)
+    assert warning and "differs from the one the library was built with" in warning and "0123456789ab" in warning
+    assert "the working tree" in warning
     (root / "pipeline.py").write_text("STAGES = 1\n")
     (root / "new_stage.py").write_text("")
-    assert library.stamp_warning(stamp, root)
-    assert library.stamp_warning(None, root) is None
+    assert library.stamp_warning(stamp, root, current=tree)
+    assert library.stamp_warning(None, root, current=tree) is None
+
+
+def test_the_stamp_hashes_the_code_the_running_agent_holds(tmp_path):
+    # Another session's uncommitted edits in the shared tree never make the stamp lie: the hash
+    # is of the files inside the running agent's container, read-only.
+    root = tmp_path / "ingest"
+    root.mkdir()
+    (root / "pipeline.py").write_text("STAGES = 1\n")
+    (root / "detect.py").write_text("TYPES = 2\n")
+    listing = [[p.name, hashlib.sha256(p.read_bytes()).hexdigest()] for p in sorted(root.iterdir())]
+    assert library.hash_files(listing) == library.ingest_hash(root)  # one format, either source
+    calls = []
+
+    def agent(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(listing) + "\n", stderr="")
+
+    (root / "detect.py").write_text("TYPES = 3  # a session's edit, not in the image\n")
+    got, source = library.running_ingest_hash(run=agent, root=root)
+    assert got == library.hash_files(listing) != library.ingest_hash(root)
+    assert source == "the running agent (redamon-agent)"
+    assert calls[0][:4] == ["docker", "exec", "-i", "redamon-agent"] and "/app/tradecraft/ingest" in calls[0][-1]
+    stamp = {"commit": "c", "ingest_hash": library.hash_files(listing)}
+    assert library.stamp_warning(stamp, root, current=lambda: library.running_ingest_hash(run=agent, root=root)) is None
+
+    def down(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no such container")
+
+    got, source = library.running_ingest_hash(run=down, root=root)
+    assert got == library.ingest_hash(root) and "the working tree" in source and "could not be read" in source
+    warning = library.stamp_warning(stamp, root, current=lambda: library.running_ingest_hash(run=down, root=root))
+    assert warning and "the working tree" in warning
+    # A snapshot records which code it hashed.
+    with mock.patch.object(library, "running_ingest_hash", return_value=("hh", "the running agent (redamon-agent)")):
+        assert library.snapshot(FakePsql(out_lines=_stream()), library.LIBRARY_OWNER, folder=tmp_path / "library",
+                                log=lambda m: None, commit="c") == library.EXIT_OK
+    written = library.read_stamp(tmp_path / "library")
+    assert written["ingest_hash"] == "hh" and written["ingest_hash_of"] == "the running agent (redamon-agent)"
 
 
 def test_the_snapshot_folder_is_ignored_by_git():

@@ -398,14 +398,45 @@ def library_summary(psql: Psql, owner_id: str) -> list:
 # The stamp: what the snapshot was built from
 # --------------------------------------------------------------------------------------
 
-def ingest_hash(root: Path = INGEST_DIR) -> str:
-    """The ingestion code as the stack's images are built from it (the working tree, which the
-    checkout's HEAD may not even track)."""
+def hash_files(files: Iterable) -> str:
+    """One hash of the ingestion code from (relative path, sha256 hex) pairs, whatever holds the
+    files: the running agent's image or a working tree."""
     h = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts):
-        h.update(path.relative_to(root).as_posix().encode() + b"\0")
-        h.update(hashlib.sha256(path.read_bytes()).hexdigest().encode() + b"\n")
+    for rel, digest in sorted(files):
+        h.update(str(rel).encode() + b"\0")
+        h.update(str(digest).encode() + b"\n")
     return h.hexdigest()
+
+
+def ingest_hash(root: Path = INGEST_DIR) -> str:
+    """The ingestion code of a working tree (the checkout's HEAD may not even track it)."""
+    return hash_files((p.relative_to(root).as_posix(), hashlib.sha256(p.read_bytes()).hexdigest())
+                      for p in root.rglob("*.py") if "__pycache__" not in p.parts)
+
+
+# The agent image's ingestion code, listed read-only inside the running container.
+AGENT_INGEST_SCRIPT = r"""
+import hashlib, json, pathlib
+root = pathlib.Path("/app/tradecraft/ingest")
+print(json.dumps([[p.relative_to(root).as_posix(), hashlib.sha256(p.read_bytes()).hexdigest()]
+                  for p in root.rglob("*.py") if "__pycache__" not in p.parts]))
+"""
+
+
+def running_ingest_hash(run: Callable[..., Any] = subprocess.run, container: str = runner.AGENT_CONTAINER,
+                        root: Path = INGEST_DIR) -> tuple:
+    """(hash, source): the ingestion code the RUNNING agent holds, which is what built the
+    library, never a shared working tree another session may be editing. Only when the agent's
+    container cannot be read, the working tree's, and the source says so."""
+    try:
+        done = run(["docker", "exec", "-i", container, "python", "-c", AGENT_INGEST_SCRIPT], capture_output=True,
+                   text=True, timeout=60, check=False)
+        files = json.loads((done.stdout or "").strip().splitlines()[-1]) if done.returncode == 0 else None
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        files = None
+    if isinstance(files, list) and files:
+        return hash_files((str(f[0]), str(f[1])) for f in files), f"the running agent ({container})"
+    return ingest_hash(root), "the working tree (the agent's container could not be read)"
 
 
 def plan_commit(run: Callable[..., Any] = subprocess.run) -> str:
@@ -425,13 +456,16 @@ def read_stamp(folder: Path = SNAPSHOT_DIR) -> Optional[dict]:
     return stamp if isinstance(stamp, dict) else None
 
 
-def stamp_warning(stamp: Optional[Mapping], root: Path = INGEST_DIR) -> Optional[str]:
-    """A warning when the ingestion code differs from the one the library was built with: the
-    snapshot then no longer shows what this code would ingest, so the library is rebuilt."""
+def stamp_warning(stamp: Optional[Mapping], root: Path = INGEST_DIR,
+                  current: Optional[Callable[[], tuple]] = None) -> Optional[str]:
+    """A warning when the ingestion code the running agent holds differs from the one the
+    library was built with: the snapshot then no longer shows what that code would ingest, so
+    the library is rebuilt. ``current`` gives (hash, source); by default the running agent's."""
     if not stamp:
         return None
-    if stamp.get("ingest_hash") != ingest_hash(root):
-        return (f"agentic/tradecraft/ingest/ changed since the library was built (commit "
+    now, source = (current or (lambda: running_ingest_hash(root=root)))()
+    if stamp.get("ingest_hash") != now:
+        return (f"the ingestion code of {source} differs from the one the library was built with (commit "
                 f"{str(stamp.get('commit', ''))[:12] or '?'}): rebuild it (library.py build, then snapshot)")
     return None
 
@@ -587,6 +621,7 @@ def snapshot(psql: Psql, owner_email: str, *, folder: Path = SNAPSHOT_DIR, log: 
         return EXIT_FAILED
     summary = library_summary(psql, owner_id)
     new, _ = _work_folders(folder)
+    hash_source = running_ingest_hash() if code_hash is None else (code_hash, "given")
     _private_dir(new)
     splitter = Splitter(new)
     code, err = psql.run([snapshot_script(columns, owner_id).encode()], on_line=splitter.line)
@@ -604,7 +639,8 @@ def snapshot(psql: Psql, owner_email: str, *, folder: Path = SNAPSHOT_DIR, log: 
         "format": STAMP_FORMAT,
         "taken_at": now_iso(),
         "commit": plan_commit() if commit is None else commit,
-        "ingest_hash": ingest_hash() if code_hash is None else code_hash,
+        "ingest_hash": code_hash if code_hash is not None else hash_source[0],
+        "ingest_hash_of": "given" if code_hash is not None else hash_source[1],
         "owner_email": owner_email,
         "owner_id": owner_id,
         "tables": tables,

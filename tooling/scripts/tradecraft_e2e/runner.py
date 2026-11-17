@@ -1658,17 +1658,23 @@ resp = requests.get(url, params={"projectId": q["project_id"], "personId": q["pe
 resp.raise_for_status()
 runtime.bind_run_catalog(resp.json())
 for item in q["questions"]:
-    out = asyncio.run(agent_tools.run_search(query=item))
-    print("TC_E2E_RESULT=" + json.dumps({"q": item, "output": out}))
+    if item.get("cve_id"):  # a CVE archive is read by CVE id, never searched (reader.lookup)
+        out = asyncio.run(agent_tools.reader.lookup(resource_id=item["resource"], cve_id=item["cve_id"]))
+    else:
+        out = asyncio.run(agent_tools.run_search(query=item["q"]))
+    print("TC_E2E_RESULT=" + json.dumps({"q": item["q"], "output": out}))
 """
 
 
 def retrieval_check(ctx: Context, project_id: str, questions: Sequence[Mapping],
                     run: Exec = subprocess.run, timeout: float = 900) -> report.CheckResult:
     """The 30 retrieval questions on the owner's restored library, read-only: each one's
-    expected page must be among its search results."""
+    expected page must be among its search results; a CVE question (``cve: true``) is a lookup
+    of its CVE id in the expected CVE archive, which no search lists."""
     _, owner_id = ctx.sessions["owner"]
-    payload = json.dumps({"project_id": project_id, "person_id": owner_id, "questions": [q["q"] for q in questions]})
+    items = [{"q": q["q"], **({"cve_id": q["q"], "resource": q["expect"]["resource"]} if q.get("cve") else {})}
+             for q in questions]
+    payload = json.dumps({"project_id": project_id, "person_id": owner_id, "questions": items})
     done = run(["docker", "exec", "-i", "-w", "/app", AGENT_CONTAINER, "python", "-c", RETRIEVAL_SCRIPT],
                input=payload, capture_output=True, text=True, timeout=timeout, check=False)
     outputs = {}
@@ -1678,7 +1684,7 @@ def retrieval_check(ctx: Context, project_id: str, questions: Sequence[Mapping],
             outputs[row["q"]] = row["output"]
     hits, misses = 0, []
     for q in questions:
-        res = checks.parse_result("tradecraft_search", outputs.get(q["q"], ""))
+        res = checks.parse_result("tradecraft_lookup" if q.get("cve") else "tradecraft_search", outputs.get(q["q"], ""))
         if any(checks.matches({}, ref, q["expect"]) for ref in res.pages):
             hits += 1
         else:
@@ -2025,7 +2031,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     scn = load_scenarios(Path(args.scenarios))
     lane_count = args.lanes or int(scn["lanes"]["default"])
     run_filters, layer1_wanted = only_filters(args.only)
-    runs = lanes.select(lanes.plan_runs(scn), run_filters) if run_filters or not layer1_wanted else []
+    # Every run in a full matrix; none when --only names the layer-1 checks alone.
+    layer1_alone = bool(args.only) and not run_filters
+    runs = [] if layer1_alone else lanes.select(lanes.plan_runs(scn), run_filters)
     env = read_env(REPO / ".env", redact)
     if not runs and not layer1_wanted:
         log("no run matches --only")
