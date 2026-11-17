@@ -52,6 +52,9 @@ FINDING_TYPES = frozenset({
 })
 OUTCOMES = ("", "ok", "failed")
 
+# Characters that hide or reorder text: controls other than whitespace (C0 and C1), bidi
+# controls and zero-width characters. Postgres also refuses a NUL in a text parameter.
+HIDDEN = re.compile("[\x00-\x08\x0e-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
 _URL = re.compile(r"\b[a-z][a-z0-9+.\-]*://\S*", re.IGNORECASE)
 _EMAIL = re.compile(r"\S+@\S+")
 _IPV4 = re.compile(r"(?<![0-9.])\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5}|/\d{1,2})?(?![0-9])")
@@ -95,7 +98,8 @@ class Focus:
 
 
 def one_line(value: Any) -> str:
-    return " ".join(str(value or "").split()) if isinstance(value, str) else ""
+    """The text on one line, with no hidden character."""
+    return " ".join(HIDDEN.sub("", value).split()) if isinstance(value, str) else ""
 
 
 def _strings(value: Any, cap: int) -> tuple[str, ...]:

@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import project_settings as ps  # noqa: E402
-from test_tradecraft_hints import FOOTER, catalog, library, state, todo  # noqa: E402
+from test_tradecraft_hints import FOOTER, HEADER, catalog, goal_line, library, state, todo  # noqa: E402
 from tradecraft import runtime  # noqa: E402
 from tradecraft.library import hints  # noqa: E402
 
@@ -155,10 +155,10 @@ def test_every_kind_of_skill_keeps_its_block_and_gets_the_rule_and_the_block():
         assert text.count(hints.RULE) == 1 and hints.RULE in rules_section(text), kind
         assert "as you go\n6. **Your library.**" in text, kind
         # The block ends the system message, after everything else.
-        tail = text[text.rindex("Library now (for your current goal: "):]
-        assert tail.splitlines()[0] == 'Library now (for your current goal: "Confirm time based blind SQL injection"):'
+        tail = text[text.rindex(HEADER):]
+        assert goal_line(tail) == '  goal: "Confirm time based blind SQL injection"'
         assert text.endswith(FOOTER) and "patt:401" in tail, kind
-        assert text.index(block[-1]) < text.index(hints.RULE) < text.rindex("Library now (for your current goal")
+        assert text.index(block[-1]) < text.index(hints.RULE) < text.rindex(HEADER)
 
 
 def test_the_skill_line_sits_just_before_the_skills_block():
@@ -203,7 +203,7 @@ def test_one_system_message_for_every_adapter():
     for shape, llm in (("tiers", ChatAnthropic()), ("plain", Plain()), ("loop", Loop())):
         messages, updates, _ = think(st, llm=llm)
         assert updates["_decision"]["action"] == "use_tool", shape
-        note = system_text(messages)[system_text(messages).rindex("Library now (for your current goal"):]
+        note = system_text(messages)[system_text(messages).rindex(HEADER):]
         roles = [_convert_message_to_dict(m)["role"] for m in messages]
         assert roles == ["system", "user"] and _alternates(roles), shape
         system, rest = _format_messages(messages, model="claude-x")
@@ -222,7 +222,7 @@ def test_one_system_message_for_every_adapter():
         parts = to_parts(messages)
         assert [m.role for m in parts] == ["system", "user"] and parts[0].parts[-1].text.endswith(FOOTER), shape
         document, _ = render_doc(parts, delivered=set(), full=False)
-        assert document.count("Library now (for your current goal") == 1 and hints.RULE in document, shape
+        assert document.count(HEADER) == 1 and hints.RULE in document, shape
 
 
 def test_the_thoughts_library_sentence_parses():
@@ -259,7 +259,7 @@ def test_the_cached_prefix_stays_while_the_block_changes():
     cached = [[b for b in m[0].content if "cache_control" in b] for m in (one, two)]
     assert len(cached[0]) == 3 and cached[0] == cached[1]
     assert one[0].content[-1] != two[0].content[-1]
-    assert 'goal: "Dump the users table with stacked queries"' in two[0].content[-1]["text"]
+    assert goal_line(two[0].content[-1]["text"]) == '  goal: "Dump the users table with stacked queries"'
 
 
 # --------------------------------------------------------------------------------------
@@ -304,7 +304,7 @@ def test_one_active_resource_shows_the_rule_the_tools_the_block_and_the_stealth_
     # Hints off: the tools stay, with no rule and no block.
     off, _, _ = think(st, cat=catalog(**{"hints.enabled": False}))
     assert "| **tradecraft_lookup** |" in system_text(off)
-    assert hints.RULE not in system_text(off) and "Library now (for your" not in system_text(off)
+    assert hints.RULE not in system_text(off) and HEADER not in system_text(off)
 
 
 # --------------------------------------------------------------------------------------

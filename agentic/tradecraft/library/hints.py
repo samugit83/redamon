@@ -16,10 +16,12 @@ search replaces it when the goal or the facts move on.
 
 The block is in the system role and apart from the base prompt's text: ``with_note`` puts it at
 the end of the call's one system message, after the prompt's cache tiers, so every cached
-prefix stays as it was. Its header holds the goal as data (in quotes, one line, clipped); the
-pages' resource names, breadcrumbs and titles come from the sites, so the rows sit inside an
-untrusted block; no page text (descriptions, sections) is ever shown. The main instructions
-carry the one rule that says how to use it (``library_rule``).
+prefix stays as it was. Its trusted lines are fixed text. The goal (one line, no hidden character,
+clipped) and the rows sit inside an untrusted block: the model or the person wrote the goal, and
+the pages' resource names, breadcrumbs and titles come from the sites. No page text (descriptions,
+sections) is ever shown, and only the rows of resources the run's catalog holds at that think: a
+resume binds the catalog again for the person resuming. The main instructions carry the one rule
+that says how to use it (``library_rule``).
 
 Limits: ``hints.perRun`` blocks per run (a block is a search's result whose pages differ from
 the ones shown), at most ``MAX_REFRESHES`` searches per run, ``SEARCH_TIMEOUT_SEC`` per search.
@@ -58,7 +60,10 @@ PATH_CHARS = 100
 MATCH_WORDS = 6
 MATCH_WORD_CHARS = 30
 
-HEADER = 'Library now (for your current goal: "{goal}"):'
+# The trusted lines are fixed text: the goal, which the model or the person wrote (and target text
+# can colour), is the first line inside the untrusted block.
+HEADER = "Library now (pages for your current goal):"
+GOAL_LINE = '  goal: "{goal}"'
 FOOTER = "If one fits your next step, read it with tradecraft_lookup(page=…) before acting."
 RULE = (
     "6. **Your library.** Your Tradecraft library is curated by the user for this work. The active "
@@ -116,20 +121,20 @@ def _clip(text: Any, limit: int) -> str:
 
 
 def shown_goal(goal: str) -> str:
-    """The goal as the header shows it: one line, its double quotes made single, no run of angle
-    brackets (a trusted line never looks like an untrusted block's marker), clipped."""
-    return _clip(re.sub(r"[<>]{3,}", " ", str(goal or "")).replace('"', "'"), GOAL_SHOWN_CHARS)
+    """The goal as the block shows it: one line, no hidden character (control, bidi or zero-width),
+    its double quotes made single, clipped. The block's wrapper then breaks any marker in it."""
+    return _clip(profile.one_line(str(goal or "")).replace('"', "'"), GOAL_SHOWN_CHARS)
 
 
 def render(goal: str, rows: Sequence[Mapping[str, Any]]) -> str:
     width = max(len(r["page"]) for r in rows)
-    lines = []
+    lines = [GOAL_LINE.format(goal=shown_goal(goal))]
     for r in rows:
-        line = f"  {r['page'].ljust(width)}  {r['path']}"
+        line = f"  {r['page'].ljust(width)}  {profile.one_line(r['path'])}"
         if r.get("matches"):
             line += f"   matches: {', '.join(r['matches'])}"
         lines.append(line)
-    return "\n".join([HEADER.format(goal=shown_goal(goal)), wrap_untrusted(lines), FOOTER])
+    return "\n".join([HEADER, wrap_untrusted(lines), FOOTER])
 
 
 def fits(cand: Any, th: Any) -> bool:

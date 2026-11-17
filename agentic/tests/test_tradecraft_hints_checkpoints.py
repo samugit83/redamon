@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from test_tradecraft_hints import entry_of, library, now, pages_of, state, todo  # noqa: E402
+from test_tradecraft_hints import entry_of, goal_line, library, now, pages_of, state, todo  # noqa: E402
 from tradecraft.library import profile  # noqa: E402
 
 
@@ -131,7 +131,7 @@ def test_a_new_message_starts_again(caplog):
         note, st, reasons = think({**st, "current_objective_index": 1,
                                    "conversation_objectives": [{"content": "x"}, {"content": "now the admin panel"}]},
                                   caplog)
-    assert reasons == "start" and note.splitlines()[0] == 'Library now (for your current goal: "now the admin panel"):'
+    assert reasons == "start" and goal_line(note) == '  goal: "now the admin panel"'
     assert st["tradecraft_hint_count"] == 1 and st["tradecraft_run_key"] == "objective:1"
 
 
