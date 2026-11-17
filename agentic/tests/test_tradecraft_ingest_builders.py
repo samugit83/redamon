@@ -523,8 +523,8 @@ CORP_PAGES = [f"{CORP_DOCS}{p}/" for p in ("install", "usage", "api")]
 
 
 def test_a_sitemap_listing_only_the_docs_root_is_passed_over(tmp_path):
-    """robots.txt names the company's root sitemap: inside the docs folder it lists only the docs
-    root, so the reading goes on to the docs' own sitemap instead of asking for the crawl."""
+    """robots.txt names the company's root sitemap, which lists only the docs root inside the docs
+    folder: the docs' own sitemap gives the map, and no crawl is asked for."""
     root_map = _urlset([CORP_DOCS, f"https://{CORP}/pricing/", f"https://{CORP}/about/"])
     fetcher = _site(tmp_path, CORP, {"robots.txt": f"Sitemap: https://{CORP}/sitemap.xml\n", "sitemap.xml": root_map,
                                       "docs/index.html": "<html></html>", "docs/sitemap.xml": _urlset([CORP_DOCS] + CORP_PAGES)})
@@ -585,3 +585,32 @@ def test_the_docs_own_sitemap_is_read_before_a_large_site_index(tmp_path):
     assert new.report_stop == "docs: no search index, sitemap.xml (4 pages)"
     sitemaps = [u for u, _ in fetcher.requests if u.endswith(".xml")]
     assert sitemaps == [f"{CORP_DOCS}sitemap.xml"]
+
+
+
+def test_a_sitemap_with_only_the_docs_root_is_passed_over_for_the_next_source(tmp_path):
+    """Below the root, with no sitemap of the docs' own: robots.txt names a pages sitemap whose
+    only page in the folder is the docs root, and the site's /sitemap.xml lists the docs. The
+    first is passed over, not taken for a one-page map or a reason to crawl."""
+    pages_map = _urlset([CORP_DOCS, f"https://{CORP}/pricing/", f"https://{CORP}/about/"])
+    fetcher = _site(tmp_path, CORP, {"robots.txt": f"Sitemap: https://{CORP}/pages.xml\n", "pages.xml": pages_map,
+                                      "sitemap.xml": _urlset([CORP_DOCS] + CORP_PAGES), "docs/index.html": "<html></html>"})
+    with net.use_fetcher(fetcher):
+        new = run(builders.build_docs(CORP_DOCS, s()))
+    assert [e.url for e in new.entries] == [CORP_DOCS] + CORP_PAGES and not new.crawl_fallback
+    assert new.index_url == f"https://{CORP}/sitemap.xml"
+    assert new.report_stop == "docs: no search index, site sitemap (4 pages)"
+
+
+def test_at_the_site_root_the_sitemaps_robots_names_come_first(tmp_path):
+    """Docs at the site root: the order is the wiki's and GitBook's, robots.txt's sitemaps first,
+    then /sitemap.xml (the docs' own sitemap and the site's are one file there)."""
+    host = "rootdocs.tc-fixture.test"
+    named = [f"https://{host}/guide/{p}/" for p in ("a", "b")]
+    listed = [f"https://{host}/other/{p}/" for p in ("c", "d")]
+    fetcher = _site(tmp_path, host, {"robots.txt": f"Sitemap: https://{host}/maps/docs.xml\n", "index.html": "<html></html>",
+                                     "maps/docs.xml": _urlset(named), "sitemap.xml": _urlset(listed)})
+    with net.use_fetcher(fetcher):
+        new = run(builders.build_docs(f"https://{host}/", s()))
+    assert [e.url for e in new.entries] == named and new.report_stop == "docs: no search index, robots (2 pages)"
+    assert [u for u, _ in fetcher.requests if u.endswith(".xml")] == [f"https://{host}/maps/docs.xml"]
