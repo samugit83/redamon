@@ -264,9 +264,9 @@ def build_system_message_content(system_prompt: str, llm, anthropic_caching: boo
 def think_messages(system_message_content, hint_note=None) -> list:
     """The think call's messages: one system message, then the ask.
 
-    A Tradecraft hint note (T8.1) goes at the end of that one system message, after the cache
-    tiers: a second system message is refused by chat templates that allow a single leading one,
-    and the provider's 400 would end the run.
+    The Tradecraft "Library now" block goes at the end of that one system message, after the
+    cache tiers: a second system message is refused by chat templates that allow a single leading
+    one, and the provider's 400 would end the run.
     """
     from tradecraft.library.hints import with_note
 
@@ -690,6 +690,10 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     else:
         _stealth_rules_text = ""
 
+    # Tradecraft: the rule only where Library now runs (its tools offered in this phase, hints on).
+    from tradecraft.library.hints import library_rule
+    from tradecraft.runtime import bound_catalog
+
     system_prompt = REACT_SYSTEM_PROMPT.format(
         current_phase=phase,
         workspace_rules=build_workspace_rules_block(project_id),
@@ -714,6 +718,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         fireteam_action_enum=ft_action_enum,
         fireteam_plan_field=ft_plan_field,
         fireteam_example_section=ft_example,
+        library_rule=library_rule(bound_catalog(), phase),
     )
 
     # Inject Deep Think section if available (from state or just computed)
@@ -1040,10 +1045,10 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     system_message_content = build_system_message_content(
         system_prompt, llm, get_setting('ANTHROPIC_PROMPT_CACHING_ENABLED', True))
 
-    # Tradecraft 2.0 library hints (T8.1): a note at a checkpoint of the attack.
-    from tradecraft.library.hints import maybe_hint
-    from tradecraft.runtime import bound_catalog
-    _tc_note, _tc_hint_updates = await maybe_hint(state, bound_catalog())
+    # Tradecraft, Library now (owner decision 2026-11-17): the library's best pages for the
+    # current goal, searched again only when the goal or the session's facts changed.
+    from tradecraft.library.hints import library_now
+    _tc_note, _tc_hint_updates = await library_now(state, bound_catalog())
 
     # Get LLM decision with retry on parse failures
     messages = think_messages(system_message_content, _tc_note)

@@ -33,6 +33,9 @@ FIELDS = (
     "tradecraft_seen_pages", "tradecraft_ask_count", "tradecraft_hint_count", "tradecraft_hint_log", "tradecraft_run_key",
 )
 COUNTERS = {"ask": "tradecraft_ask_count", "hint": "tradecraft_hint_count"}
+# The hint-log kinds of a page shown to the agent, and the word of their read log line: a
+# Library now block's ("now"), or a hint note's in a run saved before Library now ("hint").
+SHOWN = {"now": "library_now", "hint": "hint"}
 
 
 def fresh_values(key: Optional[str] = None) -> dict[str, Any]:
@@ -77,44 +80,45 @@ class RunCollector:
 
     def record_seen(self, page_ids: Iterable[str]) -> list[str]:
         """Adds the page IDs not seen yet in this run; returns the ones that were new. A page a
-        hint suggested is marked read in the hint log (R-367)."""
+        Library now block showed (or a hint of a run saved before it) is marked read in the hint
+        log (R-367)."""
         added = []
-        read = []
+        read: dict[str, str] = {}
         with self._lock:
             for page in page_ids:
                 if isinstance(page, str) and page and page not in self._seen:
                     self._seen.append(page)
                     added.append(page)
             for entry in self._hint_log:
-                if entry.get("kind") == "hint" and entry.get("page") in added and entry.get("read") is not True:
+                if entry.get("kind") in SHOWN and entry.get("page") in added and entry.get("read") is not True:
                     entry["read"] = True
-                    read.append(entry["page"])
-        for page in dict.fromkeys(read):
-            logger.info(f"[tradecraft] hint {page} read")
+                    read.setdefault(entry["page"], entry["kind"])
+        for page, kind in read.items():
+            logger.info(f"[tradecraft] {SHOWN[kind]} {page} read")
         return added
 
     def hinted(self) -> set[str]:
-        """The pages the run's hints suggested."""
+        """The pages the run's Library now blocks (or hints) showed."""
         with self._lock:
-            return {e["page"] for e in self._hint_log if e.get("kind") == "hint" and isinstance(e.get("page"), str)}
+            return {e["page"] for e in self._hint_log if e.get("kind") in SHOWN and isinstance(e.get("page"), str)}
 
-    def profile(self) -> Optional[dict]:
-        """The session profile the last hint check saved in the log (``library.profile``), or None."""
+    def library_now(self) -> Optional[dict]:
+        """The Library now entry the last think saved in the log (``library.hints``), or None."""
         with self._lock:
-            return next((dict(e) for e in reversed(self._hint_log) if e.get("kind") == "profile"), None)
+            return next((dict(e) for e in reversed(self._hint_log) if e.get("kind") == "library_now"), None)
 
-    def set_profile(self, entry: Mapping[str, Any]) -> None:
-        """Replaces the saved profile: the log keeps one, whatever the number of checks."""
+    def set_library_now(self, entry: Mapping[str, Any]) -> None:
+        """Replaces the saved Library now entry: the log keeps one, whatever the number of thinks."""
         with self._lock:
-            self._hint_log = [e for e in self._hint_log if e.get("kind") != "profile"]
-            self._hint_log.append({**entry, "kind": "profile"})
+            self._hint_log = [e for e in self._hint_log if e.get("kind") != "library_now"]
+            self._hint_log.append({**entry, "kind": "library_now"})
 
     def has_seen(self, page_id: str) -> bool:
         with self._lock:
             return page_id in self._seen
 
     def incr(self, kind: str) -> int:
-        """One more librarian question (``"ask"``) or hint (``"hint"``); returns the new count."""
+        """One more librarian question (``"ask"``) or Library now block (``"hint"``); returns the new count."""
         if kind not in COUNTERS:
             raise ValueError(f"unknown counter {kind!r}: one of {', '.join(COUNTERS)}")
         with self._lock:
@@ -133,7 +137,7 @@ class RunCollector:
             return self._counts[kind]
 
     def log_hint(self, entry: Mapping[str, Any]) -> None:
-        """A hint note given (its checkpoint, page IDs, whether one was read later)."""
+        """A page a Library now block showed (its block, whether it was read later)."""
         with self._lock:
             self._hint_log.append(dict(entry))
 

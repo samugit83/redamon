@@ -1285,7 +1285,7 @@ An error you have not reproduced is a clue, not a conclusion. Most "the tool is 
 2. Mark completed tasks as "completed"
 3. Add new tasks when you discover them
 4. Detect user INTENT - exploitation requests should be fast, research can be thorough
-5. **Add exploitation steps as TODO items** and mark them in_progress/completed as you go
+5. **Add exploitation steps as TODO items** and mark them in_progress/completed as you go{library_rule}
 
 ### When to Ask User (action="ask_user"):
 Use ask_user ONLY when you need user input that cannot be determined from graph, tool output, target_info, or qa_history:
