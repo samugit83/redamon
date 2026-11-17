@@ -53,7 +53,7 @@ from agent_in_the_loop.purpose import llm_purpose
 from logging_config import get_logger
 from orchestrator_helpers.json_utils import normalize_content
 from prompt_safety import UNTRUSTED_OUTPUT_GUIDANCE, wrap_untrusted
-from tradecraft.ingest import fetch
+from tradecraft.ingest import fetch, incremental, tree
 from tradecraft.ingest.crawl import error_code_of
 from tradecraft.ingest.tags import PhraseMatcher
 from tradecraft.settings import EffectiveSettings, constant
@@ -524,13 +524,14 @@ def parse_check(text: str) -> Optional[tuple[str, str, str]]:
 
 
 def _to_check(state: "IngestState", focus: Focus, cards: Mapping[str, dict]) -> list[Any]:
+    same = incremental.same_settings(state)
     maybe, kept = [], []
     for entry in state.entries:
         card = cards.get(entry.url)
         if card is None or entry.extra.get("status", "kept") != "kept" or entry.source == "pdf":
             continue
-        if card.get("_carried") and card.get("description_source") == "content_check":
-            continue  # unchanged since its check: the same text gives the same answer
+        if same and card.get("_carried") and card.get("description_source") == "content_check":
+            continue  # unchanged text, checked under these settings: the same answer
         decision = entry.extra.get("focus_decision")
         if decision == "maybe":
             maybe.append(entry)
@@ -593,6 +594,7 @@ async def content_check(state: "IngestState") -> "IngestState":
         return state
     if llm is None:
         return state
+    dropped = 0
     for i, entry in enumerate(todo):
         await state.check_cancelled()
         await state.progress("content_check", i, len(todo), "pages")
@@ -618,4 +620,8 @@ async def content_check(state: "IngestState") -> "IngestState":
         entry.extra["focus_decision"] = decision
         if decision == "drop" and not tag_only and not pinned(entry):
             _drop_checked(state, entry, card, reason)
+            dropped += 1
+    if dropped:
+        # The tree stage ran first: its folders and counts follow the pages still kept.
+        await tree.after_drops(state)
     return state

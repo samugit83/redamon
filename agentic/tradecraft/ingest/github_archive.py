@@ -202,6 +202,8 @@ async def read(owner: str, repo: str, branch: str, settings: EffectiveSettings, 
 
         producer = asyncio.create_task(produce())
         try:
+            # The default executor, not the job's two-worker tradecraft-ingest pool (TD-8): this
+            # thread waits on the network for the whole download and would hold one of them.
             got = await loop.run_in_executor(None, lambda: unpack(
                 _Source(pull, UNPACKED_MAX_BYTES), wanted, max_file_bytes=max_file_bytes,
                 max_total_bytes=max_total_bytes, max_files=max_files))

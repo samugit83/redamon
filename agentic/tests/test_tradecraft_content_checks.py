@@ -212,3 +212,27 @@ def test_an_unchanged_page_keeps_its_check(tmp_path):
     assert len(h.model.checks) == first + dropped
     assert h.live_by_url()[UNION]["description_source"] == "content_check"
     assert h.live_by_url()[KERB]["status"] == "dropped"
+
+
+
+def test_a_new_focus_checks_unchanged_pages_again(tmp_path):
+    """S10 review 1, finding 2: an unchanged page's check stands only under the settings (the focus
+    among them) it was made with."""
+    h = _job(tmp_path, SQLI)
+    first = len(h.model.checks)
+    h.resource_spec = {"focus": {**SQLI, "keep": "only UNION-based payloads"}}
+    h.settings_hash = "fedcba9876543210"
+    h.refresh()
+    assert len(h.model.checks) - first == first  # every page the triage left maybe, checked again
+    assert any("only UNION-based payloads" in p for p in h.model.checks[first:])
+
+
+def test_the_tree_follows_the_checks_drops(tmp_path):
+    """S10 review 1, finding 5: the tree is built before the content check; a folder whose pages
+    it dropped leaves the tree, and the counts are the kept pages'."""
+    h = _job(tmp_path, SQLI)
+    gen = h.row["generation"]
+    nodes = {n["path"]: n for n in h.store.tree if n["generation"] == gen and n["resource_id"] == "r1"}
+    kept = [e for e in h.live() if e["status"] == "kept"]
+    assert nodes and not any(path.startswith("kerberos") for path in nodes)
+    assert nodes["sqli/"]["page_count"] == len([e for e in kept if e["url"].startswith(WIKI + "sqli/")])

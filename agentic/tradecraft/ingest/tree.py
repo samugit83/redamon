@@ -17,6 +17,10 @@ model: ``constants.foldersPerDescriptionCall`` folders per call, at most
 ``constants.folderDescriptionCalls`` calls per resource, purpose ``tradecraft_ingest``, never
 retried (TD-20). The titles come from the site and go to the model as untrusted content; the
 answer is one plain line per folder the call asked about, nothing else is kept.
+
+The content check (T6.9) runs after this stage: when it drops pages, ``after_drops`` builds the
+tree again from the kept pages (a folder left with none goes) and describes again only the
+folders whose pages changed, within what is left of the per-resource call limit.
 """
 
 from __future__ import annotations
@@ -140,8 +144,13 @@ def parse_descriptions(text: str, asked: set[str]) -> Optional[dict[str, str]]:
     return out
 
 
+def _calls(state: "IngestState") -> int:
+    # The per-resource count of folder-description calls, shared by build and after_drops.
+    return getattr(state, "folder_description_calls", 0)
+
+
 async def describe(state: "IngestState", nodes: list[dict], cards: list[dict]) -> None:
-    if not nodes:
+    if not nodes or _calls(state) >= int(constant("folderDescriptionCalls")):
         return
     try:
         llm = await state.model()
@@ -152,12 +161,13 @@ async def describe(state: "IngestState", nodes: list[dict], cards: list[dict]) -
         return
     per_call = int(constant("foldersPerDescriptionCall"))
     max_calls = int(constant("folderDescriptionCalls"))
-    for call, start in enumerate(range(0, len(nodes), per_call)):
-        if call >= max_calls:
+    for start in range(0, len(nodes), per_call):
+        if _calls(state) >= max_calls:
             break
         await state.check_cancelled()
         batch = nodes[start:start + per_call]
         state.llm_calls += 1
+        state.folder_description_calls = _calls(state) + 1
         try:
             with llm_purpose("tradecraft_ingest", step="folder_descriptions"):
                 resp = await llm.ainvoke(description_prompt(batch, cards))
@@ -175,15 +185,44 @@ async def describe(state: "IngestState", nodes: list[dict], cards: list[dict]) -
             node["description"] = lines.get(node["path"], "")
 
 
+def _nodes(cards: list[dict]) -> list[dict]:
+    nodes = folder_tree(cards)
+    if len(cards) >= 2 and is_flat(nodes, len(cards)):
+        nodes = topic_tree(cards)
+    return nodes
+
+
 async def build(state: "IngestState") -> "IngestState":
     if state.site_type in NO_TREE_TYPES:
         return state
     cards = _kept(state.cards)
     if not cards:
         return state
-    nodes = folder_tree(cards)
-    if len(cards) >= 2 and is_flat(nodes, len(cards)):
-        nodes = topic_tree(cards)
+    nodes = _nodes(cards)
     await describe(state, nodes, cards)
     state.tree = nodes
     return state
+
+
+async def after_drops(state: "IngestState") -> None:
+    """The tree of the pages still kept, after a later stage dropped some: the counts follow, an
+    empty folder goes, a folder whose pages are unchanged keeps its description, the others are
+    described again."""
+    if state.site_type in NO_TREE_TYPES or not state.tree:
+        return
+    cards = _kept(state.cards)
+    if not cards:
+        state.tree = []
+        return
+    old = {(n["path"], n.get("kind")): n for n in state.tree}
+    nodes = _nodes(cards)
+    changed = []
+    for node in nodes:
+        before = old.get((node["path"], node.get("kind")))
+        # Drops only take pages away: an equal count is the same set of pages.
+        if before is not None and before["page_count"] == node["page_count"]:
+            node["description"] = before.get("description", "")
+        else:
+            changed.append(node)
+    await describe(state, changed, cards)
+    state.tree = nodes

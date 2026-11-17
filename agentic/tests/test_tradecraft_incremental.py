@@ -10,6 +10,7 @@ The sites are the fixture sites; ``ValidatingSite`` adds the validators a real s
 from __future__ import annotations
 
 import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -108,9 +109,13 @@ def test_unchanged_site(tmp_path):
     report = h.row["ingestion_report"]
     assert report["stored"]["pages"] == len(pages)
     assert report["stored"]["bytes"] == sum(first[u]["stored_bytes"] for u in pages)
-    # The pages unchanged since the last refresh cost no model call: only the summary and the folders.
+    # An unchanged page the model tagged last time costs no call: only those left without a topic
+    # are asked again (as every refresh asks for them).
     tagging = [p for p in h.model.prompts[prompts_before:] if isinstance(p, str) and "You tag the pages" in p]
-    assert tagging == []
+    asked = {line.split(". ", 1)[1].split(" — ")[0] for p in tagging for line in p.splitlines()
+             if re.match(r"^\d+\. ", line)}
+    untagged = {e["title"] for e in first.values() if e["status"] == "kept" and not e["topics"]}
+    assert asked <= untagged and not asked & {e["title"] for e in first.values() if e["topics"]}
 
 
 def test_changed_page_rebuilt(tmp_path):
@@ -229,3 +234,36 @@ def test_a_page_dropped_since_is_not_carried(tmp_path):
     assert union["status"] == "dropped" and not union["stored_text"]
     assert union_id not in _copied(h)
     assert h.store.resources[RID]["generation"] == 2
+
+
+
+class TaggingModel:
+    """Tags every page the model pass asks about as SQL injection; a summary otherwise."""
+
+    def __init__(self):
+        self.prompts: list = []
+
+    async def ainvoke(self, prompt, config=None, **kwargs):
+        import json
+
+        from langchain_core.messages import AIMessage
+        self.prompts.append(prompt)
+        if isinstance(prompt, str) and "You tag the pages" in prompt:
+            n = max(int(m) for m in re.findall(r"\n(\d+)\. ", prompt))
+            return AIMessage(content=json.dumps({"entries": [{"n": i, "topics": ["sql_injection"], "kinds": []}
+                                                             for i in range(1, n + 1)]}))
+        return AIMessage(content="A synthetic library.")
+
+
+def test_an_untagged_unchanged_page_is_tagged_again(tmp_path):
+    """S10 review 1, finding 3: a refresh whose model tagging failed leaves pages without a topic;
+    copied forward, they go to the model pass again (R-008: every page is tagged)."""
+    h, _root = _stored_site(tmp_path)
+    untagged = {e["url"] for e in h.live() if e["status"] == "kept" and not e["topics"]}
+    assert untagged
+    h.model = TaggingModel()
+    h.fetcher.reset()
+    h.refresh()
+    assert set(h.fetcher.not_modified) >= untagged  # unchanged: copied forward
+    live = h.live_by_url()
+    assert all("sql_injection" in live[u]["topics"] for u in untagged)

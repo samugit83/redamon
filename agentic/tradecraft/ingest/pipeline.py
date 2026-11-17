@@ -106,6 +106,7 @@ class IngestState:
     store_downloads: int = 0
     store_download_failures: int = 0
     llm_calls: int = 0
+    folder_description_calls: int = 0
     stop_reason: str = ""
     skipped: dict = field(default_factory=lambda: {"excluded": 0, "outOfScope": 0, "tooLittleText": 0,
                                                    "robots": 0, "outsideFocus": 0})

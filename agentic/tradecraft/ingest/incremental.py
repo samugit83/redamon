@@ -38,6 +38,11 @@ def previous_generation(state: "IngestState") -> Optional[int]:
     return state.previous.get("generation") if state.previous else None
 
 
+def same_settings(state: "IngestState") -> bool:
+    """The live generation was ingested with this job's settings (its ``settings_hash``)."""
+    return bool(state.previous and state.previous.get("same_settings"))
+
+
 def unchanged(entry: Any) -> bool:
     return bool(entry.extra.get(UNCHANGED))
 
@@ -52,7 +57,8 @@ async def plan(state: "IngestState") -> "IngestState":
     rows = {row["url"]: row for row in basis}
     resource = await state.store.resource(state.owner_id, state.resource_id) or {}
     conditional = bool(resource.get("settings_hash")) and resource.get("settings_hash") == state.request.settings_hash
-    state.previous = {"generation": int(basis[0]["generation"]), "pages": len(rows), "conditional": conditional}
+    # Same settings (the focus among them): the copies were made, and checked, as this job would.
+    state.previous = {"generation": int(basis[0]["generation"]), "pages": len(rows), "same_settings": conditional}
     for entry in state.entries:
         if entry.extra.get("status", "kept") != "kept":
             continue
