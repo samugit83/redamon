@@ -180,6 +180,16 @@ def test_seen_pages_last_cve_pages_first(monkeypatch):
     in_run(work, settings=run_settings(model=""))
     assert [c.page_id for c in h.asked[0][1]["first"].cards] == ["htk:91", "htk:88", "patt:415", "patt:412"]
 
+    # A page a hint suggested (T8.1) goes after the others as well.
+    h2 = Harness(monkeypatch, lib=lib)
+
+    async def after_a_hint():
+        run_state.log_hint({"kind": "hint", "page": "htk:88", "checkpoint": "phase", "n": 1, "read": False})
+        return await agent_tools.ask_tool.ainvoke({"need": NEED})
+
+    in_run(after_a_hint, settings=run_settings(model=""))
+    assert [c.page_id for c in h2.asked[0][1]["first"].cards] == ["htk:91", "patt:412", "patt:415", "htk:88"]
+
 
 def test_not_found_without_a_model(monkeypatch):
     model = LibrarianModel({})

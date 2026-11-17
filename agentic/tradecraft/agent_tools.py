@@ -286,11 +286,12 @@ def _scope_of(scope: Any) -> tuple[str, ...]:
 
 def ranked_first_pass(found: Found, collector: Optional[run_state.RunCollector], cves: tuple[str, ...]) -> Found:
     """The free first pass with the pages about the target's CVEs first and the pages this run
-    already read or was suggested last (Q9.3): a boost, never a filter."""
+    already read or was suggested by a hint last (Q9.3): a boost, never a filter."""
     wanted = set(cves)
+    hinted = collector.hinted() if collector is not None else set()
 
     def key(card: Any) -> tuple[bool, bool]:
-        seen = collector.has_seen(card.page_id) if collector is not None else False
+        seen = card.page_id in hinted or (collector is not None and collector.has_seen(card.page_id))
         return seen, not (wanted & set(card.entities or ()))
 
     return Found(found.verdict, tuple(sorted(found.cards, key=key)))

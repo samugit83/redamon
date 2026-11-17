@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import logging
 import threading
 from typing import Any, Iterable, Iterator, Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 FIELDS = (
     "tradecraft_seen_pages", "tradecraft_ask_count", "tradecraft_hint_count", "tradecraft_hint_log", "tradecraft_run_key",
@@ -73,14 +76,38 @@ class RunCollector:
         self._lock = threading.Lock()
 
     def record_seen(self, page_ids: Iterable[str]) -> list[str]:
-        """Adds the page IDs not seen yet in this run; returns the ones that were new."""
+        """Adds the page IDs not seen yet in this run; returns the ones that were new. A page a
+        hint suggested is marked read in the hint log (R-367)."""
         added = []
+        read = []
         with self._lock:
             for page in page_ids:
                 if isinstance(page, str) and page and page not in self._seen:
                     self._seen.append(page)
                     added.append(page)
+            for entry in self._hint_log:
+                if entry.get("kind") == "hint" and entry.get("page") in added and entry.get("read") is not True:
+                    entry["read"] = True
+                    read.append(entry["page"])
+        for page in dict.fromkeys(read):
+            logger.info(f"[tradecraft] hint {page} read")
         return added
+
+    def hinted(self) -> set[str]:
+        """The pages the run's hints suggested."""
+        with self._lock:
+            return {e["page"] for e in self._hint_log if e.get("kind") == "hint" and isinstance(e.get("page"), str)}
+
+    def profile(self) -> Optional[dict]:
+        """The session profile the last hint check saved in the log (``library.profile``), or None."""
+        with self._lock:
+            return next((dict(e) for e in reversed(self._hint_log) if e.get("kind") == "profile"), None)
+
+    def set_profile(self, entry: Mapping[str, Any]) -> None:
+        """Replaces the saved profile: the log keeps one, whatever the number of checks."""
+        with self._lock:
+            self._hint_log = [e for e in self._hint_log if e.get("kind") != "profile"]
+            self._hint_log.append({**entry, "kind": "profile"})
 
     def has_seen(self, page_id: str) -> bool:
         with self._lock:

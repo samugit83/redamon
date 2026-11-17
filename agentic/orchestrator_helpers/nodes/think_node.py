@@ -1031,6 +1031,15 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         HumanMessage(content="Based on the current state, what is your next action? Output EXACTLY ONE valid JSON object and nothing else. Do NOT simulate tool execution - you will receive actual tool output after submitting your decision. Do NOT output multiple JSON objects or continue the conversation - just ONE decision JSON.")
     ]
 
+    # Tradecraft 2.0 library hints (T8.1): a system note of its own at a checkpoint of the attack.
+    # Second, not last: the Anthropic adapter refuses a system message after the human one, and
+    # after the system prompt the cached prefix stays whole.
+    from tradecraft.library.hints import maybe_hint
+    from tradecraft.runtime import bound_catalog
+    _tc_note, _tc_hint_updates = await maybe_hint(state, bound_catalog())
+    if _tc_note:
+        messages.insert(1, SystemMessage(content=_tc_note))
+
     max_retries = get_setting('LLM_PARSE_MAX_RETRIES', 3)
     decision = None
     last_error = None
@@ -1273,6 +1282,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         "_output_tokens_this_turn": output_tokens_this_turn,
         "_skill_workflow": skill_workflow,
     }
+    updates.update(_tc_hint_updates)
 
     # LATS state pass-through (declared keys, or LangGraph strips them, §20.1).
     # Only written when LATS_ENABLED so the disabled path is a strict no-op.
