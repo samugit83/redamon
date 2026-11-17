@@ -114,6 +114,41 @@ describe.skipIf(!URL_)('S09 on a real Postgres', () => {
     expect((await db.tradecraftCuration.findMany({ where: { resourceId: r.id } })).map(c => c.url)).toEqual([`${r.url}sqli`])
   })
 
+  test('block all matching waits for a swap holding the row lock, then counts the live map it left (review C)', async () => {
+    const r = await mapResource()
+    expect(r.generation).toBe(2)
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    let taken!: () => void
+    const lockTaken = new Promise<void>(resolve => { taken = resolve })
+    // A refresh's swap: the row lock, a new generation with three matching pages, then the switch.
+    const swap = db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM user_tradecraft_resources WHERE id = ${r.id} FOR UPDATE`
+      taken()
+      await held
+      for (const path of ['g3-a', 'g3-b', 'g3-c']) {
+        const url = `${r.url}${path}`
+        const page = await tx.tradecraftPageId.create({ data: { resourceId: r.id, url } })
+        await tx.tradecraftEntry.create({ data: { userId: r.userId, resourceId: r.id, generation: 3, pageId: page.id, url, title: `SQL ${path}` } })
+      }
+      await tx.userTradecraftResource.update({ where: { id: r.id }, data: { generation: 3 } })
+    }, { timeout: 30_000 })
+    await lockTaken
+    // The person confirmed the 2 pages the old map showed; the row they hold says generation 2.
+    const blocking = curate(r, { op: 'block', matching: { query: 'sql' }, expectedCount: 2 }, r.userId)
+    for (let i = 0; i < 200; i++) {
+      const [{ waiting }] = await db.$queryRaw<{ waiting: number }[]>`SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`
+      if (waiting > 0) break
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    release()
+    await swap
+    expect(await blocking).toMatchObject({ ok: false, status: 409, code: 'count_changed', count: 3 })
+    expect(await db.tradecraftCuration.count({ where: { resourceId: r.id } })).toBe(0)
+    // Read again, the map is the new generation's, in one snapshot.
+    expect((await readMap(r, { query: 'sql' })).entries.map(e => e.title)).toEqual(['SQL g3-a', 'SQL g3-b', 'SQL g3-c'])
+  })
+
   test('restore pins a dropped page; pin records a typed URL; both are compound-key upserts', async () => {
     const r = await mapResource()
     expect(await curate(r, { op: 'restore', url: `${r.url}news` }, r.userId)).toEqual({ ok: true, op: 'restore', count: 1 })

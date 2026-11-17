@@ -162,3 +162,40 @@ describe('curate (R-167)', () => {
     expect(await curate(gone, { op: 'pin', url: 'https://wiki.example.test/a' }, 'owner')).toMatchObject({ ok: false, status: 404 })
   })
 })
+
+describe('the live generation is the one the row lock finds (review C; AC-39, D-46)', () => {
+  /** The row as a caller read it before a refresh's swap moved the live generation from 2 to 3. */
+  function swapped(): MapResource {
+    const before = { ...row() }
+    const live = h.db.rows('userTradecraftResource', { id: 'r1' })[0]
+    live.generation = 3
+    for (const [n, title, status] of [[11, 'SQL union', 'kept'], [12, 'SQL blind', 'kept'], [13, 'SQL time based', 'kept'], [14, 'Old news', 'dropped']] as const) {
+      seedEntry(n, { generation: 3, url: `https://wiki.example.test/g3-${n}`, title, status })
+    }
+    return before
+  }
+
+  test('block all matching counts the live map, not the one read before the lock: the old count is a 409', async () => {
+    const stale = swapped()
+    expect(stale.generation).toBe(2)
+    expect(await curate(stale, { op: 'block', matching: { query: 'sql' }, expectedCount: 2 }, 'owner')).toMatchObject({ ok: false, status: 409, code: 'count_changed', count: 3 })
+    expect(await curate(stale, { op: 'block', matching: { query: 'sql' }, expectedCount: 3 }, 'owner')).toEqual({ ok: true, op: 'block', count: 3 })
+    expect(h.db.rows('tradecraftCuration').map(c => c.url).sort()).toEqual([11, 12, 13].map(n => `https://wiki.example.test/g3-${n}`))
+  })
+
+  test('restore and rename act on the live generation', async () => {
+    const stale = swapped()
+    expect(await curate(stale, { op: 'restore', url: 'https://wiki.example.test/g3-14' }, 'owner')).toEqual({ ok: true, op: 'restore', count: 1 })
+    expect(h.db.rows('tradecraftEntry', { url: 'https://wiki.example.test/g3-14' })[0].status).toBe('kept')
+    // A page only the dead generation has is no longer in the map.
+    expect(await curate(stale, { op: 'restore', url: 'https://wiki.example.test/p4' }, 'owner')).toMatchObject({ ok: false, status: 404 })
+    expect(await curate(stale, { op: 'rename', url: 'https://wiki.example.test/p1', title: 'x' }, 'owner')).toMatchObject({ ok: false, status: 404 })
+  })
+
+  test('readMap reads the live generation in the same snapshot as its entries', async () => {
+    const stale = swapped()
+    const map = await readMap(stale, {})
+    expect(map.entries.map(e => e.title)).toEqual(['SQL union', 'SQL blind', 'SQL time based'])
+    expect(map.total).toBe(3)
+  })
+})

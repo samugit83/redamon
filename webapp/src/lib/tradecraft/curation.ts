@@ -10,12 +10,13 @@
  *  - unblock: the page comes back at the next refresh (read live until then);
  *  - rename: shown at once, applied to the page at the next refresh;
  *  - restore: a dropped page is kept now and pinned, so the next refresh keeps it.
- * Every write runs under the resource's row lock, as the swap of a new generation does.
+ * Every write runs under the resource's row lock, as the swap of a new generation does, on the live
+ * generation the lock found; a read takes the generation and its entries in one snapshot (D-46).
  */
 import type { Prisma, UserTradecraftResource } from '@prisma/client'
 import prisma from '@/lib/prisma'
 import { hasStoredLogin } from './masking'
-import { lockOwnResource } from './resourceAccess'
+import { lockOwnResourceGeneration, ownGeneration } from './resourceAccess'
 import { validateUrl } from './urls'
 
 export const MAP_PAGE_SIZE = 100
@@ -73,12 +74,12 @@ const ENTRY_SELECT = {
 type EntryRow = Prisma.TradecraftEntryGetPayload<{ select: typeof ENTRY_SELECT }>
 type CurationRow = { url: string; pinned: boolean; blocked: boolean; renamedTitle: string | null }
 
-/** The entries of the live generation a search names; blocked URLs are listed apart. */
-function entryWhere(r: MapResource, q: { query?: string; status?: string; tag?: string }, blocked: string[]): Prisma.TradecraftEntryWhereInput {
+/** The entries of generation `gen` a search names; blocked URLs are listed apart. */
+function entryWhere(r: MapResource, gen: number, q: { query?: string; status?: string; tag?: string }, blocked: string[]): Prisma.TradecraftEntryWhereInput {
   return {
     userId: r.userId,
     resourceId: r.id,
-    generation: r.generation,
+    generation: gen,
     status: q.status ?? 'kept',
     ...(blocked.length > 0 ? { url: { notIn: blocked } } : {}),
     AND: [
@@ -125,10 +126,23 @@ export function isMapCursor(cursor: string): boolean {
   return DIGITS.test(cursor) || /^https?:\/\//.test(cursor)
 }
 
+/**
+ * One page of the map. The generation, the curation rows and the entries are read in one
+ * REPEATABLE READ snapshot: a swap committing between them could otherwise answer an empty page
+ * or a total of another generation.
+ */
 export async function readMap(r: MapResource, q: MapQuery): Promise<MapPage> {
+  return prisma.$transaction(async (tx) => {
+    const gen = await ownGeneration(r.userId, r.id, tx)
+    if (gen === null) return { entries: [], total: 0, nextCursor: null }
+    return readMapIn(tx, { ...r, generation: gen }, q)
+  }, { isolationLevel: 'RepeatableRead' })
+}
+
+async function readMapIn(db: Prisma.TransactionClient, r: MapResource, q: MapQuery): Promise<MapPage> {
   const limit = Math.min(MAP_PAGE_SIZE, Math.max(1, q.limit ?? MAP_PAGE_SIZE))
   const status = q.status ?? 'kept'
-  const curations: CurationRow[] = await prisma.tradecraftCuration.findMany({
+  const curations: CurationRow[] = await db.tradecraftCuration.findMany({
     where: { resourceId: r.id }, select: { url: true, pinned: true, blocked: true, renamedTitle: true },
   })
   const byUrl = new Map(curations.map(c => [c.url, c]))
@@ -136,7 +150,7 @@ export async function readMap(r: MapResource, q: MapQuery): Promise<MapPage> {
 
   if (status === 'blocked') {
     // A blocked URL may have left the map at a refresh: listed from its curation row, by URL.
-    const rows = blocked.length === 0 ? [] : await prisma.tradecraftEntry.findMany({
+    const rows = blocked.length === 0 ? [] : await db.tradecraftEntry.findMany({
       where: { userId: r.userId, resourceId: r.id, generation: r.generation, url: { in: blocked } }, select: ENTRY_SELECT,
     })
     const byEntryUrl = new Map(rows.map(e => [e.url, e]))
@@ -151,12 +165,11 @@ export async function readMap(r: MapResource, q: MapQuery): Promise<MapPage> {
     }
   }
 
-  const where = entryWhere(r, { query: q.query, status, tag: q.tag }, blocked)
+  const where = entryWhere(r, r.generation, { query: q.query, status, tag: q.tag }, blocked)
   const pageWhere = q.cursor && DIGITS.test(q.cursor) ? { AND: [where, { id: { gt: BigInt(q.cursor) } }] } : where
-  const [total, rows] = await Promise.all([
-    prisma.tradecraftEntry.count({ where }),
-    prisma.tradecraftEntry.findMany({ where: pageWhere, select: ENTRY_SELECT, orderBy: { id: 'asc' }, take: limit + 1 }),
-  ])
+  // In order, not at once: the statements of one transaction share its connection.
+  const total = await db.tradecraftEntry.count({ where })
+  const rows = await db.tradecraftEntry.findMany({ where: pageWhere, select: ENTRY_SELECT, orderBy: { id: 'asc' }, take: limit + 1 })
   const page = rows.slice(0, limit)
   return {
     entries: page.map(e => view(r, e, e.url, byUrl.get(e.url), status)),
@@ -235,11 +248,15 @@ export async function curate(r: MapResource, body: unknown, actorId: string): Pr
   }
 }
 
-/** Runs `fn` under the resource's row lock; a resource deleted meanwhile is a 404. */
-async function locked<T>(r: MapResource, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+/**
+ * Runs `fn` under the resource's row lock, with the live generation the lock found: the caller's
+ * row may be older than a swap that committed while it waited. A resource deleted meanwhile is a 404.
+ */
+async function locked<T>(r: MapResource, fn: (tx: Prisma.TransactionClient, gen: number) => Promise<T>): Promise<T> {
   return prisma.$transaction(async (tx) => {
-    if (!(await lockOwnResource(tx, r.userId, r.id))) throw new Refused(refuse(404, 'not_found', 'Resource not found'))
-    return fn(tx)
+    const gen = await lockOwnResourceGeneration(tx, r.userId, r.id)
+    if (gen === null) throw new Refused(refuse(404, 'not_found', 'Resource not found'))
+    return fn(tx, gen)
   })
 }
 
@@ -280,11 +297,11 @@ async function block(r: MapResource, body: Record<string, unknown>, actorId: str
       return refuse(400, 'bad_request', 'Send the count you confirmed', { field: 'expectedCount' })
     }
   }
-  const count = await locked(r, async (tx) => {
+  const count = await locked(r, async (tx, gen) => {
     let targets = urls
     if (matching) {
       const blocked = (await tx.tradecraftCuration.findMany({ where: { resourceId: r.id, blocked: true }, select: { url: true } })).map(c => c.url)
-      const where = entryWhere(r, matching, blocked)
+      const where = entryWhere(r, gen, matching, blocked)
       // The count the person confirmed must still be the count: a refresh in between changed the map.
       const now = await tx.tradecraftEntry.count({ where })
       if (now !== body.expectedCount) {
@@ -306,7 +323,7 @@ async function block(r: MapResource, body: Record<string, unknown>, actorId: str
       await tx.tradecraftSection.deleteMany({ where: { resourceId: r.id, entryId: { in: ids } } })
       await tx.tradecraftEntry.updateMany({ where: { resourceId: r.id, id: { in: ids } }, data: { storedText: null, storedBytes: 0 } })
     }
-    const live = entries.filter(e => e.generation === r.generation && e.storedBytes > 0)
+    const live = entries.filter(e => e.generation === gen && e.storedBytes > 0)
     if (live.length > 0) await lowerStoredCounts(tx, r.id, live.length, live.reduce((n, e) => n + e.storedBytes, 0))
     return targets.length
   })
@@ -348,13 +365,13 @@ async function rename(r: MapResource, body: Record<string, unknown>, actorId: st
   if (title.length > RENAME_MAX || CONTROL.test(title)) {
     return refuse(400, 'bad_request', `A title holds at most ${RENAME_MAX} characters, on one line`, { field: 'title' })
   }
-  await locked(r, async (tx) => {
+  await locked(r, async (tx, gen) => {
     if (!title) {
       await tx.tradecraftCuration.updateMany({ where: { resourceId: r.id, url }, data: { renamedTitle: null } })
       await dropEmptyRows(tx, r.id, [url])
       return
     }
-    const inMap = await tx.tradecraftEntry.count({ where: { userId: r.userId, resourceId: r.id, generation: r.generation, url } })
+    const inMap = await tx.tradecraftEntry.count({ where: { userId: r.userId, resourceId: r.id, generation: gen, url } })
     if (inMap === 0) throw new Refused(refuse(404, 'not_in_map', 'This page is not in the map'))
     await tx.tradecraftCuration.upsert({
       where: { resourceId_url: { resourceId: r.id, url } },
@@ -368,8 +385,8 @@ async function rename(r: MapResource, body: Record<string, unknown>, actorId: st
 async function restore(r: MapResource, body: Record<string, unknown>, actorId: string): Promise<CurateResult> {
   const url = oneUrl(body.url)
   if (typeof url !== 'string') return url
-  await locked(r, async (tx) => {
-    const where = { userId: r.userId, resourceId: r.id, generation: r.generation, url }
+  await locked(r, async (tx, gen) => {
+    const where = { userId: r.userId, resourceId: r.id, generation: gen, url }
     const dropped = await tx.tradecraftEntry.updateMany({ where: { ...where, status: 'dropped' }, data: { status: 'kept', dropReason: '' } })
     if (dropped.count === 0) {
       const there = await tx.tradecraftEntry.count({ where })

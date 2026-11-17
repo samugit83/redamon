@@ -316,7 +316,7 @@ export function createTradecraftDb(): TradecraftDb {
     fail('$raw')
     const lock = /FROM user_tradecraft_resources WHERE id = \$1 AND user_id = \$2 FOR UPDATE/.exec(sql)
     if (lock) {
-      return tables.userTradecraftResource.filter(r => r.id === values[0] && r.userId === values[1]).map(r => ({ id: r.id }))
+      return tables.userTradecraftResource.filter(r => r.id === values[0] && r.userId === values[1]).map(r => ({ id: r.id, generation: r.generation }))
     }
     return []
   }

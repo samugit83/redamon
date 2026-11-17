@@ -44,3 +44,18 @@ export async function lockOwnResource(tx: Prisma.TransactionClient, accountId: s
   const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM user_tradecraft_resources WHERE id = ${resourceId} AND user_id = ${accountId} FOR UPDATE`
   return rows.length > 0
 }
+
+/**
+ * lockOwnResource, answering the live generation the lock found, or null when there is no such
+ * row. A writer that acts on the live map uses this one: a generation read before the lock may be
+ * the one a refresh's swap replaced while the writer waited (the swap takes the same lock).
+ */
+export async function lockOwnResourceGeneration(tx: Prisma.TransactionClient, accountId: string, resourceId: string): Promise<number | null> {
+  const rows = await tx.$queryRaw<{ id: string; generation: number }[]>`SELECT id, generation FROM user_tradecraft_resources WHERE id = ${resourceId} AND user_id = ${accountId} FOR UPDATE`
+  return rows.length > 0 ? rows[0].generation : null
+}
+
+/** The live generation of the account's resource, read through `db` (a snapshot's transaction), or null. */
+export async function ownGeneration(accountId: string, resourceId: string, db: Db = prisma): Promise<number | null> {
+  return ((await findOwn(db, accountId, resourceId, { generation: true })) as { generation: number } | null)?.generation ?? null
+}
