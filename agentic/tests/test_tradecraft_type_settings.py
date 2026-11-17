@@ -56,6 +56,8 @@ class Job:
 
     def run(self, is_cancelled=None):
         async def build_llm(owner, model):
+            if isinstance(self.model, Exception):  # a model that cannot be built
+                raise self.model
             return self.model
 
         async def no(*_a, **_k):
@@ -628,3 +630,44 @@ def test_a_docs_refresh_left_with_its_start_page_fails_and_keeps_the_previous_ma
             assert outcome.swapped and refresh.urls() == []
             assert refresh.report.stopReason == "docs: no search index, time budget"
             assert "docs_start_page_only" in error_codes(refresh) and refresh.resource["last_error"] == "timeout"
+
+
+def test_a_failed_map_fails_the_refresh_whatever_pins_curation_adds(tmp_path):
+    """A refresh that failed to map (the docs time budget spent; a model that cannot be built) is a
+    failed refresh even when curation adds the resource's pinned pages to its empty map: with keep,
+    the previous map stays, rather than a map of the pins alone reported as a success."""
+    from tradecraft import clock
+    from tradecraft_doubles import FakeClock
+
+    root, host, url, inside = versioned_docs(tmp_path / "docs", ["/maps/a.xml", "/maps/b.xml"])
+    index = root / host / "docs" / "searchindex.js"
+    index.write_text("Search.setIndex(" + json.dumps({"docnames": ["install", "usage"],
+                                                       "titles": ["Install", "Usage"]}) + ")")
+    store = MemoryStore()
+    assert Job(root, url, store=store).run().status == "succeeded"
+    good = sorted(e["url"] for e in store.live_entries(RID))
+    store.curate(RID, inside[0], pinned=True)
+    index.write_text("Search.setIndex({broken")
+    fake = FakeClock()
+    refresh = Job(root, url, store=store, job_id="job-2", target=2, fetcher=_Signals(root, lambda: fake.advance(200)))
+    with clock.use_clock(fake):
+        outcome = refresh.run()
+    assert outcome.status == "failed" and outcome.error_code == "timeout" and not outcome.swapped
+    assert sorted(refresh.urls()) == good
+
+    # A website crawled model-guided, then refreshed with no model to build.
+    host = "notes.tc-fixture.test"
+    site_url = f"https://{host}/"
+    pages = [f"{site_url}note-{i}/" for i in range(3)]
+    files = {"/": docs_page("Notes", pages)}
+    files.update({p.split(host, 1)[1]: docs_page(f"Note {i}", pages) for i, p in enumerate(pages)})
+    root = site(tmp_path / "web", host, files)
+    store = MemoryStore()
+    assert Job(root, site_url, store=store, model=PipelineModel(follow=3)).run().status == "succeeded"
+    good = sorted(e["url"] for e in store.live_entries(RID))
+    assert len(good) == 4
+    store.curate(RID, pages[0], pinned=True)
+    refresh = Job(root, site_url, store=store, job_id="job-2", target=2, model=RuntimeError("no provider"))
+    outcome = refresh.run()
+    assert outcome.status == "failed" and outcome.error_code == "model_unavailable" and not outcome.swapped
+    assert sorted(refresh.urls()) == good

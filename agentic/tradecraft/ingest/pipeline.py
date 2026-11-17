@@ -472,15 +472,19 @@ def budget_failure(state: IngestState) -> str:
 
 
 def failure_code(state: IngestState) -> str:
-    """The code of a refresh that failed or came back empty, or "" for a usable result. A
-    CVE archive has no entries by design, and a map whose pages the focus all dropped was read:
-    its dropped entries are written, for the Map view."""
+    """The code of a refresh that failed or came back empty, or "" for a usable result. A map
+    that failed to build fails the refresh whatever else its entries hold: curation adds the
+    pinned pages to any map, an empty one included. A CVE archive has no entries by design, and a
+    map whose pages the focus all dropped was read: its dropped entries are written, for the Map
+    view."""
+    if state.map_error:
+        return state.map_error
     kept = [e for e in state.entries if e.extra.get("status", "kept") == "kept"]
-    if kept or (state.site_type == "cve-poc-db" and not state.map_error):
+    if kept or state.site_type == "cve-poc-db":
         return ""
-    if not state.map_error and any(e.extra.get("dropped_by") == "focus" for e in state.entries):
+    if any(e.extra.get("dropped_by") == "focus" for e in state.entries):
         return ""
-    return state.map_error or state.home_problem or "fetch_failed"
+    return state.home_problem or "fetch_failed"
 
 
 # --------------------------------------------------------------------------------------
