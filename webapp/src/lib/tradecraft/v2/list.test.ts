@@ -11,11 +11,15 @@ vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.
 
 import { setNowForTests } from '@/lib/authz/clock'
 import { effectiveSettings } from '../effectiveSettings'
+import { ingestionHash } from '../staleness'
 import { legacyEntryCount, listResourcesV2, resourceViewOf } from './list'
 
 const T0 = Date.parse('2026-11-16T10:00:00Z')
 const USER = { ingestion: { 'crawl.maxPages': 90 } }
-const currentHash = (overrides: Record<string, unknown> = {}) => effectiveSettings({ user: USER, resource: overrides }).hash
+// r-v3 as a 2.0 ingestion left it: its token override and its login are part of what it was ingested with (§6.13).
+const currentHash = (overrides: Record<string, unknown> = {}) => ingestionHash(effectiveSettings({ user: USER, resource: overrides }).hash, {
+  credentials: { cookie: 'session=fake-session' }, githubTokenOverride: 'ghp_SECRET_fake_1',
+})
 
 beforeEach(() => {
   h.db = createTradecraftDb()

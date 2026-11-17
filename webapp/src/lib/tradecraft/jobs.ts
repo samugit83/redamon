@@ -209,7 +209,9 @@ export function buildJobRequest(
     bulk_id: job.bulkId,
     settings: settings.values,
     settings_snapshot: { values: settings.values, provenance: settings.provenance },
-    settings_hash: ingestionHash(settings.hash, resource.forcedType, resource.focus),
+    settings_hash: ingestionHash(settings.hash, {
+      forcedType: resource.forcedType, focus: resource.focus, credentials: resource.credentials, githubTokenOverride: resource.githubTokenOverride,
+    }),
     resource: {
       url: resource.url,
       slug: resource.slug,

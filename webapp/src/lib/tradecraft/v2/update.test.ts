@@ -190,7 +190,9 @@ describe('updateResourceV2', () => {
     function ingestedCurrent(over: Record<string, unknown> = {}) {
       Object.assign(row(), { mapVersion: 3, overrides: {}, forcedType: '', ingestionReport: { visited: 5, kept: 5, stored: { pages: 5, bytes: 50, notStoredQuota: 0, notStoredSize: 0 } }, ...over })
       const r = row()
-      r.settingsHash = ingestionHash(effectiveSettings({ resource: r.overrides }).hash, r.forcedType as string)
+      r.settingsHash = ingestionHash(effectiveSettings({ resource: r.overrides }).hash, {
+        forcedType: r.forcedType as string, credentials: r.credentials, githubTokenOverride: r.githubTokenOverride as string,
+      })
     }
     const view = async (body: Record<string, unknown>) => {
       const res = await update(body)
@@ -245,6 +247,14 @@ describe('updateResourceV2', () => {
       expect(row().typeOptions).toEqual(Object.fromEntries(Object.entries(overrides).filter(([k]) => k.startsWith('type.'))))
       expect(agent.calls).toEqual([])
       expect((await view({ overrides: {} })).resource.stale).toBe(false)
+    })
+
+    test('access (§6.13, review F): a login added is stale; the same login sent back, or its value rotated, is not', async () => {
+      ingestedCurrent()
+      stubAgent()
+      expect((await view({ credentials: { cookie: 'set' } })).resource.stale).toBe(false)
+      expect((await view({ credentials: { cookie: 'session=fake-rotated' } })).resource.stale).toBe(false)
+      expect((await view({ credentials: { headers: [{ name: 'X-Api-Key', value: 'fake-key' }] } })).resource.stale).toBe(true)
     })
 
     test('focus (§6.13, T5.5): saved, stale, no ingestion; no focus again is current', async () => {

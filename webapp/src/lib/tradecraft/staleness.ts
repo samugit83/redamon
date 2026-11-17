@@ -9,22 +9,55 @@
  * stored counts go with it (`v2/update.ts`), so a later Live → Stored is stale again.
  *
  * The hash the job request carries is `ingestionHash`, so the one the agent writes at the swap
- * is compared with today's here. Auto (no forced type) and no focus keep the plain settings
- * hash, so the resources ingested before the type or the focus joined it stay current; a focus
- * (§6.13: "saved, and the resource is marked stale") joins it as its canonical JSON.
+ * is compared with today's here. What §6.13 marks stale joins it: the forced type, the focus (the
+ * fields the agent reads, not the recipe that filled the chips), and access (a site login by its
+ * shape: whether a cookie is set, the header names, the basic user name; and whether a GitHub token
+ * override is set). Never a secret value: rotating a cookie, a password or a token changes what the
+ * site lets in, not the map, so it is no reason to re-ingest. Auto, no focus and no access keep the
+ * plain settings hash, so the resources ingested before these joined it stay current.
  */
 import type { IngestionReport } from './agentContract'
 import { canonicalJson, sha256Hex } from './effectiveSettings'
 import { forcedStorageMode } from './storageModes'
 
-function hasFocus(focus: unknown): boolean {
-  return !!focus && typeof focus === 'object' && !Array.isArray(focus) && Object.keys(focus).length > 0
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+// The fields the agent's focus stage reads (`focus_of`); the recipe is only the form's memory.
+const FOCUS_READ_KEYS = ['mode', 'topics', 'kinds', 'keep', 'skip', 'skipMode', 'strictness'] as const
+
+/** The focus as the agent reads it, or null for none (no focus, or Everything, which filters nothing). */
+function focusPart(focus: unknown): string | null {
+  if (!isRecord(focus) || focus.mode === undefined || focus.mode === 'everything') return null
+  return canonicalJson(Object.fromEntries(FOCUS_READ_KEYS.filter(k => k in focus).map(k => [k, focus[k]])))
 }
 
-export function ingestionHash(settingsHash: string, forcedType: string, focus?: unknown): string {
+/** A login by its shape, never a value: null when there is none. */
+function loginPart(credentials: unknown): string | null {
+  const c = isRecord(credentials) ? credentials : {}
+  const cookie = typeof c.cookie === 'string' && c.cookie !== ''
+  const headers = (Array.isArray(c.headers) ? c.headers : [])
+    .flatMap(h => (isRecord(h) && typeof h.name === 'string' ? [h.name.toLowerCase()] : []))
+    .sort()
+  const basic = isRecord(c.basic_auth) && typeof c.basic_auth.username === 'string' ? c.basic_auth.username : null
+  if (!cookie && headers.length === 0 && basic === null) return null
+  return canonicalJson({ cookie, headers, basic })
+}
+
+export interface IngestionInputs {
+  forcedType?: string
+  focus?: unknown
+  credentials?: unknown
+  githubTokenOverride?: string
+}
+
+export function ingestionHash(settingsHash: string, { forcedType = '', focus, credentials, githubTokenOverride = '' }: IngestionInputs = {}): string {
+  const f = focusPart(focus)
+  const login = loginPart(credentials)
   const parts = [
     ...(forcedType ? [`forced_type:${forcedType}`] : []),
-    ...(hasFocus(focus) ? [`focus:${canonicalJson(focus)}`] : []),
+    ...(f ? [`focus:${f}`] : []),
+    ...(login ? [`login:${login}`] : []),
+    ...(githubTokenOverride ? ['github_token:set'] : []),
   ]
   return parts.length > 0 ? sha256Hex([settingsHash, ...parts].join('|')).slice(0, 16) : settingsHash
 }
@@ -40,13 +73,16 @@ function tookStoredPath(report: IngestionReport): boolean {
 }
 
 export function isStale(
-  row: { settingsHash: string; forcedType: string; resourceType: string; storageMode: string; focus?: unknown },
+  row: { settingsHash: string; forcedType: string; resourceType: string; storageMode: string; focus?: unknown; credentials?: unknown; githubTokenOverride?: string },
   currentSettingsHash: string,
   report: IngestionReport | null,
 ): boolean {
   // A resource 2.0 never ingested has no hash: it shows the "before 2.0" badge instead.
   if (row.settingsHash === '') return false
-  if (row.settingsHash !== ingestionHash(currentSettingsHash, row.forcedType, row.focus)) return true
+  const current = ingestionHash(currentSettingsHash, {
+    forcedType: row.forcedType, focus: row.focus, credentials: row.credentials, githubTokenOverride: row.githubTokenOverride,
+  })
+  if (row.settingsHash !== current) return true
   if (row.storageMode !== 'stored' || !report || report.kept === 0) return false
   // A CVE archive never stores text, whatever its row says.
   if (forcedStorageMode(row.forcedType || row.resourceType) === 'live') return false
