@@ -13,6 +13,7 @@ class picks up.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import mimetypes
@@ -213,6 +214,11 @@ class FixtureFetcher:
                             body=body, content_type=ans.headers.get("content-type", "").lower(),
                             redirects=redirects, truncated=truncated)
         return failed("too_many_redirects", current)
+
+    @contextlib.asynccontextmanager
+    async def stream(self, url: str, **kwargs: Any):
+        """``get``'s answer handed over in chunks, as ``GuardedFetcher.stream`` hands its body."""
+        yield net.Streamed.of(await self.get(url, **kwargs), chunk_size=4096)
 
     async def render(self, url: str, **kwargs: Any) -> Rendered:
         return await self.browser.render(url, **kwargs)
@@ -441,6 +447,37 @@ class FetcherContractSuite:
         for url in BAD_URLS:
             assert run(self.h.fetcher.get(url)).error == "bad_url", url
         assert self.requested() == []
+
+    def _stream(self, path: str, host: str = CONTRACT_HOST, **kw):
+        async def go():
+            async with self.h.fetcher.stream(self.h.url(host, path), **kw) as s:
+                return s, await s.read()
+        return run(go())
+
+    def test_stream_reads_like_get(self):
+        s, body = self._stream("/big.bin", max_bytes=1000)
+        assert s.ok and len(body) == 1000 and s.truncated
+        s, body = self._stream("/big.bin")
+        assert len(body) == 20_000 and not s.truncated
+        s, body = self._stream("/r1")
+        assert s.status == 200 and b"tc-contract-ok" in body
+        assert s.final_url == self.h.url(CONTRACT_HOST, "/ok.html")
+        assert s.redirects == [self.h.url(CONTRACT_HOST, "/r1"), self.h.url(CONTRACT_HOST, "/r2")]
+
+    def test_stream_refusals_and_logins(self):
+        before = len(self.h.requests())
+        s, body = self._stream("/to-private")
+        assert s.error == "unsafe_address" and body == b"" and not s.ok
+        assert self.requested()[before:] == [self.h.url(CONTRACT_HOST, "/to-private")]
+        for url in BAD_URLS:
+            async def go(url=url):
+                async with self.h.fetcher.stream(url) as st:
+                    return st
+            assert run(go()).error == "bad_url", url
+        before = len(self.h.requests())
+        s, _body = self._stream("/cross", same_host_headers={"Cookie": FAKE_COOKIE})
+        first, second = self.h.requests()[before:]
+        assert first[1].get("cookie") == FAKE_COOKIE and "cookie" not in second[1]
 
 
 class RenderContractSuite:

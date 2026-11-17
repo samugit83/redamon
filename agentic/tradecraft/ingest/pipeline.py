@@ -84,6 +84,7 @@ class IngestState:
     site_type: str = WEBSITE
     meta: dict = field(default_factory=dict)
     index_kind: str = "none"
+    repo_size_kb: Optional[int] = None
     crawl: Optional[crawl.CrawlResult] = None
     entries: list[Candidate] = field(default_factory=list)
     map_error: str = ""
@@ -284,6 +285,7 @@ def _take(state: IngestState, result: builders.MapResult) -> None:
     state.entries = list(result.entries)
     state.meta = dict(result.meta)
     state.index_kind = result.index_kind
+    state.repo_size_kb = result.repo_size_kb
     if result.error:
         state.map_error = result.error
         state.count_error(result.error)

@@ -66,6 +66,8 @@ class MapResult:
     truncated: bool = False
     # A CVE repository without year folders is a plain repository (1.x re-types it).
     retype: str = ""
+    # A repository's size in KB when its API answer was read: the archive's pre-check (T6.3).
+    repo_size_kb: Optional[int] = None
 
 
 _YEAR_DIR_RE = re.compile(r"(?:19|20)\d{2}")
@@ -451,6 +453,7 @@ async def build_github(url: str, settings: EffectiveSettings, *, github_token: O
     owner, repo = parsed
     branch = settings.str("type.github.branch")
     meta = {"owner": owner, "repo": repo, "branch": branch or "main"}
+    size_kb: Optional[int] = None
     if not branch:
         resp = await fetch.fetch_raw(_api(owner, repo), settings, github_token=github_token)
         if resp.status != 200:
@@ -459,6 +462,8 @@ async def build_github(url: str, settings: EffectiveSettings, *, github_token: O
         info = _json_or_none(resp) or {}
         branch = str(info.get("default_branch") or "main") if isinstance(info, dict) else "main"
         meta["branch"] = branch
+        if isinstance(info, dict) and isinstance(info.get("size"), int):
+            size_kb = info["size"]
     tree_url = _api(owner, repo, f"/git/trees/{urllib.parse.quote(branch, safe='')}?recursive=1")
     resp = await fetch.fetch_raw(tree_url, settings, github_token=github_token)
     if resp.status != 200:
@@ -469,7 +474,7 @@ async def build_github(url: str, settings: EffectiveSettings, *, github_token: O
         settings.bool("type.github.folderEntries"))
     entries, cut = await blocking(_dedupe, entries, settings.int("knownTypes.maxMapEntries.github"))
     result = MapResult("github-repo", entries, meta=meta, index_kind="github_tree", index_url=f"https://github.com/{owner}/{repo}",
-                       truncated=cut or github_cut)
+                       truncated=cut or github_cut, repo_size_kb=size_kb)
     if github_cut:
         result.note = "github_tree_truncated"
     return result

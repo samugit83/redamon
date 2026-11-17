@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 from tradecraft import clock
-from tradecraft.ingest import fetch, titles
+from tradecraft.ingest import fetch, github_archive, titles
 from tradecraft.settings import constant
 
 if TYPE_CHECKING:
@@ -95,6 +95,8 @@ async def store(state: "IngestState") -> "IngestState":
     room = min(quota - used_by_others, int(constant("instanceStoredBytesCeiling")) - install_used)
 
     kept = [e for e in state.entries if e.extra.get("status", "kept") == "kept"]
+    # A Stored repository's files from one archive download (T6.3); what it misses is downloaded below.
+    from_archive = await github_archive.prefetch(state, kept)
     total, stored = 0, 0
     for i, entry in enumerate(kept):
         await state.check_cancelled()
@@ -104,7 +106,14 @@ async def store(state: "IngestState") -> "IngestState":
         if total >= room:
             state.stored_counts["notStoredQuota"] += 1
             continue
-        text, error, headers = await _page_text(state, entry)
+        if entry.url in from_archive:
+            text, cut = from_archive.pop(entry.url)
+            error, headers = "", {}
+            if cut:
+                state.count_error(fetch.PAGE_TOO_LARGE)
+            titles.collect(state, entry, text=text, content_type="text/markdown")
+        else:
+            text, error, headers = await _page_text(state, entry)
         if error:
             state.count_error(error)
             continue

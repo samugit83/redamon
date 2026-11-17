@@ -11,6 +11,10 @@ to the same behaviour.
 Failures never raise: a ``Response``/``Rendered`` carries a fixed ``error`` code
 (see ``ERRORS``), never page text, so callers can report it and the job's
 ``errorCode`` stays a closed set.
+
+``stream`` is ``get`` for a body read as it arrives (a repository archive, T6.6's EX-4): the
+same hops, guard, headers and ceilings, with the body handed over chunk by chunk; ``get`` reads
+it whole through the same path.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ import asyncio
 import contextlib
 import contextvars
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping, Optional, Protocol
+from typing import Any, AsyncContextManager, AsyncIterator, Iterator, Mapping, Optional, Protocol
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -86,6 +90,64 @@ class Response:
 
 
 @dataclass
+class Streamed:
+    """A response whose body is read as it arrives (``Fetcher.stream``). ``chunks()`` stops at
+    ``max_bytes`` (``truncated``) and never raises: a failure while reading sets ``error``."""
+
+    url: str
+    final_url: str
+    status: int
+    headers: dict[str, str]
+    content_type: str
+    redirects: list[str] = field(default_factory=list)
+    error: str = ""
+    truncated: bool = False
+    received: int = 0
+    max_bytes: int = 0
+    _source: Any = None
+
+    @property
+    def ok(self) -> bool:
+        return not self.error and 200 <= self.status < 300
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        if self._source is None or self.error:
+            return
+        try:
+            async for chunk in self._source:
+                if self.received + len(chunk) > self.max_bytes:
+                    rest = chunk[: self.max_bytes - self.received]
+                    self.received += len(rest)
+                    self.truncated = True
+                    if rest:
+                        yield rest
+                    return
+                self.received += len(chunk)
+                yield chunk
+        except httpx.TimeoutException:
+            self.error = "timeout"
+        except httpx.HTTPError:
+            self.error = "http_error"
+        finally:
+            self._source = None
+
+    async def read(self) -> bytes:
+        return b"".join([c async for c in self.chunks()])
+
+    @classmethod
+    def of(cls, resp: "Response", chunk_size: int = 64 * 1024) -> "Streamed":
+        """A ``Streamed`` over a body already read (a test double's ``stream``)."""
+
+        async def source() -> AsyncIterator[bytes]:
+            for i in range(0, len(resp.body), chunk_size):
+                yield resp.body[i:i + chunk_size]
+
+        return cls(url=resp.url, final_url=resp.final_url, status=resp.status, headers=dict(resp.headers),
+                   content_type=resp.content_type, redirects=list(resp.redirects), error=resp.error,
+                   truncated=resp.truncated, max_bytes=len(resp.body), _source=None if resp.error else source())
+
+
+@dataclass
 class Rendered:
     url: str
     html: str
@@ -103,6 +165,17 @@ class Fetcher(Protocol):
         max_bytes: Optional[int] = None,
         max_redirects: int = 5,
     ) -> Response: ...
+
+    def stream(
+        self,
+        url: str,
+        *,
+        headers: Optional[Mapping[str, str]] = None,
+        same_host_headers: Optional[Mapping[str, str]] = None,
+        timeout: float = 30.0,
+        max_bytes: Optional[int] = None,
+        max_redirects: int = 5,
+    ) -> AsyncContextManager[Streamed]: ...
 
     async def render(
         self,
@@ -181,58 +254,91 @@ class GuardedFetcher:
         max_bytes: Optional[int] = None,
         max_redirects: int = 5,
     ) -> Response:
-        def failed(code: str, at: str, redirects: list[str]) -> Response:
+        async with self.stream(url, headers=headers, same_host_headers=same_host_headers, timeout=timeout,
+                               max_bytes=max_bytes, max_redirects=max_redirects) as s:
+            body = await s.read()
+        if s.error and not s.status:
+            return Response(url=url, final_url=s.final_url, status=0, headers={}, body=b"", content_type="",
+                            redirects=s.redirects, error=s.error)
+        if s.error:
+            # The answer began, then the connection failed mid-body: what came is not the page.
+            _log_failure(s.error, s.final_url)
+            return Response(url=url, final_url=s.final_url, status=0, headers={}, body=b"", content_type="",
+                            redirects=s.redirects, error=s.error)
+        return Response(url=url, final_url=s.final_url, status=s.status, headers=s.headers, body=body,
+                        content_type=s.content_type, redirects=s.redirects, truncated=s.truncated)
+
+    @contextlib.asynccontextmanager
+    async def stream(
+        self,
+        url: str,
+        *,
+        headers: Optional[Mapping[str, str]] = None,
+        same_host_headers: Optional[Mapping[str, str]] = None,
+        timeout: float = 30.0,
+        max_bytes: Optional[int] = None,
+        max_redirects: int = 5,
+    ) -> AsyncIterator[Streamed]:
+        def failed(code: str, at: str) -> Streamed:
             _log_failure(code, at)
-            return Response(url=url, final_url=at, status=0, headers={}, body=b"",
-                            content_type="", redirects=redirects, error=code)
+            return Streamed(url=url, final_url=at, status=0, headers={}, content_type="", redirects=redirects,
+                            error=code)
 
         redirects: list[str] = []
         current = url
         base = {"user-agent": USER_AGENT}
         base.update({k.lower(): v for k, v in (headers or {}).items()})
-        try:
-            async with httpx.AsyncClient(
-                timeout=timeout,
-                follow_redirects=False,
-                transport=pinned_async_transport(),
-            ) as client:
+        async with contextlib.AsyncExitStack() as stack:
+            result: Optional[Streamed] = None
+            try:
+                client = await stack.enter_async_context(httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=False,
+                    transport=pinned_async_transport(),
+                ))
                 for _hop in range(max_redirects + 1):
                     problem = url_problem(current)
                     if problem:
-                        return failed(problem, current, redirects)
+                        result = failed(problem, current)
+                        break
                     assert_safe_fetch_url(current)
                     hop_headers = dict(base)
                     if same_host_headers and carries_same_host_headers(url, current):
                         hop_headers.update({k.lower(): v for k, v in same_host_headers.items()})
-                    async with client.stream("GET", current, headers=hop_headers) as resp:
-                        location = resp.headers.get("location")
-                        if resp.status_code in REDIRECT_STATUSES and location:
-                            redirects.append(current)
-                            current = urljoin(current, location)
-                            continue
-                        body, truncated = await _read_capped(resp, effective_max_bytes(max_bytes))
-                        return Response(
-                            url=url,
-                            final_url=current,
-                            status=resp.status_code,
-                            headers=dict(resp.headers.items()),
-                            body=body,
-                            content_type=(resp.headers.get("content-type") or "").lower(),
-                            redirects=redirects,
-                            truncated=truncated,
-                        )
-                return failed("too_many_redirects", current, redirects)
-        except UnsafeFetchURLError:
-            return failed("unsafe_address", current, redirects)
-        except (httpx.InvalidURL, ValueError):
-            # A URL httpx cannot parse even though urlsplit could (stray characters, a bad port).
-            return failed("bad_url", current, redirects)
-        except httpx.TimeoutException:
-            return failed("timeout", current, redirects)
-        except httpx.ConnectError:
-            return failed("unreachable", current, redirects)
-        except httpx.HTTPError:
-            return failed("http_error", current, redirects)
+                    hop = contextlib.AsyncExitStack()
+                    resp = await hop.enter_async_context(client.stream("GET", current, headers=hop_headers))
+                    location = resp.headers.get("location")
+                    if resp.status_code in REDIRECT_STATUSES and location:
+                        await hop.aclose()
+                        redirects.append(current)
+                        current = urljoin(current, location)
+                        continue
+                    stack.push_async_callback(hop.aclose)
+                    result = Streamed(
+                        url=url,
+                        final_url=current,
+                        status=resp.status_code,
+                        headers=dict(resp.headers.items()),
+                        content_type=(resp.headers.get("content-type") or "").lower(),
+                        redirects=redirects,
+                        max_bytes=effective_max_bytes(max_bytes),
+                        _source=resp.aiter_bytes(),
+                    )
+                    break
+                else:
+                    result = failed("too_many_redirects", current)
+            except UnsafeFetchURLError:
+                result = failed("unsafe_address", current)
+            except (httpx.InvalidURL, ValueError):
+                # A URL httpx cannot parse even though urlsplit could (stray characters, a bad port).
+                result = failed("bad_url", current)
+            except httpx.TimeoutException:
+                result = failed("timeout", current)
+            except httpx.ConnectError:
+                result = failed("unreachable", current)
+            except httpx.HTTPError:
+                result = failed("http_error", current)
+            yield result
 
     async def render(
         self,
@@ -312,18 +418,6 @@ class GuardedFetcher:
 
 def effective_max_bytes(max_bytes: Optional[int]) -> int:
     return HARD_MAX_BYTES if max_bytes is None else min(max_bytes, HARD_MAX_BYTES)
-
-
-async def _read_capped(resp: httpx.Response, max_bytes: int) -> tuple[bytes, bool]:
-    chunks: list[bytes] = []
-    size = 0
-    async for chunk in resp.aiter_bytes():
-        if size + len(chunk) > max_bytes:
-            chunks.append(chunk[: max_bytes - size])
-            return b"".join(chunks), True
-        chunks.append(chunk)
-        size += len(chunk)
-    return b"".join(chunks), False
 
 
 def _mcp_text(out: Any) -> str:

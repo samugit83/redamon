@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
+from typing import Any, AsyncContextManager, Awaitable, Callable, Mapping, Optional, Sequence
 
 from orchestrator_helpers.web_sources import (
     BeautifulSoup,
@@ -188,6 +188,20 @@ async def fetch_raw(url: str, settings: EffectiveSettings, *, github_token: Opti
     return await net.get_fetcher().get(
         url,
         headers=request_headers(settings, extra),
+        same_host_headers=github_headers(url, github_token) or None,
+        timeout=float(settings.int("fetching.requestTimeoutSec")),
+        max_bytes=max_bytes,
+        max_redirects=int(constant("maxRedirects")),
+    )
+
+
+def stream_raw(url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None,
+               max_bytes: Optional[int] = None) -> AsyncContextManager[net.Streamed]:
+    """``fetch_raw`` for a body read as it arrives (a repository archive): the same headers, token
+    rule and redirect limit, through the same guarded hops."""
+    return net.get_fetcher().stream(
+        url,
+        headers=request_headers(settings),
         same_host_headers=github_headers(url, github_token) or None,
         timeout=float(settings.int("fetching.requestTimeoutSec")),
         max_bytes=max_bytes,
