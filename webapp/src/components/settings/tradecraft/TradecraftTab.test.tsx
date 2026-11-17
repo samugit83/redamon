@@ -291,6 +291,31 @@ describe('TradecraftTab and the 2.0 switch', () => {
     expect(screen.queryByTestId('no-librarian-banner')).toBeNull()
   })
 
+  test('banner_when_missing, a deleted provider (Q10): a saved model no longer among the account\'s models shows the banner', async () => {
+    const MODELS = { OpenAI: [{ id: 'openai/gpt-4o-mini', name: 'GPT-4o mini', context_length: 128000, description: '' }] }
+    LIBRARIAN('openai/gone-model')
+    routes['POST /api/models'] = { status: 200, body: MODELS }
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    expect(await screen.findByTestId('no-librarian-banner')).toBeInTheDocument()
+    expect(screen.getByTestId('librarian-model-line')).toHaveTextContent('Librarian model: openai/gone-model (not available: its provider is gone) (choose)')
+    cleanup()
+    LIBRARIAN('openai/gpt-4o-mini')
+    routes['POST /api/models'] = { status: 200, body: MODELS }
+    renderTab()
+    await waitFor(() => expect(calls('POST', '/api/models')).toHaveLength(2))
+    await waitFor(() => expect(screen.getByTestId('librarian-model-line')).toHaveTextContent('Librarian model: openai/gpt-4o-mini (change)'))
+    expect(screen.queryByTestId('no-librarian-banner')).toBeNull()
+    cleanup()
+    // A listing that fails says nothing about the model: no banner on a guess.
+    LIBRARIAN('openai/gone-model')
+    routes['POST /api/models'] = { status: 503, body: { error: 'Failed to fetch models from agent API', code: 'providers_unreachable' } }
+    renderTab()
+    await waitFor(() => expect(calls('POST', '/api/models')).toHaveLength(3))
+    await screen.findByText('Lab Wiki')
+    expect(screen.queryByTestId('no-librarian-banner')).toBeNull()
+  })
+
   test('edit_link target: ?edit=<id> opens that resource\'s Edit form once the list is read (§3.4)', async () => {
     search.value = 'tab=tradecraft&edit=r1'
     routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true } }

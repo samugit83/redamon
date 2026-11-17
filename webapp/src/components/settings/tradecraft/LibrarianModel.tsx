@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { fetchSavedFeatureModels, useFeatureModelGate } from '@/components/shared/FeatureModelGate'
+import { fetchModelOptions, fetchSavedFeatureModels, useFeatureModelGate } from '@/components/shared/FeatureModelGate'
 import { toApiError } from '@/lib/apiError'
+import { modelAllowedForFeature } from '@/lib/llmFeatures'
 import tc from './tradecraft.module.css'
 
 export const LIBRARIAN_FEATURE = 'tradecraft_librarian' as const
@@ -20,33 +21,57 @@ export const NO_LIBRARIAN_TEXT = 'No librarian model: the agent can only use pla
 export type LibrarianModelState =
   | { kind: 'loading' }
   | { kind: 'error'; text: string }
-  | { kind: 'ready'; model: string }
+  /** `usable`: the saved model is among the account's models (false when its provider was deleted); null when unknown. */
+  | { kind: 'ready'; model: string; usable?: boolean | null }
+
+/** No usable librarian model: none saved, or a saved one whose provider is gone (Q10). */
+export function librarianMissing(state: LibrarianModelState): boolean {
+  return state.kind === 'ready' && (!state.model || state.usable === false)
+}
 
 /**
  * The account's "Tradecraft librarian" model (Q10 "One value, shown in three places"): the
- * Models-by-feature value, read again whenever the gate saves one.
+ * Models-by-feature value, read again whenever the gate saves one. With `checkUsable`, a saved
+ * model is also looked up among the account's models, as the gate lists them: deleting its
+ * provider leaves the id saved, and Q10 names that case for the banner. The listing asks the
+ * providers, so the tab asks for it only where the answer shows something (resources, and
+ * Librarian use "Agent decides"); a listing that fails leaves `usable` unknown, never missing.
  */
-export function useLibrarianModel(userId: string): { state: LibrarianModelState; choose: () => void } {
+export function useLibrarianModel(userId: string, { checkUsable = false }: { checkUsable?: boolean } = {}): { state: LibrarianModelState; choose: () => void } {
   const gate = useFeatureModelGate()
   const [state, setState] = useState<LibrarianModelState>({ kind: 'loading' })
   useEffect(() => {
     let live = true
     fetchSavedFeatureModels(userId)
-      .then(map => { if (live) setState({ kind: 'ready', model: map[LIBRARIAN_FEATURE] ?? '' }) })
+      .then(async map => {
+        const model = map[LIBRARIAN_FEATURE] ?? ''
+        if (!live) return
+        setState({ kind: 'ready', model, usable: null })
+        if (!model || !checkUsable) return
+        let usable: boolean | null = null
+        try {
+          const groups = await fetchModelOptions(userId)
+          usable = modelAllowedForFeature(LIBRARIAN_FEATURE, model) && Object.values(groups).some(list => list.some(m => m.id === model))
+        } catch {
+          usable = null
+        }
+        if (live) setState({ kind: 'ready', model, usable })
+      })
       .catch(e => { if (live) setState({ kind: 'error', text: toApiError(e, "Couldn't read your librarian model").message }) })
     return () => { live = false }
-  }, [userId, gate.savedVersion])
+  }, [userId, gate.savedVersion, checkUsable])
   return { state, choose: () => void gate.ensureFeatureModel(LIBRARIAN_FEATURE, { force: true, ...LIBRARIAN_SUGGESTION }) }
 }
 
 /** "Librarian model: <name> (change)", the line above the resource list and in Configure search. */
 export function LibrarianModelLine({ state, onChoose }: { state: LibrarianModelState; onChoose: () => void }) {
-  const shown = state.kind === 'loading' ? '…' : state.kind === 'error' ? 'unknown' : state.model || 'not set'
+  const shown = state.kind === 'loading' ? '…' : state.kind === 'error' ? 'unknown'
+    : !state.model ? 'not set' : state.usable === false ? `${state.model} (not available: its provider is gone)` : state.model
   return (
     <div className={tc.hint} data-testid="librarian-model-line" title={state.kind === 'error' ? state.text : undefined}>
       Librarian model: <strong>{shown}</strong>{' '}
       <button type="button" className={tc.linkButton} onClick={onChoose}>
-        ({state.kind === 'ready' && state.model ? 'change' : 'choose'})
+        ({state.kind === 'ready' && state.model && state.usable !== false ? 'change' : 'choose'})
       </button>
     </div>
   )

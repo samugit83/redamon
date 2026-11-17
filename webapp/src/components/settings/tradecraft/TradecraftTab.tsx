@@ -15,7 +15,7 @@ import { V2Switch } from './V2Switch'
 import { ResourceListV2 } from './ResourceListV2'
 import { ConfigureIngestionDialog } from './ConfigureIngestionDialog'
 import { ConfigureSearchDialog } from './ConfigureSearchDialog'
-import { LibrarianModelLine, NoLibrarianBanner, useLibrarianModel } from './LibrarianModel'
+import { LibrarianModelLine, NoLibrarianBanner, librarianMissing, useLibrarianModel } from './LibrarianModel'
 
 const TRADECRAFT_LOAD_FAILED = "Couldn't load your tradecraft resources"
 
@@ -72,7 +72,7 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
   // Librarian use (Q11): with "Search only" no librarian model is needed, so none is missing.
   const [librarianUse, setLibrarianUse] = useState<string | null>(null)
   const [searchKey, setSearchKey] = useState(0)
-  const librarian = useLibrarianModel(userId)
+  const librarian = useLibrarianModel(userId, { checkUsable: librarianUse === 'agent' && (resourceCount ?? 0) > 0 })
   useEffect(() => {
     let live = true
     tradecraftClient.getSettings(userId)
@@ -80,7 +80,7 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
       .catch(() => { if (live) setLibrarianUse(null) })
     return () => { live = false }
   }, [userId, searchKey])
-  const noLibrarian = librarianUse === 'agent' && (resourceCount ?? 0) > 0 && librarian.state.kind === 'ready' && !librarian.state.model
+  const noLibrarian = librarianUse === 'agent' && (resourceCount ?? 0) > 0 && librarianMissing(librarian.state)
   return (
     <div className={styles.section}>
       <div className={styles.sectionHeader}>
