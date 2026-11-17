@@ -194,6 +194,14 @@ def run_checkpoints(n, cat=None, index=None):
     return notes, st
 
 
+def trusted_lines(note):
+    """The note's lines outside its untrusted block."""
+    lines = (note or "").splitlines()
+    opening = next((i for i, ln in enumerate(lines) if ln.startswith("<<<UNTRUSTED_")), len(lines))
+    closing = next((i for i, ln in enumerate(lines) if ln.startswith("<<<END_UNTRUSTED_")), len(lines) - 1)
+    return lines[:opening] + lines[closing + 1:]
+
+
 def pages_of(note):
     return [ln.strip() for ln in note.splitlines()[1:] if re.fullmatch(r"\s+patt:\d+", ln)] if note else []
 
@@ -236,7 +244,16 @@ def test_planted_entities(monkeypatch):
 
     monkeypatch.setattr(hints, "queries_for", recording)
     planted = " ".join(f"CVE-2024-{1000 + i}" for i in range(40))
-    index = Index({"entries_entities": lambda p: [row(9, entities=list(p["ents"]))], "entries_text": [row(1)]})
+    # Each CVE id has a library page of its own, so the planted ids keep finding new pages.
+    served = set()
+
+    def entity_rows(params):
+        rows = [row(10 + int(c.rsplit("-", 1)[1]) % 900, entities=[c]) for c in params["ents"] if c.startswith("CVE-")]
+        served.update(f"patt:{r['page_id']}" for r in rows)
+        return rows
+
+    index = Index({"entries_entities": entity_rows, "entries_text": [row(1)]})
+    served.add("patt:401")
     st = state()
     _, updates = hint(st, index=index)
     st = {**st, **updates}
@@ -249,8 +266,10 @@ def test_planted_entities(monkeypatch):
         if note:
             given.append(note)
     assert len(given) <= 6 - 1 and st["tradecraft_hint_count"] <= 6
-    assert all(set(pages_of(n)) <= {"patt:401", "patt:409"} for n in given)
+    assert given and all(set(pages_of(n)) <= served and len(pages_of(n)) <= 3 for n in given)
     assert all("IGNORE" not in n for n in given)
+    # Finding 2 of S12's review: a planted CVE id is searched, never named in a trusted line.
+    assert not [ln for n in given for ln in trusted_lines(n) if "CVE-" in ln.upper()]
     assert len(profile.Profile.from_log(
         next(e for e in st["tradecraft_hint_log"] if e.get("kind") == "profile")).cves) <= profile.MAX_CVES
     assert built and all(len(q) <= 6 for q in built)

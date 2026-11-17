@@ -10,8 +10,9 @@ the match strictness, already suggested or already read are dropped, and the bes
 ``constants.pagesPerHint`` (3) remain.
 
 The note is its own system message, never part of a tool result. Its trusted lines hold only page
-IDs and names from the fixed lists (topics, technologies, pattern-checked CVE ids, "WAF seen");
-titles and breadcrumbs come from the sites, so they sit inside an untrusted block (R-363).
+IDs and names from the fixed lists (topics, technologies, "WAF seen");
+titles and breadcrumbs come from the sites, so they sit inside an untrusted block (R-363). CVE ids,
+which a target can plant, are searched but never named in the note (Q6).
 
 Limits: one note per think, ``hints.perRun`` notes per run counted on the run's collector (whose
 values the think node returns with the state), never the same page twice. The skill line of T5.4
@@ -39,7 +40,6 @@ PAGES = int(constant("pagesPerHint"))
 MAX_QUERIES = 6
 MAX_CVE_QUERIES = 3
 HEADER_TECHS = 2
-HEADER_CVES = 2
 PATH_CHARS = 100
 # The searches of one note together: about 50 ms on the card index (Q6); a slow database costs
 # the think node no more than this.
@@ -126,11 +126,11 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
-def render_note(current: profile.Profile, previous: Optional[profile.Profile], cards: Sequence[Card],
-                has_ask: bool) -> str:
+def render_note(current: profile.Profile, cards: Sequence[Card], has_ask: bool) -> str:
+    """The note. Its header names the topic, technologies from the vocabulary and "WAF seen" only:
+    a CVE id comes from the target's own text, so it never reaches a trusted line."""
     parts = [_topic_label(current.topic)] if current.topic else []
     parts += [_tech_name(t) for t in current.technologies[:HEADER_TECHS]]
-    parts += _new_cves(current, previous)[:HEADER_CVES]
     if current.blocked:
         parts.append(WAF_SEEN)
     lines = [f"Library suggestions ({' · '.join(parts)}):" if parts else "Library suggestions:"]
@@ -182,7 +182,7 @@ async def _note(collector: run_state.RunCollector, catalog: Any, settings: Effec
     for card in cards:
         collector.log_hint({"kind": "hint", "page": card.page_id, "checkpoint": checkpoint, "n": n, "read": False})
     logger.info(f"[tradecraft] hint n={n} checkpoint={checkpoint} pages={','.join(c.page_id for c in cards)}")
-    return render_note(current, previous, cards, is_tool_allowed_in_phase("tradecraft_ask", current.phase))
+    return render_note(current, cards, is_tool_allowed_in_phase("tradecraft_ask", current.phase))
 
 
 async def maybe_hint(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[str], dict]:

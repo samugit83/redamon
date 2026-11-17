@@ -61,11 +61,12 @@ def test_new_technology_or_cve():
                                         "vulnerabilities": []}})[0] is None
     note, st = think({**st, "target_info": {"technologies": ["PostgreSQL 14", "nginx 1.25"],
                                             "vulnerabilities": ["CVE-2024-23897"]}})
-    assert header(note) == "Library suggestions (SQL injection · PostgreSQL · nginx · CVE-2024-23897):"
+    # The CVE id is searched; the header names only the fixed lists' names (S12 review, finding 2).
+    assert header(note) == "Library suggestions (SQL injection · PostgreSQL · nginx):"
     # A CVE id in a target's tool result is one too.
     note, st = think({**st, "_current_step": {"step_id": "st-9", "tool_name": "execute_nuclei",
                                               "tool_output": "[CVE-2021-44228] matched"}})
-    assert note is not None and "CVE-2021-44228" in header(note) and st["tradecraft_hint_count"] == 4
+    assert note is not None and "CVE-" not in header(note) and st["tradecraft_hint_count"] == 4
 
 
 def test_a_block_seen():
@@ -104,6 +105,6 @@ def test_one_note_when_checkpoints_meet():
                       "target_info": {"technologies": ["PostgreSQL", "MySQL"], "vulnerabilities": ["CVE-2024-1111"]},
                       "_current_step": {"step_id": "st-1", "tool_name": "execute_curl", "tool_output": "blocked"}},
                      index=index)
-    assert header(note) == "Library suggestions (XSS · PostgreSQL · MySQL · CVE-2024-1111 · WAF seen):"
+    assert header(note) == "Library suggestions (XSS · PostgreSQL · MySQL · WAF seen):"
     assert st["tradecraft_hint_count"] == 2
     assert len([ln for ln in note.splitlines()[1:] if ln.strip().startswith("patt:")]) <= 3 * 2
