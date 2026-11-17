@@ -477,13 +477,27 @@ def test_blocks_are_not_bounded_by_hints_per_run():
         assert len(shown) == len(set(shown)) == 3 * len(GOALS)
 
 
+def test_the_cap_follows_the_runs_iteration_limit():
+    """The cost bound is twice the run's MAX_ITERATIONS plus a margin: a think brings at most one
+    new step in progress and one new next step (measured on the session logs: at most 2.0, 1.57 on
+    runs of 20 thinks or more), so a run never reaches it before its own last think. A hard bound
+    keeps a huge setting's cost sane."""
+    assert hints.goal_cap(100) == 2 * 100 + hints.GOAL_MARGIN == 210
+    assert hints.goal_cap(300) == 610
+    assert hints.goal_cap(10_000) == hints.GOAL_CAP_CEILING == 1000
+    assert hints.goal_cap(None) == hints.goal_cap("x") == hints.goal_cap(0) == 210
+    # The run's own limit, from its state, or the project's setting, or the default.
+    assert hints.max_iterations_of({"max_iterations": 40}) == 40
+    assert hints.max_iterations_of({}) == 100
+
+
 def test_the_search_cap_counts_distinct_goals_and_says_when_it_is_reached(monkeypatch, caplog):
-    """The cost bound: at most ``MAX_GOALS`` distinct goals searched per run. A goal searched
-    already is searched again for new facts at no cost to the cap; past the cap a fixed notice
-    says the block was not searched, never an empty prompt that would read as "nothing fits"."""
-    monkeypatch.setattr(hints, "MAX_GOALS", 2)
+    """At most ``goal_cap`` distinct goals searched per run. A goal searched already is searched
+    again for new facts at no cost to the cap; past the cap a fixed notice says the block was not
+    searched, never an empty prompt that would read as "nothing fits"."""
+    monkeypatch.setattr(hints, "GOAL_MARGIN", 0)
     index = by_goal()
-    st = state()
+    st = state(max_iterations=1)
 
     def step(goal, **over):
         nonlocal st

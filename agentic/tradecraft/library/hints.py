@@ -24,9 +24,9 @@ sections) is ever shown, and only the rows of resources the run's catalog holds 
 resume binds the catalog again for the person resuming. The main instructions carry the one rule
 that says how to use it (``library_rule``).
 
-Cost: at most ``MAX_GOALS`` distinct steps searched per run (a step searched already is searched
-again for new facts at no cost to it; at most one round of searches a think), ``SEARCH_TIMEOUT_SEC``
-per round. ``hints.perRun`` bounded the old notes and does not apply. The block never vanishes
+Cost: at most ``goal_cap`` distinct steps searched per run, twice the run's MAX_ITERATIONS plus a
+margin, never more than ``GOAL_CAP_CEILING`` (a step searched already is searched again for new
+facts at no cost to it; at most one round of searches a think), ``SEARCH_TIMEOUT_SEC`` per round. ``hints.perRun`` bounded the old notes and does not apply. The block never vanishes
 silently: a step past the cap, or whose search failed or was slow, gets a fixed notice (``NOTICES``),
 and a step's pages stay while the step does, even when a search for new facts fails. Measurement,
 page IDs and counts only (never a step or a title): ``[tradecraft] library_now refresh=`` per round
@@ -54,10 +54,15 @@ logger = get_logger(__name__)
 PAGES = int(constant("pagesPerHint"))
 # The pages a search keeps: the next ones step in, with no new search, as the agent reads.
 STANDING = 2 * PAGES
-# A search is about 50 ms on the card index. A run of the default 100 thinks meets about one new
-# step a think (its stated next action moves at each), the longest sessions seen fewer: 200 steps
-# cost the database about 10-20 s over the whole run.
-MAX_GOALS = 200
+# The cap of distinct steps searched in a run. A think brings at most one new step in progress and
+# one new next step: measured on 187 session logs, at most 2.0 distinct steps a think (1.57 on the
+# runs of 20 thinks or more, median 1.17), so twice the run's iteration limit, plus a margin for
+# the objective and a resume, is never reached before the run's own last think. A search is about
+# 50 ms on the card index, so the ceiling bounds a run with a huge iteration limit to about 50 s
+# of database time over the whole run.
+GOAL_MARGIN = 10
+GOAL_CAP_CEILING = 1000
+DEFAULT_MAX_ITERATIONS = 100
 SEARCH_TIMEOUT_SEC = 3.0
 CVE_QUERY = profile.SEARCHED_CVES
 GOAL_SHOWN_CHARS = 100
@@ -214,6 +219,23 @@ def _session(focus: profile.Focus) -> Any:
     return search.Session(topic=focus.topic, phase=focus.phase, technologies=focus.technologies)
 
 
+def max_iterations_of(state: Mapping[str, Any]) -> int:
+    """The run's iteration limit: its state's, else the project's setting, else the default."""
+    from project_settings import get_setting
+
+    for value in (state.get("max_iterations"), get_setting("MAX_ITERATIONS", DEFAULT_MAX_ITERATIONS)):
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return DEFAULT_MAX_ITERATIONS
+
+
+def goal_cap(max_iterations: Any) -> int:
+    """The distinct steps a run may search, for its iteration limit (``GOAL_MARGIN`` and
+    ``GOAL_CAP_CEILING`` above say why)."""
+    ok = isinstance(max_iterations, int) and not isinstance(max_iterations, bool) and max_iterations > 0
+    return min(2 * (max_iterations if ok else DEFAULT_MAX_ITERATIONS) + GOAL_MARGIN, GOAL_CAP_CEILING)
+
+
 def facts_key(focus: profile.Focus, catalog: Any) -> str:
     """The facts a search reads besides its words, the resources it searches included: the same
     step with other facts, or in a catalog a resume bound again, is searched again."""
@@ -294,7 +316,7 @@ def _entry_of(saved: Mapping[str, Any]) -> dict:
 
     searched = [x for x in (search_of(i) for i in (saved.get("searched") or [])[:len(profile.STEP_LABELS)]) if x]
     displayed = [r["page"] for r in _rows_of([{"page": p} for p in saved.get("displayed") or []])][:PAGES]
-    return {"refreshes": count("refreshes"), "shown": count("shown"), "goals": hexes(saved.get("goals"), MAX_GOALS),
+    return {"refreshes": count("refreshes"), "shown": count("shown"), "goals": hexes(saved.get("goals"), GOAL_CAP_CEILING),
             "limited": saved.get("limited") is True, "searched": [x for x in searched if x["key"]],
             "cve": search_of(saved.get("cve")), "displayed": displayed}
 
@@ -324,7 +346,7 @@ def _spent(item: Optional[dict], read: set[str]) -> bool:
 
 
 async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus: profile.Focus,
-                   reasons: Sequence[str], read: set[str]) -> dict:
+                   reasons: Sequence[str], read: set[str], cap: int) -> dict:
     """Searches the steps (and the confirmed CVE ids) that have no pages for the current facts, or
     whose kept pages were all read, in one round under one time limit. A step that cannot be
     searched (the cap, an error, the time limit) keeps the pages it had, which still fit it, or
@@ -340,7 +362,7 @@ async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus
         if had is not None and had["facts"] == facts and not _spent(had, read):
             searched.append(had)
             continue
-        if key not in goals and len(goals) >= MAX_GOALS:
+        if key not in goals and len(goals) >= cap:
             if not entry["limited"]:
                 entry = {**entry, "limited": True}
                 logger.info(f"[tradecraft] library_now code=limit goals={len(goals)}")
@@ -421,7 +443,8 @@ async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[
             reasons = profile.changes(previous, current)
             entry = _in_catalog(_entry_of(saved), catalog)
             read = set(collector.drain()["tradecraft_seen_pages"])
-            entry = await _refresh(entry, catalog, settings, current, reasons, read)
+            entry = await _refresh(entry, catalog, settings, current, reasons, read,
+                                   goal_cap(max_iterations_of(state)))
             rows = assemble(current, entry, read)
             steps = [*current.steps, *([("finding", ", ".join(entry["cve"]["ids"]))] if entry["cve"] else [])]
             shown = sorted(rows, key=lambda r: ORDER.index(r["step"]))
