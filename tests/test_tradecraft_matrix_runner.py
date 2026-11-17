@@ -1184,6 +1184,113 @@ def test_db_queries_are_wrapped_read_only_and_literals_are_quoted():
         runner.lit("a\nb")
 
 
+def test_db_json_reads_json_agg_over_several_lines():
+    # psql prints json_agg with one element per line (two rows and more): the whole output is
+    # the value. The double above answered one line and hid it.
+    def fake_exec(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0, stdout='SET\n[{"n": 1}, \n {"n": 2}, \n {"n": 3}]\n', stderr="")
+
+    assert runner.Db(run=fake_exec).json("SELECT n") == [{"n": 1}, {"n": 2}, {"n": 3}]
+
+
+def test_incremental_counts_read_the_agents_own_log_line():
+    source = (REPO / "agentic/tradecraft/ingest/storage.py").read_text(encoding="utf-8")
+    assert 'f"[tradecraft] job {state.request.job_id} incremental code= unchanged={unchanged} "' in source
+    assert 'f"stored={stored - unchanged}"' in source
+    log = ("2026-11-17 10:00:01 INFO tradecraft.ingest.storage [tradecraft] job cjob2 incremental code= unchanged=7 stored=1\n"
+           "2026-11-17 10:00:02 INFO tradecraft.ingest.storage [tradecraft] job cjob22 incremental code= unchanged=0 stored=9\n")
+    assert runner.incremental_counts(log, "cjob2") == (7, 1)
+    assert runner.incremental_counts(log, "cjob") is None and runner.incremental_counts(log, "") is None
+
+
+class _OpsWeb:
+    """The ops account's routes, with a refresh that the agent takes after two queued reads."""
+
+    def __init__(self):
+        self.calls = []
+        self.jobs = []  # the resource's jobs, latest last
+        self.queued_reads = 0
+
+    def call(self, method, path, body=None, *, headers=None, timeout=None):
+        self.calls.append((method, path, body))
+        R = runner.Response
+        if path.endswith("/tradecraft-settings"):
+            return R(200, {})
+        if method == "POST" and path.endswith("/tradecraft-resources"):
+            self.jobs.append({"id": "cjob1", "status": "succeeded"})
+            return R(201, {"resource": {"id": "res1"}, "job": self.jobs[-1]})
+        if method == "POST" and path.endswith("/refresh"):
+            n = len(self.jobs) + 1
+            self.jobs.append({"id": f"cjob{n}", "status": "succeeded" if n == 2 else "queued"})
+            return R(200, {"job": self.jobs[-1]})
+        if method == "GET" and path.endswith("/jobs"):
+            job = self.jobs[-1]
+            if job["status"] == "queued":
+                self.queued_reads += 1
+                if self.queued_reads > 2:
+                    job["status"] = "running"
+            return R(200, {"job": dict(job)})
+        if method == "DELETE" and path.endswith("/jobs"):
+            self.jobs[-1]["status"] = "cancelled"
+            return R(200, {"job": self.jobs[-1]})
+        if method == "GET":
+            return R(200, {"resource": {"id": "res1", "stale": True}})
+        if method == "DELETE":
+            return R(200, {})
+        return R(404, {"code": "not_found"})
+
+
+class _OpsDb:
+    def json(self, sql):
+        if "SELECT generation" in sql:
+            return [{"generation": 3}]
+        if "count(*) AS n FROM tradecraft_entries" in sql:
+            return [{"n": 12}]
+        return [{"n": 0}]
+
+
+def _ops_ctx(web):
+    import types
+    return types.SimpleNamespace(sessions={"ops": (web, "u-ops")}, scn=SCN, db=_OpsDb(), model="model-x")
+
+
+def test_ops_checks_add_with_a_model_without_a_librarian_and_cancel_a_running_refresh():
+    web = _OpsWeb()
+    log = "x [tradecraft] job cjob2 incremental code= unchanged=7 stored=0\n"
+    with mock.patch.object(runner, "agent_log_since", return_value=log), mock.patch.object(runner.time, "sleep"):
+        results = runner.ops_checks(_ops_ctx(web), deadline=runner.time.monotonic() + 600)
+    got = {c.name: c for c in results}
+    assert all(c.ok for c in results), results
+    assert set(got) == {"ops_resource_added", "incremental_refresh", "cancel_keeps_previous_version",
+                        "stale_after_settings_change", "delete_leaves_no_row"}
+    assert got["incremental_refresh"].detail == "succeeded; 7 pages unchanged, 0 stored again"
+    # The add carries the run's model, after the ops account's librarian use went to "Search only".
+    puts = [i for i, c in enumerate(web.calls) if c[0] == "PUT" and c[2] == {"search": {"librarian.use": "search_only"}}]
+    add = next(i for i, c in enumerate(web.calls) if c[0] == "POST" and c[1].endswith("/tradecraft-resources"))
+    assert puts and puts[0] < add and web.calls[add][2]["llmModel"] == "model-x"
+    # The cancel went out once the refresh left the queue, not on a timer.
+    cancel = next(i for i, c in enumerate(web.calls) if c[0] == "DELETE" and c[1].endswith("/jobs"))
+    assert web.queued_reads == 3 and web.calls[cancel - 1] == ("GET", "/api/users/u-ops/tradecraft-resources/res1/jobs", None)
+
+
+def test_ops_checks_an_incremental_refresh_needs_the_agents_count():
+    with mock.patch.object(runner, "agent_log_since", return_value="nothing about this job\n"), \
+            mock.patch.object(runner.time, "sleep"):
+        results = runner.ops_checks(_ops_ctx(_OpsWeb()), deadline=runner.time.monotonic() + 600)
+    inc = next(c for c in results if c.name == "incremental_refresh")
+    assert inc.ok is False and "no incremental line of this job" in inc.detail
+
+
+def test_only_layer1_runs_the_layer1_checks_alone(capsys):
+    assert runner.only_filters([]) == ([], True)
+    assert runner.only_filters(["L3-A-1", "L4-A-1"]) == (["L3-A-1", "L4-A-1"], False)
+    assert runner.only_filters(["layer1"]) == ([], True)
+    assert runner.only_filters(["layer1", "S6"]) == (["S6"], True)
+    assert runner.main(["--only", "layer1", "--dry-run"]) == 0
+    assert "the layer-1 checks alone (30 retrieval questions" in capsys.readouterr().out
+    assert runner.main(["--only", "L9-Z", "--dry-run"]) == 2
+
+
 def test_dry_run_starts_nothing(capsys):
     with mock.patch.object(subprocess, "run", side_effect=AssertionError("no command in a dry run")), \
             mock.patch.object(socket, "create_connection", side_effect=AssertionError("no network in a dry run")):

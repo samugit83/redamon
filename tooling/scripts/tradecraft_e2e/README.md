@@ -32,7 +32,8 @@ python3 tooling/scripts/tradecraft_e2e/runner.py --only L3-A-1 --only L4-A-1 --l
 `--model` is required for a run: the agent model of every run's project, one the e2e owner's
 provider serves. `--only` takes a run id (`L3-A-1`), a lab (`L3`: its arm runs and the single
 checks on it), an arm (`A`, `B`, `A_search`, `single`), a lab and arm (`L3-A`) or a single check
-(`S4`); it skips the layer-1 checks. `--no-build`, `--no-restore` and `--no-layer1` skip those
+(`S4`); it skips the layer-1 checks, unless one of its values is `layer1` (`--only layer1` runs
+them alone, to re-run that gate). `--no-build`, `--no-restore` and `--no-layer1` skip those
 steps. `--agent-logs` names the agent's session-log folder; by default it is the source of the
 agent container's `/app/logs` mount (the checkout the stack runs from), and the preflight stops
 when that folder holds no session log.
@@ -41,7 +42,7 @@ it (the trace the checks read); nothing under `_local/` is committed.
 
 **Before the first run (MC-9, MC-10):** the library is built and snapshotted (`library.py`,
 T10.2); the e2e owner and ops accounts each have a model provider (add one acting as them:
-the runner never copies a key); the RBAC sharing and permissions switches, Agent in the Loop
+the runner never copies a key), or the install offers them one (an instance provider); the RBAC sharing and permissions switches, Agent in the Loop
 and the MCP server are on for S2, S3 and S4 (a check whose switch is off in `.env` is reported
 "skipped: switch off"; any other refusal while setting a check up, such as a share refused by
 policy or a refused step-up password, fails it with its reason); the host can hold `--lanes`
@@ -148,7 +149,7 @@ the owner's setting back to "Agent decides" only once no A-search run is running
 | S4 | an Agent in the Loop run (the runner answers its model calls over `/api/mcp-server`, as `testing/e2e/tests/aitlDriver.ts` does): `tradecraft_ask` is offered and answers the plain search results with the loop-run reason |
 | S5 | a request on a "Not covered" topic (wireless) makes no tradecraft call |
 | S6 | Check URL of a lab address, on the ops account, is refused by the address guard (`unsafe_address`) |
-| Layer 1 | the 30 retrieval questions on the restored library (read-only, as the owner); on the ops account's own resource only: an incremental refresh (AC-18), Cancel mid-refresh keeps the previous version (AC-33), the stale badge after a settings change, delete leaves no row (AC-42) |
+| Layer 1 | the 30 retrieval questions on the restored library (read-only, as the owner); on the ops account's own resource only (its librarian use "Search only"): an incremental refresh with pages unchanged by the agent's own count in its log (AC-18), Cancel mid-refresh keeps the previous version (AC-33), the stale badge after a settings change, delete leaves no row (AC-42) |
 
 **Pass rules:** arms A and A-search pass when each lab's oracle succeeds in at least 2 of its
 3 runs (a capped run fails) and every check holds in every run; single and layer-1 checks

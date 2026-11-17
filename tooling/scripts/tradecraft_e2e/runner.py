@@ -692,7 +692,8 @@ class Db:
         if done.returncode != 0:
             raise RuntimeError(f"psql failed (exit {done.returncode})")
         lines = [ln for ln in (done.stdout or "").splitlines() if ln.strip() and ln.strip() != "SET"]
-        return json.loads(lines[-1]) if lines else []
+        # json_agg writes one element per line: the answer is the whole output, not its last line.
+        return json.loads("\n".join(lines)) if lines else []
 
 
 def page_store_counts(db: Db, owner_id: str) -> dict:
@@ -1683,6 +1684,19 @@ def _job_done(http: Http, uid: str, rid: str, seconds: float, deadline: Optional
     return None
 
 
+def _job_started(http: Http, uid: str, rid: str, seconds: float, deadline: Optional[float] = None,
+                 sleep: Callable[[float], None] = time.sleep) -> Optional[dict]:
+    """The resource's latest job once it left the queue (running, or already ended)."""
+    until = time.monotonic() + seconds if deadline is None else min(time.monotonic() + seconds, deadline)
+    while time.monotonic() < until:
+        res = http.call("GET", f"/api/users/{uid}/tradecraft-resources/{rid}/jobs")
+        job = (res.data or {}).get("job") if isinstance(res.data, dict) else None
+        if job and job.get("status") != "queued":
+            return job
+        sleep(0.5)
+    return None
+
+
 def ops_checks(ctx: Context, deadline: float) -> list[report.CheckResult]:
     """On the ops account's own resource: an incremental refresh (AC-18), Cancel mid-refresh
     keeps the previous version (AC-33), the stale badge after a settings change, and delete
@@ -1691,8 +1705,12 @@ def ops_checks(ctx: Context, deadline: float) -> list[report.CheckResult]:
     spec = ctx.scn["layer1"]["ops_resource"]
     base = f"/api/users/{uid}/tradecraft-resources"
     out: list[report.CheckResult] = []
+    # The ops account's librarian is never asked: with "Search only" its add needs no librarian model.
+    mode = http.call("PUT", f"/api/users/{uid}/tradecraft-settings", {"search": {"librarian.use": "search_only"}})
+    if not mode.ok:
+        return [report.CheckResult("ops_resource_added", False, f"the ops account's librarian use answered {mode.status} {mode.code}")]
     res = http.call("POST", base, {"name": spec["name"], "url": spec["url"], "storageMode": spec.get("storageMode", "stored"),
-                                   "enabled": True}, timeout=120)
+                                   "enabled": True, "llmModel": ctx.model}, timeout=120)
     rid = str(((res.data or {}).get("resource") or res.data or {}).get("id", "")) if isinstance(res.data, dict) else ""
     if not res.ok or not rid:
         return [report.CheckResult("ops_resource_added", False, f"add answered {res.status} {res.code}")]
@@ -1700,17 +1718,21 @@ def ops_checks(ctx: Context, deadline: float) -> list[report.CheckResult]:
         first = _job_done(http, uid, rid, 1800, deadline)
         out.append(report.CheckResult("ops_resource_added", bool(first and first.get("status") == "succeeded"),
                                       (first or {}).get("status", "no job end")))
+        since = now_iso()
         res = http.call("POST", f"{base}/{rid}/refresh", {})
-        second = _job_done(http, uid, rid, 1800, deadline)
-        rep = json.dumps((second or {}).get("report") or {})
-        out.append(report.CheckResult("incremental_refresh", bool(second and second.get("status") == "succeeded"
-                                                                  and re.search(r"unchanged|not_modified|incremental", rep)),
-                                      (second or {}).get("status", f"refresh answered {res.status}")))
+        second = _job_done(http, uid, rid, 1800, deadline) if res.ok else None
+        counts = incremental_counts(agent_log_since(since), str((second or {}).get("id", "")))
+        status = (second or {}).get("status", f"refresh answered {res.status} {res.code}".strip())
+        out.append(report.CheckResult(
+            "incremental_refresh", bool(second and second.get("status") == "succeeded" and counts and counts[0] > 0),
+            f"{status}; " + (f"{counts[0]} pages unchanged, {counts[1]} stored again" if counts
+                             else "no incremental line of this job in the agent's log")))
         gen = ctx.db.json(f"SELECT generation FROM user_tradecraft_resources WHERE id = {lit(rid)}")
         gen1 = gen[0]["generation"] if gen else None
         entries1 = ctx.db.json(f"SELECT count(*) AS n FROM tradecraft_entries WHERE resource_id = {lit(rid)}")
         http.call("POST", f"{base}/{rid}/refresh", {})
-        time.sleep(5)
+        # Cancelled as soon as the agent took it: a small repository's refresh can end within seconds.
+        _job_started(http, uid, rid, 60, deadline)
         http.call("DELETE", f"{base}/{rid}/jobs")
         third = _job_done(http, uid, rid, 600, deadline)
         gen = ctx.db.json(f"SELECT generation FROM user_tradecraft_resources WHERE id = {lit(rid)}")
@@ -1767,10 +1789,29 @@ def snapshot_stamp(snapshot_dir: Path = SNAPSHOT_DIR) -> Optional[dict]:
         return None
 
 
-def ingest_changed_since(commit: str, run: Exec = subprocess.run) -> Optional[bool]:
-    done = run(["git", "-C", str(REPO), "diff", "--quiet", commit, "HEAD", "--", "agentic/tradecraft/ingest/"],
-               capture_output=True, text=True, check=False, timeout=60)
-    return {0: False, 1: True}.get(done.returncode)
+def _library():
+    """library.py (T10.2), imported when used: it imports this module."""
+    from tooling.scripts.tradecraft_e2e import library
+    return library
+
+
+AGENT_LOG_INCREMENTAL = r"\[tradecraft\] job {job} incremental code= unchanged=(\d+) stored=(\d+)"
+
+
+def incremental_counts(log_text: str, job_id: str) -> Optional[tuple[int, int]]:
+    """The agent's own count of a refresh's pages (``ingest/storage.py``): unchanged ones,
+    and the ones stored again. The job's report does not hold it."""
+    if not job_id:
+        return None
+    found = re.findall(AGENT_LOG_INCREMENTAL.format(job=re.escape(job_id)), log_text)
+    return (int(found[-1][0]), int(found[-1][1])) if found else None
+
+
+def agent_log_since(since: str, run: Exec = subprocess.run, container: str = AGENT_CONTAINER) -> str:
+    """The agent container's console since ``since`` (jobs log there; they have no session)."""
+    done = run(["docker", "logs", "--since", since, container], capture_output=True, text=True, check=False,
+               timeout=120)
+    return (done.stdout or "") + (done.stderr or "")
 
 
 def mem_available_gb() -> Optional[float]:
@@ -1807,9 +1848,11 @@ def preflight(ctx: Context, runs: Sequence[lanes.Run], *, restore: bool, build: 
     if stamp is None:
         problems.append("no library snapshot (_local/tradecraft-e2e/library/stamp.json): build it with T10.2's library.py")
     else:
-        changed = ingest_changed_since(str(stamp.get("commit", "")))
-        if changed:
-            log(f"warning: agentic/tradecraft/ingest/ changed since the snapshot's commit {stamp.get('commit')}: rebuild the library")
+        # The ingestion code as the images are built from it: the checkout's HEAD may not even
+        # track the plan's files, so the stamp holds a hash of the files, not only a commit.
+        warning = _library().stamp_warning(stamp)
+        if warning:
+            log(f"warning: {warning}")
     library_py = HERE / "library.py"
     if restore and stamp is not None:
         if not library_py.exists():
@@ -1854,14 +1897,10 @@ def preflight(ctx: Context, runs: Sequence[lanes.Run], *, restore: bool, build: 
             problems.append(f"the owner's {key} is {values[key]!r}, the matrix expects {want!r}")
     for key in ("owner", "ops"):
         http, uid = ctx.sessions[key]
-        providers = http.call("GET", f"/api/users/{uid}/llm-providers")
-        plist = providers.data if isinstance(providers.data, list) else []
-        if not plist:
-            problems.append(f"the e2e {key} account has no model provider (MC-9: add one acting as it)")
-            continue
-        test = http.call("POST", f"/api/users/{uid}/llm-providers/{plist[0].get('id')}/test", {}, timeout=120)
-        if not test.ok:
-            problems.append(f"the e2e {key} account's model provider test answered {test.status} {test.code}")
+        # Its own provider, tested, or one the install offers it (an instance provider): MC-9.
+        problem = _library().provider_problem(http, uid)
+        if problem:
+            problems.append(f"the e2e {key} account: {problem}")
     mem = mem_available_gb()
     log(f"free memory: {mem if mem is not None else '?'} GB; load: {os.getloadavg()[0]:.1f}")
     log("the provider's rate-limit headroom is not visible through the webapp: each run counts its rate_limit_wait frames")
@@ -1929,10 +1968,21 @@ def _check_names(scn: Mapping, run: lanes.Run) -> list[str]:
     return [str(scn["singles"][run.check].get("title", run.check))]
 
 
+LAYER1 = "layer1"
+
+
+def only_filters(only: Sequence[str]) -> tuple[list, bool]:
+    """``--only``'s run filters, and whether the layer-1 checks run: always in a full matrix;
+    with ``--only``, only when ``layer1`` is one of its values (a cell's re-run skips them)."""
+    filters = [o for o in only if o.strip() and o.strip() != LAYER1]
+    return filters, (LAYER1 in [o.strip() for o in only]) or not filters
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--lanes", type=int, default=None, help="parallel lanes (default: scenarios.yaml, 7)")
-    ap.add_argument("--only", action="append", default=[], help="a run id, lab, arm, lab-arm or single check; repeatable")
+    ap.add_argument("--only", action="append", default=[], help="a run id, lab, arm, lab-arm or single check, or "
+                    "layer1 (the layer-1 checks alone); repeatable")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit; starts nothing")
     ap.add_argument("--model", default="", help="the agent model of every run's project (required for a run): "
                     "one the e2e owner's provider serves")
@@ -1948,12 +1998,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log = Log(redact)
     scn = load_scenarios(Path(args.scenarios))
     lane_count = args.lanes or int(scn["lanes"]["default"])
-    runs = lanes.select(lanes.plan_runs(scn), args.only)
+    run_filters, layer1_wanted = only_filters(args.only)
+    runs = lanes.select(lanes.plan_runs(scn), run_filters) if run_filters or not layer1_wanted else []
     env = read_env(REPO / ".env", redact)
-    if not runs:
+    if not runs and not layer1_wanted:
         log("no run matches --only")
         return 2
     if args.dry_run:
+        if not runs:
+            print(f"Tradecraft 2.0 matrix: the layer-1 checks alone ({len(scn['layer1']['retrieval'])} retrieval "
+                  "questions, then the ops account's refresh, cancel, stale and delete checks); no agent run")
+            return 0
         return dry_run(scn, runs, lane_count, env, out=lambda s: print(redact(s)))
     if not args.model:
         log("--model is required: the agent model every run's project uses, one the e2e owner's provider serves")
@@ -1981,10 +2036,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     layer1_results: list[report.CheckResult] = []
     layer1_thread = None
     end_by = matrix_start + plan.end_by_sec
-    if not args.no_layer1 and not args.only:
+    if layer1_wanted and not args.no_layer1:
         layer1_thread = threading.Thread(target=lambda: layer1_results.extend(layer1(ctx, end_by)), daemon=True)
         layer1_thread.start()
-    results = run_matrix(ctx, runs, lane_count, started_at=matrix_start)
+    results = run_matrix(ctx, runs, lane_count, started_at=matrix_start) if runs else []
     if layer1_thread:
         layer1_thread.join(timeout=max(0.0, time_left(end_by)))
         if layer1_thread.is_alive():
