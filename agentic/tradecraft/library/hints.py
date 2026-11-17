@@ -23,17 +23,20 @@ sections) is ever shown, and only the rows of resources the run's catalog holds 
 resume binds the catalog again for the person resuming. The main instructions carry the one rule
 that says how to use it (``library_rule``).
 
-Limits: ``hints.perRun`` blocks per run (a block is a search's result whose pages differ from
-the ones shown), at most ``MAX_REFRESHES`` searches per run, ``SEARCH_TIMEOUT_SEC`` per search.
-Measurement, page IDs and counts only (never the goal or a title): ``[tradecraft] library_now
-refresh=`` per search, ``shown=`` per think with a block, ``<page> read`` when the agent reads a
-page a block showed (``run_state.record_seen``). It never fails the think node: an error or a
-slow library shows no block and logs a code.
+Cost: at most ``MAX_GOALS`` distinct goals searched per run (a goal searched already is searched
+again for new facts at no cost to it; at most one search a think), ``SEARCH_TIMEOUT_SEC`` per
+search. ``hints.perRun`` bounded the old notes and does not apply. The block never vanishes
+silently: past the cap, or when the library fails or is slow, a fixed notice says so
+(``NOTICES``), and a block whose goal still holds keeps showing when a search for new facts
+fails. Measurement, page IDs and counts only (never the goal or a title): ``[tradecraft]
+library_now refresh=`` per search, ``shown=`` per think with a block, ``<page> read`` when the
+agent reads a page a block showed (``run_state.record_seen``). It never fails the think node.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from typing import Any, Mapping, Optional, Sequence
 
@@ -50,11 +53,12 @@ logger = get_logger(__name__)
 PAGES = int(constant("pagesPerHint"))
 # The pages a search keeps: the next ones step in, with no new search, as the agent reads.
 STANDING = 2 * PAGES
-# A search is about 50 ms on the card index; a run of 100 thinks changing goal at each one still
-# costs the database a few seconds.
-MAX_REFRESHES = 30
+# A search is about 50 ms on the card index: 200 goals, more than a run of the default 100 thinks
+# meets (the longest sessions seen took a new goal at most once a think), cost the database about
+# 10-20 s over the whole run.
+MAX_GOALS = 200
 SEARCH_TIMEOUT_SEC = 3.0
-CVE_QUERY = 3
+CVE_QUERY = profile.SEARCHED_CVES
 GOAL_SHOWN_CHARS = 100
 PATH_CHARS = 100
 MATCH_WORDS = 6
@@ -65,11 +69,18 @@ MATCH_WORD_CHARS = 30
 HEADER = "Library now (pages for your current goal):"
 GOAL_LINE = '  goal: "{goal}"'
 FOOTER = "If one fits your next step, read it with tradecraft_lookup(page=…) before acting."
+# Fixed text in place of a block that could not be searched: an empty prompt would read as
+# "nothing in the library fits".
+NOTICES = {
+    "limit": "Library now: not searched for this goal (search limit for this run); use tradecraft_search yourself.",
+    "error": "Library now: not refreshed (the library did not answer); use tradecraft_search yourself.",
+}
 RULE = (
     "6. **Your library.** Your Tradecraft library is curated by the user for this work. The active "
     "attack skill gives the method; the library gives the specifics for the step you are on. Before "
     "each new step, look at \"Library now\" at the end of this prompt (it is absent when nothing in the "
-    "library matches your current goal): if a page there fits what you are about to do, read it first "
+    "library matches your current goal, and it says so when it could not be searched): if a page there fits "
+    "what you are about to do, read it first "
     "with tradecraft_lookup(page=...); if nothing fits, go on. Whenever the active skill or any instruction asks "
     "you to get specifics (payloads, PoCs, exploit steps, commands) from your own knowledge, query_graph or "
     "web_search, check Library now first: a fitting page comes before those. In your `thought`, say in one short "
@@ -247,8 +258,16 @@ def _entry_of(saved: Mapping[str, Any]) -> dict:
             standing.append({"page": row["page"], "path": _clip(row.get("path"), PATH_CHARS),
                              "matches": matches[:MATCH_WORDS]})
     shown = [p for p in saved.get("displayed") or [] if page(p)][:PAGES]
+    goals = [g for g in saved.get("goals") or [] if isinstance(g, str) and re.fullmatch(r"[0-9a-f]{16}", g)]
+    notice = saved.get("notice") if saved.get("notice") in NOTICES else ""
     return {"refreshes": count("refreshes"), "shown": count("shown"), "block": count("block"),
-            "standing": standing, "displayed": shown, "limited": saved.get("limited") is True}
+            "standing": standing, "displayed": shown, "limited": saved.get("limited") is True,
+            "goals": goals[:MAX_GOALS], "notice": notice}
+
+
+def goal_key(goal: str) -> str:
+    """A goal as the cap counts it: its words, whatever their case or spacing."""
+    return hashlib.sha256(" ".join(goal.lower().split()).encode()).hexdigest()[:16]
 
 
 def _in_catalog(entry: dict, catalog: Any) -> dict:
@@ -269,35 +288,38 @@ def _in_catalog(entry: dict, catalog: Any) -> dict:
 
 async def _refresh(entry: dict, collector: run_state.RunCollector, catalog: Any, settings: EffectiveSettings,
                    focus: profile.Focus, reasons: Sequence[str]) -> dict:
-    """A new search for a changed focus. The block it replaces is gone whatever happens: it was
-    for a goal or facts that no longer hold."""
-    entry = {**entry, "standing": [], "block": 0}
-    per_run = settings.int("hints.perRun")
-    if collector.counts()["hint"] >= per_run or entry["refreshes"] >= MAX_REFRESHES:
+    """A new search for a changed focus. When it cannot run or fails, a block whose goal still
+    holds stands (its pages fit that goal); otherwise a notice takes its place."""
+    goal_changed = "goal" in reasons or "start" in reasons
+    kept = [] if goal_changed else entry["standing"]
+    failed = {**entry, "standing": kept, "block": entry["block"] if kept else 0}
+    key = goal_key(focus.goal)
+    if key not in entry["goals"] and len(entry["goals"]) >= MAX_GOALS:
         if not entry["limited"]:
-            entry["limited"] = True
-            logger.info(f"[tradecraft] library_now code=limit refreshes={entry['refreshes']} "
-                        f"blocks={collector.counts()['hint']}")
-        return entry
-    entry["refreshes"] += 1
+            failed["limited"] = True
+            logger.info(f"[tradecraft] library_now code=limit goals={len(entry['goals'])}")
+        return {**failed, "notice": "" if kept else "limit"}
+    entry = {**entry, "refreshes": entry["refreshes"] + 1,
+             "goals": entry["goals"] if key in entry["goals"] else [*entry["goals"], key]}
+    failed.update(refreshes=entry["refreshes"], goals=entry["goals"], notice="" if kept else "error")
     excluded = set(collector.drain()["tradecraft_seen_pages"])
     try:
         rows = await asyncio.wait_for(_search(catalog, settings, focus, excluded), timeout=SEARCH_TIMEOUT_SEC)
     except asyncio.TimeoutError:
         logger.warning(f"[tradecraft] library_now code=timeout refresh={entry['refreshes']}")
-        return entry
+        return failed
     except Exception as exc:
         logger.warning(f"[tradecraft] library_now code=internal_error error={type(exc).__name__}")
-        return entry
+        return failed
     logger.info(f"[tradecraft] library_now refresh={entry['refreshes']} reason={'+'.join(reasons)} "
                 f"found={len(rows)}")
+    entry["notice"] = ""
     if not rows:
-        return entry
+        return {**entry, "standing": [], "block": 0}
     if [r["page"] for r in rows[:PAGES]] == entry["displayed"]:
         # The pages shown last: that block stands.
         return {**entry, "standing": rows, "block": collector.counts()["hint"]}
-    block = collector.incr_within("hint", per_run)
-    return {**entry, "standing": rows, "block": block} if block is not None else entry
+    return {**entry, "standing": rows, "block": collector.incr("hint")}
 
 
 async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[str], dict]:
@@ -317,8 +339,8 @@ async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[
                 entry = await _refresh(entry, collector, catalog, settings, current, reasons)
             read = set(collector.drain()["tradecraft_seen_pages"])
             rows = [r for r in entry["standing"] if r["page"] not in read][:PAGES]
-            note = render(current.goal, rows) if rows else None
-            if note:
+            note = render(current.goal, rows) if rows else (NOTICES.get(entry["notice"]) or None)
+            if rows:
                 entry["shown"] += 1
                 entry["displayed"] = [r["page"] for r in rows]
                 already = collector.hinted()

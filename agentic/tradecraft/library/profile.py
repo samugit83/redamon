@@ -7,12 +7,13 @@ person wrote it, and target text the model read can colour it: the owner accepte
 chose this design (the R-420 card correction). Before it is searched (``query_of``), URLs,
 addresses and bare numbers go: they name the target, never a technique.
 
-The facts are structured: the skill's topic (a built-in skill is a vocabulary topic) and its
-label, the phase, the target's technologies as vocabulary ids, the CVE ids a finding confirmed
-(the newest ``MAX_CVES``: a scan listing hundreds would otherwise fix the set), the finding types
-of the agent's fixed list, and whether the last target tool ran or failed. A CVE id that recon or
-a scan only listed is no fact: it would fill the block with pages off the agent's goal. A tool
-result adds its success flag only: its text never becomes a query.
+The facts are the structured inputs of a search: the skill's topic (a built-in skill is a
+vocabulary topic) and its label, the phase, the target's technologies as vocabulary ids, and the
+CVE ids a finding confirmed (the newest ``MAX_CVES``: a scan listing hundreds would otherwise fix
+the set). A CVE id that recon or a scan only listed is no fact: it would fill the block with pages
+off the agent's goal. Finding types and the last attempt's outcome are no search input (the same
+search would find the same pages), so they never start one; a tool result's text never becomes a
+query.
 
 ``target_info`` and the findings are written from the model's reading of tool output, so they
 are target-influenced too: a technology is kept only when the vocabulary knows it, a CVE id only
@@ -33,17 +34,12 @@ from tradecraft.vocab import load_vocab
 
 MAX_TECHS = 30
 MAX_CVES = 50
-MAX_RESULTS = 50
 GOAL_CHARS = 300
+# The CVE pass searches the newest confirmed ids only.
+SEARCHED_CVES = 3
 SKILL_CHARS = 120
 
-# Tools whose output is the library or the web, never the target's.
-NOT_TARGET = frozenset({"tradecraft_lookup", "tradecraft_search", "tradecraft_ask", "web_search", "google_dork"})
-# Tools that read stored data rather than try something against the target: their success says
-# nothing about how the last attempt went.
-NOT_AN_ATTEMPT = NOT_TARGET | {"query_graph", "graph_schema", "graph_summary"}
-# The finding types of the think prompt's output contract (``prompts/base.py``, "finding_type");
-# "custom" says nothing about where the attack stands.
+# The finding types of the think prompt's output contract (``prompts/base.py``, "finding_type").
 FINDING_TYPES = frozenset({
     "vulnerability_confirmed", "credential_found", "exploit_success", "access_gained", "privilege_escalation",
     "service_identified", "exploit_module_found", "defense_detected", "configuration_found",
@@ -53,7 +49,6 @@ FINDING_TYPES = frozenset({
 # The finding types that say a vulnerability is real: the CVE ids such a finding names are searched.
 CONFIRMING = FINDING_TYPES - {"service_identified", "configuration_found", "exploit_module_found",
                               "defense_detected", "information_disclosure"}
-OUTCOMES = ("", "ok", "failed")
 
 # Characters that hide or reorder text: controls other than whitespace (C0 and C1), bidi
 # controls and zero-width characters. Postgres also refuses a NUL in a text parameter.
@@ -72,15 +67,10 @@ class Focus:
     phase: str = ""
     technologies: tuple[str, ...] = ()
     cves: tuple[str, ...] = ()
-    findings: tuple[str, ...] = ()
-    outcome: str = ""
-    # The tool results already read for CVE ids and the outcome: a resume reads them once.
-    results: tuple[str, ...] = ()
 
     def to_log(self) -> dict[str, Any]:
         return {"goal": self.goal, "topic": self.topic, "skill": self.skill, "phase": self.phase,
-                "technologies": list(self.technologies), "cves": list(self.cves), "findings": list(self.findings),
-                "outcome": self.outcome, "results": list(self.results)}
+                "technologies": list(self.technologies), "cves": list(self.cves)}
 
     @classmethod
     def from_log(cls, entry: Optional[Mapping[str, Any]]) -> Optional["Focus"]:
@@ -88,16 +78,13 @@ class Focus:
         expected types, within the caps."""
         if not isinstance(entry, Mapping):
             return None
-        topic, outcome = entry.get("topic"), entry.get("outcome")
+        topic = entry.get("topic")
         return cls(goal=one_line(entry.get("goal"))[:GOAL_CHARS],
                    topic=topic if isinstance(topic, str) and topic in load_vocab().topic_ids else None,
                    skill=one_line(entry.get("skill"))[:SKILL_CHARS],
                    phase=one_line(entry.get("phase"))[:40],
                    technologies=_strings(entry.get("technologies"), MAX_TECHS),
-                   cves=tuple(c for c in _strings(entry.get("cves"), MAX_CVES) if entity_rules.cve_ids(c) == [c]),
-                   findings=tuple(f for f in _strings(entry.get("findings"), len(FINDING_TYPES)) if f in FINDING_TYPES),
-                   outcome=outcome if outcome in OUTCOMES else "",
-                   results=_strings(entry.get("results"), MAX_RESULTS))
+                   cves=tuple(c for c in _strings(entry.get("cves"), MAX_CVES) if entity_rules.cve_ids(c) == [c]))
 
 
 def one_line(value: Any) -> str:
@@ -172,29 +159,6 @@ def query_of(goal: str) -> str:
     return " ".join([*text.split(), *cves])
 
 
-def new_results(state: Mapping[str, Any]) -> list[tuple[str, str, str, bool]]:
-    """(id, tool, output, ran) of the tool results the think node is about to read: the single
-    step's and the plan wave's, before their analysis."""
-    out: list[tuple[str, str, str, bool]] = []
-    step = state.get("_current_step")
-    if isinstance(step, Mapping) and step.get("tool_output") is not None and not step.get("output_analysis"):
-        ident = str(step.get("step_id") or f"step:{state.get('current_iteration', 0)}")
-        out.append((ident, str(step.get("tool_name") or ""), str(step.get("tool_output") or ""),
-                    step.get("success") is not False))
-    plan = state.get("_current_plan")
-    if isinstance(plan, Mapping) and not plan.get("_analyzed"):
-        wave = str(plan.get("wave_id") or f"plan:{state.get('current_iteration', 0)}")
-        for n, item in enumerate(plan.get("steps") or []):
-            if isinstance(item, Mapping) and item.get("tool_output") is not None:
-                out.append((f"{wave}:{n}", str(item.get("tool_name") or ""), str(item.get("tool_output") or ""),
-                            item.get("success") is not False))
-    return out[:MAX_RESULTS]
-
-
-def _is_attempt(tool: str) -> bool:
-    return bool(tool) and tool not in NOT_AN_ATTEMPT and not tool.startswith(("fs_", "job_"))
-
-
 def build(state: Mapping[str, Any], previous: Optional[Focus]) -> Focus:
     """The focus now: what the run knows, with what the previous check had already seen."""
     from tradecraft.library.search import technologies_of
@@ -202,21 +166,12 @@ def build(state: Mapping[str, Any], previous: Optional[Focus]) -> Focus:
     target = state.get("target_info") or {}
     techs = technologies_of(_get(target, "technologies") or [])
     cves: list[str] = []
-    findings: list[str] = []
     # The findings are the session's whole memory, oldest first: read again at every think.
     for finding in state.get("chain_findings_memory") or []:
-        if not isinstance(finding, Mapping):
-            continue
-        if finding.get("finding_type") in FINDING_TYPES:
-            findings.append(finding["finding_type"])
-        if finding.get("finding_type") in CONFIRMING:
+        if isinstance(finding, Mapping) and finding.get("finding_type") in CONFIRMING:
             for value in finding.get("related_cves") or []:
                 if isinstance(value, str):
                     cves += entity_rules.cve_ids(value)
-    checked = set(previous.results) if previous else set()
-    results = new_results(state)
-    attempts = [ran for ident, tool, _output, ran in results if ident not in checked and _is_attempt(tool)]
-    outcome = ("ok" if all(attempts) else "failed") if attempts else (previous.outcome if previous else "")
     return Focus(
         goal=goal_of(state),
         topic=topic_of(state),
@@ -224,15 +179,12 @@ def build(state: Mapping[str, Any], previous: Optional[Focus]) -> Focus:
         phase=str(state.get("current_phase") or "informational"),
         technologies=_union(previous.technologies if previous else (), techs, MAX_TECHS),
         cves=_newest(cves, MAX_CVES),
-        findings=tuple(sorted(set(previous.findings if previous else ()) | set(findings))),
-        outcome=outcome,
-        results=tuple(ident for ident, _t, _o, _r in results) or (previous.results if previous else ()),
     )
 
 
 def changes(previous: Optional[Focus], current: Focus) -> tuple[str, ...]:
     """What changed since the last check: ``start`` for a run's first, then the goal, the skill,
-    the phase, a new technology, CVE id or finding type, the last attempt's outcome."""
+    the phase, a new technology, a newly confirmed CVE id."""
     if previous is None:
         return ("start",)
     fired = []
@@ -244,10 +196,6 @@ def changes(previous: Optional[Focus], current: Focus) -> tuple[str, ...]:
         fired.append("phase")
     if set(current.technologies) - set(previous.technologies):
         fired.append("technology")
-    if set(current.cves) - set(previous.cves):
+    if set(current.cves[-SEARCHED_CVES:]) - set(previous.cves[-SEARCHED_CVES:]):
         fired.append("cve")
-    if set(current.findings) - set(previous.findings):
-        fired.append("finding")
-    if current.outcome != previous.outcome:
-        fired.append("outcome")
     return tuple(fired)

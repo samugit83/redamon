@@ -1,8 +1,9 @@
 """When Library now searches again (owner decision 2026-11-17; it replaced T8.1's fixed checkpoints,
-R-364): at a run's start, then only when the current goal or a structured fact of the session
-changed (the skill, the phase, a new technology, CVE id or finding type, the last attempt's
-outcome). Nothing else searches again: a name the vocabulary does not know, a finding type off the
-list, a tool result's text, a resume on the saved state. A new message starts again.
+R-364): at a run's start, then only when the current goal or a structured fact that is a search
+input changed (the skill, the phase, a new technology, a CVE id a finding confirmed). Nothing else
+searches again: a name the vocabulary does not know, a CVE id a scan only listed, a finding type,
+the last attempt's outcome, a tool result's text, a resume on the saved state. A new message
+starts again.
 """
 
 from __future__ import annotations
@@ -60,46 +61,36 @@ def test_a_new_goal(caplog):
 
 
 def test_each_fact(caplog):
+    """The facts that are search inputs: the skill (topic), the phase, the technologies, the CVE
+    ids a finding confirmed."""
     st = started(caplog)
     cases = {
         "skill": {"attack_path_type": "xss"},
         "phase": {"current_phase": "post_exploitation"},
         "technology": {"target_info": {"technologies": ["PostgreSQL 14", "nginx 1.25"], "vulnerabilities": []}},
-        "cve+finding": {"chain_findings_memory": [{"finding_type": "vulnerability_confirmed",
-                                                   "related_cves": ["CVE-2024-23897"]}]},
-        "finding": {"chain_findings_memory": [{"finding_type": "vulnerability_confirmed", "title": "x"}]},
-        "outcome": {"_current_step": {"step_id": "st-1", "tool_name": "execute_curl", "success": False,
-                                      "tool_output": "connection refused"}},
+        "cve": {"chain_findings_memory": [{"finding_type": "vulnerability_confirmed", "related_cves": ["CVE-2024-23897"]}]},
     }
     with caplog.at_level(logging.INFO):
         for expected, change in cases.items():
             assert think({**st, **change}, caplog)[2] == expected, expected
-        # A CVE id in a target's tool result is no fact (only the run's first attempt ran: "ok"), nor
-        # one a finding names without confirming it.
-        assert think({**st, "_current_step": {"step_id": "st-2", "tool_name": "execute_nuclei", "success": True,
-                                              "tool_output": "[CVE-2021-44228] matched"}}, caplog)[2] == "outcome"
-        assert think({**st, "chain_findings_memory": [{"finding_type": "custom",
-                                                       "related_cves": ["CVE-2022-0001"]}]}, caplog)[2] is None
 
 
 def test_what_is_no_fact(caplog):
+    """Nothing else searches again: a name the vocabulary does not know, a CVE id a scan only
+    listed or a finding did not confirm, a finding type or the last attempt's outcome (no search
+    input: the same search would find the same pages), a tool result's text."""
     st = started(caplog)
     with caplog.at_level(logging.INFO):
-        # The run's first attempt that ran is the outcome's first value.
-        _, st, reasons = think({**st, "_current_step": {"step_id": "st-0", "tool_name": "execute_curl", "success": True,
-                                                        "tool_output": "HTTP/1.1 200 OK"}}, caplog)
-        assert reasons == "outcome"
-        # A name the vocabulary does not know, a finding type off the list, a tool result's text.
         for change in ({"target_info": {"technologies": ["PostgreSQL 14.2", "AcmeServer 9"],
                                         "vulnerabilities": ["CVE-2024-0007"]}},
-                       {"chain_findings_memory": [{"finding_type": "custom", "title": "pwned"},
+                       {"chain_findings_memory": [{"finding_type": "custom", "title": "pwned", "related_cves": ["CVE-2022-0001"]},
+                                                  {"finding_type": "vulnerability_confirmed", "title": "x"},
                                                   {"finding_type": "made_up_type"}]},
-                       {"_current_step": {"step_id": "st-1", "tool_name": "execute_curl", "success": True,
-                                          "tool_output": "kerberoasting golden ticket WAF blocked"}}):
+                       {"_current_step": {"step_id": "st-1", "tool_name": "execute_curl", "success": False,
+                                          "tool_output": "kerberoasting golden ticket WAF blocked CVE-2021-44228"}},
+                       {"_current_step": {"step_id": "st-3", "tool_name": "tradecraft_lookup", "success": False,
+                                          "tool_output": "CVE-1999-1111"}}):
             assert think({**st, **change}, caplog)[2] is None, change
-        # A library tool's result says nothing about the last attempt.
-        assert think({**st, "_current_step": {"step_id": "st-3", "tool_name": "tradecraft_lookup", "success": False,
-                                              "tool_output": "CVE-1999-1111"}}, caplog)[2] is None
 
 
 def test_one_search_when_several_facts_change_together(caplog):
@@ -140,10 +131,8 @@ def test_a_new_message_starts_again(caplog):
 def test_the_saved_focus_is_read_like_any_input():
     focus = profile.Focus.from_log({"goal": "a\nb" + "x" * 900, "topic": "not_a_topic", "skill": 7, "phase": None,
                                     "technologies": ["postgresql", 3, None], "cves": ["CVE-2024-1111", "nope"],
-                                    "findings": ["access_gained", "made_up"], "outcome": "exploded",
-                                    "results": "not a list"})
+                                    "findings": ["access_gained"], "outcome": "an older run's field"})
     assert focus.goal.startswith("a b") and len(focus.goal) == profile.GOAL_CHARS
-    assert (focus.topic, focus.skill, focus.phase, focus.outcome, focus.results) == (None, "", "", "", ())
+    assert (focus.topic, focus.skill, focus.phase) == (None, "", "")
     assert focus.technologies == ("postgresql",) and focus.cves == ("CVE-2024-1111",)
-    assert focus.findings == ("access_gained",)
     assert profile.Focus.from_log(None) is None and profile.Focus.from_log(focus.to_log()) == focus

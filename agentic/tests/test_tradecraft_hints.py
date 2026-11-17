@@ -400,33 +400,43 @@ def walk(goals, *, index, cat=None):
     return notes, st
 
 
-def test_blocks_per_run(caplog):
+def test_blocks_are_not_bounded_by_hints_per_run():
+    """Design review finding 1: the block serves every goal of a long run. ``hints.perRun`` bounded
+    the old notes and does not apply to Library now (``tradecraft_hint_count`` still counts blocks)."""
+    for per_run in (0, 3):
+        notes, st = walk(GOALS, index=by_goal(), cat=catalog(**{"hints.perRun": per_run}))
+        assert all(pages_of(n) for n in notes) and st["tradecraft_hint_count"] == len(GOALS)
+        shown = [p for n in notes for p in pages_of(n)]
+        assert len(shown) == len(set(shown)) == 3 * len(GOALS)
+
+
+def test_the_search_cap_counts_distinct_goals_and_says_when_it_is_reached(monkeypatch, caplog):
+    """The cost bound: at most ``MAX_GOALS`` distinct goals searched per run. A goal searched
+    already is searched again for new facts at no cost to the cap; past the cap a fixed notice
+    says the block was not searched, never an empty prompt that would read as "nothing fits"."""
+    monkeypatch.setattr(hints, "MAX_GOALS", 2)
     index = by_goal()
+    st = state()
+
+    def step(goal, **over):
+        nonlocal st
+        st = {**st, **over, "todo_list": [todo(f"Probe vector {goal}", "in_progress")]}
+        note, updates = now(st, index=index)
+        st = {**st, **updates}
+        return note
+
     with caplog.at_level(logging.INFO):
-        notes, st = walk(GOALS, index=index, cat=catalog(**{"hints.perRun": 3}))
-    assert [bool(n) for n in notes] == [True, True, True, False, False, False]
-    assert st["tradecraft_hint_count"] == 3
-    shown = [p for n in notes if n for p in pages_of(n)]
-    assert len(shown) == len(set(shown)) == 9
-    # Past the limit the library is not even searched.
-    assert len([r for r in caplog.records if "library_now refresh=" in r.getMessage()]) == 3
+        assert pages_of(step("alpha")) and pages_of(step("bravo"))
+        # alpha again, with a new technology: searched again, not counted.
+        assert pages_of(step("alpha", target_info={"technologies": ["PostgreSQL", "nginx"], "vulnerabilities": []}))
+        assert entry_of(st)["refreshes"] == 3 and len(entry_of(st)["goals"]) == 2
+        searched = len(index.calls)
+        assert step("charlie") == hints.NOTICES["limit"] and len(index.calls) == searched
+        assert step("delta") == hints.NOTICES["limit"] and len(index.calls) == searched
+    assert hints.NOTICES["limit"] == ("Library now: not searched for this goal (search limit for this run); "
+                                      "use tradecraft_search yourself.")
     assert [r.getMessage() for r in caplog.records if "code=limit" in r.getMessage()] == [
-        "[tradecraft] library_now code=limit refreshes=3 blocks=3"]
-
-
-def test_searches_per_run(monkeypatch, caplog):
-    monkeypatch.setattr(hints, "MAX_REFRESHES", 2)
-    with caplog.at_level(logging.INFO):
-        notes, st = walk(GOALS[:4], index=by_goal(), cat=catalog(**{"hints.perRun": 20}))
-    assert [bool(n) for n in notes] == [True, True, False, False]
-    assert entry_of(st)["refreshes"] == 2
-    assert len([r for r in caplog.records if "library_now refresh=" in r.getMessage()]) == 2
-
-
-def test_hints_per_run_zero_gives_none():
-    index = by_goal()
-    notes, st = walk(GOALS[:3], index=index, cat=catalog(**{"hints.perRun": 0}))
-    assert notes == [None, None, None] and st["tradecraft_hint_count"] == 0 and index.calls == []
+        "[tradecraft] library_now code=limit goals=2"]
 
 
 def test_a_page_read_leaves_the_block():
@@ -478,7 +488,8 @@ def test_planted_cve_ids_stay_harmless():
         note, updates = now(st, index=index)
         st = {**st, **updates}
         given += [note] if note else []
-    assert st["tradecraft_hint_count"] <= 6
+    # At most one search and one new block a think (11 thinks here), never a page outside the library.
+    assert st["tradecraft_hint_count"] <= 11 and entry_of(st)["refreshes"] <= 11
     assert given and all(set(pages_of(n)) <= served and len(pages_of(n)) <= 3 for n in given)
     assert all("IGNORE" not in n for n in given)
     assert not [ln for n in given for ln in trusted_lines(n) if "CVE-" in ln.upper()]
@@ -521,17 +532,26 @@ def test_the_newest_confirmed_cve_ids_are_searched():
 # The time limit and the failure path
 # --------------------------------------------------------------------------------------
 
-def test_errors_and_slow_libraries_show_no_block(monkeypatch, caplog):
+def test_errors_and_slow_libraries_say_so(monkeypatch, caplog):
     class Broken:
+        calls = 0
+
         async def rows(self, name, params):
+            Broken.calls += 1
             raise RuntimeError("db down at 10.0.0.5 password=hunter2")
 
     with caplog.at_level(logging.WARNING):
         note, updates = now(state(), index=Broken())
-    assert note is None and updates["tradecraft_hint_count"] == 0
+    # A fixed notice, never an empty prompt that would read as "nothing in the library fits".
+    assert note == hints.NOTICES["error"] and updates["tradecraft_hint_count"] == 0
+    assert hints.NOTICES["error"] == ("Library now: not refreshed (the library did not answer); "
+                                      "use tradecraft_search yourself.")
     messages = [r.getMessage() for r in caplog.records]
     assert "[tradecraft] library_now code=internal_error error=RuntimeError" in messages
     assert not any("10.0.0.5" in m or "hunter2" in m for m in messages)
+    # The change is spent: the next think repeats the notice with no new search.
+    calls = Broken.calls
+    assert now({**state(), **updates}, index=Broken())[0] == hints.NOTICES["error"] and Broken.calls == calls
 
     class Slow:
         async def rows(self, name, params):
@@ -541,9 +561,8 @@ def test_errors_and_slow_libraries_show_no_block(monkeypatch, caplog):
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         note, updates = now(state(), index=Slow())
-    assert note is None and "[tradecraft] library_now code=timeout refresh=1" in [r.getMessage() for r in caplog.records]
-    # The change is spent: the next think does not wait again for the same goal and facts.
-    assert now({**state(), **updates}, index=Slow()) == (None, {})
+    assert note == hints.NOTICES["error"]
+    assert "[tradecraft] library_now code=timeout refresh=1" in [r.getMessage() for r in caplog.records]
 
     def boom(*_a, **_k):
         raise ValueError("unexpected")
@@ -553,6 +572,22 @@ def test_errors_and_slow_libraries_show_no_block(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         assert now(state()) == (None, {})
     assert "[tradecraft] library_now code=internal_error error=ValueError" in [r.getMessage() for r in caplog.records]
+
+
+def test_a_standing_block_stays_while_it_fits(monkeypatch):
+    """The same goal with a new fact whose search fails keeps showing its block: its pages still
+    fit the goal. A new goal whose search fails gets the notice."""
+    note, updates = now(state())
+    st = {**state(), **updates, "target_info": {"technologies": ["PostgreSQL", "nginx"], "vulnerabilities": []}}
+
+    class Broken:
+        async def rows(self, name, params):
+            raise RuntimeError("down")
+
+    again, updates = now(st, index=Broken())
+    assert pages_of(again) == pages_of(note)
+    st = {**st, **updates, "todo_list": [todo("Dump the users table", "in_progress")]}
+    assert now(st, index=Broken())[0] == hints.NOTICES["error"]
 
 
 # --------------------------------------------------------------------------------------
@@ -605,6 +640,8 @@ def test_the_rule_and_where_it_is_given():
                    "gives the specifics for the step you are on", "Before each new step, look at \"Library now\"",
                    "read it first with tradecraft_lookup(page=...); if nothing fits, go on", "with no line break",
                    "check Library now first: a fitting page comes before those",
+                   "absent when nothing in the library matches your current goal, and it says so when it could not "
+                   "be searched",
                    "\"Library: read <page id>.\"", "\"Library: nothing fit.\""):
         assert phrase in given, phrase
     # One rule for every skill and phase: nothing in it is about a topic.
