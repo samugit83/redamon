@@ -4,8 +4,8 @@ fresh, at no model cost.
 
 The main agent's think node asks ``library_now(state, catalog)`` before its model call (Fireteam
 members get none, Q13). The steps at hand (``profile.steps_of``) are the ones the agent is about
-to take: the todo item in progress, the next pending one, and the agent's own stated next action;
-a step's pages are there while it is still the next one. Each step is searched once with the
+to take: the todo item in progress and the next pending one; a step's pages are there while it is
+still the next one. Each step is searched once with the
 session's facts (topic, phase, technologies) through the free first pass (Q7.2), and again only
 when those facts change; the CVE ids a finding confirmed get a search of their own. A page is kept
 when the search's own scores pass the run's match strictness (``search.is_related``) and something
@@ -67,11 +67,10 @@ MATCH_WORD_CHARS = 30
 # The trusted lines are fixed text: the steps, which the model or the person wrote (and target
 # text can colour), are inside the untrusted block, each above the pages that fit it.
 HEADER = "Library now (pages for the steps at hand):"
-LABELS = {"now": "step in progress", "next": "next step", "planned": "your next action",
-          "finding": "confirmed finding"}
+LABELS = {"now": "step in progress", "next": "next step", "finding": "confirmed finding"}
 # The order a block takes each step's best page in: what is under way, what comes next, a CVE a
-# finding confirmed, the agent's stated next action.
-ORDER = ("now", "next", "finding", "planned")
+# finding confirmed.
+ORDER = ("now", "next", "finding")
 STEP_LINE = '  {label}: "{text}"'
 FOOTER = "If one fits your next step, read it with tradecraft_lookup(page=…) before acting."
 # Fixed text for a step that could not be searched: an empty prompt would read as "nothing in the
@@ -86,8 +85,8 @@ RULE = (
     "6. **Your library.** Your Tradecraft library is curated by the user for this work. The active "
     "attack skill gives the method; the library gives the specifics for the steps at hand. Before each new "
     "step, look at \"Library now\" at the end of this prompt: it lists the library's pages for your step in "
-    "progress, your next step and your stated next action (it is absent when nothing in the library matches "
-    "them, and it says so when a step could not be searched). If a page there fits what you are about to do, "
+    "progress and your next step (and a vulnerability a finding confirmed); it is absent when nothing in the "
+    "library matches them, and it says so when a step could not be searched. If a page there fits what you are about to do, "
     "read it first with tradecraft_lookup(page=...); if nothing fits, go on. Whenever the active skill or any "
     "instruction asks you to get specifics (payloads, PoCs, exploit steps, commands) from your own knowledge, "
     "query_graph or web_search, check Library now first: a fitting page comes before those. In your "

@@ -135,7 +135,8 @@ def test_the_saved_focus_is_read_like_any_input():
                                     "technologies": ["postgresql", 3, None], "cves": ["CVE-2024-1111", "nope"],
                                     "findings": ["access_gained"], "outcome": "an older run's field"})
     assert focus.steps[0][1].startswith("a b") and len(focus.steps[0][1]) == profile.GOAL_CHARS
-    assert [label for label, _t in focus.steps] == ["now", "planned", "next"]
+    # A saved "planned" step (the stated next action of an earlier version) is no step now.
+    assert [label for label, _t in focus.steps] == ["now", "next"]
     assert (focus.topic, focus.skill, focus.phase) == (None, "", "")
     assert focus.technologies == ("postgresql",) and focus.cves == ("CVE-2024-1111",)
     assert profile.Focus.from_log(None) is None and profile.Focus.from_log(focus.to_log()) == focus

@@ -2,12 +2,12 @@
 decision 2026-11-17, which replaced T8.1's fixed checkpoints).
 
 The steps at hand (``steps_of``) are the ones the agent is about to take, not the one it just
-took: the todo item in progress, the next pending one, and the agent's own stated next action
-(its latest analysis's first recommended next step). Models mark a step in progress in the same
-answer that takes its first action, so a step's pages must be there while it is still the next
-one. With nothing listed yet, the objective (the person's message) is the step. The model or the
-person wrote them, and target text the model read can colour them: the owner accepted that when it
-chose this design (the R-420 card correction). Before a step is searched (``query_of``), URLs,
+took: the todo item in progress and the next pending one. Models mark a step in progress in the
+same answer that takes its first action, so a step's pages must be there while it is still the
+next one. The agent's recommended next steps are no step: in most answers the first one is the
+action that same answer takes. With nothing listed yet, the objective (the person's message) is
+the step. The model or the person wrote them, and target text the model read can colour them: the
+owner accepted that when it chose this design (the R-420 card correction). Before a step is searched (``query_of``), URLs,
 addresses and bare numbers go: they name the target, never a technique.
 
 The facts are the structured inputs of a search: the skill's topic (a built-in skill is a
@@ -62,8 +62,8 @@ _IPV4 = re.compile(r"(?<![0-9.])\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5}|/\d{1,2})?(?!
 _NUMBER = re.compile(r"(?<![a-z0-9])\d+(?:[.,:/]\d+)*(?![a-z0-9])", re.IGNORECASE)
 
 
-# A step's kind: in progress, the next one, the agent's own stated next action.
-STEP_LABELS = ("now", "next", "planned")
+# A step's kind: in progress, the next one.
+STEP_LABELS = ("now", "next")
 
 
 @dataclass(frozen=True)
@@ -152,26 +152,16 @@ def _first_todo(todos: list[Mapping[str, Any]], status: str) -> str:
                  if t), "")
 
 
-def planned_of(state: Mapping[str, Any]) -> str:
-    """The agent's own stated next action: the first recommended next step of the analysis in its
-    latest answer (``_decision``); "" when that answer analysed nothing."""
-    decision = state.get("_decision")
-    analysis = decision.get("output_analysis") if isinstance(decision, Mapping) else None
-    steps = analysis.get("recommended_next_steps") if isinstance(analysis, Mapping) else None
-    return next((one_line(s)[:GOAL_CHARS] for s in steps or () if one_line(s)), "") if isinstance(steps, list) else ""
-
-
 def steps_of(state: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     """The steps at hand, each one line of at most ``GOAL_CHARS``, none twice: (``now``, the todo
-    item in progress), (``next``, the first pending one), (``planned``, the stated next action).
-    With no todo item, the objective is ``now``, and no stated next action is used: a new message
-    clears the todo list, and the latest answer may still be the last message's."""
+    item in progress), (``next``, the first pending one). With no todo item, the objective is
+    ``now``."""
     todos = [t for t in state.get("todo_list") or [] if isinstance(t, Mapping)]
     current, following = _first_todo(todos, "in_progress"), _first_todo(todos, "pending")
     if not todos:
         candidates = (("now", one_line(objective_of(state))[:GOAL_CHARS]),)
     else:
-        candidates = (("now", current), ("next", following), ("planned", planned_of(state)))
+        candidates = (("now", current), ("next", following))
     out: list[tuple[str, str]] = []
     for label, text in candidates:
         if text and text.lower() not in {t.lower() for _l, t in out}:

@@ -144,42 +144,36 @@ def entry_of(updates):
 # --------------------------------------------------------------------------------------
 
 def test_the_steps_at_hand():
-    """Design review finding 2: the step in progress, the next pending step and the agent's own
-    stated next action (its latest analysis's first recommended next step), so the pages for a
-    step are there in the think that starts it."""
+    """Design review finding 2: the step in progress and the next pending step, so the pages for a
+    step are there in the think that starts it. The agent's recommended next steps are no step:
+    in most answers the first one is the action that same answer takes (round-2 review finding 2)."""
     steps = [todo("Map the application", "completed"), todo("Confirm boolean blind SQLi on username", "in_progress"),
              todo("Dump the users table"), todo("Crack the hashes")]
     st = state(todo_list=steps, _decision=analysed("Try a CASE WHEN delay on the username", "x"))
     assert profile.steps_of(st) == (("now", "Confirm boolean blind SQLi on username"),
-                                    ("next", "Dump the users table"),
-                                    ("planned", "Try a CASE WHEN delay on the username"))
+                                    ("next", "Dump the users table"))
     # Nothing in progress yet: the next pending step; nothing listed: the objective.
     assert profile.steps_of(state(todo_list=[steps[0], steps[2]])) == (("next", "Dump the users table"),)
     assert profile.steps_of(state(todo_list=[steps[0]])) == (
         ("now", "Find a time-based blind SQL injection on the login form"),)
-    # A stated next action that repeats a step is that step; one left from an earlier message (its
-    # todo list cleared) is no step of this one.
-    assert profile.steps_of(state(todo_list=steps[:2], _decision=analysed("confirm  BOOLEAN blind SQLi on username"))) \
-        == (("now", "Confirm boolean blind SQLi on username"),)
-    assert profile.steps_of(state(_decision=analysed("Something from the last message"))) == (
-        ("now", "Find a time-based blind SQL injection on the login form"),)
     assert profile.steps_of(state(todo_list=[todo("one\n  two\tthree", "in_progress")])) == (("now", "one two three"),)
     assert len(profile.steps_of(state(todo_list=[todo("x" * 900, "in_progress")]))[0][1]) == profile.GOAL_CHARS
     assert profile.steps_of({"original_objective": "older run's objective"}) == (("now", "older run's objective"),)
+    assert profile.STEP_LABELS == ("now", "next")
 
 
 STEPS = {"alpha": "Probe vector alpha", "bravo": "Probe vector bravo", "charlie": "Probe vector charlie"}
 
 
 def test_each_step_gets_its_rows_labelled():
+    index = by_goal()
     st = state(todo_list=[todo(STEPS["alpha"], "in_progress"), todo(STEPS["bravo"])],
                _decision=analysed(STEPS["charlie"]))
-    note, _ = now(st, index=by_goal())
-    assert step_lines(note) == ['  step in progress: "Probe vector alpha"', '  next step: "Probe vector bravo"',
-                                '  your next action: "Probe vector charlie"']
-    # Three rows in all, the best of each step first.
-    assert rows_by_step(note) == {"step in progress": ["patt:411"], "next step": ["patt:421"],
-                                  "your next action": ["patt:431"]}
+    note, _ = now(st, index=index)
+    assert step_lines(note) == ['  step in progress: "Probe vector alpha"', '  next step: "Probe vector bravo"']
+    # Three rows in all, the best of each step in turn; the recommended next step is not searched.
+    assert rows_by_step(note) == {"step in progress": ["patt:411", "patt:412"], "next step": ["patt:421"]}
+    assert not any("charlie" in str(p.get("q", "")) for _n, p in index.calls)
 
 
 def test_the_next_step_is_there_before_it_starts():
@@ -730,13 +724,13 @@ def test_the_rule_and_where_it_is_given():
     assert given == "\n" + hints.RULE and given.startswith("\n6. **Your library.**")
     for phrase in ("curated by the user for this work", "The active attack skill gives the method; the library "
                    "gives the specifics for the steps at hand", "Before each new step, look at \"Library now\"",
-                   "your step in progress, your next step and your stated next action",
+                   "your step in progress and your next step (and a vulnerability a finding confirmed)",
                    "read it first with tradecraft_lookup(page=...); if nothing fits, go on", "with no line break",
                    "check Library now first: a fitting page comes before those",
                    "absent when nothing in the library matches them, and it says so when a step could not be "
-                   "searched",
-                   "\"Library: read <page id>.\"", "\"Library: nothing fit.\""):
+                   "searched", "\"Library: read <page id>.\"", "\"Library: nothing fit.\""):
         assert phrase in given, phrase
+    assert "next action" not in given
     # One rule for every skill and phase: nothing in it is about a topic.
     assert not re.search(r"WAF|CVE|SQL|blocked|bypass|injection", hints.RULE, re.IGNORECASE)
     assert rule(catalog(), phase="informational") == ""
