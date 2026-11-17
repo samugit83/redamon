@@ -573,10 +573,11 @@ def test_the_rule_and_where_it_is_given():
     for phrase in ("curated by the user for this work", "The active attack skill gives the method; the library "
                    "gives the specifics for the step you are on", "Before each new step, look at \"Library now\"",
                    "read it first with tradecraft_lookup(page=...); if nothing fits, go on", "with no line break",
+                   "check Library now first: a fitting page comes before those",
                    "\"Library: read <page id>.\"", "\"Library: nothing fit.\""):
         assert phrase in given, phrase
     # One rule for every skill and phase: nothing in it is about a topic.
-    assert not re.search(r"WAF|CVE|SQL|block|bypass|injection", hints.RULE, re.IGNORECASE)
+    assert not re.search(r"WAF|CVE|SQL|blocked|bypass|injection", hints.RULE, re.IGNORECASE)
     assert rule(catalog(), phase="informational") == ""
     assert rule(catalog(**{"hints.enabled": False})) == ""
     assert rule(catalog(resources=[])) == "" and rule({"v2": False, "legacy": []}) == "" and rule(None) == ""

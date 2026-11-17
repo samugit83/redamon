@@ -129,13 +129,14 @@ def rules_section(text):
     return text[text.index("### Important Rules:"):text.index("### When to Ask User")]
 
 
-def skill_block(skill):
+def skill_block(skill, trace=()):
     """The skill's own block as the prompt builders render it in this run."""
     import prompts
 
     allowed = ps.get_allowed_tools_for_phase("exploitation")
-    if skill == "sql_injection":
-        return prompts.build_builtin_skill_workflow(skill, allowed, False, [])
+    if skill in ("sql_injection", "cve_exploit"):
+        statefull = ps.get_setting("POST_EXPL_PHASE_TYPE", "statefull") == "statefull"
+        return prompts.build_builtin_skill_workflow(skill, allowed, statefull, list(trace))
     if skill.startswith("user_skill:"):
         return [f"## User Attack Skill: {USER_SKILL['name']}\n\n{USER_SKILL['content']}"]
     return [prompts.UNCLASSIFIED_EXPLOIT_TOOLS]
@@ -159,6 +160,32 @@ def test_every_kind_of_skill_keeps_its_block_and_gets_the_rule_and_the_block():
         assert goal_line(tail) == '  goal: "Confirm time based blind SQL injection"'
         assert text.endswith(FOOTER) and "patt:401" in tail, kind
         assert text.index(block[-1]) < text.index(hints.RULE) < text.rindex(HEADER)
+
+
+PRECEDENCE = ("Whenever the active skill or any instruction asks you to get specifics (payloads, PoCs, exploit "
+              "steps, commands) from your own knowledge, query_graph or web_search, check Library now first: a "
+              "fitting page comes before those.")
+
+
+def test_the_rule_comes_before_a_skills_own_order_of_sources():
+    """The CVE skill orders its sources of specifics as own knowledge, query_graph, web_search; the
+    rule, the same for every skill, puts a fitting Library now page first, and the skill's text
+    stays as it is."""
+    config = json.loads(json.dumps(ps.DEFAULT_AGENT_SETTINGS["ATTACK_SKILL_CONFIG"]))
+    config["builtIn"]["cve_exploit"] = True
+    config["user"] = {"abc": True}
+    # No Metasploit module: the skill's fallback, with its "own knowledge, query_graph, web_search".
+    trace = [{"tool_name": "metasploit_console", "tool_args": {"command": "search cve:2099-0001"},
+              "tool_output": "No results from search", "success": True, "iteration": 1, "phase": "exploitation",
+              "thought": "", "reasoning": ""}]
+    st = state(attack_path_type="cve_exploit", execution_trace=trace,
+               todo_list=[todo("Exploit the CVE on the login service", "in_progress")])
+    messages, _, block = think(st, run_settings=settings(ATTACK_SKILL_CONFIG=config),
+                               before=lambda: skill_block("cve_exploit", trace))
+    text = system_text(messages)
+    assert block and all(part in text for part in block)
+    assert "1. **Your own knowledge**" in text and "Use `web_search`" in text
+    assert PRECEDENCE in hints.RULE and text.count(PRECEDENCE) == 1 and PRECEDENCE in rules_section(text)
 
 
 def test_the_skill_line_sits_just_before_the_skills_block():

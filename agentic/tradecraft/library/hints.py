@@ -70,7 +70,9 @@ RULE = (
     "attack skill gives the method; the library gives the specifics for the step you are on. Before "
     "each new step, look at \"Library now\" at the end of this prompt (it is absent when nothing in the "
     "library matches your current goal): if a page there fits what you are about to do, read it first "
-    "with tradecraft_lookup(page=...); if nothing fits, go on. In your `thought`, say in one short "
+    "with tradecraft_lookup(page=...); if nothing fits, go on. Whenever the active skill or any instruction asks "
+    "you to get specifics (payloads, PoCs, exploit steps, commands) from your own knowledge, query_graph or "
+    "web_search, check Library now first: a fitting page comes before those. In your `thought`, say in one short "
     "sentence, with no line break, which page you read or that nothing fit: \"Library: read <page id>.\" "
     "or \"Library: nothing fit.\""
 )
