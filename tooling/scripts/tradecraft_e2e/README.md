@@ -120,7 +120,9 @@ writes a build record (`runner.py --record-build before`, then `after`, into
 webapp's sources that is not the tip's (with its blob id), and the two image ids. Before a run the
 runner checks that the branch is still at that tip, that the running containers are those images,
 that the only differences are another session's hunks in the files the plan shares with it
-(R-B2), and, file by file, that the running agent holds the tip's code plus those hunks (the
+(R-B2: each such copy, `docker-compose.yml` too, holds every line the plan's own diff from its
+base `8fc8fb0b` adds and no block it removes), and, file by file, that the running agent holds
+the tip's code plus those hunks (the
 webapp is compiled, so its image id stands for its sources). Any mismatch, or a check that could
 not run, stops the preflight. At the end it checks the ids and the tip again: a change voids the
 verdict, reported "NOT PASSED (code not verified)" with a non-zero exit, never PASSED.

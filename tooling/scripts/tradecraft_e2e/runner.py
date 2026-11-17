@@ -2032,6 +2032,11 @@ def _check_names(scn: Mapping, run: lanes.Run) -> list[str]:
 
 
 PLAN_REF = "refs/heads/feature/tradecraft-2.0"
+# The commit the plan branch started from (T0.1, progress_log.md "Base commits"): the plan's own
+# diff is base..tip, and a record taken from another base cannot tell the plan's lines apart.
+PLAN_BASE = "8fc8fb0b7d8c99c646cb53bbfd4cf364ffd08cdf"
+# Read by `compose up`, never baked: the plan removes the page-cache mount and volume from it.
+SHARED_CONFIG = ("docker-compose.yml",)
 BUILD_RECORD = REPO / "_local" / "tradecraft-e2e" / "build-record.json"
 # Where the agent image bakes the repository's folders (agentic/Dockerfile: COPY graph_db/,
 # recon_settings/, agentic/ into /app).
@@ -2117,9 +2122,9 @@ def git_short(ref: str, run: Optional[Exec] = None) -> str:
     return (done.stdout or "").strip()
 
 
-def tip_files(commit: str, prefixes: Sequence[str], run: Optional[Exec] = None) -> dict:
+def tip_files(commit: str, prefixes: Sequence[str], run: Optional[Exec] = None, root: Path = REPO) -> dict:
     """{repository path: git blob id} of ``commit`` under ``prefixes``."""
-    done = (run or subprocess.run)(["git", "-C", str(REPO), "ls-tree", "-r", commit, "--", *prefixes],
+    done = (run or subprocess.run)(["git", "-C", str(root), "ls-tree", "-r", commit, "--", *prefixes],
                                    capture_output=True, text=True, check=False, timeout=120)
     out = {}
     for line in (done.stdout or "").splitlines():
@@ -2135,7 +2140,7 @@ def tree_differences(commit: str, prefixes: Sequence[str], run: Optional[Exec] =
     """{repository path: working-tree blob id, "" when absent} for every file under ``prefixes``
     whose working copy is not ``commit``'s: what an image built now carries besides the commit."""
     run = run or subprocess.run
-    tip = tip_files(commit, prefixes, run)
+    tip = tip_files(commit, prefixes, run, root=root)
     # The sources as git sees them, tracked or new, never an ignored file (logs, workspaces, builds).
     listed = run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *prefixes],
                  capture_output=True, text=True, check=False, timeout=300)
@@ -2148,26 +2153,47 @@ def tree_differences(commit: str, prefixes: Sequence[str], run: Optional[Exec] =
     return {p: blobs.get(p, "") for p in paths if blobs.get(p, "") != tip.get(p, "")}
 
 
+def removed_blocks(patch: str) -> list:
+    """The blocks of lines a zero-context diff removes, one per hunk (``-`` lines, in order)."""
+    blocks, cur = [], []
+    for line in patch.splitlines():
+        if line.startswith("@@"):
+            if cur:
+                blocks.append(cur)
+            cur = []
+        elif line.startswith("-") and not line.startswith("---"):
+            cur.append(line[1:])
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
 def shared_file_check(path: str, base: str, tip: str, run: Optional[Exec] = None, root: Path = REPO) -> dict:
-    """A shared file's working copy against the plan: whether it holds every line the plan's own
-    diff (``base`` → ``tip``) adds, by reverse-applying that diff without context, and how many
-    hunks it has besides (another session's). Counts only."""
+    """A shared file's working copy against the plan's own diff (``base`` → ``tip``), counts only:
+    every line the plan adds is there (the diff reverse-applies without context); no block the plan
+    removes is back, even in part (a non-blank line of it the copy holds and the tip holds nowhere:
+    a line the tip still has elsewhere proves nothing); and how many hunks it has besides, another
+    session's."""
     run = run or subprocess.run
     patch = run(["git", "-C", str(root), "diff", "-U0", base, tip, "--", path], capture_output=True, text=True,
                 check=False, timeout=60).stdout or ""
     if not (root / path).is_file():
-        return {"plan_lines": False, "extra_hunks": 0}
+        return {"plan_lines": False, "added_present": False, "removed_absent": False, "extra_hunks": 0}
     if patch.strip():
         done = run(["git", "-C", str(root), "apply", "--check", "-R", "--unidiff-zero", "-"], input=patch,
                    capture_output=True, text=True, check=False, timeout=60)
-        present = done.returncode == 0
+        added = done.returncode == 0
     else:
-        present = True
+        added = True
     shown = run(["git", "-C", str(root), "show", f"{tip}:{path}"], capture_output=True, text=True, check=False, timeout=60)
+    tip_lines = set((shown.stdout or "").splitlines() if shown.returncode == 0 else [])
+    copy = set((root / path).read_text(encoding="utf-8", errors="replace").splitlines())
+    back = [b for b in removed_blocks(patch) if any(x.strip() and x in copy and x not in tip_lines for x in b)]
     extra = run(["git", "-C", str(root), "diff", "--no-index", "-U0", "--", "-", str(root / path)],
                 input=shown.stdout if shown.returncode == 0 else "", capture_output=True, text=True, check=False, timeout=60)
     hunks = sum(1 for line in (extra.stdout or "").splitlines() if line.startswith("@@"))
-    return {"plan_lines": present, "extra_hunks": hunks}
+    return {"plan_lines": added and not back, "added_present": added, "removed_absent": not back,
+            "extra_hunks": max(0, hunks - len(back))}
 
 
 def image_ids(run: Optional[Exec] = None) -> dict:
@@ -2181,21 +2207,23 @@ def image_ids(run: Optional[Exec] = None) -> dict:
     return {"agent": pairs.get(f"/{AGENT_CONTAINER}", "not checked"), "webapp": pairs.get(f"/{WEBAPP_CONTAINER}", "not checked")}
 
 
-def record_build(phase: str, run: Optional[Exec] = None, path: Path = BUILD_RECORD) -> str:
+def record_build(phase: str, run: Optional[Exec] = None, path: Path = BUILD_RECORD, root: Path = REPO) -> str:
     """The build record run/s15/rebuild.sh writes around a rebuild: ``before`` the builds, the plan
     tip and every file of the tree that is not the tip's; ``after`` the containers are up, their
     image ids, and whether the tree changed during the build. Returns a one-line summary."""
     run = run or subprocess.run
     prefixes = [p for p, _ in AGENT_BAKED] + list(WEBAPP_SOURCES)
-    tip = (run(["git", "-C", str(REPO), "rev-parse", "--verify", "--quiet", PLAN_REF], capture_output=True, text=True,
+    tip = (run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", PLAN_REF], capture_output=True, text=True,
                check=False, timeout=60).stdout or "").strip()
-    differences = tree_differences(tip, prefixes, run)
+    differences = tree_differences(tip, prefixes, run, root=root)
     if phase == "before":
-        base = (run(["git", "-C", str(REPO), "merge-base", tip, "HEAD"], capture_output=True, text=True, check=False,
+        base = (run(["git", "-C", str(root), "merge-base", tip, "HEAD"], capture_output=True, text=True, check=False,
                     timeout=60).stdout or "").strip()
-        changed = run(["git", "-C", str(REPO), "diff", "--name-only", base, tip, "--", *prefixes], capture_output=True,
+        changed = run(["git", "-C", str(root), "diff", "--name-only", base, tip, "--", *prefixes], capture_output=True,
                       text=True, check=False, timeout=120).stdout or ""
-        shared = {f: shared_file_check(f, base, tip, run) for f in sorted(differences) if f in SHARED_FILES}
+        config = tree_differences(tip, list(SHARED_CONFIG), run, root=root)
+        shared = {f: shared_file_check(f, base, tip, run, root=root)
+                  for f in sorted(set(differences) | set(config)) if f in SHARED_FILES}
         record = {"format": 1, "tip": tip, "base": base, "recorded_at": now_iso(), "differences": differences,
                   "plan_files": sorted(changed.split()), "shared_checks": shared, "complete": False}
     else:
@@ -2231,6 +2259,9 @@ def verify_code(record: Optional[Mapping], run: Optional[Exec] = None, *, deep: 
         return [f"no usable build record ({BUILD_RECORD.name}: {why}; run/s15/rebuild.sh writes it)"], {}
     tip = record["tip"]
     lines = {"commit": f"plan {tip[:8]}"}
+    if record.get("base") != PLAN_BASE:
+        problems.append(f"the build record's base {(record.get('base') or 'none')[:8]} is not the plan's base "
+                        f"{PLAN_BASE[:8]}: its plan diff is not the plan's")
     try:
         now_tip = (run(["git", "-C", str(REPO), "rev-parse", "--verify", "--quiet", PLAN_REF], capture_output=True,
                        text=True, check=False, timeout=60).stdout or "").strip()
@@ -2245,13 +2276,13 @@ def verify_code(record: Optional[Mapping], run: Optional[Exec] = None, *, deep: 
         problems.append(f"the images carry {len(outside)} of the plan's files that are not plan {tip[:8]}'s: "
                         + ", ".join(outside[:6]) + ("…" if len(outside) > 6 else "") if plan
                         else "the build record names no plan file: rerun run/s15/rebuild.sh")
-    shared = sorted(p for p in differences if p in SHARED_FILES)
     checks_ = record.get("shared_checks") or {}
-    # A shared file may carry another session's lines, never lack the plan's own.
+    shared = sorted(set(p for p in differences if p in SHARED_FILES) | set(checks_))
+    # A shared file may carry another session's lines, never lack the plan's own nor keep what it removed.
     missing = [p for p in shared if not (checks_.get(p) or {}).get("plan_lines")]
     if missing:
-        problems.append(f"the images' copy of {', '.join(missing)} lacks lines of plan {tip[:8]}'s own diff "
-                        "(or was not checked): not the plan's code")
+        problems.append(f"the copy of {', '.join(missing)} is not plan {tip[:8]}'s own diff (a line it adds is "
+                        "missing, a block it removes is back, or it was not checked): not the plan's code")
     named = [f"{p} (+{(checks_.get(p) or {}).get('extra_hunks', '?')} hunks of another session)" for p in shared]
     other = sorted(p for p in differences if p not in plan and p not in SHARED_FILES)
     lines["known_hunks"] = (", ".join(named) or "none") + (

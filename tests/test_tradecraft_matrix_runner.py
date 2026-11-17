@@ -1424,7 +1424,7 @@ def test_retrieval_looks_cve_questions_up_and_searches_the_rest():
 
 
 TIP = "3765744a" + "0" * 32
-RECORD = {"format": 1, "tip": TIP, "complete": True, "differences": {"agentic/api.py": "f" * 40},
+RECORD = {"format": 1, "tip": TIP, "base": runner.PLAN_BASE, "complete": True, "differences": {"agentic/api.py": "f" * 40},
           "shared_checks": {"agentic/api.py": {"plan_lines": True, "extra_hunks": 1}},
           "plan_files": ["agentic/api.py", "agentic/tradecraft/ingest/detect.py", "agentic/settings_spec.json"],
           "images": {"agent": "sha256:439168511321" + "a" * 52, "webapp": "sha256:6af9db065740" + "b" * 52}}
@@ -1486,6 +1486,9 @@ def test_the_code_check_passes_only_on_the_recorded_code():
         "the tree changed during the build": (dict(RECORD, complete=False, tree_changed=True), _stack()),
         "the branch moved": (RECORD, _stack(tip="9f00aa11" + "0" * 32)),
         "a record naming no plan file": (dict(RECORD, plan_files=[]), _stack()),
+        "a record from another base": (dict(RECORD, base=TIP), _stack()),
+        "a shared config not the plan's": (dict(RECORD, shared_checks={**RECORD["shared_checks"],
+                                                                       "docker-compose.yml": {"plan_lines": False}}), _stack()),
         "a plan file not the tip's": (dict(RECORD, differences={"agentic/tradecraft/ingest/detect.py": "9" * 40}),
                                                   _stack(files={"tradecraft/ingest/detect.py": "9" * 40, "api.py": "1" * 40})),
         "another agent image": (RECORD, _stack(images={"agent": "sha256:" + "c" * 64, "webapp": RECORD["images"]["webapp"]})),
@@ -1507,31 +1510,123 @@ def _git(root, *args, input=None):
     return subprocess.run(["git", "-C", str(root), *args], input=input, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def test_a_shared_file_must_hold_the_plans_own_lines(tmp_path):
-    # feature_models.py is shared with another session: its copy may carry that session's lines,
-    # never lack the plan's one line (tradecraft_section_picker -> tradecraft_librarian).
+FM_HEAD = 'FEATURE_IDS = (\n    "triage",\n    "codefix",\n'
+FM_TAIL = '    "report_narratives",\n    "multi_mute",\n)\n'
+API_KEEP = 'from fastapi import APIRouter\n\nrouter = APIRouter()\n\n\n@router.get("/health")\ndef health():\n    return {"ok": True}\n'
+COMPOSE_KEEP = "services:\n  agent:\n    image: redamon-agent\n    volumes:\n      - ./agentic:/app\n"
+COMPOSE_1X = "      - tradecraft_pages:/data/tradecraft-pages\nvolumes:\n  tradecraft_pages:\n"
+API_1X = ('\n\nclass TradecraftVerifyRequest:\n    url: str\n\n\n@router.post("/tradecraft/verify")\n'
+          'def tradecraft_verify(req):\n    return {"verified": req.url}\n')
+
+
+def _plan_repo(tmp_path):
+    """A repository whose base holds the 1.x lines and whose plan branch replaces them, the
+    checkout left on the base (as the shared checkout is on another branch)."""
     root = tmp_path / "repo"
     (root / "agentic").mkdir(parents=True)
-    _git(tmp_path, "init", "-q", str(root))
+    _git(tmp_path, "init", "-q", "-b", "main", str(root))
     for k, v in (("user.email", "t@e2e.invalid"), ("user.name", "t"), ("commit.gpgsign", "false")):
         _git(root, "config", k, v)
-    f = root / "agentic" / "feature_models.py"
-    head = 'FEATURE_IDS = (\n    "triage",\n    "codefix",\n'
-    tail = '    "report_narratives",\n    "multi_mute",\n)\n'
-    f.write_text(head + '    "tradecraft_section_picker",\n' + tail)
+    fm, api = root / "agentic" / "feature_models.py", root / "agentic" / "api.py"
+    (root / "agentic" / "graph.py").write_text("UNSHARED = 1\n")
+    fm.write_text(FM_HEAD + '    "tradecraft_section_picker",\n' + FM_TAIL)
+    api.write_text(API_KEEP + API_1X)
+    (root / "docker-compose.yml").write_text(COMPOSE_KEEP + COMPOSE_1X)
     _git(root, "add", "."); _git(root, "commit", "-qm", "base")
     base = _git(root, "rev-parse", "HEAD")
-    f.write_text(head + '    "tradecraft_librarian",\n' + tail)
+    _git(root, "checkout", "-q", "-b", "feature/tradecraft-2.0")
+    fm.write_text(FM_HEAD + '    "tradecraft_librarian",\n' + FM_TAIL)
+    api.write_text(API_KEEP)
+    (root / "docker-compose.yml").write_text(COMPOSE_KEEP)
     _git(root, "commit", "-qam", "the plan")
     tip = _git(root, "rev-parse", "HEAD")
+    _git(root, "checkout", "-q", "main")
+    return root, base, tip
+
+
+def test_a_shared_file_must_hold_the_plans_own_diff(tmp_path):
+    # feature_models.py and api.py are shared with another session: a copy may carry that session's
+    # lines, never lack a line the plan adds nor keep a block the plan removes.
+    root, base, tip = _plan_repo(tmp_path)
+    fm, api = root / "agentic" / "feature_models.py", root / "agentic" / "api.py"
     path = "agentic/feature_models.py"
-    assert runner.shared_file_check(path, base, tip, root=root) == {"plan_lines": True, "extra_hunks": 0}
-    f.write_text(head + '    "tradecraft_librarian",\n' + tail + 'OTHER_SESSION = True\n')
-    assert runner.shared_file_check(path, base, tip, root=root) == {"plan_lines": True, "extra_hunks": 1}
-    f.write_text(head + '    "tradecraft_section_picker",\n' + tail + 'OTHER_SESSION = True\n')
+    fm.write_text(FM_HEAD + '    "tradecraft_librarian",\n' + FM_TAIL)
+    assert runner.shared_file_check(path, base, tip, root=root)["plan_lines"] is True
+    fm.write_text(FM_HEAD + '    "tradecraft_librarian",\n' + FM_TAIL + 'OTHER_SESSION = True\n')
+    got = runner.shared_file_check(path, base, tip, root=root)
+    assert got["plan_lines"] is True and got["extra_hunks"] == 1  # a genuine other-session hunk, named
+    fm.write_text(FM_HEAD + '    "tradecraft_section_picker",\n' + FM_TAIL)
+    assert runner.shared_file_check(path, base, tip, root=root)["added_present"] is False
+    # Both the old line and the new one (a union resolution): the plan's removal is undone.
+    fm.write_text(FM_HEAD + '    "tradecraft_section_picker",\n    "tradecraft_librarian",\n' + FM_TAIL)
+    got = runner.shared_file_check(path, base, tip, root=root)
+    assert got["plan_lines"] is False and got["added_present"] is True and got["removed_absent"] is False
+    # api.py still holding the 1.x route and its request model.
+    api.write_text(API_KEEP + API_1X)
+    got = runner.shared_file_check("agentic/api.py", base, tip, root=root)
+    assert got["plan_lines"] is False and got["removed_absent"] is False
+    # Part of the removed block back: the 1.x route's decorator alone.
+    api.write_text(API_KEEP + '\n\n@router.post("/tradecraft/verify")\ndef other():\n    return {}\n')
+    assert runner.shared_file_check("agentic/api.py", base, tip, root=root)["removed_absent"] is False
+    api.write_text(API_KEEP + '\n\n@router.get("/other-session")\ndef other():\n    return {}\n')
+    got = runner.shared_file_check("agentic/api.py", base, tip, root=root)
+    assert got["plan_lines"] is True and got["extra_hunks"] == 1
+    fm.unlink()
     assert runner.shared_file_check(path, base, tip, root=root)["plan_lines"] is False
-    f.unlink()
-    assert runner.shared_file_check(path, base, tip, root=root)["plan_lines"] is False
+
+
+def test_a_removed_line_the_tip_still_holds_elsewhere_is_not_counted_back(tmp_path):
+    # The plan drops one of two identical lines: the tip's own copy holds that line, so it proves nothing.
+    root = tmp_path / "repo"
+    (root / "agentic").mkdir(parents=True)
+    _git(tmp_path, "init", "-q", "-b", "main", str(root))
+    for k, v in (("user.email", "t@e2e.invalid"), ("user.name", "t"), ("commit.gpgsign", "false")):
+        _git(root, "config", k, v)
+    api = root / "agentic" / "api.py"
+    api.write_text("A = 1\nB = 2\nA = 1\n")
+    _git(root, "add", "."); _git(root, "commit", "-qm", "base")
+    base = _git(root, "rev-parse", "HEAD")
+    api.write_text("A = 1\nB = 2\n")
+    _git(root, "commit", "-qam", "the plan")
+    got = runner.shared_file_check("agentic/api.py", base, _git(root, "rev-parse", "HEAD"), root=root)
+    assert got == {"plan_lines": True, "added_present": True, "removed_absent": True, "extra_hunks": 0}
+
+
+def test_the_build_record_checks_each_shared_file_against_the_plans_base(tmp_path):
+    # record_build end to end on a real repository: the base is the merge base of the plan tip and
+    # the checkout's HEAD, and each differing shared file is checked against the plan's own diff.
+    root, base, tip = _plan_repo(tmp_path)
+    (root / "agentic" / "feature_models.py").write_text(FM_HEAD + '    "tradecraft_librarian",\n' + FM_TAIL + "X = 1\n")
+    (root / "agentic" / "api.py").write_text(API_KEEP + API_1X + "\n# another session's line\n")
+    (root / "docker-compose.yml").write_text(COMPOSE_KEEP)  # the checkout holds the base's: make it the tip's
+    path = tmp_path / "record.json"
+    with mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
+        runner.record_build("before", path=path, root=root)
+        rec = json.loads(path.read_text())
+        assert rec["base"] == base != tip and rec["tip"] == tip
+        assert set(rec["differences"]) == {"agentic/feature_models.py", "agentic/api.py"}  # graph.py is the tip's
+        checks = rec["shared_checks"]
+        assert checks["agentic/feature_models.py"]["plan_lines"] is True
+        assert checks["agentic/feature_models.py"]["extra_hunks"] == 1
+        assert checks["agentic/api.py"]["plan_lines"] is False  # the 1.x route is back
+        assert set(checks) == {"agentic/feature_models.py", "agentic/api.py"}  # compose is the tip's: not checked
+        # docker-compose.yml is never baked, read by compose up: its copy is checked all the same.
+        (root / "docker-compose.yml").write_text(COMPOSE_KEEP + COMPOSE_1X)
+        runner.record_build("before", path=path, root=root)
+        checks = json.loads(path.read_text())["shared_checks"]
+        assert checks["docker-compose.yml"]["plan_lines"] is False
+        assert checks["docker-compose.yml"]["removed_absent"] is False
+        (root / "docker-compose.yml").write_text(COMPOSE_KEEP)
+        runner.record_build("after", path=path, root=root)
+    rec = json.loads(path.read_text())
+    assert rec["complete"] is True and rec["images"] == RECORD["images"]
+    # A change during the build voids the record.
+    with mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
+        runner.record_build("before", path=path, root=root)
+        (root / "agentic" / "feature_models.py").write_text(FM_HEAD + '    "tradecraft_librarian",\n' + FM_TAIL + "X = 2\n")
+        runner.record_build("after", path=path, root=root)
+    rec = json.loads(path.read_text())
+    assert rec["complete"] is False and rec["tree_changed"] is True
 
 
 def test_the_stale_file_scan_skips_runtime_data(tmp_path):
@@ -1594,24 +1689,6 @@ def test_the_build_record_names_the_tree_the_images_came_from(tmp_path):
 
     diff = runner.tree_differences("tip", ["agentic/"], run=run, root=root)
     assert diff == {"agentic/api.py": "a" * 40, "agentic/new.py": "c" * 40, "agentic/gone.py": ""}
-    path = tmp_path / "record.json"
-    with mock.patch.object(runner, "tree_differences", return_value={"agentic/api.py": "a" * 40}), \
-            mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
-        def fake(argv, **kw):
-            out = "agentic/api.py\nagentic/tradecraft/x.py\n" if "diff" in argv else TIP + "\n"
-            return subprocess.CompletedProcess(argv, 0, out, "")
-        assert "1 files not the tip's" in runner.record_build("before", run=fake, path=path)
-        assert json.loads(path.read_text())["plan_files"] == ["agentic/api.py", "agentic/tradecraft/x.py"]
-        assert json.loads(path.read_text())["complete"] is False
-        runner.record_build("after", run=fake, path=path)
-        rec = json.loads(path.read_text())
-        assert rec["complete"] is True and rec["images"] == RECORD["images"] and rec["tip"] == TIP
-    with mock.patch.object(runner, "tree_differences", side_effect=[{}, {"agentic/tradecraft/x.py": "e" * 40}]), \
-            mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
-        runner.record_build("before", run=fake, path=path)
-        runner.record_build("after", run=fake, path=path)
-    rec = json.loads(path.read_text())
-    assert rec["complete"] is False and rec["tree_changed"] is True
 
 
 def _main_with(tmp_path, verify_results, **extra):
