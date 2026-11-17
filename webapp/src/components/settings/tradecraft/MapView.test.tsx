@@ -267,4 +267,14 @@ describe('MapView', () => {
     expect(await screen.findByText('Tag: news')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
+
+  test('Escape closes the Map view only, never the window it was opened from', async () => {
+    const onClose = vi.fn()
+    const outer = vi.fn()
+    render(<div onKeyDown={outer}><MapView userId="user-1" resource={RESOURCE} onClose={onClose} /></div>)
+    await screen.findByText('SQL injection')
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search the map' }), { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(outer).not.toHaveBeenCalled()
+  })
 })

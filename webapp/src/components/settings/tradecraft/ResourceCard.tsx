@@ -88,7 +88,7 @@ export function ResourceCard({ userId, resource: r, busy = false, onRefresh, onC
         <span>Last refreshed {relTime(refreshedAt)}</span>
         <span>{r.entryCount} {r.entryCount === 1 ? 'entry' : 'entries'}</span>
       </div>
-      {report && <IngestionReport report={report} testId="tc-report" />}
+      {report && <IngestionReport report={report} testId="tc-report" short />}
       {mapOpen && <MapView userId={userId} resource={r} onClose={() => setMapOpen(false)} />}
     </div>
   )

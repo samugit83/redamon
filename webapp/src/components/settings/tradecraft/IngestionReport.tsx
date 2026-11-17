@@ -33,13 +33,16 @@ function bytesText(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-/** One line for the card and the accordion row: "40 visited, 31 kept, 9 LLM calls, 61 s, stopped: …". */
-export function reportSummary(report: Partial<Report>): string {
+/**
+ * The report in one line: the accordion row's "40 visited, 31 kept, 9 LLM calls, 61 s, stopped: …";
+ * `short`, the card's "40 visited, 31 kept, stopped: …", its calls and time one click away.
+ */
+export function reportSummary(report: Partial<Report>, short = false): string {
   const parts = [`${n(num(report.visited) ?? 0)} visited`, `${n(num(report.kept) ?? 0)} kept`]
   const calls = num(report.llmCalls)
-  if (calls !== null) parts.push(`${n(calls)} LLM calls`)
+  if (calls !== null && !short) parts.push(`${n(calls)} LLM calls`)
   const secs = num(report.durationSec)
-  if (secs !== null) parts.push(`${Math.round(secs)} s`)
+  if (secs !== null && !short) parts.push(`${Math.round(secs)} s`)
   return `${parts.join(', ')}${report.stopReason ? `, stopped: ${report.stopReason}` : ''}`
 }
 
@@ -72,7 +75,7 @@ export function readinessText(readiness: Report['readiness'] | undefined): { lin
  * stored and what was not, the focus counts, readiness and errors by code. Counts and codes only:
  * the report never holds a URL or page text.
  */
-export function IngestionReport({ report, testId }: { report: Partial<Report>; testId?: string }) {
+export function IngestionReport({ report, testId, short = false }: { report: Partial<Report>; testId?: string; short?: boolean }) {
   const skipped = report.skipped
   const skips = skipped ? SKIP_WORDS.filter(([k]) => (num(skipped[k]) ?? 0) > 0).map(([k, w]) => `${n(skipped[k])} ${w}`) : []
   const stored = report.stored
@@ -81,7 +84,7 @@ export function IngestionReport({ report, testId }: { report: Partial<Report>; t
   const errors = report.errors ?? []
   return (
     <details className={css.report}>
-      <summary data-testid={testId}>{reportSummary(report)}</summary>
+      <summary data-testid={testId}>{reportSummary(report, short)}</summary>
       <dl className={css.reportList} data-testid="tc-report-full">
         <dt>Pages visited</dt><dd>{n(num(report.visited) ?? 0)}</dd>
         <dt>Pages kept</dt><dd>{n(num(report.kept) ?? 0)}</dd>

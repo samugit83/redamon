@@ -233,177 +233,181 @@ export function MapView({ userId, resource, readOnly = false, onClose }: {
   const tabs = readOnly ? TABS.slice(0, 1) : TABS
 
   return (
-    <Modal isOpen onClose={onClose} title={`Map of ${resource.name}`} size="large">
-      <div data-testid="tc-map-view">
-        {readOnly && <p className={css.hint}>{READ_ONLY_NOTE}</p>}
-        <div className={css.toolbar}>
-          {tabs.length > 1 && (
-            <div className={css.tabs} role="group" aria-label="Which pages">
-              {tabs.map(([id, label]) => (
-                <button key={id} type="button" className={css.tab} aria-pressed={status === id} onClick={() => switchTab(id)}>{label}</button>
-              ))}
+    // React events bubble along the component tree through the portal: an Escape that closed this
+    // view must not also close the window it was opened from (the chat drawer's, a form).
+    <div onKeyDown={e => { if (e.key === 'Escape') e.stopPropagation() }}>
+      <Modal isOpen onClose={onClose} title={`Map of ${resource.name}`} size="large">
+        <div data-testid="tc-map-view">
+          {readOnly && <p className={css.hint}>{READ_ONLY_NOTE}</p>}
+          <div className={css.toolbar}>
+            {tabs.length > 1 && (
+              <div className={css.tabs} role="group" aria-label="Which pages">
+                {tabs.map(([id, label]) => (
+                  <button key={id} type="button" className={css.tab} aria-pressed={status === id} onClick={() => switchTab(id)}>{label}</button>
+                ))}
+              </div>
+            )}
+            <form className={css.grow} onSubmit={search} role="search" style={{ display: 'flex', gap: 6 }}>
+              <input
+                className="textInput" aria-label="Search the map" placeholder="Search titles and URLs, e.g. /tag/"
+                value={queryDraft} onChange={e => setQueryDraft(e.target.value)} maxLength={200}
+              />
+              <button type="submit" className="secondaryButton">Search</button>
+            </form>
+            {tag && (
+              <button type="button" className={css.chip} onClick={() => setTag('')} aria-label={`Clear the tag ${tag}`}>tag: {tag} ×</button>
+            )}
+          </div>
+
+          {curating && status === 'kept' && (
+            <form className={css.toolbar} onSubmit={pin}>
+              <input
+                className={`textInput ${css.grow}`} aria-label="Pin a URL" placeholder="Pin a page by its URL: it stays in the map"
+                value={pinDraft} onChange={e => setPinDraft(e.target.value)} maxLength={2048}
+              />
+              <button type="submit" className="secondaryButton" disabled={busy || !pinDraft.trim()}>Pin</button>
+            </form>
+          )}
+
+          {load.kind === 'ready' && (
+            <div className={css.toolbar}>
+              <span className={css.count} data-testid="tc-map-count">
+                {pages(total)}{query || tag ? ' match' : ''}{sources.length > 0 ? ` · from ${sources.join(', ')}` : ''}
+              </span>
+              {curating && status !== 'blocked' && (
+                <>
+                  <button
+                    type="button" className="secondaryButton" disabled={busy || selected.size === 0}
+                    onClick={() => setConfirming({ kind: 'selected', urls: [...selected] })}
+                  >
+                    Block selected ({selected.size})
+                  </button>
+                  {(query || tag) && (
+                    <button
+                      type="button" className="secondaryButton" disabled={busy || total === 0}
+                      onClick={() => setConfirming({ kind: 'matching', count: total })}
+                    >
+                      Block all matching the search
+                    </button>
+                  )}
+                </>
+              )}
+              {curating && status === 'blocked' && (
+                <button type="button" className="secondaryButton" disabled={busy || selected.size === 0} onClick={() => void unblock([...selected])}>
+                  Unblock selected ({selected.size})
+                </button>
+              )}
             </div>
           )}
-          <form className={css.grow} onSubmit={search} role="search" style={{ display: 'flex', gap: 6 }}>
-            <input
-              className="textInput" aria-label="Search the map" placeholder="Search titles and URLs, e.g. /tag/"
-              value={queryDraft} onChange={e => setQueryDraft(e.target.value)} maxLength={200}
-            />
-            <button type="submit" className="secondaryButton">Search</button>
-          </form>
-          {tag && (
-            <button type="button" className={css.chip} onClick={() => setTag('')} aria-label={`Clear the tag ${tag}`}>tag: {tag} ×</button>
+
+          {confirming && (
+            <div className={css.confirm} role="alertdialog" aria-label="Confirm the block">
+              {confirming.kind === 'matching' && confirming.changed && <span className={css.error}>{confirming.changed}.</span>}
+              <span>
+                Block {pages(confirming.kind === 'selected' ? confirming.urls.length : confirming.count)}
+                {confirming.kind === 'matching' ? ` matching "${[query, tag && `tag ${tag}`].filter(Boolean).join(', ')}"` : ''}? {BLOCK_NOTE}
+              </span>
+              <button type="button" className="secondaryButton" onClick={() => setConfirming(null)} disabled={busy}>Cancel</button>
+              <button type="button" className="primaryButton" onClick={confirmBlock} disabled={busy}>
+                {busy && <Loader2 size={12} className={tc.spin} />} Block
+              </button>
+            </div>
+          )}
+          {notice && <div className={css.notice} role="status">{notice}</div>}
+          {actionError && <div className={css.error} role="alert">{actionError}</div>}
+
+          {load.kind === 'loading' && <div className={tc.state}>Loading the map…</div>}
+          {load.kind === 'off' && <div className={tc.state} role="alert">Tradecraft 2.0 is off for this account: the Map view needs it.</div>}
+          {load.kind === 'denied' && <div className={tc.state} role="alert">You cannot see this map: {load.text}.</div>}
+          {load.kind === 'error' && (
+            <div className={tc.state} role="alert">
+              {load.text}.{' '}<button type="button" className="textButton" onClick={reload}>Retry</button>
+            </div>
+          )}
+          {load.kind === 'ready' && entries.length === 0 && (
+            <div className={tc.state}>
+              {query || tag ? 'No page matches the search.'
+                : status === 'blocked' ? 'No page is blocked.'
+                  : status === 'dropped' ? 'The focus dropped no page.'
+                    : 'No pages in the map yet: refresh the resource to build it.'}
+            </div>
+          )}
+          {load.kind === 'ready' && entries.length > 0 && (
+            <ul className={css.entries}>
+              {entries.map(e => (
+                <li key={e.url} className={css.entry} data-entry={e.url}>
+                  {curating && (
+                    <input
+                      type="checkbox" aria-label={`Select ${e.title || e.url}`} checked={selected.has(e.url)}
+                      onChange={ev => toggle(e.url, ev.target.checked)}
+                    />
+                  )}
+                  <div className={css.entryBody}>
+                    {renaming?.url === e.url ? (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input
+                          className="textInput" aria-label="New title" value={renaming.title} maxLength={300}
+                          onChange={ev => setRenaming({ url: e.url, title: ev.target.value })}
+                        />
+                        <button type="button" className="primaryButton" onClick={saveRename} disabled={busy}>Save title</button>
+                        <button type="button" className="secondaryButton" onClick={() => setRenaming(null)} disabled={busy}>Cancel</button>
+                      </div>
+                    ) : (
+                      <span className={css.entryTitle}>{e.title || '(no title)'}{e.renamed && <span className={css.hint}> (renamed)</span>}</span>
+                    )}
+                    <span className={css.entryUrl}>{e.url}</span>
+                    <div className={css.entryMeta}>
+                      {e.pageId && <span>{e.pageId}</span>}
+                      {e.source && <span>source: {e.source}</span>}
+                      {e.pinned && <span className={tc.badge}>pinned</span>}
+                      {e.stored && <span className={tc.badge}>stored</span>}
+                      {[...e.topics, ...e.kinds, ...e.technologies].map(t => (
+                        <button key={t} type="button" className={css.chip} onClick={() => setTag(t)} aria-label={`Filter by the tag ${t}`}>{t}</button>
+                      ))}
+                    </div>
+                    {e.description && <span className={css.count}>{e.description}</span>}
+                    {e.status === 'dropped' && <span className={css.hint}>dropped{e.reason ? `: ${e.reason}` : ''}</span>}
+                    <div className={css.actions}>
+                      {e.pageId && <button type="button" className="secondaryButton" onClick={() => void view(e)}>View</button>}
+                      {isWebUrl(e.url) && (
+                        <a className="secondaryButton" href={e.url} target="_blank" rel="noopener noreferrer">
+                          <ExternalLink size={12} /> Open on the site
+                        </a>
+                      )}
+                      {e.pageId && status !== 'blocked' && (
+                        <button type="button" className="secondaryButton" onClick={() => void readNow(e)}>Read now</button>
+                      )}
+                      {curating && status === 'kept' && (
+                        <button type="button" className="secondaryButton" onClick={() => setRenaming({ url: e.url, title: e.renamed ? e.title : '' })} disabled={busy}>
+                          Rename
+                        </button>
+                      )}
+                      {curating && status !== 'blocked' && (
+                        <button type="button" className="secondaryButton" onClick={() => void blockOne(e)} disabled={busy}>Block</button>
+                      )}
+                      {curating && status === 'dropped' && (
+                        <button type="button" className="secondaryButton" onClick={() => void restore(e)} disabled={busy}>Restore</button>
+                      )}
+                      {curating && status === 'blocked' && (
+                        <button type="button" className="secondaryButton" onClick={() => void unblock([e.url])} disabled={busy}>Unblock</button>
+                      )}
+                    </div>
+                    {viewing?.entry.url === e.url && <PagePanel viewing={viewing} storageMode={resource.storageMode} onReadNow={() => void readNow(e)} />}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          {load.kind === 'ready' && cursor && (
+            <div style={{ marginTop: 8 }}>
+              <button type="button" className="secondaryButton" onClick={() => void more()} disabled={moreBusy}>
+                {moreBusy && <Loader2 size={12} className={tc.spin} />} Load more
+              </button>
+            </div>
           )}
         </div>
-
-        {curating && status === 'kept' && (
-          <form className={css.toolbar} onSubmit={pin}>
-            <input
-              className={`textInput ${css.grow}`} aria-label="Pin a URL" placeholder="Pin a page by its URL: it stays in the map"
-              value={pinDraft} onChange={e => setPinDraft(e.target.value)} maxLength={2048}
-            />
-            <button type="submit" className="secondaryButton" disabled={busy || !pinDraft.trim()}>Pin</button>
-          </form>
-        )}
-
-        {load.kind === 'ready' && (
-          <div className={css.toolbar}>
-            <span className={css.count} data-testid="tc-map-count">
-              {pages(total)}{query || tag ? ' match' : ''}{sources.length > 0 ? ` · from ${sources.join(', ')}` : ''}
-            </span>
-            {curating && status !== 'blocked' && (
-              <>
-                <button
-                  type="button" className="secondaryButton" disabled={busy || selected.size === 0}
-                  onClick={() => setConfirming({ kind: 'selected', urls: [...selected] })}
-                >
-                  Block selected ({selected.size})
-                </button>
-                {(query || tag) && (
-                  <button
-                    type="button" className="secondaryButton" disabled={busy || total === 0}
-                    onClick={() => setConfirming({ kind: 'matching', count: total })}
-                  >
-                    Block all matching the search
-                  </button>
-                )}
-              </>
-            )}
-            {curating && status === 'blocked' && (
-              <button type="button" className="secondaryButton" disabled={busy || selected.size === 0} onClick={() => void unblock([...selected])}>
-                Unblock selected ({selected.size})
-              </button>
-            )}
-          </div>
-        )}
-
-        {confirming && (
-          <div className={css.confirm} role="alertdialog" aria-label="Confirm the block">
-            {confirming.kind === 'matching' && confirming.changed && <span className={css.error}>{confirming.changed}.</span>}
-            <span>
-              Block {pages(confirming.kind === 'selected' ? confirming.urls.length : confirming.count)}
-              {confirming.kind === 'matching' ? ` matching "${[query, tag && `tag ${tag}`].filter(Boolean).join(', ')}"` : ''}? {BLOCK_NOTE}
-            </span>
-            <button type="button" className="secondaryButton" onClick={() => setConfirming(null)} disabled={busy}>Cancel</button>
-            <button type="button" className="primaryButton" onClick={confirmBlock} disabled={busy}>
-              {busy && <Loader2 size={12} className={tc.spin} />} Block
-            </button>
-          </div>
-        )}
-        {notice && <div className={css.notice} role="status">{notice}</div>}
-        {actionError && <div className={css.error} role="alert">{actionError}</div>}
-
-        {load.kind === 'loading' && <div className={tc.state}>Loading the map…</div>}
-        {load.kind === 'off' && <div className={tc.state} role="alert">Tradecraft 2.0 is off for this account: the Map view needs it.</div>}
-        {load.kind === 'denied' && <div className={tc.state} role="alert">You cannot see this map: {load.text}.</div>}
-        {load.kind === 'error' && (
-          <div className={tc.state} role="alert">
-            {load.text}.{' '}<button type="button" className="textButton" onClick={reload}>Retry</button>
-          </div>
-        )}
-        {load.kind === 'ready' && entries.length === 0 && (
-          <div className={tc.state}>
-            {query || tag ? 'No page matches the search.'
-              : status === 'blocked' ? 'No page is blocked.'
-                : status === 'dropped' ? 'The focus dropped no page.'
-                  : 'No pages in the map yet: refresh the resource to build it.'}
-          </div>
-        )}
-        {load.kind === 'ready' && entries.length > 0 && (
-          <ul className={css.entries}>
-            {entries.map(e => (
-              <li key={e.url} className={css.entry} data-entry={e.url}>
-                {curating && (
-                  <input
-                    type="checkbox" aria-label={`Select ${e.title || e.url}`} checked={selected.has(e.url)}
-                    onChange={ev => toggle(e.url, ev.target.checked)}
-                  />
-                )}
-                <div className={css.entryBody}>
-                  {renaming?.url === e.url ? (
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <input
-                        className="textInput" aria-label="New title" value={renaming.title} maxLength={300}
-                        onChange={ev => setRenaming({ url: e.url, title: ev.target.value })}
-                      />
-                      <button type="button" className="primaryButton" onClick={saveRename} disabled={busy}>Save title</button>
-                      <button type="button" className="secondaryButton" onClick={() => setRenaming(null)} disabled={busy}>Cancel</button>
-                    </div>
-                  ) : (
-                    <span className={css.entryTitle}>{e.title || '(no title)'}{e.renamed && <span className={css.hint}> (renamed)</span>}</span>
-                  )}
-                  <span className={css.entryUrl}>{e.url}</span>
-                  <div className={css.entryMeta}>
-                    {e.pageId && <span>{e.pageId}</span>}
-                    {e.source && <span>source: {e.source}</span>}
-                    {e.pinned && <span className={tc.badge}>pinned</span>}
-                    {e.stored && <span className={tc.badge}>stored</span>}
-                    {[...e.topics, ...e.kinds, ...e.technologies].map(t => (
-                      <button key={t} type="button" className={css.chip} onClick={() => setTag(t)} aria-label={`Filter by the tag ${t}`}>{t}</button>
-                    ))}
-                  </div>
-                  {e.description && <span className={css.count}>{e.description}</span>}
-                  {e.status === 'dropped' && <span className={css.hint}>dropped{e.reason ? `: ${e.reason}` : ''}</span>}
-                  <div className={css.actions}>
-                    {e.pageId && <button type="button" className="secondaryButton" onClick={() => void view(e)}>View</button>}
-                    {isWebUrl(e.url) && (
-                      <a className="secondaryButton" href={e.url} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink size={12} /> Open on the site
-                      </a>
-                    )}
-                    {e.pageId && status !== 'blocked' && (
-                      <button type="button" className="secondaryButton" onClick={() => void readNow(e)}>Read now</button>
-                    )}
-                    {curating && status === 'kept' && (
-                      <button type="button" className="secondaryButton" onClick={() => setRenaming({ url: e.url, title: e.renamed ? e.title : '' })} disabled={busy}>
-                        Rename
-                      </button>
-                    )}
-                    {curating && status !== 'blocked' && (
-                      <button type="button" className="secondaryButton" onClick={() => void blockOne(e)} disabled={busy}>Block</button>
-                    )}
-                    {curating && status === 'dropped' && (
-                      <button type="button" className="secondaryButton" onClick={() => void restore(e)} disabled={busy}>Restore</button>
-                    )}
-                    {curating && status === 'blocked' && (
-                      <button type="button" className="secondaryButton" onClick={() => void unblock([e.url])} disabled={busy}>Unblock</button>
-                    )}
-                  </div>
-                  {viewing?.entry.url === e.url && <PagePanel viewing={viewing} storageMode={resource.storageMode} onReadNow={() => void readNow(e)} />}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-        {load.kind === 'ready' && cursor && (
-          <div style={{ marginTop: 8 }}>
-            <button type="button" className="secondaryButton" onClick={() => void more()} disabled={moreBusy}>
-              {moreBusy && <Loader2 size={12} className={tc.spin} />} Load more
-            </button>
-          </div>
-        )}
-      </div>
-    </Modal>
+      </Modal>
+    </div>
   )
 }
 

@@ -28,39 +28,42 @@ export function RefreshAllConfirm({ resources, busy = false, error = '', onConfi
   })
   const chosen = resources.filter(r => ticked.has(r.id)).map(r => r.id)
   return (
-    <Modal
-      isOpen
-      onClose={busy ? () => {} : onCancel}
-      title="Save & refresh all"
-      closeOnOverlayClick={false}
-      footer={(
-        <div className={css.footer}>
-          {error && <span className={tc.failure} role="alert">{error}</span>}
-          <span className={css.footerSpacer} />
-          <button type="button" className="secondaryButton" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button type="button" className="primaryButton" onClick={() => onConfirm(chosen)} disabled={busy || chosen.length === 0}>
-            {busy && <Loader2 size={14} className={tc.spin} />} Save &amp; refresh {chosen.length}
-          </button>
-        </div>
-      )}
-    >
-      {resources.length === 0 ? (
-        <p className={tc.state}>No enabled resource to refresh: Save keeps the settings for the next add or refresh.</p>
-      ) : (
-        <>
-          <p className={tc.hint}>Saves the settings, then refreshes {chosen.length} of {resources.length} enabled resources with them. {BUDGET_NOTE}</p>
-          <ul aria-label="Resources to refresh" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {resources.map(r => (
-              <li key={r.id}>
-                <label className={css.inline}>
-                  <input type="checkbox" checked={ticked.has(r.id)} onChange={e => toggle(r.id, e.target.checked)} disabled={busy} />
-                  <span>{r.name}</span>
-                </label>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-    </Modal>
+    // An Escape that closes the confirmation must not reach Configure ingestion behind it.
+    <div onKeyDown={e => { if (e.key === 'Escape') e.stopPropagation() }}>
+      <Modal
+        isOpen
+        onClose={busy ? () => {} : onCancel}
+        title="Save & refresh all"
+        closeOnOverlayClick={false}
+        footer={(
+          <div className={css.footer}>
+            {error && <span className={tc.failure} role="alert">{error}</span>}
+            <span className={css.footerSpacer} />
+            <button type="button" className="secondaryButton" onClick={onCancel} disabled={busy}>Cancel</button>
+            <button type="button" className="primaryButton" onClick={() => onConfirm(chosen)} disabled={busy || chosen.length === 0}>
+              {busy && <Loader2 size={14} className={tc.spin} />} Save &amp; refresh {chosen.length}
+            </button>
+          </div>
+        )}
+      >
+        {resources.length === 0 ? (
+          <p className={tc.state}>No enabled resource to refresh: Save keeps the settings for the next add or refresh.</p>
+        ) : (
+          <>
+            <p className={tc.hint}>Saves the settings, then refreshes {chosen.length} of {resources.length} enabled resources with them. {BUDGET_NOTE}</p>
+            <ul aria-label="Resources to refresh" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {resources.map(r => (
+                <li key={r.id}>
+                  <label className={css.inline}>
+                    <input type="checkbox" checked={ticked.has(r.id)} onChange={e => toggle(r.id, e.target.checked)} disabled={busy} />
+                    <span>{r.name}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </Modal>
+    </div>
   )
 }

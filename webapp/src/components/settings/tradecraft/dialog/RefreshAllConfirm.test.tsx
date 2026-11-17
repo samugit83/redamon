@@ -29,6 +29,15 @@ describe('RefreshAllConfirm', () => {
     expect(screen.getByRole('button', { name: 'Save & refresh 0' })).toBeDisabled()
   })
 
+  test('Escape closes the confirmation only, not Configure ingestion behind it', () => {
+    const onCancel = vi.fn()
+    const outer = vi.fn()
+    render(<div onKeyDown={outer}><RefreshAllConfirm resources={RESOURCES} onConfirm={vi.fn()} onCancel={onCancel} /></div>)
+    fireEvent.keyDown(screen.getByRole('checkbox', { name: 'Blog' }), { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(outer).not.toHaveBeenCalled()
+  })
+
   test('Cancel changes nothing; no enabled resource says so', () => {
     const onCancel = vi.fn()
     render(<RefreshAllConfirm resources={[]} onConfirm={vi.fn()} onCancel={onCancel} />)

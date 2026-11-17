@@ -46,6 +46,7 @@ describe('IngestionReport', () => {
 
   test('the summary leaves out what a report does not hold; stop codes in words; Auto\'s own line kept', () => {
     expect(reportSummary({ visited: 40, kept: 31, stopReason: 'frontier_empty' })).toBe('40 visited, 31 kept, stopped: frontier_empty')
+    expect(reportSummary({ ...REPORT, stopReason: 'max_pages' }, true)).toBe('4,800 visited, 120 kept, stopped: max_pages')
     expect(stopText('frontier_empty')).toBe('every link was visited (frontier_empty)')
     expect(stopText('auto: robots (21 pages)')).toBe('auto: robots (21 pages)')
     expect(focusText({ mode: 'tag_only' })).toBe('Tag only: nothing dropped')
