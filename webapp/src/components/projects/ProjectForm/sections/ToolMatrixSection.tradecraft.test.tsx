@@ -1,7 +1,8 @@
 /**
- * The Tool Matrix's tradecraft row (Q3, T7.5; R-321): one row, named by `tradecraft_lookup`, which
- * says it also governs `tradecraft_search` and `tradecraft_ask`; no row of their own, so the phase
- * map keys are unchanged.
+ * The Tool Matrix's tradecraft row (Q3, T7.5; R-321, R-I5): one row, named by `tradecraft_lookup`,
+ * which says it also governs `tradecraft_search` and `tradecraft_ask` when the project owner has
+ * Tradecraft 2.0 on, and is as before with it off; no row of their own, so the phase map keys are
+ * unchanged.
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
@@ -21,7 +22,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 describe('the tradecraft row of the Tool Matrix', () => {
   test('matrix_row_text: it names the three tradecraft tools; the other two have no row', async () => {
     const updateField = vi.fn()
-    render(<ToolMatrixSection data={{ agentToolPhaseMap: { tradecraft_lookup: ['informational'] } } as never} updateField={updateField} />)
+    render(<ToolMatrixSection data={{ agentToolPhaseMap: { tradecraft_lookup: ['informational'] } } as never} updateField={updateField} tradecraftV2 />)
     const note = await screen.findByTestId('tool-row-note-tradecraft_lookup')
     expect(note).toHaveTextContent(TOOL_ROW_NOTES.tradecraft_lookup)
     for (const tool of ['tradecraft_lookup', 'tradecraft_search', 'tradecraft_ask']) expect(note.parentElement).toHaveTextContent(tool)
@@ -32,5 +33,15 @@ describe('the tradecraft row of the Tool Matrix', () => {
     const row = note.closest('div')!
     fireEvent.click(row.querySelectorAll('input[type="checkbox"]')[1])
     expect(updateField).toHaveBeenCalledWith('agentToolPhaseMap', { tradecraft_lookup: ['informational', 'exploitation'] })
+  })
+
+  test('switch off (R-I5): no note, the row reads as before', async () => {
+    for (const props of [{}, { tradecraftV2: false }]) {
+      render(<ToolMatrixSection data={{ agentToolPhaseMap: { tradecraft_lookup: ['informational'] } } as never} updateField={vi.fn()} {...props} />)
+      await screen.findByText('tradecraft_lookup')
+      expect(screen.queryByTestId('tool-row-note-tradecraft_lookup')).toBeNull()
+      expect(screen.queryByText(/tradecraft_ask/)).toBeNull()
+      cleanup()
+    }
   })
 })

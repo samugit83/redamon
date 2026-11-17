@@ -1738,7 +1738,7 @@ export function ProjectForm({
         )}
 
         {activeTab === 'toolmatrix' && (
-          <ToolMatrixSection data={formData} updateField={updateField} />
+          <ToolMatrixSection data={formData} updateField={updateField} tradecraftV2={tradecraftV2} />
         )}
 
         {activeTab === 'attack' && (

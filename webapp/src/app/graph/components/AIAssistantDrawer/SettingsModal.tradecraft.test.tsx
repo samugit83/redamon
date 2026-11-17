@@ -21,9 +21,10 @@ const ROW = {
   details: { url: 'https://wiki.tc-fixture.test/', mapVersion: 3, stale: false, focus: {}, summary: 's', summarySource: 'generated', report: null, ingestedWith: {}, hasLogin: false, lastError: '' },
 }
 
-function draw(v2: boolean, modal: 'attack' | 'agent' = 'attack') {
+function draw(v2: boolean, modal: 'attack' | 'agent' | 'toolmatrix' = 'attack') {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
-    url === '/api/projects/p1/tradecraft' ? { v2, viewerIsOwner: true, resources: v2 ? [ROW] : [], counts: null } : [],
+    url === '/api/projects/p1/tradecraft' ? { v2, viewerIsOwner: true, resources: v2 ? [ROW] : [], counts: null }
+      : url.endsWith('/mcp') ? { servers: [] } : [],
   ), { status: 200 })))
   const updateProjectField = vi.fn()
   const data = { attackSkillConfig: { builtIn: { xss: true }, user: {} }, tradecraftOff: [] } as unknown as ProjectFormData
@@ -67,5 +68,15 @@ describe('SettingsModal and Tradecraft', () => {
     draw(true, 'agent')
     expect(screen.getByRole('heading', { name: 'Agent Behaviour' })).toBeInTheDocument()
     expect(vi.mocked(fetch).mock.calls.some(c => c[0] === '/api/projects/p1/tradecraft')).toBe(false)
+  })
+
+  test('the Tool Matrix window: the tradecraft row\'s note with 2.0 on only (T7.5, R-I5)', async () => {
+    draw(true, 'toolmatrix')
+    expect(await screen.findByTestId('tool-row-note-tradecraft_lookup')).toHaveTextContent('tradecraft_search and tradecraft_ask')
+    cleanup()
+    draw(false, 'toolmatrix')
+    await screen.findByText('tradecraft_lookup')
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(c => c[0] === '/api/projects/p1/tradecraft')).toBe(true))
+    expect(screen.queryByTestId('tool-row-note-tradecraft_lookup')).toBeNull()
   })
 })
