@@ -210,3 +210,67 @@ def test_archive_url_quotes_the_branch():
     assert github_archive.archive_url("o", "r", "feat/x y") == \
         "https://github.com/o/r/archive/refs/heads/feat/x%20y.tar.gz"
     assert github_archive.repo_path("payloads-main/a/b.md") == "a/b.md" and github_archive.repo_path("x") == ""
+
+
+def test_a_cancelled_job_ends_the_unpacking_at_once():
+    """A job cancelled while the worker thread still reads the archive: the thread gets the end
+    of the stream at once (no wait for the request timeout)."""
+    import threading
+    import time
+
+    started, finished = threading.Event(), threading.Event()
+    real_unpack = github_archive.unpack
+
+    def slow_unpack(source, *args, **kwargs):
+        started.set()
+        try:
+            return real_unpack(source, *args, **kwargs)
+        finally:
+            finished.set()
+
+    class Hanging(FixtureFetcher):
+        def stream(self, url, **kw):
+            fetcher = self
+
+            class _Ctx:
+                async def __aenter__(self):
+                    resp = await FixtureFetcher.get(fetcher, url, **kw)
+
+                    async def never():
+                        yield resp.body[:10]
+                        await asyncio.Event().wait()
+
+                    s = net.Streamed.of(resp)
+                    s._source = never()
+                    return s
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            return _Ctx()
+
+    async def go():
+        with net.use_fetcher(Hanging()):
+            task = asyncio.create_task(github_archive.read(
+                "tc-fixture", "payloads", "main", EffectiveSettings({"fetching.requestTimeoutSec": 300}),
+                github_token=None, wanted={"README.md"}, max_file_bytes=1000, max_total_bytes=10_000, max_files=10))
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The agent's loop runs on (asyncio.run's own teardown would wake the thread itself).
+            for _ in range(500):
+                if finished.is_set():
+                    return True
+                await asyncio.sleep(0.01)
+            return False
+
+    github_archive.unpack = slow_unpack
+    try:
+        t0 = time.monotonic()
+        assert asyncio.run(go()), "the worker thread was left waiting for the request timeout"
+        assert time.monotonic() - t0 < 30
+    finally:
+        github_archive.unpack = real_unpack

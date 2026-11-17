@@ -193,9 +193,11 @@ async def read(owner: str, repo: str, branch: str, settings: EffectiveSettings, 
             await queue.put(b"")  # the end: the thread reads it as the end of the archive
 
         def pull() -> bytes:
+            waiting = asyncio.run_coroutine_threadsafe(queue.get(), loop)
             try:
-                return asyncio.run_coroutine_threadsafe(queue.get(), loop).result(timeout=wait)
+                return waiting.result(timeout=wait)
             except Exception as exc:  # a stall, or the loop closing under a job that ended
+                waiting.cancel()
                 raise _Stalled() from exc
 
         producer = asyncio.create_task(produce())
@@ -207,6 +209,10 @@ async def read(owner: str, repo: str, branch: str, settings: EffectiveSettings, 
             producer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await producer
+            # A job cancelled while the thread still reads: it gets the end at once, not a stall.
+            while not queue.empty():
+                queue.get_nowait()
+            queue.put_nowait(b"")
         got.archive_bytes = resp.received
         if stopped:
             got.error = "cancelled"
