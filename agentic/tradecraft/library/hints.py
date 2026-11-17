@@ -353,17 +353,19 @@ def _spent(item: Optional[dict], read: set[str]) -> bool:
 
 def _stale(item: Optional[dict], facts: str, read: set[str]) -> bool:
     """Whether a step's search must run (again): never run for these facts, every page it kept
-    read, or failed and not yet retried ``MAX_RETRIES`` times."""
-    return (item is None or item["facts"] != facts or _spent(item, read)
-            or 0 < item.get("failures", 0) <= MAX_RETRIES)
+    read (unless that search is failing: then the retries decide), or failed and not yet retried
+    ``MAX_RETRIES`` times."""
+    failures = item.get("failures", 0) if item else 0
+    return (item is None or item["facts"] != facts or (failures == 0 and _spent(item, read))
+            or 0 < failures <= MAX_RETRIES)
 
 
 async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus: profile.Focus,
-                   reasons: Sequence[str], read: set[str], cap: int) -> dict:
+                   reasons: Sequence[str], read: set[str], cap: int) -> tuple[dict, bool]:
     """Searches the steps (and the confirmed CVE ids) that have no pages for the current facts, or
-    whose kept pages were all read, in one round under one time limit. A step that cannot be
-    searched (the cap, an error, the time limit) keeps the pages it had, which still fit it, or
-    gets a notice."""
+    whose kept pages were all read, in one round under one time limit; returns the entry and
+    whether a search ran. A step that cannot be searched (the cap, an error, the time limit) keeps
+    the pages it had, which still fit it, with the notice that shows once they are all read."""
     facts = facts_key(focus, catalog)
     old = {x["key"]: x for x in entry["searched"]}
     searched: list[dict] = []
@@ -417,11 +419,10 @@ async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus
             same = bool(had) and (had.get("ids") == item.get("ids") or bool(item["key"]))
             # Counted for the same facts only: other facts make a new search, with its own retries.
             item["failures"] = (had.get("failures", 0) if same and had["facts"] == item["facts"] else 0) + 1
+            item["notice"] = "error"
             if same and had["rows"]:
                 item["rows"] = had["rows"]  # the same step: its pages still fit it
-            else:
-                item["notice"] = "error"
-    return {**entry, "searched": searched}
+    return {**entry, "searched": searched}, bool(jobs)
 
 
 def assemble(focus: profile.Focus, entry: dict, read: set[str]) -> list[dict]:
@@ -460,8 +461,8 @@ async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[
             reasons = profile.changes(previous, current)
             entry = _in_catalog(_entry_of(saved), catalog)
             read = set(collector.drain()["tradecraft_seen_pages"])
-            entry = await _refresh(entry, catalog, settings, current, reasons, read,
-                                   goal_cap(max_iterations_of(state)))
+            entry, searched = await _refresh(entry, catalog, settings, current, reasons, read,
+                                             goal_cap(max_iterations_of(state)))
             rows = assemble(current, entry, read)
             steps = [*current.steps, *([("finding", ", ".join(entry["cve"]["ids"]))] if entry["cve"] else [])]
             shown = sorted(rows, key=lambda r: ORDER.index(r["step"]))
@@ -480,7 +481,9 @@ async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[
                 logger.info(f"[tradecraft] library_now shown={entry['shown']} block={block_n} "
                             f"pages={','.join(entry['displayed'])}")
             focus = current.to_log()
-            if not reasons and not note and focus == saved.get("focus"):
+            # Saved whenever a search ran, an empty one included: a step searched again for nothing
+            # new is not searched again until its facts change, and a failure counts its retries.
+            if not searched and not reasons and not note and focus == saved.get("focus"):
                 return None, {}
             collector.set_library_now({**entry, "focus": focus})
             return note, collector.drain()

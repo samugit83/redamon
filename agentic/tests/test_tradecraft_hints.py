@@ -623,6 +623,93 @@ def test_a_resume_with_another_catalog_searches_the_step_again():
     assert len(index.calls) > calls and pages_of(again) and all(p.startswith("patt:") for p in pages_of(again))
 
 
+def read_all(st, pages):
+    for page in pages:
+        st = read_page(st, page)
+    return st
+
+
+class Counting:
+    """An index that answers like ``inner`` and counts its calls, or fails while ``down``."""
+
+    def __init__(self, inner):
+        self.inner, self.down, self.searches = inner, False, 0
+
+    async def rows(self, name, params):
+        if name in ("entries_text", "entries_entities"):
+            self.searches += 1
+        if self.down:
+            raise RuntimeError("down")
+        return await self.inner.rows(name, params)
+
+
+def test_a_library_down_after_a_full_set_was_read_says_so_and_stops_retrying():
+    """Round-3 review: a step whose six kept pages were all read is searched again; when that search
+    fails, the notice says so, and the search is retried at most ``MAX_RETRIES`` times."""
+    index = Counting(library(n=20))
+    st = state(todo_list=[todo("Confirm time based blind SQLi", "in_progress")])
+    _, updates = now(st, index=index)
+    st = read_all({**st, **updates}, [f"patt:{400 + n}" for n in range(1, 7)])
+    index.down = True
+    for attempt in range(1 + hints.MAX_RETRIES):
+        before = index.searches
+        note, updates = now(st, index=index)
+        st = {**st, **updates}
+        assert note == hints.NOTICES["error"] and index.searches > before, attempt
+    before = index.searches
+    note, _ = now(st, index=index)
+    assert note == hints.NOTICES["error"] and index.searches == before
+
+
+def test_a_full_set_with_nothing_new_is_searched_once_until_the_facts_change():
+    """A library of exactly six fitting pages: once they are read, one search finds nothing new, and
+    none runs again until the facts change."""
+    index = Counting(library(n=6))
+    st = state(todo_list=[todo("Confirm time based blind SQLi", "in_progress")])
+    _, updates = now(st, index=index)
+    st = read_all({**st, **updates}, [f"patt:{400 + n}" for n in range(1, 7)])
+    before = index.searches
+    note, updates = now(st, index=index)
+    st = {**st, **updates}
+    assert note is None and index.searches > before
+    before = index.searches
+    for _ in range(3):
+        note, updates = now(st, index=index)
+        st = {**st, **updates}
+        assert note is None and index.searches == before
+    note, _ = now({**st, "target_info": {"technologies": ["PostgreSQL", "nginx"], "vulnerabilities": []}}, index=index)
+    assert index.searches > before
+
+
+def test_the_cve_search_after_its_pages_were_read_follows_the_same_rules():
+    cve_rows = [row(50 + n, entities=["CVE-2023-1234"]) for n in range(1, 7)]
+    index = Counting(Index({"entries_text": [], "entries_entities": cve_rows}))
+    st = state(chain_findings_memory=CONFIRMED)
+    note, updates = now(st, index=index)
+    assert step_lines(note) == ['  confirmed finding: "CVE-2023-1234"']
+    st = read_all({**st, **updates}, [f"patt:{450 + n}" for n in range(1, 7)])
+    before = index.searches
+    note, updates = now(st, index=index)
+    st = {**st, **updates}
+    assert note is None and index.searches > before
+    before = index.searches
+    note, updates = now(st, index=index)
+    assert note is None and index.searches == before
+    # The library down instead: the notice, and the retries stop.
+    index = Counting(Index({"entries_text": [], "entries_entities": cve_rows}))
+    st = state(chain_findings_memory=CONFIRMED)
+    _, updates = now(st, index=index)
+    st = read_all({**st, **updates}, [f"patt:{450 + n}" for n in range(1, 7)])
+    index.down = True
+    for attempt in range(1 + hints.MAX_RETRIES):
+        before = index.searches
+        note, updates = now(st, index=index)
+        st = {**st, **updates}
+        assert note == hints.NOTICES["error"] and index.searches > before, attempt
+    before = index.searches
+    assert now(st, index=index)[0] == hints.NOTICES["error"] and index.searches == before
+
+
 # --------------------------------------------------------------------------------------
 # Planted CVE ids (AC-74)
 # --------------------------------------------------------------------------------------
