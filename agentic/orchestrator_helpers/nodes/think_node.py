@@ -261,6 +261,21 @@ def build_system_message_content(system_prompt: str, llm, anthropic_caching: boo
     return content
 
 
+def think_messages(system_message_content, hint_note=None) -> list:
+    """The think call's messages: one system message, then the ask.
+
+    A Tradecraft hint note (T8.1) goes at the end of that one system message, after the cache
+    tiers: a second system message is refused by chat templates that allow a single leading one,
+    and the provider's 400 would end the run.
+    """
+    from tradecraft.library.hints import with_note
+
+    return [
+        SystemMessage(content=with_note(system_message_content, hint_note)),
+        HumanMessage(content="Based on the current state, what is your next action? Output EXACTLY ONE valid JSON object and nothing else. Do NOT simulate tool execution - you will receive actual tool output after submitting your decision. Do NOT output multiple JSON objects or continue the conversation - just ONE decision JSON.")
+    ]
+
+
 def scope_guardrail_section() -> str:
     """The SCOPE GUARDRAIL block of the system prompt, or '' when there is no
     scope to show and the guardrail is off.
@@ -1025,20 +1040,13 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     system_message_content = build_system_message_content(
         system_prompt, llm, get_setting('ANTHROPIC_PROMPT_CACHING_ENABLED', True))
 
-    # Get LLM decision with retry on parse failures
-    messages = [
-        SystemMessage(content=system_message_content),
-        HumanMessage(content="Based on the current state, what is your next action? Output EXACTLY ONE valid JSON object and nothing else. Do NOT simulate tool execution - you will receive actual tool output after submitting your decision. Do NOT output multiple JSON objects or continue the conversation - just ONE decision JSON.")
-    ]
-
-    # Tradecraft 2.0 library hints (T8.1): a system note of its own at a checkpoint of the attack.
-    # Second, not last: the Anthropic adapter refuses a system message after the human one, and
-    # after the system prompt the cached prefix stays whole.
+    # Tradecraft 2.0 library hints (T8.1): a note at a checkpoint of the attack.
     from tradecraft.library.hints import maybe_hint
     from tradecraft.runtime import bound_catalog
     _tc_note, _tc_hint_updates = await maybe_hint(state, bound_catalog())
-    if _tc_note:
-        messages.insert(1, SystemMessage(content=_tc_note))
+
+    # Get LLM decision with retry on parse failures
+    messages = think_messages(system_message_content, _tc_note)
 
     max_retries = get_setting('LLM_PARSE_MAX_RETRIES', 3)
     decision = None

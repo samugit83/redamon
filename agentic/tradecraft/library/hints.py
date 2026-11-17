@@ -9,10 +9,12 @@ CVE id as an entity. They run through the free first pass (Q7.2) with the run's 
 the match strictness, already suggested or already read are dropped, and the best
 ``constants.pagesPerHint`` (3) remain.
 
-The note is its own system message, never part of a tool result. Its trusted lines hold only page
-IDs and names from the fixed lists (topics, technologies, "WAF seen");
-titles and breadcrumbs come from the sites, so they sit inside an untrusted block (R-363). CVE ids,
-which a target can plant, are searched but never named in the note (Q6).
+The note is in the system role, never part of a tool result, and apart from the base prompt's text:
+``with_note`` puts it at the end of the think call's one system message, a text block of its own
+after the prompt's cache tiers, or a trailing section of a plain prompt (R-363). Its trusted lines
+hold only page IDs and names from the fixed lists (topics, technologies, "WAF seen"); titles and
+breadcrumbs come from the sites, so they sit inside an untrusted block. CVE ids, which a target can
+plant, are searched but never named in the note (Q6).
 
 Limits: one note per think, ``hints.perRun`` notes per run counted on the run's collector (whose
 values the think node returns with the state), never the same page twice. The skill line of T5.4
@@ -124,6 +126,19 @@ async def _suggestions(catalog: Any, queries: Sequence[str], current: profile.Pr
 def _clip(text: str, limit: int) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def with_note(system_content: Any, note: Optional[str]) -> Any:
+    """The think call's system content with the hint note at its end: a text block of its own after
+    the prompt's tiers (no cache_control, so every cached prefix stays as it was), or a trailing
+    section of a plain prompt. Always one system message: a chat template that allows one leading
+    system message (vLLM, LM Studio and llama.cpp serving Gemma 3, Mistral or Llama 2) answers a
+    second one with HTTP 400, which is never retried and would end the run."""
+    if not note:
+        return system_content
+    if isinstance(system_content, list):
+        return [*system_content, {"type": "text", "text": note}]
+    return f"{system_content}\n\n{note}" if system_content else note
 
 
 def render_note(current: profile.Profile, cards: Sequence[Card], has_ask: bool) -> str:

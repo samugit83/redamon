@@ -139,17 +139,39 @@ def test_note_format():
     assert not any("time based payloads" in ln for ln in trusted)
 
 
-def test_note_is_system_message():
-    """The note is its own system message, right after the system prompt (never in a tool result):
-    a system message after the human one is refused by the Anthropic adapter."""
+def _think_module():
     import orchestrator_helpers.nodes.think_node  # noqa: F401
-    think = sys.modules["orchestrator_helpers.nodes.think_node"]
+    return sys.modules["orchestrator_helpers.nodes.think_node"]
+
+
+TIERED = "persona {0} skills {1} phase tools {2} current state"
+
+
+def _contents():
+    """The two shapes of the think call's system content: Anthropic's cache tiers, a plain string."""
+    from prompts.base import CACHE_MARKERS
+
+    class ChatAnthropic:  # build_system_message_content checks the class name
+        pass
+
+    think = _think_module()
+    prompt = TIERED.format(*CACHE_MARKERS)
+    return {"tiers": think.build_system_message_content(prompt, ChatAnthropic(), True),
+            "string": think.build_system_message_content(prompt, object(), True)}
+
+
+def test_note_is_system_message():
+    """R-363 (card correction): the note is in the system role, never in a tool result, and apart
+    from the base prompt's text: a block of its own after the cache tiers, or a trailing section of
+    a plain prompt, in the think call's one system message."""
+    think = _think_module()
     src = inspect.getsource(think.think_node)
-    built = src.index("    messages = [\n        SystemMessage(content=system_message_content),")
+    content = src.index("system_message_content = build_system_message_content(")
     hook = src.index("_tc_note, _tc_hint_updates = await maybe_hint(state, bound_catalog())")
-    insert = src.index("messages.insert(1, SystemMessage(content=_tc_note))")
+    built = src.index("messages = think_messages(system_message_content, _tc_note)")
     loop = src.index("for attempt in range(max_retries):")
-    assert built < hook < insert < loop
+    assert content < hook < built < loop
+    assert "SystemMessage(content=_tc_note)" not in inspect.getsource(think)
     updates_at = src.index("    updates = {\n        \"current_iteration\": iteration,")
     merged = src.index("updates.update(_tc_hint_updates)")
     assert updates_at < merged < src.index("return updates")
@@ -160,16 +182,56 @@ def test_note_is_system_message():
         member = importlib.import_module("orchestrator_helpers.nodes.fireteam_member_think_node")
     assert "maybe_hint" not in inspect.getsource(member)
 
-    from langchain_anthropic.chat_models import _format_messages
-    from langchain_core.messages import HumanMessage, SystemMessage
-
     note, _ = hint(state())
-    cached = [{"type": "text", "text": "system prompt", "cache_control": {"type": "ephemeral"}}]
-    messages = [SystemMessage(content=cached), HumanMessage(content="next action?")]
-    messages.insert(1, SystemMessage(content=note))
-    system, rest = _format_messages(messages, model="claude-x")
-    assert system[0]["cache_control"] == {"type": "ephemeral"} and system[1]["text"] == note
-    assert rest == [{"role": "user", "content": "next action?"}]
+    for shape, base in _contents().items():
+        plain = think.think_messages(base)
+        messages = think.think_messages(base, note)
+        assert [m.type for m in messages] == ["system", "human"], shape
+        assert messages[1].content == plain[1].content
+        if shape == "tiers":
+            # The cached tiers are untouched; the note is one more block, with no cache_control.
+            assert messages[0].content[:-1] == plain[0].content
+            assert messages[0].content[-1] == {"type": "text", "text": note}
+        else:
+            assert messages[0].content == plain[0].content + "\n\n" + note
+    assert think.think_messages(_contents()["string"], None)[0].content == _contents()["string"]
+
+
+def _alternates(roles):
+    """The rule of the chat templates that allow one leading system message (Mistral, Gemma 3,
+    Llama 2, as vLLM, LM Studio and llama.cpp render them): then user, assistant, user, ..."""
+    rest = roles[1:] if roles and roles[0] == "system" else roles
+    return all(role == ("user" if i % 2 == 0 else "assistant") for i, role in enumerate(rest))
+
+
+def test_one_system_message_for_every_adapter():
+    """Finding 1 of S12's review: with a hint, every adapter the agent builds still sends one
+    system message, and a strict chat template still accepts the roles."""
+    from agent_in_the_loop.prompt_doc import to_parts
+    from langchain_anthropic.chat_models import _format_messages
+    from langchain_aws.chat_models.bedrock_converse import _messages_to_bedrock
+    from langchain_google_genai.chat_models import _parse_chat_history
+    from langchain_openai.chat_models.base import _convert_message_to_dict
+
+    think = _think_module()
+    note, _ = hint(state())
+    assert note
+    for shape, base in _contents().items():
+        messages = think.think_messages(base, note)
+        roles = [_convert_message_to_dict(m)["role"] for m in messages]
+        assert roles == ["system", "user"] and _alternates(roles), shape
+        system, rest = _format_messages(messages, model="claude-x")
+        plain_system, _ = _format_messages(think.think_messages(base), model="claude-x")
+        assert len(rest) == 1 and rest[0]["role"] == "user", shape
+        if shape == "tiers":
+            assert system[:-1] == plain_system and system[-1] == {"type": "text", "text": note}
+        else:
+            assert system == plain_system + "\n\n" + note
+        instruction, history = _parse_chat_history(messages)
+        assert instruction is not None and len(history) == 1 and history[0].role == "user", shape
+        bedrock_messages, bedrock_system = _messages_to_bedrock(messages)
+        assert [m["role"] for m in bedrock_messages] == ["user"] and note in bedrock_system[-1]["text"], shape
+        assert [m.role for m in to_parts(messages)] == ["system", "user"], shape
 
 
 def test_no_ask_line_with_search_only():
