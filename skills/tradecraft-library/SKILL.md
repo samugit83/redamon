@@ -13,7 +13,7 @@ description: >
 license: MIT
 metadata:
   author: redamon
-  version: "1.0.0"
+  version: "1.0.1"
   scope: [root, agentic, webapp]
   auto_invoke:
     - "Editing Tradecraft (agentic/tradecraft, lib/tradecraft, the tradecraft routes or components)"
@@ -35,12 +35,16 @@ this skill holds only the rules a change must keep. Authorization of the routes 
 
 ## Critical Rules
 
-- **NEVER write a page-store statement that is not keyed by the owner and the resource.** Every
-  statement is a named entry of `STATEMENTS` in [agentic/tradecraft/store.py](../../agentic/tradecraft/store.py)
-  (or [library/search_sql.py](../../agentic/tradecraft/library/search_sql.py)), takes `user_id` and the
-  resource id, and reads entries, sections and the tree joined to the resource row's live
-  `generation`: no caller names a generation except the job writing its own. A statement that cannot
-  be keyed goes in `UNKEYED_STATEMENTS` with its reason. On the webapp, a resource is read only by
+- **NEVER write a page-store statement that is not keyed by the owner and the resource.** The SQL
+  lives in four places only: `STATEMENTS` in [agentic/tradecraft/store.py](../../agentic/tradecraft/store.py),
+  [library/search_sql.py](../../agentic/tradecraft/library/search_sql.py), the conversion's own
+  `STATEMENTS` in [convert.py](../../agentic/tradecraft/convert.py) and `COVERAGE_SQL` in
+  [library/coverage.py](../../agentic/tradecraft/library/coverage.py). Each statement takes `user_id`
+  and the resource id (or the run catalog's resource ids), and reads entries, sections and the tree
+  joined to the resource row's live `generation`: no caller names a generation except the job writing
+  its own. A statement that cannot be keyed by one owner goes in its module's `UNKEYED_STATEMENTS`
+  with its reason (today `store.py`'s install total and expired-lease scan, `convert.py`'s
+  `sweep_users`); a new place for SQL is a new place every reviewer must know. On the webapp, a resource is read only by
   its id **and** the path's account (`loadOwnResource` in
   [resourceAccess.ts](../../webapp/src/lib/tradecraft/resourceAccess.ts)). Failed before:
   `522b9f7e` (an administrator read another account's page text and map), `85616179` (one search
@@ -103,7 +107,7 @@ this skill holds only the rules a change must keep. Authorization of the routes 
 | --- | --- |
 | A pipeline stage | `agentic/tradecraft/ingest/<stage>.py`, wired in `agentic/tradecraft/ingest/pipeline.py` and `contract.JOB_STAGES` |
 | A body crossing webapp ↔ agent | `agentic/tradecraft/contract.py` and `webapp/src/lib/tradecraft/agentContract.ts`, plus a fixture in `agentic/tests/fixtures/tradecraft_contract/` |
-| A page-store statement | `STATEMENTS` in `agentic/tradecraft/store.py` |
+| A page-store statement | `STATEMENTS` in `agentic/tradecraft/store.py`; a search one in `agentic/tradecraft/library/search_sql.py` |
 | What a run may read | `webapp/src/lib/tradecraft/catalog.ts` |
 | What a non-owner sees of a project's resources | `webapp/src/lib/tradecraft/projectView.ts` |
 | A setting | `webapp/src/lib/tradecraft/settingsSpec.json`, then the generator |

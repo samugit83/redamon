@@ -116,12 +116,14 @@ RUN PRISMA_VER=$(node -p "require('/tmp/prisma-pkg.json').version") && \
 #             added first with the value existing rows must keep, because the
 #             push would fill them with the new default (the JS Recon TruffleHog
 #             switch, off in the projects that predate it).
-#   AFTER   — the push would also drop the FTS objects (the traffic index and the
-#             Tradecraft search triggers), the ingest role and the
+#   AFTER   — the push would also drop the FTS objects, the ingest role and the
 #             engagement append-only trigger, so those are re-applied
 #             immediately afterwards (§6.3). The trigger is what makes "an
 #             authorization record cannot be rewritten" enforcement rather than
-#             a model comment. The plugin tables' one-active index and CHECK
+#             a model comment. The Tradecraft search triggers survive the push but
+#             need the tables it creates, and a release may change them, so their
+#             script runs after it and changes only what differs. The plugin
+#             tables' one-active index and CHECK
 #             constraints are re-checked here too (never fatal: the stores
 #             enforce the same rules). Row fix-ups that need the pushed columns
 #             (clamp-triage-review-budget, the one-time user-skill toggle,
