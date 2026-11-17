@@ -25,8 +25,8 @@
 #   tradecraft_pg_testdb.sh reset            drop and push the template again, then `db`
 #   tradecraft_pg_testdb.sh down             remove the container and the state file
 #
-# TC_PG_DB defaults to redamon_tc_test. `up`, `push` and `reset` are heavy: run them
-# through the plan's lock. A session's own database (`db`, `web`, `agent`) is not.
+# TC_PG_DB defaults to redamon_tc_test. `up`, `push` and `reset` are heavy (they rebuild the
+# template every copy is made from): run one at a time. A copy (`db`, `web`, `agent`) is not.
 # =============================================================================
 set -euo pipefail
 

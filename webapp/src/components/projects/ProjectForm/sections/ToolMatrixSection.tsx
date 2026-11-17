@@ -40,8 +40,7 @@ type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'use
 /**
  * A row that also governs tools with no row of their own (Q3): the phase map names
  * `tradecraft_lookup` only, and the two other tradecraft tools follow its phases, as
- * `graph_schema` and `graph_summary` follow `query_graph`. Shown only when the project owner has
- * Tradecraft 2.0 on: a 1.x run offers neither of the other two.
+ * `graph_schema` and `graph_summary` follow `query_graph`.
  */
 export const TOOL_ROW_NOTES: Readonly<Record<string, string>> = {
   tradecraft_lookup: 'Also tradecraft_search and tradecraft_ask: the three tradecraft tools share this row and its phases.',

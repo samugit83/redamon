@@ -4,7 +4,7 @@
 time in the background, every resource that needs it: one 1.x wrote a map for and never converted
 (``map_version`` 1 and a 1.x ``sitemap``; a row added through 2.0 and never ingested has none, and
 is left to its first refresh), or one whose 1.x ``sitemap`` no longer has the hash its last 2.0 write
-recorded (a 1.x Refresh made while the switch was off, D-26). It answers how many it queued.
+recorded (a 1.x Refresh made on an install rolled back to 7.8.0, D-26). It answers how many it queued.
 
 Each resource is claimed like any job (a conditional update of ``active_job_id``): a resource whose
 claim names an unfinished job is skipped, and the next sweep converts it; so is one whose live

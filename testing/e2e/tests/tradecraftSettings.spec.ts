@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { cleanupTradecraft, loginTradecraft, seedTradecraft, type TradecraftSeed } from './tradecraftFixtures'
 
 /**
- * Tradecraft 2.0 in Global Settings (T4.10, D-29): the preview switch, Configure ingestion (a value
+ * Tradecraft 2.0 in Global Settings (T4.10, D-29): no preview switch, Configure ingestion (a value
  * saved and kept, a value out of range refused in the dialog and by the server), a card's stale
  * badge and ingestion report, and the delete confirmation. Synthetic account and resources only
  * (webapp/scripts/e2e-tradecraft-seed.mjs); no agent, no site.

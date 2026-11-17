@@ -14,7 +14,7 @@ import styles from '../ProjectForm.module.css'
 
 export const GLOBAL_TRADECRAFT_HREF = '/settings?tab=tradecraft'
 export const editInGlobalHref = (id: string) => `${GLOBAL_TRADECRAFT_HREF}&edit=${encodeURIComponent(id)}`
-/** The tab and the drawer window are called this when the project owner has Tradecraft 2.0 on (§3.4). */
+/** The tab and the drawer window are called this once the project's Tradecraft view loaded (§3.4). */
 export const TAB_LABEL_V2 = 'Agent Skills & Tradecraft'
 
 const TYPE_WORDS: Readonly<Record<string, string>> = {

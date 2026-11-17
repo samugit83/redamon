@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { expect, type Page } from '@playwright/test'
 
 /**
- * The Tradecraft 2.0 specs' fixtures (T4.10): one synthetic account with 2.0 on, three resources
+ * The Tradecraft 2.0 specs' fixtures (T4.10): one synthetic account, three resources
  * and a project, written straight into the database by webapp/scripts/e2e-tradecraft-seed.mjs and
  * removed by e2e-tradecraft-cleanup.mjs. No agent and no site is reached. The scripts are fed to
  * the webapp container on stdin, so they run against an image built before them.

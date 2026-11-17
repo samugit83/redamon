@@ -9,8 +9,7 @@ interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
 }
 
-// Jobs exist only once the account turned 2.0 on, and one may still run after it turned 2.0
-// off: reading and cancelling it work in both switch states.
+// Reading and cancelling a job work whatever its state; a converted 1.x resource may have none.
 
 // GET /api/users/[id]/tradecraft-resources/[resourceId]/jobs   The resource's latest job, or null.
 export async function GET(request: NextRequest, { params }: RouteParams) {

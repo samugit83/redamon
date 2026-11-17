@@ -1,7 +1,7 @@
 /**
  * Stopping an account's Tradecraft ingestion jobs when the account goes away or is disabled
- * (R-201, R-208, D-10), whatever its 2.0 switch and the RBAC switches say: a job started while
- * 2.0 was on still runs after the switch went off.
+ * (R-201, R-208, D-10), whatever the RBAC switches say: a job may still be running when its
+ * account goes.
  *
  * The flag on each unfinished job is the cancel: whichever copy of the agent runs a job reads it
  * between pages. The agent call only makes it stop sooner, so a lost agent never blocks a delete;

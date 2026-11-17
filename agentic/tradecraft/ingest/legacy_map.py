@@ -1,6 +1,6 @@
 """Stage ``legacy_map``: the 1.x columns of the resource, written by every 2.0 ingestion (TD-18).
 
-A person who turns the switch off, or an install rolled back to 7.8.0, reads ``sitemap``,
+An install rolled back to 7.8.0 reads ``sitemap``,
 ``resource_type``, ``crawl_stats`` and ``crawl_stopped_because`` exactly as 1.x wrote them:
 
 - a wiki, a GitBook, a docs site or a website: ``{"nav": [{title, path}]}`` (a docs site adds
@@ -9,8 +9,9 @@ A person who turns the switch off, or an install rolled back to 7.8.0, reads ``s
 - a CVE archive: ``{owner, repo, branch}``;
 - a PDF: ``{"pages": [{page, firstLine}]}`` with the type ``agentic-crawl``, as 1.x stored it.
 
-``legacyMapHash`` is the hash of that map: a 1.x refresh made while the switch is off changes
-the map, and the next switch-on sees it changed and converts the resource again.
+``legacyMapHash`` is the hash of that map: a 1.x refresh made on a rolled-back install changes
+the map, and the conversion sweep of the next 2.0 start sees it changed and converts the resource
+again.
 """
 
 from __future__ import annotations

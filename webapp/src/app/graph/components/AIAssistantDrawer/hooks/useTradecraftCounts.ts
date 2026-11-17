@@ -6,7 +6,7 @@ import type { ProjectTradecraftView } from '@/lib/tradecraft/projectView'
 import { librarianWarning } from '@/components/projects/ProjectForm/sections/TradecraftResourcesAccordion'
 
 export interface TradecraftCountsState {
-  /** The project owner's Tradecraft 2.0 switch; false hides the badge and keeps the menu's old name. */
+  /** True once the project's Tradecraft view loaded (it answers true for every account); false hides the badge and keeps the menu's old name. */
   v2: boolean
   counts: ActiveCounts | null
   /** The badge tooltip's librarian warning (Q10), '' when there is none. */

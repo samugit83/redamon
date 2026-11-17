@@ -524,8 +524,8 @@ export function ProjectForm({
   // and MCP servers this project runs on are the owner's, not the collaborator's own. Picking from
   // them needs Manage, and only then are the owner's models listed.
   const ownerCatalog = useProjectOwnerCatalog(projectId, formAccess)
-  // "Agent Skills & Tradecraft" when the project's owner has Tradecraft 2.0 on (§3.4); a project not
-  // saved yet keeps the old name.
+  // "Agent Skills & Tradecraft" once the project is saved (its Tradecraft view answers v2 for every
+  // account since the cut-over, §3.4); a project not saved yet keeps the old name.
   const tradecraftV2 = useTradecraftV2(mode === 'edit' && projectId ? projectId : null)
   const writeSummary = writeAccessSummary(formAccess)
 

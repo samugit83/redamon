@@ -198,7 +198,7 @@ STATEMENTS: dict[str, str] = {
         f"FROM {R} WHERE id = %(rid)s AND user_id = %(uid)s"
     ),
     # A job that ends without a swap records its end as 1.x does after a verify: the error and
-    # the time, so a 1.x tab (switch off) shows an error card, never "verifying..." (TD-18).
+    # the time, so an install rolled back to 7.8.0 shows an error card, never "verifying..." (TD-18).
     "set_last_error": (
         f"UPDATE {R} SET last_error = %(code)s, last_verified_at = %(at)s, updated_at = now() "
         f"WHERE id = %(rid)s AND user_id = %(uid)s AND active_job_id = %(job)s"

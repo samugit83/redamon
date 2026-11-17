@@ -4,7 +4,7 @@
  * (T6.12: tradecraftMap.spec.ts).
  *
  * Everything is synthetic and written straight into the database: no agent and no site is
- * reached. One account `tradecraft-e2e@e2e.local` with Tradecraft 2.0 on and no ingestion
+ * reached. One account `tradecraft-e2e@e2e.local` (its `v2Enabled` row is still written; nothing reads it) and no ingestion
  * setting changed; three resources on `*.tc-e2e.test` hosts: a Stored wiki ingested by 2.0 with
  * entries, stored pages and a report, and a settings hash no settings give (the stale badge); a
  * Live website ingested by 2.0 with no hash (current); a third one disabled in Global Settings;
