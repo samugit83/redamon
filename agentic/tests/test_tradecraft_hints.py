@@ -711,9 +711,17 @@ def test_errors_and_slow_libraries_say_so(monkeypatch, caplog):
     messages = [r.getMessage() for r in caplog.records]
     assert "[tradecraft] library_now code=internal_error error=RuntimeError" in messages
     assert not any("10.0.0.5" in m or "hunter2" in m for m in messages)
-    # The change is spent: the next think repeats the notice with no new search.
+    # A failed step is searched again at the next thinks, at most ``MAX_RETRIES`` times, the notice
+    # shown in between (round-2 review finding 5); then the notice stays with no new search.
+    st = {**state(), **updates}
+    for retry in range(hints.MAX_RETRIES):
+        calls = Broken.calls
+        note, updates = now(st, index=Broken())
+        st = {**st, **updates}
+        assert note == hints.NOTICES["error"] and Broken.calls > calls, retry
     calls = Broken.calls
-    assert now({**state(), **updates}, index=Broken())[0] == hints.NOTICES["error"] and Broken.calls == calls
+    assert now(st, index=Broken())[0] == hints.NOTICES["error"] and Broken.calls == calls
+    assert hints.MAX_RETRIES == 2
 
     class Slow:
         async def rows(self, name, params):
@@ -734,6 +742,17 @@ def test_errors_and_slow_libraries_say_so(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         assert now(state()) == (None, {})
     assert "[tradecraft] library_now code=internal_error error=ValueError" in [r.getMessage() for r in caplog.records]
+
+
+def test_a_library_back_after_a_failure_shows_the_steps_pages():
+    class Broken:
+        async def rows(self, name, params):
+            raise RuntimeError("down")
+
+    note, updates = now(state(), index=Broken())
+    assert note == hints.NOTICES["error"]
+    note, updates = now({**state(), **updates}, index=library())
+    assert pages_of(note) == ["patt:401", "patt:402", "patt:403"] and hints.NOTICES["error"] not in note
 
 
 def test_a_standing_block_stays_while_it_fits(monkeypatch):

@@ -28,7 +28,8 @@ Cost: at most ``goal_cap`` distinct steps searched per run, twice the run's MAX_
 margin, never more than ``GOAL_CAP_CEILING`` (a step searched already is searched again for new
 facts at no cost to it; at most one round of searches a think), ``SEARCH_TIMEOUT_SEC`` per round. ``hints.perRun`` bounded the old notes and does not apply. The block never vanishes
 silently: a step past the cap, or whose search failed or was slow, gets a fixed notice (``NOTICES``),
-and a step's pages stay while the step does, even when a search for new facts fails. Measurement,
+and a failed search is tried again at the next thinks (``MAX_RETRIES``); a step's pages stay while
+the step does, even when a search for new facts fails. Measurement,
 page IDs and counts only (never a step or a title): ``[tradecraft] library_now refresh=`` per round
 of searches, ``shown=`` per think with a block, ``<page> read`` when the agent reads a page a block
 showed (``run_state.record_seen``). It never fails the think node.
@@ -61,6 +62,8 @@ STANDING = 2 * PAGES
 # 50 ms on the card index, so the ceiling bounds a run with a huge iteration limit to about 50 s
 # of database time over the whole run.
 GOAL_MARGIN = 10
+# A search that failed or timed out is tried again at the next thinks, this many times at most.
+MAX_RETRIES = 2
 GOAL_CAP_CEILING = 1000
 DEFAULT_MAX_ITERATIONS = 100
 SEARCH_TIMEOUT_SEC = 3.0
@@ -311,8 +314,10 @@ def _entry_of(saved: Mapping[str, Any]) -> dict:
             return None
         notice = item.get("notice") if item.get("notice") in NOTICES else ""
         ids = [c for c in item.get("ids") or [] if isinstance(c, str) and entity_rules.cve_ids(c) == [c]][:CVE_QUERY]
+        failures = item.get("failures")
+        failures = failures if isinstance(failures, int) and not isinstance(failures, bool) and failures >= 0 else 0
         return {"key": key[0] if key else "", "facts": facts[0], "rows": _rows_of(item.get("rows")), "notice": notice,
-                "ids": ids}
+                "ids": ids, "failures": min(failures, MAX_RETRIES + 1)}
 
     searched = [x for x in (search_of(i) for i in (saved.get("searched") or [])[:len(profile.STEP_LABELS)]) if x]
     displayed = [r["page"] for r in _rows_of([{"page": p} for p in saved.get("displayed") or []])][:PAGES]
@@ -345,6 +350,13 @@ def _spent(item: Optional[dict], read: set[str]) -> bool:
     return bool(item and len(item["rows"]) >= STANDING and all(r["page"] in read for r in item["rows"]))
 
 
+def _stale(item: Optional[dict], facts: str, read: set[str]) -> bool:
+    """Whether a step's search must run (again): never run for these facts, every page it kept
+    read, or failed and not yet retried ``MAX_RETRIES`` times."""
+    return (item is None or item["facts"] != facts or _spent(item, read)
+            or 0 < item.get("failures", 0) <= MAX_RETRIES)
+
+
 async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus: profile.Focus,
                    reasons: Sequence[str], read: set[str], cap: int) -> dict:
     """Searches the steps (and the confirmed CVE ids) that have no pages for the current facts, or
@@ -359,7 +371,7 @@ async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus
     for _label, text in focus.steps:
         key = goal_key(text)
         had = old.get(key)
-        if had is not None and had["facts"] == facts and not _spent(had, read):
+        if not _stale(had, facts, read):
             searched.append(had)
             continue
         if key not in goals and len(goals) >= cap:
@@ -374,8 +386,8 @@ async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus
         jobs[key] = _pass(catalog, settings, focus, profile.query_of(text), exact=False, read=read)
         searched.append({"key": key, "facts": facts, "rows": [], "notice": "", "ids": [], "_had": had})
     ids = list(focus.cves[-CVE_QUERY:])
-    cve = entry["cve"] if (entry["cve"] and entry["cve"]["ids"] == ids and entry["cve"]["facts"] == facts
-                           and not _spent(entry["cve"], read)) else None
+    cve = entry["cve"] if (entry["cve"] and entry["cve"]["ids"] == ids and not _stale(entry["cve"], facts, read)) \
+        else None
     if ids and cve is None:
         jobs["cve"] = _pass(catalog, settings, focus, " ".join(ids), exact=True, read=read)
         cve = {"key": "", "facts": facts, "rows": [], "notice": "", "ids": ids, "_had": entry["cve"]}
@@ -400,7 +412,11 @@ async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus
             key = item["key"] or "cve"
             if found is not None:
                 item["rows"] = found.get(key, [])
-            elif had and had["rows"] and (had.get("ids") == item.get("ids") or item["key"]):
+                continue
+            same = bool(had) and (had.get("ids") == item.get("ids") or bool(item["key"]))
+            # Counted for the same facts only: other facts make a new search, with its own retries.
+            item["failures"] = (had.get("failures", 0) if same and had["facts"] == item["facts"] else 0) + 1
+            if same and had["rows"]:
                 item["rows"] = had["rows"]  # the same step: its pages still fit it
             else:
                 item["notice"] = "error"
