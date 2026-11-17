@@ -87,6 +87,17 @@ describe('ResourceFormV2', () => {
     expect(sent()).not.toHaveProperty('githubTokenOverride')
   })
 
+  test('the Edit form opens the Map view of the saved map (§6.10, T6.8); an Add has none', async () => {
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ entries: [], total: 0, nextCursor: null }), { status: 200 }))
+    renderForm(RESOURCE)
+    fireEvent.click(screen.getByRole('button', { name: 'Map of the saved pages' }))
+    expect(await screen.findByText('No pages in the map yet: refresh the resource to build it.')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(c => c[0] === `${BASE}/r1/map?status=kept`)).toBe(true)
+    cleanup()
+    renderForm()
+    expect(screen.queryByRole('button', { name: 'Map of the saved pages' })).toBeNull()
+  })
+
   test('Stored → Live warns that the stored pages go now', () => {
     renderForm({ ...RESOURCE, storageMode: 'stored' })
     fireEvent.click(screen.getByRole('radio', { name: /Live/ }))

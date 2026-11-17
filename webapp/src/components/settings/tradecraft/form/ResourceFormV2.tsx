@@ -21,6 +21,7 @@ import { draftError, parseDraft } from '../dialog/draft'
 import { useEnabledImpactConfirm } from '../EnabledImpactAlert'
 import { AccessSection, accessDraftOf, accessError, credentialsPayload, type AccessDraft } from './AccessSection'
 import { useLibrarianGate } from '../LibrarianModel'
+import { MapView } from '../MapView'
 import { CheckUrlButton } from './CheckUrlButton'
 import { ContentSection } from './ContentSection'
 import { CveSection } from './CveSection'
@@ -158,6 +159,7 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
   const [checkRun, setCheckRun] = useState(0)
   const [current, setCurrent] = useState<ResourceView | null>(resource)
   const [submitting, setSubmitting] = useState(false)
+  const [mapOpen, setMapOpen] = useState(false)
   const [error, setError] = useState('')
   const confirmEnabled = useEnabledImpactConfirm(userId)
   const librarianGate = useLibrarianGate()
@@ -351,6 +353,12 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
           <input id={`${formId}-url`} className="textInput" value={f.url} onChange={e => onUrl(e.target.value)} placeholder="https://book.hacktricks.wiki" />
           {urlChanged && <span className={css.hint}>Saving a new URL ingests the resource again.</span>}
           <CheckUrlButton userId={userId} input={checkInput} disabled={!f.url.trim()} runToken={checkRun} onResult={onCheck} />
+          {/* §6.10: the Map view opens from the card or from this form, on the saved map. */}
+          {isEdit && (
+            <div>
+              <button type="button" className="secondaryButton" onClick={() => setMapOpen(true)}>Map of the saved pages</button>
+            </div>
+          )}
         </div>
         <div className="formGroup">
           <label className="formLabel formLabelRequired">LLM model</label>
@@ -409,6 +417,7 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
         <RefreshingSection ctx={ctx} />
         {error && <div className={css.failure} role="alert">{error}</div>}
       </form>
+      {mapOpen && resource && <MapView userId={userId} resource={resource} onClose={() => setMapOpen(false)} />}
     </Modal>
   )
 }
