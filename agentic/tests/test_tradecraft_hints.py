@@ -403,11 +403,20 @@ def two_libraries(other):
 def resumed(first_cat, then_cat, other):
     index = two_libraries(other)
     note, updates = now(state(), cat=first_cat, index=index)
-    calls = len(index.calls)
-    # The same goal and facts: a resume shows the block again with no search, under the catalog
-    # the resume bound (the webapp builds it again for the person resuming).
+    # The same goal and facts, under the catalog the resume bound (the webapp builds it again for
+    # the person resuming): the step is searched again in it, and no row of a resource it left
+    # out is shown, even when an index answered one.
     again, _ = now({**state(), **updates}, cat=then_cat, index=index)
-    assert len(index.calls) == calls
+
+    # And when that search fails, the rows the step kept are shown again: never those of a
+    # resource the resume's catalog left out.
+    class Broken:
+        async def rows(self, name, params):
+            raise RuntimeError("down")
+
+    kept, _ = now({**state(), **updates}, cat=then_cat, index=Broken())
+    assert pages_of(kept) and set(pages_of(kept)) <= set(pages_of(again)) | {p for p in pages_of(note) if p.startswith("patt:")}
+    assert set(p.split(":")[0] for p in pages_of(kept)) == {"patt"}
     return note, again
 
 
@@ -518,9 +527,9 @@ def test_a_page_read_leaves_the_block():
 
 
 def test_a_page_read_never_comes_back_on_one_shared_library():
-    """R-365 / AC-73 as the owner's Library now decision keeps it: a page the agent READ never
-    comes back, whatever the goal; one shown and not read may come back for another step (the
-    relaxation recorded under the decision of 2026-11-17). One library answers every goal here."""
+    """R-365 / AC-73 as Library now keeps it: a page the agent READ never comes back, whatever the
+    goal; one shown and not read may come back for another step (a relaxation to record as a card
+    correction under the owner's decision of 2026-11-17). One library answers every goal here."""
     index = library(n=20)
     st, read_so_far, shown_unread = state(), [], []
 
@@ -541,6 +550,59 @@ def test_a_page_read_never_comes_back_on_one_shared_library():
         st = {**st, **contextvars.Context().run(asyncio.run, read(st, pages[0]))}
     # The library answers every goal alike: pages shown and not read do come back.
     assert len(shown_unread) > len(set(shown_unread))
+
+
+def read_page(st, page):
+    async def go():
+        collector = run_state.bind(st)
+        collector.record_seen([page])
+        return collector.drain()
+
+    return {**st, **contextvars.Context().run(asyncio.run, go())}
+
+
+def test_a_shared_library_shows_pages_at_every_step_while_unread_ones_remain():
+    """Round-2 review finding 1: twelve steps of one library of 20 fitting pages, the agent reading
+    one page a step: every step shows pages, never one already read, and fitting pages remain."""
+    index = library(n=20)
+    st, read = state(), []
+    for n in range(12):
+        st = {**st, "todo_list": [todo(f"Probe the login form, approach {n}", "in_progress")]}
+        note, updates = now(st, index=index)
+        st = {**st, **updates}
+        pages = pages_of(note)
+        assert pages and not set(pages) & set(read), (n, pages)
+        read.append(pages[0])
+        st = read_page(st, pages[0])
+    assert len(read) == 12 < 20
+
+
+def test_one_step_whose_kept_pages_were_read_is_searched_again():
+    """The same step for eight thinks, the agent reading one page each: when the pages its search
+    kept are all read, the step is searched again for the next ones (it costs the cap nothing)."""
+    index = library(n=20)
+    st = state(todo_list=[todo("Confirm time based blind SQLi", "in_progress")])
+    read = []
+    for _ in range(8):
+        note, updates = now(st, index=index)
+        st = {**st, **updates}
+        pages = pages_of(note)
+        assert pages and not set(pages) & set(read)
+        read.append(pages[0])
+        st = read_page(st, pages[0])
+    assert entry_of(st)["goals"] == [hints.goal_key("Confirm time based blind SQLi")]
+
+
+def test_a_resume_with_another_catalog_searches_the_step_again():
+    """Round-2 review finding 1 (its variant): the pages a step kept were all of a resource the
+    resume's catalog no longer holds; the step is searched again in that catalog."""
+    rows = [row(50 + n, resource_id="r2", rank=1.0) for n in range(1, 8)] + [row(n, rank=0.1) for n in range(1, 4)]
+    index = Index({"entries_text": rows})
+    note, updates = now(state(), cat=catalog(resources=[PATT, HTK]), index=index)
+    assert {p.split(":")[0] for p in pages_of(note)} == {"htk"}
+    calls = len(index.calls)
+    again, _ = now({**state(), **updates}, cat=catalog(resources=[PATT]), index=index)
+    assert len(index.calls) > calls and pages_of(again) and all(p.startswith("patt:") for p in pages_of(again))
 
 
 # --------------------------------------------------------------------------------------

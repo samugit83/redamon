@@ -5,12 +5,13 @@ fresh, at no model cost.
 The main agent's think node asks ``library_now(state, catalog)`` before its model call (Fireteam
 members get none, Q13). The steps at hand (``profile.steps_of``) are the ones the agent is about
 to take: the todo item in progress and the next pending one; a step's pages are there while it is
-still the next one. Each step is searched once with the
-session's facts (topic, phase, technologies) through the free first pass (Q7.2), and again only
-when those facts change; the CVE ids a finding confirmed get a search of their own. A page is kept
-when the search's own scores pass the run's match strictness (``search.is_related``) and something
-of the step is in its title, breadcrumb or headings, or it names a CVE id exactly, or its title is
-a close fuzzy match (``fits``). Each search keeps its best ``STANDING`` pages; the block shows
+still the next one. Each step is searched once with the session's facts (topic, phase,
+technologies, the catalog's resources) through the free first pass (Q7.2), and again only when
+those facts change, or when the agent has read every page the search kept and it kept a full set
+(more may fit); the CVE ids a finding confirmed get a search of their own. A page is kept when the
+search's own scores pass the run's match strictness (``search.is_related``) and something of the
+step is in its title, breadcrumb or headings, or it names a CVE id exactly, or its title is a close
+fuzzy match (``fits``). Each search keeps its best ``STANDING`` pages not read yet; the block shows
 ``constants.pagesPerHint`` (3), the best of each step in turn, labelled by the step they fit. A
 page the run read never comes back; one shown and not read may, for another step.
 
@@ -213,9 +214,11 @@ def _session(focus: profile.Focus) -> Any:
     return search.Session(topic=focus.topic, phase=focus.phase, technologies=focus.technologies)
 
 
-def facts_key(focus: profile.Focus) -> str:
-    """The facts a search reads besides its words: the same step with other facts is searched again."""
-    return hashlib.sha256(repr((focus.topic, focus.phase, focus.technologies)).encode()).hexdigest()[:16]
+def facts_key(focus: profile.Focus, catalog: Any) -> str:
+    """The facts a search reads besides its words, the resources it searches included: the same
+    step with other facts, or in a catalog a resume bound again, is searched again."""
+    slugs = tuple(sorted(r.slug for r in catalog.resources))
+    return hashlib.sha256(repr((focus.topic, focus.phase, focus.technologies, slugs)).encode()).hexdigest()[:16]
 
 
 def goal_key(goal: str) -> str:
@@ -224,9 +227,10 @@ def goal_key(goal: str) -> str:
 
 
 async def _pass(catalog: Any, settings: EffectiveSettings, focus: profile.Focus, query: str, *,
-                exact: bool) -> list[dict]:
-    """One search's fitting pages, best first, at most ``STANDING``: for a step (``exact`` False),
-    the pages ``fits`` keeps; for the confirmed CVE ids, only the pages naming one exactly."""
+                exact: bool, read: set[str]) -> list[dict]:
+    """One search's fitting pages not read yet, best first, at most ``STANDING``: for a step
+    (``exact`` False), the pages ``fits`` keeps; for the confirmed CVE ids, only the pages naming
+    one exactly. Read pages go before the cut, so the next fitting ones take their places."""
     from tradecraft import runtime
     from tradecraft.library import search
 
@@ -243,6 +247,8 @@ async def _pass(catalog: Any, settings: EffectiveSettings, focus: profile.Focus,
         if resource is None:
             continue
         card = search.card_of(cand.row, resource)
+        if card.page_id in read:
+            continue
         path = " › ".join([resource.name or resource.slug, *card.breadcrumb, card.title])
         rows.append({"page": card.page_id, "path": _clip(path, PATH_CHARS),
                      "matches": matched_words(card, focus, query)})
@@ -312,12 +318,18 @@ def _in_catalog(entry: dict, catalog: Any) -> dict:
             "displayed": [p for p in entry["displayed"] if held(p)]}
 
 
+def _spent(item: Optional[dict], read: set[str]) -> bool:
+    """Whether the agent read every page a search kept, and it kept a full set (more may fit)."""
+    return bool(item and len(item["rows"]) >= STANDING and all(r["page"] in read for r in item["rows"]))
+
+
 async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus: profile.Focus,
-                   reasons: Sequence[str]) -> dict:
-    """Searches the steps (and the confirmed CVE ids) that have no pages for the current facts,
-    in one round under one time limit. A step that cannot be searched (the cap, an error, the time
-    limit) keeps the pages it had for other facts, which still fit it, or gets a notice."""
-    facts = facts_key(focus)
+                   reasons: Sequence[str], read: set[str]) -> dict:
+    """Searches the steps (and the confirmed CVE ids) that have no pages for the current facts, or
+    whose kept pages were all read, in one round under one time limit. A step that cannot be
+    searched (the cap, an error, the time limit) keeps the pages it had, which still fit it, or
+    gets a notice."""
+    facts = facts_key(focus, catalog)
     old = {x["key"]: x for x in entry["searched"]}
     searched: list[dict] = []
     jobs: dict[str, Any] = {}
@@ -325,7 +337,7 @@ async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus
     for _label, text in focus.steps:
         key = goal_key(text)
         had = old.get(key)
-        if had is not None and had["facts"] == facts:
+        if had is not None and had["facts"] == facts and not _spent(had, read):
             searched.append(had)
             continue
         if key not in goals and len(goals) >= MAX_GOALS:
@@ -337,12 +349,13 @@ async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus
             continue
         if key not in goals:
             goals.append(key)
-        jobs[key] = _pass(catalog, settings, focus, profile.query_of(text), exact=False)
+        jobs[key] = _pass(catalog, settings, focus, profile.query_of(text), exact=False, read=read)
         searched.append({"key": key, "facts": facts, "rows": [], "notice": "", "ids": [], "_had": had})
     ids = list(focus.cves[-CVE_QUERY:])
-    cve = entry["cve"] if entry["cve"] and entry["cve"]["ids"] == ids and entry["cve"]["facts"] == facts else None
+    cve = entry["cve"] if (entry["cve"] and entry["cve"]["ids"] == ids and entry["cve"]["facts"] == facts
+                           and not _spent(entry["cve"], read)) else None
     if ids and cve is None:
-        jobs["cve"] = _pass(catalog, settings, focus, " ".join(ids), exact=True)
+        jobs["cve"] = _pass(catalog, settings, focus, " ".join(ids), exact=True, read=read)
         cve = {"key": "", "facts": facts, "rows": [], "notice": "", "ids": ids, "_had": entry["cve"]}
     entry = {**entry, "goals": goals, "cve": cve if ids else None}
     if jobs:
@@ -407,8 +420,8 @@ async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[
             current = profile.build(state, previous)
             reasons = profile.changes(previous, current)
             entry = _in_catalog(_entry_of(saved), catalog)
-            entry = await _refresh(entry, catalog, settings, current, reasons)
             read = set(collector.drain()["tradecraft_seen_pages"])
+            entry = await _refresh(entry, catalog, settings, current, reasons, read)
             rows = assemble(current, entry, read)
             steps = [*current.steps, *([("finding", ", ".join(entry["cve"]["ids"]))] if entry["cve"] else [])]
             shown = sorted(rows, key=lambda r: ORDER.index(r["step"]))
