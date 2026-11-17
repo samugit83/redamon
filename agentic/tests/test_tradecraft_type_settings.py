@@ -487,15 +487,18 @@ def test_the_docs_sitemap_reading_stops_on_cancel_and_on_the_time_budget(tmp_pat
     assert job.run(is_cancelled=is_cancelled).status == "cancelled"
     assert not [u for u, _ in fetcher.requests if u.endswith("/maps/b.xml")]
 
-    # The crawl's time budget (180 s) bounds the reading too: the clock passes it after one file.
+    # The crawl's time budget (180 s) bounds the reading too: the clock passes it after one file. The
+    # budget is spent, so no crawl starts a fresh one (as Auto's own reading stops): the start page
+    # is all the map holds, and the report says why.
     fake = FakeClock()
     root, host, url, inside = versioned_docs(tmp_path / "time", maps)
     fetcher = _Signals(root, lambda: fake.advance(200))
     job = Job(root, url, fetcher=fetcher, model=PipelineModel(follow=3))
     with clock.use_clock(fake):
         assert job.run().status == "succeeded"
-    assert not [u for u, _ in fetcher.requests if u.endswith("/maps/b.xml")]
-    assert set(inside) <= set(job.urls())
+    assert not [u for u, _ in fetcher.requests if u.endswith(("/maps/b.xml", f"{host}/sitemap.xml"))]
+    assert job.state.crawl is None and job.urls() == [url]
+    assert job.report.stopReason == "docs: no search index, time budget"
 
 
 def test_the_docs_crawl_hand_off_keeps_the_docs_map_limit(tmp_path):

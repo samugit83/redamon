@@ -452,8 +452,9 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
     that does not parse), the sitemaps, kept to the resource's folder, in one budget that
     ``should_stop`` (the job's cancel and time budget) can end. A sitemap that lists nothing there
     but the start page (or an alias of it, ``same_page_as``) is passed over for the next one; when
-    none lists more, ``crawl_fallback``: a homepage alone is no map of a docs site. A cancel ends
-    the builder with nothing, and no crawl is asked for."""
+    none lists more, ``crawl_fallback``: a homepage alone is no map of a docs site. A cancel, or
+    the time budget spent with nothing found, ends the builder with nothing, and no crawl is asked
+    for."""
     base = url.rstrip("/")
     cap = settings.int("knownTypes.maxMapEntries.docs")
     configured = settings.str("type.docs.searchIndexUrl")
@@ -492,6 +493,11 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
                          truncated=cut, note=DOCS_INDEX_UNUSABLE,
                          report_stop=_docs_stop(f"no search index, {source}", entries, cut,
                                                 budget.stopped == "time_budget"))
+    if budget.stopped == "time_budget":
+        # The crawl's time budget is spent: a crawl would start a fresh one (as Auto's own reading,
+        # the docs map stops here).
+        return MapResult("sphinx-docs", [], meta={"indexUrl": ""}, note=DOCS_INDEX_UNUSABLE,
+                         report_stop="docs: no search index, time budget")
     return MapResult("sphinx-docs", [], meta={"indexUrl": ""}, note=DOCS_INDEX_UNUSABLE, crawl_fallback=True)
 
 
