@@ -532,3 +532,60 @@ def test_a_docs_site_listed_only_in_the_site_sitemap_gets_its_sitemap_map(tmp_pa
     assert job.state.crawl is None and job.resource["resource_type"] == "sphinx-docs"
     assert sorted(job.urls()) == sorted([url] + pages)
     assert job.report.stopReason == "docs: no search index, site sitemap (4 pages)"
+
+
+class _Clocked(FixtureFetcher):
+    """Moves a fake clock by ``schedule[url]`` on each download of that URL, and by
+    ``page_seconds`` on each crawled .html page."""
+
+    def __init__(self, root, fake, schedule, page_seconds=0):
+        super().__init__(root)
+        self.fake, self.schedule, self.page_seconds = fake, dict(schedule), page_seconds
+
+    async def get(self, url, **kwargs):
+        resp = await super().get(url, **kwargs)
+        self.fake.advance(self.schedule.get(url, self.page_seconds if url.endswith(".html") else 0))
+        return resp
+
+
+def slow_docs(root):
+    """Docs at /docs/ with no usable index and no sitemap of their own; the site's /sitemap.xml is
+    an index of two children, both outside the folder. Six pages in the folder."""
+    host = "slow-docs.tc-fixture.test"
+    url = f"https://{host}/docs/"
+    pages = [f"{url}p{i}.html" for i in range(6)]
+    head = '<meta name="generator" content="Docutils 0.20.1: https://docutils.sourceforge.io/" />'
+    children = [f"https://{host}/maps/c{i}.xml" for i in (1, 2)]
+    files = {"/docs/": docs_page("Slow docs", pages, head), "/docs/searchindex.js": "Search.setIndex({broken",
+             "/sitemap.xml": '<?xml version="1.0"?><sitemapindex>' + "".join(
+                 f"<sitemap><loc>{c}</loc></sitemap>" for c in children) + "</sitemapindex>"}
+    files.update({c.split(host, 1)[1]: urlset([f"https://{host}/v9/{c[-6:-4]}.html"]) for c in children})
+    files.update({p.split(host, 1)[1]: docs_page(p.rsplit("/", 1)[-1], pages) for p in pages})
+    return site(root, host, files), f"https://{host}", url, pages
+
+
+def test_the_time_budget_covers_the_docs_reading_and_its_crawl(tmp_path):
+    """One clock from the start of the docs reading: a reading whose last download ends past the
+    budget hands nothing on, and a reading that leaves 60 s gives the crawl those 60 s only, not
+    a fresh 180 s (no check runs after the last download of a reading)."""
+    from tradecraft import clock
+    from tradecraft_doubles import FakeClock
+
+    root, origin, url, pages = slow_docs(tmp_path)
+    index, c1, c2 = f"{origin}/sitemap.xml", f"{origin}/maps/c1.xml", f"{origin}/maps/c2.xml"
+    fake = FakeClock()
+    fetcher = _Clocked(root, fake, {index: 60, c1: 60, c2: 70})
+    job = Job(root, url, {"crawl.strategy": "rules"}, fetcher=fetcher)
+    with clock.use_clock(fake):
+        job.run()
+    assert [u for u, _ in fetcher.requests if u == c2] == [c2]
+    assert job.state.crawl is None and not [u for u, _ in fetcher.requests if u in pages]
+    assert job.state.stop_reason == "docs: no search index, time budget"
+
+    fake = FakeClock()
+    fetcher = _Clocked(root, fake, {index: 40, c1: 40, c2: 40}, page_seconds=25)
+    job = Job(root, url, {"crawl.strategy": "rules"}, fetcher=fetcher)
+    with clock.use_clock(fake):
+        job.run()
+    assert job.state.crawl.stop_reason == "time_budget"
+    assert [e.url for e in job.state.crawl.entries if e.url in pages] == pages[:3]

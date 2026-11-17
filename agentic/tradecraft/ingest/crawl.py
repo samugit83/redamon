@@ -672,16 +672,20 @@ def exclude_patterns(settings: EffectiveSettings) -> list[str]:
 
 async def crawl(url: str, settings: EffectiveSettings, *, fetch_page: Optional[FetchPage] = None, llm: Any = None,
                 blocking: Blocking = inline, cancel_check: Optional[CancelCheck] = None,
-                progress: Optional[Progress] = None, allow_browser: bool = True, focus: Any = None) -> CrawlResult:
+                progress: Optional[Progress] = None, allow_browser: bool = True, focus: Any = None,
+                started: Optional[float] = None) -> CrawlResult:
     """``allow_browser`` is False for a resource with a login (§5): its pages are read with
     plain HTTP only, whatever the browser settings say. ``focus`` is the resource's
-    ``ingest.focus.Focus``; only a Focused one with something to judge by changes the crawl."""
+    ``ingest.focus.Focus``; only a Focused one with something to judge by changes the crawl.
+    ``started`` (``clock.monotonic()``) is when the time budget began, when that was before the
+    crawl: a docs site's sitemap reading and the crawl it hands on to share one budget."""
     fetch_page = fetch_page or fetch_page_for(settings, allow_browser=allow_browser)
     base = fetch.canonical_url(url)
     if not _host(base):
         return CrawlResult(stop_reason="frontier_empty", stopped_because="invalid base url")
     starts = start_pages(base, settings)
-    state = _State(base=base, rules=FollowRules(settings, starts, exclude_patterns(settings)), started=clock.monotonic())
+    state = _State(base=base, rules=FollowRules(settings, starts, exclude_patterns(settings)),
+                   started=clock.monotonic() if started is None else started)
     state.starts = starts
     if focus is not None and focus.filters:
         from tradecraft.ingest import focus as focus_mod
