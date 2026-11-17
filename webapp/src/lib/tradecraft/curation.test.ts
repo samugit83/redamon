@@ -141,6 +141,23 @@ describe('curate (R-167)', () => {
     expect(curation('https://wiki.example.test/p2')).toMatchObject({ pinned: true, blocked: false })
   })
 
+  test('a pin is stored under the URL the refresh adds the page by, so a later block reaches its row (S10 review 1, finding 4)', async () => {
+    expect(await curate(row(), { op: 'pin', url: 'https://WIKI.example.test:443' }, 'owner')).toMatchObject({ ok: true })
+    expect(curation('https://wiki.example.test/')).toMatchObject({ pinned: true })
+    expect(h.db.rows('tradecraftCuration', { resourceId: 'r1' }).map(c => (c as { url: string }).url)).toEqual(['https://wiki.example.test/'])
+    expect((await curate(row(), { op: 'pin', url: 'https://wiki.example.test/guide#install' }, 'owner')).ok).toBe(true)
+    expect(curation('https://wiki.example.test/guide')).toMatchObject({ pinned: true })
+    expect(curation('https://wiki.example.test/guide#install')).toBeUndefined()
+  })
+
+  test('block then unblock leaves no pin and no restore: the page is the focus\'s again (S10 review 1, finding 4)', async () => {
+    await curate(row(), { op: 'restore', url: 'https://wiki.example.test/p4' }, 'owner')
+    await curate(row(), { op: 'block', urls: ['https://wiki.example.test/p4'] }, 'owner')
+    expect(curation('https://wiki.example.test/p4')).toMatchObject({ blocked: true, pinned: false, restoredFromDrop: false })
+    await curate(row(), { op: 'unblock', urls: ['https://wiki.example.test/p4'] }, 'owner')
+    expect(curation('https://wiki.example.test/p4')).toBeUndefined()
+  })
+
   test('pin_url_checked: a private address, a login in the URL, and another host on a resource with a login are refused', async () => {
     for (const url of ['http://127.0.0.1/admin', 'https://u:p@wiki.example.test/x', 'ftp://wiki.example.test/x', 'not a url']) {
       expect(await curate(row(), { op: 'pin', url }, 'owner'), url).toMatchObject({ ok: false, status: 400, field: 'url' })

@@ -4,7 +4,8 @@
  * refresh: the ingestion applies them (T6.6), the read path refuses a blocked URL from any source
  * (T1.9), and the Map view shows them at once.
  *  - pin: a URL the person typed, checked like a resource URL, on the resource's own host when it
- *    has a login; it joins the map at the next refresh;
+ *    has a login, stored in the form the ingestion names the page by (`canonicalPinUrl`); it joins
+ *    the map at the next refresh;
  *  - block: chosen URLs, or every entry matching a search whose count the person confirmed (409
  *    when it changed); the stored text and sections go at once;
  *  - unblock: the page comes back at the next refresh (read live until then);
@@ -218,6 +219,18 @@ function matchingOf(input: unknown): Matching | CurateResult {
   return { query: query || undefined, status: status as Matching['status'], tag: tag || undefined }
 }
 
+/**
+ * The URL a pin is stored under: the form the agent's ingestion stores the page by (its
+ * `fetch.canonical_url`: scheme and host in lower case, no default port, "/" for an empty path, no
+ * fragment, which is no page of its own). The entry the next refresh adds then has the pin's own
+ * URL, so the Map view shows it pinned, and a later block or rename of it reaches the same row.
+ */
+export function canonicalPinUrl(url: string): string {
+  const u = new URL(url)
+  u.hash = ''
+  return u.toString()
+}
+
 /** The 400 when a typed URL may not be pinned (§6.10, D-54); null when it may. */
 function pinRefusal(r: MapResource, url: string): CurateResult | null {
   const check = validateUrl(url)
@@ -267,10 +280,11 @@ async function dropEmptyRows(tx: Prisma.TransactionClient, resourceId: string, u
 }
 
 async function pin(r: MapResource, body: Record<string, unknown>, actorId: string): Promise<CurateResult> {
-  const url = oneUrl(body.url)
-  if (typeof url !== 'string') return url
-  const refused = pinRefusal(r, url)
+  const typed = oneUrl(body.url)
+  if (typeof typed !== 'string') return typed
+  const refused = pinRefusal(r, typed)
   if (refused) return refused
+  const url = canonicalPinUrl(typed)
   await locked(r, tx => tx.tradecraftCuration.upsert({
     where: { resourceId_url: { resourceId: r.id, url } },
     create: { resourceId: r.id, url, pinned: true, createdById: actorId },
@@ -310,7 +324,8 @@ async function block(r: MapResource, body: Record<string, unknown>, actorId: str
       targets = (await tx.tradecraftEntry.findMany({ where, select: { url: true } })).map(e => e.url)
     }
     if (!targets || targets.length === 0) return 0
-    await tx.tradecraftCuration.updateMany({ where: { resourceId: r.id, url: { in: targets } }, data: { blocked: true, pinned: false } })
+    // A block ends a pin and a restore alike: an unblock gives the page back to the focus.
+    await tx.tradecraftCuration.updateMany({ where: { resourceId: r.id, url: { in: targets } }, data: { blocked: true, pinned: false, restoredFromDrop: false } })
     await tx.tradecraftCuration.createMany({
       data: targets.map(url => ({ resourceId: r.id, url, blocked: true, createdById: actorId })), skipDuplicates: true,
     })
