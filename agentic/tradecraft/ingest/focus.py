@@ -461,6 +461,10 @@ async def _tag_only(state: "IngestState", focus: Focus) -> "IngestState":
 
 def _model_error(state: "IngestState", code: str) -> None:
     state.count_error("model_error")
+    # The spent daily budget is counted by its own code too: the job then fails with it and
+    # Save & refresh all stops its batch (pipeline.budget_failure).
+    if code == "llm_budget_exhausted":
+        state.count_error(code)
     logger.info(f"[tradecraft] job {state.request.job_id} focus code=model_error cause={code}")
 
 

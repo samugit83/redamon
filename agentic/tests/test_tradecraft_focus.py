@@ -186,11 +186,11 @@ def test_dropped_kept_with_reason(tmp_path):
 
 
 def test_model_error_keeps_maybe(tmp_path):
-    """TD-20: a model error drops nothing and is not retried; the report counts model_error."""
-    from llm_budget import LlmBudgetExhausted
-
+    """TD-20: a model error drops nothing and is not retried; the report counts model_error. (A
+    spent daily budget fails the job instead, keeping the previous version:
+    test_tradecraft_budget_stop.py::test_the_focus_counts_the_spent_budget_and_the_job_ends_there.)"""
     h = Harness(tmp_path, WIKI, focus_value=SQLI,
-                model=FocusModel(triage_errors=[LlmBudgetExhausted("u1", 1, "yours")]))
+                model=FocusModel(triage_errors=[RuntimeError("the provider did not answer")]))
     outcome = h.run()
     assert outcome.status == "succeeded"
     assert len(h.model.triage_prompts) == 1

@@ -15,6 +15,13 @@ failure or a cancel leaves the previous one live (the runner discards what was w
 ``refreshing.onFailure`` at ``replace``, a refresh that fails or finds nothing swaps the empty
 result in, as 1.x did. The job's progress, its report and ``lastError`` carry codes and
 counts only: never a secret, page text or a URL.
+
+A model call the daily budget refused (``llm_budget_exhausted``, never retried) leaves the
+result incomplete wherever it happened: a model-guided crawl stops after the pages it had, the
+focus, the tags, the folder descriptions or the summary go without the model. The stages count
+it and go on, and the job then fails with that code (``budget_failure``), so with the default
+policy the previous version stays live instead of a smaller map or one without its tags, and
+Save & refresh all stops its batch there (``jobs._stop_bulk``, R-027).
 """
 
 from __future__ import annotations
@@ -197,7 +204,7 @@ async def _run(state: IngestState) -> JobOutcome:
         await state.stage(name)
         await step(state)
 
-    failure = failure_code(state)
+    failure = failure_code(state) or budget_failure(state)
     if failure and state.settings.str("refreshing.onFailure") == "keep":
         return JobOutcome(status="failed", error_code=failure)
 
@@ -211,10 +218,18 @@ async def _run(state: IngestState) -> JobOutcome:
                        ("entities", entities.extract), ("tree", tree.build), ("content_check", focus.content_check)):
         await state.stage(name)
         await step(state)
+    if not failure:
+        failure = budget_failure(state)
+        if failure and state.settings.str("refreshing.onFailure") == "keep":
+            return JobOutcome(status="failed", error_code=failure)
     await state.stage("write")
     await write(state)
     await state.stage("summary")
     await summary.summarize(state)
+    if not failure:
+        failure = budget_failure(state)
+        if failure and state.settings.str("refreshing.onFailure") == "keep":
+            return JobOutcome(status="failed", error_code=failure)
     await state.stage("report")
     await report.build(state)
     await state.stage("legacy_map")
@@ -369,6 +384,15 @@ def _homepage_fallback(state: IngestState) -> None:
     state.entries = [Candidate(fetch.canonical_url(state.url), f"{host} (homepage)", source, state.url)]
     if state.site_type != WEBSITE:
         state.count_error("map_empty_homepage_only")
+
+
+BUDGET_EXHAUSTED = "llm_budget_exhausted"
+
+
+def budget_failure(state: IngestState) -> str:
+    """``llm_budget_exhausted`` when any stage counted a model call the daily budget refused,
+    else "": what the job built without those calls is not a refresh to swap in."""
+    return BUDGET_EXHAUSTED if state.errors.get(BUDGET_EXHAUSTED) else ""
 
 
 def failure_code(state: IngestState) -> str:
