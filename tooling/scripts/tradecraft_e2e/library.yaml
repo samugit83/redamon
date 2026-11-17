@@ -52,7 +52,9 @@ resources:
       strictness: balanced
     # The focus preview on Check URL's entries, as the form runs it before saving.
     preview: true
-    expect: {type: github-repo, min_entries: 10, min_stored_pages: 5}
+    # The bundle covers 24 vulnerability classes: the focus keeps its few SQL injection and SSRF
+    # pages (5 of 188 on 2026-11-17) and drops the rest, which is what this resource proves.
+    expect: {type: github-repo, min_entries: 3, min_stored_pages: 3, min_dropped: 50}
   - slug: web-hacking-techniques-index
     preset: web-hacking-techniques-index
     name: Web Hacking Techniques Index

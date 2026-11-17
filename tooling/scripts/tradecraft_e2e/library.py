@@ -809,6 +809,10 @@ def judge(spec: Mapping, view: Mapping, job: Optional[Mapping]) -> list:
     if mode != "everything":
         got = focus_mode((rep.get("focus") or {}).get("mode"))
         out.append(report.CheckResult("focus_applied", got == mode, json.dumps(rep.get("focus") or {}, sort_keys=True)))
+    if exp.get("min_dropped") is not None:
+        dropped = int(((rep.get("focus") or {}).get("dropped")) or 0)
+        out.append(report.CheckResult("focus_dropped", dropped >= int(exp["min_dropped"]),
+                                      f"{dropped} entries dropped by the focus (at least {exp['min_dropped']})"))
     return out
 
 

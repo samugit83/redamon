@@ -501,12 +501,15 @@ def test_the_build_sends_what_the_form_sends():
 def test_judge_checks_type_size_storage_readiness_login_and_focus():
     spec = next(s for s in LIB["resources"] if s["slug"] == "claude-bughunter")
     view = {"resourceType": "github-repo", "entryCount": 40, "storageMode": "stored", "hasLogin": False,
-            "report": {"stored": {"pages": 30}, "readiness": {"realTitlesPct": 90}, "focus": {"mode": "focused", "dropped": 7}}}
+            "report": {"stored": {"pages": 30}, "readiness": {"realTitlesPct": 90}, "focus": {"mode": "focused", "dropped": 183}}}
     job = {"status": "succeeded"}
     assert all(c.ok for c in library.judge(spec, view, job))
-    bad = dict(view, resourceType="agentic-crawl", entryCount=3, report={"stored": {"pages": 1}})
+    # The focus must have dropped most of the bundle: a focus that kept everything proves nothing.
+    kept_all = dict(view, report={**view["report"], "focus": {"mode": "focused", "dropped": 7}})
+    assert [c.name for c in library.judge(spec, kept_all, job) if not c.ok] == ["focus_dropped"]
+    bad = dict(view, resourceType="agentic-crawl", entryCount=1, report={"stored": {"pages": 1}})
     failed = {c.name for c in library.judge(spec, bad, {"status": "failed", "errorCode": "fetch_failed"}) if not c.ok}
-    assert failed == {"job_succeeded", "type", "map_size", "stored_pages", "readiness", "focus_applied"}
+    assert failed == {"job_succeeded", "type", "map_size", "stored_pages", "readiness", "focus_applied", "focus_dropped"}
     cve = next(s for s in LIB["resources"] if s["slug"] == "trickest-cve")
     names = {c.name for c in library.judge(cve, {"resourceType": "cve-poc-db", "entryCount": 0, "storageMode": "live"}, job)}
     assert "readiness" not in names and "map_size" in names
@@ -561,7 +564,10 @@ class FakeWebapp:
         mode = (spec.get("focus") or {}).get("mode", "everything")
         if mode == "everything":
             return {}
-        return {"mode": {"tagOnly": "tag_only"}.get(mode, mode)}
+        out = {"mode": {"tagOnly": "tag_only"}.get(mode, mode)}
+        if mode == "focused":  # the agent counts what a Focused focus kept and dropped
+            out.update(kept=5, maybe=0, dropped=183)
+        return out
 
     def call(self, method, path, body=None, *, headers=None, timeout=None):
         self.calls.append((method, path, body))
