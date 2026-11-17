@@ -105,6 +105,27 @@ export interface SummaryInput {
   locked?: boolean
 }
 
+/** Save & refresh all's answer: the jobs it started, and the resources it left out with why. */
+export interface RefreshAllResult {
+  bulkId: string
+  started: { resourceId: string; name: string; job: JobView }[]
+  skipped: { resourceId: string; name: string; reason: 'not_found' | 'disabled' | 'job_running' | 'use_site_logins' | 'use_github_token' }[]
+}
+
+const SKIP_WORDS: Readonly<Record<RefreshAllResult['skipped'][number]['reason'], string>> = {
+  not_found: 'not found', disabled: 'disabled', job_running: 'already refreshing',
+  use_site_logins: 'its site login is not used while acting as the account', use_github_token: 'the GitHub token is not used while acting as the account',
+}
+
+/** "Refreshing 3 resources one at a time. Skipped: KB (its site login ...)". */
+export function refreshAllText(r: RefreshAllResult): string {
+  const head = r.started.length === 0
+    ? 'No resource is being refreshed.'
+    : `Refreshing ${r.started.length} ${r.started.length === 1 ? 'resource' : 'resources'} one at a time.`
+  const skipped = r.skipped.map(s => `${s.name || s.resourceId} (${SKIP_WORDS[s.reason] ?? s.reason})`)
+  return skipped.length ? `${head} Skipped: ${skipped.join(', ')}.` : head
+}
+
 export interface SavedResource {
   resource: ResourceView | null
   job: JobView | null
@@ -126,6 +147,10 @@ export const tradecraftClient = {
     fetchJson<{ v2Enabled: true; ingestion: IngestionSettingsView }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ ingestion }),
     }, "Couldn't save your ingestion settings"),
+  refreshAll: (userId: string, resourceIds: string[]) =>
+    fetchJson<RefreshAllResult>(`${resources(userId)}/refresh-all`, {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ resourceIds }),
+    }, "Couldn't start Save & refresh all"),
   saveSearch: (userId: string, search: Record<string, unknown>) =>
     fetchJson<{ v2Enabled: true; search: SearchSettingsView }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ search }),
@@ -202,6 +227,8 @@ export function jobLabel(job: Pick<JobView, 'status' | 'stage' | 'cancelRequeste
   if (job.status === 'queued') return job.cancelRequested ? 'Cancelling…' : 'Queued'
   if (job.status === 'running') return job.cancelRequested ? 'Cancelling…' : (STAGE_LABELS[job.stage] ?? 'Starting')
   if (job.status === 'succeeded') return 'Ingested'
+  // Save & refresh all stops the rest of its batch when the daily model budget is spent (R-027).
+  if (job.status === 'cancelled' && job.errorCode === 'llm_budget_exhausted') return 'Not refreshed: the daily model budget is used up; the previous version is kept'
   if (job.status === 'cancelled') return 'Cancelled: the previous version is kept'
   return `Failed (${job.errorCode || 'unknown'}): the previous version is kept`
 }

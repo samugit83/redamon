@@ -10,7 +10,7 @@ import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import styles from '@/components/settings/Settings.module.css'
 import { actionFailedText, failureText } from '@/components/settings/failureText'
 import { readApiError } from '@/lib/apiError'
-import { tradecraftClient } from '@/lib/tradecraft/client'
+import { refreshAllText, tradecraftClient } from '@/lib/tradecraft/client'
 import { V2Switch } from './V2Switch'
 import { ResourceListV2 } from './ResourceListV2'
 import { ConfigureIngestionDialog } from './ConfigureIngestionDialog'
@@ -131,9 +131,11 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
           userId={userId}
           onDirtyChange={onDirtyChange}
           onClose={() => setConfiguring(false)}
-          onSaved={() => {
+          onSaved={(_view, refresh) => {
             setConfiguring(false)
-            toast.success('Saved: each resource uses the new settings the next time it is added or refreshed')
+            toast.success(refresh
+              ? `Saved. ${refreshAllText(refresh)}`
+              : 'Saved: each resource uses the new settings the next time it is added or refreshed')
             setListKey(k => k + 1)
           }}
         />

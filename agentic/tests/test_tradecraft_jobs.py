@@ -729,3 +729,62 @@ def test_a_job_recovered_at_boot_records_the_1x_error_state(verified_before):
     r = store.resources["r-lost"]
     assert r["last_error"] == "agent_restarted" and r["active_job_id"] is None
     assert r["last_verified_at"] == (earlier if verified_before else clock.now())
+
+
+# --- Save & refresh all (T6.10, R-026, R-027) ----------------------------------------
+
+def bulk(job_id, bulk_id="bulk-1", **kw):
+    j = job(job_id, **kw)
+    j.update(kind="bulk", bulk_id=bulk_id)
+    return j
+
+
+def test_bulk_one_at_a_time():
+    store, gate = MemoryStore(), Gate(lambda ctx: JobOutcome(status="succeeded", swapped=True))
+    batch = seed(store, bulk("k1"), bulk("k2"), bulk("k3"))
+
+    async def go():
+        runner = runner_with(store, gate)
+        answer = await runner.submit(batch)
+        assert answer.accepted == ["k1", "k2", "k3"]
+        for jid in ("k1", "k2", "k3"):
+            await settle()
+            # One at a time, in the order sent, although two slots are free.
+            assert gate.started[-1] == jid and len(gate.started) == len(gate.finished) + 1
+            gate.event(jid).set()
+        await settle(60)
+        assert gate.finished == ["k1", "k2", "k3"]
+        await runner.close()
+
+    run(go())
+
+
+def test_bulk_stops_on_budget():
+    store = MemoryStore()
+    model = ScriptedChatModel(LlmBudgetExhausted("u1", 10, "yours"))
+    ran: list[str] = []
+
+    async def entry(ctx):
+        ran.append(ctx.request.job_id)
+        llm = models.IngestModel(model, ctx.request.user_id, "openai/fake-small-model")
+        await llm.ainvoke("summarize")
+        return JobOutcome(status="succeeded", swapped=True)
+
+    batch = seed(store, bulk("k1"), bulk("k2"), bulk("k3"), bulk("other", bulk_id="bulk-2"), job("single"))
+
+    async def go():
+        runner = runner_with(store, entry)
+        await runner.submit(batch)
+        await settle(120)
+        await runner.close()
+
+    run(go())
+    # The first job met the spent budget once and was not retried; the rest of its batch never ran.
+    assert ran[0] == "k1" and model.calls >= 1
+    assert "k2" not in ran and "k3" not in ran
+    assert store.jobs["k1"]["status"] == "failed" and store.jobs["k1"]["error_code"] == "llm_budget_exhausted"
+    for jid in ("k2", "k3"):
+        assert store.jobs[jid]["status"] == "cancelled" and store.jobs[jid]["error_code"] == "llm_budget_exhausted"
+    # Another batch and a job of its own are not this batch: they run (and meet the budget themselves).
+    assert "other" in ran and "single" in ran
+    assert store.jobs["other"]["status"] == "failed" and store.jobs["single"]["status"] == "failed"

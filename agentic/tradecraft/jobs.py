@@ -15,6 +15,12 @@ job; the copy that holds the job also wakes it at once.
 A ``regenerate_summary`` job (T4.1) begins no generation: it reads the live one, and its swap
 writes only the summary, so a failure leaves nothing to discard.
 
+Save & refresh all (T6.10, §3.2) sends one ``bulk`` job per resource with one ``bulk_id`` in a
+single request: they queue in the owner's FIFO and run one at a time like any of the owner's jobs.
+When one fails because the daily model budget is spent, the rest of its batch is not run: each is
+closed ``cancelled`` with the code ``llm_budget_exhausted``, so the cards say why and the owner's
+chats keep the budget that is left (R-027). Nothing is retried.
+
 Jobs run in a context of their own (no context variable of the HTTP request that started
 them), with the clock and the fetcher the runner was given. Parsing runs on the
 ``tradecraft-ingest`` thread pool through ``run_blocking``, which passes plain values: a pool
@@ -60,6 +66,7 @@ CANCEL_POLL_SEC = 1.0
 
 Entry = Callable[[JobContext], Awaitable[JobOutcome]]
 REGENERATE_SUMMARY = "regenerate_summary"
+BUDGET_EXHAUSTED = "llm_budget_exhausted"
 
 
 def error_code_of(exc: BaseException) -> str:
@@ -277,6 +284,8 @@ class JobRunner:
                 logger.warning(f"[tradecraft] job {jid} failed code={code} error={type(exc).__name__}")
                 outcome = JobOutcome(status="failed", error_code=code)
             await self._close(user, rid, jid, generation, outcome)
+            if job.bulk_id and outcome.status == "failed" and outcome.error_code == BUDGET_EXHAUSTED:
+                await self._stop_bulk(user, job.bulk_id)
         except Exception as exc:
             # The store itself failed (the database went away): the lease runs out and the
             # next claim, or the next boot, fails the job.
@@ -320,6 +329,18 @@ class JobRunner:
             await self.store.set_error_if_never_verified(user, rid, jid, code, self._now())
         await self.store.finish_job(user, jid, outcome.status, code)
         logger.info(f"[tradecraft] job {jid} {outcome.status} code={code}")
+
+    async def _stop_bulk(self, user: str, bulk_id: str) -> None:
+        """Closes the owner's queued jobs of the batch ``bulk_id`` without running them: the daily
+        model budget is spent, and each would only spend the calls the owner's chats need."""
+        rest = [j for j in self._queues.get(user, ()) if j.bulk_id == bulk_id]
+        for job in rest:
+            if self._remove_queued(job.job_id, user) is None:
+                continue
+            await self.store.set_error_if_never_verified(user, job.resource_id, job.job_id, BUDGET_EXHAUSTED, self._now())
+            await self.store.finish_job(user, job.job_id, "cancelled", BUDGET_EXHAUSTED)
+        if rest:
+            logger.info(f"[tradecraft] bulk {bulk_id} stopped code={BUDGET_EXHAUSTED} jobs={len(rest)}")
 
     def _cancel_check(self, running: _Running) -> Callable[[], Awaitable[bool]]:
         last = {"at": None, "answer": False}

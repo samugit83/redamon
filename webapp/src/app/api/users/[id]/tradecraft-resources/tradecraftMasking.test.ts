@@ -44,6 +44,7 @@ import * as regenerate from './[resourceId]/summary/regenerate/route'
 import * as verify from './[resourceId]/verify/route'
 import * as checkUrl from './check-url/route'
 import * as focusPreview from './focus-preview/route'
+import * as refreshAll from './refresh-all/route'
 import * as settings from '../tradecraft-settings/route'
 import * as projectTradecraft from '@/app/api/projects/[id]/tradecraft/route'
 
@@ -96,6 +97,7 @@ const CALLS: Record<string, () => Promise<Response>> = {
   'POST /api/users/[id]/tradecraft-resources/focus-preview': () => focusPreview.POST(req('/tradecraft-resources/focus-preview', 'POST', {
     resourceId: 'r1', focus: { mode: 'focused', topics: ['xss'] },
   }), P),
+  'POST /api/users/[id]/tradecraft-resources/refresh-all': () => refreshAll.POST(req('/tradecraft-resources/refresh-all', 'POST', { resourceIds: ['r1'] }), P),
   'GET /api/users/[id]/tradecraft-settings': () => settings.GET(req('/tradecraft-settings'), P),
   'PUT /api/users/[id]/tradecraft-settings': () => settings.PUT(req('/tradecraft-settings', 'PUT', { ingestion: { 'crawl.maxPages': 90 } }), P),
   'GET /api/projects/[id]/tradecraft': () => projectTradecraft.GET(

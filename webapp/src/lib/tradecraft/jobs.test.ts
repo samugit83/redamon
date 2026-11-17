@@ -18,7 +18,7 @@ vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.
 import { setNowForTests } from '@/lib/authz/clock'
 import { JobStartBatch, SECRET_PLACEHOLDER } from './agentContract'
 import { effectiveSettings } from './effectiveSettings'
-import { MANUAL_JOB_KINDS, START_LEASE_MS, cancelJob, jobActorOf, jobView, latestJob, startJob, sweepLostJobs, type JobActor } from './jobs'
+import { MANUAL_JOB_KINDS, START_LEASE_MS, cancelJob, jobActorOf, jobView, latestJob, startBulkJobs, startJob, sweepLostJobs, type JobActor } from './jobs'
 
 const T0 = Date.parse('2026-11-16T10:00:00Z')
 let t = new Date(T0)
@@ -431,3 +431,68 @@ describe('sweepLostJobs: a lease no agent renews, read as agent_lost, is ended w
   })
 })
 
+
+describe('Save & refresh all: one bulk job per resource, one request (T6.10, R-026, D-49)', () => {
+  const seedMany = (n: number) => {
+    for (let i = 2; i <= n; i++) {
+      h.db.seed('userTradecraftResource', { id: `r${i}`, userId: 'owner', name: `R${i}`, slug: `r${i}`, url: `https://r${i}.example.test/`, llmModel: 'gpt-4o' })
+    }
+  }
+
+  test('creates_bulk_jobs: each resource gets a bulk job with the one bulkId, claimed, started in one request', async () => {
+    seedMany(3)
+    const agent = stubAgent()
+    const out = await startBulkJobs({ ownerId: 'owner', resourceIds: ['r1', 'r2', 'r3'], actor: OWNER, bulkId: 'b-1' })
+    expect(out.skipped).toEqual([])
+    expect(out.started.map(s => [s.resourceId, s.outcome.kind])).toEqual([['r1', 'started'], ['r2', 'started'], ['r3', 'started']])
+    expect(jobs().map(j => [j.resourceId, j.kind, j.bulkId, j.status])).toEqual([
+      ['r1', 'bulk', 'b-1', 'queued'], ['r2', 'bulk', 'b-1', 'queued'], ['r3', 'bulk', 'b-1', 'queued'],
+    ])
+    for (const r of ['r1', 'r2', 'r3']) expect(h.db.rows('userTradecraftResource', { id: r })[0].activeJobId).toBeTruthy()
+    const calls = jobCalls(agent)
+    expect(calls).toHaveLength(1)
+    const batch = JobStartBatch.parse(calls[0].body)
+    expect(batch.jobs.map(j => [j.kind, j.bulk_id, j.resource_id])).toEqual([['bulk', 'b-1', 'r1'], ['bulk', 'b-1', 'r2'], ['bulk', 'b-1', 'r3']])
+  })
+
+  test('one_agent_request_for_200: 200 resources, still one request', async () => {
+    seedMany(200)
+    const agent = stubAgent()
+    const ids = Array.from({ length: 200 }, (_, i) => `r${i + 1}`)
+    const out = await startBulkJobs({ ownerId: 'owner', resourceIds: ids, actor: OWNER, bulkId: 'b-200' })
+    expect(out.started).toHaveLength(200)
+    expect(jobCalls(agent)).toHaveLength(1)
+    expect(JobStartBatch.parse(jobCalls(agent)[0].body).jobs).toHaveLength(200)
+  })
+
+  test('skips_running: a resource already running is listed as skipped; another account\'s is not found', async () => {
+    seedMany(2)
+    h.db.seed('userTradecraftResource', { id: 'x1', userId: 'other', name: 'X', slug: 'x', url: 'https://x.example.test/', llmModel: 'm' })
+    const agent = stubAgent()
+    expect((await start('refresh', 'r2')).kind).toBe('started')
+    const out = await startBulkJobs({ ownerId: 'owner', resourceIds: ['r1', 'r2', 'x1'], actor: OWNER, bulkId: 'b-2' })
+    expect(out.skipped).toEqual([{ resourceId: 'r2', reason: 'job_running' }, { resourceId: 'x1', reason: 'not_found' }])
+    expect(out.started.map(s => s.resourceId)).toEqual(['r1'])
+    expect(jobs().filter(j => j.bulkId === 'b-2').map(j => j.resourceId)).toEqual(['r1'])
+    expect(jobCalls(agent)).toHaveLength(2)
+  })
+
+  test('an agent that cannot be reached fails every job of the batch and frees every claim', async () => {
+    seedMany(2)
+    stubAgent(() => refused())
+    const out = await startBulkJobs({ ownerId: 'owner', resourceIds: ['r1', 'r2'], actor: OWNER, bulkId: 'b-3' })
+    expect(out.started.map(s => s.outcome.kind)).toEqual(['agent_unreachable', 'agent_unreachable'])
+    for (const r of ['r1', 'r2']) expect(h.db.rows('userTradecraftResource', { id: r })[0].activeJobId).toBeNull()
+  })
+
+  test('a job of the batch the agent refuses fails alone; the others are accepted', async () => {
+    seedMany(2)
+    stubAgent((_p, body) => {
+      const ids = (body as { jobs: { job_id: string }[] }).jobs.map(j => j.job_id)
+      return json({ accepted: [ids[0]], refused: [{ job_id: ids[1], code: 'queue_full' }] }, 202)
+    })
+    const out = await startBulkJobs({ ownerId: 'owner', resourceIds: ['r1', 'r2'], actor: OWNER, bulkId: 'b-4' })
+    expect(out.started.map(s => [s.resourceId, s.outcome.kind === 'started' && s.outcome.delivery])).toEqual([['r1', 'accepted'], ['r2', 'refused']])
+    expect(h.db.rows('userTradecraftResource', { id: 'r2' })[0].activeJobId).toBeNull()
+  })
+})

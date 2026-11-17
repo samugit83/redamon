@@ -28,7 +28,7 @@ import { lockOwnResource } from './resourceAccess'
 
 export const START_LEASE_MS: number = SETTINGS_CONSTANTS.jobStartLeaseSec * 1000
 
-/** The kinds a person's action starts in this phase; T4.5 and T6.10 add theirs. */
+/** The kinds a person's click on one resource starts; Save & refresh all starts `bulk` ones (`startBulkJobs`). */
 export const MANUAL_JOB_KINDS = ['add', 'refresh', 'reingest', 'regenerate_summary'] as const
 export type ManualJobKind = (typeof MANUAL_JOB_KINDS)[number]
 
@@ -233,78 +233,80 @@ export function buildJobRequest(
 }
 
 /**
- * Starts one job on the account's resource: the job row (with its start lease) and the claim in
- * one transaction under the row lock, then one `jobs` request to the agent. The claim is
- * released at once when the request was not delivered (refused connection, an error answer);
- * after a timeout it is kept, and the start lease frees it if the agent never took the job.
+ * The job row (with its start lease) and the claim, in one transaction under the resource's row
+ * lock; a claim no agent renews is taken over, its job failed `agent_lost`.
  */
-export async function startJob(input: {
+async function claimNewJob(input: {
   ownerId: string
   resourceId: string
-  kind: ManualJobKind
+  kind: ManualJobKind | 'bulk'
   actor: JobActor
-  bulkId?: string | null
-}): Promise<StartOutcome> {
-  const { ownerId, resourceId, kind, actor } = input
-  if (!(MANUAL_JOB_KINDS as readonly string[]).includes(kind)) throw new Error(`startJob: ${kind} is not started by a person here`)
-  const at = now()
-  let job: TradecraftIngestionJob
-  let resource: UserTradecraftResource
-  try {
-    ;({ job, resource } = await prisma.$transaction(async (tx) => {
-      if (!(await lockOwnResource(tx, ownerId, resourceId))) throw new NotFound()
-      const row = await tx.userTradecraftResource.findUnique({ where: { id: resourceId } })
-      if (!row) throw new NotFound()
-      const holder = await claimHolder(tx, row, at)
-      if (holder) throw new ClaimHeld(holder)
-      const created = await tx.tradecraftIngestionJob.create({
-        data: {
-          userId: ownerId,
-          resourceId,
-          kind,
-          status: 'queued',
-          leaseUntil: new Date(at.getTime() + START_LEASE_MS),
-          bulkId: input.bulkId ?? null,
-          targetGeneration: row.generation + 1,
-          actorUserId: actor.actorUserId,
-          realActorUserId: actor.realActorUserId,
-        },
-      })
-      const claim = await tx.userTradecraftResource.updateMany({
-        where: { id: resourceId, userId: ownerId, activeJobId: row.activeJobId },
-        data: { activeJobId: created.id },
-      })
-      if (claim.count !== 1) throw new Error('startJob: the claim changed under the row lock')
-      // The claim it took over, if any: a job whose lease expired or never existed runs nowhere.
-      const lost = await tx.tradecraftIngestionJob.findMany({
-        where: { resourceId, id: { not: created.id }, status: { in: [...UNFINISHED_JOB_STATUSES] }, ...LEASE_GONE(at) },
-        select: { id: true, kind: true, resourceId: true },
-      })
-      for (const job of lost) await endWithoutSwap(tx, job, 'failed', 'agent_lost', at, { where: LEASE_GONE(at) })
-      return { job: created, resource: row }
-    }))
-  } catch (err) {
-    if (err instanceof NotFound) return { kind: 'not_found' }
-    if (err instanceof ClaimHeld) return { kind: 'job_running', job: jobView(err.job, at) }
-    throw err
-  }
+  bulkId: string | null
+  at: Date
+}): Promise<{ job: TradecraftIngestionJob; resource: UserTradecraftResource }> {
+  const { ownerId, resourceId, kind, actor, at } = input
+  return prisma.$transaction(async (tx) => {
+    if (!(await lockOwnResource(tx, ownerId, resourceId))) throw new NotFound()
+    const row = await tx.userTradecraftResource.findUnique({ where: { id: resourceId } })
+    if (!row) throw new NotFound()
+    const holder = await claimHolder(tx, row, at)
+    if (holder) throw new ClaimHeld(holder)
+    const created = await tx.tradecraftIngestionJob.create({
+      data: {
+        userId: ownerId,
+        resourceId,
+        kind,
+        status: 'queued',
+        leaseUntil: new Date(at.getTime() + START_LEASE_MS),
+        bulkId: input.bulkId,
+        targetGeneration: row.generation + 1,
+        actorUserId: actor.actorUserId,
+        realActorUserId: actor.realActorUserId,
+      },
+    })
+    const claim = await tx.userTradecraftResource.updateMany({
+      where: { id: resourceId, userId: ownerId, activeJobId: row.activeJobId },
+      data: { activeJobId: created.id },
+    })
+    if (claim.count !== 1) throw new Error('startJob: the claim changed under the row lock')
+    // The claim it took over, if any: a job whose lease expired or never existed runs nowhere.
+    const lost = await tx.tradecraftIngestionJob.findMany({
+      where: { resourceId, id: { not: created.id }, status: { in: [...UNFINISHED_JOB_STATUSES] }, ...LEASE_GONE(at) },
+      select: { id: true, kind: true, resourceId: true },
+    })
+    for (const job of lost) await endWithoutSwap(tx, job, 'failed', 'agent_lost', at, { where: LEASE_GONE(at) })
+    return { job: created, resource: row }
+  })
+}
 
+type Claimed = { job: TradecraftIngestionJob; resource: UserTradecraftResource }
+type Delivered = Exclude<StartOutcome, { kind: 'job_running' } | { kind: 'not_found' }>
+
+/**
+ * Sends the claimed jobs to the agent in one `jobs` request (the agent's per-owner token bucket is
+ * spent once, D-49) and answers each job's outcome in order. A claim is released at once when
+ * the request was not delivered (refused connection, an error answer); after a timeout it is
+ * kept, and the start lease frees it if the agent never took the job.
+ */
+async function deliverJobs(ownerId: string, claimed: Claimed[]): Promise<Delivered[]> {
   const [userSettings, account] = await Promise.all([
     prisma.tradecraftUserSettings.findUnique({ where: { userId: ownerId }, select: { ingestion: true } }),
     prisma.userSettings.findUnique({ where: { userId: ownerId }, select: { githubAccessToken: true } }),
   ])
-  const failedView = (code: ErrorCode) => jobView({ ...job, status: 'failed', errorCode: code, finishedAt: now() })
+  const failedView = (job: TradecraftIngestionJob, code: ErrorCode) => jobView({ ...job, status: 'failed', errorCode: code, finishedAt: now() })
+  const jobsList = claimed.map(c => c.job)
+  const ids = jobsList.map(j => j.id).join(',')
   let batch: ReturnType<typeof JobStartBatch.safeParse>
   try {
-    batch = JobStartBatch.safeParse({ jobs: [buildJobRequest(job, resource, userSettings, account?.githubAccessToken ?? '')] })
+    batch = JobStartBatch.safeParse({ jobs: claimed.map(c => buildJobRequest(c.job, c.resource, userSettings, account?.githubAccessToken ?? '')) })
   } catch {
     batch = JobStartBatch.safeParse(null)
   }
   if (!batch.success) {
-    // The request carries secrets: log the job and the paths that failed, never the values.
-    console.error(`[tradecraft] job_request_invalid job=${job.id} paths=${batch.error.issues.map(i => i.path.join('.')).join(',')}`)
-    await closeJob(job, 'internal_error')
-    return { kind: 'bad_request', job: failedView('internal_error') }
+    // The request carries secrets: log the jobs and the paths that failed, never the values.
+    console.error(`[tradecraft] job_request_invalid job=${ids} paths=${batch.error.issues.map(i => i.path.join('.')).join(',')}`)
+    for (const job of jobsList) await closeJob(job, 'internal_error')
+    return jobsList.map(job => ({ kind: 'bad_request', job: failedView(job, 'internal_error') }))
   }
 
   let resp: Response
@@ -317,28 +319,87 @@ export async function startJob(input: {
   } catch (err) {
     const failure = upstreamFailure('agent', err instanceof AgentUnreachableError ? err.cause_ : err, '')
     if (failure.status === 504) {
-      console.error(`[tradecraft] job_start_timeout job=${job.id}`)
-      return { kind: 'started', job: jobView(job), delivery: 'timeout' }
+      console.error(`[tradecraft] job_start_timeout job=${ids}`)
+      return jobsList.map(job => ({ kind: 'started', job: jobView(job), delivery: 'timeout' }))
     }
     const cause = failure.body.cause
-    console.error(`[tradecraft] job_start_unreachable job=${job.id}${cause ? ` cause=${cause}` : ''}`)
-    await closeJob(job, 'agent_unreachable')
-    return { kind: 'agent_unreachable', job: failedView('agent_unreachable'), ...(cause ? { cause } : {}) }
+    console.error(`[tradecraft] job_start_unreachable job=${ids}${cause ? ` cause=${cause}` : ''}`)
+    for (const job of jobsList) await closeJob(job, 'agent_unreachable')
+    return jobsList.map(job => ({ kind: 'agent_unreachable', job: failedView(job, 'agent_unreachable'), ...(cause ? { cause } : {}) }))
   }
   if (!resp.ok) {
-    console.error(`[tradecraft] job_start_refused job=${job.id} status=${resp.status}`)
-    await closeJob(job, 'agent_unreachable', resp.status)
-    return { kind: 'agent_unreachable', job: failedView('agent_unreachable'), upstreamStatus: resp.status }
+    console.error(`[tradecraft] job_start_refused job=${ids} status=${resp.status}`)
+    for (const job of jobsList) await closeJob(job, 'agent_unreachable', resp.status)
+    return jobsList.map(job => ({ kind: 'agent_unreachable', job: failedView(job, 'agent_unreachable'), upstreamStatus: resp.status }))
   }
   const answer = JobStartAnswer.safeParse(await resp.json().catch(() => null))
-  if (!answer.success) return { kind: 'started', job: jobView(job), delivery: 'unconfirmed' }
-  const refusal = answer.data.refused.find(r => r.job_id === job.id)
-  if (refusal) {
-    console.error(`[tradecraft] job_refused job=${job.id} code=${refusal.code}`)
-    await closeJob(job, refusal.code)
-    return { kind: 'started', job: failedView(refusal.code), delivery: 'refused' }
+  if (!answer.success) return jobsList.map(job => ({ kind: 'started', job: jobView(job), delivery: 'unconfirmed' }))
+  const out: Delivered[] = []
+  for (const job of jobsList) {
+    const refusal = answer.data.refused.find(r => r.job_id === job.id)
+    if (refusal) {
+      console.error(`[tradecraft] job_refused job=${job.id} code=${refusal.code}`)
+      await closeJob(job, refusal.code)
+      out.push({ kind: 'started', job: failedView(job, refusal.code), delivery: 'refused' })
+    } else {
+      out.push({ kind: 'started', job: jobView(job), delivery: 'accepted' })
+    }
   }
-  return { kind: 'started', job: jobView(job), delivery: 'accepted' }
+  return out
+}
+
+/** Starts one job on the account's resource: the claim (`claimNewJob`), then one `jobs` request. */
+export async function startJob(input: {
+  ownerId: string
+  resourceId: string
+  kind: ManualJobKind
+  actor: JobActor
+  bulkId?: string | null
+}): Promise<StartOutcome> {
+  const { ownerId, resourceId, kind, actor } = input
+  if (!(MANUAL_JOB_KINDS as readonly string[]).includes(kind)) throw new Error(`startJob: ${kind} is not started by a person here`)
+  const at = now()
+  let claimed: Claimed
+  try {
+    claimed = await claimNewJob({ ownerId, resourceId, kind, actor, bulkId: input.bulkId ?? null, at })
+  } catch (err) {
+    if (err instanceof NotFound) return { kind: 'not_found' }
+    if (err instanceof ClaimHeld) return { kind: 'job_running', job: jobView(err.job, at) }
+    throw err
+  }
+  return (await deliverJobs(ownerId, [claimed]))[0]
+}
+
+export type BulkSkip = { resourceId: string; reason: 'job_running' | 'not_found' }
+
+/**
+ * Save & refresh all (§3.2, T6.10): one `bulk` job per resource, all with `bulkId`, claimed one
+ * by one (a resource already running is skipped, never queued behind itself), then started with
+ * one `jobs` request. The agent runs them one at a time and stops the batch when the daily model
+ * budget is spent (R-027).
+ */
+export async function startBulkJobs(input: {
+  ownerId: string
+  resourceIds: readonly string[]
+  actor: JobActor
+  bulkId: string
+}): Promise<{ started: { resourceId: string; outcome: Delivered }[]; skipped: BulkSkip[] }> {
+  const { ownerId, actor, bulkId } = input
+  const at = now()
+  const claimed: Claimed[] = []
+  const skipped: BulkSkip[] = []
+  for (const resourceId of input.resourceIds) {
+    try {
+      claimed.push(await claimNewJob({ ownerId, resourceId, kind: 'bulk', actor, bulkId, at }))
+    } catch (err) {
+      if (err instanceof NotFound) skipped.push({ resourceId, reason: 'not_found' })
+      else if (err instanceof ClaimHeld) skipped.push({ resourceId, reason: 'job_running' })
+      else throw err
+    }
+  }
+  if (claimed.length === 0) return { started: [], skipped }
+  const outcomes = await deliverJobs(ownerId, claimed)
+  return { started: claimed.map((c, i) => ({ resourceId: c.resource.id, outcome: outcomes[i] })), skipped }
 }
 
 /** The answer of a route whose only work is the job (Refresh, Verify). */

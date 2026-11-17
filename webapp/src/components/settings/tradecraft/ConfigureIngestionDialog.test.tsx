@@ -74,15 +74,29 @@ describe('ConfigureIngestionDialog', () => {
     expect(screen.getByText(/Default: 200 pages\. Allowed: 1–500 pages\./)).toBeInTheDocument()
   })
 
-  test('the focus defaults are the last section (T5.6); resource-only settings and real page titles are not in the dialog', async () => {
+  test('the focus defaults are the last section (T5.6); resource-only settings are not in the dialog', async () => {
     renderDialog()
     await screen.findByText(APPLIES_TEXT)
     expect(nav().getAllByRole('button').at(-1)).toHaveTextContent('Ingestion focus')
-    open('Known site types')
-    expect(screen.queryByText('Use real page titles')).toBeNull()
-    expect(screen.queryByText('Max title fetches')).toBeNull()
     open('Website crawl')
     expect(screen.queryByText('Start pages')).toBeNull()
+  })
+
+  test('real_title_fields: "Use real page titles" and "Max title fetches" in Known site types, the limit used only when on (T6.10)', async () => {
+    renderDialog()
+    await screen.findByText(APPLIES_TEXT)
+    expect(HIDDEN_KEYS.size).toBe(0)
+    open('Known site types')
+    const pane = within(screen.getByRole('region', { name: 'Known site types' }))
+    expect(pane.getByText('Real page titles')).toBeInTheDocument()
+    const fetches = pane.getByLabelText('Max title fetches').closest('[data-setting]') as HTMLElement
+    expect(within(fetches).getByText(/Used only when "Use real page titles" is on\./)).toBeInTheDocument()
+    fireEvent.click(pane.getByLabelText('Use real page titles'))
+    expect(within(fetches).queryByText(/Used only when "Use real page titles" is on\./)).toBeNull()
+    fireEvent.change(pane.getByLabelText('Max title fetches'), { target: { value: '800' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    expect(sent()).toEqual({ ingestion: { 'knownTypes.realTitles': true, 'knownTypes.maxTitleFetches': 800 } })
   })
 
   test('marks_changed: a field and its section are marked when the value differs from the default', async () => {
@@ -218,5 +232,58 @@ describe('ConfigureIngestionDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(sent()).toEqual({ ingestion: { 'crawl.includePaths': ['/writeups/*'] } })
+  })
+})
+
+describe('Save & refresh all (§3.2, T6.10)', () => {
+  const RES = [
+    { id: 'r1', name: 'HackTricks', enabled: true }, { id: 'r2', name: 'Off', enabled: false }, { id: 'r3', name: 'Blog', enabled: true },
+  ]
+  const route = (refresh: { status: number; body: unknown }) => fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === '/api/users/user-1/tradecraft-resources') return new Response(JSON.stringify(RES), { status: 200 })
+    if (url === '/api/users/user-1/tradecraft-resources/refresh-all') return new Response(JSON.stringify(refresh.body), { status: refresh.status })
+    const a = init?.method === 'PUT' ? putAnswer : getAnswer
+    return new Response(JSON.stringify(a.body), { status: a.status })
+  })
+  const STARTED = { bulkId: 'bulk-1', started: [{ resourceId: 'r1', name: 'HackTricks', job: { id: 'j1' } }], skipped: [{ resourceId: 'r3', name: 'Blog', reason: 'job_running' }] }
+
+  test('confirmation_lists_ticked: the enabled resources; Confirm saves, then starts one batch of the ticked ones', async () => {
+    route({ status: 202, body: STARTED })
+    renderDialog()
+    await screen.findByText(APPLIES_TEXT)
+    open('Website crawl')
+    fireEvent.change(field('Max pages visited'), { target: { value: '120' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save & refresh all' }))
+    const confirm = within(await screen.findByRole('dialog', { name: 'Save & refresh all' }))
+    expect(confirm.getAllByRole('checkbox').map(c => c.closest('label')!.textContent)).toEqual(['HackTricks', 'Blog'])
+    expect(puts()).toEqual([])
+    fireEvent.click(confirm.getByRole('checkbox', { name: 'Blog' }))
+    fireEvent.click(confirm.getByRole('button', { name: 'Save & refresh 1' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(sent()).toEqual({ ingestion: { 'crawl.maxPages': 120 } })
+    const post = fetchMock.mock.calls.find(c => c[0] === '/api/users/user-1/tradecraft-resources/refresh-all')!
+    expect(JSON.parse(String((post[1] as RequestInit).body))).toEqual({ resourceIds: ['r1'] })
+    expect(onSaved.mock.calls[0][1]).toEqual(STARTED)
+  })
+
+  test('Cancel in the confirmation saves nothing and starts nothing', async () => {
+    route({ status: 202, body: STARTED })
+    renderDialog()
+    await screen.findByText(APPLIES_TEXT)
+    fireEvent.click(screen.getByRole('button', { name: 'Save & refresh all' }))
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Save & refresh all' })).getByRole('button', { name: 'Cancel' }))
+    expect(puts()).toEqual([])
+    expect(fetchMock.mock.calls.some(c => String(c[0]).endsWith('/refresh-all'))).toBe(false)
+  })
+
+  test('a batch that does not start says the settings were saved and why', async () => {
+    route({ status: 503, body: { error: 'The agent could not start the job', code: 'agent_unreachable' } })
+    renderDialog()
+    await screen.findByText(APPLIES_TEXT)
+    fireEvent.click(screen.getByRole('button', { name: 'Save & refresh all' }))
+    const confirm = within(await screen.findByRole('dialog', { name: 'Save & refresh all' }))
+    fireEvent.click(confirm.getByRole('button', { name: 'Save & refresh 2' }))
+    expect(await confirm.findByRole('alert')).toHaveTextContent(/Saved, but the refresh did not start: .*agent_unreachable/)
+    expect(onSaved).not.toHaveBeenCalled()
   })
 })

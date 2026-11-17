@@ -9,18 +9,19 @@ import { ApiError, toApiError } from '@/lib/apiError'
 import { failureText } from '@/components/settings/failureText'
 import { estimateText, estimateWebsite } from '@/lib/tradecraft/estimate'
 import { SECTIONS, SETTINGS, settingDef, type SettingDef } from '@/lib/tradecraft/settingsSpec'
-import { tradecraftClient, type IngestionSettingsView, type UserRecipe } from '@/lib/tradecraft/client'
+import { tradecraftClient, type IngestionSettingsView, type RefreshAllResult, type UserRecipe } from '@/lib/tradecraft/client'
 import { draftError, parseDraft, sameValue, type Draft } from './dialog/draft'
 import { SectionFields, SettingsSection } from './dialog/SettingsSection'
 import { KnownTypesFields } from './dialog/KnownTypesSection'
 import { FocusDefaultsFields } from './dialog/FocusDefaultsSection'
+import { RefreshAllConfirm } from './dialog/RefreshAllConfirm'
 import tc from './tradecraft.module.css'
 import css from './dialog/dialog.module.css'
 
 /** The sections of Configure ingestion (§3.2), in order (§4.1-§4.8). */
 export const DIALOG_SECTIONS = ['fetching', 'detection', 'knownTypes', 'crawl', 'storage', 'summary', 'refreshing', 'focus'] as const
-/** Settings whose feature is not built yet: real page titles arrive with phase 6. */
-export const HIDDEN_KEYS: ReadonlySet<string> = new Set(['knownTypes.realTitles', 'knownTypes.maxTitleFetches'])
+/** Settings whose feature is not built yet: none since real page titles (T6.1, T6.10). */
+export const HIDDEN_KEYS: ReadonlySet<string> = new Set()
 export const APPLIES_TEXT = 'Applies to all your resources the next time each one is added or refreshed.'
 const LOAD_FAILED = "Couldn't load your ingestion settings"
 const SAVE_FAILED = "Couldn't save your ingestion settings"
@@ -59,7 +60,8 @@ function sectionDefs(section: string): SettingDef[] {
 export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChange }: {
   userId: string
   onClose: () => void
-  onSaved: (view: IngestionSettingsView) => void
+  /** `refresh`: what Save & refresh all started and skipped. */
+  onSaved: (view: IngestionSettingsView, refresh?: RefreshAllResult) => void
   onDirtyChange?: (dirty: boolean) => void
 }) {
   const [status, setStatus] = useState<Status>({ kind: 'loading' })
@@ -70,6 +72,9 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({})
   const [saveError, setSaveError] = useState('')
   const [saving, setSaving] = useState(false)
+  // Save & refresh all: its confirmation lists the enabled resources (§3.2), read when it opens.
+  const [confirming, setConfirming] = useState<{ id: string; name: string }[] | null>(null)
+  const [refreshError, setRefreshError] = useState('')
   const { isDirty, setBaseline } = useDirtyState(draft)
   const { guardedNavigate } = useUnsavedChangesGuard(isDirty, { trackGlobal: false })
   useEffect(() => { onDirtyChange?.(isDirty) }, [isDirty, onDirtyChange])
@@ -130,19 +135,18 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
     setServerErrors({})
   }
 
-  const save = async () => {
-    if (!view) return
+  /** Saves the changed values; null (with the refusal shown) when the save failed. */
+  const write = async (): Promise<IngestionSettingsView | null> => {
+    if (!view) return null
     const changed: Record<string, unknown> = {}
     for (const [k, raw] of Object.entries(draft)) {
       const value = parseDraft(settingDef(k)!, raw)
       if (!sameValue(value, view.values[k])) changed[k] = value
     }
-    setSaving(true)
-    setSaveError('')
     try {
       const res = await tradecraftClient.saveSettings(userId, changed)
       adopt(res.ingestion)
-      onSaved(res.ingestion)
+      return res.ingestion
     } catch (e) {
       const err = toApiError(e, SAVE_FAILED)
       const list = Array.isArray(err.body?.errors) ? err.body!.errors as { key: string; message: string }[] : []
@@ -151,6 +155,50 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
       const first = Object.keys(onFields)[0]
       if (first) setSection(settingDef(first)!.section)
       else setSaveError(err.message)
+      return null
+    }
+  }
+
+  const save = async () => {
+    setSaving(true)
+    setSaveError('')
+    try {
+      const saved = await write()
+      if (saved) onSaved(saved)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const openRefreshAll = async () => {
+    setSaving(true)
+    setSaveError('')
+    try {
+      const list = await tradecraftClient.list(userId)
+      setRefreshError('')
+      setConfirming(list.filter(r => r.enabled).map(r => ({ id: r.id, name: r.name })))
+    } catch (e) {
+      setSaveError(toApiError(e, "Couldn't read your resources").message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** Save & refresh all (§3.2): the settings first, then one batch of the ticked resources. */
+  const saveAndRefresh = async (ids: string[]) => {
+    setSaving(true)
+    setRefreshError('')
+    try {
+      const saved = await write()
+      if (!saved) { setConfirming(null); return }
+      try {
+        const started = await tradecraftClient.refreshAll(userId, ids)
+        setConfirming(null)
+        onSaved(saved, started)
+      } catch (e) {
+        // The settings are saved; only the batch did not start, and the confirmation says why.
+        setRefreshError(`Saved, but the refresh did not start: ${toApiError(e, "Couldn't start Save & refresh all").message}`)
+      }
     } finally {
       setSaving(false)
     }
@@ -179,8 +227,11 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
           {saveError && <span className={tc.failure} role="alert">{saveError}</span>}
           <span className={css.footerSpacer} />
           <button type="button" className="secondaryButton" onClick={() => guardedNavigate(onClose)} disabled={saving}>Cancel</button>
-          <button type="button" className="primaryButton" onClick={save} disabled={saving || !isDirty || hasErrors}>
+          <button type="button" className="secondaryButton" onClick={save} disabled={saving || !isDirty || hasErrors}>
             {saving && <Loader2 size={14} className={tc.spin} />} Save
+          </button>
+          <button type="button" className="primaryButton" onClick={openRefreshAll} disabled={saving || hasErrors}>
+            Save &amp; refresh all
           </button>
         </div>
       ) : (
@@ -222,6 +273,12 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
             </SettingsSection>
           </div>
         </>
+      )}
+      {confirming && (
+        <RefreshAllConfirm
+          resources={confirming} busy={saving} error={refreshError}
+          onConfirm={ids => void saveAndRefresh(ids)} onCancel={() => setConfirming(null)}
+        />
       )}
     </Modal>
   )

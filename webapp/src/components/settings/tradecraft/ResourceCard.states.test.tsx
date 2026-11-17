@@ -16,6 +16,8 @@ describe('ResourceCard states', () => {
     ['failed', job({ status: 'failed', errorCode: 'fetch_failed' }), 'Failed (fetch_failed): the previous version is kept'],
     ['lost', job({ status: 'failed', errorCode: 'agent_lost' }), 'Failed (agent_lost): the previous version is kept'],
     ['cancelled', job({ status: 'cancelled', errorCode: 'cancelled' }), 'Cancelled: the previous version is kept'],
+    // Save & refresh all stopped its batch at the daily model budget (T6.10, R-027).
+    ['budget stop', job({ kind: 'bulk', status: 'cancelled', errorCode: 'llm_budget_exhausted' }), 'Not refreshed: the daily model budget is used up; the previous version is kept'],
   ])('%s', (_name, j, text) => {
     render(<ResourceCard resource={{ ...RESOURCE, job: j }} {...h} />)
     expect(screen.getByRole('status')).toHaveTextContent(text)

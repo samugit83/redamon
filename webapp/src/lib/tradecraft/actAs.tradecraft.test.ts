@@ -68,6 +68,7 @@ import * as checkUrl from '@/app/api/users/[id]/tradecraft-resources/check-url/r
 import * as preview from '@/app/api/users/[id]/tradecraft-resources/focus-preview/route'
 import * as mapRoute from '@/app/api/users/[id]/tradecraft-resources/[resourceId]/map/route'
 import * as pages from '@/app/api/users/[id]/tradecraft-resources/[resourceId]/pages/[pageId]/route'
+import * as refreshAll from '@/app/api/users/[id]/tradecraft-resources/refresh-all/route'
 
 const accounts = () => h.accounts as AccountDb
 const tc = () => h.tc as TradecraftDb
@@ -225,6 +226,33 @@ describe('use_refused: nothing sends a login while acting', () => {
     expect((await checkUrl.POST(req('/check-url', 'POST', { resourceId: 'pub' }), P())).status).toBe(200)
     expect(refusals()).toEqual([])
     expect(calls.map(c => c.path)).toEqual(['/tradecraft/v2/jobs', '/tradecraft/v2/check-url'])
+  })
+})
+
+describe('Save & refresh all while acting (R-159, T6.10)', () => {
+  test('skips_logins_act_as: the login resource is skipped and said so, one refusal recorded; the public one starts', async () => {
+    await as('admin-1', 'member-1')
+    const calls = agent().calls
+    const res = await refreshAll.POST(req('/refresh-all', 'POST', { resourceIds: ['kb', 'pub'] }), P())
+    expect(res.status).toBe(202)
+    const body = await res.json()
+    expect(body.skipped).toEqual([{ resourceId: 'kb', name: 'Company KB', reason: 'use_site_logins' }])
+    expect(body.started.map((s: { resourceId: string }) => s.resourceId)).toEqual(['pub'])
+    expect(refusals()).toHaveLength(1)
+    expect(refusals()[0]).toMatchObject({ actorId: 'admin-1', onBehalfOfUserId: 'member-1', after: { action: 'use_site_logins' } })
+    const sent = calls.filter(c => c.path === '/tradecraft/v2/jobs')
+    expect(sent).toHaveLength(1)
+    expect(JSON.stringify(sent)).not.toContain('fake-kb-session')
+  })
+
+  test('with the permissions switch off nothing is skipped for the login', async () => {
+    setFlagsForTests({ identity: true, permissions: false })
+    await as('admin-1', 'member-1')
+    agent()
+    const body = await (await refreshAll.POST(req('/refresh-all', 'POST', { resourceIds: ['kb', 'pub'] }), P())).json()
+    expect(body.skipped).toEqual([])
+    expect(body.started.map((s: { resourceId: string }) => s.resourceId)).toEqual(['kb', 'pub'])
+    expect(refusals()).toEqual([])
   })
 })
 
