@@ -17,6 +17,10 @@ untrusted block. With one line per resource, a resource's full summary is one br
 
 Above the list, when ``prompt.coverageMap`` is on, the coverage map (Q5, T5.4,
 ``library.coverage``): built from counts and the fixed lists only, so it is not wrapped.
+
+A run with no active resource (the owner has none, or the project turned them all off) sees no
+Tradecraft at all: no entry here, and none of the prompt's static texts that name the tools
+(``no_spawn_tools``, ``args_examples``, ``stealth_section``), which follow ``offered_catalog``.
 """
 
 from __future__ import annotations
@@ -214,3 +218,45 @@ def build_entries(catalog: V2Catalog, coverage: Optional[dict] = None) -> dict:
         entries["tradecraft_ask"] = ask_entry(catalog)
     return entries
 
+
+def offered_catalog() -> Optional[V2Catalog]:
+    """The run's catalog when it offers the library: 2.0, with at least one resource active for
+    this run (the webapp's catalog leaves out what the project turned off and a login another
+    person may not use). None otherwise, and then no prompt text names Tradecraft. It is bound
+    once per run start or resume, so a text that follows it stays the same from think to think."""
+    from tradecraft import runtime
+
+    catalog = runtime.bound_catalog()
+    return catalog if catalog is not None and catalog.resources else None
+
+
+def no_spawn_tools() -> str:
+    """The library's tools in the workspace rules' list of fast tools never to spawn as jobs."""
+    return "tradecraft_search, tradecraft_lookup, " if offered_catalog() is not None else ""
+
+
+def args_examples() -> str:
+    """The library's lines of the prompts' typed-arguments examples (Shape C), each on its own
+    line after the previous example; "" without a library."""
+    catalog = offered_catalog()
+    if catalog is None:
+        return ""
+    lines = ['    tradecraft_search  -> {"query": "..."}  OR  {"resource": "slug", "path": ""}',
+             '    tradecraft_lookup  -> {"page": "slug:N", "section": "..."}']
+    if has_ask(catalog):
+        lines.append('    tradecraft_ask     -> {"need": "...", "context": "..."}')
+    return "\n" + "\n".join(lines)
+
+
+def stealth_section() -> str:
+    """The stealth rules' section for the library's tools; "" without a library."""
+    catalog = offered_catalog()
+    if catalog is None:
+        return ""
+    tools = "tradecraft_search, tradecraft_lookup" + (", tradecraft_ask" if has_ask(catalog) else "")
+    return (f"### {tools} — NO RESTRICTIONS\n"
+            "- Read the user's Tradecraft library: pages stored from the knowledge sites the user added,\n"
+            "  or read from those sites.\n"
+            "- Never sends traffic to the pentest target. All requests go to the library or to the\n"
+            "  resources' own hosts.\n"
+            "- Use them freely.")

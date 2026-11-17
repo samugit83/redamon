@@ -685,13 +685,15 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     # Stealth rules now live in the cached Tier-1 segment (previously prepended
     # to the whole prompt). Empty string when stealth mode is off.
     if get_setting('STEALTH_MODE', False):
-        from prompts.stealth_rules import STEALTH_MODE_RULES
-        _stealth_rules_text = STEALTH_MODE_RULES
+        from prompts.stealth_rules import stealth_mode_rules
+        _stealth_rules_text = stealth_mode_rules()
     else:
         _stealth_rules_text = ""
 
-    # Tradecraft: the rule only where Library now runs (its tools offered in this phase, hints on).
+    # Tradecraft: the library's lines appear only in a run with an active resource; the rule
+    # only where Library now runs (its tools offered in this phase, hints on).
     from tradecraft.library.hints import library_rule
+    from tradecraft.overlay import args_examples
     from tradecraft.runtime import bound_catalog
 
     system_prompt = REACT_SYSTEM_PROMPT.format(
@@ -718,6 +720,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         fireteam_action_enum=ft_action_enum,
         fireteam_plan_field=ft_plan_field,
         fireteam_example_section=ft_example,
+        tradecraft_args=args_examples(),
         library_rule=library_rule(bound_catalog(), phase),
     )
 

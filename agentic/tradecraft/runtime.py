@@ -56,11 +56,12 @@ def bind_run_catalog(catalog: Any) -> bool:
 
 def _coverage_of(catalog: V2Catalog) -> Optional[dict]:
     """The coverage counts of the run's resources (one bounded query), or None when the map is
-    off or cannot be read: the run then goes on without one."""
+    off, the run has no active resource (it then sees no Tradecraft at all), or the counts cannot
+    be read: the run then goes on without one."""
     from tradecraft.library import coverage
     from tradecraft.settings import EffectiveSettings
 
-    if not EffectiveSettings(catalog.search or {}, scope="search").bool("prompt.coverageMap"):
+    if not catalog.resources or not EffectiveSettings(catalog.search or {}, scope="search").bool("prompt.coverageMap"):
         return None
     return coverage.coverage_for(catalog)
 

@@ -365,8 +365,7 @@ Tools fall into FOUR shape buckets — pick the right one per tool name:
     google_dork        -> {{"query": "..."}}
     shodan             -> {{"action": "host"|"search"|"dns_reverse"|"dns_domain"|"count", "query": "...", "ip": "...", "domain": "..."}}
     execute_code       -> {{"code": "...", "language": "python", "filename": "exploit"}}
-    execute_playwright -> {{"url": "...", "selector": "...", "format": "text"|"html"}}  OR  {{"script": "..."}}
-    tradecraft_lookup  -> {{"resource_id": "...", "query": "..."}}
+    execute_playwright -> {{"url": "...", "selector": "...", "format": "text"|"html"}}  OR  {{"script": "..."}}{tradecraft_args}
 
   Shape D — no args: msf_restart -> {{}}
 
@@ -615,6 +614,7 @@ def _build_pending_output_section(state: FireteamMemberState) -> str:
 def _build_member_prompt(state: FireteamMemberState) -> str:
     from prompts import get_phase_tools
     from prompts.base import build_tool_args_section, build_compact_tool_list
+    from tradecraft.overlay import args_examples
 
     phase = state.get("current_phase", "informational")
 
@@ -798,6 +798,9 @@ def _build_member_prompt(state: FireteamMemberState) -> str:
         tool_list=tool_list,
         tool_args_section=tool_args_section,
         pending_output_section=pending_output_section,
+        # Tradecraft's examples only in a run with an active resource (the run's binding, which
+        # the members inherit).
+        tradecraft_args=args_examples(),
     )
     # Prepend the budget prefix (if any). Sits ABOVE the mission header so the
     # LLM reads it before anything else.

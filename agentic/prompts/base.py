@@ -115,7 +115,7 @@ SPAWN with job_spawn when ALL hold:
   - You don't need live step-by-step feedback in the chat stream
 
 DO NOT spawn these (overhead > benefit; they return in <2s):
-  - tradecraft_lookup, query_graph, web_search, cve_intel, shodan,
+  - __TRADECRAFT_FAST_TOOLS__query_graph, web_search, cve_intel, shodan,
     google_dork, msf_restart, fs_* tools, any HTTP single-shot
     (execute_curl, execute_httpx for one URL)
 
@@ -154,6 +154,18 @@ jobs/<id>.log`.
 Inside a plan_tools wave this matters most: the wave does NOT return until
 the SLOWEST step finishes. One unwrapped slow tool blocks every fast probe
 in the same wave for the slow tool's full duration."""
+
+# The library's tools join the list of fast tools only in a run that offers them: a run with no
+# Tradecraft resource sees no Tradecraft text at all. The run's catalog is bound once per run
+# start or resume, so this cached block stays the same from think to think.
+_TRADECRAFT_FAST_TOOLS = "__TRADECRAFT_FAST_TOOLS__"
+
+
+def _tradecraft_fast_tools() -> str:
+    from tradecraft.overlay import no_spawn_tools
+
+    return no_spawn_tools()
+
 
 _WORKSPACE_LAYOUT_FOOTER = (
     "If you need a custom subtree (e.g. `evidence/2026-05-15/`), use fs_mkdir "
@@ -267,7 +279,7 @@ def build_workspace_layout_block(project_id: str) -> str:
     )
     header = _WORKSPACE_LAYOUT_HEADER.replace(
         "__WORKSPACE_ROOT__", workspace_root_path
-    )
+    ).replace(_TRADECRAFT_FAST_TOOLS, _tradecraft_fast_tools())
     parts = [header]
     uploads = _list_uploads(project_id)
     if uploads:
@@ -303,7 +315,7 @@ def build_workspace_rules_block(project_id: str) -> str:
     )
     header = _WORKSPACE_LAYOUT_HEADER.replace(
         "__WORKSPACE_ROOT__", workspace_root_path
-    )
+    ).replace(_TRADECRAFT_FAST_TOOLS, _tradecraft_fast_tools())
     return header + "\n\n" + _WORKSPACE_LAYOUT_FOOTER
 
 
@@ -1244,8 +1256,7 @@ Do NOT include tools that depend on another tool's output — plan those in the 
     google_dork        -> {{"query": "..."}}
     shodan             -> {{"action": "host"|"search"|"dns_reverse"|"dns_domain"|"count", "query": "...", "ip": "...", "domain": "..."}}
     execute_code       -> {{"code": "...", "language": "python", "filename": "exploit"}}
-    execute_playwright -> {{"url": "...", "selector": "...", "format": "text"|"html"}}  OR  {{"script": "..."}}
-    tradecraft_lookup  -> {{"resource_id": "...", "query": "..."}}
+    execute_playwright -> {{"url": "...", "selector": "...", "format": "text"|"html"}}  OR  {{"script": "..."}}{tradecraft_args}
 
   Shape D — no args: msf_restart -> {{}}
 
