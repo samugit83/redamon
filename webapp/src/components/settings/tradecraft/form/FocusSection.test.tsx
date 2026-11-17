@@ -1,6 +1,6 @@
 /**
  * The Focus section of the resource form (§6.14 "What the user sets", T5.6; R-175): the mode
- * (Tag only shown, disabled until content checks), the built-in and the owner's recipes, topic and
+ * (Tag only enabled by T6.11), the built-in and the owner's recipes, topic and
  * content-type chips (the owner's skills among the topics), Keep and Skip written by the chips and
  * editable up to 1,000 characters, Skip added to or replacing "Always skip", strictness, the
  * preview of 100 entries with its counts and reasons, the cost estimate, Save as recipe. Hidden
@@ -9,7 +9,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
-import { FocusSection, TAG_ONLY_SOON } from './FocusSection'
+import { FocusSection, TAG_ONLY_NOTE } from './FocusSection'
 import { EMPTY_FOCUS, type Focus } from '@/lib/tradecraft/focus'
 
 const fetchMock = vi.fn()
@@ -69,14 +69,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('FocusSection', () => {
-  test('the mode: Everything shows nothing else; Tag only is shown, disabled until content checks', () => {
+  test('the mode: Everything shows nothing else', () => {
     render(<Host />)
     expect(screen.getByRole('button', { name: /^Focus/ })).toHaveTextContent('Everything')
     openSection()
     expect((screen.getByLabelText('Everything') as HTMLInputElement).checked).toBe(true)
-    expect(screen.getByLabelText('Tag only')).toBeDisabled()
-    expect(screen.getByText(TAG_ONLY_SOON)).toBeInTheDocument()
     expect(screen.queryByLabelText('Keep')).toBeNull()
+    expect(screen.queryByText(TAG_ONLY_NOTE)).toBeNull()
+  })
+
+  test('tag_only_enabled: Tag only can be chosen (T6.11, AC-12), with its words; it is saved as tagOnly', () => {
+    render(<Host />)
+    openSection()
+    expect(screen.getByLabelText('Tag only')).toBeEnabled()
+    fireEvent.click(screen.getByLabelText('Tag only'))
+    expect(latest.focus).toMatchObject({ mode: 'tagOnly' })
+    expect(screen.getByText(TAG_ONLY_NOTE)).toBeInTheDocument()
   })
 
   test('chips_write_keep_skip: the chips write Keep; an edited Keep stays the person\'s', async () => {

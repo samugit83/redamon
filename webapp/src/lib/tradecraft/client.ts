@@ -68,6 +68,14 @@ export interface ResourceInput {
   presetKey?: string
   /** `{}` is no focus (Everything). */
   focus?: Focus | Record<string, never>
+  /** The site login in the contract's names; a value sent as "set" keeps the stored one; null removes it. */
+  credentials?: LoginInput | null
+}
+
+export interface LoginInput {
+  cookie: string
+  headers: { name: string; value: string }[]
+  basic_auth: { username: string; password: string } | null
 }
 
 /** The focus preview of a saved resource (its live map), or of the entries Check URL found. */
@@ -86,6 +94,7 @@ export interface CheckUrlInput {
   forcedType?: string
   overrides?: Record<string, unknown>
   githubTokenOverride?: string
+  credentials?: LoginInput | null
 }
 
 export interface SummaryInput {

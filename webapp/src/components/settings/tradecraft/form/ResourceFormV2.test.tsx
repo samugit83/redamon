@@ -75,6 +75,8 @@ describe('ResourceFormV2', () => {
   test('edit: a new URL says it re-ingests; the token is sent only when typed', async () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ resource: null, job: null }), { status: 200 }))
     renderForm({ ...RESOURCE, githubTokenOverride: 'set' })
+    // The token override sits in the Access section (§6.4, §6.6, T6.11).
+    fireEvent.click(screen.getByRole('button', { name: /^Access/ }))
     expect(screen.getByPlaceholderText(/A token is set/)).toBeInTheDocument()
     fireEvent.change(screen.getByPlaceholderText('https://book.hacktricks.wiki'), { target: { value: 'https://wiki2.tc-fixture.test/' } })
     expect(screen.getByText('Saving a new URL ingests the resource again.')).toBeInTheDocument()
@@ -128,11 +130,11 @@ describe('the full form (T4.6)', () => {
 
   test('sections_by_type: no type section until the type is known; then the section of that type only', () => {
     renderFull()
-    expect(sectionNames()).toEqual(['Site type', 'Focus', 'Fetching', 'Content', 'Summary', 'Refreshing'])
+    expect(sectionNames()).toEqual(['Site type', 'Focus', 'Access', 'Fetching', 'Content', 'Summary', 'Refreshing'])
     expect(screen.getByText(/Pick a type, or run Check URL/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^Site type/ }))
     fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'github-repo' } })
-    expect(sectionNames()).toEqual(['Site type', 'Focus', 'GitHub repository', 'Fetching', 'Content', 'Summary', 'Refreshing'])
+    expect(sectionNames()).toEqual(['Site type', 'Focus', 'GitHub repository', 'Access', 'Fetching', 'Content', 'Summary', 'Refreshing'])
     fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'pdf' } })
     expect(sectionNames()).toContain('PDF')
     expect(sectionNames()).not.toContain('GitHub repository')

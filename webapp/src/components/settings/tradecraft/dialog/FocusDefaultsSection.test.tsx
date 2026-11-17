@@ -1,6 +1,6 @@
 /**
  * Configure ingestion's "Ingestion focus" section (§4.8, T5.6; R-101): the default mode (Tag only
- * shown, disabled until content checks), the default strictness, Always skip, the content-check
+ * among them, T6.11), the default strictness, Always skip, the content-check
  * limit, Tag every page, saved with the dialog's Save; and the account's recipes, renamed or
  * deleted at once.
  */
@@ -19,7 +19,6 @@ const alertSpies = vi.hoisted(() => ({
 vi.mock('@/components/ui', async orig => ({ ...((await orig()) as Record<string, unknown>), useAlertModal: () => alertSpies }))
 
 import { ConfigureIngestionDialog } from '../ConfigureIngestionDialog'
-import { TAG_ONLY_SOON } from '../form/FocusSection'
 import { SETTINGS } from '@/lib/tradecraft/settingsSpec'
 
 const USER_DEFS = SETTINGS.filter(s => s.scope === 'ingestion' && s.level !== 'resource')
@@ -52,13 +51,12 @@ async function openFocus() {
 }
 
 describe('FocusDefaultsSection', () => {
-  test('defaults_section: the five defaults with their help, Tag only disabled; a change saved with the dialog', async () => {
+  test('defaults_section: the five defaults with their help, Tag only can be the default (T6.11); a change saved with the dialog', async () => {
     const pane = await openFocus()
     for (const key of ['focus.defaultMode', 'focus.defaultStrictness', 'focus.alwaysSkip', 'focus.maxContentChecks', 'focus.tagEveryPage']) {
       expect(pane.getAllByText(USER_DEFS.find(d => d.key === key)!.label).length, key).toBeGreaterThan(0)
     }
-    expect(pane.getByLabelText('Tag only')).toBeDisabled()
-    expect(pane.getByText(TAG_ONLY_SOON)).toBeInTheDocument()
+    expect(pane.getByLabelText('Tag only')).toBeEnabled()
     expect((pane.getByLabelText('Everything') as HTMLInputElement).checked).toBe(true)
     fireEvent.click(pane.getByLabelText('Focused'))
     fireEvent.change(pane.getByLabelText('Always skip'), { target: { value: 'news, job posts' } })

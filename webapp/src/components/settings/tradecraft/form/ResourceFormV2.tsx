@@ -19,6 +19,7 @@ import { slugify } from '@/lib/tradecraft/slug'
 import { defaultStorageMode, forcedStorageMode } from '@/lib/tradecraft/storageModes'
 import { draftError, parseDraft } from '../dialog/draft'
 import { useEnabledImpactConfirm } from '../EnabledImpactAlert'
+import { AccessSection, accessDraftOf, accessError, credentialsPayload, type AccessDraft } from './AccessSection'
 import { CheckUrlButton } from './CheckUrlButton'
 import { ContentSection } from './ContentSection'
 import { CveSection } from './CveSection'
@@ -52,7 +53,6 @@ interface Fields {
   llmModel: string
   enabled: boolean
   storageMode: 'live' | 'stored'
-  githubToken: string
   slug: string
   forcedType: string
   presetKey: string
@@ -62,6 +62,8 @@ interface Draft {
   fields: Fields
   overrides: Record<string, unknown>
   focus: Focus
+  /** The GitHub token override and the site login (§6.6). */
+  access: AccessDraft
 }
 
 const PREVIEW_TITLE_MAX = 300
@@ -138,7 +140,6 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
         storageMode: resource
           ? (resource.storageMode === 'stored' ? 'stored' : 'live')
           : defaultStorageMode(accountValues['storage.defaultMode'], forcedType),
-        githubToken: '',
         slug: resource?.slug ?? '',
         forcedType,
         presetKey: '',
@@ -146,6 +147,7 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
       overrides: structuredClone(resource?.overrides ?? {}),
       // A saved resource keeps its focus (none is Everything); a new one starts on the account's defaults (§4.8).
       focus: resource ? focusFromStored(resource.focus) : newResourceFocus(accountValues),
+      access: accessDraftOf(resource?.credentials),
     }
   }, [resource, accountValues])
   const [draft, setDraft] = useState<Draft>(initial)
@@ -204,6 +206,7 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
       },
       overrides: carried.overrides ?? {},
       focus: prev.focus,
+      access: prev.access,
     }))
     setCheck(null)
     // §6.3: Check URL runs by itself when a preset is picked.
@@ -219,14 +222,23 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
     })
   }
 
+  const token = draft.access.githubToken.trim()
+  const credentials = credentialsPayload(initial.access, draft.access)
+  // Check URL reads with the login being typed; a saved resource's stored one is the route's.
+  const checkAccess = {
+    ...(token ? { githubTokenOverride: token } : {}),
+    ...(credentials !== undefined && !accessError(draft.access) ? { credentials } : {}),
+  }
   const checkInput = isEdit && !urlChanged
-    ? { resourceId: resource!.id, forcedType: f.forcedType, overrides: overridesPayload(draft.overrides), ...(f.githubToken.trim() ? { githubTokenOverride: f.githubToken.trim() } : {}) }
-    : { url: f.url.trim(), forcedType: f.forcedType, overrides: overridesPayload(draft.overrides), ...(f.githubToken.trim() ? { githubTokenOverride: f.githubToken.trim() } : {}) }
+    ? { resourceId: resource!.id, forcedType: f.forcedType, overrides: overridesPayload(draft.overrides), ...checkAccess }
+    : { url: f.url.trim(), forcedType: f.forcedType, overrides: overridesPayload(draft.overrides), ...checkAccess }
 
   const submit = async (reingest: boolean) => {
     if (!f.name.trim() || !f.url.trim()) return setError('Name and URL are required')
     if (!f.llmModel.trim()) return setError('Pick the model that ingests this resource')
     if (Object.keys(errors).length > 0) return setError('Some settings are out of range: see the marked fields')
+    const loginError = accessError(draft.access)
+    if (loginError) return setError(`Access: ${loginError}`)
     // Enabled is the global switch: every project follows, after the alert (§3.4, R-140).
     if (isEdit && f.enabled !== resource!.enabled && !(await confirmEnabled(resource!, f.enabled))) return
     setSubmitting(true)
@@ -236,7 +248,8 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
     const focus = effectiveType === 'cve-poc-db' ? {} : focusPayload(draft.focus)
     const input: ResourceInput = {
       name: f.name.trim(), url: f.url.trim(), llmModel: f.llmModel.trim(), enabled: f.enabled, storageMode,
-      ...(f.githubToken.trim() ? { githubTokenOverride: f.githubToken.trim() } : {}),
+      ...(token ? { githubTokenOverride: token } : {}),
+      ...(credentials !== undefined && (isEdit || credentials !== null) ? { credentials } : {}),
       ...(isEdit
         ? { forcedType: f.forcedType, overrides, focus }
         : {
@@ -364,14 +377,6 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
             <span className={css.hint} role="note">Saving deletes the stored pages now.</span>
           )}
         </fieldset>
-        <div className="formGroup">
-          <label className="formLabel" htmlFor={`${formId}-token`}>GitHub token override</label>
-          <input
-            id={`${formId}-token`} className="textInput" type="password" autoComplete="new-password" value={f.githubToken}
-            onChange={e => set('githubToken', e.target.value)}
-            placeholder={resource?.githubTokenOverride === 'set' ? 'A token is set: type a new one to replace it' : 'optional: ghp_…'}
-          />
-        </div>
         <label className={css.storageOption}>
           <input type="checkbox" checked={f.enabled} onChange={e => set('enabled', e.target.checked)} />
           <span>Enabled (the agent sees enabled resources only)</span>
@@ -390,7 +395,11 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
         {typeSection === 'pdf' && <PdfSection ctx={ctx} pages={check?.ok ? check.pdf_pages : null} />}
         {typeSection === 'website' && <WebsiteSection ctx={ctx} sitemapFound={sitemapFound} />}
         {!typeSection && <span className={css.hint}>Pick a type, or run Check URL, to see the options of the site&apos;s type.</span>}
-        <FetchingSection ctx={ctx} hasLogin={resource?.hasLogin ?? false} />
+        <AccessSection
+          draft={draft.access} onChange={access => setDraft(prev => ({ ...prev, access }))}
+          tokenSet={resource?.githubTokenOverride === 'set'}
+        />
+        <FetchingSection ctx={ctx} hasLogin={credentials === undefined ? (resource?.hasLogin ?? false) : credentials !== null} />
         <ContentSection ctx={ctx} />
         <SummarySection ctx={ctx} resource={current} onResource={setCurrent} onJob={() => undefined} />
         <RefreshingSection ctx={ctx} />

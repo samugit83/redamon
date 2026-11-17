@@ -14,8 +14,8 @@ import { FormSection } from './FormSection'
 import css from '../tradecraft.module.css'
 import fcss from './form.module.css'
 
-/** Tag only needs the content checks' one-line descriptions (§6.14, phase 6, T6.9). */
-export const TAG_ONLY_SOON = 'Tag only is coming with content checks.'
+/** Tag only suits wikis and repositories (§6.14 "Focused or Tag only"): one ingestion serves every focus. */
+export const TAG_ONLY_NOTE = 'Tag only drops nothing: every page is tagged from the full lists, and content checks add a one-line description.'
 const MODE_LABELS: Readonly<Record<FocusMode, string>> = { everything: 'Everything', focused: 'Focused', tagOnly: 'Tag only' }
 const MODE_HINTS: Readonly<Record<FocusMode, string>> = {
   everything: 'No filtering: every page the site lists is kept, as before.',
@@ -144,13 +144,13 @@ function FocusBody({ userId, focus, onChange, alwaysSkip, maxContentChecks, entr
         {(['everything', 'focused', 'tagOnly'] as const).map(mode => (
           <label key={mode} className={css.storageOption}>
             <input
-              type="radio" name={`${id}-mode`} value={mode} checked={focus.mode === mode} disabled={mode === 'tagOnly'}
+              type="radio" name={`${id}-mode`} value={mode} checked={focus.mode === mode}
               aria-label={MODE_LABELS[mode]} onChange={() => change({ ...focus, mode })}
             />
             <span><strong>{MODE_LABELS[mode]}</strong>. <span className={css.hint}>{MODE_HINTS[mode]}</span></span>
           </label>
         ))}
-        <span className={css.hint}>{TAG_ONLY_SOON}</span>
+        {focus.mode === 'tagOnly' && <span className={css.hint}>{TAG_ONLY_NOTE}</span>}
       </fieldset>
 
       {focus.mode !== 'everything' && (

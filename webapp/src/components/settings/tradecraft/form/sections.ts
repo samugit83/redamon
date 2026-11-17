@@ -1,8 +1,7 @@
 /**
  * Which per-resource settings each section of the resource form holds (§6.2-§6.11), and which
  * sections a type shows. Only `both` and `resource` keys of the spec appear: a user-only setting
- * never reaches the form (§6.1, R-133). The focus (phase 5), the access logins (phase 6) and real
- * page titles (phase 6) join with their features.
+ * never reaches the form (§6.1, R-133). The focus and the Access logins have sections of their own.
  */
 import { settingDef, type SettingDef } from '@/lib/tradecraft/settingsSpec'
 
@@ -15,8 +14,10 @@ export const SECTION_KEYS: Readonly<Record<TypeSection | 'detection' | 'fetching
   github: keys('type.github.branch', 'type.github.includeFolders', 'type.github.excludeFolders', 'type.github.folderEntries',
     'knownTypes.githubFileTypes', 'knownTypes.maxMapEntries.github'),
   cve: keys('type.cve.pathPatterns', 'type.cve.branch', 'type.cve.readmeFallback'),
-  wiki: keys('type.wiki.sitemapUrls', 'type.wiki.menuSelector', 'knownTypes.language', 'knownTypes.preferredLanguage', 'knownTypes.maxMapEntries.wiki'),
-  gitbook: keys('type.gitbook.sitemapUrls', 'type.gitbook.menuSelector', 'knownTypes.language', 'knownTypes.preferredLanguage', 'knownTypes.maxMapEntries.gitbook'),
+  wiki: keys('type.wiki.sitemapUrls', 'type.wiki.menuSelector', 'knownTypes.language', 'knownTypes.preferredLanguage', 'knownTypes.maxMapEntries.wiki',
+    'knownTypes.realTitles', 'knownTypes.maxTitleFetches'),
+  gitbook: keys('type.gitbook.sitemapUrls', 'type.gitbook.menuSelector', 'knownTypes.language', 'knownTypes.preferredLanguage', 'knownTypes.maxMapEntries.gitbook',
+    'knownTypes.realTitles', 'knownTypes.maxTitleFetches'),
   docs: keys('type.docs.searchIndexUrl', 'knownTypes.maxMapEntries.docs'),
   pdf: keys('type.pdf.firstPage', 'type.pdf.lastPage', 'type.pdf.mapBy', 'type.pdf.skipPages', 'knownTypes.pdfMaxPages'),
   website: keys('type.website.startPages', 'type.website.sitemapUrls', 'type.website.followPagination',

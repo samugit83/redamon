@@ -6,7 +6,6 @@ import { tradecraftClient, type UserRecipe } from '@/lib/tradecraft/client'
 import { RECIPE_NAME_MAX, topicLabel } from '@/lib/tradecraft/focus'
 import type { SettingDef } from '@/lib/tradecraft/settingsSpec'
 import { KINDS } from '@/lib/tradecraft/vocab'
-import { TAG_ONLY_SOON } from '../form/FocusSection'
 import { SectionFields, type SectionFieldsProps } from './SettingsSection'
 import { formatValue, parseDraft, sameValue } from './draft'
 import { VALUE_LABELS } from './SettingField'
@@ -41,7 +40,7 @@ export function FocusDefaultsFields({ recipes, onRecipes, ...fields }: SectionFi
   )
 }
 
-/** The default mode as radios, so Tag only can be shown and not yet chosen (it needs the content checks of T6.9). */
+/** The default mode as radios, each with its words. */
 function DefaultModeField({ def, value, error, onChange }: { def: SettingDef; value: unknown; error?: string; onChange: (v: unknown) => void }) {
   const id = useId()
   const labels = VALUE_LABELS[def.key]
@@ -55,12 +54,12 @@ function DefaultModeField({ def, value, error, onChange }: { def: SettingDef; va
       <div className={css.inline} role="radiogroup" aria-labelledby={id}>
         {def.values!.map(v => (
           <label key={v} className={css.inline}>
-            <input type="radio" name={id} value={v} checked={value === v} disabled={v === 'tag_only'} aria-label={labels[v]} onChange={() => onChange(v)} />
+            <input type="radio" name={id} value={v} checked={value === v} aria-label={labels[v]} onChange={() => onChange(v)} />
             <span>{labels[v]}</span>
           </label>
         ))}
       </div>
-      <div className={css.fieldMeta}>{def.help} Default: {formatValue(def, def.default, labels)}. <span>{TAG_ONLY_SOON}</span></div>
+      <div className={css.fieldMeta}>{def.help} Default: {formatValue(def, def.default, labels)}.</div>
       {error && <div className={css.fieldError} role="alert">{error}</div>}
     </div>
   )
