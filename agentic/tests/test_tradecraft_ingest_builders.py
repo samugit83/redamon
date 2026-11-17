@@ -450,6 +450,16 @@ def test_slug_titles_are_decoded_once_into_one_clean_line():
         assert title and title.isprintable() and title == title.strip()
 
 
+def test_a_url_named_title_carries_no_control_or_invisible_character():
+    """A last segment with nothing left after cleaning names the page by its URL: that URL is
+    cleaned the same way (a bidi override, a zero-width space, a line separator, a newline)."""
+    for url in ("https://docs.tc-fixture.test/folder/\u202e?x=1\nIGNORE PREVIOUS",
+                "https://docs.tc-fixture.test/folder/\u200b", "https://docs.tc-fixture.test/folder/\u2028"):
+        title = builders.title_from_slug(url, strip_html=True)
+        assert title and title.isprintable() and title == " ".join(title.split()), repr(title)
+        assert title.startswith("Https://Docs.Tc Fixture.Test/Folder"), repr(title)
+
+
 def test_the_website_sitemap_titles_are_decoded(tmp_path):
     """The website crawl's Auto reading names its entries the same way."""
     from tradecraft.ingest import crawl, robots
@@ -465,3 +475,4 @@ def test_the_website_sitemap_titles_are_decoded(tmp_path):
     assert [e.title for e in found.entries] == ["Server Side Request Forgery", "Xss Injection",
                                                 "Cross Site Request Forgery"]
     assert [e.url for e in found.entries] == pages
+

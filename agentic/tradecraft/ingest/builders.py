@@ -105,11 +105,17 @@ def _dedupe(entries: list[Candidate], cap: int) -> tuple[list[Candidate], bool]:
     return out, False
 
 
+def _printable_line(text: str) -> str:
+    """Control and format characters (bidi overrides and zero-width marks among them) and line or
+    paragraph separators as spaces, runs of spaces as one: a title is one clean line."""
+    return " ".join("".join(" " if unicodedata.category(ch)[0] == "C" or unicodedata.category(ch) in ("Zl", "Zp")
+                             else ch for ch in text).split())
+
+
 def _one_line(text: str) -> str:
-    """Slashes, control characters and line or paragraph separators as spaces, runs of spaces as
-    one: what percent-decoding can bring into a title never breaks its line."""
-    return " ".join("".join(" " if ch in "/\\" or unicodedata.category(ch)[0] == "C"
-                             or unicodedata.category(ch) in ("Zl", "Zp") else ch for ch in text).split())
+    """``_printable_line`` with slashes as spaces too: what percent-decoding can bring into a
+    title never breaks its line."""
+    return _printable_line(text.replace("/", " ").replace("\\", " "))
 
 
 def title_from_slug(url: str, *, strip_html: bool) -> str:
@@ -124,7 +130,7 @@ def title_from_slug(url: str, *, strip_html: bool) -> str:
     if strip_html:
         slug = slug.removesuffix(".html")
     title = _one_line(re.sub(r"[-_]", " ", slug))
-    return title.title() if title else re.sub(r"[-_]", " ", url).title()
+    return title.title() if title else _printable_line(re.sub(r"[-_]", " ", url)).title()
 
 
 def language_filter(urls: list[str], settings: EffectiveSettings) -> list[str]:
