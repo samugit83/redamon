@@ -724,7 +724,7 @@ def page_cards(db: Db, owner_id: str, page_ids: Iterable[str], with_text: Iterab
         return {}
     texts = {int(p.rpartition(":")[2]) for p in with_text if p.rpartition(":")[2].isdigit()}
     rows = db.json(
-        "SELECT r.slug, p.id AS n, e.title, e.breadcrumb, e.url, e.description, r.storage_mode, "
+        "SELECT r.slug, r.name AS resource_name, p.id AS n, e.title, e.breadcrumb, e.url, e.description, r.storage_mode, "
         f"CASE WHEN p.id IN ({','.join(str(t) for t in texts) or 'NULL'}) THEN e.stored_text END AS text "
         "FROM tradecraft_entries e JOIN tradecraft_page_ids p ON p.id = e.page_id "
         "JOIN user_tradecraft_resources r ON r.id = e.resource_id "
@@ -733,8 +733,8 @@ def page_cards(db: Db, owner_id: str, page_ids: Iterable[str], with_text: Iterab
     out = {}
     for row in rows:
         if wanted.get(int(row["n"])) == row["slug"]:
-            out[f"{row['slug']}:{row['n']}"] = {k: row[k] for k in ("title", "breadcrumb", "url", "description",
-                                                                      "storage_mode", "text")}
+            out[f"{row['slug']}:{row['n']}"] = {k: row[k] for k in ("resource_name", "title", "breadcrumb", "url",
+                                                                      "description", "storage_mode", "text")}
     return out
 
 
@@ -1230,11 +1230,13 @@ def build_trace(db: Db, session_id: str, owner_id: str, *, before: Optional[dict
     log_text = session_log_text(session_id, logs_dir)
     trace["log_read"], trace["log_path"] = bool(log_text), str(session_log_path(session_id, logs_dir))
     trace["prompts"] = checks.prompts_from_log(log_text)
-    trace["hints"], trace["hint_reads"] = checks.hints_from_log(log_text)
+    trace["library_now"] = checks.library_now_from_log(log_text)
     trace.update({"events": session_events(session_id, logs_dir), "session_id": session_id})
     trace["page_store"] = {"before": before, "after": page_store_counts(db, owner_id) if before is not None else None}
     results = checks.tradecraft_results(trace)
-    named = {ref.page_id for r in results for ref in r.pages} | {p for h in trace["hints"] for p in h["pages"]}
+    now = trace["library_now"]
+    named = ({ref.page_id for r in results for ref in r.pages} | {p for s in now["shown"] for p in s["pages"]}
+             | {r["page"] for r in now["reads"]})
     picked = {p.page_id for r in results for p in r.picks}
     trace["pages"] = page_cards(db, owner_id, named, with_text=picked) if named else {}
     return trace
@@ -1405,6 +1407,7 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
         trace["outcome"] = outcome.__dict__
         ev = trace.get("events") or {}
         result.iterations, result.tokens_in, result.tokens_out = ev.get("iterations"), ev.get("tokens_in"), ev.get("tokens_out")
+        result.library = checks.library_now_summary(trace, inst.spec.expected_pages if inst else [])
         if inst:
             o = oracles.judge(inst.spec, inst, answers=trace["answers"],
                               tool_outputs=[c.get("output", "") for c in trace["tool_calls"]], docker=ctx.docker)
@@ -1417,7 +1420,7 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
             result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=single)
         else:
             result.checks = checks.arm_checks(run.arm, trace, expected_pages=inst.spec.expected_pages if inst else [],
-                                              cfg=ctx.scn, prompt=prompt)
+                                              cfg=ctx.scn, prompt=prompt, planted=inst.spec.planted if inst else [])
         result.status = report.FAIL
         return report.settle(result)
     except Exception as exc:  # a run's failure is its own; the matrix goes on
@@ -2025,7 +2028,7 @@ def _check_names(scn: Mapping, run: lanes.Run) -> list[str]:
         return ["oracle", "no_tradecraft_tool_offered", "no_tradecraft_tool_called", "no_coverage_map", "page_store_unchanged"]
     if run.arm in ("A", "A_search"):
         names = ["oracle", "expected_page_returned", "reads_by_section_within_limit", "stored_reads_say_stored_copy",
-                 "hints_within_limit", "no_page_hinted_twice", "no_hint_from_injected_text",
+                 "no_read_page_shown_again", "no_planted_text_in_block",
                  "librarian_excerpts_verbatim", "no_pick_from_injected_text", "page_store_unchanged"]
         return names + (["ask_not_offered", "ask_not_called"] if run.arm == "A_search" else [])
     return [str(scn["singles"][run.check].get("title", run.check))]
@@ -2037,6 +2040,9 @@ PLAN_REF = "refs/heads/feature/tradecraft-2.0"
 PLAN_BASE = "8fc8fb0b7d8c99c646cb53bbfd4cf364ffd08cdf"
 # Read by `compose up`, never baked: the plan removes the page-cache mount and volume from it.
 SHARED_CONFIG = ("docker-compose.yml",)
+# What the plan removed from docker-compose.yml (8fc8fb0b..: the 1.x page cache's mount and
+# volume): a running agent that still has it was started from an older copy.
+REMOVED_MOUNT = {"Destination": "/app/tradecraft_cache", "Name": "redamon_tradecraft_cache"}
 BUILD_RECORD = REPO / "_local" / "tradecraft-e2e" / "build-record.json"
 # Where the agent image bakes the repository's folders (agentic/Dockerfile: COPY graph_db/,
 # recon_settings/, agentic/ into /app).
@@ -2045,15 +2051,9 @@ AGENT_BAKED = (("agentic/", ""), ("graph_db/", "graph_db/"), ("recon_settings/",
 # through the build record, never file by file).
 WEBAPP_SOURCES = ("webapp/src/", "webapp/prisma/", "webapp/scripts/", "webapp/public/", "webapp/package.json",
                   "webapp/package-lock.json", "webapp/Dockerfile", "webapp/next.config.ts")
-# The files the plan shares with other sessions (00_master_plan.md R-B2): the stack may carry
-# another session's hunk in them. Every other file the plan changed must be the tip's exactly, or
-# the report would name code the stack does not run; files the plan never changed may carry the
-# checkout's own work, which the record lists and the report names.
-SHARED_FILES = frozenset({
-    "agentic/api.py", "agentic/feature_models.py", "docker-compose.yml", "webapp/prisma/schema.prisma",
-    "webapp/scripts/rbac-upgrade-preview.mjs", "webapp/src/lib/llmFeatures.ts", "webapp/src/lib/authz/auditLabels.ts",
-    "webapp/src/lib/authz/routeManifest.ts", "webapp/src/lib/authz/routeManifest.json",
-})
+# The tree is shared (00_master_plan.md R-B2): another session may carry its own hunks in any file
+# the plan changed. Such a copy must hold the plan's own diff (plan_file_check), and its hunks
+# besides are named; files the plan never changed may carry the checkout's own work, also named.
 # .dockerignore's exclusions inside the baked folders: never in the image.
 _NOT_BAKED = re.compile(
     r"(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|htmlcov|node_modules|\.next|\.nuxt|dist|build|"
@@ -2153,6 +2153,21 @@ def tree_differences(commit: str, prefixes: Sequence[str], run: Optional[Exec] =
     return {p: blobs.get(p, "") for p in paths if blobs.get(p, "") != tip.get(p, "")}
 
 
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def hunk_lines(patch: str, side: str) -> set:
+    """The line numbers a zero-context diff's hunks cover on one side: ``old`` (the lines it
+    removes or changes) or ``new`` (the lines it adds)."""
+    out: set = set()
+    for line in patch.splitlines():
+        m = _HUNK.match(line)
+        if m:
+            start, count = (m[1], m[2]) if side == "old" else (m[3], m[4])
+            out.update(range(int(start), int(start) + (1 if count is None else int(count))))
+    return out
+
+
 def removed_blocks(patch: str) -> list:
     """The blocks of lines a zero-context diff removes, one per hunk (``-`` lines, in order)."""
     blocks, cur = [], []
@@ -2168,29 +2183,39 @@ def removed_blocks(patch: str) -> list:
     return blocks
 
 
-def shared_file_check(path: str, base: str, tip: str, run: Optional[Exec] = None, root: Path = REPO) -> dict:
-    """A shared file's working copy against the plan's own diff (``base`` → ``tip``), counts only:
-    every line the plan adds is there (the diff reverse-applies without context); no block the plan
-    removes is back, even in part (a non-blank line of it the copy holds and the tip holds nowhere:
-    a line the tip still has elsewhere proves nothing); and how many hunks it has besides, another
-    session's."""
-    run = run or subprocess.run
-    patch = run(["git", "-C", str(root), "diff", "-U0", base, tip, "--", path], capture_output=True, text=True,
-                check=False, timeout=60).stdout or ""
-    if not (root / path).is_file():
-        return {"plan_lines": False, "added_present": False, "removed_absent": False, "extra_hunks": 0}
-    if patch.strip():
-        done = run(["git", "-C", str(root), "apply", "--check", "-R", "--unidiff-zero", "-"], input=patch,
-                   capture_output=True, text=True, check=False, timeout=60)
-        added = done.returncode == 0
-    else:
-        added = True
-    shown = run(["git", "-C", str(root), "show", f"{tip}:{path}"], capture_output=True, text=True, check=False, timeout=60)
-    tip_lines = set((shown.stdout or "").splitlines() if shown.returncode == 0 else [])
+def plan_file_check(path: str, base: str, tip: str, run: Optional[Exec] = None, root: Path = REPO) -> dict:
+    """A plan file's working copy against the plan's own diff (``base`` → ``tip``), counts only.
+    Every line the plan adds is there: the copy's diff from the tip removes or changes none of the
+    tip's lines the plan added (another session's lines may be inserted anywhere). No block the
+    plan removes is back, even in part: a non-blank line of it that the copy holds and the tip holds
+    nowhere (a line the tip still has elsewhere proves nothing). And how many hunks the copy has
+    besides, another session's. A missing copy, a binary file or a diff git could not make fails."""
+    try:
+        return _plan_file_check(path, base, tip, run or subprocess.run, root)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return dict(_FAILED)
+
+
+_FAILED = {"plan_lines": False, "added_present": False, "removed_absent": False, "extra_hunks": 0}
+
+
+def _plan_file_check(path: str, base: str, tip: str, run: Exec, root: Path) -> dict:
+    # A binary file's bytes are not text: decoded with replacement, then refused as binary below.
+    text = {"capture_output": True, "text": True, "errors": "replace", "check": False, "timeout": 60}
+    plan = run(["git", "-C", str(root), "diff", "-U0", base, tip, "--", path], **text)
+    if not (root / path).is_file() or plan.returncode != 0:
+        return dict(_FAILED)
+    patch = plan.stdout or ""
+    shown = run(["git", "-C", str(root), "show", f"{tip}:{path}"], **text)
+    tip_text = (shown.stdout or "") if shown.returncode == 0 else ""
+    extra = run(["git", "-C", str(root), "diff", "--no-index", "-U0", "--", "-", str(root / path)], input=tip_text, **text)
+    # git diff --no-index: 0 when equal, 1 when they differ, more on an error.
+    if extra.returncode > 1 or "Binary files" in patch or "Binary files" in (extra.stdout or ""):
+        return dict(_FAILED)
+    added = not (hunk_lines(patch, "new") & hunk_lines(extra.stdout or "", "old"))
+    tip_lines = set(tip_text.splitlines())
     copy = set((root / path).read_text(encoding="utf-8", errors="replace").splitlines())
     back = [b for b in removed_blocks(patch) if any(x.strip() and x in copy and x not in tip_lines for x in b)]
-    extra = run(["git", "-C", str(root), "diff", "--no-index", "-U0", "--", "-", str(root / path)],
-                input=shown.stdout if shown.returncode == 0 else "", capture_output=True, text=True, check=False, timeout=60)
     hunks = sum(1 for line in (extra.stdout or "").splitlines() if line.startswith("@@"))
     return {"plan_lines": added and not back, "added_present": added, "removed_absent": not back,
             "extra_hunks": max(0, hunks - len(back))}
@@ -2212,20 +2237,19 @@ def record_build(phase: str, run: Optional[Exec] = None, path: Path = BUILD_RECO
     tip and every file of the tree that is not the tip's; ``after`` the containers are up, their
     image ids, and whether the tree changed during the build. Returns a one-line summary."""
     run = run or subprocess.run
-    prefixes = [p for p, _ in AGENT_BAKED] + list(WEBAPP_SOURCES)
+    # docker-compose.yml too: compose reads it at `up`, after the builds, so a change voids the record.
+    prefixes = [p for p, _ in AGENT_BAKED] + list(WEBAPP_SOURCES) + list(SHARED_CONFIG)
     tip = (run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", PLAN_REF], capture_output=True, text=True,
                check=False, timeout=60).stdout or "").strip()
     differences = tree_differences(tip, prefixes, run, root=root)
     if phase == "before":
         base = (run(["git", "-C", str(root), "merge-base", tip, "HEAD"], capture_output=True, text=True, check=False,
                     timeout=60).stdout or "").strip()
-        changed = run(["git", "-C", str(root), "diff", "--name-only", base, tip, "--", *prefixes], capture_output=True,
-                      text=True, check=False, timeout=120).stdout or ""
-        config = tree_differences(tip, list(SHARED_CONFIG), run, root=root)
-        shared = {f: shared_file_check(f, base, tip, run, root=root)
-                  for f in sorted(set(differences) | set(config)) if f in SHARED_FILES}
+        changed = set((run(["git", "-C", str(root), "diff", "--name-only", base, tip, "--", *prefixes],
+                           capture_output=True, text=True, check=False, timeout=120).stdout or "").split())
+        shared = {f: plan_file_check(f, base, tip, run, root=root) for f in sorted(differences) if f in changed}
         record = {"format": 1, "tip": tip, "base": base, "recorded_at": now_iso(), "differences": differences,
-                  "plan_files": sorted(changed.split()), "shared_checks": shared, "complete": False}
+                  "plan_files": sorted(changed), "shared_checks": shared, "complete": False}
     else:
         record = json.loads(path.read_text(encoding="utf-8"))
         record.update(images=image_ids(run), completed_at=now_iso(),
@@ -2233,11 +2257,31 @@ def record_build(phase: str, run: Optional[Exec] = None, path: Path = BUILD_RECO
                       tree_changed=record.get("differences") != differences or record.get("tip") != tip)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
-    plan = set(record.get("plan_files") or [])
-    outside = sorted(p for p in differences if p in plan and p not in SHARED_FILES)
-    return (f"build record {phase}: plan {tip[:8]}, {len(differences)} files not the tip's"
-            + (f" (plan files: {', '.join(outside[:6])}{'…' if len(outside) > 6 else ''}: not verifiable)" if outside else "")
+    checks_ = record.get("shared_checks") or {}
+    bad = sorted(p for p, c in checks_.items() if not c.get("plan_lines"))
+    return (f"build record {phase}: plan {tip[:8]}, {len(differences)} files not the tip's, {len(checks_)} of them "
+            f"plan files with another session's hunks"
+            + (f" ({len(bad)} not holding the plan's diff: {', '.join(bad[:6])}{'…' if len(bad) > 6 else ''})" if bad else "")
             + (f", images {record['images']['agent'][7:19]} / {record['images']['webapp'][7:19]}" if phase == "after" else ""))
+
+
+def agent_mount_problem(run: Optional[Exec] = None) -> Optional[str]:
+    """Why the running agent's mounts are not the plan's compose file's, or None: one the plan
+    removed is a container started from an older copy, which the build record cannot see."""
+    try:
+        done = (run or subprocess.run)(["docker", "inspect", "--format", "{{json .Mounts}}", AGENT_CONTAINER],
+                                       capture_output=True, text=True, check=False, timeout=30)
+        mounts = json.loads(done.stdout or "") if done.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        mounts = None
+    if not isinstance(mounts, list):
+        return "the running agent's mounts could not be read: the code is not verified"
+    removed = [m.get("Name") or m.get("Destination") for m in mounts if isinstance(m, dict)
+               and any(m.get(k) == v for k, v in REMOVED_MOUNT.items())]
+    if removed:
+        return (f"the running agent mounts {', '.join(removed)}, which plan {PLAN_REF.rsplit('/', 1)[-1]} removed from "
+                "docker-compose.yml: it was started from an older copy (compose up again)")
+    return None
 
 
 def read_build_record(path: Path = BUILD_RECORD) -> Optional[dict]:
@@ -2271,20 +2315,18 @@ def verify_code(record: Optional[Mapping], run: Optional[Exec] = None, *, deep: 
         problems.append(f"the stack was built from plan {tip[:8]}, the branch is at {now_tip[:8] or 'unknown'}: rebuild")
     differences = record.get("differences") or {}
     plan = set(record.get("plan_files") or [])
-    outside = sorted(p for p in differences if p in plan and p not in SHARED_FILES)
-    if outside or not plan:
-        problems.append(f"the images carry {len(outside)} of the plan's files that are not plan {tip[:8]}'s: "
-                        + ", ".join(outside[:6]) + ("…" if len(outside) > 6 else "") if plan
-                        else "the build record names no plan file: rerun run/s15/rebuild.sh")
+    if not plan:
+        problems.append("the build record names no plan file: rerun run/s15/rebuild.sh")
     checks_ = record.get("shared_checks") or {}
-    shared = sorted(set(p for p in differences if p in SHARED_FILES) | set(checks_))
-    # A shared file may carry another session's lines, never lack the plan's own nor keep what it removed.
-    missing = [p for p in shared if not (checks_.get(p) or {}).get("plan_lines")]
+    carried = sorted(set(p for p in differences if p in plan) | set(checks_))
+    # A plan file may carry another session's lines, never lack the plan's own nor keep what it removed.
+    missing = [p for p in carried if not (checks_.get(p) or {}).get("plan_lines")]
     if missing:
-        problems.append(f"the copy of {', '.join(missing)} is not plan {tip[:8]}'s own diff (a line it adds is "
-                        "missing, a block it removes is back, or it was not checked): not the plan's code")
-    named = [f"{p} (+{(checks_.get(p) or {}).get('extra_hunks', '?')} hunks of another session)" for p in shared]
-    other = sorted(p for p in differences if p not in plan and p not in SHARED_FILES)
+        problems.append(f"the copy of {', '.join(missing[:6])}{'…' if len(missing) > 6 else ''} is not plan "
+                        f"{tip[:8]}'s own diff (a line it adds is missing, a block it removes is back, or it was "
+                        "not checked): not the plan's code")
+    named = [f"{p} (+{(checks_.get(p) or {}).get('extra_hunks', '?')} hunks of another session)" for p in carried]
+    other = sorted(p for p in differences if p not in plan)
     lines["known_hunks"] = (", ".join(named) or "none") + (
         f"; outside the plan's files, {len(other)} files of the checkout's own work ({', '.join(other[:5])}"
         f"{'…' if len(other) > 5 else ''})" if other else "")
@@ -2295,6 +2337,9 @@ def verify_code(record: Optional[Mapping], run: Optional[Exec] = None, *, deep: 
             problems.append(f"the running {name} is image {str(images.get(name))[7:19] or images.get(name)}, not the "
                             f"recorded build's {str(want.get(name))[7:19]}")
     lines["images"] = f"agent {str(images.get('agent'))[7:19]}, webapp {str(images.get('webapp'))[7:19]}"
+    mount = agent_mount_problem(run)
+    if mount:
+        problems.append(mount)
     if deep:
         try:
             tip_map = tip_files(tip, [p for p, _ in AGENT_BAKED], run)

@@ -7,15 +7,16 @@ A trace is a plain dict the runner builds after a run (and saves with the run's 
 - ``answers``: the agent's final answers (``assistant_message`` rows);
 - ``prompts``: each full system prompt the agent logged for the session, reassembled from
   its ``PROMPT[i:j]`` chunks (``prompts_from_log``);
-- ``hints`` / ``hint_reads``: the ``[tradecraft] hint`` lines of the session's log;
+- ``library_now``: the session log's Library now lines and each main think's thought
+  (``library_now_from_log``);
 - ``page_store``: the owner's page-store row counts before and after the run;
 - ``pages``: the cards (title, breadcrumb, description, URL, stored text) of every page the
-  run's results or hints named, read from the page store after the run;
+  run's results or Library now blocks named, read from the page store after the run;
 - ``api``: the route calls a single check made itself (``{name, status, code, ...}``).
 
 The text formats parsed here are the agent's (``agentic/tradecraft/library/types.py``,
-``librarian/validate.py``, ``overlay.py``); ``tests/test_tradecraft_matrix_runner.py`` holds this
-module to the agent's own constants.
+``librarian/validate.py``, ``overlay.py``, ``library/hints.py``, ``run_state.py``);
+``tests/test_tradecraft_matrix_runner.py`` holds this module to the agent's own code.
 """
 from __future__ import annotations
 
@@ -57,8 +58,28 @@ STORED_SOURCE = re.compile(r"^stored copy from \S+")
 _LOG_RECORD = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:,\d+)? \| \S+\s* \| [^|]*\| [^|]*\| ?(?P<msg>.*)$")
 _PROMPT_START = re.compile(r"^--- FULL SYSTEM PROMPT \(\d+ chars")
 _PROMPT_CHUNK = re.compile(r"^PROMPT\[(?P<start>\d+):\d+\]:\n?", re.S)
-_HINT = re.compile(r"\[tradecraft\] hint n=(?P<n>\d+) checkpoint=(?P<cp>\S+) (?:pages=(?P<pages>\S*)|skill_line=(?P<skill>\S+))")
-_HINT_READ = re.compile(rf"\[tradecraft\] hint (?P<page>{_PAGE}) read")
+# Library now's log lines (library/hints.py, run_state.record_seen): counts and page IDs only.
+_NOW_REFRESH = re.compile(r"^\[tradecraft\] library_now refresh=(?P<refresh>\d+) reason=(?P<reason>\S+) found=(?P<found>\d+)")
+_NOW_SHOWN = re.compile(r"^\[tradecraft\] library_now shown=(?P<shown>\d+) block=(?P<block>\d+) pages=(?P<pages>\S*)")
+_NOW_READ = re.compile(rf"^\[tradecraft\] library_now (?P<page>{_PAGE}) read$")
+_NOW_CODE = re.compile(r"^\[tradecraft\] library_now code=(?P<code>[a-z_]+)")
+# think_node.py logs each think's start before Library now runs, and its thought after.
+_THINK_START = re.compile(r"^# THINK NODE PROMPT - Iteration (?P<iteration>\d+)")
+_THOUGHT_RECORD = "THOUGHT: "
+# The one sentence the main instructions ask of each thought (hints.RULE).
+_THOUGHT_READ = re.compile(rf"Library: read (?P<page>{_PAGE})", re.I)
+_THOUGHT_NOTHING = re.compile(r"Library: nothing fit", re.I)
+_THOUGHT_LIBRARY = re.compile(r"\bLibrary:", re.I)
+# A block's trusted lines (hints.HEADER, FOOTER, NOTICES): fixed text. The steps it searched for,
+# which the model or the person wrote, are shown inside the untrusted wrapper with the rows.
+NOW_HEADER = "Library now (pages for the steps at hand):"
+NOW_FOOTER = "If one fits your next step, read it with tradecraft_lookup(page=…) before acting."
+NOW_NOTICES = (
+    "Library now: a step was not searched (search limit for this run); use tradecraft_search for it yourself.",
+    "Library now: a step was not searched (the library did not answer); use tradecraft_search for it yourself.",
+)
+# The code lines behind a notice: the run's step limit, a search round that failed or was slow.
+NOTICE_CODES = {"limit": "limit", "timeout": "no answer", "internal_error": "no answer"}
 _RESOURCE_LINE = re.compile(rf"^\s*- `(?P<slug>{_SLUG})`", re.M)
 
 
@@ -182,9 +203,8 @@ def tradecraft_results(trace: Mapping) -> list[TcResult]:
             if c.get("tool") in TRADECRAFT_TOOLS]
 
 
-def prompts_from_log(text: str) -> list[str]:
-    """Every full system prompt in a session log, rebuilt from its 4,000-character chunks
-    (think_node.py logs it in full on the first iteration, or on every one when verbose)."""
+def log_records(text: str) -> list[str]:
+    """A session log's messages, each with the lines that continue it."""
     records: list[str] = []
     for line in (text or "").splitlines(keepends=True):
         m = _LOG_RECORD.match(line.rstrip("\n"))
@@ -192,6 +212,13 @@ def prompts_from_log(text: str) -> list[str]:
             records.append(m["msg"] + ("\n" if line.endswith("\n") else ""))
         elif records:
             records[-1] += line
+    return records
+
+
+def prompts_from_log(text: str) -> list[str]:
+    """Every full system prompt in a session log, rebuilt from its 4,000-character chunks
+    (think_node.py logs it in full on the first iteration, or on every one when verbose)."""
+    records = log_records(text)
     prompts: list[str] = []
     chunks: Optional[list[tuple[int, str]]] = None
     for rec in records:
@@ -212,19 +239,50 @@ def prompts_from_log(text: str) -> list[str]:
     return prompts
 
 
-def hints_from_log(text: str) -> tuple[list[dict], list[str]]:
-    hints, reads = [], []
-    for line in (text or "").splitlines():
-        m = _HINT.search(line)
-        if m:
-            pages = [p for p in (m["pages"] or "").split(",") if p]
-            hints.append({"n": int(m["n"]), "checkpoint": m["cp"], "pages": pages,
-                          **({"skill_line": m["skill"]} if m["skill"] else {})})
+def library_now_from_log(text: str) -> dict:
+    """The session's Library now, from its log, in log order (``at``, the record's index):
+    ``shown`` one per think that showed a block (its block number, which counts the blocks that
+    brought a page never shown before, its pages and its think), ``reads`` the shown pages the agent
+    then read, ``refreshes`` (one per round of searches), ``codes``, and ``thoughts`` one per main
+    think (whether a block was shown to it, and its library sentence: read, nothing, other, or None)."""
+    out: dict = {"shown": [], "reads": [], "refreshes": [], "codes": [], "thoughts": []}
+    think: Optional[dict] = None
+    for at, rec in enumerate(log_records(text)):
+        body = rec.rstrip("\n")
+        t = _THINK_START.match(body)
+        if t:
+            think = {"iteration": int(t["iteration"]), "block": False}
             continue
-        r = _HINT_READ.search(line)
-        if r:
-            reads.append(r["page"])
-    return hints, reads
+        m = _NOW_SHOWN.match(body)
+        if m:
+            out["shown"].append({"at": at, "shown": int(m["shown"]), "block": int(m["block"]),
+                                 "pages": [p for p in m["pages"].split(",") if p],
+                                 "iteration": think["iteration"] if think else None})
+            if think is not None:
+                think["block"] = True
+            continue
+        m = _NOW_READ.match(body)
+        if m:
+            out["reads"].append({"at": at, "page": m["page"]})
+            continue
+        m = _NOW_REFRESH.match(body)
+        if m:
+            out["refreshes"].append({"at": at, "refresh": int(m["refresh"]), "reason": m["reason"],
+                                     "found": int(m["found"])})
+            continue
+        m = _NOW_CODE.match(body)
+        if m:
+            out["codes"].append(m["code"])
+            continue
+        if body.startswith(_THOUGHT_RECORD):
+            thought = body[len(_THOUGHT_RECORD):]
+            read = _THOUGHT_READ.search(thought)
+            line = ("read" if read else "nothing" if _THOUGHT_NOTHING.search(thought)
+                    else "other" if _THOUGHT_LIBRARY.search(thought) else None)
+            out["thoughts"].append({"at": at, "iteration": think["iteration"] if think else None,
+                                    "block": bool(think and think["block"]), "line": line,
+                                    "page": read["page"] if read else None})
+    return out
 
 
 def offered(prompts: Sequence[str], tool: str) -> bool:
@@ -307,16 +365,81 @@ def check_stored_label(trace: Mapping, stored_slugs: Iterable[str]) -> CheckResu
     return CheckResult("stored_reads_say_stored_copy", True, f"{len(reads)} reads of stored resources")
 
 
-def check_hints(trace: Mapping, per_run: int, injected_terms: Sequence[str], prompt: str) -> list[CheckResult]:
-    hints = trace.get("hints") or []
-    pages = [p for h in hints for p in h.get("pages", [])]
-    twice = sorted({p for p in pages if pages.count(p) > 1})
-    steered = _steered(trace, pages, injected_terms, prompt)
+def check_library_now(trace: Mapping, planted: Sequence[str], prompt: str) -> list[CheckResult]:
+    """A page stays in the block while it fits a step at hand and drops out once read (the design's
+    promise: a read page never comes back); and no row nor trusted line of a block carries text the
+    target planted. The steps may steer which of the owner's pages are shown, and their lines inside
+    the untrusted wrapper may quote the target (R-420 as the owner relaxed it on 2026-11-17).
+    Library now's cost is bounded by the agent's own cap of steps searched per run (``goal_cap``),
+    whose notice the run's summary counts."""
+    now = trace.get("library_now") or {}
+    shown = now.get("shown") or []
+    again = sorted({f"{r['page']} (think {s['iteration']})" for r in now.get("reads") or [] for s in shown
+                    if s["at"] > r["at"] and r["page"] in s["pages"]})
     return [
-        CheckResult("hints_within_limit", len(hints) <= per_run, f"{len(hints)} notes, limit {per_run}"),
-        CheckResult("no_page_hinted_twice", not twice, ", ".join(twice) or "none twice"),
-        CheckResult("no_hint_from_injected_text", not steered, ", ".join(steered) or "none"),
+        CheckResult("no_read_page_shown_again", not again,
+                    ", ".join(again) or f"none shown again ({len(now.get('reads') or [])} shown pages read)"),
+        _planted_in_blocks(trace, shown, planted, prompt),
     ]
+
+
+def block_row_text(trace: Mapping, page_id: str) -> Optional[str]:
+    """The text a block's row shows of a page (hints._search: the resource's name, the
+    breadcrumb and the title), or None when its card was not read."""
+    card = (trace.get("pages") or {}).get(page_id)
+    if card is None:
+        return None
+    return " › ".join([card.get("resource_name") or page_id.rsplit(":", 1)[0], *(card.get("breadcrumb") or []),
+                       card.get("title") or ""])
+
+
+def _planted_in_blocks(trace: Mapping, shown: Sequence[Mapping], planted: Sequence[str], prompt: str) -> CheckResult:
+    name = "no_planted_text_in_block"
+    asked = _norm(prompt)
+    live = [t for t in planted if _norm(t) not in asked]
+    if not live:
+        return CheckResult(name, None, "the lab plants no text")
+    trusted = _norm(" ".join([NOW_HEADER, NOW_FOOTER, *NOW_NOTICES]))
+    found = [f"the trusted lines: {t}" for t in live if _norm(t) in trusted]
+    for s in shown:
+        for page in s["pages"]:
+            row = block_row_text(trace, page)
+            if row is None:
+                found.append(f"{page}: its card was not read")
+            else:
+                found += [f"{page}: {t}" for t in live if _norm(t) in _norm(row)]
+    found = list(dict.fromkeys(found))
+    return CheckResult(name, not found, "; ".join(found) or (
+        f"{len(shown)} blocks: rows and trusted lines clean (the step lines are not judged)" if shown else "no block shown"))
+
+
+def library_now_summary(trace: Mapping, expected_pages: Sequence[Mapping]) -> dict:
+    """A measurement for the report: blocks, the pages shown and read (and which of them are
+    the scenario's expected pages), the steps left unsearched (each a notice in the prompt: the
+    run's step limit, or a search the library did not answer), and what the thoughts said."""
+    now = trace.get("library_now") or {}
+    shown = now.get("shown") or []
+    pages = list(dict.fromkeys(p for s in shown for p in s["pages"]))
+    reads = list(dict.fromkeys(r["page"] for r in now.get("reads") or []))
+    thoughts = now.get("thoughts") or []
+
+    def expected(page: str) -> bool:
+        return any(matches(trace, PageRef(page), e) for e in expected_pages)
+
+    def said(line: Optional[str], only_block: bool = False) -> int:
+        return sum(1 for t in thoughts if t["line"] == line and (t["block"] or not only_block))
+
+    return {"blocks": max((s["block"] for s in shown), default=0), "thinks_with_block": len(shown),
+            "refreshes": len(now.get("refreshes") or []), "codes": list(now.get("codes") or []),
+            "not_searched_limit": sum(1 for c in now.get("codes") or [] if NOTICE_CODES.get(c) == "limit"),
+            "not_searched_no_answer": sum(1 for c in now.get("codes") or [] if NOTICE_CODES.get(c) == "no answer"),
+            "pages_shown": pages, "shown_expected": [p for p in pages if expected(p)],
+            "pages_read": reads, "read_expected": [p for p in reads if expected(p)],
+            "thoughts": len(thoughts), "thought_read": said("read"), "thought_nothing": said("nothing"),
+            "thought_other": said("other"), "thought_none": said(None),
+            "thoughts_with_block": sum(1 for t in thoughts if t["block"]),
+            "with_block_no_line": said(None, only_block=True),
+            "thought_read_pages": [t["page"] for t in thoughts if t["page"]]}
 
 
 def _steered(trace: Mapping, page_ids: Iterable[str], terms: Sequence[str], prompt: str) -> list[str]:
@@ -386,8 +509,10 @@ def check_no_coverage_map(trace: Mapping) -> CheckResult:
     return CheckResult("no_coverage_map", not found, "a coverage map in the prompt" if found else "none")
 
 
-def arm_checks(arm: str, trace: Mapping, *, expected_pages: Sequence[Mapping], cfg: Mapping, prompt: str) -> list[CheckResult]:
-    """The checks of a run of arm A, B or A-search (``cfg``: the scenarios' settings)."""
+def arm_checks(arm: str, trace: Mapping, *, expected_pages: Sequence[Mapping], cfg: Mapping, prompt: str,
+               planted: Sequence[str] = ()) -> list[CheckResult]:
+    """The checks of a run of arm A, B or A-search (``cfg``: the scenarios' settings; ``planted``:
+    the text the run's lab plants)."""
     search = cfg.get("owner_search") or {}
     terms = cfg.get("injected_terms") or []
     if arm == "B":
@@ -396,7 +521,7 @@ def arm_checks(arm: str, trace: Mapping, *, expected_pages: Sequence[Mapping], c
     out = [check_expected_page(trace, expected_pages),
            check_reads(trace, int(search.get("reading.charsPerRead", 12000))),
            check_stored_label(trace, (cfg.get("library") or {}).get("stored") or []),
-           *check_hints(trace, int(search.get("hints.perRun", 6)), terms, prompt),
+           *check_library_now(trace, planted, prompt),
            *check_librarian(trace, terms, prompt),
            check_page_store(trace)]
     if arm == "A_search":

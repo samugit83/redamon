@@ -85,6 +85,7 @@ class RunResult:
     tokens_in: Optional[int] = None
     tokens_out: Optional[int] = None
     approvals_given: int = 0
+    library: dict = field(default_factory=dict)  # checks.library_now_summary: a measurement
     reason: str = ""
     trace_file: str = ""
 
@@ -231,14 +232,14 @@ def render(*, results: Sequence[RunResult], gates: Sequence[Gate], verdict: bool
     for g in gates:
         mark = "pass" if g.ok else ("FAIL" if g.ok is False else "—")
         lines.append(f"| {g.name} | {mark} | {g.detail} |")
-    lines += ["", "## Runs", "", "| Run | Lane | Status | Oracle | Minutes | Iterations | Failed checks |",
-              "|---|---|---|---|---|---|---|"]
+    lines += ["", "## Runs", "", "| Run | Lane | Status | Oracle | Minutes | Iterations | Library now | Failed checks |",
+              "|---|---|---|---|---|---|---|---|"]
     for r in sorted(results, key=lambda r: r.run_id):
         failed = ", ".join(c.name for c in r.checks if c.ok is False) or (r.reason if r.status in (NOT_RUN, SKIPPED, ERROR) else "")
         minutes = f"{r.seconds / 60:.1f}" if r.seconds is not None else "—"
         oracle = "—" if r.oracle is None else ("yes" if r.oracle else "no")
         lines.append(f"| {r.run_id} | {r.lane if r.lane is not None else '—'} | {r.status} | {oracle} | {minutes} | "
-                     f"{r.iterations if r.iterations is not None else '—'} | {failed} |")
+                     f"{r.iterations if r.iterations is not None else '—'} | {library_cell(r.library)} | {failed} |")
     lines += ["", "## Gain, arm A against arm B (a measurement)", "", "| Lab | Arm | Runs | Success | Iterations | Tokens in | Minutes |",
               "|---|---|---|---|---|---|---|"]
     for lab, row in gain_table.items():
@@ -250,6 +251,21 @@ def render(*, results: Sequence[RunResult], gates: Sequence[Gate], verdict: bool
         lines += ["", "## Durations (for the expected times in scenarios.yaml)", ""]
         lines += [f"- {k}: {v / 60:.1f} min" for k, v in sorted(durations.items())]
     return redact("\n".join(lines) + "\n")
+
+
+def library_cell(lib: Mapping) -> str:
+    """A run's Library now in one cell: blocks over thinks; pages shown and read (expected
+    pages among them); thoughts saying "read", "nothing fit", something else or nothing, and the
+    thinks shown a block whose thought said nothing of the library; and, when there were any, the
+    code lines behind a notice of a step not searched (the step limit, a library that did not answer)."""
+    if not lib:
+        return "—"
+    return (f"{lib['blocks']} blocks / {lib['thinks_with_block']} thinks; shown {len(lib['pages_shown'])} "
+            f"({len(lib['shown_expected'])} expected), read {len(lib['pages_read'])} ({len(lib['read_expected'])} expected); "
+            f"thoughts {lib['thoughts']}: read {lib['thought_read']}, nothing fit {lib['thought_nothing']}, "
+            f"other {lib['thought_other']}, none {lib['thought_none']} ({lib['with_block_no_line']} with a block)"
+            + (f"; steps not searched: limit {lib['not_searched_limit']}, no answer {lib['not_searched_no_answer']}"
+               if lib.get("not_searched_limit") or lib.get("not_searched_no_answer") else ""))
 
 
 def write_run_file(folder: Path, result: RunResult, trace: Mapping, redact: Redactor) -> Path:

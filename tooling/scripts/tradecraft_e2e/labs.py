@@ -48,6 +48,9 @@ class LabSpec:
     env: Mapping = field(default_factory=dict)
     networks: Mapping = field(default_factory=dict)
     expected_pages: Sequence[Mapping] = ()
+    # Text the lab's own pages plant for the agent to find (fake CVE ids, instructions to AI
+    # agents): no Library now block may carry it.
+    planted: Sequence[str] = ()
 
     @classmethod
     def from_scenarios(cls, lab_id: str, spec: Mapping) -> "LabSpec":
@@ -56,7 +59,8 @@ class LabSpec:
         return cls(id=lab_id, folder=spec["folder"], kind=spec["kind"], front=spec["front"], port=int(spec["port"]),
                    prompt=" ".join(str(spec["prompt"]).split()), secret=dict(spec["secret"]),
                    oracle=dict(spec["oracle"]), env=dict(spec.get("env") or {}),
-                   networks=dict(spec.get("networks") or {}), expected_pages=list(spec.get("expected_pages") or []))
+                   networks=dict(spec.get("networks") or {}), expected_pages=list(spec.get("expected_pages") or []),
+                   planted=[str(t) for t in spec.get("planted") or []])
 
     def image(self, service: str) -> str:
         return f"tc-e2e-{_slug(self.id)}-{_slug(service)}:latest"

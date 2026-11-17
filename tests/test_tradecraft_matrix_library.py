@@ -717,6 +717,8 @@ def test_build_adds_every_resource_two_at_a_time_and_judges_each():
     put = [c for c in web.calls if c[0] == "PUT"]
     assert put[0][2] == {"featureModels": {"tradecraft_librarian": "model-x"}}
     assert put[1][2] == {"search": SCN["owner_search"]}
+    # hints.perRun left the settings spec (Library now has its own cap): the build never sends it.
+    assert "hints.perRun" not in put[1][2]["search"]
     outcomes = builder.run()
     assert set(outcomes) == {s["slug"] for s in LIB["resources"]}
     assert all(o.ok for o in outcomes.values()), {s: [c for c in o.checks if not c.ok] for s, o in outcomes.items()}

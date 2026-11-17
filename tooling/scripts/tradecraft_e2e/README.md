@@ -117,15 +117,18 @@ pages: it stays under `_local/` and is never committed.
 A result counts only for the code the stack really ran. The rebuild of the agent and the webapp
 writes a build record (`runner.py --record-build before`, then `after`, into
 `_local/tradecraft-e2e/build-record.json`): the plan tip, every file of the agent's and the
-webapp's sources that is not the tip's (with its blob id), and the two image ids. Before a run the
+webapp's sources and of `docker-compose.yml` that is not the tip's (with its blob id), and the two
+image ids; a file that changes between `before` and `after` voids the record. Before a run the
 runner checks that the branch is still at that tip, that the running containers are those images,
-that the only differences are another session's hunks in the files the plan shares with it
-(R-B2: each such copy, `docker-compose.yml` too, holds every line the plan's own diff from its
-base `8fc8fb0b` adds and no block it removes), and, file by file, that the running agent holds
-the tip's code plus those hunks (the
-webapp is compiled, so its image id stands for its sources). Any mismatch, or a check that could
-not run, stops the preflight. At the end it checks the ids and the tip again: a change voids the
-verdict, reported "NOT PASSED (code not verified)" with a non-zero exit, never PASSED.
+that every file the plan changed and the tree holds otherwise carries only another session's hunks
+(R-B2: its copy holds every line the plan's own diff from its base `8fc8fb0b` adds and no block it
+removes; the hunks besides are named, and so is the checkout's own work in files the plan never
+changed), that the running agent has no mount the plan removed from `docker-compose.yml` (a
+container started from an older copy), and, file by file, that the running agent holds the tip's
+code plus those hunks (the webapp is compiled, so its image id stands for its sources). Any
+mismatch, or a check that could not run, stops the preflight. At the end it checks the ids, the
+mounts and the tip again: a change voids the verdict, reported "NOT PASSED (code not verified)"
+with a non-zero exit, never PASSED.
 
 ## What one run does
 
@@ -147,7 +150,8 @@ verdict, reported "NOT PASSED (code not verified)" with a non-zero exit, never P
    `budget.teardown_reserve_min` for the stop, the trace and the teardown.
 4. Reads the trace: the conversation's `tool_complete` and `assistant_message` rows, the
    session's agent log (`agentic/logs/agent.<session>.log`: the full first prompt, the
-   `[tradecraft] hint` lines; `.events.jsonl`: iterations and tokens), the owner's
+   `[tradecraft] library_now` lines and each think's thought; `.events.jsonl`:
+   iterations and tokens), the owner's
    page-store row counts before and after, and the cards of every page the run touched.
 5. Judges the oracle and the checks, removes the project and the lab instance, writes the
    run's JSON file. A run whose agent run did not happen (the question never sent, the socket
@@ -163,7 +167,7 @@ the owner's setting back to "Agent decides" only once no A-search run is running
 
 | Arm or check | Checks |
 |---|---|
-| A, A-search | the oracle; an expected page of the scenario returned by a search, a read or the librarian; every read by section and within `reading.charsPerRead`; reads of Stored resources say "stored copy from <date>"; at most `hints.perRun` hint notes, none twice, none about the injected pages' words; every librarian excerpt word for word in its page (Stored pages; a Live page's excerpt cannot be checked and is reported so); the owner's page-store counts unchanged |
+| A, A-search | the oracle; an expected page of the scenario returned by a search, a read or the librarian; every read by section and within `reading.charsPerRead`; reads of Stored resources say "stored copy from <date>"; a page the agent read never shown again in a later Library now block; no block row (resource, breadcrumb, title) and no trusted line (the fixed header, footer and notices) carrying the text the lab plants (its `planted` list: the fake CVE ids and the instructions to AI agents; the step lines, inside the untrusted wrapper, are not judged); every librarian excerpt word for word in its page (Stored pages; a Live page's excerpt cannot be checked and is reported so); the owner's page-store counts unchanged |
 | A-search | also: `tradecraft_ask` neither offered nor called |
 | B | no tradecraft tool offered or called; no coverage map in the prompt (a measurement: the oracle is not a gate) |
 | S1 | a resource turned off in the project is neither listed nor read |
