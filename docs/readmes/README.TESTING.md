@@ -511,9 +511,11 @@ Two measurements run by hand: the search measurement (`agentic/tests/test_tradec
 questions over a fixed corpus, on the harness) and `tooling/scripts/tradecraft_store_perf.sh` (the page store at
 volume). **The end-to-end matrix** (`tooling/scripts/tradecraft_e2e/README.md`) attacks two Tradecraft labs
 (`testing/guinea_pigs/tc_sqli_pg_waf`, `tc_ssrf_metadata`) and the older labs with the library on, off and in Search
-only, in parallel lanes, and checks the agent's traces. It needs the stack, a library built once from the default
-presets and a real model, so it is a live run started by hand, never part of the gate. Its unit tests
-(`tests/test_tradecraft_matrix_runner.py`) are in the gate; a root test file whose name holds `_e2e` would be tiered
+only, in parallel lanes, and checks the agent's traces. It needs the stack, a real model and a library built once from
+the default presets for the e2e owner only (`tooling/scripts/tradecraft_e2e/library.py`: `plan`, `models`, `build`,
+`snapshot`, `restore`, `status`; each matrix run restores the snapshot), so it is a live run started by hand, never part
+of the gate. Its unit tests (`tests/test_tradecraft_matrix_runner.py`, `tests/test_tradecraft_matrix_library.py`) are in
+the gate; a root test file whose name holds `_e2e` would be tiered
 `integration` and never run by `./redamon.sh test unit`.
 
 The shell section holds three Tradecraft guards: `tests/tradecraft_cache_volume_test.sh` (the old page-cache volume is

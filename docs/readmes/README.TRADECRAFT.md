@@ -712,7 +712,8 @@ The webapp waits 15 seconds longer than each deadline.
 - **The search measurement** (`agentic/tests/test_tradecraft_eval_integration.py`): 100 questions over a fixed corpus.
 - **The end-to-end matrix**: two vulnerable labs (`testing/guinea_pigs/tc_sqli_pg_waf`, `tc_ssrf_metadata`) and a
   runner that attacks them with and without the library, in parallel lanes, and checks the agent's traces
-  (`tooling/scripts/tradecraft_e2e/README.md`). It is a live run against the stack, outside the unit gate.
+  (`tooling/scripts/tradecraft_e2e/README.md`), on a library built once for the e2e owner and restored before each run
+  (`tooling/scripts/tradecraft_e2e/library.py`). It is a live run against the stack, outside the unit gate.
 - **Code-search guards** in the shell tests: no page-cache name in the code (`tests/tradecraft_no_cache_names_test.sh`),
   no new environment key (`tests/tradecraft_no_new_env_test.sh`), the volume's one-time removal
   (`tests/tradecraft_cache_volume_test.sh`).
