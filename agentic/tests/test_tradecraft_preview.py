@@ -49,10 +49,13 @@ class Model:
         return AIMessage(content=json.dumps({"entries": out}))
 
 
-def request(n=4, focus=None, model="openai/fake-small-model"):
+def request(n=4, focus=None, model="openai/fake-small-model", settings=None):
     titles = ["SQL injection on PostgreSQL", "Site news", "SQLi WAF bypass", "Lab notes"]
     entries = [{"url": f"https://wiki.tc-fixture.test/p{i}/", "title": titles[i % 4]} for i in range(n)]
-    return PreviewRequest.model_validate({"user_id": "u1", "model": model, "focus": focus or FOCUS, "entries": entries})
+    body = {"user_id": "u1", "model": model, "focus": focus or FOCUS, "entries": entries}
+    if settings is not None:
+        body["settings"] = settings
+    return PreviewRequest.model_validate(body)
 
 
 def run_preview(req, model):
@@ -155,3 +158,50 @@ def test_deadline_keeps_maybe(monkeypatch):
     answer = asyncio.run(api.preview_focus(request()))
     assert answer["error_code"] == "timeout" and answer["maybe"] == 4 and len(answer["examples"]) == 4
     assert answer["llm_calls"] == 1
+
+
+def test_the_accounts_always_skip_is_applied_like_a_refresh():
+    """Review finding 4 (§6.14 Preview, R-180): the request carries the account's settings, and the
+    preview reads the focus with them exactly as a saved refresh does, for both Skip modes."""
+    from tradecraft.ingest import focus as focus_mod
+    from tradecraft.settings import EffectiveSettings
+
+    settings = {"focus.alwaysSkip": "news, marketing, job posts"}
+    for skip_mode in ("add", "replace"):
+        raw = dict(FOCUS, skip="theory without payloads", skipMode=skip_mode)
+        model = Model()
+        run_preview(request(focus=raw, settings=settings), model)
+        refresh = focus_mod.focus_of(raw, EffectiveSettings(settings))
+        assert f"Skip: {refresh.skip}" in model.prompts[0]
+        assert ("news, marketing, job posts" in model.prompts[0]) == (skip_mode == "add")
+    # A request without the field (an older webapp) reads the defaults, as before.
+    assert request().settings == {}
+    with pytest.raises(ValidationError):
+        request(settings=["focus.alwaysSkip"])
+
+
+def test_the_deadline_counts_from_the_request(monkeypatch):
+    """Review finding 5 (D-52): the time spent building the model counts. Providers that answer late
+    and a model that never answers still give the entries before the router's deadline, the Strict
+    pre-sort's drops included."""
+    from tradecraft import api
+
+    monkeypatch.setitem(contract.DEADLINES_SEC, "preview_focus", 0.6)
+    monkeypatch.setattr(preview, "DEADLINE_MARGIN_SEC", 0.2)
+    model = Model(hang=True)
+
+    async def late(owner, model_id):
+        await asyncio.sleep(0.3)
+        return model
+
+    monkeypatch.setattr("tradecraft.models.build_ingest_llm", late)
+    answer = asyncio.run(api.preview_focus(request(focus=dict(FOCUS, strictness="strict"))))
+    assert answer["error_code"] == "timeout" and len(answer["examples"]) == 4
+    assert answer["dropped"] == 2 and answer["maybe"] == 2
+
+    async def never(owner, model_id):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("tradecraft.models.build_ingest_llm", never)
+    answer = asyncio.run(api.preview_focus(request()))
+    assert answer["error_code"] == "timeout" and answer["maybe"] == 4 and answer["llm_calls"] == 0

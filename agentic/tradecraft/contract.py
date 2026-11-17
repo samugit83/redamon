@@ -344,6 +344,9 @@ class PreviewRequest(_Model):
     model: str = Field(min_length=1, max_length=300)
     focus: dict[str, Any]
     entries: list[SampleEntry] = Field(min_length=1, max_length=PREVIEW_MAX_ENTRIES)
+    # The effective ingestion settings a refresh of the resource would carry (its focus.alwaysSkip
+    # above all), so the preview reads the focus as the refresh does; empty from an older webapp.
+    settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class PreviewExample(_Model):

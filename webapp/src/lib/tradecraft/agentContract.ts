@@ -217,6 +217,10 @@ export const PreviewRequest = z.object({
   model: z.string().min(1).max(300),
   focus: record,
   entries: z.array(SampleEntry).min(1).max(PREVIEW_MAX_ENTRIES),
+  // The effective ingestion settings a refresh of the resource would carry (focus.alwaysSkip above
+  // all): the agent reads the focus with them, as the refresh does. Optional, so a body sent
+  // without them is unchanged; the agent then reads the defaults.
+  settings: record.optional(),
 }).strict()
 
 export const PreviewResult = z.object({

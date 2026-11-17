@@ -90,6 +90,14 @@ describe('the rules', () => {
     expect(c.WEBAPP_TIMEOUTS_MS).toEqual({ checkUrl: 75_000, previewFocus: 135_000, readNow: 60_000 })
   })
 
+  test('a preview may carry the settings a refresh would read; a body without them is unchanged', () => {
+    const preview = read('PreviewRequest.valid.json')
+    expect(c.PreviewRequest.parse(preview)).not.toHaveProperty('settings')
+    const withSettings = { ...preview, settings: { 'focus.alwaysSkip': 'news, marketing' } }
+    expect(c.PreviewRequest.parse(withSettings).settings).toEqual({ 'focus.alwaysSkip': 'news, marketing' })
+    expect(c.PreviewRequest.safeParse({ ...preview, settings: ['focus.alwaysSkip'] }).success).toBe(false)
+  })
+
   test('routes', () => {
     expect(c.AGENT_ROUTES.jobs).toBe('/tradecraft/v2/jobs')
     expect(c.AGENT_ROUTES.cancelJob('a/b')).toBe('/tradecraft/v2/jobs/a%2Fb/cancel')
