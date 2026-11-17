@@ -25,7 +25,7 @@ import {
   applyCredentials, changedLoginFields, fieldErrorResponse, forcedStorageMode, hasCredentials, parseResourceFields,
   typeOptionsOf, type CredentialsPatch, type FieldError, type StoredCredentials,
 } from './fields'
-import { focusSkillRefusal } from './focusFields'
+import { withOwnSkillTopics } from './focusFields'
 import { resourceViewOf } from './list'
 
 class NotFound extends Error {}
@@ -57,8 +57,7 @@ export async function updateResourceV2(input: {
   const parsed = parseResourceFields(body, 'update')
   if (!parsed.ok) return fieldErrorResponse(parsed.error)
   const fields = parsed.value
-  const foreignSkill = await focusSkillRefusal(ownerId, fields.focus)
-  if (foreignSkill) return foreignSkill
+  const focus = fields.focus === undefined ? undefined : await withOwnSkillTopics(ownerId, fields.focus)
 
   const before = await loadOwnResource(ownerId, resourceId)
   if (!before) return NextResponse.json({ error: 'Resource not found' }, { status: 404 })
@@ -123,7 +122,7 @@ export async function updateResourceV2(input: {
         if (fields[key] !== undefined) data[key] = fields[key]
       }
       if (fields.forcedType !== undefined) data.forcedType = forcedType
-      if (fields.focus !== undefined) data.focus = fields.focus
+      if (focus !== undefined) data.focus = focus
       if (fields.overrides !== undefined) {
         data.overrides = fields.overrides
         data.typeOptions = typeOptionsOf(fields.overrides)

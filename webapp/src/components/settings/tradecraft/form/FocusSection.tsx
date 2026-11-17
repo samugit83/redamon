@@ -7,7 +7,7 @@ import type { PreviewResult } from '@/lib/tradecraft/agentContract'
 import { tradecraftClient, type FocusPreviewInput, type UserRecipe } from '@/lib/tradecraft/client'
 import {
   FOCUS_TEXT_MAX, RECIPE_NAME_MAX, applyRecipe, clampFocusText, focusCost, focusCostText, focusPayload, previewSummary,
-  setChips, userSkillTopic, type Focus, type FocusMode, type FocusStrictness,
+  setChips, userSkillIdOf, userSkillTopic, type Focus, type FocusMode, type FocusStrictness,
 } from '@/lib/tradecraft/focus'
 import { KINDS, RECIPES, TOPICS } from '@/lib/tradecraft/vocab'
 import { FormSection } from './FormSection'
@@ -78,7 +78,7 @@ export function FocusSection(props: FocusSectionProps) {
 function FocusBody({ userId, focus, onChange, alwaysSkip, maxContentChecks, entryCount, preview }: FocusSectionProps) {
   const id = useId()
   const [recipes, setRecipes] = useState<UserRecipe[]>([])
-  const [skills, setSkills] = useState<{ id: string; name: string }[]>([])
+  const [skills, setSkills] = useState<{ id: string; name: string }[] | null>(null)
   const [result, setResult] = useState<PreviewResult | null>(null)
   const [previewing, setPreviewing] = useState(false)
   const [recipeName, setRecipeName] = useState('')
@@ -90,11 +90,16 @@ function FocusBody({ userId, focus, onChange, alwaysSkip, maxContentChecks, entr
   useEffect(() => {
     let live = true
     tradecraftClient.getSettings(userId).then(r => { if (live) setRecipes(r.recipes ?? []) }).catch(() => undefined)
-    tradecraftClient.ownSkills(userId).then(s => { if (live) setSkills(Array.isArray(s) ? s.map(x => ({ id: x.id, name: x.name })) : []) }).catch(() => undefined)
+    tradecraftClient.ownSkills(userId).then(s => { if (live) setSkills(Array.isArray(s) ? s.map(x => ({ id: x.id, name: x.name })) : []) }).catch(() => { if (live) setSkills([]) })
     return () => { live = false }
   }, [userId])
 
-  const skillNames = Object.fromEntries(skills.map(s => [s.id, s.name]))
+  const skillNames = Object.fromEntries((skills ?? []).map(s => [s.id, s.name]))
+  // A topic of a skill the owner deleted since: shown, so it can be turned off (the save leaves it out anyway).
+  const staleSkills = skills === null ? [] : focus.topics.flatMap(t => {
+    const id = userSkillIdOf(t)
+    return id && !Object.hasOwn(skillNames, id) ? [{ topic: t, id }] : []
+  })
   const change = (next: Focus) => {
     setResult(null)
     onChange(next)
@@ -169,9 +174,13 @@ function FocusBody({ userId, focus, onChange, alwaysSkip, maxContentChecks, entr
               {TOPICS.map(t => (
                 <button key={t.id} type="button" className={fcss.chip} aria-pressed={focus.topics.includes(t.id)} onClick={() => toggleTopic(t.id)}>{t.label}</button>
               ))}
-              {skills.map(s => (
+              {(skills ?? []).map(s => (
                 <button key={s.id} type="button" className={fcss.chip} aria-pressed={focus.topics.includes(userSkillTopic(s.id))}
                   onClick={() => toggleTopic(userSkillTopic(s.id))}>{s.name}</button>
+              ))}
+              {staleSkills.map(s => (
+                <button key={s.topic} type="button" className={fcss.chip} aria-pressed={true} title="This skill was deleted: turn it off"
+                  onClick={() => toggleTopic(s.topic)}>{`Deleted skill (${s.id})`}</button>
               ))}
             </div>
           </div>

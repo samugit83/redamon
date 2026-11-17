@@ -29,7 +29,7 @@ export interface ResourceFields {
   forcedType?: '' | SiteType
   /** `null` removes the login; a patch is merged with the stored one (`applyCredentials`). */
   credentials?: null | CredentialsPatch
-  /** `{}` is no focus (Everything). The owner's skill topics are checked by the writer (`foreignSkillTopics`). */
+  /** `{}` is no focus (Everything). The writer keeps only the owner's skill topics (`withOwnSkillTopics`). */
   focus?: Focus | Record<string, never>
   /** The Resource ID: chosen at creation, read-only afterwards (R-137). */
   slug?: string

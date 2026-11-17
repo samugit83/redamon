@@ -20,7 +20,7 @@ import {
   applyCredentials, defaultStorageMode, fieldErrorResponse, forcedStorageMode, hasCredentials, parseResourceFields,
   typeOptionsOf, type StoredCredentials,
 } from './fields'
-import { focusSkillRefusal } from './focusFields'
+import { withOwnSkillTopics } from './focusFields'
 import { resourceViewOf } from './list'
 
 export const MAX_RESOURCES_PER_USER: number = SETTINGS_CONSTANTS.maxResourcesPerUser
@@ -65,8 +65,7 @@ export async function createResourceV2(input: {
       if (refused) return refused
     }
   }
-  const foreignSkill = await focusSkillRefusal(ownerId, fields.focus)
-  if (foreignSkill) return foreignSkill
+  const focus = fields.focus ? await withOwnSkillTopics(ownerId, fields.focus) : {}
   const noLibrarian = await librarianModelRefusal(ownerId)
   if (noLibrarian) return noLibrarian
 
@@ -108,7 +107,7 @@ export async function createResourceV2(input: {
           githubTokenOverride: fields.githubTokenOverride ?? '',
           overrides: overrides as object,
           typeOptions: typeOptionsOf(overrides) as object,
-          focus: (fields.focus ?? {}) as object,
+          focus: focus as object,
           credentials: login as object,
           hasLogin: hasCredentials(login),
           presetKey: fields.presetKey ?? '',

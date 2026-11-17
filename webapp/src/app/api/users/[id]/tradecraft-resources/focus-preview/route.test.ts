@@ -29,6 +29,7 @@ vi.mock('@/lib/tradecraft/actAs', () => ({
 }))
 
 import { PreviewRequest, WEBAPP_TIMEOUTS_MS } from '@/lib/tradecraft/agentContract'
+import { effectiveSettings } from '@/lib/tradecraft/effectiveSettings'
 import { loginUseRefusal } from '@/lib/tradecraft/actAs'
 import { requireSelfPermission } from '@/lib/authz/selfService'
 import { POST } from './route'
@@ -83,7 +84,7 @@ describe('the focus preview', () => {
     expect(r).toEqual({ status: 200, body: { result: RESULT } })
     expect(writes()).toEqual([])
     expect(h.db.raw).toEqual([])
-    expect(sent(agent)).toEqual({ user_id: 'owner', model: 'gpt-4o', focus: FOCUS, entries: ENTRIES })
+    expect(sent(agent)).toEqual({ user_id: 'owner', model: 'gpt-4o', focus: FOCUS, entries: ENTRIES, settings: effectiveSettings({}).values })
     // The agent's 120 s deadline plus the margin.
     expect(timeout).toHaveBeenCalledWith(WEBAPP_TIMEOUTS_MS.previewFocus)
     expect(WEBAPP_TIMEOUTS_MS.previewFocus).toBe(135_000)
@@ -164,7 +165,6 @@ describe('the focus preview', () => {
     ['an empty focus', { focus: {}, entries: ENTRIES, llmModel: 'gpt-4o' }, 'focus'],
     ['mode Everything', { focus: { mode: 'everything' }, entries: ENTRIES, llmModel: 'gpt-4o' }, 'focus.mode'],
     ['a bad focus', { focus: { ...FOCUS, keep: 'k'.repeat(1001) }, entries: ENTRIES, llmModel: 'gpt-4o' }, 'focus.keep'],
-    ['a foreign skill', { focus: { ...FOCUS, topics: ['user_skill:theirs'] }, entries: ENTRIES, llmModel: 'gpt-4o' }, 'focus.topics'],
     ['entries without a model', { focus: FOCUS, entries: ENTRIES }, 'llmModel'],
     ['a loop model', { focus: FOCUS, entries: ENTRIES, llmModel: 'loop/mcp' }, 'llmModel'],
     ['both a resource and entries', { focus: FOCUS, entries: ENTRIES, resourceId: 'r1', llmModel: 'gpt-4o' }, 'resourceId'],
@@ -176,6 +176,26 @@ describe('the focus preview', () => {
     expect(r.status).toBe(400)
     expect(r.body.field).toBe(field)
     expect(agent.calls).toEqual([])
+  })
+
+  test('the effective settings a refresh would carry travel with the focus: the account\'s Always skip, the resource\'s overrides (S08 finding 4)', async () => {
+    h.db.rows('tradecraftUserSettings')[0].ingestion = { 'focus.alwaysSkip': 'job posts', 'crawl.maxPages': 90 }
+    h.db.rows('userTradecraftResource', { id: 'r1' })[0].overrides = { 'focus.maxContentChecks': 7 }
+    seedEntries('r1', 2, 3)
+    const agent = previewAgent()
+    await post({ focus: { ...FOCUS, skipMode: 'add' }, entries: ENTRIES, llmModel: 'gpt-4o' })
+    expect(sent(agent).settings).toMatchObject({ 'focus.alwaysSkip': 'job posts', 'crawl.maxPages': 90, 'focus.maxContentChecks': 100 })
+    await post({ focus: FOCUS, resourceId: 'r1' })
+    expect(sent(agent, 1).settings).toMatchObject({ 'focus.alwaysSkip': 'job posts', 'focus.maxContentChecks': 7 })
+  })
+
+  test('a skill topic the owner does not have (deleted, or another account\'s) is left out of the preview, which still runs (review E)', async () => {
+    h.db.seed('userAttackSkill', { id: 'theirs', userId: 'other', name: 'Theirs' })
+    h.db.seed('userAttackSkill', { id: 'mine', userId: 'owner', name: 'Mine' })
+    const agent = previewAgent()
+    const r = await answer(await post({ focus: { ...FOCUS, topics: ['user_skill:theirs', 'user_skill:gone', 'user_skill:mine'] }, entries: ENTRIES, llmModel: 'gpt-4o' }))
+    expect(r.status).toBe(200)
+    expect(sent(agent).focus).toMatchObject({ topics: ['user_skill:mine'] })
   })
 
   test('the agent\'s deadline passes: 504 with a fixed text; unreachable 503; an error 502; a malformed answer 502', async () => {

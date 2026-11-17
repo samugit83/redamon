@@ -114,6 +114,17 @@ describe('FocusSection', () => {
     expect(keep().value).toBe('Pages about GraphQL abuse.')
   })
 
+  test('a deleted skill still in the focus is shown, pressed, and removable (review E)', async () => {
+    render(<Host initial={{ ...EMPTY_FOCUS, mode: 'focused', topics: ['xss', 'user_skill:gone', 'user_skill:s1'], kinds: [] }} />)
+    openSection()
+    const stale = await screen.findByRole('button', { name: 'Deleted skill (gone)' })
+    expect(stale).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'GraphQL abuse' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(stale)
+    expect(latest.focus!.topics).toEqual(['xss', 'user_skill:s1'])
+    expect(screen.queryByRole('button', { name: 'Deleted skill (gone)' })).toBeNull()
+  })
+
   test('limits_1000: Keep and Skip stop at 1,000 characters, with a counter', async () => {
     render(<Host />)
     await focused()

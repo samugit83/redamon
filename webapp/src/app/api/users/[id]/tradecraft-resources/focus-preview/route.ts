@@ -9,11 +9,12 @@ import { requireSelfPermission } from '@/lib/authz/selfService'
 import { auditActor } from '@/lib/auditActor'
 import { loginUseRefusal } from '@/lib/tradecraft/actAs'
 import { AGENT_ROUTES, PreviewRequest, PreviewResult, WEBAPP_TIMEOUTS_MS } from '@/lib/tradecraft/agentContract'
+import { effectiveSettings } from '@/lib/tradecraft/effectiveSettings'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
 import { SETTINGS_CONSTANTS } from '@/lib/tradecraft/settingsSpec'
 import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 import { validateUrl } from '@/lib/tradecraft/urls'
-import { focusSkillRefusal, validateFocus } from '@/lib/tradecraft/v2/focusFields'
+import { validateFocus, withOwnSkillTopics } from '@/lib/tradecraft/v2/focusFields'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -124,8 +125,7 @@ async function preview(request: NextRequest, id: string): Promise<NextResponse> 
   if (!('mode' in focus.value) || focus.value.mode === 'everything') {
     return badField(Object.keys(focus.value).length === 0 ? 'focus' : 'focus.mode', 'Everything keeps every page: pick Focused or Tag only to preview', 'bad_focus')
   }
-  const foreignSkill = await focusSkillRefusal(id, focus.value)
-  if (foreignSkill) return foreignSkill
+  const ownFocus = await withOwnSkillTopics(id, focus.value)
   const chosen = modelOf(body.llmModel)
   if (!chosen.ok) return chosen.res
 
@@ -136,6 +136,7 @@ async function preview(request: NextRequest, id: string): Promise<NextResponse> 
 
   let entries: Entry[]
   let model: string
+  let overrides: unknown = {}
   if (resourceId) {
     // A login's use is refused while someone acts as the account (§6.6): before the row is read.
     const loginRefused = await loginUseRefusal({ ownerId: id, resourceId })
@@ -147,6 +148,7 @@ async function preview(request: NextRequest, id: string): Promise<NextResponse> 
       return failure(409, 'no_entries', 'This resource has no page list yet: refresh it first, or preview from Check URL in the form')
     }
     model = chosen.model ?? row.llmModel
+    overrides = row.overrides
   } else {
     const parsed = parseEntries(body.entries)
     if (!parsed.ok) return parsed.res
@@ -155,7 +157,11 @@ async function preview(request: NextRequest, id: string): Promise<NextResponse> 
     model = chosen.model
   }
 
-  const payload = PreviewRequest.parse({ user_id: id, model, focus: focus.value, entries })
+  // The values a refresh of this resource would carry (the account's "Always skip" above all), so
+  // the agent reads the focus as the refresh will; a resource being added has no overrides yet.
+  const user = await prisma.tradecraftUserSettings.findUnique({ where: { userId: id }, select: { ingestion: true } })
+  const settings = effectiveSettings({ user, resource: overrides }).values
+  const payload = PreviewRequest.parse({ user_id: id, model, focus: ownFocus, entries, settings })
   let res: Response
   try {
     res = await agentFetch(AGENT_ROUTES.previewFocus, {

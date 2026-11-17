@@ -11,7 +11,7 @@ import { createTradecraftDb, type TradecraftDb } from '../__testing__/tradecraft
 const h = vi.hoisted(() => ({ db: null as unknown as TradecraftDb }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as never)[k] }) }))
 
-import { foreignSkillTopics, validateFocus, validateKinds, validateTopics } from './focusFields'
+import { foreignSkillTopics, validateFocus, validateKinds, validateTopics, withOwnSkillTopics } from './focusFields'
 
 const FULL = {
   mode: 'focused', recipe: 'sql_injection_deep_dive', topics: ['sql_injection'], kinds: ['payloads', 'bypasses'],
@@ -99,6 +99,17 @@ describe('foreignSkillTopics', () => {
     h.db.seed('userAttackSkill', { id: 'theirs', userId: 'other', name: 'Theirs' })
     expect(await foreignSkillTopics('owner', ['xss', 'user_skill:mine'])).toEqual([])
     expect(await foreignSkillTopics('owner', ['user_skill:mine', 'user_skill:theirs', 'user_skill:gone'])).toEqual(['user_skill:theirs', 'user_skill:gone'])
+  })
+
+  test('withOwnSkillTopics: the focus with only the owner\'s skill topics; no focus or no skill topic is returned as it is', async () => {
+    h.db.seed('userAttackSkill', { id: 'mine', userId: 'owner', name: 'Mine' })
+    const focus = { mode: 'focused' as const, topics: ['user_skill:mine', 'user_skill:gone', 'xss'], kinds: [], keep: 'k', skip: '', skipMode: 'add' as const, strictness: 'balanced' as const }
+    expect(await withOwnSkillTopics('owner', focus)).toEqual({ ...focus, topics: ['user_skill:mine', 'xss'] })
+    expect(await withOwnSkillTopics('owner', {})).toEqual({})
+    h.db.calls.length = 0
+    const plain = { ...focus, topics: ['xss'] }
+    expect(await withOwnSkillTopics('owner', plain)).toBe(plain)
+    expect(h.db.calls).toEqual([])
   })
 
   test('no skill topic reads nothing', async () => {

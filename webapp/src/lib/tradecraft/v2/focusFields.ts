@@ -6,10 +6,9 @@
  * same lists), Keep and Skip against the prompt limit.
  *
  * A `user_skill:<id>` topic must name one of the owner's own skills; that needs a database
- * read, so the writers ask `foreignSkillTopics` after the shape passed.
+ * read, so the writers pass the focus through `withOwnSkillTopics` after the shape passed.
  */
 import type { Prisma } from '@prisma/client'
-import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import {
   FOCUS_MODES, FOCUS_SKIP_MODES, FOCUS_STRICTNESS, FOCUS_TEXT_MAX, FOCUS_TOPICS_MAX, userSkillIdOf, type Focus,
@@ -127,12 +126,14 @@ export async function foreignSkillTopics(ownerId: string, topics: readonly strin
   return wanted.filter(w => !ownIds.has(w.id)).map(w => w.topic)
 }
 
-/** The 400 a writer answers when a focus names a skill the owner does not have; null otherwise. */
-export async function focusSkillRefusal(ownerId: string, focus: Focus | Record<string, never> | undefined): Promise<NextResponse | null> {
-  const topics = focus && 'topics' in focus ? focus.topics : []
-  const foreign = await foreignSkillTopics(ownerId, topics)
-  if (foreign.length === 0) return null
-  return NextResponse.json({
-    field: 'focus.topics', code: 'foreign_skill', error: `Not one of your skills: ${foreign.join(', ')}`,
-  }, { status: 400 })
+/**
+ * The focus as a writer saves it (create, update, the preview): a `user_skill:<id>` topic the owner
+ * does not have is left out. A deleted skill's topic stays in a saved focus (nothing removes it when
+ * the skill goes), and the Edit form sends the focus back with every save, so refusing it would
+ * block every edit; another account's skill is never stored either way.
+ */
+export async function withOwnSkillTopics<F extends Focus | Record<string, never>>(ownerId: string, focus: F, db: Db = prisma): Promise<F> {
+  if (!('topics' in focus)) return focus
+  const foreign = new Set(await foreignSkillTopics(ownerId, focus.topics, db))
+  return foreign.size === 0 ? focus : { ...focus, topics: focus.topics.filter(t => !foreign.has(t)) }
 }

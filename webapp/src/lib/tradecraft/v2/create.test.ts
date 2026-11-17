@@ -204,14 +204,14 @@ describe('createResourceV2', () => {
     expect(req.settings_hash).not.toBe(effectiveSettings({}).hash)
   })
 
-  test('foreign_skill_refused: a focus on another account\'s skill is a 400, nothing written', async () => {
+  test('foreign_skill_left_out (review E): a skill topic the owner does not have (another account\'s, or deleted) is not saved', async () => {
     h.db.seed('userAttackSkill', { id: 'theirs', userId: 'other', name: 'Theirs' })
+    h.db.seed('userAttackSkill', { id: 'mine', userId: 'owner', name: 'Mine' })
     const agent = stubAgent()
-    const res = await create({ ...BODY, focus: { mode: 'focused', topics: ['user_skill:theirs'] } })
-    expect(res.status).toBe(400)
-    expect(await res.json()).toMatchObject({ field: 'focus.topics', code: 'foreign_skill' })
-    expect(resources()).toEqual([])
-    expect(agent.calls).toEqual([])
+    const res = await create({ ...BODY, focus: { mode: 'focused', topics: ['xss', 'user_skill:theirs', 'user_skill:gone', 'user_skill:mine'] } })
+    expect(res.status).toBe(201)
+    expect(resources()[0].focus).toMatchObject({ topics: ['xss', 'user_skill:mine'] })
+    expect(jobRequests(agent)[0].resource.focus).toMatchObject({ topics: ['xss', 'user_skill:mine'] })
   })
 
   describe('site logins (§6.6, T6.5)', () => {

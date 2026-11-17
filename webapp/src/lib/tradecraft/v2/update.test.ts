@@ -259,16 +259,17 @@ describe('updateResourceV2', () => {
       expect(row().focus).toEqual({})
     })
 
-    test('foreign_skill_refused: a focus naming a skill the owner does not have is a 400, nothing written', async () => {
+    test('a deleted skill never blocks an edit (review E): its topic is left out, another account\'s too', async () => {
       h.db.seed('userAttackSkill', { id: 'mine', userId: 'owner', name: 'Mine' })
       h.db.seed('userAttackSkill', { id: 'theirs', userId: 'other', name: 'Theirs' })
+      row().focus = { mode: 'focused', topics: ['user_skill:mine', 'user_skill:deleted'], kinds: [], keep: '', skip: '', skipMode: 'add', strictness: 'balanced' }
       stubAgent()
-      const res = await update({ focus: { mode: 'focused', topics: ['user_skill:theirs'] }, name: 'Renamed' })
-      expect(res.status).toBe(400)
-      expect(await res.json()).toMatchObject({ field: 'focus.topics', code: 'foreign_skill' })
-      expect(row()).toMatchObject({ name: 'Wiki', focus: {} })
-      expect((await update({ focus: { mode: 'focused', topics: ['user_skill:mine'] } })).status).toBe(200)
-      expect(row().focus).toMatchObject({ topics: ['user_skill:mine'] })
+      // The Edit form sends the stored focus back with every save, the deleted skill's topic in it.
+      const res = await update({ name: 'Renamed', focus: row().focus })
+      expect(res.status).toBe(200)
+      expect(row()).toMatchObject({ name: 'Renamed', focus: { topics: ['user_skill:mine'] } })
+      expect((await update({ focus: { mode: 'focused', topics: ['user_skill:theirs', 'xss'] } })).status).toBe(200)
+      expect(row().focus).toMatchObject({ topics: ['xss'] })
     })
 
     test('Live → Stored: saved, stale until an ingestion stores the pages', async () => {
