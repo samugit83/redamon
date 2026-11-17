@@ -37,13 +37,15 @@ class Job:
     """One ingestion job of resource ``r1`` with the request's ``settings``."""
 
     def __init__(self, root, url, settings=None, *, mode="live", store=None, model=None, forced_type="",
-                 credentials=None, fetcher=None, job_id=JID, target=1):
+                 credentials=None, fetcher=None, job_id=JID, target=1, focus=None):
         self.store = store or MemoryStore()
         self.fetcher = fetcher or FixtureFetcher(root)
         self.model = model or PipelineModel()
         spec = json.loads(json.dumps(FIXTURE))
         spec.update(job_id=job_id, user_id=OWNER, actor_user_id=OWNER, resource_id=RID, settings=dict(settings or {}))
         spec["resource"].update(url=url, storage_mode=mode, model="openai/fake-small-model", forced_type=forced_type)
+        if focus is not None:
+            spec["resource"]["focus"] = focus
         spec["secrets"] = {"github_token": None, "credentials": credentials}
         self.request = JobStartRequest.model_validate(spec)
         # A refresh of a resource a first job already ingested keeps its row and live generation.
@@ -671,3 +673,46 @@ def test_a_failed_map_fails_the_refresh_whatever_pins_curation_adds(tmp_path):
     outcome = refresh.run()
     assert outcome.status == "failed" and outcome.error_code == "model_unavailable" and not outcome.swapped
     assert sorted(refresh.urls()) == good
+
+
+class _DropEverything:
+    """A crawl model for a focus nothing on the site matches: it follows every link it is offered
+    and keeps no page; any other prompt (the summary) gets a summary."""
+
+    def __init__(self):
+        self.prompts: list = []
+
+    async def ainvoke(self, messages, config=None, **kwargs):
+        import re
+        from langchain_core.messages import AIMessage
+        self.prompts.append(messages)
+        text = messages if isinstance(messages, str) else ""
+        if "Reply ONLY with JSON" in text:
+            offered = re.findall(r'^\s+(\d+)\. "', text, re.M)
+            return AIMessage(content=json.dumps({"action": "follow", "indices": [int(n) for n in offered],
+                                                 "keep": False, "reason": "not about SQL injection"}))
+        return AIMessage(content="A synthetic library of offensive techniques and payloads.")
+
+
+def test_a_focused_docs_crawl_whose_pages_the_focus_dropped_is_a_usable_map(tmp_path):
+    """A focused docs site handed on to the crawl, whose every page the focus drops: the pages were
+    found, so the refresh succeeds with them written as dropped (the Map view shows them, and
+    restores them), as for any map the focus empties; it is not a map of nothing but its start page.
+    The crawl judges a page when it offers the model a link, so each page links to one more (a
+    missing page, never an entry)."""
+    host = "focus-docs.tc-fixture.test"
+    url = f"https://{host}/"
+    pages = [f"{url}{p}.html" for p in ("install", "usage", "options")]
+    head = '<meta name="generator" content="Docutils 0.20.1: https://docutils.sourceforge.io/" />'
+    files = {"/": docs_page("Lab tool documentation", pages, head), "/searchindex.js": "Search.setIndex({broken"}
+    files.update({p.split(host, 1)[1]: docs_page(p.rsplit("/", 1)[-1], [f"{url}gone-{i}.html"])
+                  for i, p in enumerate(pages)})
+    job = Job(site(tmp_path, host, files), url, model=_DropEverything(),
+              focus={"mode": "focused", "topics": ["sql_injection"], "kinds": ["payloads"],
+                     "keep": "SQL injection payloads", "skip": "", "strictness": "balanced"})
+    outcome = job.run()
+    assert outcome.status == "succeeded" and outcome.swapped and outcome.error_code == ""
+    entries = {e["url"]: e for e in job.store.live_entries(RID)}
+    assert set(pages) <= set(entries) and all(entries[p]["status"] == "dropped" for p in pages)
+    assert job.report.kept == 0 and job.report.skipped.outsideFocus >= len(pages)
+    assert "docs_start_page_only" not in error_codes(job)

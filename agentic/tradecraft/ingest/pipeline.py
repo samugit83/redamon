@@ -432,11 +432,12 @@ def _docs_start_page_only(state: IngestState) -> None:
     """A docs map is never its start page alone: a docs site whose index, sitemaps and crawl gave
     no other page is a failed refresh, so the previous version stays under the default policy and
     a first add fails instead of keeping a one-page map. The code says why: ``timeout`` when the
-    time budget ran out, else ``fetch_failed`` (no page found)."""
+    time budget ran out, else ``fetch_failed`` (no page found). A page the crawl's focus dropped was
+    found: it counts, and a map the focus emptied stays a usable result (``failure_code``)."""
     if state.site_type != "sphinx-docs" or state.map_error:
         return
     is_start = builders.same_page_as(state.url)
-    if any(not is_start(e.url) for e in state.entries if e.extra.get("status", "kept") == "kept"):
+    if any(not is_start(e.url) for e in state.entries):
         return
     timed_out = state.stop_reason == _TIME_SPENT or (state.crawl is not None and state.crawl.stop_reason == "time_budget")
     state.entries = []
