@@ -506,7 +506,8 @@ def test_registry_entry():
     assert entry["description"].startswith("**tradecraft_ask**") and len(entry["description"]) >= 100
     assert '"need"' in entry["args_format"] and "45 s" in entry["description"] and "7 questions" in entry["description"]
     for name in ("tradecraft_lookup", "tradecraft_search"):
-        assert '("WAF blocks SLEEP") ... tradecraft_ask' in entries[name]["description"]
+        assert "you cannot tell what fits, or search shows only related pages ... tradecraft_ask" in \
+            entries[name]["description"]
 
 
 # --------------------------------------------------------------------------------------
