@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from tradecraft import api as tc_api  # noqa: E402
 from tradecraft import net  # noqa: E402
 from tradecraft import jobs  # noqa: E402
-from tradecraft.contract import JobStartAnswer, JobStartBatch, PreviewResult, ROUTES  # noqa: E402
+from tradecraft.contract import JobStartAnswer, JobStartBatch, PreviewResult, ReadNowResult, ROUTES  # noqa: E402
 from tradecraft.settings import EffectiveSettings  # noqa: E402
 from tradecraft_doubles import FixtureFetcher  # noqa: E402
 from tradecraft_memory_store import MemoryStore  # noqa: E402
@@ -101,6 +101,8 @@ def client(monkeypatch):
     monkeypatch.setattr(jobs, "default_fetcher", FixtureFetcher)
     # The focus preview (since T5.3) builds the owner's model: a scripted one, never the webapp.
     monkeypatch.setattr("tradecraft.models.build_ingest_llm", _preview_model)
+    # Read now (since T6.6) checks the resource in the page store: an empty one here, never Postgres.
+    monkeypatch.setattr(tc_api.read_now_mod, "default_store", MemoryStore)
     monkeypatch.setenv("INTERNAL_API_KEY", MASTER)
     monkeypatch.setenv("SCANNER_API_KEY", SCANNER)
     runner = FakeRunner()
@@ -233,12 +235,20 @@ def test_the_runner_hands_the_settings_to_the_pipeline():
     assert seen == {"pages": 120, "types": [".md", ".txt", ".rst"]}
 
 
-# Check URL left this list with T4.1 and the focus preview with T5.3: tests/test_tradecraft_check_url.py
-# and tests/test_tradecraft_preview.py hold what they answer.
-@pytest.mark.parametrize("path,body", [p for p in POSTS if p[0].endswith(("read-now", "convert"))])
+# Check URL left this list with T4.1, the focus preview with T5.3 and Read now with T6.6:
+# tests/test_tradecraft_check_url.py, test_tradecraft_preview.py and test_tradecraft_read_now.py hold
+# what they answer.
+@pytest.mark.parametrize("path,body", [p for p in POSTS if p[0].endswith("convert")])
 def test_stubs_answer_501(client, path, body):
     resp = client.post(path, json=body, headers=H)
     assert resp.status_code == 501 and resp.json() == {"error_code": "not_implemented"}
+
+
+def test_read_now_answers_the_contract(client):
+    resp = client.post("/tradecraft/v2/read-now", json=fixture("ReadNowRequest"), headers=H)
+    assert resp.status_code == 200
+    # The store holds no such resource: refused before any request, in the contract's shape.
+    assert ReadNowResult.model_validate(resp.json()).error_code == "resource_deleted"
 
 
 def test_the_preview_answers_the_contract(client):

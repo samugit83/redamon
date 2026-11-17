@@ -386,6 +386,37 @@ class MemoryStore:
                 return dict(c)
         return None
 
+    async def curation_rows(self, user_id, resource_id):
+        self._log("curation_rows", user_id, resource_id)
+        if self._res(user_id, resource_id) is None:
+            return []
+        keys = ("url", "pinned", "blocked", "renamed_title", "restored_from_drop")
+        return [{k: c.get(k, False if k in ("pinned", "blocked", "restored_from_drop") else None) for k in keys}
+                for c in self.curations if c["resource_id"] == resource_id]
+
+    def curate(self, resource_id, url, **flags):
+        """Seeds or updates the curation row of ``url`` (a test's Map view)."""
+        row = next((c for c in self.curations if c["resource_id"] == resource_id and c["url"] == url), None)
+        if row is None:
+            row = {"id": f"c{len(self.curations) + 1}", "resource_id": resource_id, "url": url, "pinned": False,
+                   "blocked": False, "renamed_title": None, "restored_from_drop": False}
+            self.curations.append(row)
+        row.update(flags)
+        return row
+
+    async def clear_blocked(self, user_id, resource_id, generation):
+        self._log("clear_blocked", user_id, resource_id, generation)
+        blocked = {c["url"] for c in self.curations if c["resource_id"] == resource_id and c.get("blocked")}
+        pages = size = 0
+        for e in self.entries:
+            if (e["user_id"] == user_id and e["resource_id"] == resource_id and e["generation"] == generation
+                    and e["url"] in blocked and (e.get("stored_text") is not None or e.get("stored_bytes"))):
+                pages += 1
+                size += e.get("stored_bytes") or 0
+                e["stored_text"], e["stored_bytes"] = None, 0
+                self.sections = [x for x in self.sections if x["entry_id"] != e["id"]]
+        return pages, size
+
     async def lookup_page_id(self, owner_id, page_number):
         for (rid, url), n in self.page_ids.items():
             r = self.resources.get(rid)

@@ -221,13 +221,20 @@ async def _stored_copy(read: _Read, url: str) -> Optional[dict]:
     return entry if entry and entry.get("stored_text") else None
 
 
+async def live_page(url: str, settings: EffectiveSettings, *, github_token: Optional[str],
+                    has_login: bool) -> fetch.FetchedPage:
+    """A page as the tool reads it from the site: the resource's fetching and content settings
+    (the same cleaning as storing it), plain HTTP only with a login (§5). Read now (T6.6) reads
+    through here, so the Map view shows what the agent would get."""
+    return await fetch.smart_fetch(url, settings, github_token=github_token, allow_browser=not has_login)
+
+
 async def _text_of(read: _Read, target: str, copy: Optional[dict], force_refresh: bool) -> tuple:
     """(text, source label, note, error): the stored copy, else the site, else the copy with a
     note, else the error that says whether a copy exists."""
     if copy is not None and not force_refresh:
         return copy["stored_text"], format_source("stored", _date(copy.get("fetched_at"))), "", ""
-    # §5: a resource with a login is read with plain HTTP only (fetch refuses the browser too).
-    page = await fetch.smart_fetch(target, read.settings, github_token=read.token, allow_browser=not read.has_login)
+    page = await live_page(target, read.settings, github_token=read.token, has_login=read.has_login)
     if page.error in _REFUSED:
         return None, "", "", BAD_URL.format(url=target, code=page.error)
     ok = not page.error and 200 <= page.status < 300 and bool(page.text)

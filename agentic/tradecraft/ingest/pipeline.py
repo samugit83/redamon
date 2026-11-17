@@ -418,6 +418,12 @@ async def write(state: IngestState) -> None:
         await st.write_sections(owner, rid, gen, section_rows)
     if state.tree:
         await st.write_tree(owner, rid, gen, state.tree)
+    # A block the person made while the job ran (T6.6): its text leaves this generation too.
+    pages, size = await st.clear_blocked(owner, rid, gen)
+    if pages:
+        state.stored_counts["pages"] = max(0, state.stored_counts["pages"] - pages)
+        state.stored_counts["bytes"] = max(0, state.stored_counts["bytes"] - size)
+        logger.info(f"[tradecraft] job {state.request.job_id} curation code=blocked_during_job pages={pages}")
 
 
 def swap_updates(state: IngestState, failure: str) -> dict:

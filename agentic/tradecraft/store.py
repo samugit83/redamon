@@ -316,6 +316,24 @@ STATEMENTS: dict[str, str] = {
         f"SELECT {_cols(sc.CURATIONS, 'c')} FROM {C} c JOIN {R} r ON r.id = c.resource_id "
         f"WHERE r.user_id = %(uid)s AND c.resource_id = %(rid)s AND c.url = %(url)s"
     ),
+    # --- curation at ingestion (T6.6) ----------------------------------------------------
+    "curation_rows": (
+        f"SELECT c.url, c.pinned, c.blocked, c.renamed_title, c.restored_from_drop FROM {C} c "
+        f"JOIN {R} r ON r.id = c.resource_id WHERE r.user_id = %(uid)s AND c.resource_id = %(rid)s"
+    ),
+    # A page blocked while the job ran: its text and sections leave the job's generation, as the
+    # Map view's block took them from the generations that existed when it was made.
+    "clear_blocked": (
+        f"WITH b AS (SELECT e.id, e.stored_bytes FROM {E} e JOIN {R} r ON r.id = e.resource_id AND r.user_id = e.user_id "
+        f"JOIN {C} c ON c.resource_id = e.resource_id AND c.url = e.url AND c.blocked "
+        f"WHERE e.user_id = %(uid)s AND e.resource_id = %(rid)s AND e.generation = %(gen)s "
+        f"AND (e.stored_text IS NOT NULL OR e.stored_bytes > 0)), "
+        f"gone AS (DELETE FROM {S} x USING b WHERE x.entry_id = b.id AND x.user_id = %(uid)s "
+        f"AND x.resource_id = %(rid)s RETURNING x.id), "
+        f"cleared AS (UPDATE {E} e SET stored_text = NULL, stored_bytes = 0, updated_at = now() FROM b "
+        f"WHERE e.id = b.id AND e.user_id = %(uid)s AND e.resource_id = %(rid)s RETURNING b.stored_bytes) "
+        f"SELECT count(*)::int AS pages, COALESCE(sum(stored_bytes), 0)::bigint AS bytes FROM cleared"
+    ),
     "lookup_page_id": (
         f"SELECT p.resource_id, p.url FROM {P} p JOIN {R} r ON r.id = p.resource_id "
         f"WHERE r.user_id = %(uid)s AND p.id = %(page)s"
@@ -700,6 +718,16 @@ class Store:
 
     async def curation(self, user_id: str, resource_id: str, url: str) -> Optional[dict]:
         return await self._one("curation", {"uid": user_id, "rid": resource_id, "url": url})
+
+    async def curation_rows(self, user_id: str, resource_id: str) -> list[dict]:
+        """The resource's curation rows (url, pinned, blocked, renamed_title, restored_from_drop)."""
+        return await self._all("curation_rows", {"uid": user_id, "rid": resource_id})
+
+    async def clear_blocked(self, user_id: str, resource_id: str, generation: int) -> tuple[int, int]:
+        """Empties the stored text and sections of the blocked URLs in ``generation`` (a job's
+        own, after its write); returns (pages, bytes) it cleared."""
+        row = await self._one("clear_blocked", {"uid": user_id, "rid": resource_id, "gen": generation})
+        return (int(row["pages"]), int(row["bytes"])) if row else (0, 0)
 
     # --- page IDs (library.page_ids.PageIdStore) ---------------------------------------
 
