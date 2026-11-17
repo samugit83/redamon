@@ -39,7 +39,7 @@ services:
     networks:
       lab:
       pentest:
-        ipv4_address: ${TC_SSRF_IP:-172.28.0.95}
+        ipv4_address: ${TC_SSRF_IP:-172.28.0.98}
     ports:
       - "127.0.0.1:${TC_SSRF_PORT:-9212}:5000"
     healthcheck:

@@ -39,7 +39,7 @@ services:
     networks:
       lab:
       pentest:
-        ipv4_address: ${TC_SQLI_IP:-172.28.0.94}
+        ipv4_address: ${TC_SQLI_IP:-172.28.0.97}
     ports:
       - "127.0.0.1:${TC_SQLI_PORT:-9211}:5000"
     healthcheck:

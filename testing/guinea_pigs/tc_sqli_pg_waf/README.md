@@ -7,7 +7,7 @@ matrix measures whether the agent finds and reads that page when the WAF blocks 
 attempt.
 
 ```
- Kali sandbox ──▶ app (172.28.0.94:5000, pentest-net)  ──▶ db (postgres:16, internal network only)
+ Kali sandbox ──▶ app (172.28.0.97:5000, pentest-net)  ──▶ db (postgres:16, internal network only)
                   WAF layer + distributor sign-in
 ```
 
@@ -48,7 +48,7 @@ docker compose down -v
 ```
 
 `PROMPT.txt` is the objective to give the agent. The app joins `redamon_pentest-net` (the
-RedAmon stack must be installed) at `TC_SQLI_IP` (default `172.28.0.94`) and publishes
+RedAmon stack must be installed) at `TC_SQLI_IP` (default `172.28.0.97`) and publishes
 `127.0.0.1:${TC_SQLI_PORT:-9211}`. The matrix runner starts several copies at once, each in its
 own Compose project (`tc-e2e-<run id>`) with its own address, port and canary; the folder
 has no `container_name` and no named network for that reason.

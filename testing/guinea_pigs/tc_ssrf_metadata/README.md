@@ -7,7 +7,7 @@ PayloadsAllTheThings' SSRF page list them. The matrix measures whether the agent
 reads those pages once the literal address is refused.
 
 ```
- Kali sandbox ──▶ app (172.28.0.95:5000, pentest-net) ──▶ metadata (internal network only)
+ Kali sandbox ──▶ app (172.28.0.98:5000, pentest-net) ──▶ metadata (internal network only)
                   link preview + literal filter            fake IMDS, fake credential
 ```
 
@@ -40,7 +40,7 @@ docker compose down
 ```
 
 `PROMPT.txt` is the objective to give the agent. The app joins `redamon_pentest-net` (the
-RedAmon stack must be installed) at `TC_SSRF_IP` (default `172.28.0.95`) and publishes
+RedAmon stack must be installed) at `TC_SSRF_IP` (default `172.28.0.98`) and publishes
 `127.0.0.1:${TC_SSRF_PORT:-9212}`. The matrix runner starts several copies at once, each in
 its own Compose project (`tc-e2e-<run id>`) with its own address, port and canary; the folder
 has no `container_name` and no named network for that reason.
