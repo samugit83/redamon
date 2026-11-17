@@ -31,7 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import project_settings as ps  # noqa: E402
-from test_tradecraft_hints import FOOTER, HEADER, catalog, goal_line, library, state, todo  # noqa: E402
+from test_tradecraft_hints import (FOOTER, HEADER, by_goal, catalog, goal_line, library, rows_by_step,  # noqa: E402
+                                   state, todo)
 from tradecraft import runtime  # noqa: E402
 from tradecraft.library import hints  # noqa: E402
 
@@ -78,7 +79,7 @@ class Loop:
     is_agent_in_the_loop = True
 
 
-def run(states, *, cat="default", llm=None, run_settings=None, coverage=None, answer=None, before=None):
+def run(states, *, cat="default", llm=None, run_settings=None, coverage=None, answer=None, before=None, index=None):
     """Real thinks in one run, its catalog bound once as at a run's start: ``states`` is the first
     state, then functions that make the next state from the one the previous think left. Returns
     [(the messages sent to the model, the node's updates)] and what ``before`` built in the run."""
@@ -91,7 +92,7 @@ def run(states, *, cat="default", llm=None, run_settings=None, coverage=None, an
 
     async def go():
         ps._settings_ctx.set(run_settings if run_settings is not None else settings())
-        with runtime.use_store(object()), runtime.use_index(library()):
+        with runtime.use_store(object()), runtime.use_index(index if index is not None else library()):
             runtime.bind_run_catalog(catalog() if cat == "default" else cat)
             if coverage is not None:
                 runtime._coverage.set(coverage)
@@ -157,7 +158,7 @@ def test_every_kind_of_skill_keeps_its_block_and_gets_the_rule_and_the_block():
         assert "as you go\n6. **Your library.**" in text, kind
         # The block ends the system message, after everything else.
         tail = text[text.rindex(HEADER):]
-        assert goal_line(tail) == '  goal: "Confirm time based blind SQL injection"'
+        assert goal_line(tail) == '  step in progress: "Confirm time based blind SQL injection"'
         assert text.endswith(FOOTER) and "patt:401" in tail, kind
         assert text.index(block[-1]) < text.index(hints.RULE) < text.rindex(HEADER)
 
@@ -199,6 +200,20 @@ def test_the_skill_line_sits_just_before_the_skills_block():
     for skill in ("user_skill:abc", "web-unclassified"):
         messages, _, _ = think(state(attack_path_type=skill), coverage=COVERAGE)
         assert "Library for " not in system_text(messages)
+
+
+def test_the_think_that_starts_a_step_already_shows_its_pages():
+    """Design review finding 2, through the real think node: the think whose answer takes the first
+    action of the next step was sent that step's pages."""
+    starts_bravo = {**DECISION, "tool_args": {"page": "patt:421"}, "thought": "Library: read patt:421.",
+                    "updated_todo_list": [{"description": "Probe vector alpha", "status": "completed", "priority": "high"},
+                                          {"description": "Probe vector bravo", "status": "in_progress",
+                                           "priority": "high"}]}
+    st = state(todo_list=[todo("Probe vector alpha", "in_progress"), todo("Probe vector bravo")])
+    messages, updates, _ = think(st, index=by_goal(), answer=json.dumps(starts_bravo))
+    tail = system_text(messages)[system_text(messages).rindex(HEADER):]
+    assert "patt:421" in rows_by_step(tail)["next step"]
+    assert [t["status"] for t in updates["todo_list"]] == ["completed", "in_progress"]
 
 
 def test_without_a_library_the_rules_read_as_before():
@@ -286,7 +301,7 @@ def test_the_cached_prefix_stays_while_the_block_changes():
     cached = [[b for b in m[0].content if "cache_control" in b] for m in (one, two)]
     assert len(cached[0]) == 3 and cached[0] == cached[1]
     assert one[0].content[-1] != two[0].content[-1]
-    assert goal_line(two[0].content[-1]["text"]) == '  goal: "Dump the users table with stacked queries"'
+    assert goal_line(two[0].content[-1]["text"]) == '  step in progress: "Dump the users table with stacked queries"'
 
 
 # --------------------------------------------------------------------------------------

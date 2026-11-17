@@ -49,7 +49,7 @@ def sqli(n, title, **cols):
 
 
 def slugs_of(note):
-    return {p.split(":")[0] for p in re.findall(r"^  (\S+:\d+)  ", note or "", flags=re.MULTILINE)}
+    return {p.split(":")[0] for p in re.findall(r"^    (\S+:\d+)  ", note or "", flags=re.MULTILINE)}
 
 
 async def test_the_block_reads_only_the_run_owners_catalog(pg, caplog):
@@ -76,7 +76,7 @@ async def test_the_block_reads_only_the_run_owners_catalog(pg, caplog):
         assert slugs_of(note) == {"mine"}
         assert "turned off" not in note and "behind a login" not in note and "another account" not in note
         assert "Kerberoasting" not in note
-        first = re.findall(r"^  (mine:\d+)  ", note, flags=re.MULTILINE)
+        first = re.findall(r"^    (mine:\d+)  ", note, flags=re.MULTILINE)
 
         # The owner's own run, with the login resource in its catalog, may see that one too.
         own = catalog(uid, mine, login, search_settings={"prompt.coverageMap": False})
@@ -88,7 +88,7 @@ async def test_the_block_reads_only_the_run_owners_catalog(pg, caplog):
         later["todo_list"] = [{"id": "t2", "description": "Stacked queries SQL injection on PostgreSQL",
                                "status": "in_progress", "priority": "high"}]
         note2, updates2 = await hints.library_now(later, collaborator)
-    assert note2 and re.findall(r"^  (mine:\d+)  ", note2, flags=re.MULTILINE)[0] != first[0]
+    assert note2 and re.findall(r"^    (mine:\d+)  ", note2, flags=re.MULTILINE)[0] != first[0]
     assert "stacked queries" in note2.lower() and updates2["tradecraft_hint_count"] == 2
     assert not [r for r in caplog.records if "[tradecraft] library_now code=" in r.getMessage()]
 
@@ -104,7 +104,7 @@ async def test_the_real_scores_keep_out_what_does_not_fit(pg):
     ps._settings_ctx.set(RUN_SETTINGS)
     cat = catalog(uid, lib, search_settings={"prompt.coverageMap": False})
     note, _ = await hints.library_now(state("Confirm time based blind SQL injection"), cat)
-    rows = re.findall(r"^  lib:\d+  (.*)$", note, flags=re.MULTILINE)
+    rows = re.findall(r"^    lib:\d+  (.*)$", note, flags=re.MULTILINE)
     assert "Kerberoasting" not in note and len(rows) == 1 and "PostgreSQL time based blind SQL injection" in rows[0]
     nothing, updates = await hints.library_now(
         {**state("Pivot through the mail relay with an SPF gap"), "current_objective_index": 1,

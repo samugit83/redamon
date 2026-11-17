@@ -114,7 +114,7 @@ def test_a_resume_searches_nothing(caplog):
     with caplog.at_level(logging.INFO):
         note, resumed, reasons = think(st, caplog, index=index)
     assert reasons is None and index.calls == []
-    assert pages_of(note) == ["patt:401", "patt:402", "patt:403"] and entry_of(resumed)["block"] == 1
+    assert pages_of(note) == ["patt:401", "patt:402", "patt:403"]
     assert resumed["tradecraft_hint_count"] == 1 and entry_of(resumed)["shown"] == 2
 
 
@@ -124,15 +124,18 @@ def test_a_new_message_starts_again(caplog):
         note, st, reasons = think({**st, "current_objective_index": 1,
                                    "conversation_objectives": [{"content": "x"}, {"content": "now the admin panel"}]},
                                   caplog)
-    assert reasons == "start" and goal_line(note) == '  goal: "now the admin panel"'
+    assert reasons == "start" and goal_line(note) == '  step in progress: "now the admin panel"'
     assert st["tradecraft_hint_count"] == 1 and st["tradecraft_run_key"] == "objective:1"
 
 
 def test_the_saved_focus_is_read_like_any_input():
-    focus = profile.Focus.from_log({"goal": "a\nb" + "x" * 900, "topic": "not_a_topic", "skill": 7, "phase": None,
+    focus = profile.Focus.from_log({"steps": [["now", "a\nb" + "x" * 900], ["next", 7], ["made_up", "x"], "junk",
+                                              ["planned", "p"], ["next", "q"]],
+                                    "topic": "not_a_topic", "skill": 7, "phase": None,
                                     "technologies": ["postgresql", 3, None], "cves": ["CVE-2024-1111", "nope"],
                                     "findings": ["access_gained"], "outcome": "an older run's field"})
-    assert focus.goal.startswith("a b") and len(focus.goal) == profile.GOAL_CHARS
+    assert focus.steps[0][1].startswith("a b") and len(focus.steps[0][1]) == profile.GOAL_CHARS
+    assert [label for label, _t in focus.steps] == ["now", "planned", "next"]
     assert (focus.topic, focus.skill, focus.phase) == (None, "", "")
     assert focus.technologies == ("postgresql",) and focus.cves == ("CVE-2024-1111",)
     assert profile.Focus.from_log(None) is None and profile.Focus.from_log(focus.to_log()) == focus

@@ -1,10 +1,13 @@
-"""What Library now searches for: the agent's current goal and the session's structured facts
-(owner decision 2026-11-17, which replaced T8.1's fixed checkpoints).
+"""What Library now searches for: the steps at hand and the session's structured facts (owner
+decision 2026-11-17, which replaced T8.1's fixed checkpoints).
 
-The goal is the step the think node holds as the one at hand: the first todo item in progress,
-else the first pending one, else the current objective (the person's message). The model or the
-person wrote it, and target text the model read can colour it: the owner accepted that when it
-chose this design (the R-420 card correction). Before it is searched (``query_of``), URLs,
+The steps at hand (``steps_of``) are the ones the agent is about to take, not the one it just
+took: the todo item in progress, the next pending one, and the agent's own stated next action
+(its latest analysis's first recommended next step). Models mark a step in progress in the same
+answer that takes its first action, so a step's pages must be there while it is still the next
+one. With nothing listed yet, the objective (the person's message) is the step. The model or the
+person wrote them, and target text the model read can colour them: the owner accepted that when it
+chose this design (the R-420 card correction). Before a step is searched (``query_of``), URLs,
 addresses and bare numbers go: they name the target, never a technique.
 
 The facts are the structured inputs of a search: the skill's topic (a built-in skill is a
@@ -59,9 +62,13 @@ _IPV4 = re.compile(r"(?<![0-9.])\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5}|/\d{1,2})?(?!
 _NUMBER = re.compile(r"(?<![a-z0-9])\d+(?:[.,:/]\d+)*(?![a-z0-9])", re.IGNORECASE)
 
 
+# A step's kind: in progress, the next one, the agent's own stated next action.
+STEP_LABELS = ("now", "next", "planned")
+
+
 @dataclass(frozen=True)
 class Focus:
-    goal: str = ""
+    steps: tuple[tuple[str, str], ...] = ()
     topic: Optional[str] = None
     skill: str = ""
     phase: str = ""
@@ -69,7 +76,7 @@ class Focus:
     cves: tuple[str, ...] = ()
 
     def to_log(self) -> dict[str, Any]:
-        return {"goal": self.goal, "topic": self.topic, "skill": self.skill, "phase": self.phase,
+        return {"steps": [list(s) for s in self.steps], "topic": self.topic, "skill": self.skill, "phase": self.phase,
                 "technologies": list(self.technologies), "cves": list(self.cves)}
 
     @classmethod
@@ -79,7 +86,12 @@ class Focus:
         if not isinstance(entry, Mapping):
             return None
         topic = entry.get("topic")
-        return cls(goal=one_line(entry.get("goal"))[:GOAL_CHARS],
+        steps = []
+        for item in entry.get("steps") or []:
+            if (isinstance(item, (list, tuple)) and len(item) == 2 and item[0] in STEP_LABELS
+                    and one_line(item[1]) and len(steps) < len(STEP_LABELS)):
+                steps.append((item[0], one_line(item[1])[:GOAL_CHARS]))
+        return cls(steps=tuple(steps),
                    topic=topic if isinstance(topic, str) and topic in load_vocab().topic_ids else None,
                    skill=one_line(entry.get("skill"))[:SKILL_CHARS],
                    phase=one_line(entry.get("phase"))[:40],
@@ -135,16 +147,39 @@ def objective_of(state: Mapping[str, Any]) -> str:
     return str(state.get("original_objective") or "")
 
 
-def goal_of(state: Mapping[str, Any]) -> str:
-    """The step at hand: the first todo item in progress, else the first pending one, else the
-    current objective. One line, at most ``GOAL_CHARS``."""
+def _first_todo(todos: list[Mapping[str, Any]], status: str) -> str:
+    return next((t for t in (one_line(i.get("description"))[:GOAL_CHARS] for i in todos if i.get("status") == status)
+                 if t), "")
+
+
+def planned_of(state: Mapping[str, Any]) -> str:
+    """The agent's own stated next action: the first recommended next step of the analysis in its
+    latest answer (``_decision``); "" when that answer analysed nothing."""
+    decision = state.get("_decision")
+    analysis = decision.get("output_analysis") if isinstance(decision, Mapping) else None
+    steps = analysis.get("recommended_next_steps") if isinstance(analysis, Mapping) else None
+    return next((one_line(s)[:GOAL_CHARS] for s in steps or () if one_line(s)), "") if isinstance(steps, list) else ""
+
+
+def steps_of(state: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """The steps at hand, each one line of at most ``GOAL_CHARS``, none twice: (``now``, the todo
+    item in progress), (``next``, the first pending one), (``planned``, the stated next action).
+    With no todo item, the objective is ``now``, and no stated next action is used: a new message
+    clears the todo list, and the latest answer may still be the last message's."""
     todos = [t for t in state.get("todo_list") or [] if isinstance(t, Mapping)]
-    for status in ("in_progress", "pending"):
-        for item in todos:
-            text = one_line(item.get("description")) if item.get("status") == status else ""
-            if text:
-                return text[:GOAL_CHARS]
-    return one_line(objective_of(state))[:GOAL_CHARS]
+    current, following = _first_todo(todos, "in_progress"), _first_todo(todos, "pending")
+    if not todos:
+        candidates = (("now", one_line(objective_of(state))[:GOAL_CHARS]),)
+    else:
+        candidates = (("now", current), ("next", following), ("planned", planned_of(state)))
+    out: list[tuple[str, str]] = []
+    for label, text in candidates:
+        if text and text.lower() not in {t.lower() for _l, t in out}:
+            out.append((label, text))
+    if not out:
+        objective = one_line(objective_of(state))[:GOAL_CHARS]
+        out = [("now", objective)] if objective else []
+    return tuple(out)
 
 
 def query_of(goal: str) -> str:
@@ -173,7 +208,7 @@ def build(state: Mapping[str, Any], previous: Optional[Focus]) -> Focus:
                 if isinstance(value, str):
                     cves += entity_rules.cve_ids(value)
     return Focus(
-        goal=goal_of(state),
+        steps=steps_of(state),
         topic=topic_of(state),
         skill=one_line(str(state.get("attack_path_type") or ""))[:SKILL_CHARS],
         phase=str(state.get("current_phase") or "informational"),
@@ -183,12 +218,12 @@ def build(state: Mapping[str, Any], previous: Optional[Focus]) -> Focus:
 
 
 def changes(previous: Optional[Focus], current: Focus) -> tuple[str, ...]:
-    """What changed since the last check: ``start`` for a run's first, then the goal, the skill,
-    the phase, a new technology, a newly confirmed CVE id."""
+    """What changed since the last check: ``start`` for a run's first, then a step (``goal``), the
+    skill, the phase, a new technology, a newly confirmed CVE id."""
     if previous is None:
         return ("start",)
     fired = []
-    if current.goal.lower() != previous.goal.lower():
+    if [t.lower() for _l, t in current.steps] != [t.lower() for _l, t in previous.steps]:
         fired.append("goal")
     if (current.topic, current.skill) != (previous.topic, previous.skill):
         fired.append("skill")

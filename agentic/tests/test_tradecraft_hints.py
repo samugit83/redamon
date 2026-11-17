@@ -31,7 +31,7 @@ from tradecraft.library import hints, profile, search  # noqa: E402
 OWNER = "owner-1"
 RUN_SETTINGS = {"TOOL_PHASE_MAP": {"tradecraft_lookup": ["exploitation", "post_exploitation"]},
                 "TRADECRAFT_V2": True, "TRADECRAFT_ASK": True}
-HEADER = "Library now (pages for your current goal):"
+HEADER = "Library now (pages for the steps at hand):"
 FOOTER = "If one fits your next step, read it with tradecraft_lookup(page=…) before acting."
 
 
@@ -96,12 +96,32 @@ def inside(note):
 
 
 def goal_line(note):
+    """The first step's line."""
     return inside(note)[0]
 
 
+def step_lines(note):
+    return [ln for ln in inside(note) if not ln.startswith("    ")]
+
+
 def rows_of(note):
-    """The block's rows: the lines inside its untrusted wrapper after the goal."""
-    return inside(note)[1:]
+    """The block's rows: the lines inside its untrusted wrapper under a step's line."""
+    return [ln[2:] for ln in inside(note) if ln.startswith("    ")]
+
+
+def rows_by_step(note):
+    out, label = {}, None
+    for ln in inside(note):
+        if ln.startswith("    "):
+            out.setdefault(label, []).append(ln.split()[0])
+        else:
+            label = ln.strip().split(":")[0]
+    return out
+
+
+def analysed(*next_steps):
+    """The previous think's decision, with its analysis's recommended next steps."""
+    return {"action": "use_tool", "output_analysis": {"interpretation": "", "recommended_next_steps": list(next_steps)}}
 
 
 def pages_of(note):
@@ -123,15 +143,58 @@ def entry_of(updates):
 # The query: the current goal and the structured facts
 # --------------------------------------------------------------------------------------
 
-def test_the_goal_is_the_step_at_hand():
+def test_the_steps_at_hand():
+    """Design review finding 2: the step in progress, the next pending step and the agent's own
+    stated next action (its latest analysis's first recommended next step), so the pages for a
+    step are there in the think that starts it."""
     steps = [todo("Map the application", "completed"), todo("Confirm boolean blind SQLi on username", "in_progress"),
-             todo("Dump the users table")]
-    assert profile.goal_of(state(todo_list=steps)) == "Confirm boolean blind SQLi on username"
-    assert profile.goal_of(state(todo_list=[steps[0], steps[2]])) == "Dump the users table"
-    assert profile.goal_of(state(todo_list=[steps[0]])) == "Find a time-based blind SQL injection on the login form"
-    assert profile.goal_of(state(todo_list=[todo("one\n  two\tthree", "in_progress")])) == "one two three"
-    assert len(profile.goal_of(state(todo_list=[todo("x" * 900, "in_progress")]))) == profile.GOAL_CHARS
-    assert profile.goal_of({"original_objective": "older run's objective"}) == "older run's objective"
+             todo("Dump the users table"), todo("Crack the hashes")]
+    st = state(todo_list=steps, _decision=analysed("Try a CASE WHEN delay on the username", "x"))
+    assert profile.steps_of(st) == (("now", "Confirm boolean blind SQLi on username"),
+                                    ("next", "Dump the users table"),
+                                    ("planned", "Try a CASE WHEN delay on the username"))
+    # Nothing in progress yet: the next pending step; nothing listed: the objective.
+    assert profile.steps_of(state(todo_list=[steps[0], steps[2]])) == (("next", "Dump the users table"),)
+    assert profile.steps_of(state(todo_list=[steps[0]])) == (
+        ("now", "Find a time-based blind SQL injection on the login form"),)
+    # A stated next action that repeats a step is that step; one left from an earlier message (its
+    # todo list cleared) is no step of this one.
+    assert profile.steps_of(state(todo_list=steps[:2], _decision=analysed("confirm  BOOLEAN blind SQLi on username"))) \
+        == (("now", "Confirm boolean blind SQLi on username"),)
+    assert profile.steps_of(state(_decision=analysed("Something from the last message"))) == (
+        ("now", "Find a time-based blind SQL injection on the login form"),)
+    assert profile.steps_of(state(todo_list=[todo("one\n  two\tthree", "in_progress")])) == (("now", "one two three"),)
+    assert len(profile.steps_of(state(todo_list=[todo("x" * 900, "in_progress")]))[0][1]) == profile.GOAL_CHARS
+    assert profile.steps_of({"original_objective": "older run's objective"}) == (("now", "older run's objective"),)
+
+
+STEPS = {"alpha": "Probe vector alpha", "bravo": "Probe vector bravo", "charlie": "Probe vector charlie"}
+
+
+def test_each_step_gets_its_rows_labelled():
+    st = state(todo_list=[todo(STEPS["alpha"], "in_progress"), todo(STEPS["bravo"])],
+               _decision=analysed(STEPS["charlie"]))
+    note, _ = now(st, index=by_goal())
+    assert step_lines(note) == ['  step in progress: "Probe vector alpha"', '  next step: "Probe vector bravo"',
+                                '  your next action: "Probe vector charlie"']
+    # Three rows in all, the best of each step first.
+    assert rows_by_step(note) == {"step in progress": ["patt:411"], "next step": ["patt:421"],
+                                  "your next action": ["patt:431"]}
+
+
+def test_the_next_step_is_there_before_it_starts():
+    """The think before step S starts already shows S's pages; when S is in progress its pages
+    stay with no new search (they still fit it)."""
+    index = by_goal()
+    first = state(todo_list=[todo(STEPS["alpha"], "in_progress"), todo(STEPS["bravo"])])
+    note, updates = now(first, index=index)
+    assert rows_by_step(note) == {"step in progress": ["patt:411", "patt:412"], "next step": ["patt:421"]}
+    searched = [p.get("q") for n, p in index.calls if n == "entries_text"]
+    started = {**first, **updates, "todo_list": [todo(STEPS["alpha"], "completed"), todo(STEPS["bravo"], "in_progress")]}
+    calls = len(index.calls)
+    note, _ = now(started, index=index)
+    assert rows_by_step(note) == {"step in progress": ["patt:421", "patt:422", "patt:423"]}
+    assert len(index.calls) == calls and searched
 
 
 def test_the_query_holds_the_goal_and_the_facts():
@@ -227,14 +290,15 @@ def test_the_block_format():
     note, _ = now(state(todo_list=[todo('Confirm the "time based" blind SQLi', "in_progress")]))
     lines = note.splitlines()
     # The trusted lines are fixed text; the goal, written by the model or the person, is data.
-    assert lines[0] == HEADER == hints.HEADER == "Library now (pages for your current goal):"
+    assert lines[0] == HEADER == hints.HEADER == "Library now (pages for the steps at hand):"
     assert lines[1].startswith("<<<UNTRUSTED_TRADECRAFT_RESULT id=")
-    assert goal_line(note) == "  goal: \"Confirm the 'time based' blind SQLi\""
+    assert goal_line(note) == "  step in progress: \"Confirm the 'time based' blind SQLi\""
     assert lines[-2].startswith("<<<END_UNTRUSTED_TRADECRAFT_RESULT id=") and lines[-1] == FOOTER == hints.FOOTER
     rows = rows_of(note)
     assert [r.split()[0] for r in rows] == ["patt:401", "patt:402", "patt:403"]
     path, matches = rows[0].split("   matches: ")
     assert path.startswith("  patt:401  PayloadsAllTheThings › SQL Injection › PostgreSQL › PostgreSQL time based")
+    assert lines[3].startswith("    patt:401  ")
     assert matches == "time, based, blind, SQL injection, PostgreSQL"
     # Three rows at most, whatever the library holds; the next ones wait in the run's entry.
     assert len(now(state())[0].splitlines()) == 3 + 5
@@ -247,16 +311,16 @@ def test_every_field_is_clipped():
     note, updates = now(state(todo_list=[todo(goal, "in_progress")]), index=index)
     shown = goal_line(note)
     # One line, the goal's own quotes made single, clipped; a marker inside it is broken.
-    assert shown.startswith('  goal: "') and shown.count('"') == 2 and shown.endswith('…"')
+    assert shown.startswith('  step in progress: "') and shown.count('"') == 2 and shown.endswith('…"')
     # The wrapper adds two zero-width spaces to each marker it breaks, after the clip.
-    assert len(shown.replace("\u200b", "")) <= len('  goal: ""') + hints.GOAL_SHOWN_CHARS
+    assert len(shown.replace("\u200b", "")) <= len('  step in progress: ""') + hints.GOAL_SHOWN_CHARS
     assert "<<<END_UNTRUSTED" not in shown and "END_UNTRUSTED_TRADECRAFT_RESULT id=0" in shown
     for line in rows_of(note):
         path, _, matches = line.strip().partition("   matches: ")
         assert len(path.split("  ", 1)[1]) <= hints.PATH_CHARS
         words = matches.split(", ")
         assert len(words) <= hints.MATCH_WORDS and all(len(w) <= hints.MATCH_WORD_CHARS for w in words)
-    assert len(rows_of(note)) == 3 and len(entry_of(updates)["standing"]) == hints.STANDING
+    assert len(rows_of(note)) == 3 and [len(x["rows"]) for x in entry_of(updates)["searched"]] == [hints.STANDING]
 
 
 def test_page_text_stays_untrusted_and_out_of_the_block():
@@ -433,8 +497,8 @@ def test_the_search_cap_counts_distinct_goals_and_says_when_it_is_reached(monkey
         searched = len(index.calls)
         assert step("charlie") == hints.NOTICES["limit"] and len(index.calls) == searched
         assert step("delta") == hints.NOTICES["limit"] and len(index.calls) == searched
-    assert hints.NOTICES["limit"] == ("Library now: not searched for this goal (search limit for this run); "
-                                      "use tradecraft_search yourself.")
+    assert hints.NOTICES["limit"] == ("Library now: a step was not searched (search limit for this run); "
+                                      "use tradecraft_search for it yourself.")
     assert [r.getMessage() for r in caplog.records if "code=limit" in r.getMessage()] == [
         "[tradecraft] library_now code=limit goals=2"]
 
@@ -454,8 +518,9 @@ def test_a_page_read_leaves_the_block():
     st = {**st, **contextvars.Context().run(asyncio.run, read(st, "patt:401"))}
     note, updates = now(st, index=index)
     # No new search: the next page of the same search steps in, and it is the same block.
+    # A page of the same search coming in is a new suggestion: the count of blocks moves on.
     assert pages_of(note) == ["patt:402", "patt:403", "patt:404"] and len(index.calls) == calls
-    assert entry_of(updates)["block"] == 1 and updates["tradecraft_hint_count"] == 1
+    assert updates["tradecraft_hint_count"] == 2
 
 
 # --------------------------------------------------------------------------------------
@@ -505,7 +570,8 @@ def test_one_page_about_a_confirmed_cve_among_the_first_three():
     index = Index({"entries_text": [row(i) for i in range(1, 7)], "entries_entities": [row(50, entities=["CVE-2023-1234"])]})
     note, _ = now(state(chain_findings_memory=CONFIRMED), index=index)
     assert pages_of(note) == ["patt:401", "patt:402", "patt:450"]
-    assert "   matches: CVE-2023-1234, time, based" in rows_of(note)[2]
+    assert step_lines(note)[-1] == '  confirmed finding: "CVE-2023-1234"'
+    assert "   matches: CVE-2023-1234, SQL injection, PostgreSQL" in rows_of(note)[2]
     # The same id that recon or a scan only listed, or a finding that does not confirm it, takes no row.
     for unconfirmed in ({"target_info": {"technologies": ["PostgreSQL"], "vulnerabilities": ["CVE-2023-1234"]}},
                         {"chain_findings_memory": [{"finding_type": "service_identified", "related_cves": ["CVE-2023-1234"]}]},
@@ -544,8 +610,8 @@ def test_errors_and_slow_libraries_say_so(monkeypatch, caplog):
         note, updates = now(state(), index=Broken())
     # A fixed notice, never an empty prompt that would read as "nothing in the library fits".
     assert note == hints.NOTICES["error"] and updates["tradecraft_hint_count"] == 0
-    assert hints.NOTICES["error"] == ("Library now: not refreshed (the library did not answer); "
-                                      "use tradecraft_search yourself.")
+    assert hints.NOTICES["error"] == ("Library now: a step was not searched (the library did not answer); "
+                                      "use tradecraft_search for it yourself.")
     messages = [r.getMessage() for r in caplog.records]
     assert "[tradecraft] library_now code=internal_error error=RuntimeError" in messages
     assert not any("10.0.0.5" in m or "hunter2" in m for m in messages)
@@ -637,11 +703,12 @@ def test_the_rule_and_where_it_is_given():
     given = rule(catalog())
     assert given == "\n" + hints.RULE and given.startswith("\n6. **Your library.**")
     for phrase in ("curated by the user for this work", "The active attack skill gives the method; the library "
-                   "gives the specifics for the step you are on", "Before each new step, look at \"Library now\"",
+                   "gives the specifics for the steps at hand", "Before each new step, look at \"Library now\"",
+                   "your step in progress, your next step and your stated next action",
                    "read it first with tradecraft_lookup(page=...); if nothing fits, go on", "with no line break",
                    "check Library now first: a fitting page comes before those",
-                   "absent when nothing in the library matches your current goal, and it says so when it could not "
-                   "be searched",
+                   "absent when nothing in the library matches them, and it says so when a step could not be "
+                   "searched",
                    "\"Library: read <page id>.\"", "\"Library: nothing fit.\""):
         assert phrase in given, phrase
     # One rule for every skill and phase: nothing in it is about a topic.
