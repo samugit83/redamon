@@ -1,0 +1,1883 @@
+#!/usr/bin/env python3
+"""The Tradecraft 2.0 end-to-end matrix runner (phase 10, T10.3).
+
+Runs the matrix of ``scenarios.yaml`` against the local stack: per run a fresh lab
+instance (``labs.py``) and a fresh project, the scenario's prompt sent to the agent over
+the chat socket (as the drawer does: a ticket from ``/api/agent/ws-ticket``, then the
+``init`` and ``query`` frames), the run read back (conversation rows, the session's agent
+log, the page-store counts), the lab's oracle (``oracles.py``) and the checks
+(``checks.py``), on up to ``--lanes`` lanes at once (``lanes.py``), with a 40-minute cap per
+run and a budget guard at 4:20; then the report (``report.py``).
+
+Standard library only, host Python 3. Credentials are read from the repository's ``.env``
+inline and never printed: every printed line and written file goes through a redactor that
+holds them. Nothing here starts, stops or rebuilds a container of the stack: the runner
+creates lab projects named ``tc-e2e-*`` and reads the stack's database and logs.
+
+  python3 tooling/scripts/tradecraft_e2e/runner.py --dry-run            # the plan, no stack
+  python3 tooling/scripts/tradecraft_e2e/runner.py --lanes 7            # the full matrix
+  python3 tooling/scripts/tradecraft_e2e/runner.py --only L3-A-1 --only L4-A-1 --lanes 2
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import datetime as _dt
+import hashlib
+import json
+import os
+import re
+import secrets
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+
+REPO = Path(__file__).resolve().parents[3]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from tooling.scripts.tradecraft_e2e import checks, labs, lanes, oracles, report  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+SCENARIOS = HERE / "scenarios.yaml"
+RUNS_DIR = REPO / "_local" / "tradecraft-e2e" / "runs"
+SNAPSHOT_DIR = REPO / "_local" / "tradecraft-e2e" / "library"
+LOGS_DIR = REPO / "agentic" / "logs"
+POSTGRES_CONTAINER = "redamon-postgres"
+WEBAPP_CONTAINER = "redamon-webapp"
+AGENT_CONTAINER = "redamon-agent"
+
+# --------------------------------------------------------------------------------------
+# A small YAML reader (the subset scenarios.yaml is written in)
+# --------------------------------------------------------------------------------------
+
+
+class YamlError(ValueError):
+    pass
+
+
+_BLOCK_SCALAR = re.compile(r"^[|>][-+]?$")
+# YAML 1.1 readers (PyYAML) take these for booleans, YAML 1.2 for strings: refused unquoted.
+_AMBIGUOUS = {"yes", "no", "on", "off"}
+_INT = re.compile(r"^[-+]?\d+$")
+_FLOAT = re.compile(r"^[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?$")
+
+
+def _strip_comment(text: str) -> str:
+    """``text`` without a trailing ``# comment``. A quote opens a string only where a value
+    starts, so the apostrophe of ``a collaborator's chat`` is plain text."""
+    quote = None
+    prev = " "
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                if quote == "'" and i + 1 < len(text) and text[i + 1] == "'":
+                    continue
+                quote = None
+        elif ch in "\"'" and (prev in " \t[{,:-" or i == 0):
+            quote = ch
+        elif ch == "#" and prev in " \t":
+            return text[:i].rstrip()
+        prev = ch
+    return text.rstrip()
+
+
+_VALUE_START = " \t[{,:-"
+
+
+def _opens_quote(text: str, i: int) -> bool:
+    """A quote opens a string only where a value starts (after ``: ``, ``- ``, ``[``, ``{``, ``,``)."""
+    before = text[:i].rstrip(" \t")
+    return text[i] in "\"'" and (not before or before[-1] in _VALUE_START)
+
+
+def _split_top(text: str, sep: str) -> list[str]:
+    parts, depth, quote, cur = [], 0, None, []
+    for i, ch in enumerate(text):
+        if quote:
+            cur.append(ch)
+            if ch == quote and not (quote == '"' and text[i - 1] == "\\"):
+                quote = None
+            continue
+        if _opens_quote(text, i):
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        if ch == sep and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    parts.append("".join(cur))
+    return parts
+
+
+def _key_split(text: str) -> Optional[tuple[str, str]]:
+    """``key: value`` (or ``key:``) at the top level of ``text``, outside quotes and brackets."""
+    depth, quote = 0, None
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "\"'" and i == 0:
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif ch == ":" and depth == 0 and (i + 1 == len(text) or text[i + 1] in " \t"):
+            return text[:i].strip(), text[i + 1:].strip()
+    return None
+
+
+def _scalar(text: str) -> Any:
+    t = text.strip()
+    if not t:
+        return None
+    if t[0] == '"':
+        if not t.endswith('"') or len(t) < 2:
+            raise YamlError(f"unterminated string: {t}")
+        return json.loads(t)
+    if t[0] == "'":
+        if not t.endswith("'") or len(t) < 2:
+            raise YamlError(f"unterminated string: {t}")
+        return t[1:-1].replace("''", "'")
+    if t[0] in "[{":
+        return _flow(t)
+    if t.lower() in _AMBIGUOUS:
+        raise YamlError(f"ambiguous plain value {t!r}: quote it or use true/false")
+    if t in ("null", "Null", "NULL", "~"):
+        return None
+    if t in ("true", "True", "TRUE"):
+        return True
+    if t in ("false", "False", "FALSE"):
+        return False
+    if _INT.match(t):
+        return int(t)
+    if _FLOAT.match(t):
+        return float(t)
+    if t[0] in "&*!|>%@`":
+        raise YamlError(f"unsupported YAML: {t}")
+    return t
+
+
+def _key(text: str) -> Any:
+    if text[:1] in "\"'":
+        return _scalar(text)
+    if text.lower() in _AMBIGUOUS:
+        raise YamlError(f"ambiguous key {text!r}: quote it")
+    return text
+
+
+def _flow(text: str) -> Any:
+    t = text.strip()
+    if t.startswith("["):
+        if not t.endswith("]"):
+            raise YamlError(f"unclosed list: {t}")
+        inner = t[1:-1].strip()
+        return [] if not inner else [_scalar(p) for p in _split_top(inner, ",") if p.strip()]
+    if t.startswith("{"):
+        if not t.endswith("}"):
+            raise YamlError(f"unclosed mapping: {t}")
+        inner = t[1:-1].strip()
+        out = {}
+        for part in ([] if not inner else _split_top(inner, ",")):
+            kv = _key_split(part.strip())
+            if kv is None:
+                raise YamlError(f"not a key: value pair: {part}")
+            out[_key(kv[0])] = _scalar(kv[1])
+        return out
+    return _scalar(t)
+
+
+def _balanced(text: str) -> bool:
+    depth, quote = 0, None
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif _opens_quote(text, i):
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+    return depth <= 0
+
+
+class _Yaml:
+    def __init__(self, text: str):
+        self.lines = text.replace("\t", "    ").splitlines()
+        self.i = 0
+
+    @staticmethod
+    def _indent(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    def _skip(self) -> None:
+        while self.i < len(self.lines):
+            s = self.lines[self.i].strip()
+            if s and not s.startswith("#") and s != "---":
+                return
+            self.i += 1
+
+    def _content(self) -> str:
+        return _strip_comment(self.lines[self.i].strip())
+
+    def parse(self) -> Any:
+        self._skip()
+        if self.i >= len(self.lines):
+            return None
+        value = self._block(self._indent(self.lines[self.i]))
+        self._skip()
+        if self.i < len(self.lines):
+            raise YamlError(f"line {self.i + 1}: unexpected content")
+        return value
+
+    def _block(self, indent: int) -> Any:
+        c = self._content()
+        if c == "-" or c.startswith("- "):
+            return self._seq(indent)
+        if _key_split(c) is not None:
+            return self._map(indent)
+        return self._value_lines(c)
+
+    def _value_lines(self, first: str) -> Any:
+        text = first
+        self.i += 1
+        while text[:1] in "[{" and not _balanced(text) and self.i < len(self.lines):
+            text += " " + _strip_comment(self.lines[self.i].strip())
+            self.i += 1
+        return _scalar(text)
+
+    def _nested(self, indent: int, allow_seq_same: bool) -> Any:
+        self._skip()
+        if self.i >= len(self.lines):
+            return None
+        ind = self._indent(self.lines[self.i])
+        c = self._content()
+        if ind > indent or (allow_seq_same and ind == indent and (c == "-" or c.startswith("- "))):
+            return self._block(ind)
+        return None
+
+    def _block_scalar(self, style: str, parent_indent: int) -> str:
+        self.i += 1
+        raw: list[str] = []
+        block_indent = None
+        while self.i < len(self.lines):
+            line = self.lines[self.i]
+            if line.strip():
+                ind = self._indent(line)
+                if ind <= parent_indent:
+                    break
+                block_indent = ind if block_indent is None else block_indent
+                if ind < block_indent:
+                    break
+                raw.append(line[block_indent:])
+            else:
+                raw.append("")
+            self.i += 1
+        while raw and raw[-1] == "":
+            raw.pop()
+        if style[0] == "|":
+            text = "\n".join(raw)
+        else:
+            paras, cur = [], []
+            for line in raw:
+                if line == "":
+                    paras.append(" ".join(cur))
+                    cur = []
+                else:
+                    cur.append(line)
+            paras.append(" ".join(cur))
+            text = "\n".join(paras)
+        return text if style.endswith("-") else text + "\n"
+
+    def _map(self, indent: int) -> dict:
+        out: dict = {}
+        while True:
+            self._skip()
+            if self.i >= len(self.lines):
+                return out
+            ind = self._indent(self.lines[self.i])
+            if ind < indent:
+                return out
+            if ind > indent:
+                raise YamlError(f"line {self.i + 1}: bad indentation")
+            c = self._content()
+            if c == "-" or c.startswith("- "):
+                return out
+            kv = _key_split(c)
+            if kv is None:
+                raise YamlError(f"line {self.i + 1}: expected key: value")
+            key = _key(kv[0])
+            if key in out:
+                raise YamlError(f"line {self.i + 1}: duplicate key {key}")
+            rest = kv[1]
+            if rest == "":
+                self.i += 1
+                out[key] = self._nested(indent, allow_seq_same=True)
+            elif _BLOCK_SCALAR.match(rest):
+                out[key] = self._block_scalar(rest, indent)
+            else:
+                out[key] = self._value_lines(rest)
+
+    def _seq(self, indent: int) -> list:
+        out: list = []
+        while True:
+            self._skip()
+            if self.i >= len(self.lines):
+                return out
+            ind = self._indent(self.lines[self.i])
+            if ind < indent:
+                return out
+            if ind > indent:
+                raise YamlError(f"line {self.i + 1}: bad indentation")
+            c = self._content()
+            if not (c == "-" or c.startswith("- ")):
+                return out
+            rest = c[1:].strip()
+            if rest == "":
+                self.i += 1
+                out.append(self._nested(indent, allow_seq_same=False))
+            elif rest[:1] not in "[{\"'" and _key_split(rest) is not None:
+                # "- key: value": a mapping whose keys sit where this key starts.
+                self.lines[self.i] = " " * (ind + (len(c) - len(rest))) + rest
+                out.append(self._map(ind + (len(c) - len(rest))))
+            else:
+                out.append(self._value_lines(rest))
+
+
+def load_yaml(text: str) -> Any:
+    return _Yaml(text).parse()
+
+
+def load_scenarios(path: Path = SCENARIOS) -> dict:
+    scn = load_yaml(path.read_text(encoding="utf-8"))
+    for key in ("budget", "lanes", "labs", "arms", "singles", "layer1"):
+        if key not in scn:
+            raise YamlError(f"{path.name}: no {key} section")
+    for arm, spec in scn["arms"].items():
+        for lab in spec["labs"]:
+            if lab not in scn["labs"]:
+                raise YamlError(f"{path.name}: arm {arm} names an unknown lab {lab}")
+    for check, spec in scn["singles"].items():
+        if spec.get("lab") is not None and spec["lab"] not in scn["labs"]:
+            raise YamlError(f"{path.name}: {check} names an unknown lab")
+    return scn
+
+
+# --------------------------------------------------------------------------------------
+# .env, logging, clock
+# --------------------------------------------------------------------------------------
+
+ENV_KEYS = ("UI_LOGIN_USERNAME", "UI_LOGIN_PASSWORD", "MCP_SERVER_TOKEN", "WEBAPP_PORT", "AGENT_PORT",
+            "AGENT_IN_THE_LOOP_ENABLED", "MCP_SERVER_ENABLED", "RBAC_SHARING_ENABLED", "RBAC_SHARING_WRITE_ENABLED",
+            "RBAC_PERMISSIONS_ENABLED")
+OPTIONAL_ENV_KEYS = ("WEBAPP_PORT", "AGENT_PORT")
+# Values never printed. The admin's login name is personal data, so it is scrubbed too.
+SECRET_ENV_KEYS = ("UI_LOGIN_USERNAME", "UI_LOGIN_PASSWORD", "MCP_SERVER_TOKEN")
+
+
+class Env:
+    """The few ``.env`` values the runner needs; ``repr`` and ``str`` name the keys only."""
+
+    def __init__(self, values: Mapping[str, str]):
+        self._values = dict(values)
+
+    def get(self, key: str, default: str = "") -> str:
+        return self._values.get(key, default)
+
+    def flag(self, key: str) -> bool:
+        return self.get(key).strip().lower() in ("1", "true", "yes", "on")
+
+    def present(self) -> dict[str, bool]:
+        return {k: bool(self._values.get(k)) for k in ENV_KEYS}
+
+    def __repr__(self) -> str:
+        return f"Env(keys={sorted(k for k, v in self._values.items() if v)})"
+
+    __str__ = __repr__
+
+
+def read_env(path: Path, redact: report.Redactor) -> Env:
+    values: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return Env({})
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if sep and key in ENV_KEYS:
+            values[key] = value.strip().strip("'\"")
+    redact.add(*(values.get(k) for k in SECRET_ENV_KEYS))
+    return Env(values)
+
+
+class Log:
+    def __init__(self, redact: report.Redactor, stream=None, prefix: str = "[tc-e2e]"):
+        self.redact = redact
+        self.stream = stream
+        self.prefix = prefix
+        self._lock = threading.Lock()
+
+    def __call__(self, msg: str) -> None:
+        line = self.redact(f"{_dt.datetime.now().strftime('%H:%M:%S')} {self.prefix} {msg}")
+        with self._lock:
+            print(line, file=self.stream or sys.stdout, flush=True)
+
+
+def now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+# --------------------------------------------------------------------------------------
+# HTTP (one person's session) and the WebSocket client
+# --------------------------------------------------------------------------------------
+
+@dataclass
+class Response:
+    status: int
+    data: Any = None
+    text: str = ""
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status < 300
+
+    @property
+    def code(self) -> str:
+        return str(self.data.get("code", "")) if isinstance(self.data, dict) else ""
+
+
+class Http:
+    """A person's session with the webapp: its own cookies, the same-origin header the
+    mutating routes ask for, JSON in and out. Errors name the status and a code, never a
+    header or a cookie."""
+
+    def __init__(self, base: str, *, timeout: float = 60, opener: Optional[Callable] = None):
+        self.base = base.rstrip("/")
+        self.timeout = timeout
+        self.cookies: dict[str, str] = {}
+        self._open = opener or urllib.request.build_opener(_NoRedirect()).open
+
+    def _remember(self, headers) -> None:
+        for raw in headers.get_all("Set-Cookie") or []:
+            pair = raw.split(";", 1)[0]
+            name, _, value = pair.partition("=")
+            gone = re.search(r"(?i)max-age=0|expires=thu, 01 jan 1970", raw)
+            if gone or value == "":
+                self.cookies.pop(name.strip(), None)
+            else:
+                self.cookies[name.strip()] = value.strip()
+
+    def call(self, method: str, path: str, body: Any = None, *, headers: Optional[Mapping] = None,
+             timeout: Optional[float] = None) -> Response:
+        hdrs = {"Accept": "application/json", "Origin": self.base}
+        if body is not None:
+            hdrs["Content-Type"] = "application/json"
+        if self.cookies:
+            hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+        hdrs.update(headers or {})
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=hdrs)
+        try:
+            with self._open(req, timeout=timeout or self.timeout) as resp:
+                self._remember(resp.headers)
+                raw, status = resp.read(), resp.status
+        except urllib.error.HTTPError as err:
+            self._remember(err.headers)
+            raw, status = err.read(), err.code
+        except (urllib.error.URLError, OSError) as err:
+            return Response(0, error=type(getattr(err, "reason", err)).__name__)
+        text = raw.decode("utf-8", "replace")
+        try:
+            parsed = json.loads(text) if text else None
+        except ValueError:
+            parsed = None
+        return Response(status, parsed, text)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # a redirect is an answer to read, not to follow
+        return None
+
+
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG, OP_CONT = 0x1, 0x2, 0x8, 0x9, 0xA, 0x0
+
+
+def ws_accept(key: str) -> str:
+    return base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+
+
+def ws_frame(opcode: int, payload: bytes, *, mask: Optional[bytes] = None, fin: bool = True) -> bytes:
+    """One RFC 6455 frame; a client masks every frame (``mask``: 4 bytes)."""
+    head = bytes([(0x80 if fin else 0) | opcode])
+    n = len(payload)
+    bit = 0x80 if mask is not None else 0
+    if n < 126:
+        head += bytes([bit | n])
+    elif n < 65536:
+        head += bytes([bit | 126]) + struct.pack("!H", n)
+    else:
+        head += bytes([bit | 127]) + struct.pack("!Q", n)
+    if mask is None:
+        return head + payload
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
+def ws_parse(buf: bytes) -> Optional[tuple[int, bool, bytes, int]]:
+    """(opcode, fin, payload, bytes used) of the first whole frame in ``buf``, or None."""
+    if len(buf) < 2:
+        return None
+    fin, opcode = bool(buf[0] & 0x80), buf[0] & 0x0F
+    masked, n, at = bool(buf[1] & 0x80), buf[1] & 0x7F, 2
+    if n == 126:
+        if len(buf) < 4:
+            return None
+        n, at = struct.unpack("!H", buf[2:4])[0], 4
+    elif n == 127:
+        if len(buf) < 10:
+            return None
+        n, at = struct.unpack("!Q", buf[2:10])[0], 10
+    key = b""
+    if masked:
+        if len(buf) < at + 4:
+            return None
+        key, at = buf[at:at + 4], at + 4
+    if len(buf) < at + n:
+        return None
+    payload = buf[at:at + n]
+    if masked:
+        payload = bytes(b ^ key[i % 4] for i, b in enumerate(payload))
+    return opcode, fin, payload, at + n
+
+
+class WebSocket:
+    """A minimal client: one text message at a time, pings answered, fragments joined."""
+
+    def __init__(self, url: str, *, timeout: float = 30, connect: Callable = socket.create_connection):
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != "ws":
+            raise ValueError("ws:// only: the agent's socket on the local host")
+        self.sock = connect((parts.hostname, parts.port or 80), timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {parts.netloc}\r\nUpgrade: websocket\r\n"
+                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        self.buf = b""
+        while b"\r\n\r\n" not in self.buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("the socket closed during the handshake")
+            self.buf += chunk
+        head, self.buf = self.buf.split(b"\r\n\r\n", 1)
+        lines = head.decode("latin-1").split("\r\n")
+        if " 101 " not in lines[0] + " ":
+            raise ConnectionError(f"handshake refused: {lines[0][:60]}")
+        accept = next((ln.split(":", 1)[1].strip() for ln in lines[1:] if ln.lower().startswith("sec-websocket-accept:")), "")
+        if accept != ws_accept(key):
+            raise ConnectionError("handshake answered a wrong Sec-WebSocket-Accept")
+        self.closed = False
+
+    def send_text(self, text: str) -> None:
+        self.sock.sendall(ws_frame(OP_TEXT, text.encode(), mask=os.urandom(4)))
+
+    def send_json(self, obj: Any) -> None:
+        self.send_text(json.dumps(obj))
+
+    def recv_text(self, timeout: float) -> Optional[str]:
+        """The next text message, or None when ``timeout`` passes first; raises
+        ConnectionError when the server closed."""
+        deadline = time.monotonic() + timeout
+        parts: list[bytes] = []
+        while True:
+            frame = ws_parse(self.buf)
+            if frame is None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                self.sock.settimeout(left)
+                try:
+                    chunk = self.sock.recv(65536)
+                except socket.timeout:
+                    return None
+                if not chunk:
+                    self.closed = True
+                    raise ConnectionError("the agent closed the socket")
+                self.buf += chunk
+                continue
+            opcode, fin, payload, used = frame
+            self.buf = self.buf[used:]
+            if opcode == OP_PING:
+                self.sock.sendall(ws_frame(OP_PONG, payload, mask=os.urandom(4)))
+            elif opcode == OP_CLOSE:
+                self.closed = True
+                raise ConnectionError("the agent closed the socket")
+            elif opcode in (OP_TEXT, OP_BINARY, OP_CONT):
+                parts.append(payload)
+                if fin:
+                    return b"".join(parts).decode("utf-8", "replace")
+
+    def recv_json(self, timeout: float) -> Optional[dict]:
+        text = self.recv_text(timeout)
+        if text is None:
+            return None
+        try:
+            return json.loads(text)
+        except ValueError:
+            return {"type": "unparsed"}
+
+    def close(self) -> None:
+        if not self.closed:
+            try:
+                self.sock.sendall(ws_frame(OP_CLOSE, struct.pack("!H", 1000), mask=os.urandom(4)))
+            except OSError:
+                pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        self.closed = True
+
+
+# --------------------------------------------------------------------------------------
+# The stack: its database (read), the seed of the e2e accounts, and the routes
+# --------------------------------------------------------------------------------------
+
+Exec = Callable[..., subprocess.CompletedProcess]
+
+
+def lit(value: Any) -> str:
+    """A SQL literal for an id or a number the runner holds (never page text)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    text = str(value)
+    if any(ord(ch) < 32 for ch in text):
+        raise ValueError("a control character in a SQL literal")
+    return "'" + text.replace("'", "''") + "'"
+
+
+class Db:
+    """Read-only queries on the stack's database, through ``psql`` in its container (as
+    ``testing/guinea_pigs/skiller_*.sh`` do). Each query answers one JSON value."""
+
+    def __init__(self, run: Exec = subprocess.run, container: str = POSTGRES_CONTAINER):
+        self._run = run
+        self.container = container
+
+    def json(self, sql: str, timeout: int = 60) -> Any:
+        wrapped = f"SELECT coalesce(json_agg(t), '[]'::json) FROM ({sql}) t;"
+        done = self._run(["docker", "exec", "-i", self.container, "sh", "-c",
+                          'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1 '
+                          '-c "SET default_transaction_read_only = on" -f -'],
+                         input=wrapped, capture_output=True, text=True, timeout=timeout, check=False)
+        if done.returncode != 0:
+            raise RuntimeError(f"psql failed (exit {done.returncode})")
+        lines = [ln for ln in (done.stdout or "").splitlines() if ln.strip() and ln.strip() != "SET"]
+        return json.loads(lines[-1]) if lines else []
+
+
+def page_store_counts(db: Db, owner_id: str) -> dict:
+    o = lit(owner_id)
+    rows = db.json(
+        "SELECT "
+        f"(SELECT count(*) FROM user_tradecraft_resources WHERE user_id = {o}) AS resources, "
+        "(SELECT count(*) FROM tradecraft_page_ids p JOIN user_tradecraft_resources r ON r.id = p.resource_id "
+        f"WHERE r.user_id = {o}) AS page_ids, "
+        f"(SELECT count(*) FROM tradecraft_entries WHERE user_id = {o}) AS entries, "
+        f"(SELECT coalesce(sum(stored_bytes), 0) FROM tradecraft_entries WHERE user_id = {o}) AS stored_bytes, "
+        f"(SELECT count(*) FROM tradecraft_sections WHERE user_id = {o}) AS sections, "
+        f"(SELECT count(*) FROM tradecraft_tree_nodes WHERE user_id = {o}) AS tree_nodes, "
+        "(SELECT count(*) FROM tradecraft_curations c JOIN user_tradecraft_resources r ON r.id = c.resource_id "
+        f"WHERE r.user_id = {o}) AS curations, "
+        f"(SELECT count(*) FROM tradecraft_ingestion_jobs WHERE user_id = {o}) AS jobs")
+    return {k: int(v) for k, v in (rows[0] if rows else {}).items()}
+
+
+def page_cards(db: Db, owner_id: str, page_ids: Iterable[str], with_text: Iterable[str] = ()) -> dict:
+    wanted = {}
+    for pid in page_ids:
+        slug, _, n = pid.rpartition(":")
+        if slug and n.isdigit():
+            wanted[int(n)] = slug
+    if not wanted:
+        return {}
+    texts = {int(p.rpartition(":")[2]) for p in with_text if p.rpartition(":")[2].isdigit()}
+    rows = db.json(
+        "SELECT r.slug, p.id AS n, e.title, e.breadcrumb, e.url, e.description, r.storage_mode, "
+        f"CASE WHEN p.id IN ({','.join(str(t) for t in texts) or 'NULL'}) THEN e.stored_text END AS text "
+        "FROM tradecraft_entries e JOIN tradecraft_page_ids p ON p.id = e.page_id "
+        "JOIN user_tradecraft_resources r ON r.id = e.resource_id "
+        f"WHERE e.user_id = {lit(owner_id)} AND e.generation = r.generation "
+        f"AND p.id IN ({','.join(str(n) for n in wanted)})")
+    out = {}
+    for row in rows:
+        if wanted.get(int(row["n"])) == row["slug"]:
+            out[f"{row['slug']}:{row['n']}"] = {k: row[k] for k in ("title", "breadcrumb", "url", "description",
+                                                                      "storage_mode", "text")}
+    return out
+
+
+SEED_SCRIPT = """
+import { PrismaClient } from '@prisma/client'
+import bcrypt from 'bcryptjs'
+const ACCOUNTS = __ACCOUNTS__
+const prisma = new PrismaClient()
+const ids = {}
+try {
+  for (const a of ACCOUNTS) {
+    const hash = await bcrypt.hash(a.password, 12)
+    const user = await prisma.user.upsert({
+      where: { email: a.email },
+      update: { password: hash, role: 'standard', name: a.name },
+      create: { email: a.email, password: hash, role: 'standard', name: a.name },
+    })
+    await prisma.tradecraftUserSettings.upsert({
+      where: { userId: user.id },
+      update: { v2Enabled: true },
+      create: { userId: user.id, v2Enabled: true, v2EnabledAt: new Date() },
+    })
+    ids[a.key] = user.id
+  }
+  console.log('TC_E2E_IDS=' + JSON.stringify(ids))
+} finally {
+  await prisma.$disconnect()
+}
+"""
+
+
+@dataclass
+class Account:
+    key: str
+    email: str
+    password: str = field(repr=False)
+    id: str = ""
+
+
+def seed_accounts(emails: Mapping[str, str], redact: report.Redactor, run: Exec = subprocess.run,
+                  container: str = WEBAPP_CONTAINER) -> dict[str, Account]:
+    """Creates or updates the synthetic e2e accounts with fresh random passwords (kept in
+    memory, scrubbed from every output) and Tradecraft 2.0 on. Their libraries, settings and
+    model providers are left as they are. The script goes to node on stdin, so no value
+    reaches a command line."""
+    accounts = {k: Account(k, e, secrets.token_urlsafe(24)) for k, e in emails.items()}
+    redact.add(*(a.password for a in accounts.values()))
+    payload = json.dumps([{"key": a.key, "email": a.email, "password": a.password, "name": f"Tradecraft E2E {a.key}"}
+                          for a in accounts.values()])
+    done = run(["docker", "exec", "-i", "-w", "/app", container, "node", "--input-type=module", "-"],
+               input=SEED_SCRIPT.replace("__ACCOUNTS__", payload), capture_output=True, text=True, timeout=180,
+               check=False)
+    line = next((ln for ln in (done.stdout or "").splitlines() if ln.startswith("TC_E2E_IDS=")), "")
+    if done.returncode != 0 or not line:
+        raise RuntimeError(f"seeding the e2e accounts failed (exit {done.returncode})")
+    for key, uid in json.loads(line.split("=", 1)[1]).items():
+        accounts[key].id = uid
+    return accounts
+
+
+class Stack:
+    """The routes the runner calls, each as the person whose session it holds."""
+
+    def __init__(self, env: Env, redact: report.Redactor, log: Log):
+        self.env = env
+        self.redact = redact
+        self.log = log
+        self.webapp = f"http://localhost:{env.get('WEBAPP_PORT') or '3000'}"
+        self.agent_ws = f"ws://localhost:{env.get('AGENT_PORT') or '8090'}/ws/agent"
+        self.agent_http = f"http://localhost:{env.get('AGENT_PORT') or '8090'}"
+
+    def session(self, email: str, password: str) -> tuple[Http, str]:
+        http = Http(self.webapp)
+        res = http.call("POST", "/api/auth/login", {"email": email, "password": password})
+        if not res.ok:
+            raise RuntimeError(f"sign-in failed ({res.status} {res.code})")
+        for value in http.cookies.values():
+            self.redact.add(value)
+        me = http.call("GET", "/api/auth/me")
+        if not me.ok or not isinstance(me.data, dict):
+            raise RuntimeError(f"/api/auth/me answered {me.status}")
+        uid = str(me.data.get("id") or (me.data.get("user") or {}).get("id") or "")
+        return http, uid
+
+    @staticmethod
+    def create_project(http: Http, name: str, fields: Mapping) -> str:
+        res = http.call("POST", "/api/projects", {"name": name, **fields})
+        if not res.ok or not isinstance(res.data, dict) or not res.data.get("id"):
+            raise RuntimeError(f"project create answered {res.status} {res.code}")
+        return str(res.data["id"])
+
+    @staticmethod
+    def update_project(http: Http, project_id: str, fields: Mapping) -> Response:
+        current = http.call("GET", f"/api/projects/{project_id}")
+        if not current.ok or not isinstance(current.data, dict):
+            return current
+        return http.call("PUT", f"/api/projects/{project_id}", {**fields, "updatedAt": current.data.get("updatedAt")})
+
+    @staticmethod
+    def delete_project(http: Http, project_id: str) -> Response:
+        return http.call("DELETE", f"/api/projects/{project_id}")
+
+
+def project_fields(scn: Mapping, *, target_ip: Optional[str], model: str) -> dict:
+    cfg = dict(scn.get("project") or {})
+    phases = cfg.pop("tradecraft_phases", None)
+    fields = cfg
+    fields["agentOpenaiModel"] = model
+    if target_ip:
+        fields.update({"ipMode": True, "targetIps": [target_ip]})
+    else:
+        # A documentation address (RFC 5737): a single check with no lab has no target.
+        fields.update({"ipMode": True, "targetIps": ["192.0.2.10"]})
+    if phases:
+        fields["_tradecraft_phases"] = list(phases)
+    return fields
+
+
+def apply_phase_map(http: Http, project_id: str, phases: Sequence[str]) -> None:
+    """Offers the library tools in ``phases`` (tradecraft_lookup's phases govern all three).
+    Raises when it did not take: arm B's "nothing offered" would then hold on nothing."""
+    current = http.call("GET", f"/api/projects/{project_id}")
+    if not current.ok or not isinstance(current.data, dict):
+        raise RuntimeError(f"reading the project answered {current.status} {current.code}")
+    phase_map = dict(current.data.get("agentToolPhaseMap") or {})
+    phase_map["tradecraft_lookup"] = list(phases)
+    res = http.call("PUT", f"/api/projects/{project_id}",
+                    {"agentToolPhaseMap": phase_map, "updatedAt": current.data.get("updatedAt")})
+    after = http.call("GET", f"/api/projects/{project_id}")
+    saved = ((after.data or {}).get("agentToolPhaseMap") or {}).get("tradecraft_lookup") if isinstance(after.data, dict) else None
+    if not res.ok or saved != list(phases):
+        raise RuntimeError(f"the tool phase map did not save ({res.status} {res.code})")
+
+
+# --------------------------------------------------------------------------------------
+# One chat run over the socket, and the Agent in the Loop driver
+# --------------------------------------------------------------------------------------
+
+AUTO_ANSWER = ("No person is available during this automated test run. Proceed on your own with the most "
+               "reasonable choice, within the target and scope already given.")
+END_TYPES = {"task_complete", "stopped"}
+
+
+@dataclass
+class ChatOutcome:
+    session_id: str
+    ended: str = "running"  # complete | stopped | error | cap | disconnected
+    error_code: str = ""
+    approvals: list[str] = field(default_factory=list)
+    rate_limit_waits: int = 0
+    frames: dict = field(default_factory=dict)
+    seconds: float = 0.0
+
+
+def new_session_id() -> str:
+    return f"session_{secrets.token_hex(16)}"
+
+
+def ws_ticket(http: Http, project_id: str, session_id: str) -> str:
+    res = http.call("POST", "/api/agent/ws-ticket", {"projectId": project_id, "sessionId": session_id})
+    if not res.ok or not isinstance(res.data, dict) or not res.data.get("ticket"):
+        raise RuntimeError(f"ws-ticket answered {res.status} {res.code}")
+    return str(res.data["ticket"])
+
+
+def run_chat(stack: Stack, http: Http, person_id: str, project_id: str, question: str, *, cap_sec: float,
+             session_id: Optional[str] = None, socket_factory: Callable[[str], WebSocket] = WebSocket,
+             clock: Callable[[], float] = time.monotonic, on_frame: Optional[Callable[[dict], None]] = None) -> ChatOutcome:
+    """Sends ``question`` and follows the run until it ends or ``cap_sec`` passes (then
+    stops it). Approvals, tool confirmations and questions are answered and recorded."""
+    out = ChatOutcome(session_id or new_session_id())
+    start = clock()
+    deadline = start + cap_sec
+    sent = False
+    reconnects = 0
+    ws: Optional[WebSocket] = None
+    try:
+        while out.ended == "running":
+            if ws is None:
+                ticket = ws_ticket(http, project_id, out.session_id)
+                stack.redact.add(ticket)
+                try:
+                    ws = socket_factory(stack.agent_ws)
+                except (ConnectionError, OSError):
+                    reconnects += 1
+                    if reconnects > 5:
+                        out.ended = "disconnected"
+                    time.sleep(5)
+                    continue
+                ws.send_json({"type": "init", "payload": {"user_id": person_id, "project_id": project_id,
+                                                          "session_id": out.session_id, "ticket": ticket}})
+            if clock() >= deadline:
+                out.ended = "cap"
+                ws.send_json({"type": "stop", "payload": {}})
+                _drain_until(ws, {"stopped", "task_complete"}, 90, out)
+                break
+            try:
+                msg = ws.recv_json(timeout=min(30.0, max(0.5, deadline - clock())))
+            except ConnectionError:
+                ws.close()
+                ws = None
+                reconnects += 1
+                if reconnects > 5:
+                    out.ended = "disconnected"
+                continue
+            if msg is None:
+                ws.send_json({"type": "ping", "payload": {}})
+                continue
+            kind = str(msg.get("type", ""))
+            out.frames[kind] = out.frames.get(kind, 0) + 1
+            if on_frame:
+                on_frame(msg)
+            payload = msg.get("payload") or {}
+            if kind == "connected" and not sent:
+                ws.send_json({"type": "query", "payload": {"question": question}})
+                sent = True
+            elif kind == "connected" and payload.get("agent_running") is False:
+                # A reconnect after the run ended: its last frames went to the closed socket.
+                out.ended = "complete"
+            elif kind == "approval_request":
+                ws.send_json({"type": "approval", "payload": {"decision": "approve"}})
+                out.approvals.append("phase transition")
+            elif kind == "tool_confirmation_request":
+                ws.send_json({"type": "tool_confirmation", "payload": {"decision": "approve"}})
+                out.approvals.append("tool confirmation")
+            elif kind == "fireteam_member_awaiting_confirmation":
+                ws.send_json({"type": "fireteam_member_confirmation", "payload": {
+                    "wave_id": payload.get("wave_id"), "member_id": payload.get("member_id"), "decision": "approve"}})
+                out.approvals.append("fireteam member confirmation")
+            elif kind == "question_request":
+                ws.send_json({"type": "answer", "payload": {"answer": AUTO_ANSWER}})
+                out.approvals.append("question")
+            elif kind == "rate_limit_wait":
+                out.rate_limit_waits += 1
+            elif kind == "error" and payload.get("recoverable") is False:
+                out.ended, out.error_code = "error", str(payload.get("code", ""))
+            elif kind in END_TYPES and sent:
+                out.ended = "complete" if kind == "task_complete" else "stopped"
+    finally:
+        if ws is not None:
+            ws.close()
+        out.seconds = clock() - start
+    return out
+
+
+def _drain_until(ws: WebSocket, kinds: set, seconds: float, out: ChatOutcome) -> None:
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        try:
+            msg = ws.recv_json(timeout=max(0.5, until - time.monotonic()))
+        except ConnectionError:
+            return
+        if msg and msg.get("type") in kinds:
+            return
+
+
+class LoopDriver:
+    """Plays the external agent of an Agent in the Loop run over ``/api/mcp-server`` (the
+    port of ``testing/e2e/tests/aitlDriver.ts``), scoped to one session."""
+
+    def __init__(self, base: str, token: str, session_id: str, opener: Optional[Callable] = None):
+        self.http = Http(base, timeout=120, opener=opener)
+        self.token = token
+        self.session_id = session_id
+        self.prompts: list[str] = []
+        self._id = 0
+
+    def call(self, name: str, args: Mapping) -> tuple[bool, Any, str]:
+        self._id += 1
+        res = self.http.call("POST", "/api/mcp-server",
+                             {"jsonrpc": "2.0", "id": self._id, "method": "tools/call",
+                              "params": {"name": name, "arguments": dict(args)}},
+                             headers={"Authorization": f"Bearer {self.token}",
+                                      "Accept": "application/json, text/event-stream"})
+        body = res.data if isinstance(res.data, dict) else {}
+        result = body.get("result") or {}
+        text = "\n".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        return bool(result.get("isError") or body.get("error") or not res.ok), parsed, text
+
+    def next_step(self, timeout: float) -> Optional[dict]:
+        until = time.monotonic() + timeout
+        while time.monotonic() < until:
+            err, got, _ = self.call("loop_wait_step", {"waitSeconds": 20, "sessionId": self.session_id})
+            step = (got or {}).get("step") if not err else None
+            if step:
+                prompt = str(step.get("prompt") or "")
+                cursor = (step.get("page") or {}).get("nextCursor")
+                while cursor is not None:
+                    err, more, _ = self.call("loop_get_step", {"stepId": step["stepId"], "cursor": cursor})
+                    page = (more or {}).get("step") or {}
+                    prompt += str(page.get("prompt") or "")
+                    cursor = (page.get("page") or {}).get("nextCursor") if not err else None
+                step["fullPrompt"] = prompt
+                self.prompts.append(prompt)
+                return step
+        return None
+
+    def submit(self, step: Mapping, answer: str) -> bool:
+        err, _, _ = self.call("loop_submit_step", {"stepId": step["stepId"], "answer": answer})
+        return not err
+
+
+def loop_answers(target_ip: str) -> dict:
+    j = json.dumps
+    return {
+        "scope_guardrail": j({"allowed": True, "reason": "local lab in scope"}),
+        "classify": j({"attack_path_type": "sql_injection", "required_phase": "informational", "confidence": 0.9,
+                       "reasoning": "a library question for a lab", "target_host": target_ip, "target_port": 5000}),
+        "deep_think": j({"situation_assessment": "a library question", "competing_hypotheses": [],
+                         "attack_vectors_identified": ["web application"], "recommended_approach": "ask the library",
+                         "priority_order": ["ask the librarian"], "risks_and_mitigations": "read-only"}),
+        "report": "# Tradecraft matrix S4\n\nThe driver asked the library once and stopped.",
+        "complete": j({"thought": "TC-E2E done", "reasoning": "the check is complete", "action": "complete",
+                       "completion_reason": "tradecraft matrix S4 complete", "updated_todo_list": []}),
+    }
+
+
+def drive_loop(driver: LoopDriver, ask_args: Mapping, *, target_ip: str, timeout: float) -> list[str]:
+    """Answers the run's setup steps, calls ``tradecraft_ask`` at the first think, then
+    completes. The prompts it saw are on ``driver.prompts``; returns what it did."""
+    answers = loop_answers(target_ip)
+    did: list[str] = []
+    asked = False
+    until = time.monotonic() + timeout
+    while time.monotonic() < until:
+        step = driver.next_step(max(5.0, until - time.monotonic()))
+        if step is None:
+            break
+        purpose = step.get("purpose")
+        if purpose == "think" and not asked:
+            driver.submit(step, json.dumps({
+                "thought": "TC-E2E ask the librarian", "reasoning": "the check calls tradecraft_ask once",
+                "action": "use_tool", "tool_name": "tradecraft_ask", "tool_args": dict(ask_args),
+                "updated_todo_list": []}))
+            asked = True
+            did.append("think: tradecraft_ask")
+        elif purpose == "think":
+            driver.submit(step, answers["complete"])
+            did.append("think: complete")
+        elif purpose == "report":
+            driver.submit(step, answers["report"])
+            did.append("report")
+            break
+        elif purpose in answers:
+            driver.submit(step, answers[purpose])
+            did.append(str(purpose))
+        else:
+            driver.call("loop_submit_step", {"stepId": step["stepId"], "declined": True,
+                                             "reason": "tc-e2e driver: unexpected purpose"})
+            did.append(f"declined {purpose}")
+    return did
+
+
+# --------------------------------------------------------------------------------------
+# The trace of a run
+# --------------------------------------------------------------------------------------
+
+def session_log_text(session_id: str, logs_dir: Path = LOGS_DIR) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)[:120]
+    base = logs_dir / f"agent.{safe}.log"
+    rotated = sorted(logs_dir.glob(f"agent.{safe}.log.*"), key=lambda p: -int(p.suffix[1:]) if p.suffix[1:].isdigit() else 0)
+    text = ""
+    for path in [*rotated, base]:
+        try:
+            text += path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return text
+
+
+def session_events(session_id: str, logs_dir: Path = LOGS_DIR) -> dict:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)[:120]
+    iterations, tokens_in, tokens_out = 0, 0, 0
+    try:
+        lines = (logs_dir / f"agent.{safe}.events.jsonl").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("kind") == "decision":
+            iterations = max(iterations, int(ev.get("iteration") or 0))
+            tokens_in += int(ev.get("tokens_in") or 0)
+            tokens_out += int(ev.get("tokens_out") or 0)
+    return {"iterations": iterations, "tokens_in": tokens_in, "tokens_out": tokens_out}
+
+
+def conversation_rows(db: Db, session_id: str) -> list[dict]:
+    return db.json("SELECT m.type, m.data FROM chat_messages m JOIN conversations c ON c.id = m.conversation_id "
+                   f"WHERE c.session_id = {lit(session_id)} ORDER BY m.sequence_num")
+
+
+def trace_from_rows(rows: Sequence[Mapping]) -> dict:
+    calls, answers = [], []
+    for row in rows:
+        data = row.get("data") or {}
+        if row.get("type") in ("tool_complete", "fireteam_tool_complete"):
+            calls.append({"tool": data.get("tool_name"), "args": data.get("tool_args") or {},
+                          "output": data.get("raw_output") or data.get("output_summary") or "",
+                          "success": data.get("success")})
+        elif row.get("type") == "assistant_message":
+            answers.append(str(data.get("content") or ""))
+    return {"tool_calls": calls, "answers": answers}
+
+
+def wait_until_idle(db: Db, session_id: str, seconds: float = 90) -> bool:
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        rows = db.json(f"SELECT agent_running FROM conversations WHERE session_id = {lit(session_id)}")
+        if rows and rows[0].get("agent_running") is False:
+            return True
+        time.sleep(3)
+    return False
+
+
+def build_trace(db: Db, session_id: str, owner_id: str, *, before: Optional[dict], logs_dir: Path = LOGS_DIR) -> dict:
+    trace = trace_from_rows(conversation_rows(db, session_id))
+    log_text = session_log_text(session_id, logs_dir)
+    trace["prompts"] = checks.prompts_from_log(log_text)
+    trace["hints"], trace["hint_reads"] = checks.hints_from_log(log_text)
+    trace.update({"events": session_events(session_id, logs_dir), "session_id": session_id})
+    trace["page_store"] = {"before": before, "after": page_store_counts(db, owner_id) if before is not None else None}
+    results = checks.tradecraft_results(trace)
+    named = {ref.page_id for r in results for ref in r.pages} | {p for h in trace["hints"] for p in h["pages"]}
+    picked = {p.page_id for r in results for p in r.picks}
+    trace["pages"] = page_cards(db, owner_id, named, with_text=picked) if named else {}
+    return trace
+
+
+# --------------------------------------------------------------------------------------
+# The matrix
+# --------------------------------------------------------------------------------------
+
+@dataclass
+class Context:
+    scn: dict
+    env: Env
+    redact: report.Redactor
+    log: Log
+    stack: Stack
+    db: Db
+    docker: labs.Docker
+    accounts: dict
+    sessions: dict  # key -> (Http, user id)
+    model: str
+    out_dir: Path
+    resource_ids: dict = field(default_factory=dict)  # slug -> id
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def _instance(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddressing) -> labs.Instance:
+    spec = oracles.specs(ctx.scn)[run.lab]
+    inst = labs.plan_instance(spec, run, lane, address, secret_value=oracles.new_secret(spec),
+                              suffix=secrets.token_hex(2))
+    if spec.kind == "override":
+        base = load_yaml((REPO / spec.folder / labs.COMPOSE_FILE).read_text(encoding="utf-8"))
+        path = ctx.out_dir / "overrides" / f"{inst.project}.yml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(labs.override_yaml(spec, base, inst, network=ctx.scn["lanes"]["network"]))
+        inst.override_path = path
+    return inst
+
+
+def _wait_http(url: str, seconds: float) -> bool:
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        try:
+            with urllib.request.urlopen(url, timeout=5):
+                return True
+        except urllib.error.HTTPError:
+            return True
+        except (urllib.error.URLError, OSError):
+            time.sleep(2)
+    return False
+
+
+def _tradecraft_off(ctx: Context, resources: Any) -> list[str]:
+    ids = ctx.resource_ids
+    if resources == "none":
+        return sorted(ids.values())
+    if isinstance(resources, Mapping):
+        return sorted(ids[s] for s in resources.get("turned_off", []) if s in ids)
+    return []
+
+
+def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddressing) -> report.RunResult:
+    """One run of arm A, B or A-search, or the single checks S1, S2 and S5 (an agent run on
+    a project of the owner's, or of a collaborator's share)."""
+    result = report.RunResult(run_id=run.id, arm=run.arm, lab=run.lab, n=run.n, check=run.check, lane=lane,
+                              started_at=now_iso(), status=report.ERROR)
+    single = ctx.scn["singles"].get(run.check or "", {})
+    arm = ctx.scn["arms"].get(run.arm, {})
+    inst = _instance(ctx, run, lane, address) if run.lab else None
+    owner_http, owner_id = ctx.sessions["owner"]
+    project_id = None
+    trace: dict = {"api": []}
+    t0 = time.monotonic()
+    try:
+        if inst:
+            ctx.docker.up(inst)
+            problem = oracles.after_up(inst.spec, inst, ctx.docker)
+            if problem or not _wait_http(inst.local_url, 120):
+                result.reason = problem or "the lab never answered"
+                return result
+        prompt = oracles.prompt_for(inst.spec, inst) if inst else " ".join(str(single.get("prompt", "")).split())
+        fields = project_fields(ctx.scn, target_ip=inst.ip if inst else None, model=ctx.model)
+        phases = fields.pop("_tradecraft_phases", None)
+        project_id = Stack.create_project(owner_http, f"tc-e2e {run.id} {secrets.token_hex(3)}", fields)
+        if phases:
+            apply_phase_map(owner_http, project_id, phases)
+        off = _tradecraft_off(ctx, single.get("resources") if run.arm == "single" else arm.get("resources"))
+        if off:
+            res = Stack.update_project(owner_http, project_id, {"tradecraftOff": off})
+            if not res.ok:
+                result.reason = f"turning resources off answered {res.status} {res.code}"
+                return result
+        chat_http, chat_id = owner_http, owner_id
+        if single.get("as") == "collaborator":
+            collab_http, collab_id = ctx.sessions["collaborator"]
+            res = owner_http.call("POST", f"/api/projects/{project_id}/collaborators",
+                                  {"email": ctx.accounts["collaborator"].email, "access": "write", "useAgent": True})
+            trace["api"].append({"name": "share_with_collaborator", "status": res.status, "code": res.code})
+            if res.status == 404 or not res.ok:
+                result.status, result.reason = report.SKIPPED, f"skipped: switch off (share answered {res.status} {res.code})"
+                return result
+            chat_http, chat_id = collab_http, collab_id
+        before = page_store_counts(ctx.db, owner_id)
+        outcome = run_chat(ctx.stack, chat_http, chat_id, project_id, prompt, cap_sec=run.cap_sec)
+        result.cap_reached = outcome.ended == "cap"
+        result.approvals_given = len(outcome.approvals)
+        wait_until_idle(ctx.db, outcome.session_id)
+        trace.update(build_trace(ctx.db, outcome.session_id, owner_id, before=before))
+        trace["outcome"] = outcome.__dict__
+        ev = trace.get("events") or {}
+        result.iterations, result.tokens_in, result.tokens_out = ev.get("iterations"), ev.get("tokens_in"), ev.get("tokens_out")
+        if inst:
+            o = oracles.judge(inst.spec, inst, answers=trace["answers"],
+                              tool_outputs=[c.get("output", "") for c in trace["tool_calls"]], docker=ctx.docker)
+            result.oracle, result.oracle_detail = o.ok, o.detail + (" (seen in a tool output)" if o.seen_in_tool_output else "")
+        if run.arm == "single":
+            result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=single)
+        else:
+            result.checks = checks.arm_checks(run.arm, trace, expected_pages=inst.spec.expected_pages if inst else [],
+                                              cfg=ctx.scn, prompt=prompt)
+        result.status = report.FAIL
+        if outcome.ended in ("error", "disconnected"):
+            result.reason = f"the run ended: {outcome.ended} {outcome.error_code}".strip()
+        return report.settle(result)
+    except Exception as exc:  # a run's failure is its own; the matrix goes on
+        result.status, result.reason = report.ERROR, f"{type(exc).__name__}: {exc}"
+        return result
+    finally:
+        result.seconds = round(time.monotonic() - t0, 1)
+        result.ended_at = now_iso()
+        if project_id:
+            Stack.delete_project(owner_http, project_id)
+        if inst:
+            ctx.docker.down(inst)
+        result.trace_file = str(report.write_run_file(ctx.out_dir, result, trace, ctx.redact))
+
+
+def run_acting(ctx: Context, run: lanes.Run) -> report.RunResult:
+    """S3: the administrator of ``.env`` acts as the owner."""
+    result = report.RunResult(run_id=run.id, arm=run.arm, lab=None, n=1, check=run.check, started_at=now_iso(),
+                              status=report.ERROR)
+    single = ctx.scn["singles"][run.check]
+    owner_http, owner_id = ctx.sessions["owner"]
+    trace: dict = {"api": []}
+    project_id = None
+    admin: Optional[Http] = None
+    admin_id = ""
+    t0 = time.monotonic()
+    try:
+        if not ctx.env.flag("RBAC_PERMISSIONS_ENABLED"):
+            result.status, result.reason = report.SKIPPED, "skipped: switch off (RBAC_PERMISSIONS_ENABLED)"
+            return result
+        admin, admin_id = ctx.stack.session(ctx.env.get("UI_LOGIN_USERNAME"), ctx.env.get("UI_LOGIN_PASSWORD"))
+        fields = project_fields(ctx.scn, target_ip=None, model=ctx.model)
+        phases = fields.pop("_tradecraft_phases", None)
+        project_id = Stack.create_project(owner_http, f"tc-e2e {run.id} {secrets.token_hex(3)}", fields)
+        if phases:
+            apply_phase_map(owner_http, project_id, phases)
+        res = admin.call("POST", "/api/auth/act-as", {"targetUserId": owner_id, "reason": "Tradecraft e2e matrix S3",
+                                                      "stepUpPassword": ctx.env.get("UI_LOGIN_PASSWORD")})
+        trace["api"].append({"name": "act_as", "status": res.status, "code": res.code})
+        if not res.ok:
+            result.status, result.reason = report.SKIPPED, f"skipped: act-as answered {res.status} {res.code}"
+            return result
+        for value in admin.cookies.values():
+            ctx.redact.add(value)
+        since = now_iso()
+        login_slug = ctx.scn["library"]["login_resource"]
+        rid = ctx.resource_ids.get(login_slug, "")
+        base = f"/api/users/{owner_id}/tradecraft-resources"
+        page = _any_page_id(ctx.db, rid)
+        for name, method, path, body in [
+            ("refresh_login_resource", "POST", f"{base}/{rid}/refresh", {}),
+            ("check_url_login_resource", "POST", f"{base}/check-url", {"resourceId": rid}),
+            ("read_now_login_resource", "POST", f"{base}/{rid}/pages/{urllib.parse.quote(page)}", None),
+        ]:
+            res = admin.call(method, path, body)
+            trace["api"].append({"name": name, "status": res.status, "code": res.code})
+        rows = ctx.db.json("SELECT count(*) AS n FROM audit_log WHERE action = 'act_as.refused' "
+                           f"AND on_behalf_of_user_id = {lit(owner_id)} AND created_at >= {lit(since)}::timestamptz")
+        trace["audit"] = {"act_as_refused": int(rows[0]["n"]) if rows else 0}
+        outcome = run_chat(ctx.stack, admin, owner_id, project_id, " ".join(str(single["prompt"]).split()),
+                           cap_sec=run.cap_sec)
+        result.cap_reached = outcome.ended == "cap"
+        wait_until_idle(ctx.db, outcome.session_id)
+        trace.update({k: v for k, v in build_trace(ctx.db, outcome.session_id, owner_id, before=None).items() if k != "api"})
+        result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=single)
+        result.status = report.FAIL
+        return report.settle(result)
+    except Exception as exc:
+        result.status, result.reason = report.ERROR, f"{type(exc).__name__}: {exc}"
+        return result
+    finally:
+        if admin is not None and admin_id:
+            # Acting as oneself ends acting (api/auth/act-as).
+            admin.call("POST", "/api/auth/act-as", {"targetUserId": admin_id})
+        if project_id:
+            Stack.delete_project(owner_http, project_id)
+        result.seconds = round(time.monotonic() - t0, 1)
+        result.ended_at = now_iso()
+        result.trace_file = str(report.write_run_file(ctx.out_dir, result, trace, ctx.redact))
+
+
+def _any_page_id(db: Db, resource_id: str) -> str:
+    rows = db.json("SELECT r.slug, p.id FROM tradecraft_page_ids p JOIN user_tradecraft_resources r ON r.id = p.resource_id "
+                   f"WHERE p.resource_id = {lit(resource_id)} ORDER BY p.id LIMIT 1")
+    return f"{rows[0]['slug']}:{rows[0]['id']}" if rows else "none:1"
+
+
+def run_loop(ctx: Context, run: lanes.Run) -> report.RunResult:
+    """S4: an Agent in the Loop run, its model calls answered by ``LoopDriver``."""
+    result = report.RunResult(run_id=run.id, arm=run.arm, lab=None, n=1, check=run.check, started_at=now_iso(),
+                              status=report.ERROR)
+    single = ctx.scn["singles"][run.check]
+    owner_http, owner_id = ctx.sessions["owner"]
+    trace: dict = {"api": []}
+    project_id = token_id = None
+    t0 = time.monotonic()
+    try:
+        if not (ctx.env.flag("AGENT_IN_THE_LOOP_ENABLED") and ctx.env.flag("MCP_SERVER_ENABLED")):
+            result.status, result.reason = report.SKIPPED, "skipped: switch off (Agent in the Loop or the MCP server)"
+            return result
+        res = owner_http.call("POST", f"/api/users/{owner_id}/mcp-tokens", {
+            "name": f"tc-e2e loop driver {secrets.token_hex(3)}", "scopes": ["recon:read", "agent:loop"],
+            "profile": "agent_in_the_loop", "expiresInDays": 30, "password": ctx.accounts["owner"].password})
+        if res.status != 201 or not isinstance(res.data, dict):
+            result.status, result.reason = report.SKIPPED, f"skipped: the driver token answered {res.status} {res.code}"
+            return result
+        token = str(res.data.get("plaintext") or "")
+        token_id = str((res.data.get("token") or {}).get("id") or "")
+        ctx.redact.add(token)
+        fields = project_fields(ctx.scn, target_ip=None, model="loop/mcp")
+        phases = fields.pop("_tradecraft_phases", None)
+        project_id = Stack.create_project(owner_http, f"tc-e2e {run.id} {secrets.token_hex(3)}", fields)
+        if phases:
+            apply_phase_map(owner_http, project_id, phases)
+        session_id = new_session_id()
+        driver = LoopDriver(ctx.stack.webapp, token, session_id)
+        did: list[str] = []
+        worker = threading.Thread(target=lambda: did.extend(drive_loop(driver, single["ask"], target_ip="192.0.2.10",
+                                                                         timeout=run.cap_sec)), daemon=True)
+        worker.start()
+        outcome = run_chat(ctx.stack, owner_http, owner_id, project_id, str(single["prompt"]), cap_sec=run.cap_sec,
+                           session_id=session_id)
+        worker.join(timeout=120)
+        result.cap_reached = outcome.ended == "cap"
+        wait_until_idle(ctx.db, session_id)
+        trace.update(build_trace(ctx.db, session_id, owner_id, before=None))
+        trace["loop_prompts"] = driver.prompts
+        trace["driver"] = did
+        result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=single)
+        result.status = report.FAIL
+        return report.settle(result)
+    except Exception as exc:
+        result.status, result.reason = report.ERROR, f"{type(exc).__name__}: {exc}"
+        return result
+    finally:
+        if project_id:
+            Stack.delete_project(owner_http, project_id)
+        if token_id:
+            owner_http.call("DELETE", f"/api/users/{owner_id}/mcp-tokens/{token_id}")
+        result.seconds = round(time.monotonic() - t0, 1)
+        result.ended_at = now_iso()
+        result.trace_file = str(report.write_run_file(ctx.out_dir, result, trace, ctx.redact))
+
+
+def run_address_guard(ctx: Context, run: lanes.Run, address: lanes.LaneAddressing, lane: int) -> report.RunResult:
+    """S6, on the ops account: Check URL of a lab address is refused by the address guard."""
+    result = report.RunResult(run_id=run.id, arm=run.arm, lab=run.lab, n=1, check=run.check, lane=lane,
+                              started_at=now_iso(), status=report.ERROR)
+    ops_http, ops_id = ctx.sessions["ops"]
+    url = f"http://{address.ip(lane)}:{ctx.scn['labs'][run.lab]['port']}/"
+    trace: dict = {"api": []}
+    t0 = time.monotonic()
+    try:
+        res = ops_http.call("POST", f"/api/users/{ops_id}/tradecraft-resources/check-url", {"url": url}, timeout=120)
+        answer = (res.data or {}).get("result") if isinstance(res.data, dict) else None
+        trace["api"].append({"name": "check_url_lab_address", "status": res.status,
+                             "code": (answer or {}).get("error_code") or res.code, "ok": (answer or {}).get("ok")})
+        result.checks = checks.single_checks(run.check, trace, cfg=ctx.scn, spec=ctx.scn["singles"][run.check])
+        result.status = report.FAIL
+        return report.settle(result)
+    finally:
+        result.seconds = round(time.monotonic() - t0, 1)
+        result.ended_at = now_iso()
+        result.trace_file = str(report.write_run_file(ctx.out_dir, result, trace, ctx.redact))
+
+
+def run_one(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddressing) -> report.RunResult:
+    single = ctx.scn["singles"].get(run.check or "", {})
+    if run.check == "S6":
+        return run_address_guard(ctx, run, address, lane)
+    if single.get("aitl"):
+        return run_loop(ctx, run)
+    if single.get("as") == "admin_acting":
+        return run_acting(ctx, run)
+    return run_attack(ctx, run, lane, address)
+
+
+def set_owner_mode(ctx: Context, mode: str) -> None:
+    http, uid = ctx.sessions["owner"]
+    res = http.call("PUT", f"/api/users/{uid}/tradecraft-settings", {"search": {"librarian.use": mode}})
+    if not res.ok:
+        raise RuntimeError(f"setting Librarian use to {mode} answered {res.status} {res.code}")
+    ctx.log(f"owner's Librarian use set to {mode}")
+
+
+def run_matrix(ctx: Context, runs: Sequence[lanes.Run], lane_count: int,
+               run_fn: Callable[[Context, lanes.Run, int, lanes.LaneAddressing], report.RunResult] = run_one,
+               clock: Callable[[], float] = time.monotonic, poll_sec: float = 5.0) -> list[report.RunResult]:
+    """The lanes: whenever a lane is free the scheduler picks its next run; no run starts
+    after the budget guard, and the ones left are reported ``not run: budget``."""
+    budget = ctx.scn["budget"]
+    sched = lanes.Scheduler(runs, start_until_sec=float(budget["start_until_min"]) * 60)
+    address = lanes.addressing(ctx.scn, lane_count)
+    results: list[report.RunResult] = []
+    busy: dict[int, threading.Thread] = {}
+    done_lock = threading.Lock()
+    start = clock()
+
+    def work(lane: int, run: lanes.Run) -> None:
+        try:
+            res = run_fn(ctx, run, lane, address)
+        except Exception as exc:  # noqa: BLE001 - one run's crash is that run's error
+            res = report.RunResult(run.id, run.arm, run.lab, run.n, run.check, status=report.ERROR,
+                                   reason=type(exc).__name__, lane=lane)
+        with done_lock:
+            results.append(res)
+            sched.finished(run)
+        ctx.log(f"{run.id} lane {lane}: {res.status}" + (f" ({res.reason})" if res.reason else ""))
+
+    while True:
+        with done_lock:
+            for lane in [ln for ln, t in busy.items() if not t.is_alive()]:
+                busy.pop(lane)
+            free = [ln for ln in range(lane_count) if ln not in busy]
+            progressed = False
+            for lane in free:
+                run = sched.next_run(clock() - start)
+                if run is None:
+                    break
+                mode = sched.needs_mode(run)
+                if mode:
+                    try:
+                        set_owner_mode(ctx, mode)
+                    except RuntimeError as exc:
+                        # Run in the wrong mode it would measure the other arm: an error, not a run.
+                        results.append(report.RunResult(run.id, run.arm, run.lab, run.n, run.check,
+                                                        status=report.ERROR, reason=str(exc)))
+                        sched.finished(run)
+                        progressed = True
+                        continue
+                    sched.mode_set(mode)
+                thread = threading.Thread(target=work, args=(lane, run), name=f"lane-{lane}", daemon=True)
+                busy[lane] = thread
+                thread.start()
+                progressed = True
+                ctx.log(f"{run.id} started on lane {lane}")
+            idle = not busy and not progressed
+        if idle:
+            break
+        time.sleep(poll_sec)
+    results += report.not_run_results(sched.not_started())
+    return results
+
+
+# --------------------------------------------------------------------------------------
+# Layer-1 checks (beside the lanes) and the preflight
+# --------------------------------------------------------------------------------------
+
+RETRIEVAL_SCRIPT = r"""
+import asyncio, json, os, sys
+import requests
+from tradecraft import runtime, agent_tools
+q = json.load(sys.stdin)
+url = os.environ.get("WEBAPP_API_URL", "http://webapp:3000").rstrip("/") + "/api/internal/agent/tradecraft/catalog"
+resp = requests.get(url, params={"projectId": q["project_id"], "personId": q["person_id"]},
+                    headers={"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")}, timeout=30)
+resp.raise_for_status()
+runtime.bind_run_catalog(resp.json())
+for item in q["questions"]:
+    out = asyncio.run(agent_tools.run_search(query=item))
+    print("TC_E2E_RESULT=" + json.dumps({"q": item, "output": out}))
+"""
+
+
+def retrieval_check(ctx: Context, project_id: str, questions: Sequence[Mapping],
+                    run: Exec = subprocess.run) -> report.CheckResult:
+    """The 30 retrieval questions on the owner's restored library, read-only: each one's
+    expected page must be among its search results."""
+    _, owner_id = ctx.sessions["owner"]
+    payload = json.dumps({"project_id": project_id, "person_id": owner_id, "questions": [q["q"] for q in questions]})
+    done = run(["docker", "exec", "-i", "-w", "/app", AGENT_CONTAINER, "python", "-c", RETRIEVAL_SCRIPT],
+               input=payload, capture_output=True, text=True, timeout=900, check=False)
+    outputs = {}
+    for line in (done.stdout or "").splitlines():
+        if line.startswith("TC_E2E_RESULT="):
+            row = json.loads(line.split("=", 1)[1])
+            outputs[row["q"]] = row["output"]
+    hits, misses = 0, []
+    for q in questions:
+        res = checks.parse_result("tradecraft_search", outputs.get(q["q"], ""))
+        if any(checks.matches({}, ref, q["expect"]) for ref in res.pages):
+            hits += 1
+        else:
+            misses.append(q["q"])
+    ok = done.returncode == 0 and not misses
+    detail = f"{hits}/{len(questions)} found" + (f"; missed: {'; '.join(misses[:8])}" if misses else "")
+    return report.CheckResult("retrieval_questions", ok, detail if done.returncode == 0 else f"exit {done.returncode}")
+
+
+def _job_done(http: Http, uid: str, rid: str, seconds: float) -> Optional[dict]:
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        res = http.call("GET", f"/api/users/{uid}/tradecraft-resources/{rid}/jobs")
+        job = (res.data or {}).get("job") if isinstance(res.data, dict) else None
+        if job and job.get("status") in ("succeeded", "failed", "cancelled"):
+            return job
+        time.sleep(5)
+    return None
+
+
+def ops_checks(ctx: Context) -> list[report.CheckResult]:
+    """On the ops account's own resource: an incremental refresh (AC-18), Cancel mid-refresh
+    keeps the previous version (AC-33), the stale badge after a settings change, and delete
+    leaves no row (AC-42). Never on the owner's library."""
+    http, uid = ctx.sessions["ops"]
+    spec = ctx.scn["layer1"]["ops_resource"]
+    base = f"/api/users/{uid}/tradecraft-resources"
+    out: list[report.CheckResult] = []
+    res = http.call("POST", base, {"name": spec["name"], "url": spec["url"], "storageMode": spec.get("storageMode", "stored"),
+                                   "enabled": True}, timeout=120)
+    rid = str(((res.data or {}).get("resource") or res.data or {}).get("id", "")) if isinstance(res.data, dict) else ""
+    if not res.ok or not rid:
+        return [report.CheckResult("ops_resource_added", False, f"add answered {res.status} {res.code}")]
+    try:
+        first = _job_done(http, uid, rid, 1800)
+        out.append(report.CheckResult("ops_resource_added", bool(first and first.get("status") == "succeeded"),
+                                      (first or {}).get("status", "no job end")))
+        res = http.call("POST", f"{base}/{rid}/refresh", {})
+        second = _job_done(http, uid, rid, 1800)
+        rep = json.dumps((second or {}).get("report") or {})
+        out.append(report.CheckResult("incremental_refresh", bool(second and second.get("status") == "succeeded"
+                                                                  and re.search(r"unchanged|not_modified|incremental", rep)),
+                                      (second or {}).get("status", f"refresh answered {res.status}")))
+        gen = ctx.db.json(f"SELECT generation FROM user_tradecraft_resources WHERE id = {lit(rid)}")
+        gen1 = gen[0]["generation"] if gen else None
+        entries1 = ctx.db.json(f"SELECT count(*) AS n FROM tradecraft_entries WHERE resource_id = {lit(rid)}")
+        http.call("POST", f"{base}/{rid}/refresh", {})
+        time.sleep(5)
+        http.call("DELETE", f"{base}/{rid}/jobs")
+        third = _job_done(http, uid, rid, 600)
+        gen = ctx.db.json(f"SELECT generation FROM user_tradecraft_resources WHERE id = {lit(rid)}")
+        entries2 = ctx.db.json(f"SELECT count(*) AS n FROM tradecraft_entries WHERE resource_id = {lit(rid)}")
+        kept = bool(gen and gen[0]["generation"] == gen1 and entries1 == entries2)
+        out.append(report.CheckResult("cancel_keeps_previous_version", kept and (third or {}).get("status") == "cancelled",
+                                      f"job {(third or {}).get('status')}, generation {gen1}→{gen[0]['generation'] if gen else None}"))
+        change = ctx.scn["layer1"]["stale_setting"]
+        res = http.call("PUT", f"/api/users/{uid}/tradecraft-settings", {"ingestion": {change["key"]: change["value"]}})
+        view = http.call("GET", f"{base}/{rid}")
+        stale = isinstance(view.data, dict) and bool((view.data.get("resource") or view.data).get("stale"))
+        out.append(report.CheckResult("stale_after_settings_change", res.ok and stale, f"settings {res.status}, stale={stale}"))
+        http.call("PUT", f"/api/users/{uid}/tradecraft-settings", {"reset": change["reset"]})
+    finally:
+        res = http.call("DELETE", f"{base}/{rid}")
+        left = ctx.db.json(
+            "SELECT (SELECT count(*) FROM tradecraft_entries WHERE resource_id = {r}) + "
+            "(SELECT count(*) FROM tradecraft_page_ids WHERE resource_id = {r}) + "
+            "(SELECT count(*) FROM tradecraft_sections WHERE resource_id = {r}) + "
+            "(SELECT count(*) FROM tradecraft_tree_nodes WHERE resource_id = {r}) + "
+            "(SELECT count(*) FROM user_tradecraft_resources WHERE id = {r}) AS n".format(r=lit(rid)))
+        n = int(left[0]["n"]) if left else -1
+        out.append(report.CheckResult("delete_leaves_no_row", res.ok and n == 0, f"delete {res.status}, {n} rows left"))
+    return out
+
+
+def layer1(ctx: Context) -> list[report.CheckResult]:
+    out: list[report.CheckResult] = []
+    owner_http, _ = ctx.sessions["owner"]
+    project_id = None
+    try:
+        fields = project_fields(ctx.scn, target_ip=None, model=ctx.model)
+        fields.pop("_tradecraft_phases", None)
+        project_id = Stack.create_project(owner_http, f"tc-e2e layer1 {secrets.token_hex(3)}", fields)
+        out.append(retrieval_check(ctx, project_id, ctx.scn["layer1"]["retrieval"]))
+    except Exception as exc:
+        out.append(report.CheckResult("retrieval_questions", False, f"{type(exc).__name__}: {exc}"))
+    finally:
+        if project_id:
+            Stack.delete_project(owner_http, project_id)
+    try:
+        out += ops_checks(ctx)
+    except Exception as exc:
+        out.append(report.CheckResult("ops_checks", False, f"{type(exc).__name__}: {exc}"))
+    return out
+
+
+def snapshot_stamp(snapshot_dir: Path = SNAPSHOT_DIR) -> Optional[dict]:
+    try:
+        return json.loads((snapshot_dir / "stamp.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def ingest_changed_since(commit: str, run: Exec = subprocess.run) -> Optional[bool]:
+    done = run(["git", "-C", str(REPO), "diff", "--quiet", commit, "HEAD", "--", "agentic/tradecraft/ingest/"],
+               capture_output=True, text=True, check=False, timeout=60)
+    return {0: False, 1: True}.get(done.returncode)
+
+
+def mem_available_gb() -> Optional[float]:
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return round(int(line.split()[1]) / 1024 / 1024, 1)
+    except OSError:
+        return None
+    return None
+
+
+def preflight(ctx: Context, runs: Sequence[lanes.Run], *, restore: bool, build: bool) -> list[str]:
+    """What must hold before the lanes start; returns the problems (empty: go)."""
+    problems: list[str] = []
+    stack, log = ctx.stack, ctx.log
+    for name, url in (("webapp", stack.webapp + "/api/health"), ("agent", stack.agent_http + "/health")):
+        if not _wait_http(url, 10):
+            problems.append(f"the {name} does not answer")
+    stamp = snapshot_stamp()
+    if stamp is None:
+        problems.append("no library snapshot (_local/tradecraft-e2e/library/stamp.json): build it with T10.2's library.py")
+    else:
+        changed = ingest_changed_since(str(stamp.get("commit", "")))
+        if changed:
+            log(f"warning: agentic/tradecraft/ingest/ changed since the snapshot's commit {stamp.get('commit')}: rebuild the library")
+    library_py = HERE / "library.py"
+    if restore and stamp is not None:
+        if not library_py.exists():
+            problems.append("library.py (T10.2) is missing, so the snapshot cannot be restored")
+        else:
+            done = subprocess.run([sys.executable, str(library_py), "restore"], capture_output=True, text=True,
+                                  timeout=1800, check=False)
+            if done.returncode != 0:
+                problems.append(f"the library restore failed (exit {done.returncode})")
+    leftovers = ctx.docker.leftovers()
+    for name in leftovers:
+        subprocess.run(["docker", "compose", "-p", name, "down", "-v", "--remove-orphans"], capture_output=True,
+                       check=False, timeout=300)
+    if leftovers:
+        log(f"removed {len(leftovers)} lab projects left by an earlier run")
+    if build:
+        for lab_id in sorted({r.lab for r in runs if r.lab}):
+            spec = oracles.specs(ctx.scn)[lab_id]
+            override = None
+            if spec.kind == "override":
+                base = load_yaml((REPO / spec.folder / labs.COMPOSE_FILE).read_text(encoding="utf-8"))
+                override = ctx.out_dir / "overrides" / f"build-{lab_id}.yml"
+                override.parent.mkdir(parents=True, exist_ok=True)
+                override.write_text(labs.build_override_yaml(spec, base))
+            try:
+                ctx.docker.build(spec, override)
+                log(f"lab {lab_id} image ready")
+            except subprocess.CalledProcessError as exc:
+                problems.append(f"lab {lab_id} did not build (exit {exc.returncode})")
+    owner_http, owner_id = ctx.sessions["owner"]
+    listing = owner_http.call("GET", f"/api/users/{owner_id}/tradecraft-resources")
+    rows = listing.data if isinstance(listing.data, list) else (listing.data or {}).get("resources", []) if isinstance(listing.data, dict) else []
+    ctx.resource_ids.update({str(r.get("slug")): str(r.get("id")) for r in rows if isinstance(r, dict)})
+    missing = [s for s in ctx.scn["library"]["resources"] if s not in ctx.resource_ids]
+    if missing:
+        problems.append(f"the owner's library lacks {', '.join(missing)}")
+    settings = owner_http.call("GET", f"/api/users/{owner_id}/tradecraft-settings")
+    search = (settings.data or {}).get("search") if isinstance(settings.data, dict) else None
+    values = (search or {}).get("values", search) if isinstance(search, dict) else {}
+    for key, want in (ctx.scn.get("owner_search") or {}).items():
+        if key != "librarian.use" and isinstance(values, dict) and key in values and values[key] != want:
+            problems.append(f"the owner's {key} is {values[key]!r}, the matrix expects {want!r}")
+    for key in ("owner", "ops"):
+        http, uid = ctx.sessions[key]
+        providers = http.call("GET", f"/api/users/{uid}/llm-providers")
+        plist = providers.data if isinstance(providers.data, list) else []
+        if not plist:
+            problems.append(f"the e2e {key} account has no model provider (MC-9: add one acting as it)")
+            continue
+        test = http.call("POST", f"/api/users/{uid}/llm-providers/{plist[0].get('id')}/test", {}, timeout=120)
+        if not test.ok:
+            problems.append(f"the e2e {key} account's model provider test answered {test.status} {test.code}")
+    mem = mem_available_gb()
+    log(f"free memory: {mem if mem is not None else '?'} GB; load: {os.getloadavg()[0]:.1f}")
+    log("the provider's rate-limit headroom is not visible through the webapp: each run counts its rate_limit_wait frames")
+    return problems
+
+
+# --------------------------------------------------------------------------------------
+# --dry-run and the command line
+# --------------------------------------------------------------------------------------
+
+def dry_run(scn: dict, runs: Sequence[lanes.Run], lane_count: int, env: Env, *, out=print) -> int:
+    """The plan of a matrix run, with nothing started: the runs and their checks, the lab
+    instances lane 0 would get (overrides generated and parsed back), the worst-case schedule
+    for ``--lanes``, and which ``.env`` keys are present (names only)."""
+    budget = scn["budget"]
+    start_until = float(budget["start_until_min"]) * 60
+    address = lanes.addressing(scn, lane_count)
+    specs = oracles.specs(scn)
+    out(f"Tradecraft 2.0 matrix: {len(runs)} runs on {lane_count} lanes (dry run: no stack, no Docker, no network)")
+    for lab_id, spec in sorted(specs.items()):
+        if lab_id not in {r.lab for r in runs}:
+            continue
+        folder = REPO / spec.folder
+        if not (folder / labs.COMPOSE_FILE).exists():
+            out(f"  lab {lab_id}: MISSING {spec.folder}/{labs.COMPOSE_FILE}")
+            return 1
+        line = f"  lab {lab_id}: {spec.folder} ({spec.kind}), front {spec.front}:{spec.port}, oracle {spec.oracle['kind']}"
+        if spec.kind == "override":
+            base = load_yaml((folder / labs.COMPOSE_FILE).read_text(encoding="utf-8"))
+            inst = labs.plan_instance(spec, lanes.Run(f"{lab_id}-dry", "A", lab_id, 1, 1, 1), 0, address,
+                                      secret_value="dry", suffix="dry")
+            parsed = load_yaml(labs.override_yaml(spec, base, inst, network=scn["lanes"]["network"]).replace(" !override", "").replace(" !reset", ""))
+            line += f"; override services {', '.join(parsed['services'])}"
+        out(line)
+    timeline = lanes.worst_case(runs, lane_count, start_until_sec=start_until)
+    out(f"  worst case (every run at its cap): {timeline.makespan / 3600:.2f} h of lanes, "
+        f"{(timeline.makespan + float(budget.get('preflight_min', 20)) * 60) / 3600:.2f} h with the preflight; "
+        f"budget guard at {start_until / 3600:.2f} h; owner mode changes: "
+        + (", ".join(f"{m} at {t / 60:.0f} min" for t, m in timeline.mode_changes) or "none"))
+    if timeline.not_run:
+        out(f"  with {lane_count} lanes {len(timeline.not_run)} runs would be '{lanes.NOT_RUN_BUDGET}' in the worst case: "
+            "the 5-hour budget does not hold")
+    out("  lane | start | cap | run | checks")
+    for slot in sorted(timeline.slots, key=lambda s: (s.start, s.lane)):
+        r = slot.run
+        names = _check_names(scn, r)
+        out(f"  {slot.lane:>4} | {slot.start / 60:>5.0f} | {r.cap_sec // 60:>3} | {r.id:<12} | {', '.join(names)}")
+    present = env.present()
+    out("  .env: " + ", ".join(f"{k} {'present' if v else ('default' if k in OPTIONAL_ENV_KEYS else 'MISSING')}"
+                               for k, v in present.items()))
+    return 0
+
+
+def _check_names(scn: Mapping, run: lanes.Run) -> list[str]:
+    if run.arm == "B":
+        return ["oracle", "no_tradecraft_tool_offered", "no_tradecraft_tool_called", "no_coverage_map", "page_store_unchanged"]
+    if run.arm in ("A", "A_search"):
+        names = ["oracle", "expected_page_returned", "reads_by_section_within_limit", "stored_reads_say_stored_copy",
+                 "hints_within_limit", "no_page_hinted_twice", "no_hint_from_injected_text",
+                 "librarian_excerpts_verbatim", "no_pick_from_injected_text", "page_store_unchanged"]
+        return names + (["ask_not_offered", "ask_not_called"] if run.arm == "A_search" else [])
+    return [str(scn["singles"][run.check].get("title", run.check))]
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--lanes", type=int, default=None, help="parallel lanes (default: scenarios.yaml, 7)")
+    ap.add_argument("--only", action="append", default=[], help="a run id, lab, arm, lab-arm or single check; repeatable")
+    ap.add_argument("--dry-run", action="store_true", help="print the plan and exit; starts nothing")
+    ap.add_argument("--model", default="", help="the agent model of every run's project (default: the webapp's default)")
+    ap.add_argument("--no-restore", action="store_true", help="do not restore the library snapshot first")
+    ap.add_argument("--no-build", action="store_true", help="do not build the lab images in the preflight")
+    ap.add_argument("--no-layer1", action="store_true", help="skip the layer-1 checks")
+    ap.add_argument("--scenarios", default=str(SCENARIOS))
+    args = ap.parse_args(argv)
+
+    redact = report.Redactor()
+    log = Log(redact)
+    scn = load_scenarios(Path(args.scenarios))
+    lane_count = args.lanes or int(scn["lanes"]["default"])
+    runs = lanes.select(lanes.plan_runs(scn), args.only)
+    env = read_env(REPO / ".env", redact)
+    if not runs:
+        log("no run matches --only")
+        return 2
+    if args.dry_run:
+        return dry_run(scn, runs, lane_count, env, out=lambda s: print(redact(s)))
+
+    stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
+    out_dir = RUNS_DIR / stamp
+    stack = Stack(env, redact, log)
+    db = Db()
+    docker = labs.Docker(REPO, log=log)
+    accounts = seed_accounts(scn["accounts"], redact)
+    sessions = {k: stack.session(a.email, a.password) for k, a in accounts.items()}
+    ctx = Context(scn=scn, env=env, redact=redact, log=log, stack=stack, db=db, docker=docker, accounts=accounts,
+                  sessions=sessions, model=args.model or "claude-opus-4-6", out_dir=out_dir)
+    started = now_iso()
+    problems = preflight(ctx, runs, restore=not args.no_restore, build=not args.no_build)
+    if problems:
+        for p in problems:
+            log(f"preflight: {p}")
+        return 3
+    layer1_results: list[report.CheckResult] = []
+    layer1_thread = None
+    if not args.no_layer1 and not args.only:
+        layer1_thread = threading.Thread(target=lambda: layer1_results.extend(layer1(ctx)), daemon=True)
+        layer1_thread.start()
+    t0 = time.monotonic()
+    results = run_matrix(ctx, runs, lane_count)
+    if layer1_thread:
+        layer1_thread.join(timeout=3600)
+    try:
+        set_owner_mode(ctx, str((scn.get("owner_search") or {}).get("librarian.use", "agent")))
+    except RuntimeError as exc:
+        log(str(exc))
+    verdict, gates = report.pass_rules(results, oracle_min=int(scn["pass_rules"]["oracle_min"]), layer1=layer1_results,
+                                       expected=[r.id for r in runs])
+    commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                            check=False).stdout.strip()
+    timeline = lanes.worst_case(runs, lane_count, start_until_sec=float(scn["budget"]["start_until_min"]) * 60)
+    meta = {"started": started, "finished": now_iso(), "commit": commit, "model": ctx.model, "lanes": lane_count,
+            "projected_worst_case": f"{timeline.makespan / 3600:.2f} h", "wall_clock": f"{(time.monotonic() - t0) / 3600:.2f} h"}
+    text = report.render(results=results, gates=gates, verdict=verdict, meta=meta, gain_table=report.gain(results),
+                         durations={r.run_id: r.seconds for r in results if r.seconds}, redact=redact)
+    path = report.write_report(out_dir, text)
+    log(f"report: {path} ({'PASSED' if verdict else 'FAILED'})")
+    return 0 if verdict else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
