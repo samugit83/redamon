@@ -1281,6 +1281,17 @@ def test_ops_checks_an_incremental_refresh_needs_the_agents_count():
     assert inc.ok is False and "no incremental line of this job" in inc.detail
 
 
+def test_the_report_names_the_plan_commit_the_stack_runs():
+    answers = {"refs/heads/feature/tradecraft-2.0": "3765744a\n", "HEAD": "58a5e733\n"}
+
+    def fake(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0, stdout=answers.get(argv[-1], ""), stderr="")
+
+    assert runner.run_commits(run=fake) == "plan 3765744a (checkout 58a5e733)"
+    answers.pop("refs/heads/feature/tradecraft-2.0")
+    assert runner.run_commits(run=fake) == "58a5e733"
+
+
 def test_only_layer1_runs_the_layer1_checks_alone(capsys):
     assert runner.only_filters([]) == ([], True)
     assert runner.only_filters(["L3-A-1", "L4-A-1"]) == (["L3-A-1", "L4-A-1"], False)

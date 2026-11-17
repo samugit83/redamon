@@ -1983,6 +1983,17 @@ def _check_names(scn: Mapping, run: lanes.Run) -> list[str]:
     return [str(scn["singles"][run.check].get("title", run.check))]
 
 
+def run_commits(run: Exec = subprocess.run) -> str:
+    """The code a matrix run judged: the plan branch's tip, which the stack's images are built
+    from, and the checkout's HEAD, which on the shared checkout is another branch."""
+    def short(ref: str) -> str:
+        done = run(["git", "-C", str(REPO), "rev-parse", "--short=8", "--verify", "--quiet", ref], capture_output=True,
+                   text=True, check=False)
+        return (done.stdout or "").strip()
+    plan, head = short("refs/heads/feature/tradecraft-2.0"), short("HEAD")
+    return f"plan {plan} (checkout {head})" if plan else head
+
+
 LAYER1 = "layer1"
 
 
@@ -2070,8 +2081,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log(str(exc))
     verdict, gates = report.pass_rules(results, oracle_min=int(scn["pass_rules"]["oracle_min"]), layer1=layer1_results,
                                        expected=[r.id for r in runs])
-    commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                            check=False).stdout.strip()
+    commit = run_commits()
     timeline = lanes.worst_case(runs, lane_count, plan)
     meta = {"started": started, "finished": now_iso(), "commit": commit, "model": ctx.model, "lanes": lane_count,
             "projected_worst_case": f"{timeline.makespan / 3600:.2f} h from the start, preflight included",
