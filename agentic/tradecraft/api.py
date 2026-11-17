@@ -133,8 +133,13 @@ async def preview_focus(body: PreviewRequest) -> Any:
 
 @router.post("/read-now", dependencies=[Depends(require_internal_auth)])
 async def read_now(body: ReadNowRequest) -> Any:
-    return await _within_deadline("read_now", lambda: read_now_mod.read_now(body),
-                                  lambda: ReadNowResult(error_code="timeout"))
+    async def call() -> ReadNowResult:
+        # The jobs' fetcher, as Check URL: a page reads as the agent's tool reads it, the browser
+        # tier included (a JavaScript site, "always use the browser"; never with a login).
+        with net.use_fetcher(jobs.default_fetcher()):
+            return await read_now_mod.read_now(body)
+
+    return await _within_deadline("read_now", call, lambda: ReadNowResult(error_code="timeout"))
 
 
 @router.post("/users/{user_id}/convert")

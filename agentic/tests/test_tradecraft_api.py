@@ -251,6 +251,28 @@ def test_read_now_answers_the_contract(client):
     assert ReadNowResult.model_validate(resp.json()).error_code == "resource_deleted"
 
 
+def test_read_now_reads_with_the_jobs_browser(client, monkeypatch):
+    """S10 review 1, finding 1 (AC-38): the route reads through the jobs' fetcher, whose browser
+    renders a JavaScript page as the tool's does; net's module default has no browser."""
+    class NoBrowser(FixtureFetcher):
+        async def render(self, url, **kwargs):
+            return net.Rendered(url=url, html="", error="browser_unavailable")
+
+    monkeypatch.setattr(net, "_current", contextvars.ContextVar("tradecraft_fetcher", default=NoBrowser()))
+    bound = FixtureFetcher()
+    monkeypatch.setattr(jobs, "default_fetcher", lambda: bound)
+    store = MemoryStore()
+    store.add_resource("user_owner_fake", "res_fake_0001", url="https://blog.tc-fixture.test/", slug="blog",
+                       storage_mode="live", map_version=3)
+    monkeypatch.setattr(tc_api.read_now_mod, "default_store", lambda: store)
+    page = "https://blog.tc-fixture.test/posts/42-js-only/"
+    body = {"user_id": "user_owner_fake", "resource_id": "res_fake_0001", "url": page, "read_settings": {},
+            "secrets": {"github_token": None, "credentials": None}}
+    answer = ReadNowResult.model_validate(client.post("/tradecraft/v2/read-now", json=body, headers=H).json())
+    assert answer.error_code == "" and "Lab note 42" in answer.text
+    assert bound.browser.renders == [page]
+
+
 def test_the_preview_answers_the_contract(client):
     resp = client.post("/tradecraft/v2/preview-focus", json=fixture("PreviewRequest"), headers=H)
     assert resp.status_code == 200
