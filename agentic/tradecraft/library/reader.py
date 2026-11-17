@@ -234,7 +234,9 @@ async def _text_of(read: _Read, target: str, copy: Optional[dict], force_refresh
     note, else the error that says whether a copy exists."""
     if copy is not None and not force_refresh:
         return copy["stored_text"], format_source("stored", _date(copy.get("fetched_at"))), "", ""
-    page = await live_page(target, read.settings, github_token=read.token, has_login=read.has_login)
+    # Bound here too, not only by lookup: the librarian's reads come straight to this function.
+    with read.login():
+        page = await live_page(target, read.settings, github_token=read.token, has_login=read.has_login)
     if page.error in _REFUSED:
         return None, "", "", BAD_URL.format(url=target, code=page.error)
     ok = not page.error and 200 <= page.status < 300 and bool(page.text)
@@ -334,7 +336,8 @@ async def _pdf_page_live(read: _Read, url: str, entry: dict, force_refresh: bool
     number = int(re.search(r"#page=(\d+)$", url).group(1))
     if entry.get("stored_text") and not force_refresh:
         return entry["stored_text"], format_source("stored", _date(entry.get("fetched_at"))), "", ""
-    resp = await fetch.fetch_raw(base, read.settings, github_token=read.token)
+    with read.login():
+        resp = await fetch.fetch_raw(base, read.settings, github_token=read.token)
     text = ""
     if resp.ok and resp.body[:5] == b"%PDF-":
         try:

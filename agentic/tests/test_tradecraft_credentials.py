@@ -278,6 +278,20 @@ def test_live_read_carries_the_login_and_never_the_browser():
     assert plain.browser.renders and not any(carries_login(h) for _u, h in plain.requests)
 
 
+def test_a_read_outside_lookup_carries_the_login_too():
+    """The librarian reads pages through reader._text_of, not lookup: the login is bound there."""
+    from tradecraft.contract import CatalogResource, V2Catalog
+
+    resource = CatalogResource(id="r1", slug="wiki", name="wiki", url=WIKI, type="mkdocs-wiki", storage_mode="live",
+                               has_login=True, map_version=3, read_settings=ALWAYS, credentials=LOGIN)
+    catalog = V2Catalog(v2=True, owner_id=OWNER, person_id=OWNER, resources=[resource])
+    read = reader._Read(catalog, resource, {"url": WIKI, "storage_mode": "live", "has_login": True}, MemoryStore())
+    f = FixtureFetcher()
+    text, _src, _note, error = run_with(f, lambda: reader._text_of(read, WIKI + "sqli/union-based/", None, False))
+    assert not error and text and f.browser.renders == []
+    assert f.requests and all(has_full_login(h) for _u, h in f.requests)
+
+
 def test_check_url_with_a_login():
     f = FixtureFetcher()
     req = CheckUrlRequest(user_id="u1", url=WIKI, settings=ALWAYS, secrets=SECRETS)
