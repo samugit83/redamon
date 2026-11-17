@@ -425,9 +425,11 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
     cap = settings.int("knownTypes.maxMapEntries.docs")
     configured = settings.str("type.docs.searchIndexUrl")
     candidates = [urllib.parse.urljoin(base + "/", configured)] if configured else [base + c for c in _SPHINX_INDEXES]
+    # The index gets the bound of every other listing a site serves (a sitemap, a GitHub listing):
+    # a large project's Sphinx index is a few MB, and one cut at the bound would not parse.
     for idx_url in candidates:
-        resp = await fetch.fetch_raw(idx_url, settings)
-        if resp.status != 200 or not resp.body:
+        resp = await fetch.fetch_raw(idx_url, settings, max_bytes=int(constant("sitemapMaxBytes")))
+        if resp.status != 200 or not resp.body or resp.truncated:
             continue
         nav = await blocking(_sphinx_index_entries, resp.text, base)
         entries, cut = _dedupe([Candidate(p, t, "searchindex", p) for t, p in nav], cap)
@@ -452,11 +454,15 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
 
 
 def _sphinx_index_entries(text: str, base: str) -> list[tuple[str, str]]:
-    m = re.search(r"\{.*\}", text.strip(), re.DOTALL)
-    if not m:
+    # The payload runs from the first "{" to the last "}" (Sphinx wraps it in Search.setIndex(...)).
+    # A pattern spanning them is quadratic on unclosed braces, and holds the interpreter lock while
+    # it runs on the job's thread pool.
+    body = text.strip()
+    first, last = body.find("{"), body.rfind("}")
+    if first < 0 or last < first:
         return []
     try:
-        data = json.loads(m.group(0))
+        data = json.loads(body[first:last + 1])
     except Exception:
         return []
     nav: list[tuple[str, str]] = []

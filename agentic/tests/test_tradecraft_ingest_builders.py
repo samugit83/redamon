@@ -476,3 +476,36 @@ def test_the_website_sitemap_titles_are_decoded(tmp_path):
                                                 "Cross Site Request Forgery"]
     assert [e.url for e in found.entries] == pages
 
+
+
+# --------------------------------------------------------------------------------------
+# The search index: read within a bound, its payload found in one pass
+# --------------------------------------------------------------------------------------
+
+def test_the_search_index_is_read_within_the_sitemap_bound(tmp_path, monkeypatch):
+    """The index was fetched with no size limit (up to the fetcher's 100 MB); it is read up to
+    ``sitemapMaxBytes`` (10 MB), and one cut at that bound is not parsed."""
+    host = "bigindex.tc-fixture.test"
+    index = "Search.setIndex(" + json.dumps({"docnames": [f"p{i}" for i in range(50)],
+                                              "titles": [f"Page {i}" for i in range(50)]}) + ")"
+    fetcher = _site(tmp_path, host, {"index.html": "<html></html>", "searchindex.js": index})
+    with net.use_fetcher(fetcher):
+        whole = run(builders.build_docs(f"https://{host}/", s()))
+        _budget(monkeypatch, len(index) - 1)
+        cut = run(builders.build_docs(f"https://{host}/", s()))
+    assert whole.index_kind == "searchindex" and len(whole.entries) == 50
+    assert cut.index_kind == "none" and cut.entries == [] and cut.crawl_fallback
+
+
+def test_the_search_index_payload_is_found_in_one_pass():
+    """The payload is the text from the first "{" to the last "}", as before, found without a
+    pattern that is quadratic on unclosed braces (and held the agent's interpreter lock)."""
+    import time
+
+    base = "https://d.tc-fixture.test"
+    started = time.perf_counter()
+    assert builders._sphinx_index_entries("Search.setIndex(" + "{" * 200_000, base) == []
+    assert time.perf_counter() - started < 1.0
+    assert builders._sphinx_index_entries('Search.setIndex({"docnames": ["a/b"], "titles": ["B"]})', base) == [
+        ("B", f"{base}/a/b.html")]
+    assert builders._sphinx_index_entries("no payload here }{", base) == []
