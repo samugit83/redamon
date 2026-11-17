@@ -62,7 +62,7 @@ _PROMPT_CHUNK = re.compile(r"^PROMPT\[(?P<start>\d+):\d+\]:\n?", re.S)
 _NOW_REFRESH = re.compile(r"^\[tradecraft\] library_now refresh=(?P<refresh>\d+) reason=(?P<reason>\S+) found=(?P<found>\d+)")
 _NOW_SHOWN = re.compile(r"^\[tradecraft\] library_now shown=(?P<shown>\d+) block=(?P<block>\d+) pages=(?P<pages>\S*)")
 _NOW_READ = re.compile(rf"^\[tradecraft\] library_now (?P<page>{_PAGE}) read$")
-_NOW_CODE = re.compile(r"^\[tradecraft\] library_now code=(?P<code>[a-z_]+)")
+_NOW_CODE = re.compile(r"^\[tradecraft\] library_now code=(?P<code>[a-z_]+)(?: refresh=(?P<refresh>\d+))?")
 # think_node.py logs each think's start before Library now runs, and its thought after.
 _THINK_START = re.compile(r"^# THINK NODE PROMPT - Iteration (?P<iteration>\d+)")
 _THOUGHT_RECORD = "THOUGHT: "
@@ -243,15 +243,17 @@ def library_now_from_log(text: str) -> dict:
     """The session's Library now, from its log, in log order (``at``, the record's index):
     ``shown`` one per think that showed a block (its block number, which counts the blocks that
     brought a page never shown before, its pages and its think), ``reads`` the shown pages the agent
-    then read, ``refreshes`` (one per round of searches), ``codes``, and ``thoughts`` one per main
-    think (whether a block was shown to it, and its library sentence: read, nothing, other, or None)."""
-    out: dict = {"shown": [], "reads": [], "refreshes": [], "codes": [], "thoughts": []}
+    then read, ``refreshes`` (one per round of searches), ``codes``, ``thoughts`` one per main think
+    (whether a block was shown to it, and its library sentence: read, nothing, other, or None),
+    ``thinks`` the main thinks logged and ``rounds`` the highest round number a line gives."""
+    out: dict = {"shown": [], "reads": [], "refreshes": [], "codes": [], "thoughts": [], "thinks": 0, "rounds": 0}
     think: Optional[dict] = None
     for at, rec in enumerate(log_records(text)):
         body = rec.rstrip("\n")
         t = _THINK_START.match(body)
         if t:
             think = {"iteration": int(t["iteration"]), "block": False}
+            out["thinks"] += 1
             continue
         m = _NOW_SHOWN.match(body)
         if m:
@@ -269,10 +271,13 @@ def library_now_from_log(text: str) -> dict:
         if m:
             out["refreshes"].append({"at": at, "refresh": int(m["refresh"]), "reason": m["reason"],
                                      "found": int(m["found"])})
+            out["rounds"] = max(out["rounds"], int(m["refresh"]))
             continue
         m = _NOW_CODE.match(body)
         if m:
             out["codes"].append(m["code"])
+            if m["refresh"]:
+                out["rounds"] = max(out["rounds"], int(m["refresh"]))
             continue
         if body.startswith(_THOUGHT_RECORD):
             thought = body[len(_THOUGHT_RECORD):]
@@ -374,13 +379,34 @@ def check_library_now(trace: Mapping, planted: Sequence[str], prompt: str) -> li
     whose notice the run's summary counts."""
     now = trace.get("library_now") or {}
     shown = now.get("shown") or []
+    marked = {r["page"] for r in now.get("reads") or []}
     again = sorted({f"{r['page']} (think {s['iteration']})" for r in now.get("reads") or [] for s in shown
                     if s["at"] > r["at"] and r["page"] in s["pages"]})
+    # The agent marks a shown page read (its read line) only at its first read after a block showed
+    # it: a page the trace read (a lookup, a librarian pick) that a block shows with no read line was
+    # read before it was shown, or read and never marked; either way it came back after a read.
+    unmarked = sorted(p for p in {p for s in shown for p in s["pages"]} & read_pages(trace) if p not in marked)
+    rounds, thinks = int(now.get("rounds") or 0), int(now.get("thinks") or 0)
     return [
-        CheckResult("no_read_page_shown_again", not again,
-                    ", ".join(again) or f"none shown again ({len(now.get('reads') or [])} shown pages read)"),
+        CheckResult("no_read_page_shown_again", not again and not unmarked,
+                    ", ".join(again + [f"{p} (read, never marked read)" for p in unmarked])
+                    or f"none shown again ({len(marked)} shown pages read)"),
+        CheckResult("one_search_round_per_think", rounds <= thinks, f"{rounds} rounds over {thinks} thinks"),
         _planted_in_blocks(trace, shown, planted, prompt),
     ]
+
+
+def read_pages(trace: Mapping) -> set:
+    """The pages the run read, as the agent counts them (run_state.record_seen): a lookup's page
+    and the librarian's picks; a search's results are not read."""
+    results = tradecraft_results(trace)
+    return {r.read.page_id for r in results if r.read} | {p.page_id for r in results for p in r.picks}
+
+
+def in_blocks(trace: Mapping, slug: str) -> list[str]:
+    """The pages of resource ``slug`` any Library now block showed."""
+    return sorted({p for s in (trace.get("library_now") or {}).get("shown") or [] for p in s["pages"]
+                   if p.rsplit(":", 1)[0] == slug})
 
 
 def block_row_text(trace: Mapping, page_id: str) -> Optional[str]:
@@ -536,10 +562,21 @@ def check_slug_absent(trace: Mapping, slug: str, name: str) -> list[CheckResult]
              and slug in " ".join(str(v) for v in (c.get("args") or {}).values())]
     out = [CheckResult(f"{name}_not_read", not named and not asked,
                        ", ".join(named) or (f"{len(asked)} calls name it" if asked else "never named"))]
-    missing = _prompts_or_none(f"{name}_not_listed", trace)
-    out.append(missing or CheckResult(f"{name}_not_listed", slug not in listed_resources(trace["prompts"]),
-                                      "listed" if slug in listed_resources(trace.get("prompts") or []) else "not listed"))
+    out.append(_not_listed(trace, slug, f"{name}_not_listed"))
     return out
+
+
+def _not_listed(trace: Mapping, slug: str, name: str) -> CheckResult:
+    """``slug`` is neither in the logged prompt's resource list nor in any Library now block (the
+    block is added after the prompt is logged, so only the log's shown lines see it)."""
+    blocks = in_blocks(trace, slug)
+    if blocks:
+        return CheckResult(name, False, f"in a Library now block: {', '.join(blocks)}")
+    missing = _prompts_or_none(name, trace)
+    if missing:
+        return missing
+    listed = slug in listed_resources(trace["prompts"])
+    return CheckResult(name, not listed, "listed" if listed else "not listed, in no Library now block")
 
 
 def check_public_works(trace: Mapping, login_slug: str) -> CheckResult:
@@ -589,9 +626,7 @@ def single_checks(check: str, trace: Mapping, *, cfg: Mapping, spec: Mapping) ->
         audits = (trace.get("audit") or {}).get("act_as_refused")
         out.append(CheckResult("refusals_audited", None if audits is None else audits >= 3,
                                "audit not read" if audits is None else f"{audits} act_as.refused rows"))
-        missing = _prompts_or_none("acting_chat_does_not_list_login_resource", trace)
-        out.append(missing or CheckResult("acting_chat_does_not_list_login_resource",
-                                          login not in listed_resources(trace["prompts"]), login))
+        out.append(_not_listed(trace, login, "acting_chat_does_not_list_login_resource"))
         return out
     if check == "S4":
         steps = trace.get("loop_prompts") or []

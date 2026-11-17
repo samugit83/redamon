@@ -596,7 +596,7 @@ def recorded_trace() -> dict:
                        "iteration": 3},
                       {"at": 30, "shown": 3, "block": 1, "pages": ["hacktricks:77"], "iteration": 4}],
             "reads": [{"at": 25, "page": "payloadsallthethings:412"}],
-            "refreshes": [{"at": 9, "refresh": 1, "reason": "start", "found": 2}], "codes": [],
+            "refreshes": [{"at": 9, "refresh": 1, "reason": "start", "found": 2}], "codes": [], "thinks": 4, "rounds": 1,
             "thoughts": [{"at": 5, "iteration": 1, "block": False, "line": None, "page": None},
                          {"at": 12, "iteration": 2, "block": True, "line": "nothing", "page": None},
                          {"at": 22, "iteration": 3, "block": True, "line": "read", "page": "payloadsallthethings:412"},
@@ -635,7 +635,7 @@ def test_checks_on_recorded_trace_fixture():
     got = _arm_a(recorded_trace())
     assert all(c.ok for c in got.values()), {n: (c.ok, c.detail) for n, c in got.items() if not c.ok}
     assert set(got) == {"expected_page_returned", "reads_by_section_within_limit", "stored_reads_say_stored_copy",
-                        "no_read_page_shown_again", "no_planted_text_in_block",
+                        "no_read_page_shown_again", "one_search_round_per_think", "no_planted_text_in_block",
                         "librarian_excerpts_verbatim", "no_pick_from_injected_text", "page_store_unchanged"}
 
     written = recorded_trace()
@@ -676,6 +676,35 @@ def test_a_read_page_never_comes_back_in_a_later_block():
     before = recorded_trace()
     before["library_now"]["reads"][0]["at"] = 31
     assert _arm_a(before)["no_read_page_shown_again"].ok is True
+    # Any page the run read, not only one a block showed first: a lookup's page or a librarian pick
+    # that a block shows with no read line was read before it was shown, or never marked read.
+    looked = recorded_trace()
+    looked["tool_calls"].append({"tool": "tradecraft_lookup", "args": {"page": "hacktricks:77"}, "success": True,
+                                 "output": _read_output("hacktricks:77", "Pentesting Web › SQL injection", PAGE_TEXT, "live")})
+    got = _arm_a(looked)["no_read_page_shown_again"]
+    assert got.ok is False and got.detail == "hacktricks:77 (read, never marked read)"
+    picked = recorded_trace()
+    picked["tool_calls"].append({"tool": "tradecraft_ask", "args": {"need": "x"}, "success": True, "output": _ask_output(
+        [("hacktricks:77", "Pentesting Web › SQL injection", "a heavy query gives the delay")])})
+    assert _arm_a(picked)["no_read_page_shown_again"].detail == "hacktricks:77 (read, never marked read)"
+    # A search's results are shown, not read: hacktricks:77 is one in the recorded trace.
+    assert "hacktricks:77" not in checks.read_pages(recorded_trace())
+    assert checks.read_pages(recorded_trace()) == {"payloadsallthethings:412"}
+
+
+def test_one_search_round_per_think():
+    # Library now searches at most once a think: more rounds than thinks is a broken count.
+    got = _arm_a(recorded_trace())["one_search_round_per_think"]
+    assert got.ok is True and got.detail == "1 rounds over 4 thinks"
+    over = recorded_trace()
+    over["library_now"]["rounds"] = 5
+    assert _arm_a(over)["one_search_round_per_think"].ok is False
+    # A timed-out round counts too: its code line carries the round number.
+    now = checks.library_now_from_log(_log("# THINK NODE PROMPT - Iteration 1 - Phase: informational",
+                                           "[tradecraft] library_now refresh=1 reason=start found=2",
+                                           "[tradecraft] library_now code=timeout refresh=2"))
+    assert (now["thinks"], now["rounds"]) == (1, 2)
+    assert _arm_a(dict(recorded_trace(), library_now=now))["one_search_round_per_think"].ok is False
 
 
 def test_no_block_carries_the_text_the_lab_planted():
@@ -792,6 +821,29 @@ def test_single_checks():
     acting["api"][1]["status"] = 200
     assert not all(c.ok for c in checks.single_checks("S3", acting, cfg=SCN, spec=SCN["singles"]["S3"]))
 
+    # The Library now block is added after the prompt is logged: a resource that must not be listed
+    # must not be in any block either (S1 a turned-off resource, S2 and S3 the login resource).
+    def blocks(*pages):
+        return {"shown": [{"at": 5, "shown": 1, "block": 1, "pages": list(pages), "iteration": 1}], "reads": []}
+    off = SCN["singles"]["S1"]["resources"]["turned_off"][0]
+    clean = {"tool_calls": [], "prompts": ["- `hacktricks`  (mkdocs-wiki, Live)"], "library_now": blocks("hacktricks:77")}
+    s1 = {c.name: c for c in checks.single_checks("S1", clean, cfg=SCN, spec=SCN["singles"]["S1"])}
+    assert s1[f"off_{off}_not_listed"].ok is True
+    s1 = {c.name: c for c in checks.single_checks("S1", dict(clean, library_now=blocks("hacktricks:77", f"{off}:412")),
+                                                  cfg=SCN, spec=SCN["singles"]["S1"])}
+    assert s1[f"off_{off}_not_listed"].ok is False and s1[f"off_{off}_not_listed"].detail == \
+        f"in a Library now block: {off}:412"
+    shared_block = dict(clean, library_now=blocks(f"{login}:9"), tool_calls=recorded_trace()["tool_calls"])
+    s2 = {c.name: c for c in checks.single_checks("S2", shared_block, cfg=SCN, spec=SCN["singles"]["S2"])}
+    assert s2["login_resource_not_listed"].ok is False and f"{login}:9" in s2["login_resource_not_listed"].detail
+    # Even with no logged prompt to read, a block naming the resource is a failure, not "not checked".
+    s2 = {c.name: c for c in checks.single_checks("S2", dict(shared_block, prompts=[]), cfg=SCN, spec=SCN["singles"]["S2"])}
+    assert s2["login_resource_not_listed"].ok is False
+    acting["api"][1]["status"] = 403
+    s3 = {c.name: c for c in checks.single_checks("S3", dict(acting, library_now=blocks(f"{login}:9")), cfg=SCN,
+                                                  spec=SCN["singles"]["S3"])}
+    assert s3["acting_chat_does_not_list_login_resource"].ok is False
+
     loop = {"tool_calls": [{"tool": "tradecraft_ask", "output": ENVELOPE + "\nlibrarian: NOT FOUND (low) · 0 model calls · "
                             "0 pages inspected · 0.1 s\nnote: " + checks.LOOP_RUN_TEXT + "\n" + END}],
             "loop_prompts": ["| **tradecraft_ask** | Ask the Tradecraft librarian |"]}
@@ -856,6 +908,7 @@ def test_prompts_and_library_now_from_a_session_log():
     assert [(r["refresh"], r["reason"], r["found"]) for r in now["refreshes"]] == [
         (1, "start", 4), (2, "goal+phase", 3), (4, "resume", 0)]
     assert now["codes"] == ["timeout", "limit"]
+    assert (now["thinks"], now["rounds"]) == (4, 4)
     # A Fireteam member's thought is not the main agent's (members get no Library now).
     assert [(t["iteration"], t["block"], t["line"], t["page"]) for t in now["thoughts"]] == [
         (1, True, "nothing", None), (2, True, "read", "payloadsallthethings:412"), (3, False, None, None)]
@@ -1684,7 +1737,8 @@ def _stack(*, tip=TIP, tree=TIP_TREE, files=None, py=None, images=None, exec_fai
         if argv[:2] == ["git", "-C"] and "rev-parse" in argv:
             return subprocess.CompletedProcess(argv, 0, tip + "\n", "")
         if argv[:2] == ["git", "-C"] and "ls-tree" in argv:
-            return subprocess.CompletedProcess(argv, 0, "".join(f"100644 blob {b}\t{p}\n" for p, b in tree.items()), "")
+            end = "\0" if "-z" in argv else "\n"
+            return subprocess.CompletedProcess(argv, 0, "".join(f"100644 blob {b}\t{p}{end}" for p, b in tree.items()), "")
         if argv[:2] == ["docker", "inspect"] and "{{json .Mounts}}" in argv:
             return subprocess.CompletedProcess(argv, 0 if mounts is not None else 1,
                                                json.dumps(mounts) if mounts is not None else "", "")
@@ -1882,6 +1936,83 @@ def test_any_plan_file_may_carry_another_sessions_hunks(tmp_path):
     assert runner.plan_file_check(ICON, base, tip, root=root)["plan_lines"] is False
 
 
+def test_a_plan_file_check_git_could_not_make_fails(tmp_path):
+    # The plan's diff or the copy's diff failing (a bad object, a lock, a crash) is no evidence.
+    (tmp_path / "agentic").mkdir()
+    (tmp_path / "agentic" / "api.py").write_text("A = 1\nB = 2\n")
+    patch = "diff --git a/agentic/api.py b/agentic/api.py\n--- a/agentic/api.py\n+++ b/agentic/api.py\n@@ -1,0 +2 @@\n+B = 2\n"
+
+    def git(plan_rc=0, extra_rc=1):
+        def run(argv, **kw):
+            if "--no-index" in argv:
+                return subprocess.CompletedProcess(argv, extra_rc, "", "fatal: x" if extra_rc > 1 else "")
+            if "diff" in argv:
+                return subprocess.CompletedProcess(argv, plan_rc, patch if plan_rc == 0 else "", "fatal: bad object")
+            if "show" in argv:
+                return subprocess.CompletedProcess(argv, 0, "A = 1\nB = 2\n", "")
+            raise AssertionError(argv)
+        return run
+
+    path = "agentic/api.py"
+    assert runner.plan_file_check(path, "b", "t", run=git(extra_rc=0), root=tmp_path)["plan_lines"] is True
+    assert runner.plan_file_check(path, "b", "t", run=git(plan_rc=128), root=tmp_path)["plan_lines"] is False
+    assert runner.plan_file_check(path, "b", "t", run=git(extra_rc=2), root=tmp_path)["plan_lines"] is False
+
+
+def _repo_with_plan(tmp_path, base: dict, plan: dict, moves=()):
+    """A repository: ``base`` committed on main, then the plan branch (``moves`` renamed with git mv,
+    then ``plan`` written, a None value removing a file); the checkout left on main."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(tmp_path, "init", "-q", "-b", "main", str(root))
+    for k, v in (("user.email", "t@e2e.invalid"), ("user.name", "t"), ("commit.gpgsign", "false")):
+        _git(root, "config", k, v)
+    for path, text in base.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    _git(root, "add", "."); _git(root, "commit", "-qm", "base")
+    base_sha = _git(root, "rev-parse", "HEAD")
+    _git(root, "checkout", "-q", "-b", "feature/tradecraft-2.0")
+    for old, new in moves:
+        _git(root, "mv", old, new)
+    for path, text in plan.items():
+        if text is None:
+            _git(root, "rm", "-q", path)
+            continue
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    _git(root, "add", "-A"); _git(root, "commit", "-qm", "the plan")
+    tip = _git(root, "rev-parse", "HEAD")
+    _git(root, "checkout", "-q", "main")
+    return root, base_sha, tip
+
+
+def test_a_renamed_or_spaced_plan_file_is_still_a_plan_file(tmp_path):
+    # A rename's old path is a plan file too (git diff would show only the new one): a tree that still
+    # holds it carries the plan's removed lines. A path with a space is one name, not two.
+    old_body = "".join(f"LINE_{i} = {i}\n" for i in range(20))
+    spaced = "agentic/my module.py"
+    root, base, tip = _repo_with_plan(
+        tmp_path, {"agentic/old_name.py": old_body, spaced: "A = 1\n"},
+        {"agentic/new_name.py": old_body + "ADDED = 1\n", spaced: "A = 1\nPLAN = 2\n"},
+        moves=[("agentic/old_name.py", "agentic/new_name.py")])
+    # The checkout holds the base: the old file is still there; the tip's new one is made, and the
+    # spaced file lacks the plan's line.
+    (root / "agentic" / "new_name.py").write_text(old_body + "ADDED = 1\n")
+    path = tmp_path / "record.json"
+    with mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
+        runner.record_build("before", path=path, root=root)
+    rec = json.loads(path.read_text())
+    assert {"agentic/old_name.py", "agentic/new_name.py", spaced} <= set(rec["plan_files"])
+    assert set(rec["differences"]) == {"agentic/old_name.py", spaced}
+    assert rec["shared_checks"]["agentic/old_name.py"]["removed_absent"] is False
+    assert rec["shared_checks"][spaced]["added_present"] is False
+    with mock.patch.object(runner, "PLAN_BASE", base):
+        problems = runner.verify_code(rec | {"complete": True, "images": RECORD["images"]}, run=_stack(tip=tip),
+                                      deep=False)[0]
+    assert problems and "agentic/old_name.py" in problems[0] and spaced in problems[0]
+
+
 def test_a_removed_line_the_tip_still_holds_elsewhere_is_not_counted_back(tmp_path):
     # The plan drops one of two identical lines: the tip's own copy holds that line, so it proves nothing.
     root = tmp_path / "repo"
@@ -2012,8 +2143,9 @@ def test_the_build_record_names_the_tree_the_images_came_from(tmp_path):
 
     def run(argv, **kw):
         if "ls-tree" in argv:
-            return subprocess.CompletedProcess(argv, 0, f"100644 blob {'1' * 40}\tagentic/api.py\n100644 blob {'2' * 40}\tagentic/tools.py\n"
-                                                        f"100644 blob {'3' * 40}\tagentic/gone.py\n", "")
+            end = "\0" if "-z" in argv else "\n"
+            return subprocess.CompletedProcess(argv, 0, f"100644 blob {'1' * 40}\tagentic/api.py{end}100644 blob {'2' * 40}"
+                                                        f"\tagentic/tools.py{end}100644 blob {'3' * 40}\tagentic/gone.py{end}", "")
         if "ls-files" in argv:  # git's view: tracked and new files, never an ignored one
             return subprocess.CompletedProcess(argv, 0, "agentic/api.py\0agentic/tools.py\0agentic/new.py\0", "")
         if "hash-object" in argv:

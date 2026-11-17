@@ -2028,7 +2028,7 @@ def _check_names(scn: Mapping, run: lanes.Run) -> list[str]:
         return ["oracle", "no_tradecraft_tool_offered", "no_tradecraft_tool_called", "no_coverage_map", "page_store_unchanged"]
     if run.arm in ("A", "A_search"):
         names = ["oracle", "expected_page_returned", "reads_by_section_within_limit", "stored_reads_say_stored_copy",
-                 "no_read_page_shown_again", "no_planted_text_in_block",
+                 "no_read_page_shown_again", "one_search_round_per_think", "no_planted_text_in_block",
                  "librarian_excerpts_verbatim", "no_pick_from_injected_text", "page_store_unchanged"]
         return names + (["ask_not_offered", "ask_not_called"] if run.arm == "A_search" else [])
     return [str(scn["singles"][run.check].get("title", run.check))]
@@ -2124,10 +2124,11 @@ def git_short(ref: str, run: Optional[Exec] = None) -> str:
 
 def tip_files(commit: str, prefixes: Sequence[str], run: Optional[Exec] = None, root: Path = REPO) -> dict:
     """{repository path: git blob id} of ``commit`` under ``prefixes``."""
-    done = (run or subprocess.run)(["git", "-C", str(root), "ls-tree", "-r", commit, "--", *prefixes],
+    # NUL-separated: a path git would quote (a space, a non-ASCII name) is read as it is.
+    done = (run or subprocess.run)(["git", "-C", str(root), "ls-tree", "-r", "-z", commit, "--", *prefixes],
                                    capture_output=True, text=True, check=False, timeout=120)
     out = {}
-    for line in (done.stdout or "").splitlines():
+    for line in (done.stdout or "").split("\0"):
         meta, _, path = line.partition("\t")
         parts = meta.split()
         if len(parts) == 3 and parts[1] == "blob":
@@ -2202,7 +2203,7 @@ _FAILED = {"plan_lines": False, "added_present": False, "removed_absent": False,
 def _plan_file_check(path: str, base: str, tip: str, run: Exec, root: Path) -> dict:
     # A binary file's bytes are not text: decoded with replacement, then refused as binary below.
     text = {"capture_output": True, "text": True, "errors": "replace", "check": False, "timeout": 60}
-    plan = run(["git", "-C", str(root), "diff", "-U0", base, tip, "--", path], **text)
+    plan = run(["git", "-C", str(root), "diff", "--no-renames", "-U0", base, tip, "--", path], **text)
     if not (root / path).is_file() or plan.returncode != 0:
         return dict(_FAILED)
     patch = plan.stdout or ""
@@ -2245,8 +2246,11 @@ def record_build(phase: str, run: Optional[Exec] = None, path: Path = BUILD_RECO
     if phase == "before":
         base = (run(["git", "-C", str(root), "merge-base", tip, "HEAD"], capture_output=True, text=True, check=False,
                     timeout=60).stdout or "").strip()
-        changed = set((run(["git", "-C", str(root), "diff", "--name-only", base, tip, "--", *prefixes],
-                           capture_output=True, text=True, check=False, timeout=120).stdout or "").split())
+        # Every path the plan changed, by itself: --no-renames, so a rename's old path is one too (the
+        # tree may still hold it); NUL-separated, so a name with a space or one git quotes is whole.
+        changed = {p for p in (run(["git", "-C", str(root), "diff", "--name-only", "--no-renames", "-z", base, tip,
+                                    "--", *prefixes], capture_output=True, text=True, check=False,
+                                   timeout=120).stdout or "").split("\0") if p}
         shared = {f: plan_file_check(f, base, tip, run, root=root) for f in sorted(differences) if f in changed}
         record = {"format": 1, "tip": tip, "base": base, "recorded_at": now_iso(), "differences": differences,
                   "plan_files": sorted(changed), "shared_checks": shared, "complete": False}
