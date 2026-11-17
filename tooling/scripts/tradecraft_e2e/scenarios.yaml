@@ -39,7 +39,7 @@ accounts:
 # resources these slugs). stored: the resources whose reads must say "stored copy".
 library:
   resources: [payloadsallthethings, hacktricks, trickest-cve, hexbrain-payloads, web-hacking-techniques-index,
-              web-hacking-techniques-archive-github, claude-bughunter, mitmproxy-docs, ired-team]
+              web-hacking-techniques-archive-github, claude-bughunter, scapy-docs, ired-team]
   stored: [payloadsallthethings, hexbrain-payloads, web-hacking-techniques-index, claude-bughunter]
   # The public resource T10.2 gives a fake login (cookie=fake-session): S2 and S3.
   login_resource: ired-team
@@ -259,6 +259,6 @@ layer1:
     - {q: CVE-2021-42013, expect: {resource: trickest-cve, path: [cve-2021-42013]}}
     - {q: kerberoasting, expect: {resource: ired-team, path: [kerberoast]}}
     - {q: process injection, expect: {resource: ired-team, path: [injection]}}
-    - {q: mitmproxy addon scripting, expect: {resource: mitmproxy-docs, path: [addon]}}
+    - {q: scapy adding a new protocol layer, expect: {resource: scapy-docs, path: [build_dissect]}}
     - {q: sql injection hunting with an ai agent, expect: {resource: claude-bughunter, path: [sql]}}
     - {q: oauth misconfiguration, expect: {resource: hacktricks, path: [oauth]}}

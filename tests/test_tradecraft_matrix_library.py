@@ -656,14 +656,14 @@ def test_build_resumes_without_adding_twice():
     built = {"id": "old1", "slug": "hacktricks", "url": "https://book.hacktricks.wiki", "storageMode": "live",
              "resourceType": "mkdocs-wiki", "hasLogin": False, "mapVersion": 3, "entryCount": 900,
              "report": {"readiness": {"a": 1}}, "job": {"status": "succeeded"}}
-    failed = {"id": "old2", "slug": "mitmproxy-docs", "url": "https://docs.mitmproxy.org/stable/", "mapVersion": 3,
+    failed = {"id": "old2", "slug": "scapy-docs", "url": "https://scapy.readthedocs.io/en/latest/", "mapVersion": 3,
               "job": {"status": "failed", "errorCode": "fetch_failed"}}
     stray = {"id": "old3", "slug": "not-in-the-library", "url": "https://example.invalid/", "job": None}
     web = FakeWebapp(existing=[built, failed, stray])
     builder, _ = _builder(web)
     outcomes = builder.run()
     adds = [c[2]["slug"] for c in web.calls if c[0] == "POST" and c[1].endswith("/tradecraft-resources")]
-    assert "hacktricks" not in adds and "mitmproxy-docs" in adds and len(adds) == 8
+    assert "hacktricks" not in adds and "scapy-docs" in adds and len(adds) == 8
     deleted = [c[1] for c in web.calls if c[0] == "DELETE"]
     assert any(p.endswith("/old2") for p in deleted) and any(p.endswith("/old3") for p in deleted)
     assert not any(p.endswith("/old1") for p in deleted)
@@ -671,16 +671,16 @@ def test_build_resumes_without_adding_twice():
 
 
 def test_build_cancels_a_job_past_its_limit_and_reports_the_wrong_type():
-    web = FakeWebapp(never_end={"hacktricks"}, wrong_type={"mitmproxy-docs": "agentic-crawl"})
+    web = FakeWebapp(never_end={"hacktricks"}, wrong_type={"scapy-docs": "agentic-crawl"})
     clock = FakeClock()
     builder, logs = _builder(web, clock)
     outcomes = builder.run()
     assert not outcomes["hacktricks"].ok
     assert any(c[0] == "DELETE" and c[1].endswith("/jobs") for c in web.calls)
-    assert [c.name for c in outcomes["mitmproxy-docs"].checks if not c.ok] == ["type"]
+    assert [c.name for c in outcomes["scapy-docs"].checks if not c.ok] == ["type"]
     cancelled = [c.detail for c in outcomes["hacktricks"].checks if not c.ok]
     assert cancelled == [f"cancelled after {int(LIB['resource_timeout_min'])} min"]
-    assert all(o.ok for s, o in outcomes.items() if s not in ("hacktricks", "mitmproxy-docs"))
+    assert all(o.ok for s, o in outcomes.items() if s not in ("hacktricks", "scapy-docs"))
 
 
 def test_build_stops_at_mc9_without_a_model_provider():

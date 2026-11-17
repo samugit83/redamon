@@ -90,12 +90,17 @@ resources:
     storage: live
     # No path pattern here: Check URL's cve_pattern fills it, as the form does (prefillFromCheck).
     expect: {type: cve-poc-db, min_entries: 0}
-  - slug: mitmproxy-docs
-    preset: mitmproxy-docs
-    name: Mitmproxy docs
-    url: https://docs.mitmproxy.org/stable/
+  # The Sphinx preset (the card's "chosen by T10.2"): a Sphinx site whose search index lists its
+  # pages. Mitmproxy docs, the first choice, is a Hugo site whose searchindex.js is elasticlunr,
+  # not Sphinx's index (its 1-entry map was routed as a product finding on 2026-11-17).
+  - slug: scapy-docs
+    preset: scapy-docs
+    name: Scapy docs
+    url: https://scapy.readthedocs.io/en/latest/
     storage: live
-    expect: {type: sphinx-docs, min_entries: 20}
+    overrides:
+      type.docs.searchIndexUrl: https://scapy.readthedocs.io/en/latest/searchindex.js
+    expect: {type: sphinx-docs, min_entries: 200}
   - slug: ired-team
     preset: ired-team
     name: ired.team

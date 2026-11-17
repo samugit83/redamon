@@ -64,7 +64,7 @@ archive (Live) needs the internet during a run.
 | `hexbrain-payloads` | Website | Stored; Auto; `/payloads/*`, inside the folder |
 | `web-hacking-techniques-archive-github` | GitHub repository | Live (the same archive twice) |
 | `trickest-cve` | CVE archive | Live; the path pattern Check URL finds |
-| `mitmproxy-docs` | Sphinx docs | Live |
+| `scapy-docs` | Sphinx docs (Read the Docs) | Live; its search index |
 | `ired-team` | GitBook | Live, with the fake login `cookie=fake-session` (S2, S3) |
 
 ```bash
