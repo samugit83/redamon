@@ -38,7 +38,11 @@ GRAPH_COMPANION_TOOLS = frozenset({"graph_schema", "graph_summary"})
 
 # Tradecraft 2.0's search and the librarian follow tradecraft_lookup's phases, for the reasons
 # above, and only in a run whose catalog is 2.0; the librarian also only while its owner's
-# Librarian use is Agent decides (TRADECRAFT_ASK).
+# Librarian use is Agent decides (TRADECRAFT_ASK). That row defaults to every phase (owner
+# decision 2026-11-17): the three read only the run owner's library and its resources' own
+# sites, never the target, so none of them is dangerous in any phase. Projects that still held
+# the old default (exploitation and post-exploitation) are moved once by
+# webapp/scripts/backfill-tradecraft-phases.mjs; a row a person changed is kept.
 TRADECRAFT_COMPANION_TOOLS = frozenset({"tradecraft_search", "tradecraft_ask"})
 
 # =============================================================================
@@ -324,7 +328,7 @@ DEFAULT_AGENT_SETTINGS: dict[str, Any] = {
         'execute_guarddog': ['informational', 'exploitation'],
         'shodan': ['informational', 'exploitation', 'post_exploitation'],
         'google_dork': ['informational'],
-        'tradecraft_lookup': ['exploitation', 'post_exploitation'],
+        'tradecraft_lookup': ['informational', 'exploitation', 'post_exploitation'],
     },
 
     # User-managed MCP servers (UI-driven, see /settings/mcp). Stored as raw

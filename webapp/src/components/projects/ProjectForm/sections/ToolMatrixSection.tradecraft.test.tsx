@@ -11,6 +11,7 @@ vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1
 vi.mock('@/components/ui/WikiInfoButton', () => ({ WikiInfoButton: () => null }))
 
 import { TOOL_ROW_NOTES, ToolMatrixSection } from './ToolMatrixSection'
+import { field } from '@/lib/reconSettings/registry'
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
@@ -38,5 +39,14 @@ describe('the tradecraft row of the Tool Matrix', () => {
   test('every account sees the note: the 2.0 switch left at the cut-over (T9.3)', async () => {
     render(<ToolMatrixSection data={{ agentToolPhaseMap: { tradecraft_lookup: ['informational'] } } as never} updateField={vi.fn()} />)
     expect(await screen.findByTestId('tool-row-note-tradecraft_lookup')).toHaveTextContent(TOOL_ROW_NOTES.tradecraft_lookup)
+  })
+
+  test('a new project shows the row ticked in all three phases (owner decision 2026-11-17)', async () => {
+    // The Prisma default a new project stores; the agent's /defaults equals it (test_prisma_default_parity.py).
+    const agentToolPhaseMap = JSON.parse(String(field('agentToolPhaseMap')!.default))
+    render(<ToolMatrixSection data={{ agentToolPhaseMap } as never} updateField={vi.fn()} />)
+    const row = (await screen.findByTestId('tool-row-note-tradecraft_lookup')).closest('div')!
+    const ticks = [...row.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].map(box => box.checked)
+    expect(ticks).toEqual([true, true, true])
   })
 })

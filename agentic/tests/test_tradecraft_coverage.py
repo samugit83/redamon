@@ -131,11 +131,17 @@ def test_no_titles_in_map():
     assert hostile not in text and "XSS: 5 pages · payloads 2" in text
 
 
-def bound(cov, cat=None):
-    """A context with ``cov`` bound as the run's coverage."""
+def bound(cov, cat=None, lookup_phases=None):
+    """A context with ``cov`` bound as the run's coverage; ``lookup_phases`` is the project's
+    Tradecraft row, the default one when None."""
     ctx = contextvars.copy_context()
     ctx.run(runtime._catalog.set, cat or catalog(2))
     ctx.run(runtime._coverage.set, cov)
+    if lookup_phases is not None:
+        import project_settings as ps
+
+        phase_map = {**ps.DEFAULT_AGENT_SETTINGS["TOOL_PHASE_MAP"], "tradecraft_lookup": lookup_phases}
+        ctx.run(ps._settings_ctx.set, {**ps.DEFAULT_AGENT_SETTINGS, "TOOL_PHASE_MAP": phase_map})
     return ctx
 
 
@@ -149,14 +155,17 @@ def test_skill_line():
 
 
 def test_the_skill_line_reaches_the_skills_prompt_in_a_2x_run_only():
-    """The hot edit of prompts.get_phase_tools: the line in the phases the tools are offered."""
+    """The hot edit of prompts.get_phase_tools: the line in the phases the tools are offered, every
+    phase with the default row (owner decision 2026-11-17), none a project took the row out of."""
     from prompts import get_phase_tools
 
     cov = coverage.aggregate(rows_for({"r0": 412}, SQLI), list(catalog(1).resources))
     line = "Library for SQL injection: 412 pages"
-    exploitation = bound(cov).run(get_phase_tools, "exploitation", True, "stateless", "sql_injection")
-    assert line in exploitation
-    informational = bound(cov).run(get_phase_tools, "informational", True, "stateless", "sql_injection")
+    for phase in ("informational", "exploitation"):
+        assert line in bound(cov).run(get_phase_tools, phase, True, "stateless", "sql_injection"), phase
+    kept = ["exploitation", "post_exploitation"]
+    assert line in bound(cov, lookup_phases=kept).run(get_phase_tools, "exploitation", True, "stateless", "sql_injection")
+    informational = bound(cov, lookup_phases=kept).run(get_phase_tools, "informational", True, "stateless", "sql_injection")
     assert line not in informational
     legacy = contextvars.Context().run(get_phase_tools, "exploitation", True, "stateless", "sql_injection")
     assert line not in legacy and "Library for" not in legacy
