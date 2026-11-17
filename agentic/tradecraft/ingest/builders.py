@@ -313,17 +313,19 @@ def _nav_links(html: str, page_url: str, selector: str) -> list[tuple[str, str]]
 async def _from_sitemaps(url: str, configured: list[str], settings: EffectiveSettings, blocking: Blocking,
                          keep: Optional[Callable[[str], bool]] = None,
                          budget: Optional[SitemapBudget] = None,
-                         usable: Optional[Callable[[list[str]], bool]] = None) -> tuple[list[str], str]:
+                         usable: Optional[Callable[[list[str]], bool]] = None,
+                         named: Optional[list[str]] = None) -> tuple[list[str], str]:
     """The first sitemap that lists pages (that ``keep`` accepts, and that ``usable`` takes for a
     map, when given): the resource's own URLs (§6.5; they replace ``/sitemap.xml`` at the
     resource's URL, which is read only when none is set), and the ones a ``Sitemap:`` line of
-    robots.txt names. An index of per-language copies is read in the language the map will keep
-    first (``preferred_languages``)."""
+    robots.txt names; ``named`` replaces that list. An index of per-language copies is read in the
+    language the map will keep first (``preferred_languages``)."""
     base = url.rstrip("/")
-    named = [urllib.parse.urljoin(base + "/", sm.strip()) for sm in configured if sm.strip()]
-    named += (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
-    if not configured:
-        named.append(f"{base}/sitemap.xml")
+    if named is None:
+        named = [urllib.parse.urljoin(base + "/", sm.strip()) for sm in configured if sm.strip()]
+        named += (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
+        if not configured:
+            named.append(f"{base}/sitemap.xml")
     budget = budget or SitemapBudget()
     languages = preferred_languages(url, settings)
     for sm in dict.fromkeys(named):
@@ -468,16 +470,21 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
             return MapResult("sphinx-docs", entries, meta={"indexUrl": idx_url}, index_kind="searchindex",
                              index_url=idx_url, truncated=cut, report_stop=_docs_stop("searchindex", entries, cut))
 
+    # The site's own /sitemap.xml too: Auto reads it, and docs below the site root are often listed
+    # only there.
+    named_by_robots = (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
+    own, site_root = f"{base}/sitemap.xml", f"{robots.origin_of(base)}/sitemap.xml"
     budget = SitemapBudget(should_stop)
     is_start = same_page_as(url)
     urls, sitemap_url = await _from_sitemaps(url, [], settings, blocking, keep=in_start_folder(url), budget=budget,
-                                             usable=lambda found: not all(is_start(u) for u in found))
+                                             usable=lambda found: not all(is_start(u) for u in found),
+                                             named=named_by_robots + [own, site_root])
     if budget.stopped == "cancelled":
         return MapResult("sphinx-docs", [], meta={"indexUrl": ""}, note=DOCS_INDEX_UNUSABLE)
     entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u)
                             for u in language_filter(urls, settings)], cap)
     if any(not is_start(e.url) for e in entries):
-        source = "sitemap.xml" if sitemap_url == f"{base}/sitemap.xml" else "robots"
+        source = "sitemap.xml" if sitemap_url == own else "robots" if sitemap_url in named_by_robots else "site sitemap"
         return MapResult("sphinx-docs", entries, meta={"indexUrl": ""}, index_kind="sitemap", index_url=sitemap_url,
                          truncated=cut, note=DOCS_INDEX_UNUSABLE,
                          report_stop=_docs_stop(f"no search index, {source}", entries, cut,

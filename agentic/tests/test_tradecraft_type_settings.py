@@ -509,3 +509,21 @@ def test_the_docs_crawl_hand_off_keeps_the_docs_map_limit(tmp_path):
     assert job.run().status == "succeeded"
     assert job.resource["resource_type"] == "sphinx-docs" and len(job.urls()) == 100
     assert job.report.stopReason == "docs: no search index or sitemap, crawl (max_map_entries)"
+
+
+def test_a_docs_site_listed_only_in_the_site_sitemap_gets_its_sitemap_map(tmp_path):
+    """Docs under /docs/ with no search index, no sitemap of their own and none named by robots.txt:
+    the site's /sitemap.xml lists them (Auto read it before the hand-off became model-guided), so
+    the map comes from it, inside the folder, with no crawl and no model."""
+    host = "product.tc-fixture.test"
+    url = f"https://{host}/docs/"
+    pages = [f"{url}{p}/" for p in ("intro", "install", "api")]
+    head = '<meta name="generator" content="Docusaurus v3.5.2">'
+    files = {"/docs/": docs_page("Product docs", pages, head),
+             "/sitemap.xml": urlset([f"https://{host}/", f"https://{host}/blog/launch/", url] + pages)}
+    files.update({p.split(host, 1)[1]: docs_page(p.rstrip("/").rsplit("/", 1)[-1], pages) for p in pages})
+    job = Job(site(tmp_path, host, files), url, {"crawl.strategy": "auto"}, model=PipelineModel(follow=3))
+    assert job.run().status == "succeeded"
+    assert job.state.crawl is None and job.resource["resource_type"] == "sphinx-docs"
+    assert sorted(job.urls()) == sorted([url] + pages)
+    assert job.report.stopReason == "docs: no search index, site sitemap (4 pages)"
