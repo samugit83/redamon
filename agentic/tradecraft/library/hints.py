@@ -26,12 +26,13 @@ that says how to use it (``library_rule``).
 
 Cost: at most ``goal_cap`` distinct steps searched per run, twice the run's MAX_ITERATIONS plus a
 margin, never more than ``GOAL_CAP_CEILING`` (a step searched already is searched again for new
-facts at no cost to it; at most one round of searches a think), ``SEARCH_TIMEOUT_SEC`` per round. ``hints.perRun`` bounded the old notes and does not apply. The block never vanishes
-silently: a step past the cap, or whose search failed or was slow, gets a fixed notice (``NOTICES``),
-and a failed search is tried again at the next thinks (``MAX_RETRIES``); a step's pages stay while
-the step does, even when a search for new facts fails. Measurement,
-page IDs and counts only (never a step or a title): ``[tradecraft] library_now refresh=`` per round
-of searches, ``shown=`` per think with a block, ``<page> read`` when the agent reads a page a block
+facts at no cost to it; at most one round of searches a think), ``SEARCH_TIMEOUT_SEC`` per round.
+No count of blocks limits it: "Hints per run" bounded the old notes and is gone. The block never
+vanishes silently: a step past the cap, or whose search failed or was slow, gets a fixed notice
+(``NOTICES``), and a failed search is tried again at the next thinks (``MAX_RETRIES``); a step's
+pages stay while the step does, even when a search for new facts fails. Measurement, page IDs and
+counts only (never a step or a title): ``[tradecraft] library_now refresh=`` per round of
+searches, ``shown=`` per think with a block, ``<page> read`` when the agent reads a page a block
 showed (``run_state.record_seen``). It never fails the think node.
 """
 

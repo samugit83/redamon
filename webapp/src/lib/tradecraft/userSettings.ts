@@ -16,7 +16,8 @@ import { MAX_USER_RECIPES, RECIPE_NAME_MAX, type UserRecipe } from './focus'
 import { foreignSkillTopics, validateKinds, validateTopics } from './v2/focusFields'
 import { effectiveSettings, canonicalJson } from './effectiveSettings'
 import {
-  SECTIONS, SETTINGS, SETTINGS_CONSTANTS, cloneValue, validateUserSettings, type SettingError, type SettingsValues,
+  REMOVED_KEYS, SECTIONS, SETTINGS, SETTINGS_CONSTANTS, cloneValue, validateUserSettings, type SettingError,
+  type SettingsValues,
 } from './settingsSpec'
 
 /**
@@ -351,6 +352,7 @@ export async function saveSearchSettings(userId: string, input: unknown): Promis
   }
   const defaults = searchDefaults()
   return { ok: true, view: await writeSearch(userId, (stored) => {
+    for (const key of REMOVED_KEYS) delete stored[key]
     for (const [key, value] of Object.entries(parsed.value)) {
       if (canonicalJson(value) === canonicalJson(defaults[key])) delete stored[key]
       else stored[key] = value

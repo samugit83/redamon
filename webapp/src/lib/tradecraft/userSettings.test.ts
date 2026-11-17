@@ -249,8 +249,9 @@ describe('the search settings (Configure search, Q11, T7.2)', () => {
     expect(view.values).toMatchObject({
       'librarian.use': 'agent', 'librarian.maxModelCalls': 5, 'librarian.maxPages': 4, 'librarian.timeLimitSec': 30,
       'librarian.questionsPerRun': 10, 'search.results': 8, 'search.useSession': true, 'search.strictness': 'balanced',
-      'reading.charsPerRead': 12000, 'prompt.resourceList': 'auto', 'prompt.coverageMap': true, 'hints.enabled': true, 'hints.perRun': 6,
+      'reading.charsPerRead': 12000, 'prompt.resourceList': 'auto', 'prompt.coverageMap': true, 'hints.enabled': true,
     })
+    expect(view.values).not.toHaveProperty('hints.perRun')
     const bad = await saveSearchSettings('u1', { 'librarian.maxModelCalls': 1, 'search.results': 21 })
     expect(bad.ok).toBe(false)
     expect(!bad.ok && bad.errors.map(e => e.key)).toEqual(['librarian.maxModelCalls', 'search.results'])
@@ -258,10 +259,20 @@ describe('the search settings (Configure search, Q11, T7.2)', () => {
   })
 
   test('saves only what changed, keeps the ingestion values and the switch; a default removes its key', async () => {
-    h.db.seed('tradecraftUserSettings', { userId: 'u1', v2Enabled: true, ingestion: { 'crawl.maxPages': 9 }, search: { 'hints.perRun': 2 } })
-    const r = await saveSearchSettings('u1', { 'search.results': 12, 'hints.perRun': 6 })
+    h.db.seed('tradecraftUserSettings', { userId: 'u1', v2Enabled: true, ingestion: { 'crawl.maxPages': 9 }, search: { 'search.results': 4 } })
+    const r = await saveSearchSettings('u1', { 'search.results': 12, 'librarian.questionsPerRun': 10 })
     expect(r.ok && r.view.changed).toEqual(['search.results'])
     expect(row()).toMatchObject({ v2Enabled: true, ingestion: { 'crawl.maxPages': 9 }, search: { 'search.results': 12 } })
+  })
+
+  test('a removed setting, stored or sent, is ignored and dropped at the next save, never an error', async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'u1', v2Enabled: true, search: { 'hints.perRun': 2, 'search.results': 4 } })
+    const view = await readSearchSettings('u1')
+    expect(view.values).not.toHaveProperty('hints.perRun')
+    expect(view.changed).toEqual(['search.results'])
+    const r = await saveSearchSettings('u1', { 'hints.perRun': 6, 'hints.enabled': false })
+    expect(r.ok && r.view.changed.sort()).toEqual(['hints.enabled', 'search.results'])
+    expect(row().search).toEqual({ 'search.results': 4, 'hints.enabled': false })
   })
 
   test('synonyms_cap_200 and their shape: one {term, expansions} per pair, as the agent reads them', async () => {

@@ -467,9 +467,13 @@ def walk(goals, *, index, cat=None):
     return notes, st
 
 
-def test_blocks_are_not_bounded_by_hints_per_run():
-    """Design review finding 1: the block serves every goal of a long run. ``hints.perRun`` bounded
-    the old notes and does not apply to Library now (``tradecraft_hint_count`` still counts blocks)."""
+def test_blocks_are_not_bounded_by_a_count():
+    """Design review finding 1: the block serves every goal of a long run. The "Hints per run"
+    setting is gone (round-2 review finding 3); a stale value an older webapp still sends changes
+    nothing (``tradecraft_hint_count`` still counts blocks)."""
+    from tradecraft import settings as tc_settings
+
+    assert "hints.perRun" not in tc_settings.keys("search")
     for per_run in (0, 3):
         notes, st = walk(GOALS, index=by_goal(), cat=catalog(**{"hints.perRun": per_run}))
         assert all(pages_of(n) for n in notes) and st["tradecraft_hint_count"] == len(GOALS)

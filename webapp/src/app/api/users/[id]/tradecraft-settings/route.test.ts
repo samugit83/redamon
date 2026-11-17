@@ -390,7 +390,7 @@ describe('the search settings (Configure search, T7.2)', () => {
 
   test('search_section_ranges: a value out of its range is a 400 naming the key; nothing written', async () => {
     on()
-    for (const [key, value] of [['librarian.maxModelCalls', 11], ['librarian.timeLimitSec', 9], ['search.results', 2], ['reading.charsPerRead', 40001], ['hints.perRun', 21], ['librarian.use', 'never']] as const) {
+    for (const [key, value] of [['librarian.maxModelCalls', 11], ['librarian.timeLimitSec', 9], ['search.results', 2], ['reading.charsPerRead', 40001], ['librarian.use', 'never']] as const) {
       const r = await answer(await put('victim', { search: { [key]: value } }))
       expect(r.status, key).toBe(400)
       expect(r.body.code).toBe('invalid_settings')
@@ -399,6 +399,9 @@ describe('the search settings (Configure search, T7.2)', () => {
     // An ingestion key is not a search setting.
     expect((await answer(await put('victim', { search: { 'crawl.maxPages': 50 } }))).status).toBe(400)
     expect(h.rows.get('victim')!.search).toBeUndefined()
+    // A removed setting (Hints per run) sent by an older page is ignored, never an error.
+    expect((await answer(await put('victim', { search: { 'hints.perRun': 21 } }))).status).toBe(200)
+    expect(h.rows.get('victim')?.search ?? {}).not.toHaveProperty('hints.perRun')
   })
 
   test('PUT stores only what differs from the defaults, with the synonym pairs in the agent\'s shape', async () => {

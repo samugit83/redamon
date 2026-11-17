@@ -78,8 +78,8 @@ describe.skipIf(!URL_)('S11 on a real Postgres', () => {
     // An account with no settings row yet gets one from the save.
     const fresh = `${RUN}-fresh-u`
     await db.user.create({ data: { id: fresh, name: 'fresh', email: `${fresh}@example.invalid` } })
-    expect((await saveSearchSettings(fresh, { 'hints.perRun': 2 })).ok).toBe(true)
-    expect(await db.tradecraftUserSettings.findUnique({ where: { userId: fresh }, select: { search: true, v2Enabled: true } })).toEqual({ search: { 'hints.perRun': 2 }, v2Enabled: false })
+    expect((await saveSearchSettings(fresh, { 'search.results': 4 })).ok).toBe(true)
+    expect(await db.tradecraftUserSettings.findUnique({ where: { userId: fresh }, select: { search: true, v2Enabled: true } })).toEqual({ search: { 'search.results': 4 }, v2Enabled: false })
   })
 
   test('a priority is written on its resource, with no job and no change of the settings hash', async () => {

@@ -131,8 +131,7 @@
     { "key": "reading.charsPerRead", "section": "reading", "scope": "search", "level": "user", "type": "int", "default": 12000, "min": 2000, "max": 40000, "ceiling": 40000, "unit": "chars", "label": "Characters per read", "help": "The most text in one read; pages are always read section by section." },
     { "key": "prompt.resourceList", "section": "prompt", "scope": "search", "level": "user", "type": "enum", "default": "auto", "values": ["auto", "full", "one_line"], "label": "Resource list", "help": "Auto: full summaries up to 10 resources, then one line each." },
     { "key": "prompt.coverageMap", "section": "prompt", "scope": "search", "level": "user", "type": "bool", "default": true, "label": "Coverage map", "help": "The library's topic map, \"Not covered\" included." },
-    { "key": "hints.enabled", "section": "hints", "scope": "search", "level": "user", "type": "bool", "default": true, "label": "Hints", "help": "Short library suggestions at key moments." },
-    { "key": "hints.perRun", "section": "hints", "scope": "search", "level": "user", "type": "int", "default": 6, "min": 0, "max": 20, "ceiling": 20, "unit": "hints", "label": "Hints per run", "help": "Never more than this." }
+    { "key": "hints.enabled", "section": "hints", "scope": "search", "level": "user", "type": "bool", "default": true, "label": "Hints", "help": "Library now: the library's best pages for the agent's step in progress and its next step, at the end of its prompt, kept fresh as the steps change." }
   ],
   "constants": {
     "jobsPerAgent": 2,

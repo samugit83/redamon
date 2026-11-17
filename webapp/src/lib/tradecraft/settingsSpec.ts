@@ -73,6 +73,14 @@ export const SITE_TYPE_KEYS: Readonly<Record<string, string>> = spec.siteTypes
 
 const BY_KEY: ReadonlyMap<string, SettingDef> = new Map(SETTINGS.map(s => [s.key, s]))
 
+/**
+ * Keys that were settings and are not any more. An older page mid-deploy, a script or a stored
+ * row may still carry one: it is ignored, never refused, and a save drops it from the row.
+ * `hints.perRun` bounded the old library hints; Library now has no count (owner decision of
+ * 2026-11-17: the library serves any current goal through the whole run).
+ */
+export const REMOVED_KEYS: ReadonlySet<string> = new Set(['hints.perRun'])
+
 export function settingDef(key: string): SettingDef | undefined {
   return BY_KEY.get(key)
 }
@@ -153,6 +161,7 @@ export function validateUserSettings(scope: SettingScope, input: unknown): Valid
   const errors: SettingError[] = []
   const value: SettingsValues = {}
   for (const [key, raw] of Object.entries(input)) {
+    if (REMOVED_KEYS.has(key)) continue
     const def = BY_KEY.get(key)
     if (!def) { errors.push({ key, code: 'unknown_key', message: `${key} is not a setting` }); continue }
     if (def.scope !== scope) { errors.push({ key, code: 'wrong_scope', message: `${key} is not a ${scope} setting` }); continue }
@@ -176,6 +185,7 @@ export function validateOverrides(input: unknown): ValidationResult<ResourceOver
   const errors: SettingError[] = []
   const value: ResourceOverrides = {}
   for (const [key, raw] of Object.entries(input)) {
+    if (REMOVED_KEYS.has(key)) continue
     const def = BY_KEY.get(key)
     if (!def) { errors.push({ key, code: 'unknown_key', message: `${key} is not a setting` }); continue }
     if (def.level === 'user') { errors.push({ key, code: 'user_only', message: `${key} is a user-only setting` }); continue }

@@ -35,7 +35,6 @@ const USED_WHEN: Readonly<Record<string, [string, unknown, string]>> = {
   'librarian.maxPages': ['librarian.use', 'agent', 'Used only when Librarian use is "Agent decides".'],
   'librarian.timeLimitSec': ['librarian.use', 'agent', 'Used only when Librarian use is "Agent decides".'],
   'librarian.questionsPerRun': ['librarian.use', 'agent', 'Used only when Librarian use is "Agent decides".'],
-  'hints.perRun': ['hints.enabled', true, 'Used only when Hints is on.'],
 }
 
 const SECTION_KEYS: Readonly<Record<string, string[]>> = Object.fromEntries(SEARCH_SECTIONS.map(sec => [

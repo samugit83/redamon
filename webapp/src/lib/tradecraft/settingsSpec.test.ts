@@ -7,8 +7,8 @@
  */
 import { describe, expect, test } from 'vitest'
 import {
-  SECTIONS, SETTINGS, SETTINGS_CONSTANTS, SITE_TYPE_KEYS, settingDef, specDefaults, validateOverrides, validateUserSettings,
-  isValidValue, type SettingDef,
+  REMOVED_KEYS, SECTIONS, SETTINGS, SETTINGS_CONSTANTS, SITE_TYPE_KEYS, settingDef, specDefaults, validateOverrides,
+  validateUserSettings, isValidValue, type SettingDef,
 } from './settingsSpec'
 
 const NUMERIC = (s: SettingDef) => s.type === 'int' || s.type === 'number'
@@ -64,7 +64,7 @@ describe('settingsSpec: every entry well formed', () => {
       'knownTypes.maxTitleFetches', 'knownTypes.maxMapEntries.website', 'storage.defaultMode', 'storage.incremental',
       'summary.defaultModel', 'refreshing.onFailure', 'focus.tagEveryPage', 'focus.maxContentChecks', 'librarian.use',
       'search.results', 'search.useSession', 'search.strictness', 'reading.charsPerRead', 'prompt.resourceList',
-      'prompt.coverageMap', 'hints.enabled', 'hints.perRun',
+      'prompt.coverageMap', 'hints.enabled',
     ]
     for (const k of fixed) expect(settingDef(k), k).toBeDefined()
     expect(settingDef('crawl.strategy')!.values).toEqual(['llm', 'auto', 'rules'])
@@ -152,8 +152,18 @@ describe('validateUserSettings', () => {
   })
 
   test('the search scope accepts its own keys', () => {
-    expect(validateUserSettings('search', { 'search.results': 3, 'hints.perRun': 0, 'librarian.use': 'search_only' }).ok).toBe(true)
+    expect(validateUserSettings('search', { 'search.results': 3, 'hints.enabled': false, 'librarian.use': 'search_only' }).ok).toBe(true)
     expect(validateUserSettings('search', { 'crawl.maxPages': 10 }).ok).toBe(false)
+  })
+
+  test('Hints per run is gone (Library now, owner decision 2026-11-17): sent or stored, it is ignored, never an error', () => {
+    expect(settingDef('hints.perRun')).toBeUndefined()
+    expect(REMOVED_KEYS.has('hints.perRun')).toBe(true)
+    // An older client mid-deploy, or a script, may still send it.
+    expect(validateUserSettings('search', { 'search.results': 3, 'hints.perRun': 2 })).toEqual({ ok: true, value: { 'search.results': 3 } })
+    expect(validateOverrides({ 'hints.perRun': 2 })).toEqual({ ok: true, value: {} })
+    // A removed key is never a setting again: every key of the spec is a live one.
+    for (const key of REMOVED_KEYS) expect(settingDef(key), key).toBeUndefined()
   })
 
   test('refuses something that is not an object', () => {

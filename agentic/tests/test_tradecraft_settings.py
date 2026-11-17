@@ -24,7 +24,7 @@ NUMERIC = [s for s in SPEC["settings"] if s["type"] in ("int", "number")]
 
 
 def test_clamps_every_numeric():
-    assert len(NUMERIC) > 40
+    assert len(NUMERIC) >= 40
     for s in NUMERIC:
         key = s["key"]
         assert clamp({key: s["ceiling"] + 1})[key] == s["ceiling"], key
@@ -84,9 +84,12 @@ def test_effective_settings_values_are_copies():
 
 
 def test_search_scope():
-    eff = EffectiveSettings({"search.results": 50, "hints.perRun": -3, "crawl.maxPages": 10}, scope="search")
+    eff = EffectiveSettings({"search.results": 50, "librarian.questionsPerRun": -3, "crawl.maxPages": 10,
+                             "hints.perRun": 2}, scope="search")
     assert eff.int("search.results") == 20
-    assert eff.int("hints.perRun") == 0
+    assert eff.int("librarian.questionsPerRun") == 1
+    # Hints per run is gone (Library now, owner decision 2026-11-17): a stale value is dropped.
+    assert "hints.perRun" not in settings.keys("search") and "hints.perRun" not in eff.values
     assert eff.int("reading.charsPerRead") == 12000
     with pytest.raises(KeyError):
         eff.get("crawl.maxPages")
