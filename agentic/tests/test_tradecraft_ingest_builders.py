@@ -542,3 +542,26 @@ def test_an_alias_of_the_start_page_is_the_start_page(tmp_path):
         with net.use_fetcher(fetcher):
             new = run(builders.build_docs(CORP_DOCS, s()))
         assert new.entries == [] and new.crawl_fallback, alias
+
+
+def test_two_letter_sections_are_not_languages(tmp_path):
+    """A wiki at /ad/ whose index has one child per section (/ad/, /ai/, /web/, /cloud/): two
+    two-letter folders, but no language code, so every section is read, in the listed order."""
+    host, maps = "sections.tc-fixture.test", "sections-maps.tc-fixture.test"
+    sections = ("ad", "ai", "web", "cloud")
+    children = [f"https://{maps}/{sec}/sitemap.xml" for sec in sections]
+    index = '<?xml version="1.0"?><sitemapindex>' + "".join(f"<sitemap><loc>{c}</loc></sitemap>" for c in children) + "</sitemapindex>"
+    files = {maps: {"sitemap.xml": index, **{f"{sec}/sitemap.xml": _urlset([f"https://{host}/{sec}/note-{i}/" for i in range(3)])
+                                             for sec in sections}},
+             host: {"robots.txt": f"Sitemap: https://{maps}/sitemap.xml\n", "ad/index.html": "<html></html>"}}
+    for h, hf in files.items():
+        fetcher = _site(tmp_path, h, hf)
+    with net.use_fetcher(fetcher):
+        wiki = run(builders.build_wiki(f"https://{host}/ad/", s()))
+    assert [u for u, _ in fetcher.requests if u in children] == children
+    assert sorted({e.url.split("/")[3] for e in wiki.entries}) == sorted(sections)
+    assert builders.language_children(children, ["ad", "en"]) == (children, [])
+    assert builders.preferred_languages(f"https://{host}/ad/", s()) == ["en"]
+    # Mostly language codes: a per-language index, even with a section among them.
+    mixed = [f"https://{maps}/{c}/sitemap.xml" for c in ("de", "en", "fr", "blog")]
+    assert builders.language_children(mixed, ["en"]) == (mixed[1:2] + mixed[3:], [mixed[0], mixed[2]])

@@ -166,39 +166,53 @@ def preferred_languages(start_url: str, settings: EffectiveSettings) -> list[str
         return [settings.str("knownTypes.preferredLanguage").strip().lower() or "en"]
     m = _LANG_RE.match(urllib.parse.urlsplit(start_url).path or "/")
     folder = m.group(1).lower() if m else ""
-    return [folder, "en"] if folder and folder != "en" else ["en"]
+    return [folder, "en"] if _is_language(folder) and folder != "en" else ["en"]
 
 
+# ISO 639-1. A two-letter folder is a language only when it is one of these: sites name sections
+# that way too (/ad/, /ai/, /go/).
+_LANGUAGE_CODES = frozenset("""
+    aa ab ae af ak am an ar as av ay az ba be bg bh bi bm bn bo br bs ca ce ch co cr cs cu cv cy da de dv dz
+    ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik
+    io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk ml
+    mn mr ms mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm rn ro ru rw sa sc sd
+    se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk ur uz ve vi
+    vo wa wo xh yi yo za zh zu""".split())
 _LANG_CODE_RE = re.compile(r"[a-z]{2}(?:-[a-z]{2})?")
+
+
+def _is_language(code: str) -> bool:
+    return code.split("-")[0] in _LANGUAGE_CODES
 
 
 def _child_language(loc: str) -> str:
     """The language a child sitemap of an index is for: a folder named by a language code
-    (``/af/sitemap.xml``), else a two-letter part of its file name (``sitemap-af.xml``)."""
+    (``/af/sitemap.xml``), else a language code in its file name (``sitemap-af.xml``); "" when
+    neither names one."""
     try:
         path = (urllib.parse.urlsplit(loc).path or "/").lower()
     except ValueError:
         return ""
     *folders, name = path.split("/")
     for seg in folders:
-        if _LANG_CODE_RE.fullmatch(seg):
+        if _LANG_CODE_RE.fullmatch(seg) and _is_language(seg):
             return seg
-    return next((t for t in re.split(r"[-_.]", name) if len(t) == 2 and t.isascii() and t.isalpha() and t != "gz"), "")
+    return next((t for t in re.split(r"[-_.]", name) if t in _LANGUAGE_CODES), "")
 
 
 def language_children(locs: list[str], languages: list[str]) -> tuple[list[str], list[str]]:
     """(the children of a sitemap index to read first, the ones read only when those list
-    nothing). An index of per-language copies (two languages or more, over 40% of its children
-    tagged, as ``prefer_english`` judges URLs) is read in the first of ``languages`` it has,
-    with its untagged children; any other index, or one with none of them, in its own order. A
-    translated wiki lists its languages alphabetically, and the byte budget ran out on the first
-    ones before the language the filter keeps."""
+    nothing). An index of per-language copies (two languages or more, and most of its children
+    named by a language code) is read in the first of ``languages`` it has, with its children
+    named by none; any other index, or one with none of them, in its own order. A translated
+    wiki lists its languages alphabetically, and the byte budget ran out on the first ones before
+    the language the filter keeps."""
     if not languages:
         return locs, []
     tags = [_child_language(loc).split("-")[0] for loc in locs]
     tagged = [t for t in tags if t]
     want = next((lang.split("-")[0] for lang in languages if lang.split("-")[0] in tagged), "")
-    if len(set(tagged)) < 2 or len(tagged) <= 0.4 * len(locs) or not want:
+    if len(set(tagged)) < 2 or len(tagged) <= 0.5 * len(locs) or not want:
         return locs, []
     return ([loc for loc, t in zip(locs, tags) if t in ("", want)],
             [loc for loc, t in zip(locs, tags) if t not in ("", want)])
