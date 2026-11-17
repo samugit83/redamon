@@ -44,13 +44,14 @@ const entry = (page: Page, path: string) => mapView(page).locator(`[data-entry="
 
 async function openMap(page: Page, resourceName = 'TC Map Library') {
   await page.goto('/settings?tab=tradecraft')
-  await page.getByRole('button', { name: `Map of ${resourceName}` }).click({ timeout: 30_000 })
+  await page.getByRole('button', { name: `Map of ${resourceName}`, exact: true }).click({ timeout: 30_000 })
   await expect(mapView(page).getByTestId('tc-map-count')).toBeVisible()
 }
 
 async function search(page: Page, text: string) {
-  await mapView(page).getByRole('textbox', { name: 'Search the map' }).fill(text)
-  await mapView(page).getByRole('button', { name: 'Search' }).click()
+  await mapView(page).getByRole('textbox', { name: 'Search the map', exact: true }).fill(text)
+  // Exact: "Block all matching the search" holds the word too once a search is set.
+  await mapView(page).getByRole('button', { name: 'Search', exact: true }).click()
 }
 
 test('search and the count; a stored page viewed as plain text', async ({ page }) => {
@@ -59,7 +60,7 @@ test('search and the count; a stored page viewed as plain text', async ({ page }
   await expect(entry(page, 'sqli/')).toContainText('Union and blind payloads.')
   await search(page, 'scripting')
   await expect(mapView(page).getByTestId('tc-map-count')).toHaveText(/^1 page match/)
-  await entry(page, 'xss/').getByRole('button', { name: 'View' }).click()
+  await entry(page, 'xss/').getByRole('button', { name: 'View', exact: true }).click()
   const pre = mapView(page).getByTestId('tc-page-text')
   await expect(pre).toContainText('<script>alert(document.domain)</script> is shown here as text, never run.')
   // Text, never markup: the page's HTML is not an element of the view.
@@ -72,10 +73,10 @@ test('Block all matching the search: the confirmation shows the count; the Block
   await openMap(page)
   await search(page, '/tag/')
   await expect(mapView(page).getByTestId('tc-map-count')).toHaveText(/^2 pages match/)
-  await mapView(page).getByRole('button', { name: 'Block all matching the search' }).click()
-  const confirm = mapView(page).getByRole('alertdialog', { name: 'Confirm the block' })
+  await mapView(page).getByRole('button', { name: 'Block all matching the search', exact: true }).click()
+  const confirm = mapView(page).getByRole('alertdialog', { name: 'Confirm the block', exact: true })
   await expect(confirm).toContainText('Block 2 pages matching "/tag/"?')
-  await confirm.getByRole('button', { name: 'Block' }).click()
+  await confirm.getByRole('button', { name: 'Block', exact: true }).click()
   await expect(mapView(page).getByRole('status')).toHaveText('Blocked 2 pages')
   await expect(mapView(page).getByTestId('tc-map-count')).toHaveText(/^0 pages match/)
   // The stored text went at once (§6.10): the page view says it is blocked.
@@ -85,9 +86,9 @@ test('Block all matching the search: the confirmation shows the count; the Block
   expect(view).toMatchObject({ blocked: true, stored: false, text: '' })
 
   await search(page, '')
-  await mapView(page).getByRole('button', { name: 'Blocked' }).click()
+  await mapView(page).getByRole('button', { name: 'Blocked', exact: true }).click()
   await expect(mapView(page).getByTestId('tc-map-count')).toHaveText(/^2 pages( ·|$)/)
-  await entry(page, 'tag/news').getByRole('button', { name: 'Unblock' }).click()
+  await entry(page, 'tag/news').getByRole('button', { name: 'Unblock', exact: true }).click()
   await expect(mapView(page).getByRole('status')).toHaveText('Unblocked 1 page: back in the map at the next refresh')
   await expect(mapView(page).getByTestId('tc-map-count')).toHaveText(/^1 page( ·|$)/)
   await expect.poll(async () => (await (await page.request.get(`${MAP()}?status=blocked`)).json()).total).toBe(1)
@@ -95,11 +96,11 @@ test('Block all matching the search: the confirmation shows the count; the Block
 
 test('restore a dropped page: listed with its reason; restored, it is kept and pinned (AC-14)', async ({ page }) => {
   await openMap(page)
-  await mapView(page).getByRole('button', { name: 'Dropped' }).click()
+  await mapView(page).getByRole('button', { name: 'Dropped', exact: true }).click()
   await expect(entry(page, 'theory/')).toContainText('dropped: theory without payloads')
-  await entry(page, 'theory/').getByRole('button', { name: 'Restore' }).click()
+  await entry(page, 'theory/').getByRole('button', { name: 'Restore', exact: true }).click()
   await expect(mapView(page).getByRole('status')).toHaveText('Restored and pinned: Injection theory')
-  await mapView(page).getByRole('button', { name: 'In the map' }).click()
+  await mapView(page).getByRole('button', { name: 'In the map', exact: true }).click()
   await expect(entry(page, 'theory/')).toContainText('pinned')
   const kept = await (await page.request.get(`${MAP()}?query=theory`)).json()
   expect(kept.entries[0]).toMatchObject({ status: 'kept', pinned: true })
@@ -109,26 +110,26 @@ test('the project accordion\'s Pages: the Map view read-only', async ({ page }) 
   await page.goto(`/projects/${seed.TC_MAP_PROJECT_ID}/settings`)
   await page.getByRole('button', { name: 'Agent Skills & Tradecraft' }).click({ timeout: 30_000 })
   const accordion = page.getByTestId('tradecraft-accordion')
-  await accordion.getByRole('button', { name: 'Details of TC Map Library' }).click()
-  await accordion.getByRole('button', { name: 'Pages' }).click()
+  await accordion.getByRole('button', { name: 'Details of TC Map Library', exact: true }).click()
+  await accordion.getByRole('button', { name: 'Pages', exact: true }).click()
   await expect(mapView(page).getByText(/^Read-only:/)).toBeVisible()
   await expect(entry(page, 'sqli/')).toBeVisible()
   for (const name of [/^Block/, /^Pin$/, /^Rename$/, /^Restore$/, /^Unblock/, /^Dropped$/, /^Blocked$/]) {
     await expect(mapView(page).getByRole('button', { name })).toHaveCount(0)
   }
-  await entry(page, 'sqli/').getByRole('button', { name: 'View' }).click()
+  await entry(page, 'sqli/').getByRole('button', { name: 'View', exact: true }).click()
   await expect(mapView(page).getByTestId('tc-page-text')).toContainText("' UNION SELECT username, password FROM users --")
 })
 
 test('the resource with a login: its card, map, page and form show the login as "set" only', async ({ page }) => {
   await openMap(page, 'TC Map KB')
-  await mapView(page).locator('[data-entry="https://kb.tc-e2e.test/runbook"]').getByRole('button', { name: 'View' }).click()
+  await mapView(page).locator('[data-entry="https://kb.tc-e2e.test/runbook"]').getByRole('button', { name: 'View', exact: true }).click()
   await expect(mapView(page).getByTestId('tc-page-text')).toBeVisible()
   await page.keyboard.press('Escape')
-  await page.getByRole('button', { name: 'Edit TC Map KB' }).click()
+  await page.getByRole('button', { name: 'Edit TC Map KB', exact: true }).click()
   await page.getByRole('button', { name: /^Access/ }).click()
-  await expect(page.getByLabel('Cookies')).toHaveAttribute('placeholder', 'set: type a new value to replace it')
-  await expect(page.getByLabel('Cookies')).toHaveValue('')
+  await expect(page.getByLabel('Cookies', { exact: true })).toHaveAttribute('placeholder', 'set: type a new value to replace it')
+  await expect(page.getByLabel('Cookies', { exact: true })).toHaveValue('')
   const list = await page.request.get(`/api/users/${seed.TC_MAP_USER_ID}/tradecraft-resources`)
   expect(await list.text()).not.toContain(FAKE_SECRET)
 })
