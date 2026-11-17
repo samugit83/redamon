@@ -244,6 +244,22 @@ def _entry_of(saved: Mapping[str, Any]) -> dict:
             "standing": standing, "displayed": shown, "limited": saved.get("limited") is True}
 
 
+def _in_catalog(entry: dict, catalog: Any) -> dict:
+    """The entry with only the rows of resources the run's catalog holds now. A resume binds the
+    catalog again for the person resuming: a resource turned off since, or a login that person may
+    not use (``catalog.ts``), is no longer in it, and its pages are never shown again."""
+    from tradecraft.library import page_ids
+
+    slugs = {r.slug for r in catalog.resources}
+
+    def held(page: str) -> bool:
+        parsed = page_ids.parse(page)
+        return parsed is not None and parsed[0] in slugs
+
+    return {**entry, "standing": [r for r in entry["standing"] if held(r["page"])],
+            "displayed": [p for p in entry["displayed"] if held(p)]}
+
+
 async def _refresh(entry: dict, collector: run_state.RunCollector, catalog: Any, settings: EffectiveSettings,
                    focus: profile.Focus, reasons: Sequence[str]) -> dict:
     """A new search for a changed focus. The block it replaces is gone whatever happens: it was
@@ -289,7 +305,7 @@ async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[
             previous = profile.Focus.from_log(saved.get("focus"))
             current = profile.build(state, previous)
             reasons = profile.changes(previous, current)
-            entry = _entry_of(saved)
+            entry = _in_catalog(_entry_of(saved), catalog)
             if reasons:
                 entry = await _refresh(entry, collector, catalog, settings, current, reasons)
             read = set(collector.drain()["tradecraft_seen_pages"])

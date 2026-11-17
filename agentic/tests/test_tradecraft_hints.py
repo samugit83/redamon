@@ -268,6 +268,53 @@ def test_only_the_run_owners_resources_of_the_catalog():
     assert all(p["uid"] == OWNER and p["rids"] == ["r1"] for _n, p in index.calls)
 
 
+HTK = {"id": "r2", "slug": "htk", "name": "HackTricks", "url": "https://htk.tc-fixture.test/", "type": "mkdocs-wiki",
+       "storage_mode": "live", "summary": "Pentest notes.", "map_version": 3}
+LOGIN = {"id": "r3", "slug": "kb", "name": "Team KB", "url": "https://kb.tc-fixture.test/", "type": "agentic-crawl",
+         "storage_mode": "stored", "summary": "The team's notes, behind a login.", "map_version": 3}
+PATT = catalog()["resources"][0]
+
+
+def two_libraries(other):
+    """Pages of ``other`` and of patt, alternating in rank (``other`` first), all fitting the goal."""
+    rows = []
+    for n in range(1, 7):
+        rows += [row(50 + n, resource_id=other["id"], rank=1.0 / (2 * n - 1)), row(n, rank=1.0 / (2 * n))]
+    return Index({"entries_text": rows})
+
+
+def resumed(first_cat, then_cat, other):
+    index = two_libraries(other)
+    note, updates = now(state(), cat=first_cat, index=index)
+    calls = len(index.calls)
+    # The same goal and facts: a resume shows the block again with no search, under the catalog
+    # the resume bound (the webapp builds it again for the person resuming).
+    again, _ = now({**state(), **updates}, cat=then_cat, index=index)
+    assert len(index.calls) == calls
+    return note, again
+
+
+def test_a_resume_after_a_resource_was_turned_off_shows_none_of_its_pages():
+    note, again = resumed(catalog(resources=[PATT, HTK]), catalog(resources=[PATT]), HTK)
+    assert {p.split(":")[0] for p in pages_of(note)} == {"patt", "htk"}
+    assert pages_of(again) and all(p.startswith("patt:") for p in pages_of(again))
+    assert "HackTricks" not in again
+    # With only the turned-off resource's pages standing, nothing is shown.
+    only_htk = Index({"entries_text": [row(50 + n, resource_id="r2") for n in range(1, 4)]})
+    _, updates = now(state(), cat=catalog(resources=[PATT, HTK]), index=only_htk)
+    assert now({**state(), **updates}, cat=catalog(resources=[PATT]), index=only_htk)[0] is None
+
+
+def test_a_resume_under_act_as_without_the_login_resource_shows_none_of_its_pages():
+    """The owner's run holds its login resource; an administrator acting as the owner resumes it,
+    and the webapp's catalog for that resume leaves the login out (``catalog.ts``)."""
+    owners = catalog(resources=[PATT, LOGIN])
+    acting = {**catalog(resources=[PATT]), "person_id": OWNER, "actor_id": "admin-9"}
+    note, again = resumed(owners, acting, LOGIN)
+    assert any(p.startswith("kb:") for p in pages_of(note))
+    assert pages_of(again) and not any(p.startswith("kb:") for p in pages_of(again)) and "Team KB" not in again
+
+
 # --------------------------------------------------------------------------------------
 # Limits (R-365, AC-73)
 # --------------------------------------------------------------------------------------
