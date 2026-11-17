@@ -156,10 +156,11 @@ describe('ConfigureSearchDialog', () => {
     expect(puts()).toEqual([])
   })
 
-  test('states: 2.0 off, a failure with Retry', async () => {
+  test('states: an answer without the section (an older webapp mid-deploy), a failure with Retry', async () => {
     getBody = { v2Enabled: false }
     renderDialog()
-    expect(await screen.findByRole('alert')).toHaveTextContent('Tradecraft 2.0 is off for this account')
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't")
+    expect(screen.queryByText(/turn it on/)).toBeNull()
     cleanup()
     getBody = { error: 'x', code: 'P1001' }
     const real = fetchMock.getMockImplementation()!

@@ -11,8 +11,9 @@
 
 Every read is keyed by the catalog's owner and the resource's id, and reads the resource's
 live generation at this call, so a refresh that swaps during a run is seen at the next call.
-The catalog, its token and its logins come only from ``runtime.bound_catalog()``; outside a
-run's task nothing is bound and nothing is requested. Reading never writes (R-306).
+The catalog, its token and its logins come only from ``runtime.bound_catalog()``, and the account's
+GitHub token (used when the resource has none, R-156) only from the run's own settings
+(``runtime.run_github_token``); outside a run's task nothing is bound and nothing is requested. Reading never writes (R-306).
 
 Reading by page and section (Q8, T2.5): ``page`` (an ID from search, a hint or the librarian)
 names the page, ``section`` one of its headings and ``part`` a part of a long section. A read
@@ -119,7 +120,9 @@ class _Read:
         self.catalog, self.resource, self.row, self.store = catalog, resource, row, store
         self.owner = catalog.owner_id
         self.settings = EffectiveSettings(resource.read_settings or {})
-        self.token = resource.github_token
+        # R-156, as 1.x: the resource's own token, else the run's account token (the catalog
+        # carries only the resource's; the account's is read from the run's own settings).
+        self.token = resource.github_token or runtime.run_github_token() or None
         self.sitemap = row.get("sitemap") or {}
         self.mode = row.get("storage_mode") or resource.storage_mode
         self.slug = resource.slug

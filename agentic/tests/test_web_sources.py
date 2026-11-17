@@ -21,6 +21,41 @@ class SharedObjects(unittest.TestCase):
             self.assertIs(getattr(module, name), getattr(ws, name), f"{module.__name__}.{name}")
 
 
+class SplitGithubUrl(unittest.TestCase):
+    """Owner/repo parsing (issue #153), moved from the 1.x lookup tests when they left (T9.2): the
+    function is still the title match's and the GitHub builder's."""
+
+    def test_plain_repo_and_suffix(self):
+        self.assertEqual(ws.split_github_url("https://github.com/pallets/flask"), ("pallets", "flask"))
+        self.assertEqual(ws.split_github_url("https://github.com/redamon/redamon.git"), ("redamon", "redamon"))
+
+    def test_names_ending_in_stripped_letters_are_kept(self):
+        for url, want in [("https://github.com/streamlit/streamlit", ("streamlit", "streamlit")),
+                          ("https://github.com/projectdiscovery/nuclei", ("projectdiscovery", "nuclei")),
+                          ("https://github.com/spring-projects/spring", ("spring-projects", "spring"))]:
+            self.assertEqual(ws.split_github_url(url), want, url)
+
+    def test_a_repo_of_stripped_letters_only_is_not_emptied(self):
+        self.assertEqual(ws.split_github_url("https://github.com/git/git"), ("git", "git"))
+
+    def test_only_one_dot_git_suffix_is_stripped(self):
+        self.assertEqual(ws.split_github_url("https://github.com/owner/digit.git"), ("owner", "digit"))
+
+    def test_trailing_slash_and_subpath(self):
+        self.assertEqual(ws.split_github_url("https://github.com/owner/routing/tree/main"), ("owner", "routing"))
+        self.assertEqual(ws.split_github_url("https://github.com/owner/routing/"), ("owner", "routing"))
+
+    def test_http_scheme_accepted(self):
+        self.assertEqual(ws.split_github_url("http://github.com/owner/digit"), ("owner", "digit"))
+
+    def test_non_github_url_returns_none(self):
+        self.assertIsNone(ws.split_github_url("https://gitlab.com/owner/repo"))
+        self.assertIsNone(ws.split_github_url("https://example.com/owner/repo"))
+
+    def test_owner_never_truncated(self):
+        self.assertEqual(ws.split_github_url("https://github.com/digit/flask"), ("digit", "flask"))
+
+
 class GithubUrls(unittest.TestCase):
     def test_split_github_url_keeps_names_ending_in_git_letters(self):
         self.assertEqual(ws.split_github_url("https://github.com/o/streamlit"), ("o", "streamlit"))

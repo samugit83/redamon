@@ -4,18 +4,26 @@ The base is the page's URL (its FINAL URL, after redirects), or its `<base href>
 Joining against `page_url + "/"` put a sibling of `/a/page.html` under
 `/a/page.html/`, so the crawl fetched pages that do not exist. Since the cut-over (T9.2)
 these checks run on the 2.0 crawl's extractor (``tradecraft.ingest.crawl.page_meta``, the
-port of 1.x's ``_extract_links_and_meta``); the 1.x crawl loop's checks (it resolved against
-the final URL, the same-host filter, the nav harvests) are 2.0's own:
-test_tradecraft_ingest_crawl.py and test_tradecraft_ingest_builders.py.
+port of 1.x's ``_extract_links_and_meta``); the crawl loop and the menu harvests are held to the
+page's final URL below, with a page that redirects (review finding 4).
 
 Hosts are RFC 2606 `.test` names; nothing here touches the network.
 """
 from __future__ import annotations
 
+import asyncio
+import sys
 import unittest
+from pathlib import Path
 
-from orchestrator_helpers.web_sources import resolve_link
-from tradecraft.ingest.crawl import page_meta
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from orchestrator_helpers.web_sources import resolve_link  # noqa: E402
+from tradecraft import net  # noqa: E402
+from tradecraft.ingest import builders  # noqa: E402
+from tradecraft.ingest.crawl import CrawlFetch, crawl, page_meta  # noqa: E402
+from tradecraft.settings import EffectiveSettings  # noqa: E402
+from tradecraft_doubles import FixtureFetcher  # noqa: E402
 
 DOCS = "https://docs.example.test"
 
@@ -56,6 +64,53 @@ class ResolveLikeABrowser(unittest.TestCase):
 
     def test_fragment_is_dropped(self):
         self.assertEqual(resolve_link(f"{DOCS}/a/b.html", "c.html#top"), f"{DOCS}/a/c.html")
+
+
+class CrawlLoopUsesFinalUrl(unittest.TestCase):
+    """The crawl resolves a page's links against the URL it was redirected to (``crawl.py``)."""
+
+    def setUp(self):
+        self.requested = []
+
+    async def _fetch(self, url):
+        self.requested.append(url)
+        if url == f"{DOCS}/start":
+            # /start redirects to /guide/index.html: "other.html" is /guide/other.html.
+            return CrawlFetch(_page(["other.html", "/abs.html"]), f"{DOCS}/guide/index.html")
+        if url in (f"{DOCS}/guide/other.html", f"{DOCS}/abs.html"):
+            return CrawlFetch(_page([]), url)
+        return CrawlFetch("", url, 0, "http_error")
+
+    def test_crawl_resolves_against_final_url_after_redirect(self):
+        settings = EffectiveSettings({"crawl.strategy": "rules", "fetching.browserEnabled": False})
+        result = asyncio.run(crawl(f"{DOCS}/start", settings, fetch_page=self._fetch, allow_browser=False))
+        self.assertIn(f"{DOCS}/guide/other.html", self.requested)
+        self.assertIn(f"{DOCS}/abs.html", self.requested)
+        self.assertNotIn(f"{DOCS}/start/other.html", self.requested)
+        self.assertNotIn(f"{DOCS}/other.html", self.requested)
+        self.assertIn(f"{DOCS}/guide/other.html", {e.url for e in result.entries})
+
+
+class NavHarvestUsesFetchedPage(unittest.TestCase):
+    """A wiki's or a GitBook's menu resolves against the start page's final URL (``builders.py``):
+    the site has no sitemap and no mkdocs.yml, so the menu is the map."""
+
+    HOST = "https://other.tc-fixture.test"
+    MENU = ('<html><body><nav><a href="install/">Install</a><a href="../usage/">Usage</a></nav>'
+            '<main><p>start</p></main></body></html>')
+
+    def _build(self, build):
+        with net.use_fetcher(FixtureFetcher()):
+            return asyncio.run(build(f"{self.HOST}/", EffectiveSettings({}), home_html=self.MENU,
+                                     home_final_url=f"{self.HOST}/en/latest/"))
+
+    def test_mkdocs_nav_harvest_resolves_against_fetched_page(self):
+        result = self._build(builders.build_wiki)
+        self.assertEqual([e.url for e in result.entries], [f"{self.HOST}/en/latest/install/", f"{self.HOST}/en/usage/"])
+
+    def test_gitbook_nav_harvest_resolves_against_fetched_page(self):
+        result = self._build(builders.build_gitbook)
+        self.assertEqual([e.url for e in result.entries], [f"{self.HOST}/en/latest/install/", f"{self.HOST}/en/usage/"])
 
 
 if __name__ == "__main__":

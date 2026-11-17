@@ -85,6 +85,17 @@ def bound_catalog() -> Optional[V2Catalog]:
     return _catalog.get()
 
 
+def run_github_token() -> str:
+    """The GitHub token of the account whose run this is (its project's owner: the run's
+    ``USER_SETTINGS``), read from the settings bound to the run's task only, as 1.x read it
+    (``tools.run_user_settings``, RBAC T17): never another run's, never the module-global
+    snapshot of whichever project loaded last. "" outside a run or when the account has none."""
+    import project_settings as _ps
+
+    user_settings = (_ps._settings_ctx.get() or {}).get("USER_SETTINGS") or {}
+    return str(user_settings.get("githubAccessToken") or "")
+
+
 def v2_active() -> bool:
     return _catalog.get() is not None
 

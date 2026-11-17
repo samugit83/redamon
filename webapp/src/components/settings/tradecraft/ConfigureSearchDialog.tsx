@@ -61,7 +61,7 @@ export function parseSynonymLines(text: string): { pairs: SynonymPair[]; error: 
 
 const synonymLines = (pairs: SynonymPair[]) => pairs.map(p => `${p.term} = ${p.expansion}`).join('\n')
 
-type Status = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; text: string } | { kind: 'denied'; text: string } | { kind: 'off' }
+type Status = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; text: string } | { kind: 'denied'; text: string }
 type Priority = 'high' | 'normal' | 'low'
 interface DialogDraft { values: Draft; synonyms: string; priorities: Record<string, Priority> }
 
@@ -109,11 +109,11 @@ export function ConfigureSearchDialog({ userId, onClose, onSaved, onDirtyChange 
     setStatus({ kind: 'loading' })
     try {
       const [res, list] = await Promise.all([tradecraftClient.getSettings(userId), tradecraftClient.list(userId)])
-      if (!res.v2Enabled || !res.search) return setStatus({ kind: 'off' })
+      // An answer without the section (an older webapp mid-deploy) is a failure, with Retry.
+      if (!res.search) return setStatus({ kind: 'error', text: LOAD_FAILED })
       adopt(res.search, list)
       setStatus({ kind: 'ready' })
     } catch (e) {
-      if (e instanceof ApiError && e.code === 'tradecraft_v2_off') return setStatus({ kind: 'off' })
       const denied = e instanceof ApiError && (e.status === 401 || e.status === 403)
       setStatus({ kind: denied ? 'denied' : 'error', text: failureText(LOAD_FAILED, e) })
     }
@@ -218,7 +218,6 @@ export function ConfigureSearchDialog({ userId, onClose, onSaved, onDirtyChange 
       )}
     >
       {status.kind === 'loading' && <div className={tc.state}>Loading your settings…</div>}
-      {status.kind === 'off' && <div className={tc.state} role="alert">Tradecraft 2.0 is off for this account: turn it on to configure search.</div>}
       {status.kind === 'denied' && <div className={tc.state} role="alert">You cannot change these settings: {status.text}.</div>}
       {status.kind === 'error' && (
         <div className={tc.state} role="alert">

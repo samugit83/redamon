@@ -35,10 +35,11 @@ describe('MapView states', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/You cannot see this map: .*account_content_only · HTTP 403/)
   })
 
-  test('2.0 off for the account', async () => {
+  test('an older webapp\'s switch 404 mid-deploy is a failure, never "the Map view needs it" (T9.3)', async () => {
     fetchMock.mockResolvedValueOnce(answer(404, { error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' }))
     draw()
-    expect(await screen.findByRole('alert')).toHaveTextContent('Tradecraft 2.0 is off for this account')
+    expect(await screen.findByRole('alert')).toHaveTextContent(/tradecraft_v2_off · HTTP 404/)
+    expect(screen.queryByText(/needs it/)).toBeNull()
   })
 
   test('no match for a search; no blocked or dropped page', async () => {

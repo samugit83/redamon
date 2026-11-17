@@ -371,11 +371,12 @@ class NoSharedKeyPath(unittest.TestCase):
 
 
 class GitHubTokenPerRun(unittest.TestCase):
-    """Since the cut-over (T9.2) the token is the one each run's own catalog carries (the webapp
-    puts the resource's own token there before the account's: ``catalog.test.ts``): two runs at
-    once each read with theirs, and a run with none sends none."""
+    """R-156, as 1.x: a tradecraft read sends the resource's own token, else the GitHub token of the
+    account whose run it is, read at call time from the settings bound to that run's task (the
+    catalog carries only the resource's own token). Three runs at once each send their own account's
+    token, a run whose account has none sends none, and a resource's own token wins."""
 
-    def test_github_token_per_run(self):
+    def _reads(self, runs):
         from tradecraft import runtime
         from tradecraft.library import cve, reader
         from tradecraft_memory_store import MemoryStore
@@ -387,29 +388,42 @@ class GitHubTokenPerRun(unittest.TestCase):
             tokens.append(github_token or "")
             return "poc body", "https://github.com/x/pocs/blob/main/poc.py", None
 
-        def catalog(owner, token):
+        def catalog(owner, own_token):
             store.add_resource(owner, f"r-{owner}", url="https://github.com/x/pocs", slug="pocs",
                                resource_type="cve-poc-db", map_version=2)
             return {"v2": True, "owner_id": owner, "person_id": owner, "actor_id": None, "search": {},
                     "resources": [{"id": f"r-{owner}", "slug": "pocs", "name": "PoCs", "url": "https://github.com/x/pocs",
                                    "type": "cve-poc-db", "storage_mode": "live", "map_version": 2,
-                                   "github_token": token}]}
+                                   "github_token": own_token}]}
 
-        async def run(owner, token, barrier):
-            runtime.bind_run_catalog(catalog(owner, token))
+        async def run(owner, account_token, own_token, barrier):
+            ps._settings_ctx.set({**ps.DEFAULT_AGENT_SETTINGS,
+                                  "USER_SETTINGS": {"githubAccessToken": account_token} if account_token else {}})
+            runtime.bind_run_catalog(catalog(owner, own_token))
             with runtime.use_store(store):
                 await barrier.wait()
                 return await reader.lookup(resource_id="pocs", cve_id="CVE-2024-0001")
 
         async def main():
-            barrier = asyncio.Barrier(3)
-            return await asyncio.gather(*(asyncio.create_task(run(o, t, barrier), context=contextvars.Context())
-                                          for o, t in (("A", "ghp-A"), ("B", "ghp-B"), ("C", None))))
+            barrier = asyncio.Barrier(len(runs))
+            return await asyncio.gather(*(asyncio.create_task(run(*r, barrier), context=contextvars.Context())
+                                          for r in runs))
 
         with mock.patch.object(cve, "lookup", fake_lookup):
             answers = asyncio.run(main())
         self.assertTrue(all("poc body" in a for a in answers))
+        return tokens
+
+    def test_github_token_per_run(self):
+        tokens = self._reads([("A", "ghp-A", None), ("B", "ghp-B", None), ("C", "", None)])
         self.assertEqual(sorted(tokens), ["", "ghp-A", "ghp-B"])
+
+    def test_a_resources_own_token_still_wins(self):
+        self.assertEqual(self._reads([("A", "ghp-A", "ghp-resource")]), ["ghp-resource"])
+
+    def test_no_run_no_account_token(self):
+        from tradecraft import runtime
+        self.assertEqual(contextvars.Context().run(runtime.run_github_token), "")
 
 
 class _Tag:

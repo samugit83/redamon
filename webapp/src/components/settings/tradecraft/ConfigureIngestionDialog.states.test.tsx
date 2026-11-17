@@ -47,13 +47,14 @@ describe('ConfigureIngestionDialog states', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
-  test('off: 2.0 turned off meanwhile (the switch read false, or the section answered 404)', async () => {
+  test('an older webapp mid-deploy (no section, or its switch 404) is a failure with Retry, never "turn it on" (T9.3)', async () => {
     fetchMock.mockResolvedValueOnce(answer(200, { v2Enabled: false }))
     renderDialog()
-    expect(await screen.findByText(/Tradecraft 2.0 is off for this account/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument()
     cleanup()
     fetchMock.mockResolvedValueOnce(answer(404, { error: 'Tradecraft 2.0 is off for this account', code: 'tradecraft_v2_off' }))
     renderDialog()
-    expect(await screen.findByText(/turn it on to configure ingestion/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByText(/turn it on/)).toBeNull()
   })
 })

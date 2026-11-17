@@ -28,7 +28,6 @@ type Load =
   | { kind: 'ready' }
   | { kind: 'error'; text: string }
   | { kind: 'denied'; text: string }
-  | { kind: 'off' }
 
 type Viewing = {
   entry: MapEntryView
@@ -107,7 +106,6 @@ export function MapView({ userId, resource, readOnly = false, onClose }: {
       })
       .catch(e => {
         if (!live) return
-        if (e instanceof ApiError && e.code === 'tradecraft_v2_off') return setLoad({ kind: 'off' })
         const denied = e instanceof ApiError && (e.status === 401 || e.status === 403)
         setLoad({ kind: denied ? 'denied' : 'error', text: failureText(LOAD_FAILED, e) })
       })
@@ -317,7 +315,6 @@ export function MapView({ userId, resource, readOnly = false, onClose }: {
           {actionError && <div className={css.error} role="alert">{actionError}</div>}
 
           {load.kind === 'loading' && <div className={tc.state}>Loading the map…</div>}
-          {load.kind === 'off' && <div className={tc.state} role="alert">Tradecraft 2.0 is off for this account: the Map view needs it.</div>}
           {load.kind === 'denied' && <div className={tc.state} role="alert">You cannot see this map: {load.text}.</div>}
           {load.kind === 'error' && (
             <div className={tc.state} role="alert">

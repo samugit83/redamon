@@ -38,7 +38,6 @@ type Status =
   | { kind: 'ready' }
   | { kind: 'error'; text: string }
   | { kind: 'denied'; text: string }
-  | { kind: 'off' }
 
 /** The account-level settings of each section, in spec order. */
 const SECTION_KEYS: Readonly<Record<string, string[]>> = Object.fromEntries(DIALOG_SECTIONS.map(sec => [
@@ -91,12 +90,12 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
     setStatus({ kind: 'loading' })
     try {
       const res = await tradecraftClient.getSettings(userId)
-      if (!res.v2Enabled || !res.ingestion) return setStatus({ kind: 'off' })
+      // An answer without the section (an older webapp mid-deploy) is a failure, with Retry.
+      if (!res.ingestion) return setStatus({ kind: 'error', text: LOAD_FAILED })
       adopt(res.ingestion)
       setRecipes(res.recipes ?? [])
       setStatus({ kind: 'ready' })
     } catch (e) {
-      if (e instanceof ApiError && e.code === 'tradecraft_v2_off') return setStatus({ kind: 'off' })
       const denied = e instanceof ApiError && (e.status === 401 || e.status === 403)
       setStatus({ kind: denied ? 'denied' : 'error', text: failureText(LOAD_FAILED, e) })
     }
@@ -239,7 +238,6 @@ export function ConfigureIngestionDialog({ userId, onClose, onSaved, onDirtyChan
       )}
     >
       {status.kind === 'loading' && <div className={tc.state}>Loading your settings…</div>}
-      {status.kind === 'off' && <div className={tc.state} role="alert">Tradecraft 2.0 is off for this account: turn it on to configure ingestion.</div>}
       {status.kind === 'denied' && <div className={tc.state} role="alert">You cannot change these settings: {status.text}.</div>}
       {status.kind === 'error' && (
         <div className={tc.state} role="alert">
