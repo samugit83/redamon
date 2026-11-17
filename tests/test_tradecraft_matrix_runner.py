@@ -1188,6 +1188,51 @@ def test_a_refused_loop_driver_backs_off_and_names_the_refusal():
     assert runner.drive_loop(driver, {"need": "x"}, target_ip="192.0.2.10", timeout=30) == []
 
 
+def test_the_loop_driver_waits_for_a_session_that_does_not_exist_yet():
+    # loop_wait_step answers "Session not found" until the chat's conversation exists
+    # (loopTools.ts): before the first step that is waiting, never a refusal.
+    answers = iter([("error", "Session not found")] * 7 + [("step", None)])
+    pauses = []
+
+    def opener(req, timeout):
+        kind, msg = next(answers)
+        if kind == "error":
+            data = {"result": {"isError": True, "content": [{"type": "text", "text": msg}]}}
+        else:
+            data = {"result": {"content": [{"type": "text", "text": json.dumps(
+                {"step": {"stepId": "s1", "purpose": "classify", "prompt": "p", "page": {"nextCursor": None}}})}]}}
+        resp = io.BytesIO(json.dumps(data).encode())
+        resp.status, resp.headers = 200, mock.Mock(get_all=lambda n: [])
+        return resp
+
+    driver = runner.LoopDriver("http://webapp.invalid", "fake-driver-token-0001", "session_x", opener=opener,
+                               sleep=pauses.append)
+    step = driver.next_step(timeout=600)
+    assert step and step["stepId"] == "s1" and driver.refused == "" and pauses == [2.0] * 7
+    # After the first step the same answer is a refusal again: the session went away.
+    gone = runner.LoopDriver("http://webapp.invalid", "t", "session_x", opener=lambda r, timeout: _rpc_error("Session not found"),
+                             sleep=lambda s: None)
+    gone.prompts.append("an earlier step")
+    assert gone.next_step(timeout=600) is None and "Session not found" in gone.refused
+
+
+def _rpc_error(msg):
+    resp = io.BytesIO(json.dumps({"result": {"isError": True, "content": [{"type": "text", "text": msg}]}}).encode())
+    resp.status, resp.headers = 200, mock.Mock(get_all=lambda n: [])
+    return resp
+
+
+def test_a_cve_answered_from_the_readme_is_not_the_cves_page():
+    reader = _agent("tradecraft.library.reader")
+    out = reader.render("trickest-cve", "https://raw.githubusercontent.com/trickest/cve/main/README.md",
+                        "CVE-2099-0001 (repository README; no 2099/CVE-2099-0001 entry)", "live", "… CVE-2099-0001 …")
+    res = checks.parse_result("tradecraft_lookup", out)
+    assert [p.page_id for p in res.pages] == ["trickest-cve:repository README"]
+    assert not checks.matches({}, res.pages[0], {"resource": "trickest-cve", "path": ["cve-2099-0001"]})
+    source = (REPO / "agentic/tradecraft/library/reader.py").read_text(encoding="utf-8")
+    assert '(repository README; no {cve_norm.split(' in source
+
+
 def test_loop_driver_asks_the_librarian_once_then_completes():
     steps = iter([
         {"stepId": "s1", "purpose": "classify", "prompt": "classify", "page": {"nextCursor": None}},
@@ -1378,65 +1423,165 @@ def test_retrieval_looks_cve_questions_up_and_searches_the_rest():
     assert got.ok is False and got.detail == "1/2 found; missed: ssrf payloads"
 
 
-def _code_run(tree: dict, agent: dict, tips=("3765744a",), head="58a5e733", images=None):
-    """A fake subprocess.run for git (the plan tip, its Tradecraft tree) and docker (the agent's files)."""
-    tips = list(tips)
+TIP = "3765744a" + "0" * 32
+RECORD = {"format": 1, "tip": TIP, "complete": True, "differences": {"agentic/api.py": "f" * 40},
+          "plan_files": ["agentic/api.py", "agentic/tradecraft/ingest/detect.py", "agentic/settings_spec.json"],
+          "images": {"agent": "sha256:439168511321" + "a" * 52, "webapp": "sha256:6af9db065740" + "b" * 52}}
+TIP_TREE = {"agentic/api.py": "1" * 40, "agentic/tradecraft/ingest/detect.py": "2" * 40, "agentic/tests/test_x.py": "3" * 40,
+            "agentic/settings_spec.json": "4" * 40, "graph_db/tenant_filter.py": "5" * 40}
+
+
+def _stack(*, tip=TIP, tree=TIP_TREE, files=None, py=None, images=None, exec_fails=False):
+    """A fake subprocess.run for the code check: git (the tip, its tree) and docker (images, files)."""
+    image = {"api.py": "f" * 40, "tradecraft/ingest/detect.py": "2" * 40, "settings_spec.json": "4" * 40,
+             "graph_db/tenant_filter.py": "5" * 40}
+    image.update(files or {})
+    py_files = py if py is not None else ["api.py", "tradecraft/ingest/detect.py", "graph_db/tenant_filter.py"]
+    ids = images or RECORD["images"]
 
     def run(argv, **kw):
         if argv[:2] == ["git", "-C"] and "rev-parse" in argv:
-            out = (tips.pop(0) if len(tips) > 1 else tips[0]) if argv[-1] == runner.PLAN_REF else head
-            return subprocess.CompletedProcess(argv, 0, out + "\n", "")
+            return subprocess.CompletedProcess(argv, 0, tip + "\n", "")
         if argv[:2] == ["git", "-C"] and "ls-tree" in argv:
-            lines = "".join(f"100644 blob {sha}\tagentic/tradecraft/{p}\n" for p, sha in tree.items())
-            return subprocess.CompletedProcess(argv, 0, lines, "")
-        if argv[:3] == ["docker", "exec", "-i"]:
-            return subprocess.CompletedProcess(argv, 0, json.dumps([[p, s] for p, s in agent.items()]) + "\n", "")
+            return subprocess.CompletedProcess(argv, 0, "".join(f"100644 blob {b}\t{p}\n" for p, b in tree.items()), "")
         if argv[:2] == ["docker", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0, images or "/redamon-agent sha256:439168511321ff\n"
-                                               "/redamon-webapp sha256:6af9db065740ff\n", "")
+            return subprocess.CompletedProcess(argv, 0, f"/redamon-agent {ids['agent']}\n/redamon-webapp {ids['webapp']}\n", "")
+        if argv[:3] == ["docker", "exec", "-i"]:
+            if exec_fails:
+                return subprocess.CompletedProcess(argv, 1, "", "no such container")
+            asked = json.loads(kw["input"])
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"files": {a: image.get(a) for a in asked}, "py": py_files}), "")
         raise AssertionError(argv)
     return run
 
 
-def test_the_report_checks_the_code_the_stack_runs():
-    same = {"ingest/detect.py": "a" * 40, "library/search.py": "b" * 40}
-    assert runner.agent_code_check("3765744a", run=_code_run(same, same)) == \
-        "the running agent holds plan 3765744a's Tradecraft code (2 files)"
-    edited = dict(same, **{"ingest/detect.py": "c" * 40})
-    got = runner.agent_code_check("3765744a", run=_code_run(same, edited))
-    assert got.startswith("DIFFERS") and "1 of 2 files (ingest/detect.py)" in got
-    extra = dict(same, **{"ingest/new.py": "d" * 40})
-    assert "ingest/new.py" in runner.agent_code_check("3765744a", run=_code_run(same, extra))
-    assert runner.image_ids(run=_code_run(same, same)) == "redamon-agent 439168511321, redamon-webapp 6af9db065740"
-    start = runner.provenance_now(run=_code_run(same, same))
-    end = runner.provenance_now(run=_code_run(same, same, tips=("9f00aa11",)), with_code=False)
-    lines = runner.provenance(start, end)
-    assert lines["commit"] == "plan 3765744a, moved to 9f00aa11 during the run (checkout 58a5e733)"
-    assert lines["agent_code"].startswith("the running agent holds plan 3765744a")
-    assert runner.provenance(start, start)["commit"] == "plan 3765744a (checkout 58a5e733)"
+def test_what_the_agent_image_bakes():
+    assert runner.baked_path("agentic/tradecraft/ingest/detect.py") == "tradecraft/ingest/detect.py"
+    assert runner.baked_path("agentic/settings_spec.json") == "settings_spec.json"
+    assert runner.baked_path("graph_db/tenant_filter.py") == "graph_db/tenant_filter.py"
+    assert runner.baked_path("recon_settings/registry.json") == "recon_settings/registry.json"
+    for not_baked in ("agentic/tests/test_x.py", "agentic/logs/agent.log", "agentic/__pycache__/x.cpython-311.pyc",
+                      "agentic/Dockerfile", "agentic/knowledge_base/x.py", "webapp/src/app/page.tsx", "README.md"):
+        assert runner.baked_path(not_baked) is None, not_baked
 
 
-def test_main_reports_the_code_the_stack_ran(tmp_path):
-    # The wiring: main reads the plan tip and the agent's code at the start and the tip again at the
-    # end, and the report says so. A report that named the checkout's HEAD fails here.
-    same = {"ingest/detect.py": "a" * 40}
-    fake = _code_run(same, dict(same, **{"ingest/detect.py": "e" * 40}), tips=("3765744a", "9f00aa11"))
+def test_the_code_check_passes_only_on_the_recorded_code():
+    assert runner.verify_code(RECORD, run=_stack())[0] == []
+    problems, lines = runner.verify_code(RECORD, run=_stack())
+    assert lines["known_hunks"] == "agentic/api.py" and lines["agent_code"].startswith("4 baked files compared, all plan 3765744a")
+    # The checkout's own work outside the plan's files is allowed, and named.
+    other = dict(RECORD, differences={**RECORD["differences"], "agentic/navigator/tooling.py": "7" * 40})
+    problems, lines = runner.verify_code(other, run=_stack(files={"navigator/tooling.py": "7" * 40},
+                                                            py=["api.py", "tradecraft/ingest/detect.py", "graph_db/tenant_filter.py",
+                                                                "navigator/tooling.py"]))
+    assert problems == [] and "1 files of the checkout's own work (agentic/navigator/tooling.py)" in lines["known_hunks"]
+    cases = {
+        "no record": (None, _stack()),
+        "an unfinished record": (dict(RECORD, complete=False), _stack()),
+        "the tree changed during the build": (dict(RECORD, complete=False, tree_changed=True), _stack()),
+        "the branch moved": (RECORD, _stack(tip="9f00aa11" + "0" * 32)),
+        "a record naming no plan file": (dict(RECORD, plan_files=[]), _stack()),
+        "a plan file not the tip's": (dict(RECORD, differences={"agentic/tradecraft/ingest/detect.py": "9" * 40}),
+                                                  _stack(files={"tradecraft/ingest/detect.py": "9" * 40, "api.py": "1" * 40})),
+        "another agent image": (RECORD, _stack(images={"agent": "sha256:" + "c" * 64, "webapp": RECORD["images"]["webapp"]})),
+        "another webapp image": (RECORD, _stack(images={"agent": RECORD["images"]["agent"], "webapp": "sha256:" + "d" * 64})),
+        "a baked file not the tip's": (RECORD, _stack(files={"settings_spec.json": "8" * 40})),
+        "a stale Python file": (RECORD, _stack(py=["api.py", "tradecraft/ingest/detect.py", "graph_db/tenant_filter.py",
+                                                   "orchestrator_helpers/tradecraft_lookup.py"])),
+        "the agent unreadable": (RECORD, _stack(exec_fails=True)),
+    }
+    for name, (record, run) in cases.items():
+        assert runner.verify_code(record, run=run)[0], name
+    # The end check (ids and tip, no file read) also sees a rebuild and a moved branch.
+    assert runner.verify_code(RECORD, run=_stack(images={"agent": "sha256:" + "c" * 64, "webapp": RECORD["images"]["webapp"]}),
+                              deep=False)[0]
+    assert runner.verify_code(RECORD, run=_stack(tip="9f00aa11" + "0" * 32), deep=False)[0]
+
+
+def test_an_end_probe_that_fails_never_loses_the_report():
+    def broken(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 60)
+
+    assert runner.image_ids(run=broken) == {"agent": "not checked", "webapp": "not checked"}
+
+
+def test_the_build_record_names_the_tree_the_images_came_from(tmp_path):
+    root = tmp_path / "repo"
+    (root / "agentic").mkdir(parents=True)
+    (root / "agentic" / "api.py").write_text("hunk\n")
+    (root / "agentic" / "tools.py").write_text("same\n")
+    (root / "agentic" / "new.py").write_text("untracked\n")
+
+    (root / "agentic" / "workspace.log").write_text("an ignored artifact\n")
+
+    def run(argv, **kw):
+        if "ls-tree" in argv:
+            return subprocess.CompletedProcess(argv, 0, f"100644 blob {'1' * 40}\tagentic/api.py\n100644 blob {'2' * 40}\tagentic/tools.py\n"
+                                                        f"100644 blob {'3' * 40}\tagentic/gone.py\n", "")
+        if "ls-files" in argv:  # git's view: tracked and new files, never an ignored one
+            return subprocess.CompletedProcess(argv, 0, "agentic/api.py\0agentic/tools.py\0agentic/new.py\0", "")
+        if "hash-object" in argv:
+            blobs = {"agentic/api.py": "a" * 40, "agentic/tools.py": "2" * 40, "agentic/new.py": "c" * 40}
+            return subprocess.CompletedProcess(argv, 0, "".join(blobs[p] + "\n" for p in kw["input"].split()), "")
+        raise AssertionError(argv)
+
+    diff = runner.tree_differences("tip", ["agentic/"], run=run, root=root)
+    assert diff == {"agentic/api.py": "a" * 40, "agentic/new.py": "c" * 40, "agentic/gone.py": ""}
+    path = tmp_path / "record.json"
+    with mock.patch.object(runner, "tree_differences", return_value={"agentic/api.py": "a" * 40}), \
+            mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
+        def fake(argv, **kw):
+            out = "agentic/api.py\nagentic/tradecraft/x.py\n" if "diff" in argv else TIP + "\n"
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        assert "1 files not the tip's" in runner.record_build("before", run=fake, path=path)
+        assert json.loads(path.read_text())["plan_files"] == ["agentic/api.py", "agentic/tradecraft/x.py"]
+        assert json.loads(path.read_text())["complete"] is False
+        runner.record_build("after", run=fake, path=path)
+        rec = json.loads(path.read_text())
+        assert rec["complete"] is True and rec["images"] == RECORD["images"] and rec["tip"] == TIP
+    with mock.patch.object(runner, "tree_differences", side_effect=[{}, {"agentic/tradecraft/x.py": "e" * 40}]), \
+            mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
+        runner.record_build("before", run=fake, path=path)
+        runner.record_build("after", run=fake, path=path)
+    rec = json.loads(path.read_text())
+    assert rec["complete"] is False and rec["tree_changed"] is True
+
+
+def _main_with(tmp_path, verify_results, **extra):
     written = {}
     accounts = {k: runner.Account(k, e, "x" * 24, id=f"u-{k}") for k, e in SCN["accounts"].items()}
-    with mock.patch.object(runner.subprocess, "run", side_effect=fake), \
-            mock.patch.object(runner, "seed_accounts", return_value=accounts), \
+    seed = mock.Mock(return_value=accounts)
+    with mock.patch.object(runner, "read_build_record", return_value=RECORD), \
+            mock.patch.object(runner, "verify_code", side_effect=verify_results), \
+            mock.patch.object(runner, "seed_accounts", seed), \
             mock.patch.object(runner.Stack, "session", return_value=(mock.Mock(), "u-owner")), \
             mock.patch.object(runner, "agent_logs_dir", return_value=tmp_path), \
             mock.patch.object(runner, "preflight", return_value=[]), \
-            mock.patch.object(runner, "run_matrix", return_value=[]), \
+            mock.patch.object(runner, "run_matrix", return_value=extra.get("results", [])), \
             mock.patch.object(runner, "set_owner_mode"), \
             mock.patch.object(runner, "RUNS_DIR", tmp_path), \
             mock.patch.object(report, "write_report", side_effect=lambda d, text: written.setdefault("text", text)):
-        runner.main(["--only", "S6", "--model", "test/model"])
-    text = written["text"]
-    assert "- commit: plan 3765744a, moved to 9f00aa11 during the run (checkout 58a5e733)" in text
-    assert "- agent code: DIFFERS: the running agent's Tradecraft code is not plan 3765744a's in 1 of 1 files" in text
-    assert "- images: redamon-agent 439168511321, redamon-webapp 6af9db065740" in text
+        code = runner.main(["--only", "S6", "--model", "test/model"])
+    return code, written.get("text", ""), seed
+
+
+def test_unverified_code_stops_the_preflight_or_voids_the_verdict(tmp_path):
+    good = ([], {"commit": "plan 3765744a", "known_hunks": "agentic/api.py", "agent_code": "4 baked files compared, all ok",
+                 "images": "agent 439168511321, webapp 6af9db065740"})
+    # Before the runs: nothing is seeded, nothing runs.
+    code, text, seed = _main_with(tmp_path, [(["the running agent is image cccc, not the recorded build's 4391"], {})])
+    assert code == 3 and text == "" and not seed.called
+    # A run that passes every gate, on code that changed during it: never PASSED.
+    passed = report.RunResult(run_id="S6", arm="single", lab="L1", n=1, check="S6", status=report.PASS,
+                              checks=[report.CheckResult("check_url_lab_address", True, "")])
+    code, text, _ = _main_with(tmp_path, [good, (["the stack was built from plan 3765744a, the branch is at 9f00aa11: rebuild"], {})],
+                               results=[passed])
+    assert code == 1 and text.startswith("# Tradecraft 2.0 end-to-end matrix: NOT PASSED (code not verified)")
+    assert "- code verified: NO: the stack was built from plan 3765744a" in text
+    assert "- commit: plan 3765744a" in text and "- known hunks: agentic/api.py" in text
+    # The same run on code verified at both ends passes.
+    code, text, _ = _main_with(tmp_path, [good, ([], {})], results=[passed])
+    assert code == 0 and "matrix: PASSED" in text and "- code verified: yes, at the start and at the end" in text
 
 
 def test_only_layer1_runs_the_layer1_checks_alone(capsys):

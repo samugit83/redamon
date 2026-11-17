@@ -1010,6 +1010,10 @@ def _drain_until(ws: WebSocket, kinds: set, seconds: float, out: ChatOutcome) ->
             return
 
 
+# loop_wait_step's answer for a session whose conversation does not exist yet (lib/mcp/loopTools.ts).
+SESSION_NOT_YET = "Session not found"
+
+
 class LoopDriver:
     """Plays the external agent of an Agent in the Loop run over ``/api/mcp-server`` (the
     port of ``testing/e2e/tests/aitlDriver.ts``), scoped to one session."""
@@ -1054,6 +1058,11 @@ class LoopDriver:
         refusals = 0
         while time.monotonic() < until:
             err, got, text = self.call("loop_wait_step", {"waitSeconds": 20, "sessionId": self.session_id})
+            if err and not self.prompts and SESSION_NOT_YET in text:
+                # The chat's conversation does not exist until the run starts (loopTools.ts): wait for
+                # it, as aitlDriver.ts names a session only once it exists; the run's cap bounds it.
+                self._sleep(2.0)
+                continue
             if err:
                 # Never a tight loop on a refusal: a pause, and the run's error after a few.
                 refusals += 1
@@ -2023,80 +2032,225 @@ def _check_names(scn: Mapping, run: lanes.Run) -> list[str]:
 
 
 PLAN_REF = "refs/heads/feature/tradecraft-2.0"
+BUILD_RECORD = REPO / "_local" / "tradecraft-e2e" / "build-record.json"
+# Where the agent image bakes the repository's folders (agentic/Dockerfile: COPY graph_db/,
+# recon_settings/, agentic/ into /app).
+AGENT_BAKED = (("agentic/", ""), ("graph_db/", "graph_db/"), ("recon_settings/", "recon_settings/"))
+# What the image is built from besides the agent: the webapp's sources (compiled, so compared
+# through the build record, never file by file).
+WEBAPP_SOURCES = ("webapp/src/", "webapp/prisma/", "webapp/scripts/", "webapp/public/", "webapp/package.json",
+                  "webapp/package-lock.json", "webapp/Dockerfile", "webapp/next.config.ts")
+# The files the plan shares with other sessions (00_master_plan.md R-B2): the stack may carry
+# another session's hunk in them. Every other file the plan changed must be the tip's exactly, or
+# the report would name code the stack does not run; files the plan never changed may carry the
+# checkout's own work, which the record lists and the report names.
+SHARED_FILES = frozenset({
+    "agentic/api.py", "agentic/feature_models.py", "docker-compose.yml", "webapp/prisma/schema.prisma",
+    "webapp/scripts/rbac-upgrade-preview.mjs", "webapp/src/lib/llmFeatures.ts", "webapp/src/lib/authz/auditLabels.ts",
+    "webapp/src/lib/authz/routeManifest.ts", "webapp/src/lib/authz/routeManifest.json",
+})
+# .dockerignore's exclusions inside the baked folders: never in the image.
+_NOT_BAKED = re.compile(
+    r"(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|htmlcov|node_modules|\.next|\.nuxt|dist|build|"
+    r"\.venv|venv|env|[^/]*-env|[^/]*-venv)/"
+    r"|\.(pyc|pyo|pyd)$|(^|/)\.coverage$|(^|/)coverage\.xml$|(^|/)Dockerfile$|(^|/)docker-compose[^/]*\.yml$"
+    r"|(^|/)\.dockerignore$|\.(test|spec)\.py$")
+_AGENT_NOT_BAKED = re.compile(r"^agentic/(tests|logs|knowledge_base)/")
 
 
-def git_short(ref: str, run: Optional[Exec] = None) -> str:
-    done = (run or subprocess.run)(["git", "-C", str(REPO), "rev-parse", "--short=8", "--verify", "--quiet", ref], capture_output=True,
-               text=True, check=False)
-    return (done.stdout or "").strip()
+def baked_path(repo_path: str) -> Optional[str]:
+    """Where the agent image holds a repository file, or None when the image has no copy of it."""
+    if _NOT_BAKED.search(repo_path) or _AGENT_NOT_BAKED.match(repo_path):
+        return None
+    for prefix, at in AGENT_BAKED:
+        if repo_path.startswith(prefix):
+            return at + repo_path[len(prefix):]
+    return None
 
 
-# The running agent's Tradecraft package, as git blob ids, read-only inside its container.
-AGENT_CODE_SCRIPT = r"""
-import hashlib, json, pathlib
-root = pathlib.Path("/app/tradecraft")
-out = []
-for p in root.rglob("*.py"):
-    if "__pycache__" in p.parts:
-        continue
-    data = p.read_bytes()
-    out.append([p.relative_to(root).as_posix(), hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()])
-print(json.dumps(out))
+def compare_baked(tip: Mapping[str, str], differences: Mapping[str, str], image: Mapping[str, Optional[str]],
+                  image_py: Iterable[str]) -> dict:
+    """The agent image against the plan tip and the build's recorded differences (git blob ids;
+    "" is a file the working tree did not have). Returns the files compared, those that differ
+    (repository paths) and the image's Python files no expected file explains."""
+    expected: dict = {}
+    for repo_path, blob in tip.items():
+        at = baked_path(repo_path)
+        if at is not None:
+            expected[at] = (repo_path, differences.get(repo_path, blob))
+    for repo_path, blob in differences.items():
+        at = baked_path(repo_path)
+        if at is not None and repo_path not in tip:
+            expected[at] = (repo_path, blob)
+    differing = sorted(repo for at, (repo, want) in expected.items() if (image.get(at) or "") != (want or ""))
+    known_py = {at for at, (_, want) in expected.items() if want}
+    extra = sorted(p for p in image_py if p not in known_py)
+    return {"files": sum(1 for _, w in expected.values() if w), "differing": differing, "extra": extra}
+
+
+# The agent image's files as git blob ids, read-only inside its container: the paths asked on
+# stdin, and every Python file /app holds from the agent's folders (to see a stale one).
+AGENT_FILES_SCRIPT = r"""
+import hashlib, json, pathlib, sys
+want = json.load(sys.stdin)
+def blob(p):
+    try:
+        data = p.read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+root = pathlib.Path("/app")
+files = {at: blob(root / at) for at in want}
+skip = ("knowledge_base/", "logs/", "kb_data/")
+py = [p.relative_to(root).as_posix() for p in root.rglob("*.py")
+      if "__pycache__" not in p.parts and not p.relative_to(root).as_posix().startswith(skip)]
+print(json.dumps({"files": files, "py": py}))
 """
 
 
-def agent_code_check(commit: str, run: Optional[Exec] = None, container: str = AGENT_CONTAINER) -> str:
-    """Whether the RUNNING agent holds ``commit``'s Tradecraft code (agentic/tradecraft/**.py),
-    file by file: a result is never credited to code the stack does not run. Names only."""
-    if not commit:
-        return "not checked: no plan commit"
-    run = run or subprocess.run
-    tree = run(["git", "-C", str(REPO), "ls-tree", "-r", commit, "--", "agentic/tradecraft/"], capture_output=True,
-               text=True, check=False)
-    want = {}
-    for line in (tree.stdout or "").splitlines():
+def git_short(ref: str, run: Optional[Exec] = None) -> str:
+    done = (run or subprocess.run)(["git", "-C", str(REPO), "rev-parse", "--short=8", "--verify", "--quiet", ref],
+                                   capture_output=True, text=True, check=False, timeout=60)
+    return (done.stdout or "").strip()
+
+
+def tip_files(commit: str, prefixes: Sequence[str], run: Optional[Exec] = None) -> dict:
+    """{repository path: git blob id} of ``commit`` under ``prefixes``."""
+    done = (run or subprocess.run)(["git", "-C", str(REPO), "ls-tree", "-r", commit, "--", *prefixes],
+                                   capture_output=True, text=True, check=False, timeout=120)
+    out = {}
+    for line in (done.stdout or "").splitlines():
         meta, _, path = line.partition("\t")
         parts = meta.split()
-        if len(parts) == 3 and parts[1] == "blob" and path.endswith(".py"):
-            want[path[len("agentic/tradecraft/"):]] = parts[2]
+        if len(parts) == 3 and parts[1] == "blob":
+            out[path] = parts[2]
+    return out
+
+
+def tree_differences(commit: str, prefixes: Sequence[str], run: Optional[Exec] = None,
+                     root: Path = REPO) -> dict:
+    """{repository path: working-tree blob id, "" when absent} for every file under ``prefixes``
+    whose working copy is not ``commit``'s: what an image built now carries besides the commit."""
+    run = run or subprocess.run
+    tip = tip_files(commit, prefixes, run)
+    # The sources as git sees them, tracked or new, never an ignored file (logs, workspaces, builds).
+    listed = run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *prefixes],
+                 capture_output=True, text=True, check=False, timeout=300)
+    present = [p for p in (listed.stdout or "").split("\0") if p and not _NOT_BAKED.search(p)]
+    paths = sorted(set(present) | set(tip))
+    existing = [p for p in paths if (root / p).is_file()]
+    done = run(["git", "-C", str(root), "hash-object", "--stdin-paths"], input="\n".join(existing) + "\n",
+               capture_output=True, text=True, check=False, timeout=300)
+    blobs = dict(zip(existing, (done.stdout or "").split()))
+    return {p: blobs.get(p, "") for p in paths if blobs.get(p, "") != tip.get(p, "")}
+
+
+def image_ids(run: Optional[Exec] = None) -> dict:
+    """{agent, webapp}: the running containers' image ids, or "not checked" when they cannot be read."""
     try:
-        done = run(["docker", "exec", "-i", container, "python", "-c", AGENT_CODE_SCRIPT], capture_output=True,
-                   text=True, check=False, timeout=60)
-        have = {str(a): str(b) for a, b in json.loads((done.stdout or "").strip().splitlines()[-1])} \
-            if done.returncode == 0 else None
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        have = None
-    if not want or have is None:
-        return f"not checked: {'the commit lists no Tradecraft file' if not want else 'the agent container could not be read'}"
-    differing = sorted(k for k in set(want) | set(have) if want.get(k) != have.get(k))
-    if not differing:
-        return f"the running agent holds plan {commit}'s Tradecraft code ({len(want)} files)"
-    more = f", +{len(differing) - 6} more" if len(differing) > 6 else ""
-    return (f"DIFFERS: the running agent's Tradecraft code is not plan {commit}'s in {len(differing)} of "
-            f"{len(set(want) | set(have))} files ({', '.join(differing[:6])}{more})")
+        done = (run or subprocess.run)(["docker", "inspect", AGENT_CONTAINER, WEBAPP_CONTAINER, "--format",
+                                        "{{.Name}} {{.Image}}"], capture_output=True, text=True, check=False, timeout=60)
+        pairs = dict(ln.split() for ln in (done.stdout or "").splitlines() if len(ln.split()) == 2)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pairs = {}
+    return {"agent": pairs.get(f"/{AGENT_CONTAINER}", "not checked"), "webapp": pairs.get(f"/{WEBAPP_CONTAINER}", "not checked")}
 
 
-def image_ids(run: Optional[Exec] = None) -> str:
-    done = (run or subprocess.run)(["docker", "inspect", AGENT_CONTAINER, WEBAPP_CONTAINER, "--format", "{{.Name}} {{.Image}}"],
-               capture_output=True, text=True, check=False, timeout=60)
-    pairs = [ln.split() for ln in (done.stdout or "").splitlines() if len(ln.split()) == 2]
-    return ", ".join(f"{n.lstrip('/')} {i.split(':')[-1][:12]}" for n, i in pairs) or "not read"
+def record_build(phase: str, run: Optional[Exec] = None, path: Path = BUILD_RECORD) -> str:
+    """The build record run/s15/rebuild.sh writes around a rebuild: ``before`` the builds, the plan
+    tip and every file of the tree that is not the tip's; ``after`` the containers are up, their
+    image ids, and whether the tree changed during the build. Returns a one-line summary."""
+    run = run or subprocess.run
+    prefixes = [p for p, _ in AGENT_BAKED] + list(WEBAPP_SOURCES)
+    tip = (run(["git", "-C", str(REPO), "rev-parse", "--verify", "--quiet", PLAN_REF], capture_output=True, text=True,
+               check=False, timeout=60).stdout or "").strip()
+    differences = tree_differences(tip, prefixes, run)
+    if phase == "before":
+        base = (run(["git", "-C", str(REPO), "merge-base", tip, "HEAD"], capture_output=True, text=True, check=False,
+                    timeout=60).stdout or "").strip()
+        changed = run(["git", "-C", str(REPO), "diff", "--name-only", base, tip, "--", *prefixes], capture_output=True,
+                      text=True, check=False, timeout=120).stdout or ""
+        record = {"format": 1, "tip": tip, "base": base, "recorded_at": now_iso(), "differences": differences,
+                  "plan_files": sorted(changed.split()), "complete": False}
+    else:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record.update(images=image_ids(run), completed_at=now_iso(),
+                      complete=record.get("tip") == tip and record.get("differences") == differences,
+                      tree_changed=record.get("differences") != differences or record.get("tip") != tip)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+    plan = set(record.get("plan_files") or [])
+    outside = sorted(p for p in differences if p in plan and p not in SHARED_FILES)
+    return (f"build record {phase}: plan {tip[:8]}, {len(differences)} files not the tip's"
+            + (f" (plan files: {', '.join(outside[:6])}{'…' if len(outside) > 6 else ''}: not verifiable)" if outside else "")
+            + (f", images {record['images']['agent'][7:19]} / {record['images']['webapp'][7:19]}" if phase == "after" else ""))
 
 
-def provenance(started: Mapping, ended: Mapping) -> dict:
-    """The report's lines about the code that ran: the plan tip at the start and the end, whether the
-    running agent holds it, and the two images; any change during the run is said."""
-    commit = f"plan {started['tip']}"
-    if ended["tip"] != started["tip"]:
-        commit += f", moved to {ended['tip']} during the run"
-    images = started["images"] + ("" if ended["images"] == started["images"] else f"; at the end: {ended['images']}")
-    return {"commit": f"{commit} (checkout {started['head']})", "agent_code": started["agent_code"], "images": images}
+def read_build_record(path: Path = BUILD_RECORD) -> Optional[dict]:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
 
 
-def provenance_now(run: Optional[Exec] = None, with_code: bool = True) -> dict:
-    tip = git_short(PLAN_REF, run)
-    return {"tip": tip, "head": git_short("HEAD", run), "images": image_ids(run),
-            "agent_code": agent_code_check(tip, run) if with_code else ""}
+def verify_code(record: Optional[Mapping], run: Optional[Exec] = None, *, deep: bool = True) -> tuple:
+    """(problems, lines): whether the running stack is the code the report names. ``deep`` also
+    compares the running agent's baked files one by one (the preflight; the end checks ids and tip)."""
+    run = run or subprocess.run
+    problems: list = []
+    if not record or not record.get("complete"):
+        why = "none" if not record else ("the tree changed during that build" if record.get("tree_changed")
+                                         else "not completed")
+        return [f"no usable build record ({BUILD_RECORD.name}: {why}; run/s15/rebuild.sh writes it)"], {}
+    tip = record["tip"]
+    lines = {"commit": f"plan {tip[:8]}"}
+    try:
+        now_tip = (run(["git", "-C", str(REPO), "rev-parse", "--verify", "--quiet", PLAN_REF], capture_output=True,
+                       text=True, check=False, timeout=60).stdout or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        now_tip = ""
+    if now_tip != tip:
+        problems.append(f"the stack was built from plan {tip[:8]}, the branch is at {now_tip[:8] or 'unknown'}: rebuild")
+    differences = record.get("differences") or {}
+    plan = set(record.get("plan_files") or [])
+    outside = sorted(p for p in differences if p in plan and p not in SHARED_FILES)
+    if outside or not plan:
+        problems.append(f"the images carry {len(outside)} of the plan's files that are not plan {tip[:8]}'s: "
+                        + ", ".join(outside[:6]) + ("…" if len(outside) > 6 else "") if plan
+                        else "the build record names no plan file: rerun run/s15/rebuild.sh")
+    shared = sorted(p for p in differences if p in SHARED_FILES)
+    other = sorted(p for p in differences if p not in plan and p not in SHARED_FILES)
+    lines["known_hunks"] = (", ".join(shared) or "none") + (
+        f"; outside the plan's files, {len(other)} files of the checkout's own work ({', '.join(other[:5])}"
+        f"{'…' if len(other) > 5 else ''})" if other else "")
+    images = image_ids(run)
+    want = record.get("images") or {}
+    for name in ("agent", "webapp"):
+        if images.get(name) != want.get(name):
+            problems.append(f"the running {name} is image {str(images.get(name))[7:19] or images.get(name)}, not the "
+                            f"recorded build's {str(want.get(name))[7:19]}")
+    lines["images"] = f"agent {str(images.get('agent'))[7:19]}, webapp {str(images.get('webapp'))[7:19]}"
+    if deep:
+        try:
+            tip_map = tip_files(tip, [p for p, _ in AGENT_BAKED], run)
+            asked = sorted({baked_path(p) for p in list(tip_map) + list(record.get("differences") or {})} - {None})
+            done = run(["docker", "exec", "-i", AGENT_CONTAINER, "python", "-c", AGENT_FILES_SCRIPT],
+                       input=json.dumps(asked), capture_output=True, text=True, check=False, timeout=120)
+            got = json.loads((done.stdout or "").strip().splitlines()[-1]) if done.returncode == 0 else None
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            got = None
+        if not got:
+            problems.append("the running agent's files could not be read: the code is not verified")
+        else:
+            diff = compare_baked(tip_map, record.get("differences") or {}, got["files"], got["py"])
+            if diff["differing"] or diff["extra"]:
+                problems.append(f"the running agent is not plan {tip[:8]} plus the recorded hunks: {len(diff['differing'])} "
+                                f"of {diff['files']} files differ ({', '.join(diff['differing'][:6])}), "
+                                f"{len(diff['extra'])} more Python files ({', '.join(diff['extra'][:4])})")
+            lines["agent_code"] = f"{diff['files']} baked files compared, " + (
+                "all plan " + tip[:8] + "'s or a recorded hunk" if not (diff["differing"] or diff["extra"]) else "DIFFER")
+    return problems, lines
 
 
 LAYER1 = "layer1"
@@ -2123,7 +2277,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--no-build", action="store_true", help="do not build the lab images in the preflight")
     ap.add_argument("--no-layer1", action="store_true", help="skip the layer-1 checks")
     ap.add_argument("--scenarios", default=str(SCENARIOS))
+    ap.add_argument("--record-build", choices=("before", "after"), default="",
+                    help="write the build record around a rebuild (run/s15/rebuild.sh), then exit")
     args = ap.parse_args(argv)
+    if args.record_build:
+        print(record_build(args.record_build))
+        return 0
 
     redact = report.Redactor()
     log = Log(redact)
@@ -2149,8 +2308,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # The budget counts from here: the preflight is part of the 5 hours.
     matrix_start = time.monotonic()
-    code_at_start = provenance_now()
-    log(f"code: plan {code_at_start['tip']}; {code_at_start['agent_code']}; images {code_at_start['images']}")
+    # Before anything runs: the stack is the code the report will name, or nothing runs at all.
+    record = read_build_record()
+    problems, code = verify_code(record)
+    if problems:
+        for p in problems:
+            log(f"preflight: code not verified: {p}")
+        return 3
+    log(f"code: {code['commit']} plus the shared files' recorded hunks ({code['known_hunks']}); {code['agent_code']}; "
+        f"images {code['images']}")
     plan = lanes.budget(scn)
     stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
     out_dir = RUNS_DIR / stamp
@@ -2190,7 +2356,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log(str(exc))
     verdict, gates = report.pass_rules(results, oracle_min=int(scn["pass_rules"]["oracle_min"]), layer1=layer1_results,
                                        expected=[r.id for r in runs])
-    code = provenance(code_at_start, provenance_now(with_code=False))
+    try:
+        # The ids and the tip again: a rebuild or a new commit during the run voids its verdict.
+        end_problems, _ = verify_code(record, deep=False)
+    except Exception as exc:  # a probe that could not run is not a verified run
+        end_problems = [f"the end check could not run ({type(exc).__name__})"]
+    if end_problems:
+        verdict = False
+        code["code_verified"] = "NO: " + "; ".join(end_problems)
+    else:
+        code["code_verified"] = "yes, at the start and at the end"
     timeline = lanes.worst_case(runs, lane_count, plan)
     meta = {"started": started, "finished": now_iso(), **code, "model": ctx.model, "lanes": lane_count,
             "projected_worst_case": f"{timeline.makespan / 3600:.2f} h from the start, preflight included",

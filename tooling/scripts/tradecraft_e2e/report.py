@@ -216,10 +216,12 @@ def matrix_table(results: Sequence[RunResult]) -> list[str]:
 def render(*, results: Sequence[RunResult], gates: Sequence[Gate], verdict: bool, meta: Mapping,
            gain_table: Mapping, durations: Mapping[str, float], redact: Redactor) -> str:
     skipped = sum(1 for g in gates if g.ok is None)
-    title = ("PASSED" if verdict else "FAILED") + (f" ({skipped} gates skipped, see below)" if skipped else "")
+    unverified = str(meta.get("code_verified", "")).startswith("NO")
+    title = ("PASSED" if verdict else "NOT PASSED (code not verified)" if unverified else "FAILED") + (
+        f" ({skipped} gates skipped, see below)" if skipped else "")
     lines = [f"# Tradecraft 2.0 end-to-end matrix: {title}", ""]
-    for key in ("started", "finished", "commit", "agent_code", "images", "model", "lanes", "projected_worst_case",
-                "wall_clock"):
+    for key in ("started", "finished", "commit", "known_hunks", "agent_code", "images", "code_verified", "model", "lanes",
+                "projected_worst_case", "wall_clock"):
         if key in meta:
             lines.append(f"- {key.replace('_', ' ')}: {meta[key]}")
     for note in meta.get("notes", []):

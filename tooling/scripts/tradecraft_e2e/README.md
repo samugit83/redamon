@@ -112,6 +112,19 @@ accounts (`runner.seed_accounts`, which `build`, `models` and the matrix call) r
 address but the three synthetic `@e2e.local` accounts. The snapshot holds third-party
 pages: it stays under `_local/` and is never committed.
 
+## The code a run judged
+
+A result counts only for the code the stack really ran. The rebuild of the agent and the webapp
+writes a build record (`runner.py --record-build before`, then `after`, into
+`_local/tradecraft-e2e/build-record.json`): the plan tip, every file of the agent's and the
+webapp's sources that is not the tip's (with its blob id), and the two image ids. Before a run the
+runner checks that the branch is still at that tip, that the running containers are those images,
+that the only differences are another session's hunks in the files the plan shares with it
+(R-B2), and, file by file, that the running agent holds the tip's code plus those hunks (the
+webapp is compiled, so its image id stands for its sources). Any mismatch, or a check that could
+not run, stops the preflight. At the end it checks the ids and the tip again: a change voids the
+verdict, reported "NOT PASSED (code not verified)" with a non-zero exit, never PASSED.
+
 ## What one run does
 
 1. Starts the run's lab instance on its lane: `docker compose -p tc-e2e-<run>-<suffix>` with
