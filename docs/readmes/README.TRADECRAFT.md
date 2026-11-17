@@ -216,8 +216,10 @@ resource. Each skipped page is counted by reason (`excluded`, `outOfScope`, `too
 
 **Fetching.** A page is first downloaded with a plain GET. When it gives too little text, or the resource asks for it
 every time, it is rendered in the sandbox browser, which cleans it in the page before the transfer (body selector,
-removed elements). The browser is never used for a resource with a login. Every request, plain or rendered, passes the
-address guard on every redirect hop.
+removed elements). The browser is never used for a resource with a login. Every plain request passes the address guard
+on every redirect hop, judged on the address it connects to; the browser runs a guard script that aborts navigations and
+resources aimed at internal addresses (its residual, a blind request on a redirect hop, is in
+[README.SECURITY_POSTURE.md](README.SECURITY_POSTURE.md) §11), and a refused page is never retried in it.
 
 ### The resource card
 
