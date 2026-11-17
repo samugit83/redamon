@@ -55,6 +55,7 @@ from tradecraft.ingest import (
 )
 from tradecraft.ingest.builders import Candidate
 from tradecraft.ingest.detect import WEBSITE, detect
+from tradecraft.settings import EffectiveSettings
 
 logger = get_logger(__name__)
 
@@ -289,7 +290,7 @@ async def build_map(state: IngestState) -> None:
         result = await builders.build_known(
             t, state.url, s, github_token=state.github_token, home_html=state.home.html,
             home_final_url=state.home.final_url, allow_browser=browser_allowed(state), blocking=state.blocking,
-            forced=forced)
+            forced=forced, should_stop=_reading_stop(state))
         _take(state, result)
         if result.retype and not forced:
             state.site_type = result.retype
@@ -325,11 +326,26 @@ def _take(state: IngestState, result: builders.MapResult) -> None:
         logger.info(f"[tradecraft] job {state.request.job_id} build_map note={result.note}")
 
 
-async def _crawl(state: IngestState) -> None:
+def _reading_stop(state: IngestState) -> builders.Stop:
+    """What ends a builder's sitemap reading early: the job's cancel, and the crawl's time budget
+    from now, as the Auto crawl's own reading has them."""
+    budget_sec = state.settings.int("crawl.timeBudgetSec")
+    started = clock.monotonic()
+
+    async def should_stop() -> str:
+        if await state.ctx.is_cancelled():
+            return "cancelled"
+        return "time_budget" if clock.monotonic() - started >= budget_sec else ""
+
+    return should_stop
+
+
+async def _crawl(state: IngestState, settings: Optional[EffectiveSettings] = None) -> None:
     # Only the model-guided crawl needs the owner's model, and Auto only when the site has no
     # usable sitemap: a Rule-based or sitemap crawl whose model cannot be built still maps the
     # site, and only the summary is kept as it was.
-    strategy = state.settings.str("crawl.strategy")
+    settings = settings or state.settings
+    strategy = settings.str("crawl.strategy")
     llm, model_error = None, ""
     if strategy != "rules":
         try:
@@ -344,10 +360,10 @@ async def _crawl(state: IngestState) -> None:
     async def progress(done: int, total: int) -> None:
         await state.progress("build_map", done, total, "pages")
 
-    result = await crawl.crawl(state.url, state.settings, llm=llm, blocking=state.blocking,
+    result = await crawl.crawl(state.url, settings, llm=llm, blocking=state.blocking,
                                cancel_check=state.ctx.is_cancelled, progress=progress,
                                allow_browser=browser_allowed(state),
-                               focus=focus.focus_of(state.request.resource.focus, state.settings))
+                               focus=focus.focus_of(state.request.resource.focus, settings))
     if result.stop_reason == "cancelled":
         raise Cancelled()
     if model_error:
@@ -376,9 +392,16 @@ _CRAWL_INSTEAD = "docs: no search index or sitemap, crawl"
 async def _crawl_instead(state: IngestState) -> None:
     """A docs site whose search index and sitemaps listed nothing gets the crawl a website would
     get, with every rule and limit of the crawl, instead of a map of its homepage alone. The type
-    stays: the report names the source (the crawl's own code in brackets, at most 57 characters)."""
+    stays: the report names the source (the crawl's own code in brackets, at most 57 characters).
+
+    The docs builder has just read the site's sitemaps, in one budget and inside the resource's
+    folder: Auto would read them again on a fresh budget and take the pages outside that folder,
+    so the hand-off crawls model-guided instead (what Auto does with no usable sitemap), and stays
+    in the folder."""
     state.stop_reason = _CRAWL_INSTEAD
-    await _crawl(state)
+    strategy = state.settings.str("crawl.strategy")
+    await _crawl(state, EffectiveSettings({**state.settings.values, "crawl.stayInFolder": True,
+                                           "crawl.strategy": "llm" if strategy == "auto" else strategy}))
     if state.crawl is not None:
         state.stop_reason = f"{_CRAWL_INSTEAD} ({state.crawl.stop_reason})"
 

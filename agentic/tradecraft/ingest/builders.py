@@ -297,7 +297,8 @@ def _nav_links(html: str, page_url: str, selector: str) -> list[tuple[str, str]]
 
 
 async def _from_sitemaps(url: str, configured: list[str], settings: EffectiveSettings, blocking: Blocking,
-                         keep: Optional[Callable[[str], bool]] = None) -> tuple[list[str], str]:
+                         keep: Optional[Callable[[str], bool]] = None,
+                         budget: Optional[SitemapBudget] = None) -> tuple[list[str], str]:
     """The first sitemap that lists pages (that ``keep`` accepts, when given): the resource's own
     URLs (§6.5; they replace ``/sitemap.xml`` at the resource's URL, which is read only when none
     is set), and the ones a ``Sitemap:`` line of robots.txt names. An index of per-language
@@ -307,7 +308,7 @@ async def _from_sitemaps(url: str, configured: list[str], settings: EffectiveSet
     named += (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
     if not configured:
         named.append(f"{base}/sitemap.xml")
-    budget = SitemapBudget()
+    budget = budget or SitemapBudget()
     languages = preferred_languages(url, settings)
     for sm in dict.fromkeys(named):
         urls = await sitemap_urls(sm, settings, blocking=blocking, budget=budget, languages=languages)
@@ -409,14 +410,17 @@ def _join(base: str, path: str) -> str:
 DOCS_INDEX_UNUSABLE = "docs_index_unusable"
 
 
-def _docs_stop(source: str, entries: list[Candidate], cut: bool) -> str:
-    return f"docs: {source} ({len(entries)} pages{', map limit' if cut else ''})"
+def _docs_stop(source: str, entries: list[Candidate], cut: bool, timed_out: bool = False) -> str:
+    return f"docs: {source} ({len(entries)} pages{', map limit' if cut else ', time budget' if timed_out else ''})"
 
 
-async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blocking = inline) -> MapResult:
+async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blocking = inline,
+                     should_stop: Optional[Stop] = None) -> MapResult:
     """The search index; when it lists nothing (none found, another tool's file of that name, one
-    that does not parse), the sitemaps, kept to the resource's folder; when they list nothing
-    but the start page, ``crawl_fallback``: a homepage alone is no map of a docs site."""
+    that does not parse), the sitemaps, kept to the resource's folder, in one budget that
+    ``should_stop`` (the job's cancel and time budget) can end; when they list nothing but the
+    start page, ``crawl_fallback``: a homepage alone is no map of a docs site. A cancel ends the
+    builder with nothing, and no crawl is asked for."""
     base = url.rstrip("/")
     cap = settings.int("knownTypes.maxMapEntries.docs")
     configured = settings.str("type.docs.searchIndexUrl")
@@ -431,7 +435,10 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
             return MapResult("sphinx-docs", entries, meta={"indexUrl": idx_url}, index_kind="searchindex",
                              index_url=idx_url, truncated=cut, report_stop=_docs_stop("searchindex", entries, cut))
 
-    urls, sitemap_url = await _from_sitemaps(url, [], settings, blocking, keep=in_start_folder(url))
+    budget = SitemapBudget(should_stop)
+    urls, sitemap_url = await _from_sitemaps(url, [], settings, blocking, keep=in_start_folder(url), budget=budget)
+    if budget.stopped == "cancelled":
+        return MapResult("sphinx-docs", [], meta={"indexUrl": ""}, note=DOCS_INDEX_UNUSABLE)
     entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u)
                             for u in language_filter(urls, settings)], cap)
     start = fetch.canonical_url(url)
@@ -439,7 +446,8 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
         source = "sitemap.xml" if sitemap_url == f"{base}/sitemap.xml" else "robots"
         return MapResult("sphinx-docs", entries, meta={"indexUrl": ""}, index_kind="sitemap", index_url=sitemap_url,
                          truncated=cut, note=DOCS_INDEX_UNUSABLE,
-                         report_stop=_docs_stop(f"no search index, {source}", entries, cut))
+                         report_stop=_docs_stop(f"no search index, {source}", entries, cut,
+                                                budget.stopped == "time_budget"))
     return MapResult("sphinx-docs", [], meta={"indexUrl": ""}, note=DOCS_INDEX_UNUSABLE, crawl_fallback=True)
 
 
@@ -752,15 +760,17 @@ async def build_pdf(url: str, body: bytes, settings: EffectiveSettings, *, block
 
 async def build_known(site_type: str, url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None,
                       home_html: str = "", home_final_url: str = "", allow_browser: bool = True,
-                      blocking: Blocking = inline, forced: bool = False) -> MapResult:
+                      blocking: Blocking = inline, forced: bool = False,
+                      should_stop: Optional[Stop] = None) -> MapResult:
     """The builder of a known type (not ``pdf``, which needs the document, nor the website
     crawl of ``crawl.py``). A ``forced`` type is the person's choice (R-144): a CVE archive
     without year folders at its root stays one (its files may sit under a path its pattern
-    names), where a detected one becomes a plain repository."""
+    names), where a detected one becomes a plain repository. ``should_stop`` ends a docs site's
+    sitemap reading (the one builder that hands a site on to the crawl)."""
     if site_type == "mkdocs-wiki":
         return await build_wiki(url, settings, home_html=home_html, home_final_url=home_final_url, blocking=blocking)
     if site_type == "sphinx-docs":
-        return await build_docs(url, settings, blocking=blocking)
+        return await build_docs(url, settings, blocking=blocking, should_stop=should_stop)
     if site_type == "gitbook":
         return await build_gitbook(url, settings, home_html=home_html, home_final_url=home_final_url,
                                    allow_browser=allow_browser, blocking=blocking)

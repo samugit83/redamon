@@ -37,9 +37,9 @@ class Job:
     """One ingestion job of resource ``r1`` with the request's ``settings``."""
 
     def __init__(self, root, url, settings=None, *, mode="live", store=None, model=None, forced_type="",
-                 credentials=None):
+                 credentials=None, fetcher=None):
         self.store = store or MemoryStore()
-        self.fetcher = FixtureFetcher(root)
+        self.fetcher = fetcher or FixtureFetcher(root)
         self.model = model or PipelineModel()
         spec = json.loads(json.dumps(FIXTURE))
         spec.update(job_id=JID, user_id=OWNER, actor_user_id=OWNER, resource_id=RID, settings=dict(settings or {}))
@@ -51,7 +51,7 @@ class Job:
         self.store.jobs[JID]["target_generation"] = 1
         self.state = None
 
-    def run(self):
+    def run(self, is_cancelled=None):
         async def build_llm(owner, model):
             return self.model
 
@@ -63,7 +63,7 @@ class Job:
 
         # As the job runner does (jobs.py): the request's values, clamped by the agent's spec.
         ctx = JobContext(request=self.request, settings=EffectiveSettings(self.request.settings), target_generation=1,
-                         is_cancelled=no, set_stage=stage)
+                         is_cancelled=is_cancelled or no, set_stage=stage)
         seen = {}
         original = pipeline.detect_type
 
@@ -421,3 +421,76 @@ def test_the_map_keeps_decoded_titles(tmp_path):
     assert job.run().status == "succeeded"
     titles = {e["url"]: e["title"] for e in job.store.live_entries(RID)}
     assert [titles[u] for u in pages] == ["Server Side Request Forgery", "Xss Injection", "Cross Site Request Forgery"]
+
+
+# --------------------------------------------------------------------------------------
+# The docs map's fallback chain reads each source once, within its limits
+# --------------------------------------------------------------------------------------
+
+def versioned_docs(root, maps):
+    """A Sphinx site whose index does not parse, in /docs/ beside an older version in /v9/. Its
+    robots.txt names ``maps`` (each listing only /v9/ pages, outside the resource's folder)."""
+    host = "versioned-docs.tc-fixture.test"
+    url = f"https://{host}/docs/"
+    inside = [f"{url}{p}.html" for p in ("install", "usage")]
+    outside = [f"https://{host}/v9/{p}.html" for p in ("install", "usage")]
+    head = '<meta name="generator" content="Docutils 0.20.1: https://docutils.sourceforge.io/" />'
+    files = {"/docs/": docs_page("Lab docs", inside + outside[:1], head), "/docs/searchindex.js": "Search.setIndex({broken",
+             "/robots.txt": "".join(f"Sitemap: https://{host}{m}\n" for m in maps)}
+    files.update({m: urlset(outside) for m in maps})
+    files.update({u.split(host, 1)[1]: docs_page(u.rsplit("/", 1)[-1], inside) for u in inside + outside})
+    return site(root, host, files), host, url, inside
+
+
+def test_the_docs_crawl_hand_off_reads_no_sitemap_again_and_stays_in_the_folder(tmp_path):
+    """With Auto, the hand-off's crawl started with the sitemaps again, on a fresh budget and outside
+    the folder the docs reading had just kept to; it is the model-guided crawl, in the folder."""
+    root, host, url, inside = versioned_docs(tmp_path, ["/maps/all.xml"])
+    job = Job(root, url, {"crawl.strategy": "auto"}, model=PipelineModel(follow=3))
+    assert job.run().status == "succeeded"
+    assert [u for u, _ in job.fetcher.requests if u.endswith("/maps/all.xml")] == [f"https://{host}/maps/all.xml"]
+    assert set(inside) <= set(job.urls()) and all(u.startswith(url) for u in job.urls())
+    assert job.report.stopReason.startswith("docs: no search index or sitemap, crawl (")
+    assert job.resource["crawl_stats"]["strategy"] == "llm"
+
+
+class _Signals(FixtureFetcher):
+    """Runs ``on_first`` once, right after the first sitemap download."""
+
+    def __init__(self, root, on_first):
+        super().__init__(root)
+        self.on_first = on_first
+
+    async def get(self, url, **kwargs):
+        resp = await super().get(url, **kwargs)
+        if "/maps/" in url and self.on_first is not None:
+            self.on_first, signal = None, self.on_first
+            signal()
+        return resp
+
+
+def test_the_docs_sitemap_reading_stops_on_cancel_and_on_the_time_budget(tmp_path):
+    from tradecraft import clock
+    from tradecraft_doubles import FakeClock
+
+    maps = ["/maps/a.xml", "/maps/b.xml"]
+    cancelled = {"now": False}
+    root, host, url, _inside = versioned_docs(tmp_path / "cancel", maps)
+    fetcher = _Signals(root, lambda: cancelled.update(now=True))
+
+    async def is_cancelled():
+        return cancelled["now"]
+
+    job = Job(root, url, fetcher=fetcher)
+    assert job.run(is_cancelled=is_cancelled).status == "cancelled"
+    assert not [u for u, _ in fetcher.requests if u.endswith("/maps/b.xml")]
+
+    # The crawl's time budget (180 s) bounds the reading too: the clock passes it after one file.
+    fake = FakeClock()
+    root, host, url, inside = versioned_docs(tmp_path / "time", maps)
+    fetcher = _Signals(root, lambda: fake.advance(200))
+    job = Job(root, url, fetcher=fetcher, model=PipelineModel(follow=3))
+    with clock.use_clock(fake):
+        assert job.run().status == "succeeded"
+    assert not [u for u, _ in fetcher.requests if u.endswith("/maps/b.xml")]
+    assert set(inside) <= set(job.urls())
