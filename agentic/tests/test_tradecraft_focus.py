@@ -200,13 +200,20 @@ def test_model_error_keeps_maybe(tmp_path):
 
 
 def test_everything_and_tag_only_change_nothing(tmp_path):
-    for value in ({"mode": "everything"}, {}, {"mode": "tag_only", "topics": ["sql_injection"]},
-                  {"mode": "focused"}):
+    for value in ({"mode": "everything"}, {}, {"mode": "focused"}):
         h = Harness(tmp_path / str(len(str(value))) / value.get("mode", "none"), WIKI, focus_value=value)
         h.run()
         assert h.model.triage_prompts == []
         assert all(e["status"] == "kept" for e in h.entries())
         assert h.report().skipped.outsideFocus == 0
+    # Tag only (T6.9) triages every page for its tags and drops nothing
+    # (test_tradecraft_content_checks.py::test_tag_only_drops_nothing).
+    h = Harness(tmp_path / "tag_only", WIKI, focus_value={"mode": "tag_only", "topics": ["sql_injection"]},
+                model=FocusModel(lambda t, p: ("drop", "no", ["sql_injection"], [])))
+    h.run()
+    assert h.model.triage_prompts
+    assert all(e["status"] == "kept" for e in h.entries())
+    assert h.report().skipped.outsideFocus == 0
 
 
 def test_a_focus_that_drops_every_page_is_not_a_failure(tmp_path):
