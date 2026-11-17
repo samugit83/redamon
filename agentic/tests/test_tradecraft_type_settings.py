@@ -338,6 +338,8 @@ def test_the_docs_sitemap_fallback_keeps_the_guards(tmp_path):
     maps = "maps.tc-fixture.test"
     root = hugo_site(tmp_path, **{"/robots.txt": f"Sitemap: http://127.0.0.1/sitemap.xml\nSitemap: https://{maps}/docs.xml\n"})
     site(root, maps, {"/docs.xml": urlset([HUGO_URL] + HUGO_PAGES)})
+    # Below the site root the docs' own sitemap is read first: this site has none.
+    (root / HUGO / "stable" / "sitemap.xml").unlink()
     job = Job(root, HUGO_URL, forced_type="sphinx-docs", credentials=FAKE_LOGIN)
     assert job.run().status == "succeeded"
     assert sorted(job.urls()) == sorted([HUGO_URL] + HUGO_PAGES)

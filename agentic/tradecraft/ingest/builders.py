@@ -471,14 +471,17 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
                              index_url=idx_url, truncated=cut, report_stop=_docs_stop("searchindex", entries, cut))
 
     # The site's own /sitemap.xml too: Auto reads it, and docs below the site root are often listed
-    # only there.
+    # only there. Below the root, the docs' own sitemap comes first: a company's index named by
+    # robots.txt can spend the whole budget (21 files) on pages outside the folder.
     named_by_robots = (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
     own, site_root = f"{base}/sitemap.xml", f"{robots.origin_of(base)}/sitemap.xml"
+    below_root = (urllib.parse.urlsplit(base).path or "/") != "/"
+    named = [own] + named_by_robots + [site_root] if below_root else named_by_robots + [own, site_root]
     budget = SitemapBudget(should_stop)
     is_start = same_page_as(url)
     urls, sitemap_url = await _from_sitemaps(url, [], settings, blocking, keep=in_start_folder(url), budget=budget,
                                              usable=lambda found: not all(is_start(u) for u in found),
-                                             named=named_by_robots + [own, site_root])
+                                             named=named)
     if budget.stopped == "cancelled":
         return MapResult("sphinx-docs", [], meta={"indexUrl": ""}, note=DOCS_INDEX_UNUSABLE)
     entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u)

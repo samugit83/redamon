@@ -114,6 +114,8 @@ def test_docs_sitemap_named_by_robots_and_the_map_limit(tmp_path):
     pages = [HUGO_URL] + [f"{HUGO_URL}page-{i}/" for i in range(101)]
     files = _hugo_files(**{"robots.txt": f"User-agent: *\nSitemap: https://{HUGO}/maps/docs.xml\n",
                            "maps/docs.xml": _urlset(pages)})
+    # Below the site root the docs' own sitemap is read first: this site has none.
+    del files["stable/sitemap.xml"]
     with net.use_fetcher(_site(tmp_path, HUGO, files)):
         robots_first = run(builders.build_docs(HUGO_URL, s()))
         capped = run(builders.build_docs(HUGO_URL, s(**{"knownTypes.maxMapEntries.docs": 100})))
@@ -565,3 +567,21 @@ def test_two_letter_sections_are_not_languages(tmp_path):
     # Mostly language codes: a per-language index, even with a section among them.
     mixed = [f"https://{maps}/{c}/sitemap.xml" for c in ("de", "en", "fr", "blog")]
     assert builders.language_children(mixed, ["en"]) == (mixed[1:2] + mixed[3:], [mixed[0], mixed[2]])
+
+
+def test_the_docs_own_sitemap_is_read_before_a_large_site_index(tmp_path):
+    """robots.txt names the company's index of 25 children (none in the docs folder): read first,
+    it spent the reading's budget (21 files) before the docs' own sitemap. Below the site root,
+    the docs' own sitemap is read first, in the same budget."""
+    children = [f"https://{CORP}/maps/part-{i}.xml" for i in range(25)]
+    index = '<?xml version="1.0"?><sitemapindex>' + "".join(f"<sitemap><loc>{c}</loc></sitemap>" for c in children) + "</sitemapindex>"
+    files = {"robots.txt": f"Sitemap: https://{CORP}/maps/index.xml\n", "maps/index.xml": index,
+             "docs/index.html": "<html></html>", "docs/sitemap.xml": _urlset([CORP_DOCS] + CORP_PAGES)}
+    files.update({f"maps/part-{i}.xml": _urlset([f"https://{CORP}/shop/item-{i}/"]) for i in range(25)})
+    fetcher = _site(tmp_path, CORP, files)
+    with net.use_fetcher(fetcher):
+        new = run(builders.build_docs(CORP_DOCS, s()))
+    assert [e.url for e in new.entries] == [CORP_DOCS] + CORP_PAGES and not new.crawl_fallback
+    assert new.report_stop == "docs: no search index, sitemap.xml (4 pages)"
+    sitemaps = [u for u, _ in fetcher.requests if u.endswith(".xml")]
+    assert sitemaps == [f"{CORP_DOCS}sitemap.xml"]
