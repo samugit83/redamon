@@ -12,7 +12,7 @@ vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.
 import { setNowForTests } from '@/lib/authz/clock'
 import { effectiveSettings } from '../effectiveSettings'
 import { ingestionHash } from '../staleness'
-import { legacyEntryCount, listResourcesV2, resourceViewOf } from './list'
+import { bulkRefreshOffer, legacyEntryCount, listResourcesV2, resourceViewOf } from './list'
 
 const T0 = Date.parse('2026-11-16T10:00:00Z')
 const USER = { ingestion: { 'crawl.maxPages': 90 } }
@@ -109,5 +109,21 @@ describe('overrides in the view', () => {
     const list = await listResourcesV2('owner')
     expect(list.find(r => r.id === 'r-v1')!.overrides).toEqual({ 'crawl.maxPages': 40 })
     expect(list.find(r => r.id === 'r-v3')!.overrides).toEqual({})
+  })
+})
+
+describe('bulkRefreshOffer (T9.1, §7.2)', () => {
+  test('offered while a converted resource (map version 2) exists, until the person answered once', async () => {
+    expect(await bulkRefreshOffer('owner')).toBe(false)
+    h.db.seed('userTradecraftResource', { id: 'r-v2', userId: 'owner', name: 'Converted', slug: 'conv', url: 'https://conv.example.test/', mapVersion: 2 })
+    expect(await bulkRefreshOffer('owner')).toBe(true)
+    expect(await bulkRefreshOffer('other')).toBe(false)
+    h.db.rows('tradecraftUserSettings', { userId: 'owner' })[0].bulkRefreshOfferedAt = new Date(T0)
+    expect(await bulkRefreshOffer('owner')).toBe(false)
+  })
+
+  test('an account with no settings row is offered too (a conversion needs no row)', async () => {
+    h.db.seed('userTradecraftResource', { id: 'r-v2b', userId: 'other', name: 'Converted', slug: 'conv', url: 'https://conv.example.test/', mapVersion: 2 })
+    expect(await bulkRefreshOffer('other')).toBe(true)
   })
 })

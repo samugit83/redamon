@@ -163,12 +163,17 @@ export const tradecraftClient = {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ v2Enabled }),
     }, "Couldn't change the Tradecraft 2.0 switch"),
   getSettings: (userId: string) =>
-    fetchJson<{ v2Enabled: boolean; ingestion?: IngestionSettingsView; recipes?: UserRecipe[]; search?: SearchSettingsView }>(
+    fetchJson<{ v2Enabled: boolean; ingestion?: IngestionSettingsView; recipes?: UserRecipe[]; search?: SearchSettingsView; offerBulkRefresh?: boolean }>(
       `/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, undefined, "Couldn't read your ingestion settings"),
   saveSettings: (userId: string, ingestion: Record<string, unknown>) =>
     fetchJson<{ v2Enabled: true; ingestion: IngestionSettingsView }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ ingestion }),
     }, "Couldn't save your ingestion settings"),
+  /** The person answered the Save & refresh all offer after the conversion (§7.2), either way. */
+  answerBulkRefreshOffer: (userId: string) =>
+    fetchJson<{ v2Enabled: true; offerBulkRefresh: false }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ bulkRefreshOffered: true }),
+    }, "Couldn't save your answer"),
   refreshAll: (userId: string, resourceIds: string[]) =>
     fetchJson<RefreshAllResult>(`${resources(userId)}/refresh-all`, {
       method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ resourceIds }),

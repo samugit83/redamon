@@ -19,11 +19,23 @@ vi.stubEnv('INTERNAL_API_KEY', 'ik-test-tradecraft-0001')
 const h = vi.hoisted(() => ({
   auth: undefined as string | undefined,
   actAs: undefined as string | undefined,
-  rows: new Map<string, { v2Enabled: boolean; v2EnabledAt: Date | null; ingestion?: Record<string, unknown>; recipes?: unknown; search?: Record<string, unknown>; synonyms?: unknown }>(),
+  rows: new Map<string, { v2Enabled: boolean; v2EnabledAt: Date | null; ingestion?: Record<string, unknown>; recipes?: unknown; search?: Record<string, unknown>; synonyms?: unknown; bulkRefreshOfferedAt?: Date | null }>(),
   audits: [] as Record<string, unknown>[],
   writes: [] as string[],
   reads: 0,
   readError: null as Error | null,
+  convertCalls: [] as string[],
+  convertAnswer: { status: 200, body: { queued: 2 } as unknown } as { status: number; body: unknown } | 'unreachable',
+  converted: 0,
+}))
+
+vi.mock('@/lib/agentFetch', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  agentFetch: vi.fn(async (path: string) => {
+    h.convertCalls.push(path)
+    if (h.convertAnswer === 'unreachable') throw new Error('connect ECONNREFUSED')
+    return new Response(JSON.stringify(h.convertAnswer.body), { status: h.convertAnswer.status })
+  }),
 }))
 
 vi.mock('next/headers', () => ({
@@ -67,6 +79,7 @@ vi.mock('@/lib/prisma', () => {
           ? { id: where.id, email: `${where.id}@e2e.local`, name: where.id, createdAt: new Date(0), ...ACCOUNTS[where.id] }
           : null
       }
+      if (name === 'userTradecraftResource' && op === 'count') return async () => h.converted
       if (READS.has(op)) return async () => (op === 'findMany' || op === 'groupBy' ? [] : op === 'count' ? 0 : null)
       return async () => { h.writes.push(`${name}.${op}`); throw new Error(`unexpected write ${name}.${op}`) }
     },
@@ -119,6 +132,9 @@ beforeEach(async () => {
   h.writes = []
   h.reads = 0
   h.readError = null
+  h.convertCalls = []
+  h.convertAnswer = { status: 200, body: { queued: 2 } }
+  h.converted = 0
   vi.mocked(requireSelfPermission).mockClear()
   vi.spyOn(console, 'info').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -451,5 +467,52 @@ describe('the search settings (Configure search, T7.2)', () => {
     expect((await put('managed', { search: { 'search.results': 9 } })).status).toBe(403)
     expect(h.rows.get('managed')!.search).toBeUndefined()
     expect((await put('victim', { search: { 'search.results': 9 }, reset: 'search' })).status).toBe(400)
+  })
+})
+
+describe('the conversion of 1.x resources (T9.1)', () => {
+  test('switch_on_triggers_convert: turning 2.0 on asks the agent to convert the account; off asks nothing', async () => {
+    expect(await answer(await put('victim', { v2Enabled: true }))).toEqual({ status: 200, body: { v2Enabled: true } })
+    expect(h.convertCalls).toEqual(['/tradecraft/v2/users/victim/convert'])
+    expect(await answer(await put('victim', { v2Enabled: false }))).toEqual({ status: 200, body: { v2Enabled: false } })
+    expect(h.convertCalls).toHaveLength(1)
+  })
+
+  test('the conversion is best effort: a refusing or unreachable agent never fails the switch', async () => {
+    h.convertAnswer = { status: 503, body: { error_code: 'internal_error' } }
+    expect(await answer(await put('victim', { v2Enabled: true }))).toEqual({ status: 200, body: { v2Enabled: true } })
+    h.rows.get('victim')!.v2Enabled = false
+    h.convertAnswer = 'unreachable'
+    expect(await answer(await put('victim', { v2Enabled: true }))).toEqual({ status: 200, body: { v2Enabled: true } })
+    expect(h.rows.get('victim')!.v2Enabled).toBe(true)
+    expect(h.convertCalls).toHaveLength(2)
+  })
+
+  test('a request the switch refuses asks for no conversion', async () => {
+    h.auth = undefined
+    expect((await put('victim', { v2Enabled: true })).status).toBe(401)
+    expect(h.convertCalls).toEqual([])
+  })
+
+  test('offer_once: offered while a converted resource exists and the person never answered; either answer ends it', async () => {
+    h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
+    expect((await answer(await get('victim'))).body.offerBulkRefresh).toBe(false)
+    h.converted = 3
+    expect((await answer(await get('victim'))).body.offerBulkRefresh).toBe(true)
+    expect(await answer(await put('victim', { bulkRefreshOffered: true }))).toEqual({ status: 200, body: { v2Enabled: true, offerBulkRefresh: false } })
+    const at = h.rows.get('victim')!.bulkRefreshOfferedAt
+    expect(at).toBeInstanceOf(Date)
+    expect((await answer(await get('victim'))).body.offerBulkRefresh).toBe(false)
+    await put('victim', { bulkRefreshOffered: true })
+    expect(h.rows.get('victim')!.bulkRefreshOfferedAt).toBe(at)
+  })
+
+  test('the answer needs 2.0 on, a person and the account; anything but true is a 400', async () => {
+    expect((await answer(await put('victim', { bulkRefreshOffered: true }))).status).toBe(404)
+    h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
+    expect((await answer(await put('victim', { bulkRefreshOffered: false }))).status).toBe(400)
+    expect((await answer(await put('victim', { bulkRefreshOffered: true }, {}))).status).toBe(200)
+    h.auth = await createToken('admin-1', 'admin')
+    expect((await put('victim', { bulkRefreshOffered: true })).status).toBe(403)
   })
 })

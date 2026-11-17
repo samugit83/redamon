@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from tradecraft import api as tc_api  # noqa: E402
 from tradecraft import net  # noqa: E402
 from tradecraft import jobs  # noqa: E402
-from tradecraft.contract import JobStartAnswer, JobStartBatch, PreviewResult, ReadNowResult, ROUTES  # noqa: E402
+from tradecraft.contract import ConvertAnswer, JobStartAnswer, JobStartBatch, PreviewResult, ReadNowResult, ROUTES  # noqa: E402
 from tradecraft.settings import EffectiveSettings  # noqa: E402
 from tradecraft_doubles import FixtureFetcher  # noqa: E402
 from tradecraft_memory_store import MemoryStore  # noqa: E402
@@ -45,6 +45,7 @@ class FakeRunner:
         self.batches: list[JobStartBatch] = []
         self.cancelled: list[str] = []
         self.users: list[str] = []
+        self.converted: list[str] = []
         self.fail = False
 
     async def submit(self, batch):
@@ -59,6 +60,12 @@ class FakeRunner:
     async def cancel_user(self, user_id):
         self.users.append(user_id)
         return 3
+
+    async def convert(self, user_id):
+        if self.fail:
+            raise OSError("database down")
+        self.converted.append(user_id)
+        return 2
 
 
 class Limits:
@@ -235,13 +242,17 @@ def test_the_runner_hands_the_settings_to_the_pipeline():
     assert seen == {"pages": 120, "types": [".md", ".txt", ".rst"]}
 
 
-# Check URL left this list with T4.1, the focus preview with T5.3 and Read now with T6.6:
-# tests/test_tradecraft_check_url.py, test_tradecraft_preview.py and test_tradecraft_read_now.py hold
-# what they answer.
-@pytest.mark.parametrize("path,body", [p for p in POSTS if p[0].endswith("convert")])
-def test_stubs_answer_501(client, path, body):
-    resp = client.post(path, json=body, headers=H)
-    assert resp.status_code == 501 and resp.json() == {"error_code": "not_implemented"}
+# Check URL left the stubs with T4.1, the focus preview with T5.3, Read now with T6.6 and the
+# conversion with T9.1: tests/test_tradecraft_check_url.py, test_tradecraft_preview.py,
+# test_tradecraft_read_now.py and test_tradecraft_convert*.py hold what they answer.
+def test_convert_answers_the_contract(client):
+    resp = client.post("/tradecraft/v2/users/user_owner_fake/convert", json={}, headers=H)
+    assert resp.status_code == 200
+    assert ConvertAnswer.model_validate(resp.json()).queued == 2
+    assert client.runner.converted == ["user_owner_fake"]
+    client.runner.fail = True
+    down = client.post("/tradecraft/v2/users/user_owner_fake/convert", json={}, headers=H)
+    assert down.status_code == 503 and down.json() == {"error_code": "internal_error"}
 
 
 def test_read_now_answers_the_contract(client):

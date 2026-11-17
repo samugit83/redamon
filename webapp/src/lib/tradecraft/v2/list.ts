@@ -140,3 +140,15 @@ export async function listResourcesV2(ownerId: string): Promise<ResourceView[]> 
 export async function resourceViewOf(ownerId: string, resourceId: string): Promise<ResourceView | null> {
   return (await views(ownerId, { id: resourceId }))[0] ?? null
 }
+
+/**
+ * Whether Settings → Tradecraft offers Save & refresh all (§7.2, R-216): while a resource converted
+ * from 1.x (map version 2, title-only cards) is in the library, until the person answered the offer once.
+ */
+export async function bulkRefreshOffer(ownerId: string): Promise<boolean> {
+  const [row, converted] = await Promise.all([
+    prisma.tradecraftUserSettings.findUnique({ where: { userId: ownerId }, select: { bulkRefreshOfferedAt: true } }),
+    prisma.userTradecraftResource.count({ where: { userId: ownerId, mapVersion: 2 } }),
+  ])
+  return !row?.bulkRefreshOfferedAt && converted > 0
+}

@@ -10,6 +10,9 @@
  */
 import { randomUUID } from 'node:crypto'
 import prisma from '@/lib/prisma'
+import { agentFetch } from '@/lib/agentFetch'
+import { now } from '@/lib/authz/clock'
+import { AGENT_ROUTES, ConvertAnswer } from './agentContract'
 import { MAX_USER_RECIPES, RECIPE_NAME_MAX, type UserRecipe } from './focus'
 import { lockTradecraftUserSettings } from './switch'
 import { foreignSkillTopics, validateKinds, validateTopics } from './v2/focusFields'
@@ -375,5 +378,50 @@ async function writeSearch(
       await tx.tradecraftUserSettings.upsert({ where: { userId }, create: { userId, ...data }, update: data })
     }
     return searchViewOf(after, nextSynonyms)
+  })
+}
+
+// --- the conversion of 1.x resources (T9.1) ---------------------------------------------
+
+const CONVERT_TIMEOUT_MS = 10_000
+
+/**
+ * Asks the agent to convert the account's 1.x resources (§7.2), after 2.0 is turned on; answers
+ * how many it queued, or null when it did not answer. Best effort: the conversion is idempotent
+ * and the agent's boot sweep converts what a missed call left, so a refusal or an unreachable
+ * agent is logged, never an error of the switch.
+ */
+export async function startConversion(userId: string): Promise<number | null> {
+  try {
+    const resp = await agentFetch(AGENT_ROUTES.convert(userId), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    }, { timeoutMs: CONVERT_TIMEOUT_MS })
+    if (!resp.ok) {
+      console.error(`[tradecraft] convert_refused status=${resp.status}`)
+      return null
+    }
+    const answer = ConvertAnswer.safeParse(await resp.json().catch(() => null))
+    return answer.success ? answer.data.queued : null
+  } catch {
+    console.error('[tradecraft] convert_unreachable')
+    return null
+  }
+}
+
+/**
+ * Records the person's answer to the Save & refresh all offer (§7.2: it is offered once), whichever
+ * it was. Under the account's row lock, so the first answer's time stays.
+ */
+export async function markBulkRefreshOffered(userId: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await lockTradecraftUserSettings(tx, userId)
+    const row = await tx.tradecraftUserSettings.findUnique({ where: { userId }, select: { bulkRefreshOfferedAt: true } })
+    if (row?.bulkRefreshOfferedAt) return
+    const at = now()
+    await tx.tradecraftUserSettings.upsert({
+      where: { userId },
+      create: { userId, bulkRefreshOfferedAt: at },
+      update: { bulkRefreshOfferedAt: at },
+    })
   })
 }

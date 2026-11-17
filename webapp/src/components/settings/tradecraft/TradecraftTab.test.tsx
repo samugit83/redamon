@@ -334,6 +334,40 @@ describe('TradecraftTab and the 2.0 switch', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  test('offer_once (T9.1, §7.2): converted resources offer Save & refresh all; accepting records the answer and opens its confirmation', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true, offerBulkRefresh: true } }
+    routes[`PUT ${SETTINGS}`] = { status: 200, body: { v2Enabled: true, offerBulkRefresh: false } }
+    routes[`GET ${BASE}`] = { status: 200, body: [{ ...V2_RESOURCE, mapVersion: 2 }] }
+    routes[`POST ${BASE}/refresh-all`] = { status: 200, body: { bulkId: 'b1', started: [{ resourceId: 'r1', jobId: 'j1' }], skipped: [] } }
+    renderTab()
+    const offer = await screen.findByTestId('bulk-refresh-offer')
+    expect(offer).toHaveTextContent('Refresh them for headings, descriptions and search inside pages')
+    fireEvent.click(within(offer).getByRole('button', { name: 'Save & refresh all' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Save & refresh all' })
+    expect(screen.queryByTestId('bulk-refresh-offer')).toBeNull()
+    expect(calls('PUT', SETTINGS).map(c => JSON.parse(String((c[1] as RequestInit).body)))).toEqual([{ bulkRefreshOffered: true }])
+    expect(calls('POST', `${BASE}/refresh-all`)).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save & refresh 1' }))
+    await waitFor(() => expect(calls('POST', `${BASE}/refresh-all`)).toHaveLength(1))
+    expect(JSON.parse(String((calls('POST', `${BASE}/refresh-all`)[0][1] as RequestInit).body))).toEqual({ resourceIds: ['r1'] })
+  })
+
+  test('offer_once: "Not now" records the answer and starts nothing; no offer once answered', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true, offerBulkRefresh: true } }
+    routes[`PUT ${SETTINGS}`] = { status: 200, body: { v2Enabled: true, offerBulkRefresh: false } }
+    routes[`GET ${BASE}`] = { status: 200, body: [{ ...V2_RESOURCE, mapVersion: 2 }] }
+    renderTab()
+    fireEvent.click(within(await screen.findByTestId('bulk-refresh-offer')).getByRole('button', { name: 'Not now' }))
+    await waitFor(() => expect(screen.queryByTestId('bulk-refresh-offer')).toBeNull())
+    expect(calls('PUT', SETTINGS)).toHaveLength(1)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    cleanup()
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true, offerBulkRefresh: false } }
+    renderTab()
+    await screen.findByText('Lab Wiki')
+    expect(screen.queryByTestId('bulk-refresh-offer')).toBeNull()
+  })
+
   test('a switch that cannot be read: the 1.x tab, without the switch', async () => {
     routes[`GET ${SETTINGS}`] = { status: 403, body: { error: 'Forbidden', code: 'forbidden' } }
     renderTab()

@@ -15,9 +15,13 @@ import { V2Switch } from './V2Switch'
 import { ResourceListV2 } from './ResourceListV2'
 import { ConfigureIngestionDialog } from './ConfigureIngestionDialog'
 import { ConfigureSearchDialog } from './ConfigureSearchDialog'
+import { RefreshAllConfirm } from './dialog/RefreshAllConfirm'
+import tc from './tradecraft.module.css'
 import { LibrarianModelLine, NoLibrarianBanner, librarianMissing, useLibrarianModel } from './LibrarianModel'
 
 const TRADECRAFT_LOAD_FAILED = "Couldn't load your tradecraft resources"
+export const BULK_REFRESH_OFFER_TEXT = 'Your resources were converted to Tradecraft 2.0 from their saved maps, without '
+  + 'reading their pages. Refresh them for headings, descriptions and search inside pages.'
 
 type TcResource = TradecraftResource & {
   crawlStoppedBecause?: string
@@ -72,14 +76,55 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
   // Librarian use (Q11): with "Search only" no librarian model is needed, so none is missing.
   const [librarianUse, setLibrarianUse] = useState<string | null>(null)
   const [searchKey, setSearchKey] = useState(0)
+  // Save & refresh all, offered once after the conversion of 1.x resources (§7.2, T9.1).
+  const [offer, setOffer] = useState(false)
+  const [offerError, setOfferError] = useState('')
+  const [confirming, setConfirming] = useState<{ id: string; name: string }[] | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState('')
   const librarian = useLibrarianModel(userId, { checkUsable: librarianUse === 'agent' && (resourceCount ?? 0) > 0 })
   useEffect(() => {
     let live = true
     tradecraftClient.getSettings(userId)
-      .then(s => { if (live) setLibrarianUse(typeof s.search?.values['librarian.use'] === 'string' ? s.search.values['librarian.use'] as string : null) })
+      .then(s => {
+        if (!live) return
+        setLibrarianUse(typeof s.search?.values['librarian.use'] === 'string' ? s.search.values['librarian.use'] as string : null)
+        setOffer(s.offerBulkRefresh === true)
+      })
       .catch(() => { if (live) setLibrarianUse(null) })
     return () => { live = false }
   }, [userId, searchKey])
+
+  /** Either answer is recorded, so the offer is never shown again; accepting opens the confirmation. */
+  const answerOffer = async (accept: boolean) => {
+    setOfferError('')
+    try {
+      await tradecraftClient.answerBulkRefreshOffer(userId)
+      setOffer(false)
+      if (accept) {
+        const list = await tradecraftClient.list(userId)
+        setRefreshError('')
+        setConfirming(list.filter(r => r.enabled).map(r => ({ id: r.id, name: r.name })))
+      }
+    } catch (e) {
+      setOfferError(actionFailedText(accept ? 'Save & refresh all' : 'Not now', e))
+    }
+  }
+
+  const refreshAll = async (ids: string[]) => {
+    setRefreshing(true)
+    setRefreshError('')
+    try {
+      const started = await tradecraftClient.refreshAll(userId, ids)
+      setConfirming(null)
+      toast.success(refreshAllText(started))
+      setListKey(k => k + 1)
+    } catch (e) {
+      setRefreshError(actionFailedText('Save & refresh all', e))
+    } finally {
+      setRefreshing(false)
+    }
+  }
   const noLibrarian = librarianUse === 'agent' && (resourceCount ?? 0) > 0 && librarianMissing(librarian.state)
   return (
     <div className={styles.section}>
@@ -94,6 +139,20 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
         background: its card shows the stage, and Refresh becomes Cancel while it runs. Live resources are
         read from their site at every read; Stored ones keep a copy in your database.
       </p>
+      {offer && (
+        <div className={`${tc.switchBar} ${tc.badgeInfo}`} role="status" data-testid="bulk-refresh-offer">
+          <span>{BULK_REFRESH_OFFER_TEXT}</span>
+          <button type="button" className="primaryButton" onClick={() => void answerOffer(true)}>Save &amp; refresh all</button>
+          <button type="button" className="secondaryButton" onClick={() => void answerOffer(false)}>Not now</button>
+          {offerError && <span className={tc.failure} role="alert">{offerError}</span>}
+        </div>
+      )}
+      {confirming && (
+        <RefreshAllConfirm
+          resources={confirming} busy={refreshing} error={refreshError}
+          onConfirm={ids => void refreshAll(ids)} onCancel={() => setConfirming(null)}
+        />
+      )}
       {noLibrarian && <NoLibrarianBanner onChoose={librarian.choose} />}
       <LibrarianModelLine state={librarian.state} onChoose={librarian.choose} />
       <ResourceListV2

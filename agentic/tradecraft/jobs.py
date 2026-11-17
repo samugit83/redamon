@@ -133,6 +133,21 @@ class JobRunner:
     def _lease_until(self):
         return self._now() + timedelta(seconds=self.lease_sec)
 
+    def lease_until(self):
+        return self._lease_until()
+
+    def hold(self, job_id: str, user_id: str) -> None:
+        """Renews the lease of a job this copy runs outside the queue (a conversion, T9.1)
+        until ``release_hold``."""
+        self._held[job_id] = user_id
+        self._ensure_lease_task()
+
+    def release_hold(self, job_id: str) -> None:
+        self._held.pop(job_id, None)
+
+    def spawn(self, coro_fn: Callable[[], Awaitable[Any]], name: str) -> asyncio.Task:
+        return self._spawn(coro_fn, name)
+
     def _spawn(self, coro_fn: Callable[[], Awaitable[Any]], name: str) -> asyncio.Task:
         """A task in a fresh context, with only the runner's clock and fetcher bound."""
 
@@ -424,6 +439,12 @@ class JobRunner:
         await self.store.request_cancel(user, job_id)
         await self._cancel_local(job_id, user)
 
+    async def convert(self, user_id: str) -> int:
+        """Queues the conversion of the account's 1.x resources (T9.1); returns how many."""
+        from tradecraft import convert  # it imports the pipeline's stages
+
+        return await convert.start(self, user_id)
+
     async def cancel_user(self, user_id: str) -> int:
         """Sets the cancel flag of every unfinished job of the user, on every copy, and stops
         the ones this copy holds; returns how many were unfinished."""
@@ -510,7 +531,9 @@ def set_runner_for_tests(runner: Optional[JobRunner]) -> None:
 
 async def recover_on_boot() -> None:
     """Called once from the agent's start-up. Never raises: a store that cannot be reached
-    (no DATABASE_URL in a hand-run agent) leaves recovery to the next start."""
+    (no DATABASE_URL in a hand-run agent) leaves recovery to the next start. Then the boot
+    sweep converts the accounts' unconverted resources in the background (T9.1): after the
+    recovery, so a conversion that died with the previous process holds no claim any more."""
     runner = get_runner()
     try:
         count = await runner.recover()
@@ -519,3 +542,6 @@ async def recover_on_boot() -> None:
         logger.warning(f"[tradecraft] boot recovery skipped error={type(exc).__name__}")
         return
     runner.schedule_second_recovery()
+    from tradecraft import convert  # it imports the pipeline's stages: only once the agent runs
+
+    runner.spawn(lambda: convert.boot_sweep(runner), "tradecraft-convert-sweep")

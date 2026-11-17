@@ -6,15 +6,16 @@ import { internalError } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { setTradecraftV2, tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 import {
-  editRecipes, readIngestionSettings, readRecipes, readSearchSettings, resetIngestionSettings, resetSearchSettings,
-  saveIngestionSettings, saveSearchSettings, type SaveResult, type SearchSaveResult,
+  editRecipes, markBulkRefreshOffered, readIngestionSettings, readRecipes, readSearchSettings, resetIngestionSettings,
+  resetSearchSettings, saveIngestionSettings, saveSearchSettings, startConversion, type SaveResult, type SearchSaveResult,
 } from '@/lib/tradecraft/userSettings'
+import { bulkRefreshOffer } from '@/lib/tradecraft/v2/list'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-const BAD_BODY = 'Body must be {"v2Enabled": boolean}, {"ingestion": {<key>: <value>}}, {"search": {<key>: <value>, "synonyms"?: [...]}}, {"reset": "<section>" | "all" | "search"} or {"recipes": {"add" | "rename" | "delete": ...}}'
+const BAD_BODY = 'Body must be {"v2Enabled": boolean}, {"ingestion": {<key>: <value>}}, {"search": {<key>: <value>, "synonyms"?: [...]}}, {"reset": "<section>" | "all" | "search"}, {"recipes": {"add" | "rename" | "delete": ...}} or {"bulkRefreshOffered": true}'
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -46,8 +47,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
     if (!(await tradecraftV2Enabled(id))) return NextResponse.json({ v2Enabled: false })
-    const [ingestion, recipes, search] = await Promise.all([readIngestionSettings(id), readRecipes(id), readSearchSettings(id)])
-    return NextResponse.json({ v2Enabled: true, ingestion, recipes, search })
+    const [ingestion, recipes, search, offerBulkRefresh] = await Promise.all([
+      readIngestionSettings(id), readRecipes(id), readSearchSettings(id), bulkRefreshOffer(id),
+    ])
+    return NextResponse.json({ v2Enabled: true, ingestion, recipes, search, offerBulkRefresh })
   } catch (error) {
     return internalError(error, 'Failed to read the Tradecraft settings')
   }
@@ -58,6 +61,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 //     | { search: { <key>: <value>, synonyms?: [{ term, expansion }] } } (Configure search, Q11: user level only;
 //       the agent reads it from the next message, nothing is re-ingested)
 //     | { recipes: { add: { name, topics, kinds } } | { rename: { id, name } } | { delete: "<id>" } }
+//     | { bulkRefreshOffered: true } (the person answered the Save & refresh all offer, either way, T9.1)
+// Turning 2.0 on asks the agent to convert the account's 1.x resources (best effort, T9.1).
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id } = await params
@@ -76,7 +81,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (keys.length !== 1) return NextResponse.json({ error: BAD_BODY }, { status: 400 })
     if (typeof body.v2Enabled === 'boolean') {
       await setTradecraftV2(actor, id, body.v2Enabled)
+      if (body.v2Enabled) await startConversion(id)
       return NextResponse.json({ v2Enabled: body.v2Enabled })
+    }
+    if (body.bulkRefreshOffered === true) {
+      if (!(await tradecraftV2Enabled(id))) return V2_OFF()
+      await markBulkRefreshOffered(id)
+      return NextResponse.json({ v2Enabled: true, offerBulkRefresh: false })
     }
     if (isPlainObject(body.ingestion)) {
       if (!(await tradecraftV2Enabled(id))) return V2_OFF()
