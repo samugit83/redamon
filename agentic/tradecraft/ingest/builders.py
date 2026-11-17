@@ -298,11 +298,13 @@ def _nav_links(html: str, page_url: str, selector: str) -> list[tuple[str, str]]
 
 async def _from_sitemaps(url: str, configured: list[str], settings: EffectiveSettings, blocking: Blocking,
                          keep: Optional[Callable[[str], bool]] = None,
-                         budget: Optional[SitemapBudget] = None) -> tuple[list[str], str]:
-    """The first sitemap that lists pages (that ``keep`` accepts, when given): the resource's own
-    URLs (§6.5; they replace ``/sitemap.xml`` at the resource's URL, which is read only when none
-    is set), and the ones a ``Sitemap:`` line of robots.txt names. An index of per-language
-    copies is read in the language the map will keep first (``preferred_languages``)."""
+                         budget: Optional[SitemapBudget] = None,
+                         usable: Optional[Callable[[list[str]], bool]] = None) -> tuple[list[str], str]:
+    """The first sitemap that lists pages (that ``keep`` accepts, and that ``usable`` takes for a
+    map, when given): the resource's own URLs (§6.5; they replace ``/sitemap.xml`` at the
+    resource's URL, which is read only when none is set), and the ones a ``Sitemap:`` line of
+    robots.txt names. An index of per-language copies is read in the language the map will keep
+    first (``preferred_languages``)."""
     base = url.rstrip("/")
     named = [urllib.parse.urljoin(base + "/", sm.strip()) for sm in configured if sm.strip()]
     named += (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
@@ -314,9 +316,23 @@ async def _from_sitemaps(url: str, configured: list[str], settings: EffectiveSet
         urls = await sitemap_urls(sm, settings, blocking=blocking, budget=budget, languages=languages)
         if keep is not None:
             urls = [u for u in urls if keep(u)]
-        if urls or budget.stopped:
+        if (usable(urls) if usable is not None else urls) or budget.stopped:
             return urls, sm if urls else ""
     return [], ""
+
+
+def same_page_as(start_url: str) -> Callable[[str], bool]:
+    """Whether a URL names the start page: the same host with or without ``www.``, either scheme,
+    with or without a trailing slash. A company's root sitemap names its docs root that way."""
+    def key(url: str) -> Optional[tuple]:
+        try:
+            parts = urllib.parse.urlsplit(fetch.canonical_url(url))
+            return ((parts.hostname or "").removeprefix("www."), parts.port, parts.path.rstrip("/") or "/", parts.query)
+        except ValueError:
+            return None
+
+    start = key(start_url)
+    return lambda url: key(url) == start
 
 
 def in_start_folder(start_url: str) -> Callable[[str], bool]:
@@ -418,9 +434,10 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
                      should_stop: Optional[Stop] = None) -> MapResult:
     """The search index; when it lists nothing (none found, another tool's file of that name, one
     that does not parse), the sitemaps, kept to the resource's folder, in one budget that
-    ``should_stop`` (the job's cancel and time budget) can end; when they list nothing but the
-    start page, ``crawl_fallback``: a homepage alone is no map of a docs site. A cancel ends the
-    builder with nothing, and no crawl is asked for."""
+    ``should_stop`` (the job's cancel and time budget) can end. A sitemap that lists nothing there
+    but the start page (or an alias of it, ``same_page_as``) is passed over for the next one; when
+    none lists more, ``crawl_fallback``: a homepage alone is no map of a docs site. A cancel ends
+    the builder with nothing, and no crawl is asked for."""
     base = url.rstrip("/")
     cap = settings.int("knownTypes.maxMapEntries.docs")
     configured = settings.str("type.docs.searchIndexUrl")
@@ -438,13 +455,14 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
                              index_url=idx_url, truncated=cut, report_stop=_docs_stop("searchindex", entries, cut))
 
     budget = SitemapBudget(should_stop)
-    urls, sitemap_url = await _from_sitemaps(url, [], settings, blocking, keep=in_start_folder(url), budget=budget)
+    is_start = same_page_as(url)
+    urls, sitemap_url = await _from_sitemaps(url, [], settings, blocking, keep=in_start_folder(url), budget=budget,
+                                             usable=lambda found: not all(is_start(u) for u in found))
     if budget.stopped == "cancelled":
         return MapResult("sphinx-docs", [], meta={"indexUrl": ""}, note=DOCS_INDEX_UNUSABLE)
     entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u)
                             for u in language_filter(urls, settings)], cap)
-    start = fetch.canonical_url(url)
-    if any(e.url != start for e in entries):
+    if any(not is_start(e.url) for e in entries):
         source = "sitemap.xml" if sitemap_url == f"{base}/sitemap.xml" else "robots"
         return MapResult("sphinx-docs", entries, meta={"indexUrl": ""}, index_kind="sitemap", index_url=sitemap_url,
                          truncated=cut, note=DOCS_INDEX_UNUSABLE,

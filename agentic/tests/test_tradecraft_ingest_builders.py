@@ -509,3 +509,36 @@ def test_the_search_index_payload_is_found_in_one_pass():
     assert builders._sphinx_index_entries('Search.setIndex({"docnames": ["a/b"], "titles": ["B"]})', base) == [
         ("B", f"{base}/a/b.html")]
     assert builders._sphinx_index_entries("no payload here }{", base) == []
+
+
+# --------------------------------------------------------------------------------------
+# The docs sitemap reading takes the start page alone, or an alias of it, as no map
+# --------------------------------------------------------------------------------------
+
+CORP = "corp.tc-fixture.test"
+CORP_DOCS = f"https://{CORP}/docs/"
+CORP_PAGES = [f"{CORP_DOCS}{p}/" for p in ("install", "usage", "api")]
+
+
+def test_a_sitemap_listing_only_the_docs_root_is_passed_over(tmp_path):
+    """robots.txt names the company's root sitemap: inside the docs folder it lists only the docs
+    root, so the reading goes on to the docs' own sitemap instead of asking for the crawl."""
+    root_map = _urlset([CORP_DOCS, f"https://{CORP}/pricing/", f"https://{CORP}/about/"])
+    fetcher = _site(tmp_path, CORP, {"robots.txt": f"Sitemap: https://{CORP}/sitemap.xml\n", "sitemap.xml": root_map,
+                                      "docs/index.html": "<html></html>", "docs/sitemap.xml": _urlset([CORP_DOCS] + CORP_PAGES)})
+    with net.use_fetcher(fetcher):
+        new = run(builders.build_docs(CORP_DOCS, s()))
+    assert [e.url for e in new.entries] == [CORP_DOCS] + CORP_PAGES and not new.crawl_fallback
+    assert new.index_url == f"{CORP_DOCS}sitemap.xml" and new.report_stop == "docs: no search index, sitemap.xml (4 pages)"
+
+
+def test_an_alias_of_the_start_page_is_the_start_page(tmp_path):
+    """The root sitemap names the docs root with www. or http: still the start page alone, so no
+    one-entry map comes back as a success."""
+    for alias in (f"https://www.{CORP}/docs/", f"http://{CORP}/docs/", f"http://www.{CORP}/docs"):
+        root_map = _urlset([alias, f"https://{CORP}/pricing/"])
+        fetcher = _site(tmp_path / alias.split(":")[0] / str(len(alias)), CORP, {
+            "robots.txt": f"Sitemap: https://{CORP}/sitemap.xml\n", "sitemap.xml": root_map, "docs/index.html": "<html></html>"})
+        with net.use_fetcher(fetcher):
+            new = run(builders.build_docs(CORP_DOCS, s()))
+        assert new.entries == [] and new.crawl_fallback, alias
