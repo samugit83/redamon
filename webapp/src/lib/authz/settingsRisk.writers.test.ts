@@ -94,6 +94,7 @@ const OWNER_OR_SYSTEM: Record<string, string> = {
   'src/lib/reconPresets/badges.ts': "the preset owner's own projects' badge",
   'src/lib/userSkillWrites.ts': "the skill author's own projects (where: {userId})",
   'scripts/backfill-jev-provider-selection.mjs': 'system: a one-time backfill the operator runs at install or update',
+  'scripts/backfill-tradecraft-phases.mjs': 'system: a one-time backfill the operator runs at install or update',
   'scripts/backfill-user-skill-toggles.mjs': 'system: a one-time backfill the operator runs at install or update',
   'scripts/clamp-triage-review-budget.mjs': 'system: clamps stored budgets at install or update',
   'scripts/e2e-rbac-seed.mjs': 'system: the live test seed of synthetic fixtures',

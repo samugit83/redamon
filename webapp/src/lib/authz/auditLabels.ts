@@ -269,6 +269,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'system.user_skill_toggles_backfill': 'Attack skill toggles set at the upgrade',
     'system.jev_provider_selection_cutoff': 'Model provider choice cut-off recorded',
     'system.jev_provider_selection_backfill': 'Model provider choices set at the upgrade',
+    'system.tradecraft_phases_cutoff': 'Tradecraft phases cut-off recorded',
+    'system.tradecraft_phases_backfill': 'Tradecraft tools moved to every phase at the upgrade',
   }),
 })
 

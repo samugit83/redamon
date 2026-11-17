@@ -155,6 +155,8 @@ const INDIRECT_WRITERS: Readonly<Record<string, string>> = {
   'scripts/backfill-rbac-legacy-overrides.mjs: MARKER_ACTION': 'the MARKER_ACTION constant',
   'scripts/backfill-jev-provider-selection.mjs: CUTOFF_ACTION': 'the CUTOFF_ACTION constant',
   'scripts/backfill-jev-provider-selection.mjs: MARKER_ACTION': 'the MARKER_ACTION constant',
+  'scripts/backfill-tradecraft-phases.mjs: CUTOFF_ACTION': 'the CUTOFF_ACTION constant',
+  'scripts/backfill-tradecraft-phases.mjs: MARKER_ACTION': 'the MARKER_ACTION constant',
 }
 
 /** What each template written today stands for: its expansions, or the family that labels it. */
