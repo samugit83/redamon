@@ -54,6 +54,17 @@ beforeEach(() => {
 afterEach(() => { setNowForTests(null); vi.restoreAllMocks() })
 
 describe('updateResourceV2', () => {
+  test('priority_field: a priority is saved at once, even while a job runs; no job, nothing stale (Q11, T7.2)', async () => {
+    runningJob(new Date(T0 + 60_000))
+    const before = { ...row() }
+    const res = await update({ priority: 'high' })
+    expect(res.status).toBe(200)
+    expect(row().priority).toBe('high')
+    expect((await res.json()).job).toBeNull()
+    expect(h.db.rows('tradecraftIngestionJob', {}).length).toBe(1)
+    expect(row().settingsHash).toBe(before.settingsHash)
+  })
+
   test('url_checked: a new URL passes the address check (D-04); nothing written', async () => {
     const res = await update({ url: 'http://169.254.169.254/latest/' })
     expect(res.status).toBe(400)

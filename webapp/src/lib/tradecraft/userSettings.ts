@@ -1,10 +1,12 @@
 /**
- * The account's ingestion settings, the values of the Configure ingestion dialog (§3.2, §4):
+ * The account's ingestion settings, the values of the Configure ingestion dialog (§3.2, §4), and
+ * its search settings with its own synonym pairs, the values of Configure search (Q11):
  * `TradecraftUserSettings.ingestion` holds only the keys a person changed, so a default the
  * spec changes later reaches every account that never touched it. The only writer of that
  * column; the merge with a resource's overrides is `effectiveSettings.ts`.
  *
- * Also the only writer of the account's focus recipes (`recipes`, §4.8 "My focus recipes").
+ * Also the only writer of the account's focus recipes (`recipes`, §4.8 "My focus recipes"), of
+ * `search` and of `synonyms` (Q11 "My synonyms", user only).
  */
 import { randomUUID } from 'node:crypto'
 import prisma from '@/lib/prisma'
@@ -13,7 +15,7 @@ import { lockTradecraftUserSettings } from './switch'
 import { foreignSkillTopics, validateKinds, validateTopics } from './v2/focusFields'
 import { effectiveSettings, canonicalJson } from './effectiveSettings'
 import {
-  SECTIONS, SETTINGS, cloneValue, validateUserSettings, type SettingError, type SettingsValues,
+  SECTIONS, SETTINGS, SETTINGS_CONSTANTS, cloneValue, validateUserSettings, type SettingError, type SettingsValues,
 } from './settingsSpec'
 
 const USER_KEYS = SETTINGS.filter(s => s.scope === 'ingestion' && s.level !== 'resource')
@@ -228,5 +230,150 @@ export async function editRecipes(userId: string, input: unknown): Promise<Recip
       update: { recipes: next as unknown as object },
     })
     return { ok: true, recipes: next }
+  })
+}
+
+// --- search settings (Configure search, Q11) ------------------------------------------
+
+const SEARCH_KEYS = SETTINGS.filter(s => s.scope === 'search' && s.level !== 'resource')
+
+/** One of the account's own synonym pairs, e.g. `PATT = PayloadsAllTheThings`; each works both ways. */
+export interface SynonymPair {
+  term: string
+  expansion: string
+}
+
+export interface SearchSettingsView {
+  values: SettingsValues
+  /** The keys whose value comes from the account (a saved value), in spec order. */
+  changed: string[]
+  defaults: SettingsValues
+  synonyms: SynonymPair[]
+}
+
+export type SearchSaveResult = { ok: true; view: SearchSettingsView } | { ok: false; errors: SettingError[] }
+
+export const MAX_USER_SYNONYMS: number = SETTINGS_CONSTANTS.maxUserSynonyms
+/** The agent clips a term to this many characters (`library/synonyms.MAX_TERM_CHARS`). */
+export const SYNONYM_TERM_MAX = 100
+
+export function searchDefaults(): SettingsValues {
+  const out: SettingsValues = {}
+  for (const s of SEARCH_KEYS) out[s.key] = cloneValue(s.default)
+  return out
+}
+
+/**
+ * The stored pairs, in the agent's shape (`{term, expansions}`, `library/synonyms.parse_user`),
+ * as the dialog edits them: one expansion each. A malformed entry is skipped, never an error.
+ */
+function pairsOf(stored: unknown): SynonymPair[] {
+  if (!Array.isArray(stored)) return []
+  return stored.flatMap((p): SynonymPair[] => {
+    if (!isPlainObject(p) || typeof p.term !== 'string' || !Array.isArray(p.expansions) || typeof p.expansions[0] !== 'string') return []
+    return [{ term: p.term, expansion: p.expansions[0] }]
+  }).slice(0, MAX_USER_SYNONYMS)
+}
+
+function searchViewOf(stored: unknown, synonyms: unknown): SearchSettingsView {
+  const eff = effectiveSettings({ user: { search: stored }, scope: 'search' })
+  const values: SettingsValues = {}
+  const changed: string[] = []
+  for (const s of SEARCH_KEYS) {
+    values[s.key] = eff.values[s.key]
+    if (eff.provenance[s.key] === 'user') changed.push(s.key)
+  }
+  return { values, changed, defaults: searchDefaults(), synonyms: pairsOf(synonyms) }
+}
+
+export async function readSearchSettings(userId: string): Promise<SearchSettingsView> {
+  const row = await prisma.tradecraftUserSettings.findUnique({ where: { userId }, select: { search: true, synonyms: true } })
+  return searchViewOf(row?.search ?? {}, row?.synonyms ?? [])
+}
+
+const synonymError = (message: string): SettingError => ({ key: 'synonyms', code: 'bad_value', message })
+
+/** The pairs as typed, trimmed; refused whole when one is malformed, a duplicate, or past the cap. */
+export function validateSynonyms(input: unknown): { ok: true; value: SynonymPair[] } | { ok: false; errors: SettingError[] } {
+  if (!Array.isArray(input)) return { ok: false, errors: [synonymError('synonyms is a list of {term, expansion}')] }
+  if (input.length > MAX_USER_SYNONYMS) return { ok: false, errors: [synonymError(`At most ${MAX_USER_SYNONYMS} synonym pairs`)] }
+  const out: SynonymPair[] = []
+  const seen = new Set<string>()
+  for (const [i, raw] of input.entries()) {
+    if (!isPlainObject(raw) || Object.keys(raw).some(k => k !== 'term' && k !== 'expansion')) {
+      return { ok: false, errors: [synonymError(`Pair ${i + 1} is {term, expansion}`)] }
+    }
+    const rawTerm = typeof raw.term === 'string' ? raw.term : ''
+    const rawExpansion = typeof raw.expansion === 'string' ? raw.expansion : ''
+    // Checked before the trim: a line break is no edge space to forgive.
+    if (CONTROL.test(rawTerm) || CONTROL.test(rawExpansion)) return { ok: false, errors: [synonymError(`Pair ${i + 1} cannot hold a control character`)] }
+    const term = rawTerm.trim()
+    const expansion = rawExpansion.trim()
+    if (!term || !expansion) return { ok: false, errors: [synonymError(`Pair ${i + 1} needs both words`)] }
+    if (term.length > SYNONYM_TERM_MAX || expansion.length > SYNONYM_TERM_MAX) {
+      return { ok: false, errors: [synonymError(`Pair ${i + 1}: each side holds at most ${SYNONYM_TERM_MAX} characters`)] }
+    }
+    if (term.toLowerCase() === expansion.toLowerCase()) return { ok: false, errors: [synonymError(`Pair ${i + 1} names the same word twice`)] }
+    const key = `${term.toLowerCase()}\u0000${expansion.toLowerCase()}`
+    if (seen.has(key)) return { ok: false, errors: [synonymError(`${term} = ${expansion} is listed twice`)] }
+    seen.add(key)
+    out.push({ term, expansion })
+  }
+  return { ok: true, value: out }
+}
+
+/**
+ * Saves Configure search (Q11): the search settings a person changed (user level only, each
+ * within its range; a value equal to its default removes the key) and, when given, the whole list
+ * of the account's synonym pairs. One bad value refuses the whole save. A change reaches the agent
+ * from the next message (the run catalog reads it); nothing is re-ingested and nothing turns stale.
+ */
+export async function saveSearchSettings(userId: string, input: unknown): Promise<SearchSaveResult> {
+  if (!isPlainObject(input)) return { ok: false, errors: [{ key: '', code: 'not_an_object', message: 'search must be an object' }] }
+  const { synonyms: rawSynonyms, ...values } = input
+  const parsed = validateUserSettings('search', values)
+  if (!parsed.ok) return parsed
+  let synonyms: SynonymPair[] | null = null
+  if (rawSynonyms !== undefined) {
+    const s = validateSynonyms(rawSynonyms)
+    if (!s.ok) return s
+    synonyms = s.value
+  }
+  const defaults = searchDefaults()
+  return { ok: true, view: await writeSearch(userId, (stored) => {
+    for (const [key, value] of Object.entries(parsed.value)) {
+      if (canonicalJson(value) === canonicalJson(defaults[key])) delete stored[key]
+      else stored[key] = value
+    }
+    return stored
+  }, synonyms) }
+}
+
+/** Every search setting back to its default; the synonym pairs are the person's own and stay. */
+export async function resetSearchSettings(userId: string): Promise<SearchSaveResult> {
+  const keys: ReadonlySet<string> = new Set(SEARCH_KEYS.map(s => s.key))
+  return { ok: true, view: await writeSearch(userId, (stored) => {
+    for (const key of Object.keys(stored)) if (keys.has(key)) delete stored[key]
+    return stored
+  }, null) }
+}
+
+/** Under the account's row lock, as the ingestion writer: two tabs saving at once each see the other's result. */
+async function writeSearch(
+  userId: string, edit: (stored: Record<string, unknown>) => Record<string, unknown>, synonyms: SynonymPair[] | null,
+): Promise<SearchSettingsView> {
+  return prisma.$transaction(async (tx) => {
+    await lockTradecraftUserSettings(tx, userId)
+    const row = await tx.tradecraftUserSettings.findUnique({ where: { userId }, select: { search: true, synonyms: true } })
+    const before = isPlainObject(row?.search) ? row!.search as Record<string, unknown> : {}
+    const after = edit({ ...before })
+    const nextSynonyms = synonyms === null ? row?.synonyms ?? [] : synonyms.map(p => ({ term: p.term, expansions: [p.expansion] }))
+    const data: Record<string, object> = {}
+    if (canonicalJson(after) !== canonicalJson(before)) data.search = after as object
+    if (synonyms !== null && canonicalJson(nextSynonyms) !== canonicalJson(row?.synonyms ?? [])) data.synonyms = nextSynonyms as object
+    if (Object.keys(data).length > 0) {
+      await tx.tradecraftUserSettings.upsert({ where: { userId }, create: { userId, ...data }, update: data })
+    }
+    return searchViewOf(after, nextSynonyms)
   })
 }

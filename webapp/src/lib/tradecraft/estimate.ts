@@ -93,3 +93,32 @@ export function estimateText(e: WebsiteEstimate): { headline: string; stop: stri
   else stop = `The crawl stops first at the time budget (${e.timeBudgetSec} s, about ${pages}).`
   return { headline, stop }
 }
+
+export interface SearchEstimate {
+  /** Search only: the librarian makes no call. */
+  librarian: boolean
+  callsPerQuestion: number
+  secondsPerQuestion: number
+  callsPerRun: number
+}
+
+/**
+ * The live estimate at the top of Configure search (Q11 "The dialog"): the librarian's worst case
+ * for one question is its call limit and its time limit; per agent run, its call limit times the
+ * questions allowed in a run. Search alone makes no model call.
+ */
+export function estimateSearch(values: Record<string, unknown>): SearchEstimate {
+  const librarian = str(values, 'librarian.use') === 'agent'
+  const calls = num(values, 'librarian.maxModelCalls')
+  return {
+    librarian,
+    callsPerQuestion: librarian ? calls : 0,
+    secondsPerQuestion: librarian ? num(values, 'librarian.timeLimitSec') : 0,
+    callsPerRun: librarian ? calls * num(values, 'librarian.questionsPerRun') : 0,
+  }
+}
+
+export function searchEstimateText(e: SearchEstimate): string {
+  if (!e.librarian) return 'Search only: the agent uses plain search, and no librarian model call is made.'
+  return `Worst case per question: ${e.callsPerQuestion} model calls, ${e.secondsPerQuestion} s. Per agent run: up to ${e.callsPerRun} librarian calls`
+}

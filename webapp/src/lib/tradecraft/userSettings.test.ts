@@ -12,7 +12,8 @@ const h = vi.hoisted(() => ({ db: null as unknown as TradecraftDb }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as never)[k] }) }))
 
 import {
-  INGESTION_SECTIONS, editRecipes, ingestionDefaults, readIngestionSettings, readRecipes, resetIngestionSettings, saveIngestionSettings,
+  INGESTION_SECTIONS, MAX_USER_SYNONYMS, editRecipes, ingestionDefaults, readIngestionSettings, readRecipes, readSearchSettings,
+  resetIngestionSettings, resetSearchSettings, saveIngestionSettings, saveSearchSettings, searchDefaults, validateSynonyms,
 } from './userSettings'
 import { SETTINGS } from './settingsSpec'
 
@@ -235,5 +236,55 @@ describe('focus recipes (§4.8 "My focus recipes", T5.5)', () => {
     await add('u1', { name: 'New', kinds: ['poc'] })
     expect(stored('u1')).toEqual({ 'crawl.maxPages': 9 })
     expect(storedRecipes('u1').map(r => r.name)).toEqual(['Kept', 'New'])
+  })
+})
+
+describe('the search settings (Configure search, Q11, T7.2)', () => {
+  const row = () => h.db.rows('tradecraftUserSettings', { userId: 'u1' })[0]
+
+  test('search_section_ranges: every search setting of the spec, user level, defaults as Q11; out of range refused', async () => {
+    const view = await readSearchSettings('u1')
+    expect(Object.keys(view.values).sort()).toEqual(SETTINGS.filter(s => s.scope === 'search').map(s => s.key).sort())
+    expect(view.defaults).toEqual(searchDefaults())
+    expect(view.values).toMatchObject({
+      'librarian.use': 'agent', 'librarian.maxModelCalls': 5, 'librarian.maxPages': 4, 'librarian.timeLimitSec': 30,
+      'librarian.questionsPerRun': 10, 'search.results': 8, 'search.useSession': true, 'search.strictness': 'balanced',
+      'reading.charsPerRead': 12000, 'prompt.resourceList': 'auto', 'prompt.coverageMap': true, 'hints.enabled': true, 'hints.perRun': 6,
+    })
+    const bad = await saveSearchSettings('u1', { 'librarian.maxModelCalls': 1, 'search.results': 21 })
+    expect(bad.ok).toBe(false)
+    expect(!bad.ok && bad.errors.map(e => e.key)).toEqual(['librarian.maxModelCalls', 'search.results'])
+    expect(row()).toBeUndefined()
+  })
+
+  test('saves only what changed, keeps the ingestion values and the switch; a default removes its key', async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'u1', v2Enabled: true, ingestion: { 'crawl.maxPages': 9 }, search: { 'hints.perRun': 2 } })
+    const r = await saveSearchSettings('u1', { 'search.results': 12, 'hints.perRun': 6 })
+    expect(r.ok && r.view.changed).toEqual(['search.results'])
+    expect(row()).toMatchObject({ v2Enabled: true, ingestion: { 'crawl.maxPages': 9 }, search: { 'search.results': 12 } })
+  })
+
+  test('synonyms_cap_200 and their shape: one {term, expansions} per pair, as the agent reads them', async () => {
+    expect(MAX_USER_SYNONYMS).toBe(200)
+    const many = Array.from({ length: 201 }, (_, i) => ({ term: `t${i}`, expansion: `e${i}` }))
+    expect(validateSynonyms(many.slice(0, 200)).ok).toBe(true)
+    expect(validateSynonyms(many).ok).toBe(false)
+    const r = await saveSearchSettings('u1', { synonyms: [{ term: 'PATT', expansion: 'PayloadsAllTheThings' }] })
+    expect(r.ok && r.view.synonyms).toEqual([{ term: 'PATT', expansion: 'PayloadsAllTheThings' }])
+    expect(row().synonyms).toEqual([{ term: 'PATT', expansions: ['PayloadsAllTheThings'] }])
+    expect((await readSearchSettings('u1')).synonyms).toEqual([{ term: 'PATT', expansion: 'PayloadsAllTheThings' }])
+  })
+
+  test('reset leaves the synonyms and the keys the spec does not know; under the account row lock', async () => {
+    h.db.seed('tradecraftUserSettings', { userId: 'u1', search: { 'search.results': 12, 'future.key': 1 }, synonyms: [{ term: 'a', expansions: ['b'] }] })
+    await resetSearchSettings('u1')
+    expect(row().search).toEqual({ 'future.key': 1 })
+    expect(row().synonyms).toEqual([{ term: 'a', expansions: ['b'] }])
+    expect(h.db.raw[0].values).toEqual(['tradecraft_user_settings:u1'])
+  })
+
+  test('isolated (AC-04): one account\'s search settings never reach another\'s', async () => {
+    await saveSearchSettings('u1', { 'search.results': 3 })
+    expect((await readSearchSettings('u2')).values['search.results']).toBe(8)
   })
 })

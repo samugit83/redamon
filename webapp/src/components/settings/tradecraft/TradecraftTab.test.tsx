@@ -26,6 +26,12 @@ vi.mock('@/components/ui', async orig => ({
   useAlertModal: () => alertSpies,
 }))
 
+const gate = vi.hoisted(() => ({ ensureFeatureModel: vi.fn(async () => null), fetchWithFeatureModel: vi.fn(), userId: 'user-1', savedVersion: 0 }))
+vi.mock('@/components/shared/FeatureModelGate', async orig => ({
+  ...((await orig()) as Record<string, unknown>),
+  useFeatureModelGate: () => gate,
+}))
+
 const { TradecraftTab } = await import('./TradecraftTab')
 
 const BASE = '/api/users/user-1/tradecraft-resources'
@@ -226,6 +232,63 @@ describe('TradecraftTab and the 2.0 switch', () => {
     expect(await screen.findByText(/Saved: each resource uses the new settings/)).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: 'Configure ingestion' })).toBeNull()
     await waitFor(() => expect(calls('GET', BASE).length).toBeGreaterThan(listReads))
+  })
+
+  test('configure_search_button: Configure search sits next to Configure ingestion and opens its dialog (R-021)', async () => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true } }
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    const search = await screen.findByRole('button', { name: /Configure search/ })
+    const ingestion = screen.getByRole('button', { name: /Configure ingestion/ })
+    expect(search.compareDocumentPosition(ingestion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(search)
+    expect(await screen.findByRole('dialog', { name: 'Configure search' })).toBeInTheDocument()
+    cleanup()
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: false } }
+    routes[`GET ${BASE}`] = { status: 200, body: [RES] }
+    renderTab()
+    await screen.findByText('Lab Wiki')
+    expect(screen.queryByRole('button', { name: /Configure search/ })).toBeNull()
+  })
+
+  const LIBRARIAN = (model: string, use = 'agent') => {
+    routes[`GET ${SETTINGS}`] = { status: 200, body: { v2Enabled: true, search: { values: { 'librarian.use': use }, changed: [], defaults: {}, synonyms: [] } } }
+    routes['GET /api/users/user-1/settings'] = { status: 200, body: { featureModels: model ? { tradecraft_librarian: model } : {} } }
+  }
+
+  test('librarian_line: "Librarian model: <name> (change)" above the list; change opens the gate', async () => {
+    LIBRARIAN('openai/gpt-4o-mini')
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    const line = await screen.findByTestId('librarian-model-line')
+    await waitFor(() => expect(line).toHaveTextContent('Librarian model: openai/gpt-4o-mini (change)'))
+    expect(line.compareDocumentPosition(await screen.findByText('Lab Wiki')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(within(line).getByRole('button', { name: '(change)' }))
+    expect(gate.ensureFeatureModel).toHaveBeenCalledWith('tradecraft_librarian', expect.objectContaining({ force: true }))
+    expect(screen.queryByTestId('no-librarian-banner')).toBeNull()
+  })
+
+  test('banner_when_missing: resources and no librarian model; none without resources or with Search only', async () => {
+    LIBRARIAN('')
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    const banner = await screen.findByTestId('no-librarian-banner')
+    expect(banner).toHaveTextContent('No librarian model: the agent can only use plain search on your resources')
+    fireEvent.click(within(banner).getByRole('button', { name: 'Choose a model' }))
+    expect(gate.ensureFeatureModel).toHaveBeenCalledWith('tradecraft_librarian', expect.objectContaining({ force: true }))
+    expect(screen.getByTestId('librarian-model-line')).toHaveTextContent('Librarian model: not set (choose)')
+    cleanup()
+    routes[`GET ${BASE}`] = { status: 200, body: [] }
+    renderTab()
+    await screen.findByText(/No resources yet/)
+    expect(screen.queryByTestId('no-librarian-banner')).toBeNull()
+    cleanup()
+    LIBRARIAN('', 'search_only')
+    routes[`GET ${BASE}`] = { status: 200, body: [V2_RESOURCE] }
+    renderTab()
+    await screen.findByText('Lab Wiki')
+    await waitFor(() => expect(screen.getByTestId('librarian-model-line')).toHaveTextContent('not set'))
+    expect(screen.queryByTestId('no-librarian-banner')).toBeNull()
   })
 
   test('edit_link target: ?edit=<id> opens that resource\'s Edit form once the list is read (§3.4)', async () => {

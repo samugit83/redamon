@@ -19,7 +19,7 @@ vi.stubEnv('INTERNAL_API_KEY', 'ik-test-tradecraft-0001')
 const h = vi.hoisted(() => ({
   auth: undefined as string | undefined,
   actAs: undefined as string | undefined,
-  rows: new Map<string, { v2Enabled: boolean; v2EnabledAt: Date | null; ingestion?: Record<string, unknown>; recipes?: unknown }>(),
+  rows: new Map<string, { v2Enabled: boolean; v2EnabledAt: Date | null; ingestion?: Record<string, unknown>; recipes?: unknown; search?: Record<string, unknown>; synonyms?: unknown }>(),
   audits: [] as Record<string, unknown>[],
   writes: [] as string[],
   reads: 0,
@@ -367,5 +367,89 @@ describe('the focus recipes (T5.5)', () => {
     on()
     expect((await put('victim', { recipes: { delete: 'x' }, reset: 'all' })).status).toBe(400)
     expect(h.writes).toEqual([])
+  })
+})
+
+describe('the search settings (Configure search, T7.2)', () => {
+  type View = { values: Record<string, unknown>; changed: string[]; defaults: Record<string, unknown>; synonyms: { term: string; expansion: string }[] }
+  const on = () => h.rows.set('victim', { v2Enabled: true, v2EnabledAt: new Date() })
+
+  test('GET answers the search section beside ingestion and recipes: values, changed, defaults, my synonyms', async () => {
+    on()
+    h.rows.get('victim')!.search = { 'librarian.use': 'search_only', 'search.results': 12 }
+    h.rows.get('victim')!.synonyms = [{ term: 'PATT', expansions: ['PayloadsAllTheThings'] }, 'junk']
+    const r = await answer(await get('victim'))
+    const view = r.body.search as View
+    expect(view.values).toMatchObject({ 'librarian.use': 'search_only', 'search.results': 12, 'librarian.maxModelCalls': 5, 'reading.charsPerRead': 12000 })
+    expect(view.changed).toEqual(['librarian.use', 'search.results'])
+    expect(view.defaults['search.results']).toBe(8)
+    expect(view.synonyms).toEqual([{ term: 'PATT', expansion: 'PayloadsAllTheThings' }])
+  })
+
+  test('search_section_ranges: a value out of its range is a 400 naming the key; nothing written', async () => {
+    on()
+    for (const [key, value] of [['librarian.maxModelCalls', 11], ['librarian.timeLimitSec', 9], ['search.results', 2], ['reading.charsPerRead', 40001], ['hints.perRun', 21], ['librarian.use', 'never']] as const) {
+      const r = await answer(await put('victim', { search: { [key]: value } }))
+      expect(r.status, key).toBe(400)
+      expect(r.body.code).toBe('invalid_settings')
+      expect((r.body.errors as { key: string }[])[0].key).toBe(key)
+    }
+    // An ingestion key is not a search setting.
+    expect((await answer(await put('victim', { search: { 'crawl.maxPages': 50 } }))).status).toBe(400)
+    expect(h.rows.get('victim')!.search).toBeUndefined()
+  })
+
+  test('PUT stores only what differs from the defaults, with the synonym pairs in the agent\'s shape', async () => {
+    on()
+    const r = await answer(await put('victim', { search: {
+      'librarian.maxModelCalls': 3, 'search.results': 8, 'prompt.resourceList': 'one_line',
+      synonyms: [{ term: ' PATT ', expansion: 'PayloadsAllTheThings' }],
+    } }))
+    expect(r.status).toBe(200)
+    expect((r.body.search as View).changed).toEqual(['librarian.maxModelCalls', 'prompt.resourceList'])
+    expect(h.rows.get('victim')!.search).toEqual({ 'librarian.maxModelCalls': 3, 'prompt.resourceList': 'one_line' })
+    expect(h.rows.get('victim')!.synonyms).toEqual([{ term: 'PATT', expansions: ['PayloadsAllTheThings'] }])
+    // Settings without synonyms keep the stored pairs.
+    await put('victim', { search: { 'hints.enabled': false } })
+    expect(h.rows.get('victim')!.synonyms).toEqual([{ term: 'PATT', expansions: ['PayloadsAllTheThings'] }])
+  })
+
+  test('synonyms_cap_200: 200 pairs are taken, 201 refused; a malformed or doubled pair refuses the save', async () => {
+    on()
+    const pairs = (n: number) => Array.from({ length: n }, (_, i) => ({ term: `t${i}`, expansion: `expansion ${i}` }))
+    expect((await answer(await put('victim', { search: { synonyms: pairs(200) } }))).status).toBe(200)
+    expect((h.rows.get('victim')!.synonyms as unknown[]).length).toBe(200)
+    for (const synonyms of [pairs(201), [{ term: 'a', expansion: '' }], [{ term: 'a', expansion: 'A' }], [{ term: 'a', expansion: 'b' }, { term: 'A', expansion: 'B' }], [{ term: 'a\n', expansion: 'b' }], 'a = b']) {
+      const r = await answer(await put('victim', { search: { synonyms } }))
+      expect(r.status, JSON.stringify(synonyms).slice(0, 40)).toBe(400)
+      expect((r.body.errors as { key: string }[])[0].key).toBe('synonyms')
+    }
+    expect((h.rows.get('victim')!.synonyms as unknown[]).length).toBe(200)
+  })
+
+  test('reset: every search setting back to its default; the synonym pairs stay', async () => {
+    on()
+    h.rows.get('victim')!.search = { 'search.results': 12, 'some.future.key': 1 }
+    h.rows.get('victim')!.synonyms = [{ term: 'a', expansions: ['b'] }]
+    const r = await answer(await put('victim', { reset: 'search' }))
+    expect(r.status).toBe(200)
+    expect((r.body.search as View).changed).toEqual([])
+    expect(h.rows.get('victim')!.search).toEqual({ 'some.future.key': 1 })
+    expect(h.rows.get('victim')!.synonyms).toEqual([{ term: 'a', expansions: ['b'] }])
+  })
+
+  test('with 2.0 off: 404, nothing written; the internal key alone saves none; another account is refused', async () => {
+    for (const body of [{ search: { 'search.results': 9 } }, { reset: 'search' }]) {
+      expect((await answer(await put('victim', body))).status).toBe(404)
+    }
+    expect(h.writes).toEqual([])
+    on()
+    h.auth = undefined
+    expect((await put('victim', { search: { 'search.results': 9 } }, { 'x-internal-key': 'ik-test-tradecraft-0001' })).status).toBe(401)
+    h.auth = await createToken('victim', 'standard')
+    h.rows.set('managed', { v2Enabled: true, v2EnabledAt: new Date() })
+    expect((await put('managed', { search: { 'search.results': 9 } })).status).toBe(403)
+    expect(h.rows.get('managed')!.search).toBeUndefined()
+    expect((await put('victim', { search: { 'search.results': 9 }, reset: 'search' })).status).toBe(400)
   })
 })

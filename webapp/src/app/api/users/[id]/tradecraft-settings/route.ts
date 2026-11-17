@@ -6,14 +6,15 @@ import { internalError } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { setTradecraftV2, tradecraftV2Enabled } from '@/lib/tradecraft/switch'
 import {
-  editRecipes, readIngestionSettings, readRecipes, resetIngestionSettings, saveIngestionSettings, type SaveResult,
+  editRecipes, readIngestionSettings, readRecipes, readSearchSettings, resetIngestionSettings, resetSearchSettings,
+  saveIngestionSettings, saveSearchSettings, type SaveResult, type SearchSaveResult,
 } from '@/lib/tradecraft/userSettings'
 
 interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-const BAD_BODY = 'Body must be {"v2Enabled": boolean}, {"ingestion": {<key>: <value>}}, {"reset": "<section>" | "all"} or {"recipes": {"add" | "rename" | "delete": ...}}'
+const BAD_BODY = 'Body must be {"v2Enabled": boolean}, {"ingestion": {<key>: <value>}}, {"search": {<key>: <value>, "synonyms"?: [...]}}, {"reset": "<section>" | "all" | "search"} or {"recipes": {"add" | "rename" | "delete": ...}}'
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -29,6 +30,13 @@ function settingsAnswer(result: SaveResult): NextResponse {
   return NextResponse.json({ v2Enabled: true, ingestion: result.view })
 }
 
+function searchAnswer(result: SearchSaveResult): NextResponse {
+  if (!result.ok) {
+    return NextResponse.json({ error: result.errors[0].message, code: 'invalid_settings', errors: result.errors }, { status: 400 })
+  }
+  return NextResponse.json({ v2Enabled: true, search: result.view })
+}
+
 // GET /api/users/[id]/tradecraft-settings
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
@@ -38,15 +46,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
     if (!(await tradecraftV2Enabled(id))) return NextResponse.json({ v2Enabled: false })
-    const [ingestion, recipes] = await Promise.all([readIngestionSettings(id), readRecipes(id)])
-    return NextResponse.json({ v2Enabled: true, ingestion, recipes })
+    const [ingestion, recipes, search] = await Promise.all([readIngestionSettings(id), readRecipes(id), readSearchSettings(id)])
+    return NextResponse.json({ v2Enabled: true, ingestion, recipes, search })
   } catch (error) {
     return internalError(error, 'Failed to read the Tradecraft settings')
   }
 }
 
 // PUT /api/users/[id]/tradecraft-settings
-//   Body, exactly one of: { v2Enabled: boolean } | { ingestion: { <key>: <value> } } | { reset: "<section>" | "all" }
+//   Body, exactly one of: { v2Enabled: boolean } | { ingestion: { <key>: <value> } } | { reset: "<section>" | "all" | "search" }
+//     | { search: { <key>: <value>, synonyms?: [{ term, expansion }] } } (Configure search, Q11: user level only;
+//       the agent reads it from the next message, nothing is re-ingested)
 //     | { recipes: { add: { name, topics, kinds } } | { rename: { id, name } } | { delete: "<id>" } }
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
@@ -71,6 +81,14 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (isPlainObject(body.ingestion)) {
       if (!(await tradecraftV2Enabled(id))) return V2_OFF()
       return settingsAnswer(await saveIngestionSettings(id, body.ingestion))
+    }
+    if (isPlainObject(body.search)) {
+      if (!(await tradecraftV2Enabled(id))) return V2_OFF()
+      return searchAnswer(await saveSearchSettings(id, body.search))
+    }
+    if (body.reset === 'search') {
+      if (!(await tradecraftV2Enabled(id))) return V2_OFF()
+      return searchAnswer(await resetSearchSettings(id))
     }
     if (typeof body.reset === 'string') {
       if (!(await tradecraftV2Enabled(id))) return V2_OFF()

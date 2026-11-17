@@ -19,12 +19,14 @@ type Status = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; text: s
  * The 2.0 resources of the account: cards, the basic form, and the job views read every 3 s while a job runs.
  * `headerActions` sit left of Add Resource and show exactly when it does (§3.1).
  */
-export function ResourceListV2({ userId, onDirtyChange, headerActions, initialEditId = null }: {
+export function ResourceListV2({ userId, onDirtyChange, headerActions, initialEditId = null, onLoaded }: {
   userId: string
   onDirtyChange: (dirty: boolean) => void
   headerActions?: ReactNode
   /** A resource to open in its Edit form once the list is read (a project's "Edit in Global Settings"). */
   initialEditId?: string | null
+  /** Each list read: the tab's librarian banner needs to know whether there are resources (Q10). */
+  onLoaded?: (resources: ResourceView[]) => void
 }) {
   const { dangerConfirm } = useAlertModal()
   const toast = useToast()
@@ -37,11 +39,15 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions, initialEd
   const [settings, setSettings] = useState<IngestionSettingsView | null>(null)
   const resourcesRef = useRef(resources)
   resourcesRef.current = resources
+  const onLoadedRef = useRef(onLoaded)
+  onLoadedRef.current = onLoaded
 
   const load = useCallback(async () => {
     try {
-      setResources(await tradecraftClient.list(userId))
+      const list = await tradecraftClient.list(userId)
+      setResources(list)
       setStatus({ kind: 'ready' })
+      onLoadedRef.current?.(list)
     } catch (e) {
       const denied = e instanceof ApiError && (e.status === 401 || e.status === 403)
       setStatus({ kind: denied ? 'denied' : 'error', text: failureText(LOAD_FAILED, e) })

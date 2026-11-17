@@ -4,7 +4,8 @@
  */
 import { describe, test, expect } from 'vitest'
 import { estimateWebsite, estimateText, LLM_CALL_SEC, PAGE_SEC } from './estimate'
-import { ingestionDefaultsForEstimate } from './estimate'
+import { ingestionDefaultsForEstimate, estimateSearch, searchEstimateText } from './estimate'
+import { specDefaults } from './settingsSpec'
 
 const base = () => ingestionDefaultsForEstimate()
 
@@ -80,5 +81,20 @@ describe('estimateText', () => {
     expect(rules.stop).toBe('The crawl stops first at the page limit (3 pages).')
     const time = estimateText(estimateWebsite({ ...base(), 'crawl.maxLlmCalls': 200 }))
     expect(time.stop).toMatch(/^The crawl stops first at the time budget \(180 s, about \d+ pages\)\.$/)
+  })
+})
+
+describe('estimateSearch (Configure search, Q11, T7.2)', () => {
+  test('dialog_estimate: the defaults give 5 calls, 30 s per question and 50 calls per run', () => {
+    const e = estimateSearch(specDefaults('search'))
+    expect(e).toEqual({ librarian: true, callsPerQuestion: 5, secondsPerQuestion: 30, callsPerRun: 50 })
+    expect(searchEstimateText(e)).toBe('Worst case per question: 5 model calls, 30 s. Per agent run: up to 50 librarian calls')
+  })
+
+  test('follows the limits being edited; Search only makes no call', () => {
+    const values = { ...specDefaults('search'), 'librarian.maxModelCalls': 3, 'librarian.timeLimitSec': 60, 'librarian.questionsPerRun': 4 }
+    expect(searchEstimateText(estimateSearch(values))).toBe('Worst case per question: 3 model calls, 60 s. Per agent run: up to 12 librarian calls')
+    expect(estimateSearch({ ...values, 'librarian.use': 'search_only' })).toEqual({ librarian: false, callsPerQuestion: 0, secondsPerQuestion: 0, callsPerRun: 0 })
+    expect(searchEstimateText(estimateSearch({ 'librarian.use': 'search_only' }))).toMatch(/^Search only/)
   })
 })

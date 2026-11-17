@@ -63,6 +63,18 @@ describe('parseResourceFields', () => {
   })
 })
 
+describe('priority_field (Q11 "Resource priority", T7.2)', () => {
+  test('high, normal or low, on an edit or an add; anything else refused naming the field', () => {
+    for (const priority of ['high', 'normal', 'low']) {
+      expect(parseResourceFields({ priority }, 'update')).toEqual({ ok: true, value: { priority } })
+    }
+    expect(parseResourceFields({ ...CREATE, priority: 'low' }, 'create')).toMatchObject({ ok: true, value: { priority: 'low' } })
+    for (const priority of ['urgent', '', 1, null]) {
+      expect(parseResourceFields({ priority }, 'update')).toMatchObject({ ok: false, error: { field: 'priority' } })
+    }
+  })
+})
+
 describe('slug_rules (R-137, §6.4)', () => {
   test('a Resource ID is lowercase letters, digits and dashes from a letter or digit on', () => {
     for (const ok of ['hacktricks', 'my-blog-2', '0day', 'a']) {

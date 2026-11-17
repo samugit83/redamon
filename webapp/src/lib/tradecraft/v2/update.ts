@@ -118,7 +118,7 @@ export async function updateResourceV2(input: {
       }
 
       const data: Record<string, unknown> = {}
-      for (const key of ['name', 'url', 'enabled', 'llmModel', 'githubTokenOverride'] as const) {
+      for (const key of ['name', 'url', 'enabled', 'llmModel', 'githubTokenOverride', 'priority'] as const) {
         if (fields[key] !== undefined) data[key] = fields[key]
       }
       if (fields.forcedType !== undefined) data.forcedType = forcedType

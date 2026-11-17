@@ -24,6 +24,9 @@ export const VALUE_LABELS: Readonly<Record<string, Record<string, string>>> = {
   'focus.defaultMode': { everything: 'Everything', focused: 'Focused', tag_only: 'Tag only' },
   'focus.defaultStrictness': { loose: 'Loose', balanced: 'Balanced', strict: 'Strict' },
   'focus.tagEveryPage': { rules_model: 'Rules + model for the rest', rules: 'Rules only' },
+  'librarian.use': { agent: 'Agent decides', search_only: 'Search only' },
+  'search.strictness': { strict: 'Strict', balanced: 'Balanced', loose: 'Loose' },
+  'prompt.resourceList': { auto: 'Auto', full: 'Full summaries', one_line: 'One line each' },
 }
 
 /** Keys the dialog shows with a picker of the person's models instead of free text. */

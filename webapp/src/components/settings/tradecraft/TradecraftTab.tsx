@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { Plus, SlidersHorizontal } from 'lucide-react'
+import { Plus, Search, SlidersHorizontal } from 'lucide-react'
 import { TradecraftResourceForm } from '@/components/settings/TradecraftResourceForm'
 import type { TradecraftResource } from '@/components/settings/TradecraftResourceForm'
 import { TradecraftResourceList } from '@/components/settings/TradecraftResourceList'
@@ -14,6 +14,8 @@ import { tradecraftClient } from '@/lib/tradecraft/client'
 import { V2Switch } from './V2Switch'
 import { ResourceListV2 } from './ResourceListV2'
 import { ConfigureIngestionDialog } from './ConfigureIngestionDialog'
+import { ConfigureSearchDialog } from './ConfigureSearchDialog'
+import { LibrarianModelLine, NoLibrarianBanner, useLibrarianModel } from './LibrarianModel'
 
 const TRADECRAFT_LOAD_FAILED = "Couldn't load your tradecraft resources"
 
@@ -63,8 +65,22 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
   // A project's "Edit in Global Settings" link (§3.4) names the resource to open.
   const editId = useSearchParams()?.get('edit') ?? null
   const [configuring, setConfiguring] = useState(false)
+  const [configuringSearch, setConfiguringSearch] = useState(false)
   // A save changes which cards read as stale: the list is read again by mounting it anew.
   const [listKey, setListKey] = useState(0)
+  const [resourceCount, setResourceCount] = useState<number | null>(null)
+  // Librarian use (Q11): with "Search only" no librarian model is needed, so none is missing.
+  const [librarianUse, setLibrarianUse] = useState<string | null>(null)
+  const [searchKey, setSearchKey] = useState(0)
+  const librarian = useLibrarianModel(userId)
+  useEffect(() => {
+    let live = true
+    tradecraftClient.getSettings(userId)
+      .then(s => { if (live) setLibrarianUse(typeof s.search?.values['librarian.use'] === 'string' ? s.search.values['librarian.use'] as string : null) })
+      .catch(() => { if (live) setLibrarianUse(null) })
+    return () => { live = false }
+  }, [userId, searchKey])
+  const noLibrarian = librarianUse === 'agent' && (resourceCount ?? 0) > 0 && librarian.state.kind === 'ready' && !librarian.state.model
   return (
     <div className={styles.section}>
       <div className={styles.sectionHeader}>
@@ -78,17 +94,38 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
         background: its card shows the stage, and Refresh becomes Cancel while it runs. Live resources are
         read from their site at every read; Stored ones keep a copy in your database.
       </p>
+      {noLibrarian && <NoLibrarianBanner onChoose={librarian.choose} />}
+      <LibrarianModelLine state={librarian.state} onChoose={librarian.choose} />
       <ResourceListV2
         key={listKey}
         userId={userId}
         onDirtyChange={onDirtyChange}
         initialEditId={editId}
+        onLoaded={list => setResourceCount(list.length)}
         headerActions={
-          <button type="button" className="secondaryButton" onClick={() => setConfiguring(true)}>
-            <SlidersHorizontal size={14} /> Configure ingestion
-          </button>
+          <>
+            <button type="button" className="secondaryButton" onClick={() => setConfiguringSearch(true)}>
+              <Search size={14} /> Configure search
+            </button>
+            <button type="button" className="secondaryButton" onClick={() => setConfiguring(true)}>
+              <SlidersHorizontal size={14} /> Configure ingestion
+            </button>
+          </>
         }
       />
+      {configuringSearch && (
+        <ConfigureSearchDialog
+          userId={userId}
+          onDirtyChange={onDirtyChange}
+          onClose={() => setConfiguringSearch(false)}
+          onSaved={() => {
+            setConfiguringSearch(false)
+            toast.success('Saved: the agent uses the new search settings from the next message')
+            setSearchKey(k => k + 1)
+            setListKey(k => k + 1)
+          }}
+        />
+      )}
       {configuring && (
         <ConfigureIngestionDialog
           userId={userId}

@@ -10,7 +10,7 @@
  */
 import { NextResponse } from 'next/server'
 import { isLoopModel } from '@/lib/agentInTheLoop'
-import { SITE_TYPES, SLUG_RE, STORAGE_MODES, type SiteType, type StorageMode } from '../agentContract'
+import { PRIORITIES, SITE_TYPES, SLUG_RE, STORAGE_MODES, type SiteType, type StorageMode } from '../agentContract'
 import { isMaskedValue } from '../masking'
 import { presetByKey } from '../presets'
 import { validateOverrides, type ResourceOverrides } from '../settingsSpec'
@@ -37,6 +37,8 @@ export interface ResourceFields {
   overrides?: ResourceOverrides
   /** The Quick Add preset the resource was added from (OQ-6); creation only. */
   presetKey?: string
+  /** How search ranks the resource's pages (Q11 "Resource priority"); a search setting, never stale. */
+  priority?: (typeof PRIORITIES)[number]
 }
 
 export interface FieldError {
@@ -139,6 +141,10 @@ export function parseResourceFields(body: Record<string, unknown>, mode: 'create
       return bad(first.key ? `overrides.${first.key}` : 'overrides', first.message, first.code)
     }
     value.overrides = parsed.value
+  }
+  if (has('priority')) {
+    if (!(PRIORITIES as readonly unknown[]).includes(body.priority)) return bad('priority', `The priority is one of ${PRIORITIES.join(', ')}`)
+    value.priority = body.priority as ResourceFields['priority']
   }
   if (has('presetKey') && mode === 'create') {
     if (typeof body.presetKey !== 'string' || !presetByKey(body.presetKey)) return bad('presetKey', 'Not a Quick Add preset', 'bad_preset')

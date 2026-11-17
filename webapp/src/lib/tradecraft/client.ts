@@ -6,12 +6,12 @@
 import { fetchJson } from '@/lib/apiError'
 import type { JobView } from './jobs'
 import type { ResourceView } from './v2/list'
-import type { IngestionSettingsView } from './userSettings'
+import type { IngestionSettingsView, SearchSettingsView, SynonymPair } from './userSettings'
 import type { CheckUrlResult, PreviewResult, ReadNowResult } from './agentContract'
 import type { Focus, UserRecipe } from './focus'
 import type { MapEntryView, MapPage, MapStatus } from './curation'
 
-export type { IngestionSettingsView, JobView, MapEntryView, MapPage, MapStatus, ReadNowResult, ResourceView, UserRecipe }
+export type { IngestionSettingsView, JobView, MapEntryView, MapPage, MapStatus, ReadNowResult, ResourceView, SearchSettingsView, SynonymPair, UserRecipe }
 
 export interface MapQueryInput {
   query?: string
@@ -70,6 +70,8 @@ export interface ResourceInput {
   focus?: Focus | Record<string, never>
   /** The site login in the contract's names; a value sent as "set" keeps the stored one; null removes it. */
   credentials?: LoginInput | null
+  /** How search ranks the resource's pages (Q11). */
+  priority?: 'high' | 'normal' | 'low'
 }
 
 export interface LoginInput {
@@ -118,12 +120,16 @@ export const tradecraftClient = {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ v2Enabled }),
     }, "Couldn't change the Tradecraft 2.0 switch"),
   getSettings: (userId: string) =>
-    fetchJson<{ v2Enabled: boolean; ingestion?: IngestionSettingsView; recipes?: UserRecipe[] }>(
+    fetchJson<{ v2Enabled: boolean; ingestion?: IngestionSettingsView; recipes?: UserRecipe[]; search?: SearchSettingsView }>(
       `/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, undefined, "Couldn't read your ingestion settings"),
   saveSettings: (userId: string, ingestion: Record<string, unknown>) =>
     fetchJson<{ v2Enabled: true; ingestion: IngestionSettingsView }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
       method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ ingestion }),
     }, "Couldn't save your ingestion settings"),
+  saveSearch: (userId: string, search: Record<string, unknown>) =>
+    fetchJson<{ v2Enabled: true; search: SearchSettingsView }>(`/api/users/${encodeURIComponent(userId)}/tradecraft-settings`, {
+      method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ search }),
+    }, "Couldn't save your search settings"),
   list: (userId: string) => fetchJson<ResourceView[]>(resources(userId), undefined, "Couldn't load your tradecraft resources"),
   create: (userId: string, input: ResourceInput) =>
     fetchJson<SavedResource>(resources(userId), { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) }, "Couldn't add the resource"),

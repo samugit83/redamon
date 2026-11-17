@@ -111,6 +111,7 @@ export async function createResourceV2(input: {
           credentials: login as object,
           hasLogin: hasCredentials(login),
           presetKey: fields.presetKey ?? '',
+          ...(fields.priority ? { priority: fields.priority } : {}),
         },
         select: { id: true },
       })
