@@ -12,8 +12,10 @@
  * object.
  *
  * Run once: the marker is an AuditLog row (`system.tradecraft_phases_backfill`, carrying the count
- * and nothing else), written in the same transaction as the update, under an advisory lock so two
- * webapp copies booting together do it once. Running it again would undo a person who puts the old
+ * and the moved projects' ids, no name or setting), written in the same transaction as the update,
+ * under an advisory lock so two webapp copies booting together do it once. The ids are the way
+ * back: setting the old row again on those of them that still hold exactly all three phases undoes
+ * the move, though it cannot tell a moved project whose person later re-ticked all three apart. Running it again would undo a person who puts the old
  * phases back after the upgrade. Only projects that existed when the new code FIRST started move:
  * that moment is its own AuditLog row (`system.tradecraft_phases_cutoff`), kept when the update
  * fails, so a later retry never touches a project created meanwhile with the new default and
@@ -56,7 +58,7 @@ export async function backfillTradecraftPhases(prisma) {
     const oldPhases = JSON.stringify(OLD_PHASES)
     // jsonb containment both ways is set equality on a list of strings: order and repeats aside,
     // nothing missing and nothing else (a nested list or another value is contained in no string).
-    const projects = await tx.$executeRaw`
+    const moved = await tx.$queryRaw`
       UPDATE projects
          SET agent_tool_phase_map = jsonb_set(agent_tool_phase_map, '{tradecraft_lookup}', ${JSON.stringify(NEW_PHASES)}::jsonb),
              updated_at = now()
@@ -64,12 +66,15 @@ export async function backfillTradecraftPhases(prisma) {
          AND jsonb_typeof(agent_tool_phase_map -> 'tradecraft_lookup') = 'array'
          AND (agent_tool_phase_map -> 'tradecraft_lookup') @> ${oldPhases}::jsonb
          AND (agent_tool_phase_map -> 'tradecraft_lookup') <@ ${oldPhases}::jsonb
-         AND created_at <= (SELECT min(created_at) FROM audit_log WHERE action = ${CUTOFF_ACTION})`
+         AND created_at <= (SELECT min(created_at) FROM audit_log WHERE action = ${CUTOFF_ACTION})
+      RETURNING id`
+    // The ids are the way back (R-K3): the statement that undoes the move reads them here.
+    const ids = moved.map((row) => row.id).sort()
 
     await tx.auditLog.create({
-      data: { action: MARKER_ACTION, targetType: 'system', source: 'system', after: { projects } },
+      data: { action: MARKER_ACTION, targetType: 'system', source: 'system', after: { projects: ids.length, ids } },
     })
-    return { done: true, projects }
+    return { done: true, projects: ids.length, ids }
   }, { timeout: 120_000, maxWait: 30_000 })
 }
 

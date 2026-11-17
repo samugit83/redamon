@@ -7,9 +7,10 @@
  * opened before the upgrade gets a stale-save refusal instead of writing the old row back. A row a
  * person changed, a map with no row, a value that is not a list of phases, a map that is not an
  * object and a project created after the new code first started keep exactly what they hold. It runs
- * once (an AuditLog marker carrying the count, written in the same transaction, under an advisory
- * lock), so a person who puts the old phases back afterwards keeps them. A project created after the
- * change with no map of its own gets all three phases.
+ * once (an AuditLog marker carrying the count and the moved ids, written in the same transaction,
+ * under an advisory lock), so a person who puts the old phases back afterwards keeps them; those ids
+ * are the way back (R-K3). A project created after the change with no map of its own gets all three
+ * phases.
  *
  * Needs a DISPOSABLE database holding the webapp schema; it empties `audit_log`, `projects` and
  * `users` (CASCADE) between tests. Run:
@@ -52,6 +53,20 @@ const STAYS: Record<string, unknown> = {
   'map-as-text': JSON.stringify({ ...OTHERS, tradecraft_lookup: OLD }),
   'map-as-list': [{ tradecraft_lookup: OLD }],
 }
+const MOVED_IDS = Object.keys(MOVES).sort()
+
+/**
+ * The way back (R-K3), as FIX-PHASES's progress-log entry states it: the projects the marker names
+ * that still hold exactly all three phases get the old row again. A moved project whose person
+ * re-ticked all three afterwards cannot be told apart; one the marker does not name is never touched.
+ */
+const WAY_BACK = `
+  UPDATE projects
+     SET agent_tool_phase_map = jsonb_set(agent_tool_phase_map, '{tradecraft_lookup}', '["exploitation","post_exploitation"]'::jsonb),
+         updated_at = now()
+   WHERE id IN (SELECT jsonb_array_elements_text(after -> 'ids') FROM audit_log WHERE action = 'system.tradecraft_phases_backfill')
+     AND agent_tool_phase_map -> 'tradecraft_lookup' @> '["informational","exploitation","post_exploitation"]'::jsonb
+     AND agent_tool_phase_map -> 'tradecraft_lookup' <@ '["informational","exploitation","post_exploitation"]'::jsonb`
 
 async function project(id: string, map: unknown, createdAt = T0) {
   await db.project.create({ data: { id, userId: 'alice', name: id, agentToolPhaseMap: map as never } })
@@ -83,7 +98,7 @@ describe.skipIf(!URL)('backfillTradecraftPhases on a real Postgres (PLUGINS_PG_T
 
   test('only the rows that still hold the old default move, and the marker records how many', async () => {
     const result = await backfillTradecraftPhases(db)
-    expect(result).toEqual({ done: true, projects: Object.keys(MOVES).length })
+    expect(result).toEqual({ done: true, projects: MOVED_IDS.length, ids: MOVED_IDS })
     for (const [id, map] of Object.entries(MOVES)) {
       const row = await read(id)
       expect(row.map, id).toEqual({ ...(map as object), tradecraft_lookup: ALL })
@@ -93,7 +108,9 @@ describe.skipIf(!URL)('backfillTradecraftPhases on a real Postgres (PLUGINS_PG_T
       expect(await read(id), id).toEqual({ map, updatedAt: T0 })
     }
     const [marker] = await markers()
-    expect(marker).toMatchObject({ targetType: 'system', source: 'system', after: { projects: 3 }, actorId: null })
+    // Exactly the moved projects' ids, and no other key (no name, no setting).
+    expect(marker).toMatchObject({ targetType: 'system', source: 'system', actorId: null })
+    expect(marker.after).toEqual({ projects: 3, ids: MOVED_IDS })
     expect(await db.auditLog.count({ where: { action: CUTOFF_ACTION } })).toBe(1)
   })
 
@@ -114,7 +131,7 @@ describe.skipIf(!URL)('backfillTradecraftPhases on a real Postgres (PLUGINS_PG_T
     const [a, b] = [client(), client()]
     try {
       const results = await Promise.all([backfillTradecraftPhases(a), backfillTradecraftPhases(b)])
-      expect(results).toContainEqual({ done: true, projects: 3 })
+      expect(results).toContainEqual({ done: true, projects: 3, ids: MOVED_IDS })
       expect(results).toContainEqual({ done: false })
     } finally {
       await Promise.all([a.$disconnect(), b.$disconnect()])
@@ -128,9 +145,29 @@ describe.skipIf(!URL)('backfillTradecraftPhases on a real Postgres (PLUGINS_PG_T
     // The first start records the cut-off and fails before its marker (here: no backfill yet).
     await db.auditLog.create({ data: { action: CUTOFF_ACTION, targetType: 'system', source: 'system', createdAt: new Date('2026-06-01T00:00:00.000Z') } })
     await project('late-old', { ...OTHERS, tradecraft_lookup: OLD }, new Date('2026-07-01T00:00:00.000Z'))
-    expect(await backfillTradecraftPhases(db)).toEqual({ done: true, projects: 3 })
+    expect(await backfillTradecraftPhases(db)).toEqual({ done: true, projects: 3, ids: MOVED_IDS })
+    expect((await markers())[0].after).toEqual({ projects: 3, ids: MOVED_IDS })
     expect(await read('late-old')).toEqual({ map: { ...OTHERS, tradecraft_lookup: OLD }, updatedAt: T0 })
     expect(await db.auditLog.count({ where: { action: CUTOFF_ACTION } })).toBe(1)
+  })
+
+  test('the way back puts the moved rows back, and keeps a later choice and every row it did not move', async () => {
+    await backfillTradecraftPhases(db)
+    // After the move: a person narrows one moved project; one never moved already held all three.
+    await db.project.update({ where: { id: 'old-reversed' }, data: { agentToolPhaseMap: { ...OTHERS, tradecraft_lookup: ['exploitation'] } } })
+    await db.$executeRaw`UPDATE projects SET updated_at = ${T0}`
+    const before = Object.fromEntries(await Promise.all(Object.keys({ ...MOVES, ...STAYS }).map(async (id) => [id, await read(id)])))
+    expect(await db.$executeRawUnsafe(WAY_BACK)).toBe(2)
+    for (const id of ['old-default', 'old-repeated']) {
+      const row = await read(id)
+      expect(row.map, id).toEqual({ ...OTHERS, tradecraft_lookup: OLD })
+      expect(row.updatedAt.getTime(), id).toBeGreaterThan(T0.getTime())
+    }
+    for (const id of Object.keys(before).filter((id) => !['old-default', 'old-repeated'].includes(id))) {
+      expect(await read(id), id).toEqual(before[id])
+    }
+    // The marker stays, so the next start does not move them again.
+    expect(await backfillTradecraftPhases(db)).toEqual({ done: false })
   })
 
   test('a project created after the change with no map of its own gets all three phases', async () => {

@@ -61,24 +61,31 @@ describe('backfill-tradecraft-phases', () => {
     expect(CODE.match(/\bUPDATE\s+projects\b/gi)).toHaveLength(1)
   })
 
-  test('the log line carries the count only', async () => {
+  test('the marker keeps the moved ids, sorted; the log line carries the count only', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     const create = vi.fn(async () => ({ createdAt: new Date('2026-11-17T00:00:00Z') }))
     const tx = {
-      $executeRaw: vi.fn(async () => 3),
+      $executeRaw: vi.fn(async () => 1),
+      $queryRaw: vi.fn(async () => [{ id: 'p-c' }, { id: 'p-a' }, { id: 'p-b' }]),
       auditLog: { findFirst: vi.fn(async () => null), create },
     }
     await main(fakePrisma(tx) as never)
     expect(log).toHaveBeenCalledTimes(1)
-    expect(log.mock.calls[0].join(' ')).toMatch(/^\[tradecraft\] phases_default_moved projects=3\b/)
-    expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: MARKER_ACTION, after: { projects: 3 } }) })
+    const line = log.mock.calls[0].join(' ')
+    expect(line).toMatch(/^\[tradecraft\] phases_default_moved projects=3\b/)
+    expect(line).not.toMatch(/p-[abc]/)
+    expect(create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ action: MARKER_ACTION, after: { projects: 3, ids: ['p-a', 'p-b', 'p-c'] } }),
+    })
   })
 
   test('a failure is logged with a fixed text, writes no marker, and the boot goes on', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const create = vi.fn()
+    // The cut-off is written; the update then fails.
+    const create = vi.fn(async () => ({ createdAt: new Date('2026-11-17T00:00:00Z') }))
     const tx = {
-      $executeRaw: vi.fn(async () => { throw new Error('canceling statement: "projects" row (id)=(p-1) ...') }),
+      $executeRaw: vi.fn(async () => 1),
+      $queryRaw: vi.fn(async () => { throw new Error('canceling statement: "projects" row (id)=(p-1) ...') }),
       auditLog: { findFirst: vi.fn(async () => null), create },
     }
     await expect(main(fakePrisma(tx) as never)).resolves.toBeUndefined()
@@ -86,6 +93,7 @@ describe('backfill-tradecraft-phases', () => {
     const line = error.mock.calls[0].join(' ')
     expect(line).toMatch(/^\[tradecraft\] phases_default_failed code=Error\b/)
     expect(line).not.toContain('p-1')
+    expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: CUTOFF_ACTION }) })
     expect(create).not.toHaveBeenCalledWith({ data: expect.objectContaining({ action: MARKER_ACTION }) })
   })
 })

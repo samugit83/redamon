@@ -159,3 +159,19 @@ SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'conve
 \echo == project transfers, offers or transfers of any status [step 5.12]
 SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name = 'project_transfers')
   || '|' || (SELECT count(*) FROM project_transfers);
+
+-- The Tradecraft tools' phases (owner decision 2026-11-17): every fixture project holds the 7.7.x
+-- default row, exploitation and post-exploitation, so the boot moves each to all three phases,
+-- once, and only those created before its cut-off. The marker counts them and keeps their ids
+-- (the way back), no name and no setting.
+\echo == tradecraft phases (project, tradecraft_lookup) [tradecraft phases]
+SELECT name, agent_tool_phase_map -> 'tradecraft_lookup' FROM projects ORDER BY name;
+
+\echo == tradecraft phases marker (projects moved, ids kept, the projects those ids name), one line per marker row
+SELECT a.after ->> 'projects', jsonb_array_length(a.after -> 'ids'),
+       (SELECT string_agg(p.name, ',' ORDER BY p.name) FROM projects p WHERE a.after -> 'ids' ? p.id)
+  FROM audit_log a WHERE a.action = 'system.tradecraft_phases_backfill' ORDER BY a.created_at;
+
+\echo == projects created after the tradecraft phases cut-off
+SELECT count(*) FROM projects
+ WHERE created_at > (SELECT min(created_at) FROM audit_log WHERE action = 'system.tradecraft_phases_cutoff');
