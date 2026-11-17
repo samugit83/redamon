@@ -294,6 +294,8 @@ async def build_map(state: IngestState) -> None:
         if result.retype and not forced:
             state.site_type = result.retype
             logger.info(f"[tradecraft] job {state.request.job_id} retyped code=")
+        if result.crawl_fallback and not state.entries and not state.map_error:
+            await _crawl_instead(state)
     else:
         await _crawl(state)
     _drop_unstorable_urls(state)
@@ -314,6 +316,8 @@ def _take(state: IngestState, result: builders.MapResult) -> None:
     state.meta = dict(result.meta)
     state.index_kind = result.index_kind
     state.repo_size_kb = result.repo_size_kb
+    if result.report_stop:
+        state.stop_reason = result.report_stop
     if result.error:
         state.map_error = result.error
         state.count_error(result.error)
@@ -364,6 +368,19 @@ async def _crawl(state: IngestState) -> None:
         state.count_error(result.error_code)
         if not result.entries:
             state.map_error = result.error_code
+
+
+_CRAWL_INSTEAD = "docs: no search index or sitemap, crawl"
+
+
+async def _crawl_instead(state: IngestState) -> None:
+    """A docs site whose search index and sitemaps listed nothing gets the crawl a website would
+    get, with every rule and limit of the crawl, instead of a map of its homepage alone. The type
+    stays: the report names the source (the crawl's own code in brackets, at most 57 characters)."""
+    state.stop_reason = _CRAWL_INSTEAD
+    await _crawl(state)
+    if state.crawl is not None:
+        state.stop_reason = f"{_CRAWL_INSTEAD} ({state.crawl.stop_reason})"
 
 
 # A crawl that needed the owner's model and could not have it found nothing: its map is not

@@ -35,14 +35,15 @@ TEXT = "Synthetic technique text about payloads and bypasses. " * 20
 class Job:
     """One ingestion job of resource ``r1`` with the request's ``settings``."""
 
-    def __init__(self, root, url, settings=None, *, mode="live", store=None, model=None, forced_type=""):
+    def __init__(self, root, url, settings=None, *, mode="live", store=None, model=None, forced_type="",
+                 credentials=None):
         self.store = store or MemoryStore()
         self.fetcher = FixtureFetcher(root)
         self.model = model or PipelineModel()
         spec = json.loads(json.dumps(FIXTURE))
         spec.update(job_id=JID, user_id=OWNER, actor_user_id=OWNER, resource_id=RID, settings=dict(settings or {}))
         spec["resource"].update(url=url, storage_mode=mode, model="openai/fake-small-model", forced_type=forced_type)
-        spec["secrets"] = {"github_token": None, "credentials": None}
+        spec["secrets"] = {"github_token": None, "credentials": credentials}
         self.request = JobStartRequest.model_validate(spec)
         self.store.add_resource(OWNER, RID, url=url, storage_mode=mode, generation=0)
         self.store.add_job(OWNER, RID, JID, status="running")
@@ -269,3 +270,108 @@ def test_storage_limits_from_settings(tmp_path):
     live = Job(root, url, {"storage.maxPages": 20000}, mode="live")
     live.run()
     assert live.report.stored.pages == 0 and stored(live) == []
+
+
+# --------------------------------------------------------------------------------------
+# A docs site whose search index lists nothing (detection §4.2, the docs map §4.3)
+# --------------------------------------------------------------------------------------
+
+# A Hugo docs site: its searchindex.js is another search library's JavaScript bundle, not
+# Sphinx's index; its sitemap lists its pages. Every page links to the others.
+HUGO = "hugo-docs.tc-fixture.test"
+HUGO_URL = f"https://{HUGO}/stable/"
+HUGO_PAGES = [f"{HUGO_URL}{p}/" for p in ("overview", "concepts", "howto", "api")]
+ELASTICLUNR_BUNDLE = ("window.docsSearch = (function(){\n    /** elasticlunr - synthetic bundle */\n"
+                      '    var lunr = function (config) { return config; };\n    var data = {"version": "0.9.5"};\n'
+                      "    return lunr(data);\n})();\n")
+FAKE_LOGIN = {"cookie": "cookie=fake-session", "headers": [], "basic_auth": None}
+
+
+def docs_page(title, links=(), head=""):
+    menu = "".join(f'<li><a href="{u}">{u.rstrip("/").rsplit("/", 1)[-1].title()}</a></li>' for u in links)
+    return (f"<html><head><title>{title}</title>{head}</head><body><main><article><h1>{title}</h1>"
+            f"<p>{TEXT}</p><ul>{menu}</ul></article></main></body></html>")
+
+
+def hugo_site(root, **extra):
+    head = '<meta name="generator" content="Hugo 0.139.3"><script src="/stable/searchindex.js" defer></script>'
+    files = {"/stable/": docs_page("Lab proxy docs", HUGO_PAGES, head),
+             "/stable/searchindex.js": ELASTICLUNR_BUNDLE,
+             "/stable/sitemap.xml": urlset([HUGO_URL] + HUGO_PAGES)}
+    files.update({u.split(HUGO, 1)[1]: docs_page(u.rstrip("/").rsplit("/", 1)[-1].title(), HUGO_PAGES) for u in HUGO_PAGES})
+    files.update(extra)
+    return site(root, HUGO, files)
+
+
+def error_codes(job):
+    return {e.code for e in job.report.errors}
+
+
+def test_a_hugo_docs_site_is_crawled_not_kept_as_its_homepage(tmp_path):
+    """Detection: a page that loads another tool's searchindex.js is a website, so the crawl maps
+    it; it was typed a Sphinx site, and a map holding its homepage alone succeeded."""
+    job = Job(hugo_site(tmp_path), HUGO_URL, model=PipelineModel(follow=len(HUGO_PAGES)))
+    assert job.run().status == "succeeded"
+    assert job.state.site_type == "agentic-crawl" and job.resource["resource_type"] == "agentic-crawl"
+    assert set(HUGO_PAGES) <= set(job.urls())
+    assert "map_empty_homepage_only" not in error_codes(job)
+
+
+def test_a_docs_type_without_a_sphinx_index_is_mapped_from_its_sitemap(tmp_path):
+    """The docs map: a search index that lists nothing falls back to the site's sitemap, and the
+    report names the source; no crawl runs."""
+    job = Job(hugo_site(tmp_path), HUGO_URL, forced_type="sphinx-docs")
+    assert job.run().status == "succeeded"
+    assert job.resource["resource_type"] == "sphinx-docs"
+    assert sorted(job.urls()) == sorted([HUGO_URL] + HUGO_PAGES) and job.report.kept == 5
+    assert job.report.stopReason == "docs: no search index, sitemap.xml (5 pages)"
+    assert "map_empty_homepage_only" not in error_codes(job)
+    assert job.state.crawl is None and job.resource["crawl_stats"] == {}
+    # The 1.x columns: a docs map, with no index URL.
+    assert job.resource["sitemap"]["indexUrl"] == "" and len(job.resource["sitemap"]["nav"]) == 5
+
+
+def test_the_docs_sitemap_fallback_keeps_the_guards(tmp_path):
+    """robots.txt names a sitemap at an internal address and one on another host: the first is
+    refused before any request, and the resource's login never reaches the other host."""
+    maps = "maps.tc-fixture.test"
+    root = hugo_site(tmp_path, **{"/robots.txt": f"Sitemap: http://127.0.0.1/sitemap.xml\nSitemap: https://{maps}/docs.xml\n"})
+    site(root, maps, {"/docs.xml": urlset([HUGO_URL] + HUGO_PAGES)})
+    job = Job(root, HUGO_URL, forced_type="sphinx-docs", credentials=FAKE_LOGIN)
+    assert job.run().status == "succeeded"
+    assert sorted(job.urls()) == sorted([HUGO_URL] + HUGO_PAGES)
+    assert job.report.stopReason == "docs: no search index, robots (5 pages)"
+    requests = job.fetcher.requests
+    assert not [u for u, _ in requests if "127.0.0.1" in u]
+    off_host = [h for u, h in requests if f"//{maps}/" in u]
+    own_host = [h for u, h in requests if f"//{HUGO}/" in u]
+    assert off_host and not any("cookie" in h for h in off_host)
+    assert own_host and all(h.get("cookie") == "cookie=fake-session" for h in own_host)
+
+
+def test_a_sphinx_site_whose_index_lists_nothing_is_crawled(tmp_path):
+    """A real Sphinx page whose index does not parse and with no sitemap: the crawl a website
+    would get maps it, and the report says so."""
+    host = "sphinx-broken.tc-fixture.test"
+    url = f"https://{host}/"
+    pages = [f"{url}{p}.html" for p in ("install", "usage", "options")]
+    head = '<meta name="generator" content="Docutils 0.20.1: https://docutils.sourceforge.io/" />'
+    files = {"/": docs_page("Lab tool documentation", pages, head), "/searchindex.js": "Search.setIndex({broken"}
+    files.update({p.split(host, 1)[1]: docs_page(p.rsplit("/", 1)[-1], pages) for p in pages})
+    job = Job(site(tmp_path, host, files), url, model=PipelineModel(follow=len(pages)))
+    assert job.run().status == "succeeded"
+    assert job.state.site_type == "sphinx-docs" and job.resource["resource_type"] == "sphinx-docs"
+    assert set(pages) <= set(job.urls())
+    assert job.report.stopReason.startswith("docs: no search index or sitemap, crawl (")
+    assert job.resource["crawl_stats"]["strategy"] == "llm" and job.report.llmCalls >= 1
+    assert "map_empty_homepage_only" not in error_codes(job)
+
+
+def test_a_docs_index_that_lists_pages_is_used_as_before(tmp_path):
+    job = Job(padded_sites(tmp_path), "https://docs.tc-fixture.test/")
+    assert job.run().status == "succeeded"
+    assert job.resource["resource_type"] == "sphinx-docs" and len(job.urls()) == 8
+    assert job.report.stopReason == "docs: searchindex (8 pages)"
+    assert job.resource["sitemap"]["indexUrl"] == "https://docs.tc-fixture.test/searchindex.js"
+    assert job.resource["crawl_stats"] == {}
+    assert not [u for u, _ in job.fetcher.requests if u.endswith(("/sitemap.xml", "/robots.txt"))]

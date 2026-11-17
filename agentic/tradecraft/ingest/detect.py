@@ -4,8 +4,11 @@ below keeps 1.x's signature for the workspace importer).
 The same rules in the same order: a CVE archive, a GitHub repository, MkDocs or mdBook,
 Sphinx or Docusaurus, GitBook, else a website for the crawl. The archive threshold is
 ``detection.cveArchiveThreshold`` (20, as 1.x) and a person can turn a detector off
-(``detection.enabledDetectors``); with the defaults the answer equals 1.x's. A PDF is told
-by its content, not here (``fetch.FetchedPage.is_pdf``).
+(``detection.enabledDetectors``); with the defaults the answer equals 1.x's but for one rule:
+a page that loads a file named ``searchindex.js`` is Sphinx only beside a mark only Sphinx
+writes, and no Sphinx marker counts on a page whose generator meta names another tool (1.x
+typed a Hugo site Sphinx, and its map held the homepage alone). A PDF is told by its content,
+not here (``fetch.FetchedPage.is_pdf``).
 """
 
 from __future__ import annotations
@@ -23,14 +26,61 @@ _MKDOCS_MARKERS = (
     'name="generator" content="mkdocs', 'name="generator" content="material',
     "<!-- book generated using mdbook -->", 'class="mdbook"', "mdbook.js",
 )
-_SPHINX_MARKERS = (
-    'name="generator" content="docutils', "_static/searchindex.js", "searchindex.js",
-    'name="generator" content="docusaurus', "docusaurus.config",
+_SPHINX_MARKERS = ('name="generator" content="docutils', "_static/searchindex.js")
+# Other tools also ship a search script named searchindex.js (Hugo themes bundle elasticlunr
+# under that name): it says Sphinx only beside something only Sphinx writes.
+_SPHINX_INDEX_FILE = "searchindex.js"
+_SPHINX_COMPANIONS = (
+    "search.setindex", "documentation_options", "_static/doctools.js", "_static/searchtools.js",
+    "_static/sphinx_highlight.js",
 )
+# A generator meta naming none of these is another tool's page, whatever Sphinx-like file it loads.
+_SPHINX_GENERATORS = ("docutils", "sphinx", "docusaurus")
+_DOCUSAURUS_MARKERS = ('name="generator" content="docusaurus', "docusaurus.config")
+_ATTR_RE = re.compile(r"""([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
+# A generator meta sits near the top of the head: these bounds keep reading a hostile page linear.
+_MAX_META_TAGS = 1000
+_MAX_META_TAG_CHARS = 2000
 _GITBOOK_MARKERS = (
     'application-name" content="gitbook"', 'name="generator" content="gitbook',
     "static-2v.gitbook.com", "static.gitbook.com", "data-rsc-router",
 )
+
+
+def generators(raw_html: str) -> list[str]:
+    """The lowercased ``content`` of every ``<meta name="generator">``, in any attribute order
+    or quoting, among the page's first ``_MAX_META_TAGS`` tags of at most ``_MAX_META_TAG_CHARS``
+    characters each. Detection runs on the job's event loop, and one pattern over the whole page
+    is quadratic on a page of unclosed ``<meta`` tags."""
+    text = (raw_html or "").lower()
+    out: list[str] = []
+    pos = 0
+    for _ in range(_MAX_META_TAGS):
+        start = text.find("<meta", pos)
+        if start < 0:
+            break
+        end = text.find(">", start, start + _MAX_META_TAG_CHARS)
+        if end < 0:
+            pos = start + len("<meta")
+            continue
+        attrs = {m.group(1): m.group(2) or m.group(3) or m.group(4) or ""
+                 for m in _ATTR_RE.finditer(text, start + len("<meta"), end)}
+        if attrs.get("name", "").strip() == "generator" and attrs.get("content", "").strip():
+            out.append(attrs["content"].strip())
+        pos = end + 1
+    return out
+
+
+def _sphinx_page(body_lc: str, raw_html: str) -> bool:
+    if any(m in body_lc for m in _DOCUSAURUS_MARKERS):
+        return True
+    gens = generators(raw_html)
+    if gens and not any(name in g for g in gens for name in _SPHINX_GENERATORS):
+        return False
+    if any(m in body_lc for m in _SPHINX_MARKERS):
+        return True
+    sphinx_generator = any("sphinx" in g for g in gens)
+    return _SPHINX_INDEX_FILE in body_lc and (sphinx_generator or any(m in body_lc for m in _SPHINX_COMPANIONS))
 
 
 def detect(url: str, raw_html: str, status: int, settings: EffectiveSettings) -> str:
@@ -60,7 +110,7 @@ def detect(url: str, raw_html: str, status: int, settings: EffectiveSettings) ->
     if "mkdocs" in enabled and any(m in body_lc for m in _MKDOCS_MARKERS):
         return "mkdocs-wiki"
     # ReadTheDocs always serves Sphinx: the host alone decides.
-    if "sphinx" in enabled and (host.endswith(".readthedocs.io") or any(m in body_lc for m in _SPHINX_MARKERS)):
+    if "sphinx" in enabled and (host.endswith(".readthedocs.io") or _sphinx_page(body_lc, body)):
         return "sphinx-docs"
     if "gitbook" in enabled and ("gitbook.io" in host or any(m in body_lc for m in _GITBOOK_MARKERS)):
         return "gitbook"

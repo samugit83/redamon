@@ -4,7 +4,9 @@ A builder answers a ``MapResult``: candidate entries ``{url, title, source, path
 and the type's metadata (owner, repository and branch of a GitHub repository, the index
 URL of a Sphinx site). Every request goes through ``fetch.fetch_raw`` (the GitHub token
 only to GitHub hosts) and every cap is a setting whose default is 1.x's value; the wiki's
-sitemap, unlimited in 1.x, stops at ``knownTypes.maxMapEntries.wiki`` (20,000).
+sitemap, unlimited in 1.x, stops at ``knownTypes.maxMapEntries.wiki`` (20,000). Where 1.x left
+a docs site whose search index listed nothing with its homepage alone, its sitemaps map it,
+else the pipeline crawls it.
 
 Parsing (XML, HTML, PDF) is CPU work: the pipeline passes ``blocking``, which runs it on
 the job runner's thread pool; called alone, a builder parses inline.
@@ -67,6 +69,11 @@ class MapResult:
     retype: str = ""
     # A repository's size in KB when its API answer was read: the archive's pre-check (T6.3).
     repo_size_kb: Optional[int] = None
+    # Nothing the type reads listed the site's pages: the pipeline crawls it as a website.
+    crawl_fallback: bool = False
+    # The report's stopReason when the type can build its map more than one way: which source did.
+    # Fixed words, codes and counts, never a URL; at most 64 characters.
+    report_stop: str = ""
 
 
 _YEAR_DIR_RE = re.compile(r"(?:19|20)\d{2}")
@@ -205,10 +212,10 @@ def _nav_links(html: str, page_url: str, selector: str) -> list[tuple[str, str]]
 
 
 async def _from_sitemaps(base: str, configured: list[str], settings: EffectiveSettings,
-                         blocking: Blocking) -> tuple[list[str], str]:
-    """The first sitemap that lists pages: the resource's own URLs (§6.5; they replace
-    ``/sitemap.xml`` at the resource's URL, which is read only when none is set), and the ones
-    a ``Sitemap:`` line of robots.txt names."""
+                         blocking: Blocking, keep: Optional[Callable[[str], bool]] = None) -> tuple[list[str], str]:
+    """The first sitemap that lists pages (that ``keep`` accepts, when given): the resource's own
+    URLs (§6.5; they replace ``/sitemap.xml`` at the resource's URL, which is read only when none
+    is set), and the ones a ``Sitemap:`` line of robots.txt names."""
     named = [urllib.parse.urljoin(base + "/", sm.strip()) for sm in configured if sm.strip()]
     named += (await robots.read(base, settings)).sitemaps[: int(constant("sitemapMaxChildren"))]
     if not configured:
@@ -216,9 +223,31 @@ async def _from_sitemaps(base: str, configured: list[str], settings: EffectiveSe
     budget = SitemapBudget()
     for sm in dict.fromkeys(named):
         urls = await sitemap_urls(sm, settings, blocking=blocking, budget=budget)
+        if keep is not None:
+            urls = [u for u in urls if keep(u)]
         if urls or budget.stopped:
             return urls, sm if urls else ""
     return [], ""
+
+
+def in_start_folder(start_url: str) -> Callable[[str], bool]:
+    """The resource's own pages: its host (with or without ``www.``) and the folder of its URL,
+    as the website mirror scopes a start page. A versioned docs host's sitemap also lists the
+    other versions' folders, which are not this resource."""
+    parts = urllib.parse.urlsplit(start_url)
+    host = (parts.hostname or "").lower().removeprefix("www.")
+    path = parts.path or "/"
+    folder = path[: path.rfind("/") + 1] or "/"
+
+    def keep(url: str) -> bool:
+        try:
+            other = urllib.parse.urlsplit(url)
+            other_host = (other.hostname or "").lower()
+        except ValueError:
+            return False
+        return other_host.removeprefix("www.") == host and (other.path or "/").startswith(folder)
+
+    return keep
 
 
 # --------------------------------------------------------------------------------------
@@ -289,7 +318,17 @@ def _join(base: str, path: str) -> str:
 # Sphinx / Docusaurus
 # --------------------------------------------------------------------------------------
 
+DOCS_INDEX_UNUSABLE = "docs_index_unusable"
+
+
+def _docs_stop(source: str, entries: list[Candidate], cut: bool) -> str:
+    return f"docs: {source} ({len(entries)} pages{', map limit' if cut else ''})"
+
+
 async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blocking = inline) -> MapResult:
+    """The search index; when it lists nothing (none found, another tool's file of that name, one
+    that does not parse), the sitemaps, kept to the resource's folder; when they list nothing
+    but the start page, ``crawl_fallback``: a homepage alone is no map of a docs site."""
     base = url.rstrip("/")
     cap = settings.int("knownTypes.maxMapEntries.docs")
     configured = settings.str("type.docs.searchIndexUrl")
@@ -299,11 +338,21 @@ async def build_docs(url: str, settings: EffectiveSettings, *, blocking: Blockin
         if resp.status != 200 or not resp.body:
             continue
         nav = await blocking(_sphinx_index_entries, resp.text, base)
-        if nav:
-            entries, cut = _dedupe([Candidate(p, t, "searchindex", p) for t, p in nav], cap)
+        entries, cut = _dedupe([Candidate(p, t, "searchindex", p) for t, p in nav], cap)
+        if entries:
             return MapResult("sphinx-docs", entries, meta={"indexUrl": idx_url}, index_kind="searchindex",
-                             index_url=idx_url, truncated=cut)
-    return MapResult("sphinx-docs", [], meta={"indexUrl": ""})
+                             index_url=idx_url, truncated=cut, report_stop=_docs_stop("searchindex", entries, cut))
+
+    urls, sitemap_url = await _from_sitemaps(base, [], settings, blocking, keep=in_start_folder(url))
+    entries, cut = _dedupe([Candidate(u, title_from_slug(u, strip_html=True), "sitemap", u)
+                            for u in language_filter(urls, settings)], cap)
+    start = fetch.canonical_url(url)
+    if any(e.url != start for e in entries):
+        source = "sitemap.xml" if sitemap_url == f"{base}/sitemap.xml" else "robots"
+        return MapResult("sphinx-docs", entries, meta={"indexUrl": ""}, index_kind="sitemap", index_url=sitemap_url,
+                         truncated=cut, note=DOCS_INDEX_UNUSABLE,
+                         report_stop=_docs_stop(f"no search index, {source}", entries, cut))
+    return MapResult("sphinx-docs", [], meta={"indexUrl": ""}, note=DOCS_INDEX_UNUSABLE, crawl_fallback=True)
 
 
 def _sphinx_index_entries(text: str, base: str) -> list[tuple[str, str]]:

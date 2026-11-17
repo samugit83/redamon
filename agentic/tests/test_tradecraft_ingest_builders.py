@@ -63,6 +63,83 @@ def test_docs_matches_1x(fixtures):
     assert set(ORACLE["docs"]["titles"]) <= titles
 
 
+def test_docs_index_with_entries_is_used_as_before(fixtures):
+    """An index that lists pages builds the map as it always did, names itself in the report,
+    and no sitemap is read."""
+    new = run(builders.build_docs("https://docs.tc-fixture.test/", s()))
+    assert new.index_kind == "searchindex" and len(new.entries) == len(ORACLE["docs"]["urls"]) == 8
+    assert all(e.source == "searchindex" for e in new.entries) and not new.crawl_fallback
+    assert new.report_stop == "docs: searchindex (8 pages)"
+    assert not [u for u, _ in fixtures.requests if u.endswith(("/sitemap.xml", "/robots.txt"))]
+
+
+# A Hugo docs site: its searchindex.js is a JavaScript bundle of another search library, and its
+# sitemap lists its pages, another version's and another host's.
+HUGO = "hugo-docs.tc-fixture.test"
+HUGO_URL = f"https://{HUGO}/stable/"
+HUGO_PAGES = [HUGO_URL] + [f"{HUGO_URL}{p}/" for p in ("overview", "concepts/filters", "howto/transparent", "api")]
+ELASTICLUNR_BUNDLE = ("window.docsSearch = (function(){\n    /** elasticlunr - synthetic bundle */\n"
+                      '    var lunr = function (config) { return config; };\n    var data = {"version": "0.9.5"};\n'
+                      "    return lunr(data);\n})();\n")
+
+
+def _urlset(urls):
+    return ('<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + "".join(f"<url><loc>{u}</loc></url>" for u in urls) + "</urlset>")
+
+
+def _hugo_files(**extra):
+    files = {
+        "stable/index.html": '<html><head><meta name="generator" content="Hugo 0.139.3"><title>Lab proxy</title></head></html>',
+        "stable/searchindex.js": ELASTICLUNR_BUNDLE,
+        "stable/sitemap.xml": _urlset(HUGO_PAGES + [f"https://{HUGO}/v9/overview/", "https://other-docs.tc-fixture.test/stable/x/"]),
+    }
+    files.update(extra)
+    return files
+
+
+def test_docs_without_a_sphinx_index_maps_its_sitemap(tmp_path):
+    with net.use_fetcher(_site(tmp_path, HUGO, _hugo_files())):
+        new = run(builders.build_docs(HUGO_URL, s()))
+    assert new.type == "sphinx-docs" and new.index_kind == "sitemap" and not new.crawl_fallback
+    # Only the resource's own pages: not another version's folder, not another host.
+    assert [e.url for e in new.entries] == HUGO_PAGES
+    assert all(e.source == "sitemap" and e.title for e in new.entries)
+    assert new.index_url == f"{HUGO_URL}sitemap.xml" and new.meta == {"indexUrl": ""}
+    assert new.report_stop == "docs: no search index, sitemap.xml (5 pages)"
+    assert new.note == "docs_index_unusable" and not new.error
+
+
+def test_docs_sitemap_named_by_robots_and_the_map_limit(tmp_path):
+    pages = [HUGO_URL] + [f"{HUGO_URL}page-{i}/" for i in range(101)]
+    files = _hugo_files(**{"robots.txt": f"User-agent: *\nSitemap: https://{HUGO}/maps/docs.xml\n",
+                           "maps/docs.xml": _urlset(pages)})
+    with net.use_fetcher(_site(tmp_path, HUGO, files)):
+        robots_first = run(builders.build_docs(HUGO_URL, s()))
+        capped = run(builders.build_docs(HUGO_URL, s(**{"knownTypes.maxMapEntries.docs": 100})))
+    assert [e.url for e in robots_first.entries] == pages and not robots_first.truncated
+    assert robots_first.report_stop == "docs: no search index, robots (102 pages)"
+    assert robots_first.index_url == f"https://{HUGO}/maps/docs.xml"
+    assert [e.url for e in capped.entries] == pages[:100] and capped.truncated
+    assert capped.report_stop == "docs: no search index, robots (100 pages, map limit)"
+
+
+def test_docs_with_no_index_and_no_usable_sitemap_asks_for_the_crawl(tmp_path):
+    """Read the Docs' root sitemap lists only version roots: inside the resource's folder that is
+    the start page alone, which is no map; nothing at all is no map either."""
+    host = "rtd-like.tc-fixture.test"
+    roots = _urlset([f"https://{host}/en/latest/", f"https://{host}/en/stable/", f"https://{host}/fr/latest/"])
+    files = {"en/latest/index.html": "<html><body>docs</body></html>", "robots.txt": f"Sitemap: https://{host}/sitemap.xml\n",
+             "sitemap.xml": roots, "en/latest/searchindex.js": "Search.setIndex(not json)"}
+    with net.use_fetcher(_site(tmp_path, host, files)):
+        only_home = run(builders.build_docs(f"https://{host}/en/latest/", s()))
+    assert only_home.entries == [] and only_home.crawl_fallback and only_home.index_kind == "none"
+    assert only_home.note == "docs_index_unusable" and not only_home.error
+    with net.use_fetcher(_site(tmp_path, "bare-docs.tc-fixture.test", {"index.html": "<html></html>"})):
+        nothing = run(builders.build_docs("https://bare-docs.tc-fixture.test/", s()))
+    assert nothing.entries == [] and nothing.crawl_fallback
+
+
 def test_gitbook_matches_1x(fixtures):
     url = "https://book.tc-fixture.test/"
     new = run(builders.build_gitbook(url, s()))

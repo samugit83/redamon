@@ -1,8 +1,9 @@
 """Stage ``report``: the ingestion report on the card (§3.3, the contract's ``IngestionReport``).
 
 Counts and codes only: pages visited and kept, pages skipped by reason, why the crawl
-stopped, model calls, the duration, what was stored and what was not, and errors counted by
-code. Never a URL (it may carry a query string or a token), never page text.
+stopped (or which source built a docs map), model calls, the duration, what was stored and
+what was not, and errors counted by code. Never a URL (it may carry a query string or a
+token), never page text.
 
 Two lines join it with the focus (T5.1): ``focus``, what the focus did (its mode, and in
 Focused mode how many pages it kept, kept as maybe and dropped, §6.14 "Transparency"), and
@@ -62,7 +63,8 @@ async def build(state: "IngestState") -> "IngestState":
         visited=state.visited,
         kept=kept,
         skipped={**state.skipped, "outsideFocus": focus.dropped_count(state.entries)},
-        stopReason=(crawl.report_stop_reason if crawl is not None else state.stop_reason)[:64],
+        # The pipeline's own reason names the source of a docs map, the crawl included when it built it.
+        stopReason=(state.stop_reason or (crawl.report_stop_reason if crawl is not None else ""))[:64],
         llmCalls=state.llm_calls,
         durationSec=round(max(0.0, clock.monotonic() - state.started), 1),
         stored=dict(state.stored_counts),
