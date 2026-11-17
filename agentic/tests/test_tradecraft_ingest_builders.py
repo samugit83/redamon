@@ -421,3 +421,47 @@ def test_language_children():
     assert builders.preferred_languages("https://w.tc-fixture.test/fr/", s(**{"knownTypes.language": "all"})) == []
     assert builders.preferred_languages("https://w.tc-fixture.test/", s(**{
         "knownTypes.language": "preferred", "knownTypes.preferredLanguage": "DE"})) == ["de"]
+
+
+# --------------------------------------------------------------------------------------
+# Titles guessed from a URL
+# --------------------------------------------------------------------------------------
+
+def test_slug_titles_are_decoded_once_into_one_clean_line():
+    def t(path, strip_html=True):
+        return builders.title_from_slug(f"https://w.tc-fixture.test/{path}", strip_html=strip_html)
+
+    assert t("payloads/Server%20Side%20Request%20Forgery") == "Server Side Request Forgery"
+    assert t("payloads/Xss%20Injection/") == "Xss Injection"
+    assert t("Cross-Site%20Request%20Forgery") == "Cross Site Request Forgery"
+    assert t("r%C3%A9sum%C3%A9.html") == "Résumé" and t("r%C3%A9sum%C3%A9.html", strip_html=False) == "Résumé.Html"
+    # Decoded once: an encoded percent sign stays one; a plus in a path is a plus.
+    assert t("100%2520coverage") == "100%20Coverage"
+    assert t("C%2B%2B-tricks") == "C++ Tricks" and t("a+b") == "A+B"
+    # What decoding could bring in never breaks the line: controls, separators, slashes.
+    assert t("bad%0Aline%00x%2Fy%5Cz%E2%80%A8w%09v") == "Bad Line X Y Z W V"
+    assert t("--a--b--") == "A B"
+    # Bytes that are not UTF-8 stay as the site wrote them.
+    assert t("caf%E9") == "Caf%E9"
+    # A segment with nothing left after cleaning, or no segment at all, is named by its URL.
+    assert t("%0A%0D") == "Https://W.Tc Fixture.Test/%0A%0D"
+    assert builders.title_from_slug("https://w.tc-fixture.test/", strip_html=True) == "Https://W.Tc Fixture.Test/"
+    for title in (t("bad%0Aline%00x"), t("%0A%0D"), t("caf%E9")):
+        assert title and title.isprintable() and title == title.strip()
+
+
+def test_the_website_sitemap_titles_are_decoded(tmp_path):
+    """The website crawl's Auto reading names its entries the same way."""
+    from tradecraft.ingest import crawl, robots
+
+    host = "payloads.tc-fixture.test"
+    pages = [f"https://{host}/payloads/{p}/" for p in ("Server%20Side%20Request%20Forgery", "Xss%20Injection",
+                                                       "Cross-Site%20Request%20Forgery")]
+    fetcher = _site(tmp_path, host, {"sitemap.xml": _urlset(pages), "index.html": "<html></html>"})
+    base = f"https://{host}/"
+    with net.use_fetcher(fetcher):
+        rules = crawl.FollowRules(s(), [base])
+        found = run(crawl.sitemap_entries(base, s(), rules=rules, robots_cache=robots.RobotsCache(s())))
+    assert [e.title for e in found.entries] == ["Server Side Request Forgery", "Xss Injection",
+                                                "Cross Site Request Forgery"]
+    assert [e.url for e in found.entries] == pages

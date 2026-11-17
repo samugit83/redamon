@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -404,3 +405,19 @@ def test_a_translated_wiki_keeps_its_english_pages_within_the_sitemap_budget(tmp
     assert languages() == ["en"]
     assert languages(**{"knownTypes.language": "preferred", "knownTypes.preferredLanguage": "fr"}) == ["fr"]
     assert languages(**{"knownTypes.language": "all"}) == ["af", "de"]
+
+
+def test_the_map_keeps_decoded_titles(tmp_path):
+    """A website read with Auto: the titles guessed from its sitemap's percent-encoded paths are
+    stored decoded, as search ranks them and the agent reads them."""
+    host = "payloads.tc-fixture.test"
+    slugs = ("Server%20Side%20Request%20Forgery", "Xss%20Injection", "Cross-Site%20Request%20Forgery")
+    pages = [f"https://{host}/payloads/{s}/" for s in slugs]
+    files = {"/": f"<html><head><title>Payloads</title></head><body><main><p>{TEXT}</p></main></body></html>",
+             "/sitemap.xml": urlset(pages)}
+    for url in pages:
+        files[urllib.parse.unquote(url.split(host, 1)[1])] = docs_page("Payload page")
+    job = Job(site(tmp_path, host, files), f"https://{host}/", {"crawl.strategy": "auto"})
+    assert job.run().status == "succeeded"
+    titles = {e["url"]: e["title"] for e in job.store.live_entries(RID)}
+    assert [titles[u] for u in pages] == ["Server Side Request Forgery", "Xss Injection", "Cross Site Request Forgery"]

@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import unicodedata
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Sequence
@@ -104,11 +105,26 @@ def _dedupe(entries: list[Candidate], cap: int) -> tuple[list[Candidate], bool]:
     return out, False
 
 
+def _one_line(text: str) -> str:
+    """Slashes, control characters and line or paragraph separators as spaces, runs of spaces as
+    one: what percent-decoding can bring into a title never breaks its line."""
+    return " ".join("".join(" " if ch in "/\\" or unicodedata.category(ch)[0] == "C"
+                             or unicodedata.category(ch) in ("Zl", "Zp") else ch for ch in text).split())
+
+
 def title_from_slug(url: str, *, strip_html: bool) -> str:
-    slug = urllib.parse.urlsplit(url).path.strip("/").split("/")[-1] or url
+    """A title guessed from the last segment of a URL's path, percent-decoded once (a ``+`` in a
+    path is a plus; bytes that are not UTF-8 stay as written), dashes and underscores as
+    spaces; the URL itself when nothing is left of the segment."""
+    slug = urllib.parse.urlsplit(url).path.strip("/").split("/")[-1]
+    try:
+        slug = urllib.parse.unquote(slug, errors="strict")
+    except UnicodeDecodeError:
+        pass
     if strip_html:
         slug = slug.removesuffix(".html")
-    return re.sub(r"[-_]", " ", slug).title()
+    title = _one_line(re.sub(r"[-_]", " ", slug))
+    return title.title() if title else re.sub(r"[-_]", " ", url).title()
 
 
 def language_filter(urls: list[str], settings: EffectiveSettings) -> list[str]:
