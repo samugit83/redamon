@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from test_tradecraft_librarian_graph import (  # noqa: E402
-    FOUND_ANSWER, NONE_ANSWER, REQUEST, LibrarianModel, run, tools)
+    FOUND_ANSWER, NONE_ANSWER, REQUEST, LibrarianModel, card, run, tools)
 from test_tradecraft_librarian_graph import ask as ask_with  # noqa: E402
 from tradecraft import clock, run_state  # noqa: E402
 from tradecraft.librarian import graph, validate  # noqa: E402
@@ -164,3 +164,26 @@ def test_an_error_outside_a_model_call_answers_the_free_results():
     answer = run(ask_with(model, lib))
     assert model.steps == ["shortlist"] and answer.verdict == "PARTIAL"
     assert answer.notes == (graph.FAILED.format(code="internal_error"),)
+
+
+def test_the_page_limit_counts_the_whole_question():
+    """Review finding 1 (R-398, AC-69): "pages inspected per question" caps the question, both
+    rounds together. With the default 4, a first round that read 4 pages leaves no second try:
+    PARTIAL with the best so far, saying why, and no plan call."""
+    lib = tools()
+    model = LibrarianModel({"shortlist": {"pages": ["patt:412", "htk:88", "patt:415", "htk:91"]},
+                            "judge": NONE_ANSWER, "plan": {"queries": ["x"]}})
+    answer = run(ask_with(model, lib))
+    assert model.steps == ["shortlist", "judge"] and answer.pages_inspected == 4
+    assert answer.verdict == "PARTIAL" and answer.notes == (graph.PAGES_UP.format(pages=4),)
+
+    # Two read in the first round: the second may read the two left, no more.
+    lib = tools(results={REQUEST.need: ["patt:412", "htk:88"], "q1": ["patt:415", "htk:91", "patt:9"]}, default=[])
+    lib.cards["patt:9"] = card("patt:9", "Another page")
+    lib.pages["patt:9"] = [("Notes", "More notes on PostgreSQL delays.")]
+    model = LibrarianModel({"shortlist": [{"pages": ["patt:412", "htk:88"]}, {"pages": ["patt:415", "htk:91", "patt:9"]}],
+                            "judge": NONE_ANSWER, "plan": {"queries": ["q1"]}})
+    answer = run(ask_with(model, lib, **{"librarian.maxModelCalls": 10}))
+    assert model.steps == ["shortlist", "judge", "plan", "shortlist", "judge"]
+    assert "Pick at most 2 pages" in model.messages[3][-1]["content"]
+    assert answer.pages_inspected == 4 and len({c[1] for c in lib.calls if c[0] == "outline"}) == 4

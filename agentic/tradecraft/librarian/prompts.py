@@ -108,7 +108,9 @@ def plan(request_block: str, tried: Sequence[str], inspected: Sequence[tuple[str
         tree.append(f"{level.resource_slug}: {folders or '(no folders)'}")
     user = (
         request_block + "\n\n"
-        "Searches already tried: " + json.dumps([_one(q, 120) for q in tried], ensure_ascii=False) + "\n"
+        # The first search is the agent's need, the others a model's: data, like the need itself.
+        "Searches already tried, one per line:\n"
+        + wrap_untrusted("\n".join(_one(q, 120) for q in tried) or "(none)", "SEARCHES_TRIED") + "\n"
         "Pages read that did not answer the need, with their sections, and the library's top folders:\n"
         + wrap_untrusted(seen + "\n\nFolders:\n" + ("\n".join(tree) or "(none)"), "LIBRARY_TEXT") + "\n\n"
         "Write up to 3 new short search queries (keywords, at most 12 words each) that would find a page "

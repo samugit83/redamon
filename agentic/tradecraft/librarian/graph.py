@@ -5,7 +5,7 @@
                  +----------- plan <--------+  NONE, in the first round only
 
 - ``shortlist`` (model): reads up to ``constants.mergedCandidates`` (40) cards from its own
-  searches and picks up to ``librarian.maxPages`` pages;
+  searches and picks pages to read: ``librarian.maxPages`` per question, both rounds together;
 - ``inspect`` (no model): for each pick, the outline, the 1-2 sections that match the need (a
   section a stored copy's grep finds the need's code-like terms in comes first), each read up
   to ``constants.librarianSectionChars`` characters;
@@ -69,6 +69,7 @@ MODEL_ERROR = "the librarian's model failed ({code}) and was not retried: these 
 FAILED = "the librarian stopped on an error ({code}): these are the plain search results"
 TIME_UP = "the time limit of {secs} s was reached: this is the best result so far"
 CALLS_UP = "the limit of {calls} model calls per question was reached: this is the best result so far"
+PAGES_UP = "the limit of {pages} pages inspected per question was reached: this is the best result so far"
 UNREADABLE = "the pages found could not be read: these are the plain search results"
 UNCHECKED = "no excerpt could be checked against the pages' text: the pages read are listed instead"
 SCOPE_MISSED = "the scope named no resource of this run: the whole library was searched"
@@ -151,6 +152,10 @@ class _Run:
                 new += 1
         return new
 
+    def pages_left(self) -> int:
+        """Pages this question may still open: ``librarian.maxPages`` counts both rounds (Q9.6)."""
+        return self.max_pages - len(self.inspected)
+
     def time_up(self) -> bool:
         if clock.monotonic() >= self.deadline:
             self.stop = self.stop or "time"
@@ -204,14 +209,15 @@ def _words(text: str) -> set[str]:
 
 async def shortlist(run: _Run) -> Step:
     candidates = [run.cards[p] for p in run.order if p not in run.inspected][:CANDIDATES]
-    if not candidates or run.time_up():
+    room = run.pages_left()
+    if not candidates or room <= 0 or run.time_up():
         return {"next": "answer"}
-    data = await run.call(prompts.shortlist(run.request_block, candidates, run.max_pages), "shortlist")
+    data = await run.call(prompts.shortlist(run.request_block, candidates, room), "shortlist")
     if data is None:
         return {"next": "answer"}
-    picks = validate.shortlist_ids(data, [c.page_id for c in candidates], run.max_pages)
+    picks = validate.shortlist_ids(data, [c.page_id for c in candidates], room)
     # An answer outside the format picks nothing: the search's own order decides.
-    run.picks = picks or [c.page_id for c in candidates[:run.max_pages]]
+    run.picks = picks or [c.page_id for c in candidates[:room]]
     return {"next": "inspect"}
 
 
@@ -240,7 +246,7 @@ async def _sections_of(run: _Run, page_id: str) -> list[tuple[str, str]]:
 async def inspect(run: _Run) -> Step:
     if run.time_up():
         return {"next": "answer"}
-    picks = [p for p in run.picks if p not in run.inspected]
+    picks = [p for p in run.picks if p not in run.inspected][:max(0, run.pages_left())]
     found = await asyncio.gather(*(_sections_of(run, p) for p in picks))
     run.this_round = []
     for page_id, sections in zip(picks, found):
@@ -258,6 +264,10 @@ async def judge(run: _Run) -> Step:
         return {"next": "answer"}
     run.judged = validate.judge_answer(data)
     if run.judged is not None and run.judged.verdict == "NONE" and run.round <= SECOND_TRIES:
+        if run.pages_left() <= 0:
+            # The second try would have nothing left to read: no plan call for it.
+            run.stop = "pages"
+            return {"next": "answer"}
         return {"next": "plan"}
     return {"next": "answer"}
 
@@ -328,6 +338,8 @@ def _stop_note(run: _Run) -> str:
         return TIME_UP.format(secs=run.settings.int("librarian.timeLimitSec"))
     if run.stop == "calls":
         return CALLS_UP.format(calls=run.max_calls)
+    if run.stop == "pages":
+        return PAGES_UP.format(pages=run.max_pages)
     if run.stop == "model_error":
         return MODEL_ERROR.format(code=run.error_code or "model_unavailable")
     if run.stop == "error":

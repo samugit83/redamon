@@ -103,7 +103,9 @@ def judge_answer(data: Optional[Mapping[str, Any]]) -> Optional[Judged]:
     return Judged(data["verdict"], confidence, tuple(picks), also)
 
 
-_PAGE_ID_LIKE = re.compile(r"\b[a-z0-9][a-z0-9-]{0,199}:[0-9]{1,18}\b")
+# Anything shaped like a page ID, wherever it sits: next to an underscore, a letter of any script
+# or in capitals it is still an ID the agent could read (no word boundaries).
+_PAGE_ID_LIKE = re.compile(r"[a-z0-9][a-z0-9-]{0,199}:[0-9]{1,18}", re.IGNORECASE)
 
 
 def scrub_ids(text: str, known: set) -> str:
