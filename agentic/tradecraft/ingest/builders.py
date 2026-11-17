@@ -29,7 +29,6 @@ from orchestrator_helpers.web_sources import (
     resolve_link,
     split_github_url,
 )
-from tradecraft import net
 from tradecraft.ingest import fetch, robots
 from tradecraft.settings import EffectiveSettings, constant
 
@@ -352,7 +351,7 @@ async def build_gitbook(url: str, settings: EffectiveSettings, *, home_html: str
         home_html, home_final_url = (page.text, page.final_url) if page.ok else ("", "")
     links = await blocking(_nav_links, home_html, home_final_url or base, selector)
     if not links and allow_browser and settings.bool("fetching.browserEnabled"):
-        rendered = await net.get_fetcher().render(base, **fetch.render_options(settings))
+        rendered = await fetch.render(base, settings)
         if rendered.html:
             links = await blocking(_nav_links, rendered.html, base, selector)
     entries, cut = _dedupe([Candidate(p, t, "nav", p) for t, p in links], menu_cap)

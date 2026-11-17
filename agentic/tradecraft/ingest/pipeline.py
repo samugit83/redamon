@@ -175,7 +175,10 @@ async def run(ctx: JobContext, *, store: Any = None, run_blocking: Optional[Call
     opts = fetch.content_options(ctx.settings)
     state.clean_args = (opts["body_selector"], opts["remove"])
     try:
-        return await _run(state)
+        # The job's login goes to the resource's own host on every request, and no stage uses
+        # the browser while it is bound (§5, T6.4).
+        with fetch.use_login(req.resource.url, secrets.credentials if secrets else None):
+            return await _run(state)
     except Cancelled:
         logger.info(f"[tradecraft] job {req.job_id} cancelled code=cancelled")
         return JobOutcome(status="cancelled", error_code="cancelled")
@@ -224,7 +227,8 @@ async def _run(state: IngestState) -> JobOutcome:
 
 async def fetch_home(state: IngestState) -> None:
     await state.stage("fetch_home")
-    home = await fetch.smart_fetch(state.url, state.settings, github_token=state.github_token, cleaner=state.clean)
+    home = await fetch.smart_fetch(state.url, state.settings, github_token=state.github_token,
+                                   allow_browser=browser_allowed(state), cleaner=state.clean)
     state.visited += 1
     state.home = home
     state.home_problem = fetch.homepage_problem(home, state.settings)
@@ -232,6 +236,12 @@ async def fetch_home(state: IngestState) -> None:
         state.count_error(state.home_problem)
     if home.truncated:
         state.count_error(fetch.PAGE_TOO_LARGE)
+
+
+def browser_allowed(state: IngestState) -> bool:
+    """§5: a resource with a login never uses the browser (``fetch`` refuses it too while the
+    login is bound)."""
+    return not fetch.has_login(state.request.secrets)
 
 
 async def detect_type(state: IngestState) -> None:
@@ -261,7 +271,8 @@ async def build_map(state: IngestState) -> None:
         forced = bool(state.request.resource.forced_type)
         result = await builders.build_known(
             t, state.url, s, github_token=state.github_token, home_html=state.home.html,
-            home_final_url=state.home.final_url, blocking=state.blocking, forced=forced)
+            home_final_url=state.home.final_url, allow_browser=browser_allowed(state), blocking=state.blocking,
+            forced=forced)
         _take(state, result)
         if result.retype and not forced:
             state.site_type = result.retype
@@ -314,6 +325,7 @@ async def _crawl(state: IngestState) -> None:
 
     result = await crawl.crawl(state.url, state.settings, llm=llm, blocking=state.blocking,
                                cancel_check=state.ctx.is_cancelled, progress=progress,
+                               allow_browser=browser_allowed(state),
                                focus=focus.focus_of(state.request.resource.focus, state.settings))
     if result.stop_reason == "cancelled":
         raise Cancelled()

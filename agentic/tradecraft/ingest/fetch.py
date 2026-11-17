@@ -7,14 +7,26 @@ the browser would follow the same redirect.
 
 The GitHub token goes only to the exact GitHub hosts over https (R-114), and only on hops
 to the host it was sent to (``same_host_headers``): a redirect elsewhere never carries it.
+
+A resource's login (§6.6, T6.4: a cookie, custom headers, basic authentication) is bound for
+the job, read or check that uses it (``use_login``, from the job's or the catalog's
+credentials only). Every request this module sends to the resource's own host (the host of its
+URL; its http to https upgrade) then carries the login as ``same_host_headers``, which
+``net`` adds again only on a hop to that host, never on a redirect elsewhere. While a login is
+bound the browser is never used (§5): ``smart_fetch`` and ``render`` refuse it whatever
+"always use the browser" says, so no script, which other sessions' commands can read in the
+shared sandbox, ever holds a login value; ``render`` takes no headers anyway.
 """
 
 from __future__ import annotations
 
+import base64
+import contextlib
+import contextvars
 import re
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, AsyncContextManager, Awaitable, Callable, Mapping, Optional, Sequence
+from typing import Any, AsyncContextManager, Awaitable, Callable, Iterator, Mapping, Optional, Sequence
 
 from orchestrator_helpers.web_sources import (
     BeautifulSoup,
@@ -24,8 +36,11 @@ from orchestrator_helpers.web_sources import (
     rewrite_github_url,
     url_host,
 )
+from logging_config import get_logger
 from tradecraft import net
 from tradecraft.settings import EffectiveSettings, constant, setting
+
+logger = get_logger(__name__)
 
 # Elements 1.x always drops before it looks for the article (web_sources.html_to_markdown).
 _NOISE_ELEMENTS = ("nav", "footer", "header", "aside", "script", "style", "form", "iframe")
@@ -110,6 +125,94 @@ def has_login(secrets: Any) -> bool:
     return credentials is not None and not credentials.is_empty()
 
 
+# Header names a login may not set (the webapp refuses them when the login is saved; a login
+# that bypassed it is still not sent with them). Cookie and Authorization come from their own fields.
+FORBIDDEN_LOGIN_HEADERS = frozenset({"host", "content-length", "transfer-encoding", "connection", "cookie",
+                                     "authorization"})
+_TOKEN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_LINE_BREAKS = ("\r", "\n", "\x00")
+
+
+def _breaks(value: str) -> bool:
+    """A CR, LF or NUL in a login value would add a header line."""
+    return any(c in value for c in _LINE_BREAKS)
+
+
+def login_headers(credentials: Any) -> dict[str, str]:
+    """The request headers of a login: ``Cookie``, the custom headers, ``Authorization: Basic``.
+    A part the webapp would have refused (a forbidden or malformed name, a line break, a ``:`` in
+    the user name) is left out and logged by its field name only, never its value."""
+    if credentials is None or credentials.is_empty():
+        return {}
+    out: dict[str, str] = {}
+    left_out: list[str] = []
+    for header in credentials.headers:
+        name, value = header.name.strip(), header.value
+        if not _TOKEN.match(name) or name.lower() in FORBIDDEN_LOGIN_HEADERS or not value or _breaks(value):
+            left_out.append("header")
+            continue
+        out[name] = value
+    if credentials.cookie:
+        if _breaks(credentials.cookie):
+            left_out.append("cookie")
+        else:
+            out["Cookie"] = credentials.cookie
+    basic = credentials.basic_auth
+    if basic is not None:
+        user, password = basic.username or "", basic.password or ""
+        if ":" in user or _breaks(user) or _breaks(password):
+            left_out.append("basic_auth")
+        else:
+            out["Authorization"] = "Basic " + base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+    if left_out:
+        logger.warning(f"[tradecraft] login code=login_part_refused fields={','.join(sorted(set(left_out)))}")
+    return out
+
+
+@dataclass(frozen=True)
+class _Login:
+    origin: str
+    headers: Mapping[str, str]
+
+
+_LOGIN: contextvars.ContextVar[Optional[_Login]] = contextvars.ContextVar("tradecraft_login", default=None)
+
+
+@contextlib.contextmanager
+def use_login(resource_url: str, credentials: Any) -> Iterator[bool]:
+    """Binds one resource's login for what runs inside (the task and the tasks it starts):
+    every request to the resource's own host carries it, and the browser is refused. A resource
+    without a login binds none, also inside another resource's binding. Yields whether a login
+    is bound."""
+    has = credentials is not None and not credentials.is_empty()
+    token = _LOGIN.set(_Login(origin=resource_url, headers=login_headers(credentials)) if has else None)
+    try:
+        yield has
+    finally:
+        _LOGIN.reset(token)
+
+
+def login_bound() -> bool:
+    return _LOGIN.get() is not None
+
+
+def login_for(url: str) -> dict[str, str]:
+    """The bound login's headers for a request to ``url``: only on the resource's own host."""
+    login = _LOGIN.get()
+    if login is None or not login.headers:
+        return {}
+    try:
+        same = net.carries_same_host_headers(login.origin, url)
+    except ValueError:
+        return {}
+    return dict(login.headers) if same else {}
+
+
+def _same_host(url: str, github_token: Optional[str]) -> Optional[dict[str, str]]:
+    headers = {**github_headers(url, github_token), **login_for(url)}
+    return headers or None
+
+
 def request_headers(settings: EffectiveSettings, extra: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     headers = {"User-Agent": settings.str("fetching.userAgent")}
     language = settings.str("fetching.acceptLanguage")
@@ -188,7 +291,7 @@ async def fetch_raw(url: str, settings: EffectiveSettings, *, github_token: Opti
     return await net.get_fetcher().get(
         url,
         headers=request_headers(settings, extra),
-        same_host_headers=github_headers(url, github_token) or None,
+        same_host_headers=_same_host(url, github_token),
         timeout=float(settings.int("fetching.requestTimeoutSec")),
         max_bytes=max_bytes,
         max_redirects=int(constant("maxRedirects")),
@@ -202,11 +305,19 @@ def stream_raw(url: str, settings: EffectiveSettings, *, github_token: Optional[
     return net.get_fetcher().stream(
         url,
         headers=request_headers(settings),
-        same_host_headers=github_headers(url, github_token) or None,
+        same_host_headers=_same_host(url, github_token),
         timeout=float(settings.int("fetching.requestTimeoutSec")),
         max_bytes=max_bytes,
         max_redirects=int(constant("maxRedirects")),
     )
+
+
+async def render(url: str, settings: EffectiveSettings) -> net.Rendered:
+    """The sandbox browser's render of ``url`` with the 2.0 options: the one way tradecraft
+    renders a page. Refused (``browser_unavailable``, no browser call) while a login is bound."""
+    if login_bound():
+        return net.Rendered(url=url, html="", error="browser_unavailable")
+    return await net.get_fetcher().render(url, **render_options(settings))
 
 
 Cleaner = Callable[[str], Awaitable[str]]
@@ -229,6 +340,8 @@ async def smart_fetch(url: str, settings: EffectiveSettings, *, github_token: Op
         async def cleaner(html: str) -> str:
             return clean_page(html, **options)
 
+    # §5: never the browser while a login is bound, whatever the caller allows.
+    allow_browser = allow_browser and not login_bound()
     page = FetchedPage(url=url)
     if not settings.bool("fetching.alwaysBrowser") or not allow_browser:
         resp = await fetch_raw(target, settings, github_token=github_token, headers=extra, max_bytes=max_bytes)
@@ -243,7 +356,7 @@ async def smart_fetch(url: str, settings: EffectiveSettings, *, github_token: Op
             return page
     if not (allow_browser and settings.bool("fetching.browserEnabled")):
         return page
-    rendered = await net.get_fetcher().render(url, **render_options(settings))
+    rendered = await render(url, settings)
     if rendered.error == "unsafe_address":
         # The browser saw the hop the address guard refuses: that wins over a thin tier 1.
         return FetchedPage(url=url, final_url=url, error="unsafe_address", tier=2)

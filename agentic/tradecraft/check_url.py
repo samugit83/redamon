@@ -69,6 +69,12 @@ async def check_url(request: CheckUrlRequest) -> CheckUrlResult:
     problem = net.url_problem(url)
     if problem:
         return CheckUrlResult(ok=False, error_code=problem)
+    # The typed or stored login reaches the checked URL's own host only, and no browser (T6.4).
+    with fetch.use_login(url, request.secrets.credentials):
+        return await _check(request, url)
+
+
+async def _check(request: CheckUrlRequest, url: str) -> CheckUrlResult:
     settings = _settings(request)
     token = request.secrets.github_token
     login = request.secrets.credentials is not None and not request.secrets.credentials.is_empty()

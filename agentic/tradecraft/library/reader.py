@@ -128,6 +128,11 @@ class _Read:
     def has_login(self) -> bool:
         return bool(self.resource.has_login or self.row.get("has_login"))
 
+    def login(self):
+        """The resource's login, bound for this read (T6.4): sent to its own host only, and no
+        browser. The catalog carries it only in its owner's own runs."""
+        return fetch.use_login(self.row.get("url") or self.resource.url, self.resource.credentials)
+
     @property
     def converted(self) -> bool:
         """A 2.0 resource: it has cards, entries and page IDs."""
@@ -161,18 +166,19 @@ async def lookup(*, resource_id: str = "", query: str = "", cve_id: Optional[str
         return DELETED.format(slug=resource.slug)
     read = _Read(catalog, resource, row, store)
     logger.info(f"[tradecraft] lookup resource={read.slug} section={'forced' if section_path else 'auto'}")
-    if resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
-        return await _cve(read, cve_id)
-    index = runtime.run_index()
-    if index is not None and not section_path and read.converted:
-        picked = await _first_pass_pick(read, query, index) or await _title_pick(read, query)
-        if picked is None:
-            return NO_PAGE.format(slug=read.slug, query=query)
-        return await _read_section(read, *picked, section=section, part=part, query=query,
-                                   force_refresh=force_refresh)
-    if isinstance(read.sitemap.get("pages"), list) and read.sitemap.get("pages"):
-        return await _pdf(read, query, section_path, force_refresh)
-    return await _page(read, query, section_path, force_refresh)
+    with read.login():
+        if resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
+            return await _cve(read, cve_id)
+        index = runtime.run_index()
+        if index is not None and not section_path and read.converted:
+            picked = await _first_pass_pick(read, query, index) or await _title_pick(read, query)
+            if picked is None:
+                return NO_PAGE.format(slug=read.slug, query=query)
+            return await _read_section(read, *picked, section=section, part=part, query=query,
+                                       force_refresh=force_refresh)
+        if isinstance(read.sitemap.get("pages"), list) and read.sitemap.get("pages"):
+            return await _pdf(read, query, section_path, force_refresh)
+        return await _page(read, query, section_path, force_refresh)
 
 
 # --------------------------------------------------------------------------------------
@@ -220,7 +226,8 @@ async def _text_of(read: _Read, target: str, copy: Optional[dict], force_refresh
     note, else the error that says whether a copy exists."""
     if copy is not None and not force_refresh:
         return copy["stored_text"], format_source("stored", _date(copy.get("fetched_at"))), "", ""
-    page = await fetch.smart_fetch(target, read.settings, github_token=read.token)
+    # §5: a resource with a login is read with plain HTTP only (fetch refuses the browser too).
+    page = await fetch.smart_fetch(target, read.settings, github_token=read.token, allow_browser=not read.has_login)
     if page.error in _REFUSED:
         return None, "", "", BAD_URL.format(url=target, code=page.error)
     ok = not page.error and 200 <= page.status < 300 and bool(page.text)
@@ -309,8 +316,9 @@ async def _by_page_id(catalog: Any, text: str, *, section: Optional[str], part: 
     if resolved.resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
         return CVE_BY_ID.format(slug=read.slug)
     logger.info(f"[tradecraft] lookup resource={read.slug} section=page")
-    return await _read_section(read, resolved.page_id, resolved.url, section=section, part=part, query=query,
-                               force_refresh=force_refresh)
+    with read.login():
+        return await _read_section(read, resolved.page_id, resolved.url, section=section, part=part, query=query,
+                                   force_refresh=force_refresh)
 
 
 async def _pdf_page_live(read: _Read, url: str, entry: dict, force_refresh: bool) -> tuple:

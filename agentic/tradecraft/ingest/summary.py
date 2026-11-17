@@ -187,7 +187,9 @@ async def regenerate(ctx: JobContext, *, store: Any = None,
         await state.stage("summary")
         state.site_type, state.entries = saved_map(row, req.resource.url)
         if not keeps_previous(state):
-            await _read_sources(state, store, has_login=bool(row.get("has_login")))
+            # The start page is read with the job's login, on the resource's own host only (T6.4).
+            with fetch.use_login(req.resource.url, req.secrets.credentials if req.secrets else None):
+                await _read_sources(state, store, has_login=bool(row.get("has_login")))
             await summarize(state)
             if state.summary is None:
                 return JobOutcome(status="failed", error_code=_failure_code(state))

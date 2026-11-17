@@ -52,7 +52,7 @@ from logging_config import get_logger
 from orchestrator_helpers.json_utils import normalize_content
 from orchestrator_helpers.web_sources import BeautifulSoup, document_base_href, resolve_link
 from prompt_safety import UNTRUSTED_OUTPUT_GUIDANCE, wrap_untrusted
-from tradecraft import clock, net
+from tradecraft import clock
 from tradecraft.contract import ERROR_CODES
 from tradecraft.ingest import builders, fetch, robots
 from tradecraft.ingest.builders import Blocking, Candidate, inline
@@ -259,8 +259,8 @@ def fetch_page_for(settings: EffectiveSettings, *, allow_browser: bool = True) -
     async def fetch_page(url: str) -> CrawlFetch:
         if always:
             # §6.7 "Always use the browser": no plain request first (never with a login: the
-            # caller passes allow_browser=False then).
-            rendered = await net.get_fetcher().render(url, **fetch.render_options(settings))
+            # caller passes allow_browser=False then, and fetch.render refuses it).
+            rendered = await fetch.render(url, settings)
             return CrawlFetch(rendered.html, url, 2, "" if rendered.html else (rendered.error or "http_error"))
         resp = await fetch.fetch_raw(url, settings, headers={"Accept": "text/html,application/xhtml+xml"},
                                      max_bytes=fetch.PAGE_MAX_BYTES)
@@ -271,7 +271,7 @@ def fetch_page_for(settings: EffectiveSettings, *, allow_browser: bool = True) -
             return CrawlFetch(html, resp.final_url or url, 1, truncated=resp.truncated)
         if not (allow_browser and settings.bool("fetching.browserEnabled")):
             return CrawlFetch(html, resp.final_url or url, 1 if html else 0, "" if html else (resp.error or "http_error"))
-        rendered = await net.get_fetcher().render(url, **fetch.render_options(settings))
+        rendered = await fetch.render(url, settings)
         if rendered.html:
             # The guarded browser script does not say where redirects ended: links resolve
             # against the requested URL, as in 1.x.
