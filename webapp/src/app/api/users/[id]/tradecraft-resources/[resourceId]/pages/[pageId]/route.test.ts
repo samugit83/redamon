@@ -13,10 +13,14 @@ import { json, refused, stubAgent, timedOut } from '@/lib/tradecraft/__testing__
 
 const h = vi.hoisted(() => ({
   db: null as unknown as TradecraftDb, denied: null as Response | null, person: 'owner' as string | null, actingAs: false,
+  notOwn: null as Response | null,
   loginRefusal: null as Response | null,
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as Record<string | symbol, unknown>)[k] }) }))
-vi.mock('@/lib/authz/selfService', () => ({ requireSelfPermission: vi.fn(async () => null) }))
+vi.mock('@/lib/authz/selfService', () => ({
+  requireSelfPermission: vi.fn(async () => null),
+  accountContentRefusal: vi.fn(async () => h.notOwn),
+}))
 vi.mock('@/lib/session', () => ({ requireUserAccess: vi.fn(async () => h.denied), isInternalRequest: vi.fn(() => false) }))
 vi.mock('@/lib/auditActor', async orig => ({
   ...(await orig<typeof import('@/lib/auditActor')>()),
@@ -46,6 +50,7 @@ const readAgent = () => stubAgent(path => (path === '/tradecraft/v2/read-now' ? 
 beforeEach(() => {
   h.db = createTradecraftDb()
   h.denied = null
+  h.notOwn = null
   h.person = 'owner'
   h.actingAs = false
   h.loginRefusal = null
@@ -98,6 +103,16 @@ describe('View page', () => {
     expect(vi.mocked(loginUseRefusal)).toHaveBeenCalledWith({ ownerId: 'owner', resourceId: 'r1' })
     expect(h.db.calls.filter(c => c.startsWith('tradecraftEntry'))).toEqual([])
   })
+})
+
+test('the account content rule runs after the account rule, for View and Read now alike', async () => {
+  const agent = readAgent()
+  h.notOwn = NextResponse.json({ code: 'account_content_only' }, { status: 403 })
+  h.db.calls.length = 0
+  expect((await get('wiki:412')).status).toBe(403)
+  expect((await post('wiki:412')).status).toBe(403)
+  expect(h.db.calls.filter(c => c.startsWith('tradecraftEntry'))).toEqual([])
+  expect(agent.calls).toEqual([])
 })
 
 describe('Read now', () => {

@@ -18,7 +18,7 @@
  * route's permission.
  */
 import { NextResponse, type NextRequest } from 'next/server'
-import { getAuthzIdentity, isInternalRequest, isScannerRequest, type AuthzIdentity } from '@/lib/session'
+import { actsAsAccount, getAuthzIdentity, getSession, isInternalRequest, isScannerRequest, type AuthzIdentity } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { actsOnProject } from './can'
 import { requirePermission } from './guards'
@@ -55,4 +55,25 @@ export async function requireSelfPermission(
   // `fresh`: a critical path (minting a credential) reads both accounts, the sets and the Root again.
   const auth = fresh ? await requirePermission(request, permission, { fresh: true }) : await requirePermission(request, permission)
   return auth instanceof NextResponse ? auth : null
+}
+
+/**
+ * The account rule of an account's own content, which no mask can make safe to show: the page
+ * text and the map of its Tradecraft library (§6.6 "Its pages are private"). Only the account
+ * itself, an administrator acting as it, or the internal key reach it; the user directory
+ * (`users:read`), which `requireUserAccess`'s read mode admits on any account's path, does not:
+ * its premise is that every secret it reads is masked, and page text is not a secret it can mask.
+ * Acting as the account reaches it under the act-as rules of the route (a resource with a login
+ * refuses its use, `tradecraft/actAs.ts`). Runs after the route's `requireUserAccess`; null when
+ * allowed, else the 401 or the 403.
+ */
+export async function accountContentRefusal(request: NextRequest, accountId: string): Promise<NextResponse | null> {
+  if (isInternalRequest(request)) return null
+  const session = await getSession()
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (session.userId === accountId || (await actsAsAccount(session, accountId))) return null
+  return NextResponse.json({
+    error: "Only the account itself, or an administrator acting as it, can read this account's pages",
+    code: 'account_content_only',
+  }, { status: 403 })
 }

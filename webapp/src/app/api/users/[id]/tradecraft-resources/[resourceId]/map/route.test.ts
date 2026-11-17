@@ -13,9 +13,13 @@ import { createTradecraftDb, type TradecraftDb } from '@/lib/tradecraft/__testin
 
 const h = vi.hoisted(() => ({
   db: null as unknown as TradecraftDb, denied: null as Response | null, person: 'owner' as string | null, actingAs: false,
+  notOwn: null as Response | null,
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as Record<string | symbol, unknown>)[k] }) }))
-vi.mock('@/lib/authz/selfService', () => ({ requireSelfPermission: vi.fn(async () => null) }))
+vi.mock('@/lib/authz/selfService', () => ({
+  requireSelfPermission: vi.fn(async () => null),
+  accountContentRefusal: vi.fn(async () => h.notOwn),
+}))
 vi.mock('@/lib/session', () => ({ requireUserAccess: vi.fn(async () => h.denied), isInternalRequest: vi.fn(() => false) }))
 vi.mock('@/lib/auditActor', async orig => ({
   ...(await orig<typeof import('@/lib/auditActor')>()),
@@ -41,6 +45,7 @@ async function answer(res: Response) {
 beforeEach(() => {
   h.db = createTradecraftDb()
   h.denied = null
+  h.notOwn = null
   h.person = 'owner'
   h.actingAs = false
   h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
@@ -73,6 +78,13 @@ describe('GET map', () => {
     h.denied = NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     expect((await get()).status).toBe(403)
     expect(vi.mocked(requireSelfPermission).mock.calls[0].slice(1)).toEqual(['owner', 'self:tradecraft'])
+  })
+
+  test('the account content rule runs after the account rule: the user directory alone is refused, nothing read', async () => {
+    h.notOwn = NextResponse.json({ code: 'account_content_only' }, { status: 403 })
+    h.db.calls.length = 0
+    expect(await answer(await get())).toEqual({ status: 403, body: { code: 'account_content_only' } })
+    expect(h.db.calls.filter(c => c.startsWith('tradecraftEntry') || c.startsWith('userTradecraftResource'))).toEqual([])
   })
 
   test.each([['?status=gone', 'status'], [`?query=${'q'.repeat(201)}`, 'query'], ['?cursor=abc', 'cursor'], ['?limit=0', 'limit'], ['?limit=101', 'limit']])(

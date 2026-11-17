@@ -4,7 +4,7 @@ import prisma from '@/lib/prisma'
 import { requireUserAccess } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
-import { requireSelfPermission } from '@/lib/authz/selfService'
+import { accountContentRefusal, requireSelfPermission } from '@/lib/authz/selfService'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
 import { auditActor } from '@/lib/auditActor'
 import { loginUseRefusal } from '@/lib/tradecraft/actAs'
@@ -52,14 +52,21 @@ type Opened =
   | { res: Response }
   | { id: string; row: UserTradecraftResource; pageId: string; entry: NonNullable<Awaited<ReturnType<typeof entryOf>>> }
 
-/** The guards both handlers share, then the row and the page; the login rule before the row is read. */
-async function open(request: NextRequest, p: RouteParams['params'], mode: 'read' | 'write'): Promise<Opened> {
+/**
+ * The guards both handlers share, then the row and the page; the login rule before the row is read.
+ * Page text is the account's own content: the account itself or an administrator acting as it,
+ * never the user directory (`accountContentRefusal`). Read now writes nothing, so it follows the
+ * same read rule: acting as the account reads a public resource's page as View does (§6.6).
+ */
+async function open(request: NextRequest, p: RouteParams['params'], { person }: { person: boolean }): Promise<Opened> {
   const { id, resourceId, pageId } = await p
-  const denied = await requireUserAccess(request, id, { mode })
+  const denied = await requireUserAccess(request, id, { mode: 'read' })
   if (denied) return { res: denied }
+  const notOwn = await accountContentRefusal(request, id)
+  if (notOwn) return { res: notOwn }
   const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
   if (selfRefused) return { res: selfRefused }
-  if (mode === 'write') {
+  if (person) {
     const actor = await auditActor()
     if (!actor.actorId) return { res: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
   }
@@ -82,7 +89,7 @@ async function open(request: NextRequest, p: RouteParams['params'], mode: 'read'
 // text; or "not stored" (a Live resource, or a page the quota or a block left without text).
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
-    const o = await open(request, params, 'read')
+    const o = await open(request, params, { person: false })
     if ('res' in o) return o.res
     const { row, pageId, entry } = o
     const blocked = await isBlocked(row.id, entry.url)
@@ -108,7 +115,7 @@ function isTimeout(err: AgentUnreachableError): boolean {
 // The agent ends the read at its deadline; this route waits that long plus a margin (D-52).
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
-    const o = await open(request, params, 'write')
+    const o = await open(request, params, { person: true })
     if ('res' in o) return o.res
     const { id, row, entry } = o
     if (await isBlocked(row.id, entry.url)) return failure(409, 'page_blocked', 'This page is blocked: unblock it to read it')

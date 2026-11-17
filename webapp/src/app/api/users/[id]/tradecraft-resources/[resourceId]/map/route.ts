@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireUserAccess } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
-import { requireSelfPermission } from '@/lib/authz/selfService'
+import { accountContentRefusal, requireSelfPermission } from '@/lib/authz/selfService'
 import { actingAsOn } from '@/lib/authz/actAsRefusals'
 import { auditActor } from '@/lib/auditActor'
-import { MAP_PAGE_SIZE, MAP_STATUSES, curate, isMapCursor, readMap, type MapStatus } from '@/lib/tradecraft/curation'
+import { MAP_PAGE_SIZE, MAP_STATUSES, curate, isMapCursor, readMap, titlesAndUrlsOnly, type MapStatus } from '@/lib/tradecraft/curation'
 import { hasStoredLogin } from '@/lib/tradecraft/masking'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
 import { tradecraftV2Enabled } from '@/lib/tradecraft/switch'
@@ -21,13 +21,17 @@ const bad = (field: string, error: string) => NextResponse.json({ error, code: '
 // GET /api/users/[id]/tradecraft-resources/[resourceId]/map?query=&status=kept|dropped|blocked&tag=&cursor=&limit=
 // The Map view (§6.10): the live generation's entries, 100 at a time, with the total. Titles,
 // URLs, tags, the one-line description, source, status and the drop reason; never page text.
-// While an administrator acts as the account, a resource with a login answers titles and URLs
-// only (R-161): the descriptions were written from its private pages.
+// The account's own content: the account itself or an administrator acting as it, never the user
+// directory. While an administrator acts as the account, a resource with a login answers titles
+// and URLs only (R-161): its tags, descriptions, sources and drop reasons were made from its
+// private pages, and a tag filter would tell its tags too, so none is applied.
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, resourceId } = await params
     const denied = await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
+    const notOwn = await accountContentRefusal(request, id)
+    if (notOwn) return notOwn
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
     if (!(await tradecraftV2Enabled(id))) return V2_OFF()
@@ -46,11 +50,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     const row = await loadOwnResource(id, resourceId)
     if (!row) return NOT_FOUND()
-    const page = await readMap(row, { query: query || undefined, status: status as MapStatus, tag: tag || undefined, cursor, limit })
-    if (hasStoredLogin(row) && await actingAsOn(id)) {
-      return NextResponse.json({ ...page, entries: page.entries.map(e => ({ ...e, description: '' })) })
-    }
-    return NextResponse.json(page)
+    const hidden = hasStoredLogin(row) && await actingAsOn(id)
+    const page = await readMap(row, { query: query || undefined, status: status as MapStatus, tag: hidden ? undefined : tag || undefined, cursor, limit })
+    return NextResponse.json(hidden ? { ...page, entries: page.entries.map(titlesAndUrlsOnly) } : page)
   } catch (error) {
     return internalError(error, 'Failed to read the map')
   }

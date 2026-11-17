@@ -66,6 +66,8 @@ import * as one from '@/app/api/users/[id]/tradecraft-resources/[resourceId]/rou
 import * as refreshRoute from '@/app/api/users/[id]/tradecraft-resources/[resourceId]/refresh/route'
 import * as checkUrl from '@/app/api/users/[id]/tradecraft-resources/check-url/route'
 import * as preview from '@/app/api/users/[id]/tradecraft-resources/focus-preview/route'
+import * as mapRoute from '@/app/api/users/[id]/tradecraft-resources/[resourceId]/map/route'
+import * as pages from '@/app/api/users/[id]/tradecraft-resources/[resourceId]/pages/[pageId]/route'
 
 const accounts = () => h.accounts as AccountDb
 const tc = () => h.tc as TradecraftDb
@@ -115,6 +117,7 @@ async function expectRefused(res: Response, action: 'use_site_logins' | 'change_
 const agent = () => stubAgent((path, body) => {
   if (path === '/tradecraft/v2/check-url') return json(CHECK_RESULT)
   if (path === '/tradecraft/v2/preview-focus') return json(PREVIEW_RESULT)
+  if (path === '/tradecraft/v2/read-now') return json({ text: 'live text', source: 'live', fetched_at: '', truncated: false, error_code: '' })
   if (path === '/tradecraft/v2/jobs') return json({ accepted: (body as { jobs: { job_id: string }[] }).jobs.map(j => j.job_id), refused: [] }, 202)
   return json({ detail: 'Not Found' }, 404)
 })
@@ -135,8 +138,18 @@ beforeEach(() => {
     id: 'kb', userId: 'member-1', name: 'Company KB', slug: 'kb', url: 'https://kb.example.test/', llmModel: 'gpt-4o', credentials: LOGIN, hasLogin: true, generation: 1,
   })
   tc().seed('userTradecraftResource', { id: 'pub', userId: 'member-1', name: 'Wiki', slug: 'wiki', url: 'https://wiki.example.test/', llmModel: 'gpt-4o', generation: 1 })
-  tc().seed('tradecraftEntry', { id: BigInt(1), userId: 'member-1', resourceId: 'kb', generation: 1, pageId: 1, url: 'https://kb.example.test/a', title: 'A' })
-  tc().seed('userTradecraftResource', { id: 'own', userId: 'member-2', name: 'Notes', slug: 'notes', url: 'https://notes.example.test/', llmModel: 'gpt-4o' })
+  tc().seed('tradecraftEntry', {
+    id: BigInt(1), userId: 'member-1', resourceId: 'kb', generation: 1, pageId: 1, url: 'https://kb.example.test/a', title: 'A',
+    topics: ['sql_injection'], kinds: ['payloads'], technologies: ['postgresql'], description: 'Private one-liner', source: 'crawl',
+    storedText: 'private text', storedBytes: 12,
+  })
+  tc().seed('tradecraftEntry', {
+    id: BigInt(2), userId: 'member-1', resourceId: 'kb', generation: 1, pageId: 2, url: 'https://kb.example.test/b', title: 'B',
+    status: 'dropped', dropReason: 'the model read: internal salaries',
+  })
+  tc().seed('tradecraftEntry', { id: BigInt(3), userId: 'member-1', resourceId: 'pub', generation: 1, pageId: 3, url: 'https://wiki.example.test/a', title: 'Pub A', storedText: 'public text', storedBytes: 11 })
+  tc().seed('tradecraftEntry', { id: BigInt(4), userId: 'member-2', resourceId: 'own', generation: 1, pageId: 4, url: 'https://notes.example.test/a', title: 'Notes A' })
+  tc().seed('userTradecraftResource', { id: 'own', userId: 'member-2', name: 'Notes', slug: 'notes', url: 'https://notes.example.test/', llmModel: 'gpt-4o', generation: 1 })
   setFlagsForTests({ identity: true, permissions: true })
   setNowForTests(() => new Date('2026-11-16T10:00:00Z'))
   clearPrincipalCacheForTests()
@@ -231,5 +244,79 @@ describe('switch_off_masks_only (R-160): with the permissions switch off nothing
     expect(answers).toContain('"cookie":"set"')
     expect(refusals()).toEqual([])
     expect(resource('kb').credentials).toMatchObject({ cookie: 'session=fake-rotated' })
+  })
+})
+
+describe('page text and the map are the account\'s own (R-161, R-067, §6.6; review A, B, D)', () => {
+  const mapGet = (resourceId: string, account = 'member-1', qs = '') =>
+    mapRoute.GET(new NextRequest(`http://redamon.test/api/users/${account}/tradecraft-resources/${resourceId}/map${qs}`, { headers: { host: 'redamon.test' } }),
+      { params: Promise.resolve({ id: account, resourceId }) })
+  const pageCall = (method: 'GET' | 'POST', resourceId: string, pageId: string, account = 'member-1') =>
+    pages[method](new NextRequest(`http://redamon.test/api/users/${account}/tradecraft-resources/${resourceId}/pages/${encodeURIComponent(pageId)}`, {
+      method, headers: { host: 'redamon.test', origin: 'http://redamon.test', 'content-type': 'application/json' }, ...(method === 'POST' ? { body: '{}' } : {}),
+    }), { params: Promise.resolve({ id: account, resourceId, pageId }) })
+
+  test('an administrator who does not act as the account reads neither its page text nor its map, login or not', async () => {
+    await as('admin-1')
+    const calls = agent().calls
+    for (const res of [await pageCall('GET', 'kb', 'kb:1'), await pageCall('GET', 'pub', 'wiki:3'), await mapGet('kb'), await mapGet('pub'), await pageCall('POST', 'pub', 'wiki:3')]) {
+      expect(res.status).toBe(403)
+      expect(JSON.stringify(await res.json())).not.toMatch(/private|Private|salaries|public text/)
+    }
+    expect(calls).toEqual([])
+    // The directory read of the resource list is unchanged: names and masked secrets only.
+    expect((await list.GET(req(''), P())).status).toBe(200)
+  })
+
+  test('the account itself reads its pages and its map', async () => {
+    await as('member-2')
+    agent()
+    expect((await pageCall('GET', 'own', 'notes:4', 'member-2')).status).toBe(200)
+    expect((await mapGet('own', 'member-2')).status).toBe(200)
+  })
+
+  test('acting as an account that signs in for itself: a public resource\'s pages, map and Read now as usual (review D)', async () => {
+    await as('admin-1', 'member-2')
+    const calls = agent().calls
+    expect((await mapGet('own', 'member-2')).status).toBe(200)
+    expect((await pageCall('GET', 'own', 'notes:4', 'member-2')).status).toBe(200)
+    const read = await pageCall('POST', 'own', 'notes:4', 'member-2')
+    expect(read.status).toBe(200)
+    expect(await read.json()).toMatchObject({ result: { text: 'live text' } })
+    expect(calls.map(c => c.path)).toEqual(['/tradecraft/v2/read-now'])
+    expect(refusals()).toEqual([])
+  })
+
+  test('acting as the account, a login resource\'s page text and Read now are refused as use_site_logins', async () => {
+    await as('admin-1', 'member-1')
+    const calls = agent().calls
+    await expectRefused(await pageCall('GET', 'kb', 'kb:1'), 'use_site_logins')
+    await expectRefused(await pageCall('POST', 'kb', 'kb:1'), 'use_site_logins')
+    expect(calls).toEqual([])
+  })
+
+  test('acting as the account, a login resource\'s map answers titles and URLs only, every other field empty (review B)', async () => {
+    await as('admin-1', 'member-1')
+    agent()
+    for (const status of ['kept', 'dropped']) {
+      const res = await mapGet('kb', 'member-1', `?status=${status}`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { entries: Record<string, unknown>[] }
+      expect(body.entries).toHaveLength(1)
+      for (const e of body.entries) {
+        expect(e).toEqual({
+          id: expect.any(String), pageId: expect.stringMatching(/^kb:/), title: expect.any(String), url: expect.stringMatching(/^https:\/\/kb\./),
+          status, pinned: false, renamed: false,
+          topics: [], kinds: [], technologies: [], description: '', source: '', reason: '', stored: false,
+        })
+      }
+      expect(JSON.stringify(body)).not.toMatch(/Private|salaries|sql_injection|postgresql|crawl/)
+    }
+    // A tag cannot be used to learn the page's tags either: the filter is not applied.
+    expect((await (await mapGet('kb', 'member-1', '?tag=sql_injection')).json()).total).toBe(1)
+    expect((await (await mapGet('kb', 'member-1', '?tag=nothing')).json()).total).toBe(1)
+    // A public resource of the same account shows its tags and descriptions as usual.
+    const pub = await (await mapGet('pub')).json() as { entries: Record<string, unknown>[] }
+    expect(pub.entries[0]).toMatchObject({ title: 'Pub A', stored: true })
   })
 })

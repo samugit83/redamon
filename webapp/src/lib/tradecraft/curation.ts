@@ -107,6 +107,18 @@ function view(r: MapResource, e: EntryRow | null, url: string, c: CurationRow | 
   }
 }
 
+/**
+ * An entry as an administrator acting as the account sees a resource with a login (R-161): its
+ * title and URL, with what the person did (status, pin, rename); everything made from the private
+ * page (tags, description, source, the model's drop reason, whether its text is stored) left empty.
+ */
+export function titlesAndUrlsOnly(e: MapEntryView): MapEntryView {
+  return {
+    id: e.id, pageId: e.pageId, title: e.title, url: e.url, status: e.status, pinned: e.pinned, renamed: e.renamed,
+    topics: [], kinds: [], technologies: [], description: '', source: '', reason: '', stored: false,
+  }
+}
+
 const DIGITS = /^[0-9]{1,19}$/
 
 export function isMapCursor(cursor: string): boolean {
