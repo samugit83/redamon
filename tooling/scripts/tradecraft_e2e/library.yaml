@@ -53,8 +53,16 @@ resources:
     # The focus preview on Check URL's entries, as the form runs it before saving.
     preview: true
     # The bundle covers 24 vulnerability classes: the focus keeps its few SQL injection and SSRF
-    # pages (5 of 188 on 2026-11-17) and drops the rest, which is what this resource proves.
-    expect: {type: github-repo, min_entries: 3, min_stored_pages: 3, min_dropped: 50}
+    # pages (5 of 188 on 2026-11-17: hunt-sqli and hunt-ssrf, each a skill and a disclosed report,
+    # and security-arsenal) and drops the rest, which is what this resource proves. kept_names:
+    # each group's words must be in some kept entry's path or title, so neither half of the focus
+    # can vanish under the counts.
+    expect:
+      type: github-repo
+      min_entries: 3
+      min_stored_pages: 3
+      min_dropped: 50
+      kept_names: [[sqli, sql injection], [ssrf, server side request forgery]]
   - slug: web-hacking-techniques-index
     preset: web-hacking-techniques-index
     name: Web Hacking Techniques Index

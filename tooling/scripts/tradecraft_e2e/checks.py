@@ -425,6 +425,24 @@ def check_api(trace: Mapping, name: str, *, status: int, codes: Sequence[str] = 
     return CheckResult(name, not bad, detail)
 
 
+# The webapp's guard refuses a literal private address before any fetch (lib/tradecraft/urls.ts
+# validateUrl); the agent's guard refuses a name that resolves to one (unsafe_address).
+PRIVATE_ADDRESS_REFUSAL = "private address blocked"
+
+
+def check_address_refused(trace: Mapping) -> CheckResult:
+    """S6: Check URL of a lab address is refused by an address guard, by that guard's own answer."""
+    rows = [a for a in trace.get("api", []) if a.get("name") == "check_url_lab_address"]
+    if not rows:
+        return CheckResult("check_url_lab_address", False, "not called")
+    a = rows[-1]
+    webapp = a.get("status") == 400 and a.get("field") == "url" and a.get("error") == PRIVATE_ADDRESS_REFUSAL
+    agent = a.get("status") == 200 and a.get("code") == "unsafe_address" and a.get("ok") is False
+    detail = f"{a.get('status')} {a.get('code') or ''}".strip() + (f" ({a.get('error')})" if a.get("error") else "")
+    return CheckResult("check_url_lab_address", webapp or agent,
+                       detail + ("; the webapp's guard" if webapp else "; the agent's guard" if agent else ""))
+
+
 def single_checks(check: str, trace: Mapping, *, cfg: Mapping, spec: Mapping) -> list[CheckResult]:
     login = (cfg.get("library") or {}).get("login_resource", "")
     if check == "S1":
@@ -455,5 +473,5 @@ def single_checks(check: str, trace: Mapping, *, cfg: Mapping, spec: Mapping) ->
         called = _called(trace, TRADECRAFT_TOOLS)
         return [CheckResult("no_tradecraft_call", not called, ", ".join(called) or "none")]
     if check == "S6":
-        return [check_api(trace, "check_url_lab_address", status=200, codes=["unsafe_address"])]
+        return [check_address_refused(trace)]
     raise ValueError(f"unknown single check {check}")

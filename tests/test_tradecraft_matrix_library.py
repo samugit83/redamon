@@ -509,6 +509,15 @@ def test_the_library_resources_are_the_presets():
             block = presets[start:min(ends)]
             for key in spec["overrides"]:
                 assert f"'{key}'" in block, (spec["slug"], key)
+        # Every setting Quick Add fills is in library.yaml too, but the CVE pattern, which Check URL
+        # finds instead (library.yaml's own note).
+        start = presets.find(f"'{spec['preset']}': {{")
+        if start != -1:
+            ends = [i for i in (presets.find("\n  '", start + 1), presets.find("\n}", start)) if i != -1]
+            block = presets[start:min(ends)]
+            preset_keys = set(re.findall(r"'([a-zA-Z]+\.[a-zA-Z.]+)':", block))
+            omitted = {"type.cve.pathPatterns"} if spec["slug"] == "trickest-cve" else set()
+            assert preset_keys - omitted <= set(spec.get("overrides") or {}), (spec["slug"], preset_keys)
 
 
 def test_the_build_sends_what_the_form_sends():
@@ -543,13 +552,31 @@ def test_judge_checks_type_size_storage_readiness_login_and_focus():
     view = {"resourceType": "github-repo", "entryCount": 40, "storageMode": "stored", "hasLogin": False,
             "report": {"stored": {"pages": 30}, "readiness": {"realTitlesPct": 90}, "focus": {"mode": "focused", "dropped": 183}}}
     job = {"status": "succeeded"}
-    assert all(c.ok for c in library.judge(spec, view, job))
+    assert all(c.ok for c in library.judge(spec, view, job, BUGHUNTER_KEPT))
     # The focus must have dropped most of the bundle: a focus that kept everything proves nothing.
     kept_all = dict(view, report={**view["report"], "focus": {"mode": "focused", "dropped": 7}})
-    assert [c.name for c in library.judge(spec, kept_all, job) if not c.ok] == ["focus_dropped"]
+    assert [c.name for c in library.judge(spec, kept_all, job, BUGHUNTER_KEPT) if not c.ok] == ["focus_dropped"]
     bad = dict(view, resourceType="agentic-crawl", entryCount=1, report={"stored": {"pages": 1}})
     failed = {c.name for c in library.judge(spec, bad, {"status": "failed", "errorCode": "fetch_failed"}) if not c.ok}
-    assert failed == {"job_succeeded", "type", "map_size", "stored_pages", "readiness", "focus_applied", "focus_dropped"}
+    assert failed == {"job_succeeded", "type", "map_size", "stored_pages", "readiness", "focus_applied", "focus_dropped",
+                      "kept_names"}
+
+
+def test_the_focus_must_keep_both_halves_of_its_topics():
+    # A build that dropped both SSRF pages would still keep 3 entries and pass every count: the
+    # kept names see it (review of dc5ee40b).
+    spec = next(s for s in LIB["resources"] if s["slug"] == "claude-bughunter")
+    assert spec["expect"]["kept_names"] == [["sqli", "sql injection"], ["ssrf", "server side request forgery"]]
+    view = {"resourceType": "github-repo", "entryCount": 3, "storageMode": "stored", "hasLogin": False,
+            "report": {"stored": {"pages": 3}, "readiness": {"a": 1}, "focus": {"mode": "focused", "dropped": 185}}}
+    job = {"status": "succeeded"}
+    good = {c.name: c for c in library.judge(spec, view, job, BUGHUNTER_KEPT)}
+    assert good["kept_names"].ok and good["kept_names"].detail == "sqli: 2; ssrf: 2"
+    no_ssrf = [e for e in BUGHUNTER_KEPT if "ssrf" not in e["url"]]
+    got = {c.name: c for c in library.judge(spec, view, job, no_ssrf)}
+    assert [n for n, c in got.items() if not c.ok] == ["kept_names"]
+    assert got["kept_names"].detail == "sqli: 2; none kept for ssrf: 0"
+    assert not library.kept_names_check(spec["expect"]["kept_names"], []).ok
     cve = next(s for s in LIB["resources"] if s["slug"] == "trickest-cve")
     names = {c.name for c in library.judge(cve, {"resourceType": "cve-poc-db", "entryCount": 0, "storageMode": "live"}, job)}
     assert "readiness" not in names and "map_size" in names
@@ -571,6 +598,15 @@ def test_the_build_record_holds_counts_only():
 # --------------------------------------------------------------------------------------
 # The build against a scripted webapp
 # --------------------------------------------------------------------------------------
+
+BUGHUNTER_KEPT = [  # the build of 2026-11-17 (run/s15/live/bughunter_relevant.txt): public repository paths
+    {"url": f"https://raw.githubusercontent.com/elementalsouls/Claude-BugHunter/main/{p}", "title": t}
+    for p, t in (("docs/disclosed-reports/hunt-sqli.md", "docs > disclosed reports > hunt sqli"),
+                 ("docs/disclosed-reports/hunt-ssrf.md", "docs > disclosed reports > hunt ssrf"),
+                 ("skills/hunt-sqli/SKILL.md", "skills > hunt sqli > SKILL"),
+                 ("skills/hunt-ssrf/SKILL.md", "skills > hunt ssrf > SKILL"),
+                 ("skills/security-arsenal/SKILL.md", "skills > security arsenal > SKILL"))]
+
 
 class FakeWebapp:
     """The routes the build calls, with jobs that end after ``polls`` listings."""
@@ -624,6 +660,9 @@ class FakeWebapp:
             return R(200, {**loop, **(self.models or {})})
         if path.endswith("/settings") or path.endswith("/tradecraft-settings"):
             return R(200, {})
+        if "/map?status=kept" in path:
+            view = self.resources.get(path.split("/")[-2], {})
+            return R(200, {"entries": BUGHUNTER_KEPT if view.get("slug") == "claude-bughunter" else [], "nextCursor": None})
         if path.endswith("/check-url"):
             return R(200, {"result": {"ok": True, "error_code": "", "detected_type": "", "sample_entries":
                                       [{"url": "https://example.invalid/a", "title": "A"}], "cve_pattern": None}})

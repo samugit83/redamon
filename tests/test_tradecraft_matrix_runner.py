@@ -288,9 +288,35 @@ def test_s2_a_refused_share_with_sharing_on_is_a_failure(tmp_path):
     ctx.sessions["owner"][0].call.return_value = runner.Response(429, {"code": "rate_limited"})
     result, chat, _ = _attack(ctx, "S2", _outcome(), GOOD_TRACE)
     assert result.status == report.FAIL and "429 rate_limited" in result.reason
-    assert [(c.name, c.ok) for c in result.checks] == [("share_with_collaborator", False)]
+    assert [(c.name, c.ok) for c in result.checks] == [("owner_credential_consent", False)]
     chat.assert_not_called()
     assert report.pass_rules([result])[1][0].ok is False
+    # The consent given, a refused share still fails, with its own reason.
+    ctx = _ctx(tmp_path, env=ON)
+    ctx.sessions["owner"][0].call.side_effect = [runner.Response(200, {"ownerCredentialConsent": True}),
+                                                 runner.Response(409, {"code": "owner_consent_required"})]
+    result, chat, _ = _attack(ctx, "S2", _outcome(), GOOD_TRACE)
+    assert [(c.name, c.ok) for c in result.checks] == [("share_with_collaborator", False)]
+    assert "409 owner_consent_required" in result.reason
+    chat.assert_not_called()
+
+
+def test_s2_the_owner_consents_with_their_password_before_the_share(tmp_path):
+    # Sharing "Use AI agent" spends the owner's providers: the product refuses it (409
+    # owner_consent_required) until the owner consented, with a step-up password.
+    ctx = _ctx(tmp_path, env=ON)
+    owner = ctx.sessions["owner"][0]
+    owner.call.side_effect = [runner.Response(200, {"ownerCredentialConsent": True}), runner.Response(201, {})]
+    result, chat, _ = _attack(ctx, "S2", _outcome(), GOOD_TRACE)
+    (m1, p1, b1), _ = owner.call.call_args_list[0]
+    (m2, p2, b2), _ = owner.call.call_args_list[1]
+    assert (m1, p1) == ("POST", "/api/projects/p1/access-policy")
+    assert b1 == {"ownerCredentialConsent": True, "stepUpPassword": "fake-pass-owner-0001"}
+    assert (m2, p2) == ("POST", "/api/projects/p1/collaborators") and b2["useAgent"] is True
+    chat.assert_called_once()
+    assert chat.call_args.args[1] is ctx.sessions["collaborator"][0]
+    # The password goes to the route only: never into the run's trace.
+    assert "fake-pass-owner-0001" not in json.dumps(result.__dict__, default=str)
 
 
 def test_s3_a_refused_act_as_with_permissions_on_is_a_failure(tmp_path):
@@ -674,10 +700,20 @@ def test_single_checks():
     assert all(c.ok for c in checks.single_checks("S4", loop, cfg=SCN, spec=SCN["singles"]["S4"]))
 
     assert not checks.single_checks("S5", trace, cfg=SCN, spec={})[0].ok
-    refused = {"api": [{"name": "check_url_lab_address", "status": 200, "code": "unsafe_address"}]}
+    refused = {"api": [{"name": "check_url_lab_address", "status": 200, "code": "unsafe_address", "ok": False}]}
     assert checks.single_checks("S6", refused, cfg=SCN, spec={})[0].ok
     fetched = {"api": [{"name": "check_url_lab_address", "status": 200, "code": ""}]}
     assert not checks.single_checks("S6", fetched, cfg=SCN, spec={})[0].ok
+    # A literal private address never reaches the agent: the webapp's guard refuses it first
+    # (urls.ts validateUrl), by its own message on the url field. Any other 400 is no refusal by a guard.
+    webapp = {"api": [{"name": "check_url_lab_address", "status": 400, "code": "bad_url", "field": "url",
+                       "error": "private address blocked"}]}
+    assert checks.single_checks("S6", webapp, cfg=SCN, spec={})[0].ok
+    for other in ({"field": "url", "error": "Invalid URL"}, {"field": "name", "error": "private address blocked"}):
+        row = {"name": "check_url_lab_address", "status": 400, "code": "bad_url", **other}
+        assert not checks.single_checks("S6", {"api": [row]}, cfg=SCN, spec={})[0].ok
+    source = (REPO / "webapp/src/lib/tradecraft/urls.ts").read_text(encoding="utf-8")
+    assert f"error: '{checks.PRIVATE_ADDRESS_REFUSAL}'" in source
 
 
 def test_prompts_and_hints_from_a_session_log():
@@ -1132,6 +1168,26 @@ def test_run_chat_reconnects_and_sees_a_run_that_ended_meanwhile():
     assert out.ended == "complete" and http.call.call_count == 2  # a fresh ticket for the second socket
 
 
+def test_a_refused_loop_driver_backs_off_and_names_the_refusal():
+    # The endpoint refusing every call (as it refused the Origin header on 2026-11-17, ~200,000
+    # times in 15 minutes): a few calls with a pause between them, then the run's error.
+    calls, pauses = [], []
+
+    def opener(req, timeout):
+        calls.append(json.loads(req.data)["params"]["name"])
+        data = json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "cross-origin request refused"}})
+        resp = io.BytesIO(data.encode())
+        resp.status, resp.headers = 403, mock.Mock(get_all=lambda n: [])
+        return resp
+
+    driver = runner.LoopDriver("http://webapp.invalid", "fake-driver-token-0001", "session_x", opener=opener,
+                               sleep=pauses.append)
+    assert driver.next_step(timeout=600) is None
+    assert len(calls) == runner.LoopDriver.MAX_REFUSALS and pauses == [2.0] * (runner.LoopDriver.MAX_REFUSALS - 1)
+    assert driver.refused and "cross-origin request refused" in driver.refused
+    assert runner.drive_loop(driver, {"need": "x"}, target_ip="192.0.2.10", timeout=30) == []
+
+
 def test_loop_driver_asks_the_librarian_once_then_completes():
     steps = iter([
         {"stepId": "s1", "purpose": "classify", "prompt": "classify", "page": {"nextCursor": None}},
@@ -1145,6 +1201,8 @@ def test_loop_driver_asks_the_librarian_once_then_completes():
         body = json.loads(req.data)
         name, args = body["params"]["name"], body["params"]["arguments"]
         assert req.headers["Authorization"] == "Bearer fake-driver-token-0001"
+        # An MCP client sends no Origin: the endpoint refuses one that is not its own host.
+        assert "Origin" not in req.headers and req.get_header("Origin") is None
         if name == "loop_wait_step":
             assert args["sessionId"] == "session_x"
             result = {"step": next(steps)}
@@ -1320,15 +1378,65 @@ def test_retrieval_looks_cve_questions_up_and_searches_the_rest():
     assert got.ok is False and got.detail == "1/2 found; missed: ssrf payloads"
 
 
-def test_the_report_names_the_plan_commit_the_stack_runs():
-    answers = {"refs/heads/feature/tradecraft-2.0": "3765744a\n", "HEAD": "58a5e733\n"}
+def _code_run(tree: dict, agent: dict, tips=("3765744a",), head="58a5e733", images=None):
+    """A fake subprocess.run for git (the plan tip, its Tradecraft tree) and docker (the agent's files)."""
+    tips = list(tips)
 
-    def fake(argv, **kw):
-        return subprocess.CompletedProcess(argv, 0, stdout=answers.get(argv[-1], ""), stderr="")
+    def run(argv, **kw):
+        if argv[:2] == ["git", "-C"] and "rev-parse" in argv:
+            out = (tips.pop(0) if len(tips) > 1 else tips[0]) if argv[-1] == runner.PLAN_REF else head
+            return subprocess.CompletedProcess(argv, 0, out + "\n", "")
+        if argv[:2] == ["git", "-C"] and "ls-tree" in argv:
+            lines = "".join(f"100644 blob {sha}\tagentic/tradecraft/{p}\n" for p, sha in tree.items())
+            return subprocess.CompletedProcess(argv, 0, lines, "")
+        if argv[:3] == ["docker", "exec", "-i"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps([[p, s] for p, s in agent.items()]) + "\n", "")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, images or "/redamon-agent sha256:439168511321ff\n"
+                                               "/redamon-webapp sha256:6af9db065740ff\n", "")
+        raise AssertionError(argv)
+    return run
 
-    assert runner.run_commits(run=fake) == "plan 3765744a (checkout 58a5e733)"
-    answers.pop("refs/heads/feature/tradecraft-2.0")
-    assert runner.run_commits(run=fake) == "58a5e733"
+
+def test_the_report_checks_the_code_the_stack_runs():
+    same = {"ingest/detect.py": "a" * 40, "library/search.py": "b" * 40}
+    assert runner.agent_code_check("3765744a", run=_code_run(same, same)) == \
+        "the running agent holds plan 3765744a's Tradecraft code (2 files)"
+    edited = dict(same, **{"ingest/detect.py": "c" * 40})
+    got = runner.agent_code_check("3765744a", run=_code_run(same, edited))
+    assert got.startswith("DIFFERS") and "1 of 2 files (ingest/detect.py)" in got
+    extra = dict(same, **{"ingest/new.py": "d" * 40})
+    assert "ingest/new.py" in runner.agent_code_check("3765744a", run=_code_run(same, extra))
+    assert runner.image_ids(run=_code_run(same, same)) == "redamon-agent 439168511321, redamon-webapp 6af9db065740"
+    start = runner.provenance_now(run=_code_run(same, same))
+    end = runner.provenance_now(run=_code_run(same, same, tips=("9f00aa11",)), with_code=False)
+    lines = runner.provenance(start, end)
+    assert lines["commit"] == "plan 3765744a, moved to 9f00aa11 during the run (checkout 58a5e733)"
+    assert lines["agent_code"].startswith("the running agent holds plan 3765744a")
+    assert runner.provenance(start, start)["commit"] == "plan 3765744a (checkout 58a5e733)"
+
+
+def test_main_reports_the_code_the_stack_ran(tmp_path):
+    # The wiring: main reads the plan tip and the agent's code at the start and the tip again at the
+    # end, and the report says so. A report that named the checkout's HEAD fails here.
+    same = {"ingest/detect.py": "a" * 40}
+    fake = _code_run(same, dict(same, **{"ingest/detect.py": "e" * 40}), tips=("3765744a", "9f00aa11"))
+    written = {}
+    accounts = {k: runner.Account(k, e, "x" * 24, id=f"u-{k}") for k, e in SCN["accounts"].items()}
+    with mock.patch.object(runner.subprocess, "run", side_effect=fake), \
+            mock.patch.object(runner, "seed_accounts", return_value=accounts), \
+            mock.patch.object(runner.Stack, "session", return_value=(mock.Mock(), "u-owner")), \
+            mock.patch.object(runner, "agent_logs_dir", return_value=tmp_path), \
+            mock.patch.object(runner, "preflight", return_value=[]), \
+            mock.patch.object(runner, "run_matrix", return_value=[]), \
+            mock.patch.object(runner, "set_owner_mode"), \
+            mock.patch.object(runner, "RUNS_DIR", tmp_path), \
+            mock.patch.object(report, "write_report", side_effect=lambda d, text: written.setdefault("text", text)):
+        runner.main(["--only", "S6", "--model", "test/model"])
+    text = written["text"]
+    assert "- commit: plan 3765744a, moved to 9f00aa11 during the run (checkout 58a5e733)" in text
+    assert "- agent code: DIFFERS: the running agent's Tradecraft code is not plan 3765744a's in 1 of 1 files" in text
+    assert "- images: redamon-agent 439168511321, redamon-webapp 6af9db065740" in text
 
 
 def test_only_layer1_runs_the_layer1_checks_alone(capsys):

@@ -46,6 +46,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence, Union
@@ -818,9 +819,20 @@ def focus_mode(raw: Any) -> str:
     return key if key in AGENT_FOCUS_MODES else "everything"
 
 
-def judge(spec: Mapping, view: Mapping, job: Optional[Mapping]) -> list:
+def kept_names_check(groups: Sequence[Sequence[str]], kept: Sequence[Mapping]) -> "report.CheckResult":
+    """Each group of words in the path or title of at least one kept entry (counts and words only)."""
+    found, missing = [], []
+    for group in groups:
+        words = [str(w).lower() for w in group]
+        n = sum(1 for e in kept if any(w in f"{e.get('url', '')} {e.get('title', '')}".lower() for w in words))
+        (found if n else missing).append(f"{words[0]}: {n}")
+    return report.CheckResult("kept_names", not missing,
+                              "; ".join(found) + (f"; none kept for {', '.join(missing)}" if missing else ""))
+
+
+def judge(spec: Mapping, view: Mapping, job: Optional[Mapping], kept: Optional[Sequence[Mapping]] = None) -> list:
     """The build's checks on one resource: its job, type, map size, storage, readiness, login
-    and focus (counts and names only)."""
+    and focus (counts and names only). ``kept``: the kept entries, when ``expect.kept_names`` asks."""
     exp = spec["expect"]
     rep = view.get("report") or {}
     status = (job or {}).get("status", "none")
@@ -849,6 +861,8 @@ def judge(spec: Mapping, view: Mapping, job: Optional[Mapping]) -> list:
         dropped = int(((rep.get("focus") or {}).get("dropped")) or 0)
         out.append(report.CheckResult("focus_dropped", dropped >= int(exp["min_dropped"]),
                                       f"{dropped} entries dropped by the focus (at least {exp['min_dropped']})"))
+    if exp.get("kept_names"):
+        out.append(kept_names_check(exp["kept_names"], kept or []))
     return out
 
 
@@ -944,6 +958,21 @@ class Builder:
             raise RuntimeError(f"the resource list answered {res.status} {res.code}")
         return {str(r.get("slug")): r for r in rows if isinstance(r, dict)}
 
+    def kept_entries(self, rid: str, pages: int = 20) -> list:
+        """The resource's kept map entries (url and title), through the Map view's route."""
+        out: list = []
+        cursor = ""
+        for _ in range(pages):
+            res = self.http.call("GET", f"{self.base}/{rid}/map?status=kept" + (f"&cursor={urllib.parse.quote(cursor)}"
+                                                                               if cursor else ""))
+            data = res.data if res.ok and isinstance(res.data, dict) else {}
+            out += [{"url": e.get("url", ""), "title": e.get("title", "")} for e in data.get("entries") or []
+                    if isinstance(e, dict)]
+            cursor = str(data.get("nextCursor") or "")
+            if not cursor:
+                break
+        return out
+
     def delete(self, view: Mapping, why: str) -> None:
         res = self.http.call("DELETE", f"{self.base}/{view.get('id')}")
         self.log(f"{view.get('slug')}: deleted ({why}): {res.status}")
@@ -992,7 +1021,8 @@ class Builder:
     def finish(self, spec: Mapping, view: Mapping, started: float) -> None:
         out = self.outcomes.setdefault(spec["slug"], Outcome(spec["slug"]))
         out.resource_id = str(view.get("id", out.resource_id))
-        out.checks += judge(spec, view, view.get("job"))
+        kept = self.kept_entries(out.resource_id) if (spec.get("expect") or {}).get("kept_names") else None
+        out.checks += judge(spec, view, view.get("job"), kept)
         out.counts = report_counts(view)
         out.entries = int(view.get("entryCount") or 0)
         out.seconds = round(self.clock() - started, 1)

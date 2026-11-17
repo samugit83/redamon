@@ -469,10 +469,11 @@ class Http:
     mutating routes ask for, JSON in and out. Errors name the status and a code, never a
     header or a cookie."""
 
-    def __init__(self, base: str, *, timeout: float = 60, opener: Optional[Callable] = None):
+    def __init__(self, base: str, *, timeout: float = 60, opener: Optional[Callable] = None, origin: bool = True):
         self.base = base.rstrip("/")
         self.timeout = timeout
         self.cookies: dict[str, str] = {}
+        self.origin = origin
         self._open = opener or urllib.request.build_opener(_NoRedirect()).open
 
     def _remember(self, headers) -> None:
@@ -487,7 +488,7 @@ class Http:
 
     def call(self, method: str, path: str, body: Any = None, *, headers: Optional[Mapping] = None,
              timeout: Optional[float] = None) -> Response:
-        hdrs = {"Accept": "application/json", "Origin": self.base}
+        hdrs = {"Accept": "application/json", **({"Origin": self.base} if self.origin else {})}
         if body is not None:
             hdrs["Content-Type"] = "application/json"
         if self.cookies:
@@ -1013,11 +1014,19 @@ class LoopDriver:
     """Plays the external agent of an Agent in the Loop run over ``/api/mcp-server`` (the
     port of ``testing/e2e/tests/aitlDriver.ts``), scoped to one session."""
 
-    def __init__(self, base: str, token: str, session_id: str, opener: Optional[Callable] = None):
-        self.http = Http(base, timeout=120, opener=opener)
+    # Refusals in a row after which the driver gives up: the endpoint will not take it.
+    MAX_REFUSALS = 5
+
+    def __init__(self, base: str, token: str, session_id: str, opener: Optional[Callable] = None,
+                 sleep: Callable[[float], None] = time.sleep):
+        # An MCP client is not a browser: no Origin, which the endpoint refuses unless it is its own
+        # (api/mcp-server/route.ts originAllowed).
+        self.http = Http(base, timeout=120, opener=opener, origin=False)
         self.token = token
         self.session_id = session_id
         self.prompts: list[str] = []
+        self.refused = ""
+        self._sleep = sleep
         self._id = 0
 
     def call(self, name: str, args: Mapping) -> tuple[bool, Any, str]:
@@ -1030,6 +1039,10 @@ class LoopDriver:
         body = res.data if isinstance(res.data, dict) else {}
         result = body.get("result") or {}
         text = "\n".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
+        if not text and body.get("error"):  # a refusal answers a JSON-RPC error, as aitlDriver.ts reads it
+            text = json.dumps(body["error"])
+        elif not text and not res.ok:
+            text = f"HTTP {res.status} {res.code}".strip()
         try:
             parsed = json.loads(text)
         except ValueError:
@@ -1038,9 +1051,19 @@ class LoopDriver:
 
     def next_step(self, timeout: float) -> Optional[dict]:
         until = time.monotonic() + timeout
+        refusals = 0
         while time.monotonic() < until:
-            err, got, _ = self.call("loop_wait_step", {"waitSeconds": 20, "sessionId": self.session_id})
-            step = (got or {}).get("step") if not err else None
+            err, got, text = self.call("loop_wait_step", {"waitSeconds": 20, "sessionId": self.session_id})
+            if err:
+                # Never a tight loop on a refusal: a pause, and the run's error after a few.
+                refusals += 1
+                if refusals >= self.MAX_REFUSALS:
+                    self.refused = " ".join(text.split())[:160] or "no answer"
+                    return None
+                self._sleep(2.0)
+                continue
+            refusals = 0
+            step = (got or {}).get("step")
             if step:
                 prompt = str(step.get("prompt") or "")
                 cursor = (step.get("page") or {}).get("nextCursor")
@@ -1347,6 +1370,13 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
         chat_http, chat_id = owner_http, owner_id
         if collaborator:
             collab_http, collab_id = ctx.sessions["collaborator"]
+            # "Use AI agent" spends the owner's providers: the owner consents first, with their
+            # password, as the share dialog asks (access-policy route, step 5.6).
+            res = owner_http.call("POST", f"/api/projects/{project_id}/access-policy",
+                                  {"ownerCredentialConsent": True, "stepUpPassword": ctx.accounts["owner"].password})
+            trace["api"].append({"name": "owner_credential_consent", "status": res.status, "code": res.code})
+            if not res.ok:
+                return _refused(result, "owner_credential_consent", res, "the owner's consent to share their credentials")
             res = owner_http.call("POST", f"/api/projects/{project_id}/collaborators",
                                   {"email": ctx.accounts["collaborator"].email, "access": "write", "useAgent": True})
             trace["api"].append({"name": "share_with_collaborator", "status": res.status, "code": res.code})
@@ -1514,7 +1544,8 @@ def run_loop(ctx: Context, run: lanes.Run, deadline: float) -> report.RunResult:
         trace.update(build_trace(ctx.db, session_id, owner_id, before=None, logs_dir=ctx.logs_dir))
         trace["loop_prompts"] = driver.prompts
         trace["driver"] = did
-        problem = run_problem(outcome, trace, loop=True)
+        problem = (f"the MCP server refused the Agent in the Loop driver ({driver.refused})" if driver.refused
+                   else run_problem(outcome, trace, loop=True))
         if problem:
             result.status, result.reason = report.ERROR, problem
             return result
@@ -1545,8 +1576,10 @@ def run_address_guard(ctx: Context, run: lanes.Run, address: lanes.LaneAddressin
     try:
         res = ops_http.call("POST", f"/api/users/{ops_id}/tradecraft-resources/check-url", {"url": url}, timeout=120)
         answer = (res.data or {}).get("result") if isinstance(res.data, dict) else None
+        refusal = res.data if isinstance(res.data, dict) and not res.ok else {}
         trace["api"].append({"name": "check_url_lab_address", "status": res.status,
-                             "code": (answer or {}).get("error_code") or res.code, "ok": (answer or {}).get("ok")})
+                             "code": (answer or {}).get("error_code") or res.code, "ok": (answer or {}).get("ok"),
+                             "field": refusal.get("field"), "error": str(refusal.get("error") or "")[:80]})
         if res.status == 0:
             result.reason = f"the webapp was not reached ({res.error})"
             return result
@@ -1989,15 +2022,81 @@ def _check_names(scn: Mapping, run: lanes.Run) -> list[str]:
     return [str(scn["singles"][run.check].get("title", run.check))]
 
 
-def run_commits(run: Exec = subprocess.run) -> str:
-    """The code a matrix run judged: the plan branch's tip, which the stack's images are built
-    from, and the checkout's HEAD, which on the shared checkout is another branch."""
-    def short(ref: str) -> str:
-        done = run(["git", "-C", str(REPO), "rev-parse", "--short=8", "--verify", "--quiet", ref], capture_output=True,
-                   text=True, check=False)
-        return (done.stdout or "").strip()
-    plan, head = short("refs/heads/feature/tradecraft-2.0"), short("HEAD")
-    return f"plan {plan} (checkout {head})" if plan else head
+PLAN_REF = "refs/heads/feature/tradecraft-2.0"
+
+
+def git_short(ref: str, run: Optional[Exec] = None) -> str:
+    done = (run or subprocess.run)(["git", "-C", str(REPO), "rev-parse", "--short=8", "--verify", "--quiet", ref], capture_output=True,
+               text=True, check=False)
+    return (done.stdout or "").strip()
+
+
+# The running agent's Tradecraft package, as git blob ids, read-only inside its container.
+AGENT_CODE_SCRIPT = r"""
+import hashlib, json, pathlib
+root = pathlib.Path("/app/tradecraft")
+out = []
+for p in root.rglob("*.py"):
+    if "__pycache__" in p.parts:
+        continue
+    data = p.read_bytes()
+    out.append([p.relative_to(root).as_posix(), hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()])
+print(json.dumps(out))
+"""
+
+
+def agent_code_check(commit: str, run: Optional[Exec] = None, container: str = AGENT_CONTAINER) -> str:
+    """Whether the RUNNING agent holds ``commit``'s Tradecraft code (agentic/tradecraft/**.py),
+    file by file: a result is never credited to code the stack does not run. Names only."""
+    if not commit:
+        return "not checked: no plan commit"
+    run = run or subprocess.run
+    tree = run(["git", "-C", str(REPO), "ls-tree", "-r", commit, "--", "agentic/tradecraft/"], capture_output=True,
+               text=True, check=False)
+    want = {}
+    for line in (tree.stdout or "").splitlines():
+        meta, _, path = line.partition("\t")
+        parts = meta.split()
+        if len(parts) == 3 and parts[1] == "blob" and path.endswith(".py"):
+            want[path[len("agentic/tradecraft/"):]] = parts[2]
+    try:
+        done = run(["docker", "exec", "-i", container, "python", "-c", AGENT_CODE_SCRIPT], capture_output=True,
+                   text=True, check=False, timeout=60)
+        have = {str(a): str(b) for a, b in json.loads((done.stdout or "").strip().splitlines()[-1])} \
+            if done.returncode == 0 else None
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        have = None
+    if not want or have is None:
+        return f"not checked: {'the commit lists no Tradecraft file' if not want else 'the agent container could not be read'}"
+    differing = sorted(k for k in set(want) | set(have) if want.get(k) != have.get(k))
+    if not differing:
+        return f"the running agent holds plan {commit}'s Tradecraft code ({len(want)} files)"
+    more = f", +{len(differing) - 6} more" if len(differing) > 6 else ""
+    return (f"DIFFERS: the running agent's Tradecraft code is not plan {commit}'s in {len(differing)} of "
+            f"{len(set(want) | set(have))} files ({', '.join(differing[:6])}{more})")
+
+
+def image_ids(run: Optional[Exec] = None) -> str:
+    done = (run or subprocess.run)(["docker", "inspect", AGENT_CONTAINER, WEBAPP_CONTAINER, "--format", "{{.Name}} {{.Image}}"],
+               capture_output=True, text=True, check=False, timeout=60)
+    pairs = [ln.split() for ln in (done.stdout or "").splitlines() if len(ln.split()) == 2]
+    return ", ".join(f"{n.lstrip('/')} {i.split(':')[-1][:12]}" for n, i in pairs) or "not read"
+
+
+def provenance(started: Mapping, ended: Mapping) -> dict:
+    """The report's lines about the code that ran: the plan tip at the start and the end, whether the
+    running agent holds it, and the two images; any change during the run is said."""
+    commit = f"plan {started['tip']}"
+    if ended["tip"] != started["tip"]:
+        commit += f", moved to {ended['tip']} during the run"
+    images = started["images"] + ("" if ended["images"] == started["images"] else f"; at the end: {ended['images']}")
+    return {"commit": f"{commit} (checkout {started['head']})", "agent_code": started["agent_code"], "images": images}
+
+
+def provenance_now(run: Optional[Exec] = None, with_code: bool = True) -> dict:
+    tip = git_short(PLAN_REF, run)
+    return {"tip": tip, "head": git_short("HEAD", run), "images": image_ids(run),
+            "agent_code": agent_code_check(tip, run) if with_code else ""}
 
 
 LAYER1 = "layer1"
@@ -2050,6 +2149,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # The budget counts from here: the preflight is part of the 5 hours.
     matrix_start = time.monotonic()
+    code_at_start = provenance_now()
+    log(f"code: plan {code_at_start['tip']}; {code_at_start['agent_code']}; images {code_at_start['images']}")
     plan = lanes.budget(scn)
     stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
     out_dir = RUNS_DIR / stamp
@@ -2089,9 +2190,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         log(str(exc))
     verdict, gates = report.pass_rules(results, oracle_min=int(scn["pass_rules"]["oracle_min"]), layer1=layer1_results,
                                        expected=[r.id for r in runs])
-    commit = run_commits()
+    code = provenance(code_at_start, provenance_now(with_code=False))
     timeline = lanes.worst_case(runs, lane_count, plan)
-    meta = {"started": started, "finished": now_iso(), "commit": commit, "model": ctx.model, "lanes": lane_count,
+    meta = {"started": started, "finished": now_iso(), **code, "model": ctx.model, "lanes": lane_count,
             "projected_worst_case": f"{timeline.makespan / 3600:.2f} h from the start, preflight included",
             "wall_clock": f"{(time.monotonic() - matrix_start) / 3600:.2f} h"}
     text = report.render(results=results, gates=gates, verdict=verdict, meta=meta, gain_table=report.gain(results),

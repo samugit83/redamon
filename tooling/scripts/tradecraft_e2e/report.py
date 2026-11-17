@@ -218,7 +218,8 @@ def render(*, results: Sequence[RunResult], gates: Sequence[Gate], verdict: bool
     skipped = sum(1 for g in gates if g.ok is None)
     title = ("PASSED" if verdict else "FAILED") + (f" ({skipped} gates skipped, see below)" if skipped else "")
     lines = [f"# Tradecraft 2.0 end-to-end matrix: {title}", ""]
-    for key in ("started", "finished", "commit", "model", "lanes", "projected_worst_case", "wall_clock"):
+    for key in ("started", "finished", "commit", "agent_code", "images", "model", "lanes", "projected_worst_case",
+                "wall_clock"):
         if key in meta:
             lines.append(f"- {key.replace('_', ' ')}: {meta[key]}")
     for note in meta.get("notes", []):
