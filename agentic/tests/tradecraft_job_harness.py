@@ -38,6 +38,7 @@ class JobHarness:
         self.store = store or MemoryStore()
         if RID not in self.store.resources:
             self.store.add_resource(OWNER, RID, url=url, storage_mode=mode, generation=0)
+        self.settings_hash: Optional[str] = None
         self.stages: list = []
         self.jobs = 0
         self.outcome: Any = None
@@ -47,6 +48,8 @@ class JobHarness:
         spec.update(job_id=job_id, user_id=OWNER, actor_user_id=OWNER, resource_id=RID, settings=dict(self.settings))
         spec["resource"].update(url=self.url, storage_mode=self.mode, model=self.model_id, **self.resource_spec)
         spec["secrets"] = self.secrets
+        if self.settings_hash:
+            spec["settings_hash"] = self.settings_hash
         return JobStartRequest.model_validate(spec)
 
     async def _set_stage(self, stage: str, progress: Any = None) -> None:

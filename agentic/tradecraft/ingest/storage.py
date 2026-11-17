@@ -94,7 +94,7 @@ async def _page_text(state: "IngestState", entry) -> tuple[str, str, dict, bool]
     # §5: a resource with a login never uses the browser, "always use the browser" included.
     page = await fetch.smart_fetch(entry.url, state.settings, github_token=state.github_token,
                                    allow_browser=not fetch.has_login(state.request.secrets), cleaner=state.clean,
-                                   headers=conditional_headers(reuse) if reuse else None)
+                                   headers=conditional_headers(reuse) if reuse and reuse.get("conditional") else None)
     state.visited += 1
     if page.status == 304 and reuse:
         return "", "", page.headers, True

@@ -186,6 +186,30 @@ def test_new_validators_replace_the_copys(tmp_path):
     assert new["last_modified"] == "Tue, 03 Nov 2026 10:00:00 GMT" and new["etag"] == old["etag"]
 
 
+def test_new_settings_are_not_trusted_to_a_304(tmp_path):
+    """A 304 says the page did not change, not that a new body selector stores the same text: with
+    other ingestion settings than the copy's, every page is downloaded and judged by its text."""
+    h, _root = _stored_site(tmp_path)
+    first = h.live_by_url()
+    h.fetcher.reset()
+    h.settings["content.removeSelectors"] = ["h2"]
+    h.settings_hash = "fedcba9876543210"
+    h.refresh()
+    assert h.fetcher.conditional == [] and h.fetcher.not_modified == []
+    second = h.live_by_url()
+    with_h2 = [u for u, e in first.items() if e["stored_text"] and "\n## " in e["stored_text"]]
+    assert with_h2
+    for url in with_h2:
+        assert "\n## " not in second[url]["stored_text"] and second[url]["page_id"] not in _copied(h)
+    # The pages the new settings store alike are still carried, by their fingerprint.
+    same = [u for u, e in first.items() if e["stored_text"] and u not in with_h2]
+    assert all(first[u]["page_id"] in _copied(h) for u in same)
+    # Back on the same settings, the next refresh asks with the validators again.
+    h.fetcher.reset()
+    h.refresh()
+    assert h.fetcher.conditional and h.fetcher.not_modified
+
+
 def test_conditional_headers():
     assert storage.conditional_headers({"etag": '"abc"', "last_modified": LAST_MODIFIED}) == {
         "If-None-Match": '"abc"', "If-Modified-Since": LAST_MODIFIED}
