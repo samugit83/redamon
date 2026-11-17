@@ -136,7 +136,8 @@ def _base_card(entry: Any) -> dict:
     return {
         "url": entry.url,
         "title": entry.title,
-        "title_source": "real" if entry.source == "crawl" else "guessed",
+        # A title the page gave (T6.1) or the person wrote (T6.6) says so; else the source decides.
+        "title_source": entry.extra.get("title_source") or ("real" if entry.source == "crawl" else "guessed"),
         "source": entry.source,
         "status": entry.extra.get("status", "kept"),
         "drop_reason": entry.extra.get("drop_reason", ""),

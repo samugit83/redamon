@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 from tradecraft import clock
-from tradecraft.ingest import fetch
+from tradecraft.ingest import fetch, titles
 from tradecraft.settings import constant
 
 if TYPE_CHECKING:
@@ -77,6 +77,7 @@ async def _page_text(state: "IngestState", entry) -> tuple[str, str, dict]:
         return "", page.error or "http_error", {}
     if page.truncated:
         state.count_error(fetch.PAGE_TOO_LARGE)
+    titles.collect(state, entry, html=page.html, text=page.text, content_type=page.content_type)
     return page.text, "", page.headers
 
 
@@ -126,6 +127,7 @@ async def store(state: "IngestState") -> "IngestState":
         await state.progress("store", i + 1, len(kept), "pages")
     state.stored_counts["pages"] = stored
     state.stored_counts["bytes"] = total
+    titles.finish(state)
     return state
 
 
