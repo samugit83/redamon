@@ -112,7 +112,7 @@ A new provider is fully integrated when **every one** of the following works wit
 - [ ] Text-to-Cypher (graph view "ask the graph" + redagraph MCP tool) uses your provider.
 - [ ] The **inbound** MCP server's `query_graph` answers on a project whose model points at your provider. Mint a token in Global Settings -> MCP Server with `recon:read`, then call `query_graph` with a `question` (not a `cypher`). Same `/graph/nl-query` -> `_build_cypher_manager` -> `setup_llm` path as "ask the graph", so an unrecognised prefix in `parse_model_provider` breaks it for **every external agent at once** - and they are told `Could not turn that question into a query. Try rephrasing it.`, which sends them rewriting a question that was never the problem.
 - [ ] CypherFix Triage + CodeFix WebSocket orchestrators use your provider when `cypherfixLlmModel` (or fallback `agentOpenaiModel`) points at it.
-- [ ] Tradecraft URL verifier (`/tradecraft/verify`) uses your provider.
+- [ ] Tradecraft uses your provider: an ingestion job (Add or Refresh a resource whose model is on it), Check URL, the focus preview and the librarian (`tradecraft_ask`, on the *Tradecraft librarian* model), all built through `build_llm_from_providers` (`agentic/tradecraft/models.py`, `agent_tools._build_model`).
 
 If any one of these silently falls back to OpenAI/Anthropic, you have missed a kwarg in `setup_llm()` call sites - see [§4.9](#49-agentic---propagate-the-new-api-key-kwarg-into-every-call-site).
 
@@ -419,7 +419,7 @@ myprovider_api_key=(myprovider_p or {}).get("apiKey"),
 | 1 | [agentic/orchestrator_helpers/llm_setup.py](../../../agentic/orchestrator_helpers/llm_setup.py) | `apply_project_settings` | 341-405 | Main agent orchestrator (think loop, tool calls, generate response, fireteam, guardrail) |
 | 2 | [agentic/api.py](../../../agentic/api.py) | `_build_llm_with_model_for_user` | 467-516 | All five `/llm/*` recon endpoints (FFuf, Nuclei tags, Nuclei FP, WAF, Takeover) |
 | 3 | [agentic/api.py](../../../agentic/api.py) | `_setup_llm_for_endpoint` | 1094-1134 | `/roe/parse`, `/api/report/summarize`, (any endpoint that reads from cached orchestrator settings) |
-| 4 | [agentic/api.py](../../../agentic/api.py) | `_build_llm_for_user` | 1148+ | `/tradecraft/verify`, plus other non-project endpoints |
+| 4 | [agentic/api.py](../../../agentic/api.py) | `_build_llm_for_user` | 1918+ | `/guardrail/check-target`, plus other non-project endpoints |
 | 5 | [agentic/api.py](../../../agentic/api.py) | `text_to_cypher` handler | ~2380-2462 | `/text-to-cypher` (graph view "ask the graph", redagraph MCP tool, Cypher generation inside agent tools) |
 | 6 | [agentic/cypherfix_triage/orchestrator.py](../../../agentic/cypherfix_triage/orchestrator.py) | `__init__` | ~15-80 | `/ws/cypherfix-triage` WebSocket orchestrator |
 | 7 | [agentic/cypherfix_codefix/orchestrator.py](../../../agentic/cypherfix_codefix/orchestrator.py) | `__init__` | ~15-80 | `/ws/cypherfix-codefix` WebSocket orchestrator |
@@ -544,7 +544,7 @@ After your PR is wired up, run **all** of these. Do not mark the PR ready for re
 - [ ] Run a small scan with AI hooks on, check recon container logs for `[Nuclei-AI]`/`[FFUF-AI]`/`[WAF-AI]` lines showing successful agent calls.
 - [ ] Open graph view, "ask the graph" with a Cypher question, Cypher executes.
 - [ ] Trigger CypherFix on a broken Cypher, triage and codefix orchestrators both run.
-- [ ] Submit a tradecraft URL on `/tradecraft`, verifier returns metadata.
+- [ ] Add a Tradecraft resource (Global Settings → Tradecraft) whose model is on your provider: the ingestion job ends with a summary; with the *Tradecraft librarian* model on it, `tradecraft_ask` answers in a chat.
 
 ### Resilience
 

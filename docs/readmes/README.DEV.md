@@ -296,6 +296,17 @@ redamon/
 │   │   ├── config.py               #     Orchestrator configuration constants
 │   │   ├── json_utils.py           #     JSON serialization helpers
 │   │   └── debug.py                #     Debug utilities
+│   ├── tradecraft/                 #   Tradecraft: an account's library of knowledge sites (README.TRADECRAFT.md)
+│   │   ├── api.py                  #     Master-key /tradecraft/v2/* routes: jobs, Check URL, focus preview, Read now, convert
+│   │   ├── jobs.py                 #     Ingestion job runner: per-owner queues, 2 per copy, leases, cancel by flag
+│   │   ├── ingest/                 #     The pipeline's stages: fetch, detect, map builders, crawl, focus, store, cards, tags…
+│   │   ├── store.py, db.py         #     The page store: keyed raw SQL on its own Postgres pool of 5
+│   │   ├── runtime.py, overlay.py  #     A run's catalog binding and its registry entries
+│   │   ├── agent_tools.py          #     tradecraft_search, tradecraft_lookup, tradecraft_ask
+│   │   ├── library/                #     Search, reading by section, page IDs, coverage map, hints
+│   │   ├── librarian/              #     The librarian sub-graph and its checks
+│   │   ├── convert.py              #     Converts 1.x resources without crawling
+│   │   └── net.py, clock.py        #     The only web boundary and the only clock (tests swap both)
 │   ├── workspace_import/           #   Folder/archive uploads and URL imports into the Agent Workspace
 │   │   ├── extract.py              #     safe_extract: hand-written extraction, real-byte caps, no links or devices
 │   │   ├── staging.py              #     /workspace/.staging op dirs, disk-reservation ledger, boot swap recovery
@@ -1308,7 +1319,7 @@ All deep-dive documentation lives in the `docs/readmes/` folder alongside this f
 | [README.AGENTIC_SYSTEM.md](README.AGENTIC_SYSTEM.md) | Full pentest agent architecture: ReAct loop, LangGraph state machine, WebSocket protocol, tool specs, multi-objective support, RoE guardrails, EvoGraph attack chains, prompt token optimization |
 | [README.CYPHERFIX_AGENTS.md](README.CYPHERFIX_AGENTS.md) | Triage + CodeFix agents: hybrid architecture, prioritization algorithm, 11 code tools, diff approval flow, GitHub PR integration, WebSocket protocols |
 | [README.KBASE.md](README.KBASE.md) | The Knowledge Base: offline retrieval (FAISS + Neo4j) over curated security datasets, ahead of web search |
-| [README.TRADECRAFT.md](README.TRADECRAFT.md) | Tradecraft Lookup: how a knowledge resource a user adds reaches the agent during a session |
+| [README.TRADECRAFT.md](README.TRADECRAFT.md) | Tradecraft: an account's library of knowledge sites, from ingestion to the agent's search, reads, librarian and hints |
 
 ### Reconnaissance and scanning
 

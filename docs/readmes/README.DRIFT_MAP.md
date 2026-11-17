@@ -167,7 +167,7 @@ ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 | one RoE + recon-budget gate (`roe_gate.check_tool_call`) asked by the single-tool node, the plan wave and every fireteam member; every `CATEGORY_TOOL_MAP` and discovery-list name is a `TOOL_REGISTRY` key | `agentic/tests/test_roe_gate.py` |
 | the fireteam mutex validator rejects any two members sharing a `TOOL_MUTEX_GROUPS` tool; every group tool is a registry key | `agentic/tests/test_fireteam_mutex_groups.py` |
 | the unclassified routing table names every `KNOWN_ATTACK_PATHS` id once | `agentic/tests/test_unclassified_routing_table.py` |
-| `BUILTIN_RESERVED_TOOL_NAMES` (TS) == `mcp_registry._builtin_tool_names()` (registry keys, `tradecraft_lookup` and `SYSTEM_MCP_TOOL_NAMES`), both ways | `agentic/tests/test_reserved_tool_names_parity.py` |
+| `BUILTIN_RESERVED_TOOL_NAMES` (TS) == `mcp_registry._builtin_tool_names()` (registry keys, the three tradecraft tools and `SYSTEM_MCP_TOOL_NAMES`), both ways | `agentic/tests/test_reserved_tool_names_parity.py` |
 | server tools -> `SYSTEM_MCP_TOOL_NAMES` (one direction: a stale allowlist name passes) | `agentic/tests/test_system_mcp_tool_coverage.py` |
 | fs_ tools <-> registry both ways; job_ tools one way plus a count lock of 29 | `agentic/tests/test_tool_registry_completeness.py` |
 | every timeout in `mcp/servers/*_server.py` has a larger `TOOL_DEADLINES_S` entry | `agentic/tests/test_tool_deadline.py` |
@@ -254,7 +254,7 @@ ten webapp drift suites passed (298 tests; the one skip is the write-mode case).
 ### 4.1 Agent tools: the tool registry and its satellites
 
 **Source of truth:** `TOOL_REGISTRY` in `agentic/prompts/tool_registry.py`
-(58 entries; dict order is prompt priority) plus `tradecraft_lookup` (per-session
+(58 entries; dict order is prompt priority) plus `tradecraft_lookup`, `tradecraft_search` and `tradecraft_ask` (per-run
 overlay) plus tools injected from MCP manifests at runtime.
 
 | Dependent | Where | Guard | Fails how |

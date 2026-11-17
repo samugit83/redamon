@@ -327,7 +327,7 @@ Edit [agentic/project_settings.py](../../../agentic/project_settings.py).
 ```python
 'ATTACK_SKILL_CONFIG': {
     'builtIn': {
-        'cve_exploit': True,
+        'cve_exploit': False,
         'brute_force_credential_guess': False,
         'phishing_social_engineering': False,
         'denial_of_service': False,
@@ -362,13 +362,13 @@ These keys are what you read in `_inject_builtin_skill_workflow()` via `get_sett
 Edit [webapp/prisma/schema.prisma](../../../webapp/prisma/schema.prisma) at line ~681. The `attackSkillConfig` field has a hardcoded JSON default:
 
 ```prisma
-attackSkillConfig    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true},\"user\":{}}") @map("attack_skill_config")
+attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":false,\"brute_force_credential_guess\":false,\"phishing_social_engineering\":false,\"denial_of_service\":false,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}") @map("attack_skill_config")
 ```
 
 Add your skill ID to the JSON. Keep the escaping intact (note `\"`):
 
 ```prisma
-attackSkillConfig    Json     @default("{\"builtIn\":{\"cve_exploit\":true,...,\"xss\":true,\"<skill_id>\":<true_or_false>},\"user\":{}}") @map("attack_skill_config")
+attackSkillConfig    Json     @default("{\"builtIn\":{\"cve_exploit\":false,...,\"crypto_attack\":true,\"<skill_id>\":<true_or_false>},\"user\":{}}") @map("attack_skill_config")
 ```
 
 Then run:
