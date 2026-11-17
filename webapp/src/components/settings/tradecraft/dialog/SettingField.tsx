@@ -52,8 +52,8 @@ export function SettingField({ def, value, error, inactiveHint, userId, onChange
     <div className={`${css.field}${inactiveHint ? ` ${css.fieldInactive}` : ''}`} data-setting={def.key}>
       <div className={css.fieldHead}>
         {def.type === 'bool' ? (
-          <label className={css.inline}>
-            <input id={id} type="checkbox" checked={value === true} onChange={e => onChange(e.target.checked)} />
+          <label className={css.check}>
+            <input id={id} type="checkbox" className="checkbox" checked={value === true} onChange={e => onChange(e.target.checked)} />
             <span>{def.label}</span>
           </label>
         ) : (
@@ -119,11 +119,11 @@ function ChoiceList({ id, def, value, labels, onChange }: {
 }) {
   const on = new Set(Array.isArray(value) ? value : [])
   return (
-    <div id={id} className={css.inline} role="group" aria-label={def.label}>
+    <div id={id} className={css.choiceRow} role="group" aria-label={def.label}>
       {def.values!.map(v => (
-        <label key={v} className={css.inline}>
+        <label key={v} className={css.check}>
           <input
-            type="checkbox" checked={on.has(v)}
+            type="checkbox" className="checkbox" checked={on.has(v)}
             onChange={e => onChange(def.values!.filter(x => (x === v ? e.target.checked : on.has(x))))}
           />
           <span>{labels?.[v] ?? v}</span>
@@ -146,18 +146,20 @@ export function ListField({ id, def, value, onChange, addLabel }: {
     setText('')
   }
   return (
-    <div className={css.field}>
-      <div className={css.chips} aria-label={`${def.label} items`}>
-        {items.map(item => (
-          <span key={item} className={css.chip}>
-            {item}
-            <button type="button" className={css.chipRemove} aria-label={`Remove ${item}`} onClick={() => onChange(items.filter(x => x !== item))}>
-              <X size={10} />
-            </button>
-          </span>
-        ))}
-      </div>
-      <div className={css.inline}>
+    <div className={css.listField}>
+      {items.length > 0 && (
+        <div className={css.chips} aria-label={`${def.label} items`}>
+          {items.map(item => (
+            <span key={item} className={css.chip}>
+              {item}
+              <button type="button" className={css.chipRemove} aria-label={`Remove ${item}`} onClick={() => onChange(items.filter(x => x !== item))}>
+                <X size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className={css.listAdd}>
         <input
           id={id} className="textInput" value={text} maxLength={def.maxLength}
           onChange={e => setText(e.target.value)}

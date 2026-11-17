@@ -335,7 +335,7 @@ export function MapView({ userId, resource, readOnly = false, onClose }: {
                 <li key={e.url} className={css.entry} data-entry={e.url}>
                   {curating && (
                     <input
-                      type="checkbox" aria-label={`Select ${e.title || e.url}`} checked={selected.has(e.url)}
+                      type="checkbox" className="checkbox" aria-label={`Select ${e.title || e.url}`} checked={selected.has(e.url)}
                       onChange={ev => toggle(e.url, ev.target.checked)}
                     />
                   )}

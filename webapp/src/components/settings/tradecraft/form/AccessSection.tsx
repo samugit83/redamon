@@ -5,7 +5,6 @@ import { Plus, X } from 'lucide-react'
 import { useOptionalAuth } from '@/providers/AuthProvider'
 import type { MaskedCredentials } from '@/lib/tradecraft/masking'
 import { FormSection } from './FormSection'
-import css from '../tradecraft.module.css'
 import fcss from './form.module.css'
 
 /** The placeholder every tradecraft answer shows for a stored secret; sent back, it keeps the value. */
@@ -111,9 +110,9 @@ export function AccessSection({ draft, onChange, tokenSet }: {
   return (
     <FormSection title="Access" status={accessStatus(draft, tokenSet)}>
       {locked && (
-        <span className={css.hint} role="note">Not available while acting as {actingAs.name || actingAs.email}: the logins stay the account&apos;s own.</span>
+        <span className="formHint" role="note">Not available while acting as {actingAs.name || actingAs.email}: the logins stay the account&apos;s own.</span>
       )}
-      <fieldset disabled={locked} style={{ border: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <fieldset disabled={locked} className={fcss.plainFieldset}>
         <div className="formGroup">
           <label className="formLabel" htmlFor={`${id}-token`}>GitHub token override</label>
           <input
@@ -124,9 +123,9 @@ export function AccessSection({ draft, onChange, tokenSet }: {
         </div>
         <div className="formGroup">
           <label className="formLabel" htmlFor={`${id}-cookie`}>Cookies</label>
-          <div className={fcss.row}>
+          <div className={fcss.inputRow}>
             <input
-              id={`${id}-cookie`} className={`textInput ${fcss.grow}`} type="password" autoComplete="new-password" maxLength={8000}
+              id={`${id}-cookie`} className="textInput" type="password" autoComplete="new-password" maxLength={8000}
               value={shown(draft.cookie)} onChange={e => set({ cookie: e.target.value })}
               placeholder={secretPlaceholder(draft.cookie, 'session=…; other=…')}
             />
@@ -134,18 +133,18 @@ export function AccessSection({ draft, onChange, tokenSet }: {
               <button type="button" className="secondaryButton" onClick={() => set({ cookie: '' })}>Remove the cookie</button>
             )}
           </div>
-          <span className={css.hint}>The Cookie header for a site that needs a session, such as a paid knowledge base.</span>
+          <span className="formHint">The Cookie header for a site that needs a session, such as a paid knowledge base.</span>
         </div>
         <div className="formGroup">
           <span className="formLabel">Custom headers</span>
           {draft.headers.map((h, i) => (
-            <div key={i} className={fcss.row} data-header-row={i}>
+            <div key={i} className={fcss.headerRow} data-header-row={i}>
               <input
-                className={`textInput ${fcss.grow}`} aria-label={`Header ${i + 1} name`} value={h.name} maxLength={200}
+                className="textInput" aria-label={`Header ${i + 1} name`} value={h.name} maxLength={200}
                 onChange={e => setHeader(i, { name: e.target.value })} placeholder="X-Api-Key"
               />
               <input
-                className={`textInput ${fcss.grow}`} type="password" autoComplete="new-password" aria-label={`Header ${i + 1} value`}
+                className="textInput" type="password" autoComplete="new-password" aria-label={`Header ${i + 1} value`}
                 value={shown(h.value)} maxLength={4096} onChange={e => setHeader(i, { value: e.target.value })}
                 placeholder={secretPlaceholder(h.value, 'value')}
               />
@@ -164,21 +163,21 @@ export function AccessSection({ draft, onChange, tokenSet }: {
           </div>
         </div>
         <div className="formGroup">
-          <label className={css.storageOption}>
+          <label className={fcss.checkLine}>
             <input
-              type="checkbox" checked={!!draft.basic}
+              type="checkbox" className="checkbox" checked={!!draft.basic}
               onChange={e => set({ basic: e.target.checked ? { username: '', password: '' } : null })}
             />
             <span>Basic authentication</span>
           </label>
           {draft.basic && (
-            <div className={fcss.row}>
+            <div className={fcss.pairRow}>
               <input
-                className={`textInput ${fcss.grow}`} aria-label="User name" value={draft.basic.username} maxLength={500}
+                className="textInput" aria-label="User name" value={draft.basic.username} maxLength={500}
                 onChange={e => set({ basic: { ...draft.basic!, username: e.target.value } })} placeholder="user name"
               />
               <input
-                className={`textInput ${fcss.grow}`} type="password" autoComplete="new-password" aria-label="Password"
+                className="textInput" type="password" autoComplete="new-password" aria-label="Password"
                 value={shown(draft.basic.password)} maxLength={2000}
                 onChange={e => set({ basic: { ...draft.basic!, password: e.target.value } })}
                 placeholder={secretPlaceholder(draft.basic.password, 'password')}
@@ -186,8 +185,8 @@ export function AccessSection({ draft, onChange, tokenSet }: {
             </div>
           )}
         </div>
-        <span className={css.hint}>{LOGIN_NOTE}</span>
-        {error && <span className={css.failure} role="alert">{error}</span>}
+        <span className="formHint">{LOGIN_NOTE}</span>
+        {error && <span className={fcss.checkFailed} role="alert">{error}</span>}
       </fieldset>
     </FormSection>
   )

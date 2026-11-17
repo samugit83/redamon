@@ -5,6 +5,7 @@ import type { SettingDef, SettingValue } from '@/lib/tradecraft/settingsSpec'
 import { OverrideField } from './OverrideField'
 import { FormSection } from './FormSection'
 import { SECTION_KEYS, defsOf, overrideStatus } from './sections'
+import css from './form.module.css'
 
 /** What every section of the resource form reads and writes. */
 export interface FormContext {
@@ -54,5 +55,5 @@ export function SettingsOnlySection({ ctx, title, section, hide = [], hints, chi
 
 /** A Check URL suggestion: one click writes it as the override. */
 export function Suggest({ label, onUse }: { label: string; onUse: () => void }) {
-  return <button type="button" className="textButton" onClick={onUse}>{label}</button>
+  return <button type="button" className={css.suggest} onClick={onUse}>{label}</button>
 }

@@ -20,10 +20,12 @@ type Status = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; text: s
  * The 2.0 resources of the account: cards, the basic form, and the job views read every 3 s while a job runs.
  * `headerActions` sit left of Add Resource and show exactly when it does (§3.1).
  */
-export function ResourceListV2({ userId, onDirtyChange, headerActions, initialEditId = null, onLoaded }: {
+export function ResourceListV2({ userId, onDirtyChange, headerActions, toolbarStart, initialEditId = null, onLoaded }: {
   userId: string
   onDirtyChange: (dirty: boolean) => void
   headerActions?: ReactNode
+  /** Shown left of the actions whatever the list's state (the tab's librarian model line). */
+  toolbarStart?: ReactNode
   /** A resource to open in its Edit form once the list is read (a project's "Edit in Global Settings"). */
   initialEditId?: string | null
   /** Each list read: the tab's librarian banner needs to know whether there are resources (Q10). */
@@ -148,12 +150,13 @@ export function ResourceListV2({ userId, onDirtyChange, headerActions, initialEd
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '12px' }}>
+      <div className={css.toolbar}>
+        {toolbarStart}
         {status.kind === 'ready' && !form && (
-          <>
+          <div className={css.toolbarActions}>
             {headerActions}
             <button type="button" className="primaryButton" onClick={() => setForm('new')}><Plus size={14} /> Add Resource</button>
-          </>
+          </div>
         )}
       </div>
       {form && (

@@ -110,8 +110,8 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
         read from their site at every read; Stored ones keep a copy in your database.
       </p>
       {offer && (
-        <div className={`${tc.switchBar} ${tc.badgeInfo}`} role="status" data-testid="bulk-refresh-offer">
-          <span>{BULK_REFRESH_OFFER_TEXT}</span>
+        <div className={`${tc.banner} ${tc.bannerInfo}`} role="status" data-testid="bulk-refresh-offer">
+          <span className={tc.bannerText}>{BULK_REFRESH_OFFER_TEXT}</span>
           <button type="button" className="primaryButton" onClick={() => void answerOffer(true)}>Save &amp; refresh all</button>
           <button type="button" className="secondaryButton" onClick={() => void answerOffer(false)}>Not now</button>
           {offerError && <span className={tc.failure} role="alert">{offerError}</span>}
@@ -124,13 +124,13 @@ function TradecraftV2Section({ userId, onDirtyChange }: TradecraftTabProps) {
         />
       )}
       {noLibrarian && <NoLibrarianBanner onChoose={librarian.choose} />}
-      <LibrarianModelLine state={librarian.state} onChoose={librarian.choose} />
       <ResourceListV2
         key={listKey}
         userId={userId}
         onDirtyChange={onDirtyChange}
         initialEditId={editId}
         onLoaded={list => setResourceCount(list.length)}
+        toolbarStart={<LibrarianModelLine state={librarian.state} onChoose={librarian.choose} />}
         headerActions={
           <>
             <button type="button" className="secondaryButton" onClick={() => setConfiguringSearch(true)}>

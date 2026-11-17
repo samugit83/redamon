@@ -69,7 +69,7 @@ export function LibrarianModelLine({ state, onChoose }: { state: LibrarianModelS
   const shown = state.kind === 'loading' ? '…' : state.kind === 'error' ? 'unknown'
     : !state.model ? 'not set' : state.usable === false ? `${state.model} (not available: its provider is gone)` : state.model
   return (
-    <div className={tc.hint} data-testid="librarian-model-line" title={state.kind === 'error' ? state.text : undefined}>
+    <div className={tc.modelLine} data-testid="librarian-model-line" title={state.kind === 'error' ? state.text : undefined}>
       Librarian model: <strong>{shown}</strong>{' '}
       <button type="button" className={tc.linkButton} onClick={onChoose}>
         ({state.kind === 'ready' && state.model && state.usable !== false ? 'change' : 'choose'})
@@ -81,8 +81,8 @@ export function LibrarianModelLine({ state, onChoose }: { state: LibrarianModelS
 /** Q10: Settings → Tradecraft with resources but no librarian model (after the upgrade, or its provider was deleted). */
 export function NoLibrarianBanner({ onChoose }: { onChoose: () => void }) {
   return (
-    <div className={`${tc.switchBar} ${tc.badgeWarn}`} role="alert" data-testid="no-librarian-banner">
-      <span>{NO_LIBRARIAN_TEXT}</span>
+    <div className={`${tc.banner} ${tc.bannerWarn}`} role="alert" data-testid="no-librarian-banner">
+      <span className={tc.bannerText}>{NO_LIBRARIAN_TEXT}</span>
       <button type="button" className="secondaryButton" onClick={onChoose}>Choose a model</button>
     </div>
   )

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Loader2, Search } from 'lucide-react'
 import { toApiError } from '@/lib/apiError'
 import type { CheckUrlResult } from '@/lib/tradecraft/agentContract'
@@ -57,12 +57,14 @@ export function checkSummary(r: CheckUrlResult): string {
  * Check URL (§6.3): runs on a click, and again whenever `runToken` changes (a preset was
  * picked). Calls no model and saves nothing; the form pre-fills from the result it hands over.
  */
-export function CheckUrlButton({ userId, input, disabled, runToken = 0, onResult }: {
+export function CheckUrlButton({ userId, input, disabled, runToken = 0, onResult, field }: {
   userId: string
   input: CheckUrlInput
   disabled?: boolean
   runToken?: number
   onResult: (result: CheckUrlResult | null) => void
+  /** The URL input, drawn on the button's line so the result line spans both. */
+  field?: ReactNode
 }) {
   const [busy, setBusy] = useState(false)
   const [line, setLine] = useState<{ ok: boolean; text: string; live: boolean } | null>(null)
@@ -88,8 +90,9 @@ export function CheckUrlButton({ userId, input, disabled, runToken = 0, onResult
   useEffect(() => { if (runToken > 0) run() }, [runToken, run])
 
   return (
-    <div className={css.override}>
-      <div className={css.row}>
+    <div className={css.stack}>
+      <div className={css.inputRow}>
+        {field}
         <button type="button" className="secondaryButton" onClick={run} disabled={busy || disabled}>
           {busy ? <Loader2 size={14} className={tc.spin} /> : <Search size={14} />} Check URL
         </button>

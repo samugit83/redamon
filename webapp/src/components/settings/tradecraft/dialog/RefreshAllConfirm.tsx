@@ -50,12 +50,12 @@ export function RefreshAllConfirm({ resources, busy = false, error = '', onConfi
           <p className={tc.state}>No enabled resource to refresh: Save keeps the settings for the next add or refresh.</p>
         ) : (
           <>
-            <p className={tc.hint}>Saves the settings, then refreshes {chosen.length} of {resources.length} enabled resources with them. {BUDGET_NOTE}</p>
-            <ul aria-label="Resources to refresh" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <p className={css.intro}>Saves the settings, then refreshes {chosen.length} of {resources.length} enabled resources with them. {BUDGET_NOTE}</p>
+            <ul aria-label="Resources to refresh" className={css.list}>
               {resources.map(r => (
                 <li key={r.id}>
-                  <label className={css.inline}>
-                    <input type="checkbox" checked={ticked.has(r.id)} onChange={e => toggle(r.id, e.target.checked)} disabled={busy} />
+                  <label className={`${css.listRow} ${css.check}`}>
+                    <input type="checkbox" className="checkbox" checked={ticked.has(r.id)} onChange={e => toggle(r.id, e.target.checked)} disabled={busy} />
                     <span>{r.name}</span>
                   </label>
                 </li>

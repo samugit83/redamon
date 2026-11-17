@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { Search } from 'lucide-react'
 import { ALPHABETICAL_PRESETS, FEATURED_PRESETS, type TradecraftPreset } from '@/lib/tradecraft/presets'
 import css from './form.module.css'
 
@@ -28,13 +29,17 @@ export function PresetPicker({ onPick }: { onPick: (preset: TradecraftPreset) =>
     </button>
   )
   return (
-    <div className={css.override}>
-      <div className={css.row}>
-        <input
-          className={`textInput ${css.grow}`} aria-label="Quick add" placeholder="search presets…" value={query}
-          onChange={e => setQuery(e.target.value)}
-        />
-        <button type="button" className="textButton" onClick={() => setOpen(o => !o)}>
+    <div className={css.stack}>
+      <span className="formLabel">Quick add</span>
+      <div className={css.inputRow}>
+        <div className="inputWithIcon">
+          <Search size={13} className="inputIcon" aria-hidden="true" />
+          <input
+            className="textInput" aria-label="Quick add" placeholder="Search presets by name, URL or type…" value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+        </div>
+        <button type="button" className="secondaryButton" aria-expanded={shown} onClick={() => setOpen(o => !o)}>
           {shown ? 'Hide presets' : `Browse ${FEATURED_PRESETS.length + ALPHABETICAL_PRESETS.length} presets`}
         </button>
       </div>
@@ -44,7 +49,7 @@ export function PresetPicker({ onPick }: { onPick: (preset: TradecraftPreset) =>
           {featured.map(item)}
           {rest.length > 0 && <div className={css.presetGroup}>All presets</div>}
           {rest.map(item)}
-          {featured.length + rest.length === 0 && <div className={css.presetDesc} style={{ padding: 8 }}>No preset matches.</div>}
+          {featured.length + rest.length === 0 && <div className={css.presetEmpty}>No preset matches.</div>}
         </div>
       )}
     </div>

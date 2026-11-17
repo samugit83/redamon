@@ -32,12 +32,12 @@ export function OverrideField(props: OverrideFieldProps) {
   const labels = VALUE_LABELS[def.key]
   const source = def.level === 'resource' ? 'Default' : 'Using your setting'
   return (
-    <div className={css.override} data-setting={def.key}>
-      <div className={css.overrideHead}>
-        <label htmlFor={id}>{def.label}</label>
+    <div className={css.field} data-setting={def.key}>
+      <div className={css.fieldHead}>
+        <label className={css.fieldLabel} htmlFor={id}>{def.label}</label>
         <label className={css.overrideToggle}>
           <input
-            type="checkbox" aria-label={`Override ${def.label}`} checked={overridden}
+            type="checkbox" className="checkbox" aria-label={`Override ${def.label}`} checked={overridden}
             onChange={e => onChange(e.target.checked ? cloneValue(inherited) : undefined)}
           />
           Override
@@ -45,19 +45,19 @@ export function OverrideField(props: OverrideFieldProps) {
       </div>
       {overridden ? (
         def.type === 'bool' ? (
-          <label className={css.overrideHead}>
-            <input id={id} type="checkbox" checked={value === true} onChange={e => onChange(e.target.checked)} />
+          <label className={css.checkLine}>
+            <input id={id} type="checkbox" className="checkbox" checked={value === true} onChange={e => onChange(e.target.checked)} />
             <span>{value === true ? 'On' : 'Off'}</span>
           </label>
         ) : (
           <Control id={id} def={def} value={value} labels={labels} userId={userId} onChange={onChange} />
         )
       ) : (
-        <span id={id} className={css.inherited}>{source}: {formatValue(def, inherited, labels)}</span>
+        <span id={id} className={css.inheritedValue}>{source}: {formatValue(def, inherited, labels)}</span>
       )}
-      <span className={css.inherited}>{def.help}</span>
+      <span className="formHint">{def.help}</span>
       {hint}
-      {error && <div className={css.checkFailed} role="alert">{error}</div>}
+      {error && <div className="formError" role="alert">{error}</div>}
     </div>
   )
 }

@@ -66,17 +66,17 @@ export function SummarySection({ ctx, resource, onResource, onJob }: {
   return (
     <FormSection title="Summary" status={summaryStatus(resource, overrideStatus(SECTION_KEYS.summary, ctx.overrides))}>
       {resource && (
-        <div className={css.override} aria-label="Summary editor" role="group">
-          <label className="formLabel" htmlFor="tc-summary-text">
+        <div className={css.field} aria-label="Summary editor" role="group">
+          <label className={css.fieldLabel} htmlFor="tc-summary-text">
             The summary the agent reads {manual ? '(written by me)' : '(generated)'}
           </label>
           <textarea
             id="tc-summary-text" className="textarea" rows={6} maxLength={SUMMARY_MAX} value={text}
             onChange={e => setText(e.target.value)}
           />
-          <span className={css.inherited}>{text.length.toLocaleString('en-US')} / {SUMMARY_MAX.toLocaleString('en-US')} characters. Saving your own text makes it "Written by me".</span>
-          <label className={css.overrideHead}>
-            <input type="checkbox" checked={locked} onChange={e => setLocked(e.target.checked)} />
+          <span className="formHint">{text.length.toLocaleString('en-US')} / {SUMMARY_MAX.toLocaleString('en-US')} characters. Saving your own text makes it "Written by me".</span>
+          <label className={css.checkLine}>
+            <input type="checkbox" className="checkbox" checked={locked} onChange={e => setLocked(e.target.checked)} />
             <span>Lock summary: a refresh rebuilds the map and keeps this summary</span>
           </label>
           <div className={css.row}>

@@ -139,18 +139,23 @@ function FocusBody({ userId, focus, onChange, alwaysSkip, maxContentChecks, entr
 
   return (
     <>
-      <fieldset className={css.storageChoice} aria-label="Focus mode">
+      <fieldset className={fcss.choiceGroup} aria-label="Focus mode">
         <legend className="formLabel">Mode</legend>
-        {(['everything', 'focused', 'tagOnly'] as const).map(mode => (
-          <label key={mode} className={css.storageOption}>
-            <input
-              type="radio" name={`${id}-mode`} value={mode} checked={focus.mode === mode}
-              aria-label={MODE_LABELS[mode]} onChange={() => change({ ...focus, mode })}
-            />
-            <span><strong>{MODE_LABELS[mode]}</strong>. <span className={css.hint}>{MODE_HINTS[mode]}</span></span>
-          </label>
-        ))}
-        {focus.mode === 'tagOnly' && <span className={css.hint}>{TAG_ONLY_NOTE}</span>}
+        <div className={fcss.choices}>
+          {(['everything', 'focused', 'tagOnly'] as const).map(mode => (
+            <label key={mode} className={fcss.choice}>
+              <input
+                type="radio" className="radio" name={`${id}-mode`} value={mode} checked={focus.mode === mode}
+                aria-label={MODE_LABELS[mode]} onChange={() => change({ ...focus, mode })}
+              />
+              <span className={fcss.choiceBody}>
+                <span className={fcss.choiceTitle}>{MODE_LABELS[mode]}</span>
+                <span className={fcss.choiceDesc}>{MODE_HINTS[mode]}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {focus.mode === 'tagOnly' && <span className={`formHint ${fcss.groupNote}`}>{TAG_ONLY_NOTE}</span>}
       </fieldset>
 
       {focus.mode !== 'everything' && (
@@ -196,29 +201,34 @@ function FocusBody({ userId, focus, onChange, alwaysSkip, maxContentChecks, entr
             <label className="formLabel" htmlFor={`${id}-keep`}>Keep</label>
             <textarea id={`${id}-keep`} className="textarea" rows={2} value={focus.keep}
               onChange={e => change({ ...focus, keep: clampFocusText(e.target.value) })} placeholder="written by the chips; edit it freely" />
-            <span className={css.hint}>{`${focus.keep.length} / ${FOCUS_TEXT_MAX}`}</span>
+            <span className="formHint">{`${focus.keep.length} / ${FOCUS_TEXT_MAX}`}</span>
           </div>
           <div className="formGroup">
             <label className="formLabel" htmlFor={`${id}-skip`}>Skip</label>
             <textarea id={`${id}-skip`} className="textarea" rows={2} value={focus.skip}
               onChange={e => change({ ...focus, skip: clampFocusText(e.target.value) })} placeholder="for example: theory without payloads, news" />
-            <span className={css.hint}>{`${focus.skip.length} / ${FOCUS_TEXT_MAX}`}</span>
+            <span className="formHint">{`${focus.skip.length} / ${FOCUS_TEXT_MAX}`}</span>
             <select aria-label="Skip mode" className="select" value={focus.skipMode}
               onChange={e => change({ ...focus, skipMode: e.target.value === 'replace' ? 'replace' : 'add' })}>
               <option value="add">Add to my Always skip</option>
               <option value="replace">Replace my Always skip</option>
             </select>
-            {alwaysSkip && <span className={css.hint}>{`Your Always skip: ${alwaysSkip}`}</span>}
+            {alwaysSkip && <span className="formHint">{`Your Always skip: ${alwaysSkip}`}</span>}
           </div>
-          <fieldset className={css.storageChoice} aria-label="Strictness">
+          <fieldset className={fcss.choiceGroup} aria-label="Strictness">
             <legend className="formLabel">Strictness</legend>
-            {STRICTNESS.map(([value, label, hint]) => (
-              <label key={value} className={css.storageOption}>
-                <input type="radio" name={`${id}-strictness`} value={value} checked={focus.strictness === value} aria-label={label}
-                  onChange={() => change({ ...focus, strictness: value })} />
-                <span><strong>{label}</strong>: <span className={css.hint}>{hint}</span></span>
-              </label>
-            ))}
+            <div className={fcss.choices}>
+              {STRICTNESS.map(([value, label, hint]) => (
+                <label key={value} className={fcss.choice}>
+                  <input type="radio" className="radio" name={`${id}-strictness`} value={value} checked={focus.strictness === value} aria-label={label}
+                    onChange={() => change({ ...focus, strictness: value })} />
+                  <span className={fcss.choiceBody}>
+                    <span className={fcss.choiceTitle}>{label}</span>
+                    <span className={fcss.choiceDesc}>{hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
           </fieldset>
 
           <div className="formGroup">
@@ -226,11 +236,11 @@ function FocusBody({ userId, focus, onChange, alwaysSkip, maxContentChecks, entr
               <button type="button" className="secondaryButton" onClick={runPreview} disabled={!preview || previewing}>
                 {previewing && <Loader2 size={14} className={css.spin} />} Preview on 100 pages
               </button>
-              <span className={css.hint}>{focusCostText(focusCost({ mode: focus.mode, entries: entryCount, maxContentChecks }))}</span>
+              <span className="formHint">{focusCostText(focusCost({ mode: focus.mode, entries: entryCount, maxContentChecks }))}</span>
             </div>
-            {!preview && <span className={css.hint}>Run Check URL first: the preview samples the page list it finds.</span>}
+            {!preview && <span className="formHint">Run Check URL first: the preview samples the page list it finds.</span>}
             {result && (
-              <div role="status">
+              <div role="status" className={fcss.previewBox}>
                 <span>{previewSummary(result)}</span>
                 <ul className={fcss.previewList} aria-label="Preview examples">
                   {result.examples.map(x => (
@@ -241,13 +251,13 @@ function FocusBody({ userId, focus, onChange, alwaysSkip, maxContentChecks, entr
             )}
           </div>
 
-          <div className={fcss.row}>
-            <input aria-label="Recipe name" className={`textInput ${fcss.grow}`} maxLength={RECIPE_NAME_MAX} value={recipeName}
+          <div className={fcss.inputRow}>
+            <input aria-label="Recipe name" className="textInput" maxLength={RECIPE_NAME_MAX} value={recipeName}
               onChange={e => setRecipeName(e.target.value)} placeholder="name these chips to reuse them" />
             <button type="button" className="secondaryButton" onClick={saveRecipe}
               disabled={savingRecipe || !recipeName.trim() || (focus.topics.length === 0 && focus.kinds.length === 0)}>Save as recipe</button>
           </div>
-          {error && <div className={css.failure} role="alert">{error}</div>}
+          {error && <div className={fcss.checkFailed} role="alert">{error}</div>}
         </>
       )}
     </>

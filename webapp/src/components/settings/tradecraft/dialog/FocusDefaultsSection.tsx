@@ -51,10 +51,10 @@ function DefaultModeField({ def, value, error, onChange }: { def: SettingDef; va
         <span id={id}>{def.label}</span>
         {changed && <span className={css.changed} title="Changed from the default">● changed</span>}
       </div>
-      <div className={css.inline} role="radiogroup" aria-labelledby={id}>
+      <div className={css.choiceRow} role="radiogroup" aria-labelledby={id}>
         {def.values!.map(v => (
-          <label key={v} className={css.inline}>
-            <input type="radio" name={id} value={v} checked={value === v} aria-label={labels[v]} onChange={() => onChange(v)} />
+          <label key={v} className={css.check}>
+            <input type="radio" className="radio" name={id} value={v} checked={value === v} aria-label={labels[v]} onChange={() => onChange(v)} />
             <span>{labels[v]}</span>
           </label>
         ))}
@@ -90,23 +90,22 @@ function MyRecipes({ userId, recipes, onRecipes }: { userId: string; recipes: Us
       {recipes.length === 0 ? (
         <div className={css.fieldMeta}>No recipe yet. Save one from a resource&apos;s Focus section (Save as recipe); at most 50.</div>
       ) : (
-        <ul aria-label="My recipes" className={css.fieldMeta}>
+        <ul aria-label="My recipes" className={css.list}>
           {recipes.map(r => (
-            <li key={r.id}>
+            <li key={r.id} className={css.listRow}>
               {renaming === r.id ? (
-                <span className={css.inline}>
-                  <input aria-label={`New name of ${r.name}`} className="textInput" maxLength={RECIPE_NAME_MAX} value={name} onChange={e => setName(e.target.value)} />
+                <>
+                  <input aria-label={`New name of ${r.name}`} className={`textInput ${css.listGrow}`} maxLength={RECIPE_NAME_MAX} value={name} onChange={e => setName(e.target.value)} />
                   <button type="button" className="secondaryButton" disabled={busy || !name.trim()}
                     onClick={() => edit({ rename: { id: r.id, name: name.trim() } }, "Couldn't rename the recipe")}>Save name</button>
                   <button type="button" className="textButton" onClick={() => setRenaming(null)}>Cancel</button>
-                </span>
+                </>
               ) : (
-                <span className={css.inline}>
-                  <strong>{r.name}</strong>
-                  <span>{recipeChips(r)}</span>
+                <>
+                  <span className={css.listGrow}><strong>{r.name}</strong> <span className={css.fieldMeta}>{recipeChips(r)}</span></span>
                   <button type="button" className="textButton" disabled={busy} onClick={() => { setRenaming(r.id); setName(r.name) }}>Rename</button>
                   <button type="button" className="textButton" disabled={busy} onClick={() => edit({ delete: r.id }, "Couldn't delete the recipe")}>Delete</button>
-                </span>
+                </>
               )}
             </li>
           ))}

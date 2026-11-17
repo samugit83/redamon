@@ -26,13 +26,13 @@ export function SiteTypeSection({ ctx, forcedType, detectedType, onForcedType }:
   const detection = overrideStatus(SECTION_KEYS.detection, ctx.overrides)
   return (
     <FormSection title="Site type" status={detection === 'Inherit' ? status : `${status} · ${detection}`}>
-      <div className={css.override}>
-        <label className="formLabel" htmlFor="tc-site-type">Type</label>
+      <div className={css.field}>
+        <label className={css.fieldLabel} htmlFor="tc-site-type">Type</label>
         <select id="tc-site-type" className="select" value={forcedType} onChange={e => onForcedType(e.target.value)}>
           <option value="">{detectedType ? `Auto (detected: ${TYPE_LABELS[detectedType] ?? detectedType})` : 'Auto (detect it)'}</option>
           {SITE_TYPES.map(t => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
         </select>
-        <span className={css.inherited}>A forced type skips detection. The section of the type shows its own options.</span>
+        <span className="formHint">A forced type skips detection. The section of the type shows its own options.</span>
       </div>
       {!forcedType && <OverrideList ctx={ctx} defs={defsOf('detection')} />}
     </FormSection>

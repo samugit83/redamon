@@ -326,14 +326,14 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
         </>
       }
     >
-      <form id={formId} onSubmit={e => { e.preventDefault(); submit(false) }} autoComplete="off" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      <form id={formId} className={fcss.form} onSubmit={e => { e.preventDefault(); submit(false) }} autoComplete="off">
         {!isEdit && <PresetPicker onPick={onPreset} />}
-        <div className={fcss.row}>
-          <div className={`formGroup ${fcss.grow}`}>
+        <div className={fcss.twoCol}>
+          <div className="formGroup">
             <label className="formLabel formLabelRequired" htmlFor={`${formId}-name`}>Name</label>
             <input id={`${formId}-name`} className="textInput" value={f.name} onChange={e => onName(e.target.value)} placeholder="HackTricks" />
           </div>
-          <div className={`formGroup ${fcss.grow}`}>
+          <div className="formGroup">
             <label className="formLabel" htmlFor={`${formId}-slug`}>Resource ID</label>
             {isEdit ? (
               <input id={`${formId}-slug`} className="textInput" value={f.slug} readOnly aria-readonly="true" />
@@ -343,16 +343,18 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
                 onChange={e => { setSlugEdited(true); set('slug', e.target.value.toLowerCase()) }}
               />
             )}
-            <span className={css.hint}>
+            <span className="formHint">
               {isEdit ? 'The agent names the resource and its pages with it: it cannot change.' : 'Lowercase letters, digits and dashes; it cannot change once added.'}
             </span>
           </div>
         </div>
         <div className="formGroup">
           <label className="formLabel formLabelRequired" htmlFor={`${formId}-url`}>URL</label>
-          <input id={`${formId}-url`} className="textInput" value={f.url} onChange={e => onUrl(e.target.value)} placeholder="https://book.hacktricks.wiki" />
-          {urlChanged && <span className={css.hint}>Saving a new URL ingests the resource again.</span>}
-          <CheckUrlButton userId={userId} input={checkInput} disabled={!f.url.trim()} runToken={checkRun} onResult={onCheck} />
+          <CheckUrlButton
+            userId={userId} input={checkInput} disabled={!f.url.trim()} runToken={checkRun} onResult={onCheck}
+            field={<input id={`${formId}-url`} className="textInput" value={f.url} onChange={e => onUrl(e.target.value)} placeholder="https://book.hacktricks.wiki" />}
+          />
+          {urlChanged && <span className="formHint">Saving a new URL ingests the resource again.</span>}
           {/* §6.10: the Map view opens from the card or from this form, on the saved map. */}
           {isEdit && (
             <div>
@@ -363,59 +365,69 @@ export function ResourceFormV2({ userId, resource, settings = null, onSaved, onC
         <div className="formGroup">
           <label className="formLabel formLabelRequired">LLM model</label>
           <ModelPicker userId={userId} value={f.llmModel} onChange={v => set('llmModel', v)} placeholder="pick the model that ingests this resource" filter={excludeLoop} />
-          <span className={css.hint}>{MODEL_HELP}</span>
+          <span className="formHint">{MODEL_HELP}</span>
         </div>
-        <fieldset className={css.storageChoice} aria-label="Content storage">
+        <fieldset className={fcss.choiceGroup} aria-label="Content storage">
           <legend className="formLabel">Content storage</legend>
-          <label className={css.storageOption}>
-            <input
-              type="radio" name={`${formId}-storage`} value="live" checked={storageMode === 'live'} disabled={!!forcedMode}
-              onChange={() => { setStorageTouched(true); set('storageMode', 'live') }}
-            />
-            <span><strong>Live</strong>. <span className={css.hint}>{LIVE_NOTE}</span></span>
-          </label>
-          <label className={css.storageOption}>
-            <input
-              type="radio" name={`${formId}-storage`} value="stored" checked={storageMode === 'stored'} disabled={!!forcedMode}
-              onChange={() => { setStorageTouched(true); set('storageMode', 'stored') }}
-            />
-            <span><strong>Stored</strong>. <span className={css.hint}>{STORED_WHY} {STORED_NOTE}</span></span>
-          </label>
-          {forcedMode && <span className={css.hint}>{forcedMode === 'stored' ? 'A PDF is always Stored.' : 'A CVE archive is always Live.'}</span>}
+          <div className={fcss.choices}>
+            <label className={fcss.choice}>
+              <input
+                type="radio" className="radio" name={`${formId}-storage`} value="live" checked={storageMode === 'live'} disabled={!!forcedMode}
+                onChange={() => { setStorageTouched(true); set('storageMode', 'live') }}
+              />
+              <span className={fcss.choiceBody}>
+                <span className={fcss.choiceTitle}>Live</span>
+                <span className={fcss.choiceDesc}>{LIVE_NOTE}</span>
+              </span>
+            </label>
+            <label className={fcss.choice}>
+              <input
+                type="radio" className="radio" name={`${formId}-storage`} value="stored" checked={storageMode === 'stored'} disabled={!!forcedMode}
+                onChange={() => { setStorageTouched(true); set('storageMode', 'stored') }}
+              />
+              <span className={fcss.choiceBody}>
+                <span className={fcss.choiceTitle}>Stored</span>
+                <span className={fcss.choiceDesc}>{STORED_WHY} {STORED_NOTE}</span>
+              </span>
+            </label>
+          </div>
+          {forcedMode && <span className={`formHint ${fcss.groupNote}`}>{forcedMode === 'stored' ? 'A PDF is always Stored.' : 'A CVE archive is always Live.'}</span>}
           {!forcedMode && check?.ok && (
-            <span className={css.hint}>{check.recommended_storage === 'stored' ? 'Stored' : 'Live'} recommended for this site.</span>
+            <span className={`formHint ${fcss.groupNote}`}>{check.recommended_storage === 'stored' ? 'Stored' : 'Live'} recommended for this site.</span>
           )}
           {isEdit && resource!.storageMode === 'stored' && storageMode === 'live' && (
-            <span className={css.hint} role="note">Saving deletes the stored pages now.</span>
+            <span className={`formHint ${fcss.groupNote}`} role="note">Saving deletes the stored pages now.</span>
           )}
         </fieldset>
-        <label className={css.storageOption}>
-          <input type="checkbox" checked={f.enabled} onChange={e => set('enabled', e.target.checked)} />
-          <span>Enabled (the agent sees enabled resources only)</span>
+        <label className={fcss.checkLine}>
+          <input type="checkbox" className="checkbox" checked={f.enabled} onChange={e => set('enabled', e.target.checked)} />
+          <span>Enabled <span className={fcss.muted}>(the agent sees enabled resources only)</span></span>
         </label>
 
-        <SiteTypeSection ctx={ctx} forcedType={f.forcedType} detectedType={detectedType} onForcedType={t => set('forcedType', t)} />
-        <FocusSection
-          userId={userId} focus={draft.focus} onChange={focus => setDraft(prev => ({ ...prev, focus }))} siteType={effectiveType}
-          alwaysSkip={typeof accountValues['focus.alwaysSkip'] === 'string' ? accountValues['focus.alwaysSkip'] as string : ''}
-          maxContentChecks={maxContentChecks} entryCount={entryCount} preview={focusPreview}
-        />
-        {typeSection === 'github' && <GithubSection ctx={ctx} github={check?.ok ? check.github : null} />}
-        {typeSection === 'cve' && <CveSection ctx={ctx} foundPattern={check?.ok ? check.cve_pattern : null} />}
-        {(typeSection === 'wiki' || typeSection === 'gitbook') && <WikiSection ctx={ctx} variant={typeSection} sitemapFound={sitemapFound} />}
-        {typeSection === 'docs' && <DocsSection ctx={ctx} indexFound={docsIndexFound} />}
-        {typeSection === 'pdf' && <PdfSection ctx={ctx} pages={check?.ok ? check.pdf_pages : null} />}
-        {typeSection === 'website' && <WebsiteSection ctx={ctx} sitemapFound={sitemapFound} />}
-        {!typeSection && <span className={css.hint}>Pick a type, or run Check URL, to see the options of the site&apos;s type.</span>}
-        <AccessSection
-          draft={draft.access} onChange={access => setDraft(prev => ({ ...prev, access }))}
-          tokenSet={resource?.githubTokenOverride === 'set'}
-        />
-        <FetchingSection ctx={ctx} hasLogin={credentials === undefined ? (resource?.hasLogin ?? false) : credentials !== null} />
-        <ContentSection ctx={ctx} />
-        <SummarySection ctx={ctx} resource={current} onResource={setCurrent} onJob={() => undefined} />
-        <RefreshingSection ctx={ctx} />
-        {error && <div className={css.failure} role="alert">{error}</div>}
+        <div className={fcss.sections}>
+          <SiteTypeSection ctx={ctx} forcedType={f.forcedType} detectedType={detectedType} onForcedType={t => set('forcedType', t)} />
+          <FocusSection
+            userId={userId} focus={draft.focus} onChange={focus => setDraft(prev => ({ ...prev, focus }))} siteType={effectiveType}
+            alwaysSkip={typeof accountValues['focus.alwaysSkip'] === 'string' ? accountValues['focus.alwaysSkip'] as string : ''}
+            maxContentChecks={maxContentChecks} entryCount={entryCount} preview={focusPreview}
+          />
+          {typeSection === 'github' && <GithubSection ctx={ctx} github={check?.ok ? check.github : null} />}
+          {typeSection === 'cve' && <CveSection ctx={ctx} foundPattern={check?.ok ? check.cve_pattern : null} />}
+          {(typeSection === 'wiki' || typeSection === 'gitbook') && <WikiSection ctx={ctx} variant={typeSection} sitemapFound={sitemapFound} />}
+          {typeSection === 'docs' && <DocsSection ctx={ctx} indexFound={docsIndexFound} />}
+          {typeSection === 'pdf' && <PdfSection ctx={ctx} pages={check?.ok ? check.pdf_pages : null} />}
+          {typeSection === 'website' && <WebsiteSection ctx={ctx} sitemapFound={sitemapFound} />}
+          {!typeSection && <span className="formHint">Pick a type, or run Check URL, to see the options of the site&apos;s type.</span>}
+          <AccessSection
+            draft={draft.access} onChange={access => setDraft(prev => ({ ...prev, access }))}
+            tokenSet={resource?.githubTokenOverride === 'set'}
+          />
+          <FetchingSection ctx={ctx} hasLogin={credentials === undefined ? (resource?.hasLogin ?? false) : credentials !== null} />
+          <ContentSection ctx={ctx} />
+          <SummarySection ctx={ctx} resource={current} onResource={setCurrent} onJob={() => undefined} />
+          <RefreshingSection ctx={ctx} />
+        </div>
+        {error && <div className={fcss.checkFailed} role="alert">{error}</div>}
       </form>
       {mapOpen && resource && <MapView userId={userId} resource={resource} onClose={() => setMapOpen(false)} />}
     </Modal>

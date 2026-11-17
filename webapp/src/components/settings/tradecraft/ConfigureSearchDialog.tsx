@@ -265,7 +265,7 @@ export function ConfigureSearchDialog({ userId, onClose, onSaved, onDirtyChange 
                     {resources.map(r => (
                       <label key={r.id} className={css.inline}>
                         <select
-                          aria-label={`Priority of ${r.name}`} value={draft.priorities[r.id] ?? 'normal'}
+                          className="select" aria-label={`Priority of ${r.name}`} value={draft.priorities[r.id] ?? 'normal'}
                           onChange={e => {
                             const p = e.target.value as Priority
                             setDraft(prev => ({ ...prev, priorities: { ...prev.priorities, [r.id]: p } }))

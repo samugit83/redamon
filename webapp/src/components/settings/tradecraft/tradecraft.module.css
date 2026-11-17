@@ -1,49 +1,93 @@
-.switchBar {
+/* The Tradecraft tab sits inside a Settings .section card, like the API Keys
+   tab: its notices, toolbar and resource cards follow that page's look
+   (Settings.module.css, CredentialDrawer.module.css), and every colour comes
+   from a theme token so the light theme follows. */
+
+.banner {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  margin-bottom: var(--space-4);
-  border: 1px solid var(--border-default);
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+  border: 1px solid;
   border-radius: var(--radius-md);
-  background: var(--bg-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.5;
 }
 
-.switchText {
+.bannerText {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.bannerInfo {
+  color: var(--status-info-text);
+  background: color-mix(in srgb, var(--status-info) 10%, transparent);
+  border-color: color-mix(in srgb, var(--status-info) 35%, transparent);
+}
+
+.bannerWarn {
+  color: var(--status-warning-text);
+  background: color-mix(in srgb, var(--status-warning) 10%, transparent);
+  border-color: color-mix(in srgb, var(--status-warning) 35%, transparent);
+}
+
+.modelLine {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
 }
 
-.switchTitle {
-  font-size: var(--text-sm);
-  font-weight: 600;
+.modelLine strong {
+  font-family: var(--font-mono);
+  font-weight: var(--font-medium);
   color: var(--text-primary);
 }
 
-.hint {
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
 .list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   background: var(--bg-primary);
+  transition: border-color 0.15s ease;
+}
+
+.card:hover {
+  border-color: var(--border-strong);
 }
 
 .cardDisabled {
-  opacity: 0.65;
+  opacity: 0.6;
 }
 
 .cardHead {
@@ -55,12 +99,13 @@
 
 .cardName {
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: var(--font-semibold);
   color: var(--text-primary);
 }
 
 .cardUrl {
-  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: var(--text-secondary);
   word-break: break-all;
 }
@@ -69,59 +114,73 @@
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
 }
 
 .meta {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
+  gap: var(--space-1) var(--space-3);
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
+/* The chips of the API Keys drawers: small, tinted, no outline. */
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: var(--text-xs);
-  border: 1px solid var(--border-default);
+  gap: var(--space-1);
+  padding: 1px 7px;
+  border-radius: var(--radius-default);
+  background: var(--bg-hover);
   color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.02em;
+  line-height: 1.6;
 }
 
 .badgeWarn {
-  border-color: var(--warning, #b7791f);
-  color: var(--warning, #b7791f);
+  background: color-mix(in srgb, var(--status-warning) 14%, transparent);
+  color: var(--status-warning-text);
 }
 
 .badgeInfo {
-  border-color: var(--accent-primary, #3b82f6);
-  color: var(--accent-primary, #3b82f6);
+  background: color-mix(in srgb, var(--status-info) 14%, transparent);
+  color: var(--status-info-text);
 }
 
 .stage {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--text-primary);
+  gap: var(--space-1-5);
+  font-size: 11px;
+  color: var(--status-info-text);
 }
 
 .failure {
-  font-size: var(--text-xs);
-  color: var(--error, #c53030);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--status-error);
 }
 
 .linkButton {
   background: none;
   border: none;
   padding: 0;
-  color: var(--accent-primary, #3b82f6);
+  color: var(--accent-primary);
   cursor: pointer;
-  font-size: inherit;
+  font: inherit;
+  font-weight: var(--font-medium);
+}
+
+.linkButton:hover:not(:disabled) {
   text-decoration: underline;
+}
+
+.linkButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .state {
@@ -134,19 +193,6 @@
 .goes {
   margin: var(--space-2) 0 0;
   padding-left: var(--space-5);
-  font-size: var(--text-sm);
-}
-
-.storageChoice {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.storageOption {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
   font-size: var(--text-sm);
 }
 
