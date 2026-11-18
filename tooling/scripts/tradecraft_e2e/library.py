@@ -61,6 +61,7 @@ HERE = Path(__file__).resolve().parent
 LIBRARY_YAML = HERE / "library.yaml"
 SNAPSHOT_DIR = runner.SNAPSHOT_DIR
 BUILD_RECORD = SNAPSHOT_DIR.parent / "library-build.json"
+REFRESH_RECORD = SNAPSHOT_DIR.parent / "library-refresh.json"
 INGEST_DIR = REPO / "agentic" / "tradecraft" / "ingest"
 SCHEMA = REPO / "webapp" / "prisma" / "schema.prisma"
 PLAN_BRANCH = "refs/heads/feature/tradecraft-2.0"
@@ -820,14 +821,15 @@ def focus_mode(raw: Any) -> str:
 
 
 def kept_names_check(groups: Sequence[Sequence[str]], kept: Sequence[Mapping]) -> "report.CheckResult":
-    """Each group of words in the path or title of at least one kept entry (counts and words only)."""
+    """Each group of words in the title of at least one kept entry (a repository's titles hold its
+    path); the detail names the entries found by page ID only, never a title or a URL."""
     found, missing = [], []
     for group in groups:
         words = [str(w).lower() for w in group]
-        n = sum(1 for e in kept if any(w in f"{e.get('url', '')} {e.get('title', '')}".lower() for w in words))
-        (found if n else missing).append(f"{words[0]}: {n}")
+        ids = [str(e.get("pageId") or "?") for e in kept if any(w in str(e.get("title", "")).lower() for w in words)]
+        (found.append(f"{words[0]}: {', '.join(ids)}") if ids else missing.append(words[0]))
     return report.CheckResult("kept_names", not missing,
-                              "; ".join(found) + (f"; none kept for {', '.join(missing)}" if missing else ""))
+                              "; ".join(found + ([f"none kept for {', '.join(missing)}"] if missing else [])))
 
 
 def judge(spec: Mapping, view: Mapping, job: Optional[Mapping], kept: Optional[Sequence[Mapping]] = None) -> list:
@@ -863,6 +865,32 @@ def judge(spec: Mapping, view: Mapping, job: Optional[Mapping], kept: Optional[S
                                       f"{dropped} entries dropped by the focus (at least {exp['min_dropped']})"))
     if exp.get("kept_names"):
         out.append(kept_names_check(exp["kept_names"], kept or []))
+    return out
+
+
+_INDEX_STOP = re.compile(r"^cve index: (?:largest )?(?P<kept>\d+) of (?P<total>\d+) files")
+
+
+def refresh_checks(spec: Mapping, view: Mapping, job: Optional[Mapping], found: Mapping[str, Sequence[str]]) -> list:
+    """A refresh that must index the resource (``refresh_expect``): its job, the index's size, each
+    expected CVE among its entries, and the stop reason of a capped index with no "needs a token".
+    Counts and page IDs only. ``found``: each expected CVE id's page IDs in the map."""
+    exp = spec.get("refresh_expect") or {}
+    rep = view.get("report") or {}
+    status = (job or {}).get("status", "none")
+    entries = int(view.get("entryCount") or 0)
+    out = [report.CheckResult("refresh_succeeded", status == "succeeded", f"{status} {(job or {}).get('errorCode', '')}".strip()),
+           report.CheckResult("index_entries", entries >= int(exp.get("min_entries", 1)),
+                              f"{entries} entries (at least {exp.get('min_entries', 1)})")]
+    for cve in exp.get("cves") or []:
+        ids = list(found.get(cve) or [])
+        out.append(report.CheckResult(f"index_has_{cve}", bool(ids), ", ".join(ids) or "not in the map"))
+    stop = str(rep.get("stopReason") or "")
+    m = _INDEX_STOP.match(stop)
+    flagged = [w for w in exp.get("not_in_report") or [] if w in json.dumps(rep)]
+    ok = stop.startswith(str(exp.get("stop_reason", ""))) and m is not None and not flagged
+    detail = (f"{'largest ' if 'largest' in stop else ''}{m['kept']} of {m['total']} files" if m else "no index stop reason")
+    out.append(report.CheckResult("index_stop_reason", ok, detail + (f"; {', '.join(flagged)}" if flagged else "")))
     return out
 
 
@@ -966,12 +994,58 @@ class Builder:
             res = self.http.call("GET", f"{self.base}/{rid}/map?status=kept" + (f"&cursor={urllib.parse.quote(cursor)}"
                                                                                if cursor else ""))
             data = res.data if res.ok and isinstance(res.data, dict) else {}
-            out += [{"url": e.get("url", ""), "title": e.get("title", "")} for e in data.get("entries") or []
-                    if isinstance(e, dict)]
+            out += [{"url": e.get("url", ""), "title": e.get("title", ""), "pageId": e.get("pageId", "")}
+                    for e in data.get("entries") or [] if isinstance(e, dict)]
             cursor = str(data.get("nextCursor") or "")
             if not cursor:
                 break
         return out
+
+    def cve_pages(self, rid: str, cve_id: str) -> list:
+        """The page IDs of the kept entries the map names by ``cve_id`` (an index entry's title)."""
+        res = self.http.call("GET", f"{self.base}/{rid}/map?status=kept&query={urllib.parse.quote(cve_id)}")
+        data = res.data if res.ok and isinstance(res.data, dict) else {}
+        return [str(e.get("pageId")) for e in data.get("entries") or []
+                if isinstance(e, dict) and str(e.get("title", "")).upper() == cve_id.upper() and e.get("pageId")]
+
+    def refresh(self, spec: Mapping, *, record: Path = REFRESH_RECORD) -> list:
+        """Refresh one resource, wait for that job (not the one before it), and judge it with its
+        ``refresh_expect``; the checks go to ``record`` (counts and page IDs only)."""
+        slug = spec["slug"]
+        started = now_iso()
+        view = self.listing().get(slug)
+        if view is None:
+            checks = [report.CheckResult("refresh_started", False, "not in the library")]
+        else:
+            rid = str(view["id"])
+            res = self.http.call("POST", f"{self.base}/{rid}/refresh", {})
+            job_id = ((res.data or {}).get("job") or {}).get("id") if isinstance(res.data, dict) else None
+            if not res.ok or not job_id:
+                checks = [report.CheckResult("refresh_started", False, f"{res.status} {res.code}".strip())]
+            else:
+                self.log(f"{slug}: refreshing (job {job_id})")
+                checks = self._refreshed(spec, rid, str(job_id))
+        for c in checks:
+            self.log(f"{slug}: {c.name} {'ok' if c.ok else 'FAILED'} ({c.detail})")
+        _write_private(record, {"slug": slug, "started": started, "finished": now_iso(),
+                                "checks": [c.__dict__ for c in checks]})
+        return checks
+
+    def _refreshed(self, spec: Mapping, rid: str, job_id: str) -> list:
+        start = self.clock()
+        per = float(self.lib.get("resource_timeout_min", 120)) * 60
+        poll = float(self.lib.get("poll_sec", 20))
+        while True:
+            self.sleep(poll)
+            view = self.listing().get(spec["slug"]) or {}
+            job = view.get("job") or {}
+            if str(job.get("id")) == job_id and job.get("status") in JOB_ENDED:
+                break
+            if self.clock() - start > per:
+                self.http.call("DELETE", f"{self.base}/{rid}/jobs")
+                return [report.CheckResult("refresh_succeeded", False, f"cancelled after {per / 60:.0f} min")]
+        found = {cve: self.cve_pages(rid, cve) for cve in (spec.get("refresh_expect") or {}).get("cves") or []}
+        return refresh_checks(spec, view, job, found)
 
     def delete(self, view: Mapping, why: str) -> None:
         res = self.http.call("DELETE", f"{self.base}/{view.get('id')}")
@@ -1215,7 +1289,8 @@ def cmd_status(out: Callable[[str], None] = print, folder: Path = SNAPSHOT_DIR) 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=("plan", "models", "build", "snapshot", "restore", "status"))
+    ap.add_argument("command", choices=("plan", "models", "build", "refresh", "snapshot", "restore", "status"))
+    ap.add_argument("--slug", default="", help="refresh: the resource to refresh and judge with its refresh_expect")
     ap.add_argument("--model", default="", help="build: the model of every resource and the librarian, one the "
                     "e2e owner's provider serves")
     ap.add_argument("--dir", default=str(SNAPSHOT_DIR), help="snapshot/restore/status: the snapshot folder")
@@ -1244,6 +1319,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except (RuntimeError, OSError) as exc:
             log(f"{args.command}: {type(exc).__name__}: {exc}")
             return EXIT_FAILED
+    if args.command == "refresh":
+        spec = next((s for s in lib["resources"] if s["slug"] == args.slug and s.get("refresh_expect")), None)
+        if spec is None:
+            log(f"refresh: --slug names no resource with a refresh_expect in library.yaml ({args.slug or 'none'})")
+            return EXIT_USAGE
+        try:
+            http, uid = _owner_session(scn, redact, log)
+        except ValueError as exc:
+            log(f"refresh: refused: {exc}")
+            return EXIT_USAGE
+        except (ConnectionError, RuntimeError) as exc:
+            log(f"refresh: {exc}")
+            return EXIT_STACK
+        checks = Builder(lib, scn, http, uid, "", log).refresh(spec)
+        return EXIT_OK if all(c.ok for c in checks) else EXIT_FAILED
     if args.command == "models":
         try:
             http, uid = _owner_session(scn, redact, log)

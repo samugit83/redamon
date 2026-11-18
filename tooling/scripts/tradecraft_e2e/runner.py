@@ -1409,6 +1409,8 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
         result.iterations, result.tokens_in, result.tokens_out = ev.get("iterations"), ev.get("tokens_in"), ev.get("tokens_out")
         result.library = checks.library_now_summary(trace, inst.spec.expected_pages if inst else [])
         if inst:
+            result.skill = checks.skill_summary(trace, inst.spec.skills, inst.spec.class_terms)
+        if inst:
             o = oracles.judge(inst.spec, inst, answers=trace["answers"],
                               tool_outputs=[c.get("output", "") for c in trace["tool_calls"]], docker=ctx.docker)
             result.oracle, result.oracle_detail = o.ok, o.detail + (" (seen in a tool output)" if o.seen_in_tool_output else "")
@@ -1474,9 +1476,12 @@ def run_acting(ctx: Context, run: lanes.Run, deadline: float) -> report.RunResul
             ("refresh_login_resource", "POST", f"{base}/{rid}/refresh", {}),
             ("check_url_login_resource", "POST", f"{base}/check-url", {"resourceId": rid}),
             ("read_now_login_resource", "POST", f"{base}/{rid}/pages/{urllib.parse.quote(page)}", None),
+            ("view_login_resource", "GET", f"{base}/{rid}/pages/{urllib.parse.quote(page)}", None),
         ]:
             res = admin.call(method, path, body)
-            trace["api"].append({"name": name, "status": res.status, "code": res.code})
+            action = res.data.get("action") if isinstance(res.data, dict) else None
+            trace["api"].append({"name": name, "status": res.status, "code": res.code,
+                                 **({"action": str(action)} if action else {})})
         rows = ctx.db.json("SELECT count(*) AS n FROM audit_log WHERE action = 'act_as.refused' "
                            f"AND on_behalf_of_user_id = {lit(owner_id)} AND created_at >= {lit(since)}::timestamptz")
         trace["audit"] = {"act_as_refused": int(rows[0]["n"]) if rows else 0}

@@ -53,14 +53,13 @@ resources:
     # The focus preview on Check URL's entries, as the form runs it before saving.
     preview: true
     # The bundle covers 24 vulnerability classes: the focus keeps its few SQL injection and SSRF
-    # pages (5 of 188 on 2026-11-17: hunt-sqli and hunt-ssrf, each a skill and a disclosed report,
-    # and security-arsenal) and drops the rest, which is what this resource proves. kept_names:
-    # each group's words must be in some kept entry's path or title, so neither half of the focus
-    # can vanish under the counts.
+    # pages and drops the rest, which is what this resource proves. It kept 5 of 188 on 2026-11-17
+    # and the two hunt skills only on 2026-11-18 (twice), so the floor is two (Q-D, the owner):
+    # kept_names asks one kept entry's title for each half, so neither half can vanish under it.
     expect:
       type: github-repo
-      min_entries: 3
-      min_stored_pages: 3
+      min_entries: 2
+      min_stored_pages: 2
       min_dropped: 50
       kept_names: [[sqli, sql injection], [ssrf, server side request forgery]]
   - slug: web-hacking-techniques-index
@@ -97,7 +96,15 @@ resources:
     forcedType: cve-poc-db
     storage: live
     # No path pattern here: Check URL's cve_pattern fills it, as the form does (prefillFromCheck).
+    # The build runs without a GitHub token, so the archive has no index (FIX-CVEIDX builds it only
+    # with one): the build checks the type, and `library.py refresh --slug trickest-cve`, run with
+    # the owner's token, checks the index separately (library.refresh_checks).
     expect: {type: cve-poc-db, min_entries: 0}
+    refresh_expect:
+      min_entries: 10000
+      cves: [CVE-2021-41773, CVE-2021-42013]
+      stop_reason: 'cve index: largest 20000 of '
+      not_in_report: [cve_index_needs_token]
   # The Sphinx preset (the card's "chosen by T10.2"): a Sphinx site whose search index lists its
   # pages. Mitmproxy docs, the first choice, is a Hugo site whose searchindex.js is elasticlunr,
   # not Sphinx's index (its 1-entry map was routed as a product finding on 2026-11-17).
