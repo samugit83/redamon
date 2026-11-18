@@ -3,7 +3,7 @@ import { mintToken, signIn } from './auth'
 
 /**
  * AI Navigator in a real browser against the running stack (plan §12): the launcher after sign-in,
- * dragging it and keeping its place across a reload, the panel's Intro and History, Escape, the
+ * dragging it and keeping its place across a reload, resizing the panel by its free edges, the panel's Intro and History, Escape, the
  * model gate on a first send with no model saved, and "Open the AI Agent" opening the AI Agent
  * drawer with nothing of the Navigator over it. None of it needs a model provider.
  *
@@ -113,5 +113,56 @@ test.describe('AI Navigator', () => {
     const l = (await launcher(page).boundingBox())!
     const overlap = l.x < d.x + d.width && l.x + l.width > d.x && l.y < d.y + d.height && l.y + l.height > d.y
     expect(overlap).toBe(false)
+  })
+})
+
+// No project and no settings change: the panel's size lives in the browser only.
+test.describe('AI Navigator panel size', () => {
+  // The sizes below are worked out for this window; Desktop Chrome's own is 1280 x 720.
+  test.use({ viewport: { width: 1600, height: 1000 } })
+
+  async function dragBy(page: Page, testId: string, dx: number, dy: number) {
+    const h = (await page.getByTestId(testId).boundingBox())!
+    await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(h.x + h.width / 2 + dx, h.y + h.height / 2 + dy, { steps: 10 })
+    await page.mouse.up()
+  }
+
+  test('the free edges resize it, the size survives a reload, it stops at the window, and resets', async ({ page, baseURL }) => {
+    await open(page, baseURL!, '/projects')
+    await launcher(page).click()
+    const start = (await panel(page).boundingBox())!
+    expect(Math.round(start.width)).toBe(380)
+    expect(Math.round(start.height)).toBe(560)
+    // The launcher sits bottom right, so the panel's left and top edges are the free ones.
+    await expect(page.getByTestId('navigator-resize-nw')).toBeAttached()
+    await expect(page.getByTestId('navigator-resize-e')).toHaveCount(0)
+
+    await dragBy(page, 'navigator-resize-w', -200, 0)
+    await dragBy(page, 'navigator-resize-n', 0, -150)
+    const grown = (await panel(page).boundingBox())!
+    expect(Math.round(grown.width)).toBe(580)
+    expect(Math.round(grown.height)).toBe(710)
+    expect(Math.round(grown.x + grown.width)).toBe(Math.round(start.x + start.width))
+    expect(Math.round(grown.y + grown.height)).toBe(Math.round(start.y + start.height))
+
+    await page.reload()
+    await launcher(page).click()
+    const kept = (await panel(page).boundingBox())!
+    expect(Math.round(kept.width)).toBe(580)
+    expect(Math.round(kept.height)).toBe(710)
+
+    await dragBy(page, 'navigator-resize-nw', -3000, -3000)
+    const max = (await panel(page).boundingBox())!
+    expect(Math.round(max.x)).toBe(8)
+    expect(Math.round(max.y)).toBe(8)
+    expect(Math.round(max.x + max.width)).toBe(Math.round(start.x + start.width))
+
+    await panel(page).getByRole('button', { name: 'More' }).click()
+    await panel(page).getByRole('menuitem', { name: 'Reset panel size' }).click()
+    const reset = (await panel(page).boundingBox())!
+    expect(Math.round(reset.width)).toBe(380)
+    expect(Math.round(reset.height)).toBe(560)
   })
 })

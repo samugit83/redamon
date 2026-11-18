@@ -15,6 +15,7 @@ import { IntroView, type IntroVariant } from './views/IntroView'
 import { ChatView } from './views/ChatView'
 import { HistoryView, type ThreadItem } from './views/HistoryView'
 import { useNavigatorChat } from './useNavigatorChat'
+import type { ResizeHandle } from './usePanelSize'
 import { ACTING_AS_NO_MODEL, navigatorMessage } from './messages'
 import styles from './Navigator.module.css'
 
@@ -70,6 +71,7 @@ async function getJson<T>(url: string): Promise<T> {
 
 export function NavigatorPanel({
   id, open, projectId, projectName, userId, style, onClose, onOpenAgent, agentAllowed, onAnswerDone, onResetPosition, pagePath,
+  resizeHandles = [], onResizeStart, onResetSize,
 }: {
   id: string
   open: boolean
@@ -83,6 +85,10 @@ export function NavigatorPanel({
   onAnswerDone: () => void
   onResetPosition: () => void
   pagePath: string
+  /** The edges a drag may move; none on the phone-width sheet. */
+  resizeHandles?: readonly ResizeHandle[]
+  onResizeStart?: (e: React.PointerEvent<HTMLElement>, handle: ResizeHandle) => void
+  onResetSize?: () => void
 }) {
   const queryClient = useQueryClient()
   const { dangerConfirm } = useAlertModal()
@@ -232,6 +238,9 @@ export function NavigatorPanel({
               <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); void ensureFeatureModel('navigator', { force: true }) }}>Change model</button>
               <a role="menuitem" href="/settings?tab=models" onClick={() => setMenuOpen(false)}>Models by feature</a>
               <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onResetPosition() }}>Reset button position</button>
+              {onResetSize && (
+                <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onResetSize() }}>Reset panel size</button>
+              )}
             </div>
           )}
         </div>
@@ -319,6 +328,11 @@ export function NavigatorPanel({
           ? <button type="button" className={styles.sendButton} aria-label="Stop" onClick={chat.stop}><Square size={14} /></button>
           : <button type="submit" className={styles.sendButton} aria-label="Send" disabled={inputDisabled || !draft.trim()}><Send size={14} /></button>}
       </form>
+
+      {onResizeStart && resizeHandles.map((h) => (
+        <div key={h} className={styles.resizeHandle} data-edge={h} data-testid={`navigator-resize-${h}`} aria-hidden
+          onPointerDown={(e) => onResizeStart(e, h)} />
+      ))}
     </div>
   )
 }

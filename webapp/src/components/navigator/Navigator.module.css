@@ -49,6 +49,22 @@
 @media (prefers-reduced-motion: reduce) { .panel { animation: none; } }
 @keyframes navIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
+/* Drag strips on the panel's free edges, inside its border: the panel clips what overflows it. */
+.resizeHandle { position: absolute; z-index: 3; touch-action: none; }
+.resizeHandle:hover { background: var(--accent-primary-subtle); }
+.resizeHandle[data-edge='n'], .resizeHandle[data-edge='s'] { left: 14px; right: 14px; height: 6px; cursor: ns-resize; }
+.resizeHandle[data-edge='e'], .resizeHandle[data-edge='w'] { top: 14px; bottom: 14px; width: 6px; cursor: ew-resize; }
+.resizeHandle[data-edge='n'] { top: 0; }
+.resizeHandle[data-edge='s'] { bottom: 0; }
+.resizeHandle[data-edge='e'] { right: 0; }
+.resizeHandle[data-edge='w'] { left: 0; }
+.resizeHandle[data-edge='nw'], .resizeHandle[data-edge='ne'],
+.resizeHandle[data-edge='sw'], .resizeHandle[data-edge='se'] { width: 14px; height: 14px; }
+.resizeHandle[data-edge='nw'] { top: 0; left: 0; cursor: nwse-resize; }
+.resizeHandle[data-edge='se'] { bottom: 0; right: 0; cursor: nwse-resize; }
+.resizeHandle[data-edge='ne'] { top: 0; right: 0; cursor: nesw-resize; }
+.resizeHandle[data-edge='sw'] { bottom: 0; left: 0; cursor: nesw-resize; }
+
 .header {
   display: flex;
   align-items: center;
