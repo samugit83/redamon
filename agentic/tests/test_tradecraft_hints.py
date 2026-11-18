@@ -846,6 +846,40 @@ def test_a_library_back_after_a_failure_shows_the_steps_pages():
     assert pages_of(note) == ["patt:401", "patt:402", "patt:403"] and hints.NOTICES["error"] not in note
 
 
+def test_a_step_an_outage_spent_is_searched_again_once_another_search_succeeds():
+    """FIX-LIBNOW's known limit: a library down for more thinks than a step has retries left that
+    step with the notice until its facts changed. A later search that succeeds gives it its
+    retries back, so the next think searches it and shows its pages."""
+    index = Counting(library(n=20))
+    index.down = True
+    st = state(todo_list=[todo("Confirm time based blind SQLi", "in_progress")])
+    for _attempt in range(1 + hints.MAX_RETRIES + 1):
+        note, updates = now(st, index=index)
+        st = {**st, **updates}
+        assert note == hints.NOTICES["error"]
+    index.down = False
+    before = index.searches
+    st = {**st, "todo_list": [todo("Confirm time based blind SQLi", "in_progress"), todo("Dump the users table")]}
+    note, updates = now(st, index=index)
+    st = {**st, **updates}
+    assert index.searches > before and set(rows_by_step(note)) == {"next step"}
+    before = index.searches
+    note, updates = now(st, index=index)
+    assert index.searches > before and "step in progress" in rows_by_step(note)
+    assert hints.NOTICES["error"] not in note
+
+
+def test_the_round_limit_covers_the_measured_first_round():
+    """The bound a think waits for its round (FIX-ITER2). Measured on the e2e library (6,910 pages,
+    12,222 stored sections) after the sections statement stopped ranking pages a wording filters
+    out: a run's first round, the person's whole message as the step, took 2.2-2.8 s alone and up
+    to 5.3 s with seven runs starting together (the pool has five connections). The limit keeps
+    half as much again above the worst of them; a never-ending round is still cut at it."""
+    worst_measured_first_round_sec = 5.3
+    assert hints.SEARCH_TIMEOUT_SEC >= 1.5 * worst_measured_first_round_sec
+    assert hints.SEARCH_TIMEOUT_SEC <= 10.0
+
+
 def test_a_standing_block_stays_while_it_fits(monkeypatch):
     """The same goal with a new fact whose search fails keeps showing its block: its pages still
     fit the goal. A new goal whose search fails gets the notice."""

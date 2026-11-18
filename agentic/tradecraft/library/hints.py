@@ -26,11 +26,12 @@ that says how to use it (``library_rule``).
 
 Cost: at most ``goal_cap`` distinct steps searched per run, twice the run's MAX_ITERATIONS plus a
 margin, never more than ``GOAL_CAP_CEILING`` (a step searched already is searched again for new
-facts at no cost to it; at most one round of searches a think), ``SEARCH_TIMEOUT_SEC`` per round.
-No count of blocks limits it: "Hints per run" bounded the old notes and is gone. The block never
-vanishes silently: a step past the cap, or whose search failed or was slow, gets a fixed notice
-(``NOTICES``), and a failed search is tried again at the next thinks (``MAX_RETRIES``); a step's
-pages stay while the step does, even when a search for new facts fails. Measurement, page IDs and
+facts at no cost to it; at most one round of searches a think), and a think waits at most
+``SEARCH_TIMEOUT_SEC`` for its round. No count of blocks limits it: "Hints per run" bounded the
+old notes and is gone. The block never vanishes silently: a step past the cap, or whose search
+failed or was slow, gets a fixed notice (``NOTICES``), and a failed search is tried again at the
+next thinks (``MAX_RETRIES``), and again after any later search succeeds; a step's pages stay
+while the step does, even when a search for new facts fails. Measurement, page IDs and
 counts only (never a step or a title): ``[tradecraft] library_now refresh=`` per round of
 searches, ``shown=`` per think with a block, ``<page> read`` when the agent reads a page a block
 showed (``run_state.record_seen``). It never fails the think node.
@@ -59,15 +60,21 @@ STANDING = 2 * PAGES
 # The cap of distinct steps searched in a run. A think brings at most one new step in progress and
 # one new next step: measured on 187 session logs, at most 2.0 distinct steps a think (1.57 on the
 # runs of 20 thinks or more, median 1.17), so twice the run's iteration limit, plus a margin for
-# the objective and a resume, is never reached before the run's own last think. A search is about
-# 50 ms on the card index, so the ceiling bounds a run with a huge iteration limit to about 50 s
-# of database time over the whole run.
+# the objective and a resume, is never reached before the run's own last think. A todo step's
+# search took 0.4-0.8 s on the e2e library (6,910 pages, 12,222 stored sections), so the ceiling
+# also bounds the database time of a run with a huge iteration limit.
 GOAL_MARGIN = 10
-# A search that failed or timed out is tried again at the next thinks, this many times at most.
+# A search that failed or timed out is tried again at the next thinks, this many times at most;
+# a later search that succeeds gives a step whose retries are spent its retries back.
 MAX_RETRIES = 2
 GOAL_CAP_CEILING = 1000
 DEFAULT_MAX_ITERATIONS = 100
-SEARCH_TIMEOUT_SEC = 3.0
+# The most a think waits for its one round of searches. Measured on the e2e library: a run's first
+# round (the person's whole message as the step) took 2.2-2.8 s alone, and up to 5.3 s with seven
+# runs starting together, the last two waiting for the pool's five connections; a two-step round
+# of todo items took at most 2.0 s with seven at once. A round still running at the limit is
+# stopped and shows the "did not answer" notice.
+SEARCH_TIMEOUT_SEC = 8.0
 CVE_QUERY = profile.SEARCHED_CVES
 GOAL_SHOWN_CHARS = 100
 PATH_CHARS = 100
@@ -410,6 +417,10 @@ async def _refresh(entry: dict, catalog: Any, settings: EffectiveSettings, focus
                         f"found={sum(len(r) for r in found.values())}")
         for item in [*searched, *([cve] if cve else [])]:
             if "_had" not in item:
+                if found is not None and item.get("failures", 0) > MAX_RETRIES:
+                    # The library answers again: a step whose retries an outage spent is searched
+                    # at the next think, with its retries back, instead of keeping the notice.
+                    item["failures"] = 1
                 continue
             had = item.pop("_had")
             key = item["key"] or "cve"
