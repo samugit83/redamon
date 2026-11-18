@@ -265,6 +265,28 @@ export function lastRefreshedOf(r: Pick<ResourceView, 'lastRefreshedAt' | 'lastV
   return r.lastRefreshedAt ?? (r.mapVersion === 1 && !r.lastError ? r.lastVerifiedAt : null)
 }
 
+/**
+ * The agent's words for a CVE archive's index (`build_cve` and `index_cve` in
+ * agentic/tradecraft/ingest/builders.py): every stop reason they write starts with the prefix
+ * (client.cveIndex.test.ts holds it), and an ingestion with no GitHub token counts the code. A report
+ * from before the index has neither.
+ */
+export const CVE_INDEX_STOP_PREFIX = 'cve index:'
+export const CVE_INDEX_NEEDS_TOKEN = 'cve_index_needs_token'
+
+/**
+ * What a CVE archive's card says about its index (NQ-9), from its last report: `token` when that
+ * ingestion had no GitHub token, `refresh` when the report predates the index (its settings hash did
+ * not change, so the card is not stale) or a token was set on the resource since; null once the index
+ * ran, for another type, and before the first report. The account's own token is not in the view, so
+ * one added there shows `token` until the next successful refresh: a failed one keeps the old report.
+ */
+export function cveIndexHint(r: Pick<ResourceView, 'resourceType' | 'forcedType' | 'githubTokenOverride' | 'report'>): 'refresh' | 'token' | null {
+  if ((r.forcedType || r.resourceType) !== 'cve-poc-db' || !r.report) return null
+  if ((r.report.errors ?? []).some(e => e.code === CVE_INDEX_NEEDS_TOKEN)) return r.githubTokenOverride === 'set' ? 'refresh' : 'token'
+  return (r.report.stopReason ?? '').startsWith(CVE_INDEX_STOP_PREFIX) ? null : 'refresh'
+}
+
 export function relTime(iso: string | null | undefined, now: number = Date.now()): string {
   if (!iso) return 'never'
   const t = new Date(iso).getTime()
