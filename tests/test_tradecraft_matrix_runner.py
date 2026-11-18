@@ -1767,6 +1767,36 @@ def test_retrieval_looks_cve_questions_up_and_searches_the_rest():
     assert got.ok is False and got.detail == "1/2 found; missed: ssrf payloads"
 
 
+def test_hexbrains_expected_pages_match_their_decoded_titles():
+    # The HexBrain entries name a page by a word of its decoded title (FIX-DOCS decodes them):
+    # L2's SSRF page is "Server Side Request Forgery", which never says "ssrf"; the XSS page is
+    # "Xss Injection". Each entry stays one page: HexBrain's "Cross Site Request Forgery" is not L2's.
+    types = _agent("tradecraft.library.types")
+
+    def read_of(page, title):
+        return {"tool": "tradecraft_lookup", "args": {"page": page}, "success": True,
+                "output": types.wrap_untrusted([types.READ_PAGE.format(page_id=page, breadcrumb=f"HexBrain payloads › {title}"),
+                                                types.format_read_section(title, 1, 1, []),
+                                                types.READ_SOURCE.format(source=types.format_source("stored", "2026-11-18")),
+                                                "---", "payloads"])}
+
+    def trace(page, title):
+        return {"tool_calls": [read_of(page, title)],
+                "pages": {page: {"resource_name": "HexBrain payloads", "title": title,
+                                 "breadcrumb": ["Browse", "Payloads", title], "description": f"Browse / Payloads / {title}",
+                                 "url": "https://hexbrainai.com/payloads/" + title.replace(" ", "%20")}}}
+
+    l2 = oracles.specs(SCN)["L2"].expected_pages
+    got = checks.check_expected_page(trace("hexbrain-payloads:12643", "Server Side Request Forgery"), l2)
+    assert got.ok is True and got.detail == "hexbrain-payloads:12643 from tradecraft_lookup"
+    assert checks.check_expected_page(trace("hexbrain-payloads:12641", "Cross Site Request Forgery"), l2).ok is False
+    xss = next(q for q in SCN["layer1"]["retrieval"] if q["q"] == "xss payloads")["expect"]
+    assert checks.check_expected_page(trace("hexbrain-payloads:12659", "Xss Injection"), [xss]).ok is True
+    hexbrain = [e for e in [*SCN["labs"]["L2"]["expected_pages"]]
+                + [q["expect"] for q in SCN["layer1"]["retrieval"]] if e["resource"] == "hexbrain-payloads"]
+    assert [e["path"] for e in hexbrain] == [["server side request forgery"], ["server side request forgery"], ["xss"]]
+
+
 def test_the_ssrf_payloads_question_finds_hexbrains_page_by_its_title():
     # HexBrain's titles are decoded: its SSRF page is "Server Side Request Forgery", which never says
     # "ssrf". The question expects that one page by its title: not HexBrain's "Cross Site Request
