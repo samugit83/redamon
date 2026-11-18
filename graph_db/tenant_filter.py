@@ -57,10 +57,11 @@ _WRITE_PROCEDURE_RE = re.compile(
 #: keyword from `_WRITE_CLAUSE_RE`, which scans raw text. `apoc.load.json` turns
 #: the same hole into an SSRF from inside the database container.
 #:
-#: APOC ships enabled and unrestricted in this deployment
-#: (docker-compose.yml NEO4J_PLUGINS / procedures_unrestricted), so none of this
-#: is theoretical. No agent or MCP read needs any of it: the legitimate graph
-#: queries are MATCH/RETURN over labelled patterns.
+#: APOC shipped enabled and unrestricted when this was found. Neo4j now loads only
+#: the APOC RedAmon itself calls (docker-compose.yml procedures_allowlist), so
+#: apoc.cypher.* and apoc.load.* are gone from the database too; this allowlist
+#: stays the first line. No agent or MCP read needs any of it: the legitimate
+#: graph queries are MATCH/RETURN over labelled patterns.
 _ALLOWED_PROCEDURES = frozenset({
     # The fixed schema op, which is server-controlled and never caller Cypher.
     "db.schema.visualization",

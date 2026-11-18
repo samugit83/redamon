@@ -11,8 +11,9 @@ services:
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set - run redamon.sh (STRIDE S13)}
       - NEO4J_PLUGINS=["apoc"]
-      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      # The same APOC list as the root docker-compose.yml, which says why.
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.create.node,apoc.create.relationship,apoc.merge.node,apoc.meta.*,apoc.convert.toJson,apoc.text.base64Encode
+      - NEO4J_dbms_security_procedures_allowlist=apoc.create.node,apoc.create.relationship,apoc.merge.node,apoc.meta.*,apoc.convert.toJson,apoc.text.base64Encode
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
