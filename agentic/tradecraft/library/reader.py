@@ -70,9 +70,12 @@ SKIPPED_COPY = "read from the site at your request; the stored copy from {date} 
 _REFUSED = ("unsafe_address", "userinfo_refused", "bad_url")
 PAGE_GONE = ("Error: page {page_id} is no longer in resource '{slug}' (a refresh removed it); "
              "search again with tradecraft_search.")
-NO_SECTION = "Error: page {page_id} has no section {section!r}. Its sections: {sections}."
-NO_PART = "Error: section {section!r} of page {page_id} has {parts} part(s); ask for part 1 to {parts}."
-NO_READ_PART = "Error: {what!r} of resource '{slug}' has {parts} part(s); ask for part 1 to {parts}."
+# A refusal names the page by its ID or the resource by its slug, never by a title or a heading:
+# those are the site's text, and the refusal is not inside the untrusted envelope. The headings a
+# missing section lists follow in an envelope of their own.
+NO_SECTION = "Error: page {page_id} has no section of that name; its sections:"
+NO_PART = "Error: that section of page {page_id} has {parts} part(s); ask for part 1 to {parts}."
+NO_READ_PART = "Error: this read of resource '{slug}' has {parts} part(s); ask for part 1 to {parts}."
 CVE_BY_ID = "Error: resource '{slug}' is a cve-poc-db: read it with cve_id='CVE-YYYY-NNNNN', not by page."
 NO_PAGE = ("Error: no page of resource '{slug}' matches {query!r}. Search it with tradecraft_search(query=..., "
            'resource="{slug}"), or browse it with tradecraft_search(resource="{slug}", path="").')
@@ -148,7 +151,7 @@ def render_parts(read: "_Read", url: str, section_title: str, source: str, text:
     pieces = split.parts(text or "", chars)
     number = 1 if part in (None, "") else int(part)
     if number < 1 or number > len(pieces):
-        return NO_READ_PART.format(what=_one_line(section_title), slug=read.slug, parts=len(pieces))
+        return NO_READ_PART.format(slug=read.slug, parts=len(pieces))
     if seen is not None:
         seen()
     following = _call(**next_args, part=number + 1) if number < len(pieces) else ""
@@ -445,12 +448,12 @@ async def _read_section(read: _Read, page_id: str, url: str, *, section: Optiona
     chosen = split.pick_section(sections, section, query)
     if chosen is None:
         names = ", ".join(split.section_name(s) for s in sections[:OTHER_SECTIONS_LISTED])
-        return NO_SECTION.format(page_id=page_id, section=section, sections=names)
+        return NO_SECTION.format(page_id=page_id) + "\n" + wrap_untrusted([f"sections: {_one_line(names)}"])
     chars = EffectiveSettings(read.catalog.search or {}, scope="search").int("reading.charsPerRead")
     pieces = split.parts(chosen.text, chars)
     number = 1 if part in (None, "") else int(part)
     if number < 1 or number > len(pieces):
-        return NO_PART.format(section=split.section_name(chosen), page_id=page_id, parts=len(pieces))
+        return NO_PART.format(page_id=page_id, parts=len(pieces))
     try:
         run_state.record_seen([page_id])
     except LookupError:

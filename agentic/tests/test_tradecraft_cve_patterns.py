@@ -173,9 +173,8 @@ POC_LINES = "\n".join(f"- https://github.com/tc-fixture/poc-{n:04d} synthetic pr
 
 
 def test_a_long_entry_is_read_in_parts_within_the_read_limit(tmp_path):
-    """FIX-ITER2 (an L3 run read a CVE entry of 29,937 characters against the 12,000 per read): the
-    archive's entry keeps the per-read limit of a page read, with the call that reads its next part,
-    and no line of it is lost across the parts."""
+    """The archive's entry keeps the per-read limit of a page read, with the call that reads its next
+    part, and no line of it is lost across the parts."""
     entry = ("### [CVE-2021-4242](https://cve.example.invalid/CVE-2021-4242)\n\n### Description\nSynthetic.\n\n"
              f"### POC\n\n#### Github\n{POC_LINES}\n")
     root = archive(tmp_path, {"raw.githubusercontent.com/tc-fixture/cve/main/2021/CVE-2021-4242.md": entry})
@@ -188,7 +187,7 @@ def test_a_long_entry_is_read_in_parts_within_the_read_limit(tmp_path):
     assert all(f"poc-{n:04d} " in "\n".join(body(p) for p in parts) for n in range(450))
     assert header(parts[-1], "next") is None
     beyond, _ = read(root, "CVE-2021-4242", patterns, part=count + 1)
-    assert beyond == f"Error: 'CVE-2021-4242' of resource 'cves' has {count} part(s); ask for part 1 to {count}."
+    assert beyond == f"Error: this read of resource 'cves' has {count} part(s); ask for part 1 to {count}."
     # The owner's own limit decides: at 40,000 characters it is one read, as before.
     whole, _ = read(root, "CVE-2021-4242", patterns, search={"reading.charsPerRead": 40_000})
     assert header(whole, "part") is None and header(whole, "next") is None and POC_LINES in whole
