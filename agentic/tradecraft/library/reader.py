@@ -30,16 +30,19 @@ picker is not used on such a resource), and the read is still one section. An un
 resource, a forced ``section_path`` and a run without a search index keep today's title match
 (no model: the section picker left with 1.x, R-401) and today's whole-page answer; the page they
 return is recorded as seen too when it is an entry of the store (page IDs name entries). A CVE
-archive is read live, a CVE at a time; a PDF page from the store.
+archive is read live, a CVE at a time; a PDF page from the store. These whole-text answers keep
+the per-read limit too: their text is cut into parts as a section is, and a ``next:`` line names
+the call that reads the next part.
 """
 
 from __future__ import annotations
 
 import asyncio
 import io
+import json
 import re
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from logging_config import get_logger
 from tradecraft import net, run_state, runtime
@@ -69,6 +72,7 @@ PAGE_GONE = ("Error: page {page_id} is no longer in resource '{slug}' (a refresh
              "search again with tradecraft_search.")
 NO_SECTION = "Error: page {page_id} has no section {section!r}. Its sections: {sections}."
 NO_PART = "Error: section {section!r} of page {page_id} has {parts} part(s); ask for part 1 to {parts}."
+NO_READ_PART = "Error: {what!r} of resource '{slug}' has {parts} part(s); ask for part 1 to {parts}."
 CVE_BY_ID = "Error: resource '{slug}' is a cve-poc-db: read it with cve_id='CVE-YYYY-NNNNN', not by page."
 NO_PAGE = ("Error: no page of resource '{slug}' matches {query!r}. Search it with tradecraft_search(query=..., "
            'resource="{slug}"), or browse it with tradecraft_search(resource="{slug}", path="").')
@@ -100,17 +104,56 @@ def _one_line(value: Any) -> str:
     return " ".join(str(value).split())
 
 
-def render(slug: str, url: str, section_title: str, source: str, text: str, note: str = "") -> str:
-    """The result in Q1.2's shape, inside the untrusted envelope whatever the source."""
+def render(slug: str, url: str, section_title: str, source: str, text: str, note: str = "", *,
+           part: int = 1, parts: int = 1, next_call: str = "", max_chars: Optional[int] = None) -> str:
+    """The result in Q1.2's shape, inside the untrusted envelope whatever the source. A text cut
+    into parts says which part this is and how to read the next one. The list of its code blocks
+    is kept only while it fits in the read with the text (``max_chars``): it repeats them."""
     lines = [f"resource: {_one_line(slug)}", f"url: {_one_line(url)}",
              f"section_title: {_one_line(section_title)}", f"source: {_one_line(source)}"]
     if note:
         lines.append(f"note: {_one_line(note)}")
+    if parts > 1:
+        lines.append(f"part: {part} of {parts}")
+    if next_call:
+        lines.append(f"next: {next_call}")
     lines += ["---", text or ""]
     blocks = code_blocks(text)
-    if blocks:
+    listed = "\n\nCode blocks:\n" + blocks
+    if blocks and (max_chars is None or len(text or "") + len(listed) <= max_chars):
         lines += ["", "Code blocks:", blocks]
     return wrap_untrusted(lines)
+
+
+def _read_limit(read: "_Read") -> int:
+    return EffectiveSettings(read.catalog.search or {}, scope="search").int("reading.charsPerRead")
+
+
+def _call(**args: Any) -> str:
+    """A ``tradecraft_lookup`` call as a read's ``next:`` line writes it: each text value quoted
+    as JSON, so it stays on one line and a path or a query comes back exactly as it was given."""
+    out = []
+    for key, value in args.items():
+        out.append(f"{key}={value}" if isinstance(value, int) else f"{key}={json.dumps(str(value), ensure_ascii=False)}")
+    return f"tradecraft_lookup({', '.join(out)})"
+
+
+def render_parts(read: "_Read", url: str, section_title: str, source: str, text: str, part: Optional[int],
+                 next_args: dict, note: str = "", seen: Optional[Callable[[], None]] = None) -> str:
+    """A read in Q1.2's shape within ``reading.charsPerRead``, as a page read is: the text in parts
+    (``split.parts``: at paragraph ends, code blocks whole), part ``part`` of them, and the call that
+    reads the next part (``next_args`` plus ``part``). ``seen`` records the page once a part is
+    returned, not for a part that does not exist."""
+    chars = _read_limit(read)
+    pieces = split.parts(text or "", chars)
+    number = 1 if part in (None, "") else int(part)
+    if number < 1 or number > len(pieces):
+        return NO_READ_PART.format(what=_one_line(section_title), slug=read.slug, parts=len(pieces))
+    if seen is not None:
+        seen()
+    following = _call(**next_args, part=number + 1) if number < len(pieces) else ""
+    return render(read.slug, url, section_title, source, pieces[number - 1], note=note, part=number,
+                  parts=len(pieces), next_call=following, max_chars=chars)
 
 
 class _Read:
@@ -171,7 +214,7 @@ async def lookup(*, resource_id: str = "", query: str = "", cve_id: Optional[str
     logger.info(f"[tradecraft] lookup resource={read.slug} section={'forced' if section_path else 'auto'}")
     with read.login():
         if resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
-            return await _cve(read, cve_id)
+            return await _cve(read, cve_id, part)
         index = runtime.run_index()
         if index is not None and not section_path and read.converted:
             picked = await _first_pass_pick(read, query, index) or await _title_pick(read, query)
@@ -180,8 +223,8 @@ async def lookup(*, resource_id: str = "", query: str = "", cve_id: Optional[str
             return await _read_section(read, *picked, section=section, part=part, query=query,
                                        force_refresh=force_refresh)
         if isinstance(read.sitemap.get("pages"), list) and read.sitemap.get("pages"):
-            return await _pdf(read, query, section_path, force_refresh)
-        return await _page(read, query, section_path, force_refresh)
+            return await _pdf(read, query, section_path, force_refresh, part)
+        return await _page(read, query, section_path, force_refresh, part)
 
 
 # --------------------------------------------------------------------------------------
@@ -253,7 +296,13 @@ async def _text_of(read: _Read, target: str, copy: Optional[dict], force_refresh
     return page.text, format_source("live_not_stored" if read.mode == "stored" else "live"), "", ""
 
 
-async def _page(read: _Read, query: str, section_path: Optional[str], force_refresh: bool) -> str:
+def _again(read: _Read, force_refresh: bool, **args: Any) -> dict:
+    """The arguments that read the same text again, for a read's ``next:`` line."""
+    return {"resource_id": read.slug, **args, **({"force_refresh": True} if force_refresh else {})}
+
+
+async def _page(read: _Read, query: str, section_path: Optional[str], force_refresh: bool,
+                part: Optional[int] = None) -> str:
     target, title = await _pick_url(read, query, section_path)
     refused = await _refusal(read, target)
     if refused:
@@ -262,10 +311,13 @@ async def _page(read: _Read, query: str, section_path: Optional[str], force_refr
     text, source, note, error = await _text_of(read, target, copy, force_refresh)
     if error:
         return error
+    entry = None
     if read.converted:
-        read.record_seen(copy or await read.store.entry_by_url(read.owner, read.resource.id,
-                                                               fetch.canonical_url(target)))
-    return render(read.slug, target, title, source, text, note=note)
+        entry = copy or await read.store.entry_by_url(read.owner, read.resource.id, fetch.canonical_url(target))
+    # The same arguments pick the same page again: the title match reads the same map.
+    again = _again(read, force_refresh, **({"section_path": section_path} if section_path else {"query": query}))
+    return render_parts(read, target, title, source, text, part, again, note=note,
+                        seen=(lambda: read.record_seen(entry)) if read.converted else None)
 
 
 # --------------------------------------------------------------------------------------
@@ -411,7 +463,7 @@ async def _read_section(read: _Read, page_id: str, url: str, *, section: Optiona
 # A CVE archive, and a PDF
 # --------------------------------------------------------------------------------------
 
-async def _cve(read: _Read, cve_id: Optional[str]) -> str:
+async def _cve(read: _Read, cve_id: Optional[str], part: Optional[int] = None) -> str:
     if not cve_id or not cve.CVE_ID_RE.match(cve_id):
         return (f"Error: resource '{read.slug}' is a cve-poc-db; "
                 f"you must pass cve_id='CVE-YYYY-NNNNN'.")
@@ -429,7 +481,7 @@ async def _cve(read: _Read, cve_id: Optional[str]) -> str:
     if not content:
         return (f"PoC not found for {cve_norm} in resource '{read.slug}' "
                 f"(no archive entry, and the repository README does not mention it).")
-    return render(read.slug, src, title, format_source("live"), content)
+    return render_parts(read, src, title, format_source("live"), content, part, _again(read, False, cve_id=cve_norm))
 
 
 def _pdf_page_text(body: bytes, page: int) -> str:
@@ -440,7 +492,8 @@ def _pdf_page_text(body: bytes, page: int) -> str:
     return reader.pages[page - 1].extract_text() or ""
 
 
-async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refresh: bool) -> str:
+async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refresh: bool,
+               part: Optional[int] = None) -> str:
     pages = [p for p in read.sitemap.get("pages") or [] if isinstance(p, dict)]
     base = read.row.get("url") or read.resource.url
     if section_path:
@@ -464,10 +517,14 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
     if refused:
         return refused
     entry = await read.store.entry_by_url(read.owner, read.resource.id, url)
-    if entry and entry.get("stored_text") and not force_refresh:
+    again = _again(read, force_refresh, section_path=f"page={number}")
+
+    def seen() -> None:
         read.record_seen(entry)
-        return render(read.slug, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
-                      entry["stored_text"])
+
+    if entry and entry.get("stored_text") and not force_refresh:
+        return render_parts(read, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
+                            entry["stored_text"], part, again, seen=seen)
     resp = await fetch.fetch_raw(base, read.settings, github_token=read.token)
     text = ""
     if resp.ok and resp.body[:5] == b"%PDF-":
@@ -478,13 +535,11 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
     if not text:
         code = resp.error or (f"http_{resp.status}" if resp.status else "unreachable")
         if entry and entry.get("stored_text"):
-            read.record_seen(entry)
-            return render(read.slug, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
-                          entry["stored_text"], note=NOT_REFRESHED.format(code=code))
+            return render_parts(read, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
+                                entry["stored_text"], part, again, note=NOT_REFRESHED.format(code=code), seen=seen)
         return UNREACHABLE_NOT_STORED.format(url=url, code=code, slug=read.slug)
-    read.record_seen(entry)
     if entry and entry.get("stored_text"):
-        return render(read.slug, url, f"page {number}", format_source("live"), text,
-                      note=SKIPPED_COPY.format(date=_date(entry.get("fetched_at"))))
+        return render_parts(read, url, f"page {number}", format_source("live"), text, part, again,
+                            note=SKIPPED_COPY.format(date=_date(entry.get("fetched_at"))), seen=seen)
     source = "live_not_stored" if read.row.get("map_version", 1) >= 2 else "live"
-    return render(read.slug, url, f"page {number}", format_source(source), text)
+    return render_parts(read, url, f"page {number}", format_source(source), text, part, again, seen=seen)

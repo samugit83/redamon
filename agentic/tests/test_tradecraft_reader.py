@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
+import re
 import sys
 from pathlib import Path
 
@@ -243,6 +245,95 @@ def test_cve_live_pdf_stored():
     assert "stored text of page 2" in answer and pdf.requested() == []
     assert header(answer, "url") == f"{pdf_url}#page=2"
     assert "is not in this resource's map" in pdf.read(resource_id="guide", section_path="9")
+
+
+LONG_TEXT = "\n\n".join(f"Paragraph {n}: " + "synthetic words for the read limit " * 12 for n in range(90))
+
+
+def every_part(lib, **kw):
+    """Each part of one read, following its ``next:`` lines; the calls they name."""
+    parts, calls = [lib.read(**kw)], []
+    while header(parts[-1], "next"):
+        calls.append(header(parts[-1], "next"))
+        parts.append(lib.read(**kw, part=len(parts) + 1))
+    return parts, calls
+
+
+def body(result):
+    lines = result.splitlines()
+    return "\n".join(lines[lines.index("---") + 1:-1])
+
+
+def test_every_whole_text_read_keeps_the_read_limit():
+    """FIX-ITER2: the reads that answer a whole text (a forced section path, a 1.x title match, a
+    PDF page; a CVE entry in ``test_tradecraft_cve_patterns.py``) keep the per-read limit of a page
+    read: parts of at most ``reading.charsPerRead`` characters, each naming the call that reads the
+    next one, nothing lost, the stored copy still named as one, and the page seen once."""
+    repo = "https://github.com/tc-fixture/payloads"
+    raw = "https://raw.githubusercontent.com/tc-fixture/payloads/main/sqli/union.md"
+    lib = Library().add("r1", "payloads", repo, type_="github-repo", mode="stored",
+                        sitemap={"tree": [{"title": "sqli > union", "path": "sqli/union.md"}],
+                                 "owner": "tc-fixture", "repo": "payloads", "branch": "main"},
+                        read_settings=no_browser()).entry("r1", raw, LONG_TEXT)
+    parts, calls = every_part(lib, resource_id="payloads", section_path="sqli/union.md")
+    assert len(LONG_TEXT) > 36_000 and len(parts) >= 3 and lib.requested() == []
+    assert calls == [f'tradecraft_lookup(resource_id="payloads", section_path="sqli/union.md", part={n})'
+                     for n in range(2, len(parts) + 1)]
+    assert all(len(body(p)) <= 12_000 and header(p, "source") == "stored copy from 2026-11-10" for p in parts)
+    assert all(f"Paragraph {n}: " in "\n".join(body(p) for p in parts) for n in range(90))
+    assert lib.read(resource_id="payloads", section_path="sqli/union.md", part=len(parts) + 1) == (
+        f"Error: 'sqli/union.md' of resource 'payloads' has {len(parts)} part(s); ask for part 1 to {len(parts)}.")
+
+    # A 1.x title match goes on with the words that picked the page.
+    wiki = Library().add("r1", "wiki", WIKI, mode="stored", map_version=1, read_settings=no_browser())
+    wiki.entry("r1", PAGES["Kerberos: Kerberoasting"], LONG_TEXT)
+    parts, calls = every_part(wiki, resource_id="wiki", query="kerberoast attack")
+    assert len(parts) >= 3 and calls[0] == 'tradecraft_lookup(resource_id="wiki", query="kerberoast attack", part=2)'
+    assert {header(p, "section_title") for p in parts} == {"Kerberos: Kerberoasting"}
+
+    pdf_url = "https://files.tc-fixture.test/guide.pdf"
+    pdf = Library().add("r2", "guide", pdf_url, type_="pdf", mode="stored",
+                        sitemap={"pages": [{"page": n, "firstLine": f"Chapter {n}"} for n in (1, 2)]})
+    pdf.entry("r2", f"{pdf_url}#page=1", "short page").entry("r2", f"{pdf_url}#page=2", LONG_TEXT)
+    parts, calls = every_part(pdf, resource_id="guide", section_path="page=2")
+    assert len(parts) >= 3 and calls[0] == 'tradecraft_lookup(resource_id="guide", section_path="page=2", part=2)'
+    assert all(len(body(p)) <= 12_000 for p in parts) and pdf.requested() == []
+    short = pdf.read(resource_id="guide", section_path="page=1")
+    assert header(short, "part") is None and header(short, "next") is None and "short page" in short
+
+
+def test_the_next_call_gives_back_a_path_and_words_exactly():
+    """The ``next:`` line's values are JSON strings: a path holding a double quote, or words over
+    two lines, come back as they were given, on one line."""
+    line = reader._call(resource_id="payloads", section_path='sqli/"quoted" union.md', part=2)
+    assert line == 'tradecraft_lookup(resource_id="payloads", section_path="sqli/\\"quoted\\" union.md", part=2)'
+    value = re.search(r'section_path=("(?:[^"\\]|\\.)*")', line).group(1)
+    assert json.loads(value) == 'sqli/"quoted" union.md'
+    two_lines = reader._call(resource_id="wiki", query="kerberoast\nattack", part=3)
+    assert "\n" not in two_lines and json.loads(two_lines.split("query=")[1].rsplit(", part=", 1)[0]) == "kerberoast\nattack"
+
+
+def test_a_part_that_does_not_exist_is_refused_and_not_seen():
+    pdf_url = "https://files.tc-fixture.test/guide.pdf"
+    pdf = Library().add("r2", "guide", pdf_url, type_="pdf", mode="stored",
+                        sitemap={"pages": [{"page": 1, "firstLine": "Chapter 1"}]})
+    pdf.entry("r2", f"{pdf_url}#page=1", "short page")
+    seen = []
+
+    async def go():
+        from tradecraft import run_state
+        with net.use_fetcher(pdf.fetcher), runtime.use_store(pdf.store), \
+                run_state.bound({"session_id": "s-1", "current_objective_index": 0}) as collector:
+            assert runtime.bind_run_catalog(pdf.catalog())
+            refused = await reader.lookup(resource_id="guide", section_path="page=1", part=2)
+            seen.append(list(collector.drain()["tradecraft_seen_pages"]))
+            read = await reader.lookup(resource_id="guide", section_path="page=1", part=1)
+            seen.append(list(collector.drain()["tradecraft_seen_pages"]))
+            return refused, read
+
+    refused, read = contextvars.Context().run(asyncio.run, go())
+    assert refused == "Error: 'page 1' of resource 'guide' has 1 part(s); ask for part 1 to 1."
+    assert "short page" in read and seen == [[], ["guide:1"]]
 
 
 def test_unstored_pdf_page_is_read_from_the_document():

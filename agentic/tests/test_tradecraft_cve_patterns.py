@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tradecraft import net, runtime  # noqa: E402
-from tradecraft.library import cve, reader  # noqa: E402
+from tradecraft.library import cve, reader, split  # noqa: E402
 from tradecraft.settings import EffectiveSettings  # noqa: E402
 from tradecraft_doubles import FIXTURES, FixtureFetcher, run  # noqa: E402
 from tradecraft_memory_store import MemoryStore  # noqa: E402
@@ -43,12 +43,13 @@ def archive(tmp_path, files=None) -> Path:
     return root
 
 
-def read(root, cve_id, read_settings=None):
-    """The agent's lookup in a run whose catalog lists the archive with ``read_settings``."""
+def read(root, cve_id, read_settings=None, *, part=None, search=None):
+    """The agent's lookup in a run whose catalog lists the archive with ``read_settings`` (and the
+    owner's ``search`` settings), for ``part`` of the entry."""
     store = MemoryStore()
     store.add_resource(OWNER, "r1", url="https://github.com/tc-fixture/cve", slug="cves", storage_mode="live",
                        map_version=3, resource_type="cve-poc-db", sitemap=dict(META))
-    catalog = {"v2": True, "owner_id": OWNER, "person_id": OWNER, "actor_id": None, "search": {},
+    catalog = {"v2": True, "owner_id": OWNER, "person_id": OWNER, "actor_id": None, "search": search or {},
                "resources": [{"id": "r1", "slug": "cves", "name": "cves", "url": "https://github.com/tc-fixture/cve",
                               "type": "cve-poc-db", "storage_mode": "live", "summary": "s", "has_login": False,
                               "priority": "normal", "map_version": 3, "read_settings": read_settings or {},
@@ -58,7 +59,7 @@ def read(root, cve_id, read_settings=None):
     async def go():
         with net.use_fetcher(fetcher), runtime.use_store(store):
             assert runtime.bind_run_catalog(catalog)
-            return await reader.lookup(resource_id="cves", cve_id=cve_id)
+            return await reader.lookup(resource_id="cves", cve_id=cve_id, part=part)
 
     return contextvars.Context().run(asyncio.run, go()), [u for u, _h in fetcher.requests]
 
@@ -145,3 +146,57 @@ def test_api_error_is_not_a_miss(tmp_path):
     assert (text, url, error) == ("", "", "github_http_429")
     answer, _ = read(root, "CVE-2022-0009", {"type.cve.pathPatterns": ["{year}/{cve}.json"]})
     assert "NOT a 'PoC not found' answer" in answer and "github_http_429" in answer
+
+
+def body(result):
+    """A read's text: the lines after its header, inside the envelope."""
+    lines = result.splitlines()
+    return "\n".join(lines[lines.index("---") + 1:-1])
+
+
+def header(result, name):
+    return next((ln[len(name) + 2:] for ln in result.splitlines() if ln.startswith(f"{name}: ")), None)
+
+
+def every_part(root, cve_id, read_settings=None, search=None):
+    """Each part of a CVE read, following the ``next:`` line from the first one."""
+    parts = [read(root, cve_id, read_settings, search=search)[0]]
+    while header(parts[-1], "next"):
+        call = header(parts[-1], "next")
+        assert call == f'tradecraft_lookup(resource_id="cves", cve_id="{cve_id}", part={len(parts) + 1})'
+        parts.append(read(root, cve_id, read_settings, part=len(parts) + 1, search=search)[0])
+    return parts
+
+
+POC_LINES = "\n".join(f"- https://github.com/tc-fixture/poc-{n:04d} synthetic proof of concept number {n}"
+                      for n in range(450))
+
+
+def test_a_long_entry_is_read_in_parts_within_the_read_limit(tmp_path):
+    """FIX-ITER2 (an L3 run read a CVE entry of 29,937 characters against the 12,000 per read): the
+    archive's entry keeps the per-read limit of a page read, with the call that reads its next part,
+    and no line of it is lost across the parts."""
+    entry = ("### [CVE-2021-4242](https://cve.example.invalid/CVE-2021-4242)\n\n### Description\nSynthetic.\n\n"
+             f"### POC\n\n#### Github\n{POC_LINES}\n")
+    root = archive(tmp_path, {"raw.githubusercontent.com/tc-fixture/cve/main/2021/CVE-2021-4242.md": entry})
+    patterns = {"type.cve.pathPatterns": ["{year}/{cve}.md"]}
+    parts = every_part(root, "CVE-2021-4242", patterns)
+    count = len(split.parts(entry, 12_000))
+    assert len(entry) > 30_000 and len(parts) == count >= 3
+    assert [header(p, "part") for p in parts] == [f"{n} of {count}" for n in range(1, count + 1)]
+    assert all(len(body(p)) <= 12_000 and header(p, "source") == "live" for p in parts)
+    assert all(f"poc-{n:04d} " in "\n".join(body(p) for p in parts) for n in range(450))
+    assert header(parts[-1], "next") is None
+    beyond, _ = read(root, "CVE-2021-4242", patterns, part=count + 1)
+    assert beyond == f"Error: 'CVE-2021-4242' of resource 'cves' has {count} part(s); ask for part 1 to {count}."
+    # The owner's own limit decides: at 40,000 characters it is one read, as before.
+    whole, _ = read(root, "CVE-2021-4242", patterns, search={"reading.charsPerRead": 40_000})
+    assert header(whole, "part") is None and header(whole, "next") is None and POC_LINES in whole
+
+
+def test_a_long_readme_fallback_is_read_in_parts_too(tmp_path):
+    readme = f"# tc-fixture/cve\nKnown issue CVE-2020-0043 is listed here.\n\n{POC_LINES}\n"
+    root = archive(tmp_path, {"api.github.com/repos/tc-fixture/cve/readme/index.json": readme})
+    parts = every_part(root, "CVE-2020-0043")
+    assert len(parts) >= 3 and all(len(body(p)) <= 12_000 for p in parts)
+    assert all("repository README; no 2020/CVE-2020-0043 entry" in header(p, "section_title") for p in parts)
