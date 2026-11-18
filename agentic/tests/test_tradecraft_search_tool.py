@@ -52,7 +52,10 @@ class Index:
     async def rows(self, name, params):
         self.calls.append((name, dict(params)))
         if name == "assess":
-            return [{"id": i, "total": 1, "strong": int(self.strong), "anywhere": 1} for i in params["ids"]]
+            # The fake pages carry their terms in the title and the breadcrumb (``row``), so a page
+            # strong here is also named there.
+            return [{"id": i, "total": 1, "strong": int(self.strong), "anywhere": 1, "named": int(self.strong)}
+                    for i in params["ids"]]
         answer = self.answers.get(name, [])
         return [dict(r) for r in (answer(params) if callable(answer) else answer)]
 

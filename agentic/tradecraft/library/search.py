@@ -115,6 +115,9 @@ class Candidate:
     title: float = 0.0
     strong: float = 0.0
     anywhere: float = 0.0
+    # How many of the need's term groups the page's title or breadcrumb holds: Library now's fit
+    # reads it (``hints.fits``); the shares above, the verdict and the order do not.
+    named: int = 0
     snippet: str = ""
 
 
@@ -317,6 +320,8 @@ class FirstPass:
     candidates: list[Candidate]
     groups: list[str]
     cves: frozenset
+    # The term groups that have a lexeme (a stop word has none): the shares' denominator.
+    total: int = 0
 
 
 def _resources(catalog: Any) -> list[Any]:
@@ -432,16 +437,19 @@ async def free_first_pass(owner_id: str, catalog: Any, query: str, *, resource: 
         if candidates and groups:
             rows = await ix.rows("assess", {"uid": owner_id, "rids": base["rids"], "groups": groups,
                                             "ids": [c.row["id"] for c in candidates]})
+    groups_total = 0
     if candidates and groups:
         coverage = {r["id"]: r for r in rows}
         for cand in candidates:
             got = coverage.get(cand.row["id"])
             total = int(got["total"]) if got else 0
+            groups_total = max(groups_total, total)
             if total:
                 cand.title = int(got.get("title") or 0) / total
                 cand.strong = int(got["strong"]) / total
                 cand.anywhere = int(got["anywhere"]) / total
-    return FirstPass(tuple(wordings), candidates, groups, cves)
+                cand.named = int(got.get("named") or 0)
+    return FirstPass(tuple(wordings), candidates, groups, cves, groups_total)
 
 
 def is_related(cand: Candidate, th: Thresholds) -> bool:

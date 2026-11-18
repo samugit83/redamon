@@ -61,8 +61,9 @@ class FakeIndex:
         if name == "assess":
             out = []
             for i in params["ids"]:
-                strong, anywhere, *total = self.coverage.get(i, (0, 0))
-                out.append(dict(id=i, strong=strong, anywhere=anywhere, total=total[0] if total else 1))
+                strong, anywhere, *rest = self.coverage.get(i, (0, 0))
+                out.append(dict(id=i, strong=strong, anywhere=anywhere, total=rest[0] if rest else 1,
+                                named=rest[1] if len(rest) > 1 else 0))
             return out
         answer = self.answers.get(name, [])
         return [dict(r) for r in (answer(params) if callable(answer) else answer)]
@@ -311,6 +312,27 @@ def test_the_sections_statement_filters_the_pages_before_it_ranks_their_sections
     ranking = sql[sql.index("FROM (") + len("FROM ("):sql.index(") b ")]
     assert "ts_rank_cd" in ranking
     assert search_sql.FILTERS in ranking and search_sql.KEYED_E in ranking
+
+
+def test_the_first_pass_reads_the_groups_a_pages_title_or_breadcrumb_names():
+    """FIX-ITER4: ``named`` (the step's term groups in the page's title or breadcrumb, never its
+    headings) is a count of its own, read by Library now's fit; the search's shares, verdict and
+    order do not read it. ``total`` is the step's term groups that have a lexeme."""
+    index = FakeIndex({"entries_text": [row(1), row(2)]}, coverage={1: (2, 3, 4, 1), 2: (2, 3, 4, 0)})
+    fp = run(search.free_first_pass(OWNER, catalog(("r1", "patt", "normal")), "time based blind injection",
+                                    index=index))
+    got = {c.row["id"]: (c.named, c.strong, c.anywhere) for c in fp.candidates}
+    assert got == {1: (1, 0.5, 0.75), 2: (0, 0.5, 0.75)} and fp.total == 4
+    assessed = search_sql.STATEMENTS["assess"]
+    named = assessed[assessed.index("AS anywhere"):assessed.index("AS named")]
+    # The title's weight and the breadcrumb, never the headings' weight B (which also holds the breadcrumb).
+    assert "'{a}'" in named and "e.breadcrumb" in named and "'{a,b}'" not in named
+    answers = [run(search.search(OWNER, catalog(("r1", "patt", "normal")), "time based blind injection",
+                                 index=FakeIndex({"entries_text": [row(1), row(2)]},
+                                                 coverage={1: (2, 3, 4, a), 2: (2, 3, 4, b)})))
+               for a, b in ((1, 0), (0, 1), (0, 0))]
+    assert len({(a.verdict, tuple(h.card.page_id for h in a.hits)) for a in answers}) == 1
+    assert [h.card.page_id for h in answers[0].hits] == ["patt:1", "patt:2"]
 
 
 def test_a_long_query_is_cut_and_its_terms_capped():

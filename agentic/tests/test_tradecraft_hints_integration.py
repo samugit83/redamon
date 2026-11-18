@@ -93,6 +93,29 @@ async def test_the_block_reads_only_the_run_owners_catalog(pg, caplog):
     assert not [r for r in caplog.records if "[tradecraft] library_now code=" in r.getMessage()]
 
 
+async def test_a_page_whose_headings_alone_hold_the_steps_words_is_not_shown(pg):
+    """FIX-ITER4: a long stored page about one technique, its headings full of planning words, fitted
+    any step made of them (the e2e runs showed an SSRF skill page in path traversal, deserialization
+    and smuggling steps). It is shown for a step that names its subject in its title, and for no
+    step of planning words only."""
+    uid = await pg.user()
+    planning = ["Payload and detection patterns", "Bypass techniques", "Confirm the request", "Target endpoints",
+                "Parameter discovery", "Response header signals"]
+    lib = await seed(pg, uid, [
+        page(1, title="Hunting request forgery", topics=["ssrf"], headings=[{"level": 2, "text": h} for h in planning],
+             sections=[(h, f"{h}: probe the target endpoint, bypass the filter, confirm the payload in the response.")
+                       for h in planning]),
+        sqli(2, "PostgreSQL time based blind SQL injection"),
+    ], slug="lib")
+    ps._settings_ctx.set(RUN_SETTINGS)
+    cat = catalog(uid, lib, search_settings={"prompt.coverageMap": False})
+    planned, _ = await hints.library_now(
+        state("Probe the endpoint parameter, bypass the filter and confirm the payload"), cat)
+    assert "Hunting request forgery" not in (planned or "")
+    named, _ = await hints.library_now(state("Confirm the request forgery through the URL parameter"), cat)
+    assert "Hunting request forgery" in (named or "")
+
+
 async def test_the_real_scores_keep_out_what_does_not_fit(pg):
     uid = await pg.user()
     lib = await seed(pg, uid, [

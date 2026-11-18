@@ -10,8 +10,9 @@ technologies, the catalog's resources) through the free first pass (Q7.2), and a
 those facts change, or when the agent has read every page the search kept and it kept a full set
 (more may fit); the CVE ids a finding confirmed get a search of their own. A page is kept when the
 search's own scores pass the run's match strictness (``search.is_related``) and something of the
-step is in its title, breadcrumb or headings, or it names a CVE id exactly, or its title is a close
-fuzzy match (``fits``). Each search keeps its best ``STANDING`` pages not read yet; the block shows
+step is in its title or breadcrumb, where a page names itself (a heading only lists what a long
+page contains), or it names a CVE id exactly, or its title is a close fuzzy match (``fits``). Each
+search keeps its best ``STANDING`` pages not read yet; the block shows
 ``constants.pagesPerHint`` (3), the best of each step in turn, labelled by the step they fit. A
 page the run read never comes back; one shown and not read may, for another step.
 
@@ -38,9 +39,9 @@ failed or was slow, gets a fixed notice (``NOTICES``), and a failed search is tr
 next thinks (``MAX_RETRIES``), and again after any later search succeeds; a step's pages stay
 while the step does, even when a search for new facts fails. Measurement, page IDs and
 counts only (never a step or a title): ``[tradecraft] library_now refresh=`` per round of
-searches, ``shown=`` per think with a block, ``<page> read`` when the agent reads a page a block
-showed (``run_state.record_seen``), ``unread pages=`` when the notice is shown. It never fails the
-think node.
+searches, ``fit`` per step searched (``fit_line``), ``shown=`` per think with a block, ``<page>
+read`` when the agent reads a page a block showed (``run_state.record_seen``), ``unread pages=``
+when the notice is shown. It never fails the think node.
 """
 
 from __future__ import annotations
@@ -87,6 +88,8 @@ GOAL_SHOWN_CHARS = 100
 PATH_CHARS = 100
 MATCH_WORDS = 6
 MATCH_WORD_CHARS = 30
+# The pages with the best fused rank a ``fit`` line reports, fitting or not.
+FIT_LOG_BEST = 3
 
 # The trusted lines are fixed text: the steps, which the model or the person wrote (and target
 # text can colour), are inside the untrusted block, each above the pages that fit it.
@@ -204,11 +207,33 @@ def render(steps: Sequence[tuple[str, str]], rows: Sequence[Mapping[str, Any]]) 
 
 def fits(cand: Any, th: Any) -> bool:
     """The threshold, from the search's own scores: related at the run's match strictness, and
-    about something the goal names (one of its terms in the title, breadcrumb or headings), or an
-    exact CVE id, or a close title."""
+    about something the goal names (one of its terms in the title or the breadcrumb), or an exact
+    CVE id, or a close title. A heading does not count: a long page's headings hold planning words
+    ("Payload & Detection Patterns", "Bypass Techniques") that any step uses, and fitted it to steps
+    of another subject (FIX-ITER4, measured on 62 steps: 14 fewer off-topic rows, 8 more relevant)."""
     from tradecraft.library import search
 
-    return search.is_related(cand, th) and (cand.entity_match or cand.strong > 0 or cand.fuzzy >= th.fuzzy)
+    return search.is_related(cand, th) and (cand.entity_match or cand.named > 0 or cand.fuzzy >= th.fuzzy)
+
+
+def fit_line(found: Any, kept: Sequence[tuple[str, Any]], th: Any, by_id: Mapping[str, Any]) -> str:
+    """The measurement of one step's search, page IDs and counts only: the step's term groups, the
+    threshold, each kept page as ``<page>/<groups covered>/<groups its title or breadcrumb names>``,
+    and the ``FIT_LOG_BEST`` best by the fused rank with ``/<1 if it fits>``: the threshold can be
+    measured on real runs from the log alone, without the step's or a page's words."""
+    from tradecraft.library import page_ids
+
+    def ref(cand: Any) -> Optional[str]:
+        res = by_id.get(cand.row["resource_id"])
+        return page_ids.format(res.slug, int(cand.row["page_id"])) if res is not None else None
+
+    def counts(cand: Any) -> str:
+        return f"{round(cand.anywhere * found.total)}/{cand.named}"
+
+    keep = ",".join(f"{page}/{counts(cand)}" for page, cand in kept) or "-"
+    top = sorted(found.candidates, key=lambda c: (-c.score, c.row["page_id"]))[:FIT_LOG_BEST]
+    best = ",".join(f"{ref(c)}/{counts(c)}/{int(fits(c, th))}" for c in top if ref(c)) or "-"
+    return f"[tradecraft] library_now fit groups={found.total} related={th.related} kept={keep} best={best}"
 
 
 def _stem(word: str) -> str:
@@ -298,6 +323,7 @@ async def _pass(catalog: Any, settings: EffectiveSettings, focus: profile.Focus,
                                          settings=settings, index=index)
     by_id = {r.id: r for r in catalog.resources}
     rows: list[dict] = []
+    kept: list[tuple[str, Any]] = []
     for cand in sorted((c for c in found.candidates if (c.entity_match if exact else fits(c, th))), key=search._order):
         resource = by_id.get(cand.row["resource_id"])
         if resource is None:
@@ -308,8 +334,11 @@ async def _pass(catalog: Any, settings: EffectiveSettings, focus: profile.Focus,
         path = " › ".join([resource.name or resource.slug, *card.breadcrumb, card.title])
         rows.append({"page": card.page_id, "path": _clip(path, PATH_CHARS),
                      "matches": matched_words(card, focus, query)})
+        kept.append((card.page_id, cand))
         if len(rows) >= STANDING:
             break
+    if not exact:
+        logger.info(fit_line(found, kept, th, by_id))
     return rows
 
 

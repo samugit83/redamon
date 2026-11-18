@@ -76,8 +76,9 @@ STATEMENTS: dict[str, str] = {
         f"ORDER BY rank DESC, e.page_id LIMIT %(limit)s"
     ),
     # How much of the agent's need each candidate covers: its term groups found in the title
-    # (weight A), in the title, breadcrumb and headings (A and B), and anywhere (the card or a
-    # section).
+    # (weight A), in the title, breadcrumb and headings (A and B), anywhere (the card or a
+    # section), and in the title or breadcrumb (``named``: where a page names itself; weight B
+    # also holds the headings, so the breadcrumb is read on its own).
     "assess": (
         f"SELECT e.id, "
         f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0) AS total, "
@@ -88,7 +89,9 @@ STATEMENTS: dict[str, str] = {
         f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0 AND (e.search_vector @@ {GROUP} "
         f"OR EXISTS (SELECT 1 FROM {S} s WHERE s.entry_id = e.id AND s.user_id = e.user_id "
         f"AND s.resource_id = e.resource_id AND s.generation = e.generation AND s.search_vector @@ {GROUP}))) "
-        f"AS anywhere "
+        f"AS anywhere, "
+        f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0 AND (ts_filter(e.search_vector, '{{a}}') @@ {GROUP} "
+        f"OR to_tsvector('{CFG}', array_to_string(e.breadcrumb, ' ')) @@ {GROUP})) AS named "
         f"FROM {E} e {LIVE_E} WHERE {KEYED_E} AND e.id = ANY(%(ids)s::bigint[])"
     ),
     # A few words of the stored section that matched best, for the hits shown (R-091).

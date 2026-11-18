@@ -121,6 +121,24 @@ async def test_weights_synonyms_trigram(pg):
     assert typo.hits and typo.hits[0].card.title == "Kerberos: Kerberoasting" and typo.verdict == "RELATED"
 
 
+async def test_named_counts_the_title_and_the_breadcrumb_never_the_headings(pg):
+    """FIX-ITER4: Library now's fit asks that the step be named where a page names itself, its title
+    or its breadcrumb (a page whose stored title is only the site's name is named by its path); a
+    heading says what a long page contains. The search's own strong share still reads headings."""
+    uid = await pg.user()
+    res = await seed(pg, uid, [
+        page(1, title="Kerberoasting walkthrough"),
+        page(2, title="HackTricks", breadcrumb=["windows hardening", "kerberoasting"]),
+        page(3, title="Ticket notes", headings=[{"level": 2, "text": "Kerberoasting"}]),
+        page(4, title="Domain notes", sections=[("Intro", "Kerberoasting is described here, in the text only.")]),
+    ])
+    fp = await search.free_first_pass(uid, catalog(uid, res), "kerberoasting")
+    got = {c.row["title"]: (c.named, round(c.strong, 2), round(c.anywhere, 2)) for c in fp.candidates}
+    assert got == {"Kerberoasting walkthrough": (1, 1.0, 1.0), "HackTricks": (1, 1.0, 1.0),
+                   "Ticket notes": (0, 1.0, 1.0), "Domain notes": (0, 0.0, 1.0)}
+    assert fp.total == 1
+
+
 async def test_synonyms_same_pages(pg):
     """AC-62: "sqli", "SQLi" and "SQL injection" find the same pages."""
     uid = await pg.user()
