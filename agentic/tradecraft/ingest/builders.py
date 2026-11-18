@@ -707,15 +707,16 @@ async def build_cve(url: str, settings: EffectiveSettings, *, github_token: Opti
     result = MapResult("cve-poc-db", meta={"owner": owner, "repo": repo, "branch": branch}, index_kind="none",
                        index_url=f"https://github.com/{owner}/{repo}")
     resp = await fetch.fetch_raw(_api(owner, repo, "/contents" + _ref(settings, branch)), settings,
-                                 github_token=github_token)
-    listing = _json_or_none(resp) if resp.status == 200 else None
+                                 github_token=github_token, max_bytes=CVE_LISTING_MAX_BYTES)
+    listing = _json_or_none(resp) if resp.status == 200 and not resp.truncated else None
     if isinstance(listing, list) and not any(
             isinstance(it, dict) and it.get("type") == "dir" and _YEAR_DIR_RE.fullmatch(str(it.get("name", "")))
             for it in listing):
         result.retype = "github-repo"
         if not forced:
             return result
-    root_error = "" if isinstance(listing, list) else (resp.error or _status_note(resp.status))
+    root_error = "" if isinstance(listing, list) else (
+        LISTING_TOO_LARGE if resp.status == 200 and resp.truncated else resp.error or _status_note(resp.status))
     await index_cve(result, owner, repo, listing if isinstance(listing, list) else None, root_error, settings,
                     github_token=github_token, blocking=blocking, should_stop=should_stop,
                     rate_limited=resp.status in _RATE_LIMITED)
@@ -736,11 +737,19 @@ CVE_FOLDER_UNREAD = "cve_index_folder_unread"
 CVE_LISTING_CUT = "cve_index_listing_cut"
 CVE_TIME_BUDGET = "cve_index_time_budget"
 CVE_FOLDER_MISSING = "cve_index_folder_missing"
+# The most of one listing answer the index reads: the root's, a folder's before ``{year}``, a year's
+# tree. An answer over it would be cut at every refresh: a cut (``CVE_LISTING_CUT``), never a miss.
+CVE_LISTING_MAX_BYTES = int(constant("sitemapMaxBytes"))
+LISTING_TOO_LARGE = "cve_index_listing_too_large"
 # No GitHub token: no index (the owner's decision of 2026-11-18 on an index's GitHub calls). GitHub
 # allows 60 API calls an hour from one address without one, and a full archive's index takes one per
 # year folder (about 30): the archive is read by CVE id as it always was, and the report says what to add.
 CVE_NEEDS_TOKEN = "cve_index_needs_token"
 NEEDS_TOKEN_STOP = "cve index: add a GitHub token to index this archive"
+# A forced archive whose path patterns name no ``{year}`` folder is read by CVE id only: the index
+# lists year folders, and no token or refresh changes that. Within the report's 64 characters.
+CVE_NO_YEAR_PATTERN = "cve_index_no_year_pattern"
+NO_YEAR_STOP = "cve index: none, no path pattern names a year folder"
 # Statuses after which every further listing call would be refused too (GitHub's rate limits).
 _RATE_LIMITED = (403, 429)
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -855,11 +864,11 @@ async def index_cve(result: MapResult, owner: str, repo: str, root: Optional[lis
     file the reader reads first for it, no page text (R-082 holds: nothing is downloaded or stored).
 
     One listing per year folder, through the git trees API (the contents API stops at 1,000 entries
-    of a folder), newest year first, each answer read up to ``constants.sitemapMaxBytes`` and parsed
-    off the event loop; a folder before ``{year}`` other than the root costs one listing more. Every
-    call carries the job's GitHub token (the resource's own, else the account's), as the archive's
-    other calls do; without one there is no index (``CVE_NEEDS_TOKEN``), and no call is made for
-    it. Rules:
+    of a folder), newest year first, parsed off the event loop; a folder before ``{year}`` other than
+    the root costs one listing more. Every listing answer, the root's included, is read up to
+    ``CVE_LISTING_MAX_BYTES``. Every call carries the job's GitHub token (the resource's own, else
+    the account's), as the archive's other calls do; without one there is no index
+    (``CVE_NEEDS_TOKEN``), and no call is made for it. Rules:
 
     - a CVE counts once, at the first of the archive's patterns that names its file;
     - over ``cve_index_cap()`` files, the largest are kept: in a proof-of-concept archive a CVE's
@@ -869,6 +878,8 @@ async def index_cve(result: MapResult, owner: str, repo: str, root: Optional[lis
       GitHub rate limit also stops the listing."""
     patterns = index_patterns(settings.list("type.cve.pathPatterns"))
     if not patterns:
+        _count(result, CVE_NO_YEAR_PATTERN)
+        result.report_stop = NO_YEAR_STOP
         return
     from tradecraft.library import cve
 
@@ -885,16 +896,20 @@ async def index_cve(result: MapResult, owner: str, repo: str, root: Optional[lis
         if head:
             resp = await fetch.fetch_raw(
                 _api(owner, repo, f"/contents/{urllib.parse.quote(head)}" + _ref(settings, branch)), settings,
-                github_token=github_token)
-            listing = _json_or_none(resp) if resp.status == 200 else None
-            error = resp.error or _status_note(resp.status)
+                github_token=github_token, max_bytes=CVE_LISTING_MAX_BYTES)
+            listing = _json_or_none(resp) if resp.status == 200 and not resp.truncated else None
+            too_large = resp.status == 200 and resp.truncated
+            error = LISTING_TOO_LARGE if too_large else resp.error or _status_note(resp.status)
             rate_limited = rate_limited or resp.status in _RATE_LIMITED
             if resp.status == 404:
                 _count(result, CVE_FOLDER_MISSING)
                 continue
         if not isinstance(listing, list):
             unread += 1
-            missed += 1
+            if error == LISTING_TOO_LARGE:
+                _count(result, CVE_LISTING_CUT)
+            else:
+                missed += 1
             result.note = result.note or error or "cve_index_unlisted"
             continue
         for year, sha in _year_folders(listing).items():
@@ -917,12 +932,11 @@ async def index_cve(result: MapResult, owner: str, repo: str, root: Optional[lis
                 continue
             mine = [p for p in patterns if p.head == head]
             tree = _api(owner, repo, f"/git/trees/{sha}" + ("?recursive=1" if any(p.deep for p in mine) else ""))
-            resp = await fetch.fetch_raw(tree, settings, github_token=github_token,
-                                         max_bytes=int(constant("sitemapMaxBytes")))
+            resp = await fetch.fetch_raw(tree, settings, github_token=github_token, max_bytes=CVE_LISTING_MAX_BYTES)
             if resp.status == 200 and resp.truncated:
                 unread += 1
                 _count(result, CVE_LISTING_CUT)
-                result.note = result.note or "cve_index_listing_too_large"
+                result.note = result.note or LISTING_TOO_LARGE
                 continue
             listed = await blocking(year_files, resp.body, head, year, mine) if resp.status == 200 else None
             if listed is None:

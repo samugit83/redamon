@@ -38,7 +38,7 @@ from tradecraft.ingest import builders, entities, pipeline  # noqa: E402
 from tradecraft.ingest.builders import Candidate  # noqa: E402
 from tradecraft.library import reader, search  # noqa: E402
 from tradecraft.library.types import BrowseLevel  # noqa: E402
-from tradecraft.settings import EffectiveSettings  # noqa: E402
+from tradecraft.settings import EffectiveSettings, constant  # noqa: E402
 from tradecraft_doubles import FIXTURES, FixtureFetcher, run  # noqa: E402
 from tradecraft_memory_store import padded_sites  # noqa: E402
 
@@ -177,8 +177,7 @@ def test_a_listing_over_the_size_bound_or_cut_by_github(tmp_path, monkeypatch):
     result, _ = build(root)
     assert "CVE-2021-0001" in {e.title for e in result.entries} and not result.index_incomplete
     assert result.counted == {"cve_index_listing_cut": 1}
-    real = builders.constant
-    monkeypatch.setattr(builders, "constant", lambda name: 4096 if name == "sitemapMaxBytes" else real(name))
+    monkeypatch.setattr(builders, "CVE_LISTING_MAX_BYTES", 4096)
     result, _ = build()
     # The 2023 tree (1,050 files) is over the bound; the small years are read.
     assert {e.title[:8] for e in result.entries} == {"CVE-2021", "CVE-2022"} and not result.index_incomplete
@@ -277,6 +276,87 @@ def test_a_folder_a_pattern_names_that_the_repository_lacks_holds_nothing():
     assert result.report_stop == f"cve index: {FILES} of {FILES} files"
 
 
+class Bounds(FixtureFetcher):
+    """The fixture fetcher, recording the size bound each request asked for."""
+
+    def __init__(self, root):
+        super().__init__(root)
+        self.bounds = {}
+
+    async def get(self, url, **kwargs):
+        self.bounds[url] = kwargs.get("max_bytes")
+        return await super().get(url, **kwargs)
+
+
+def _bounded_build(root, settings):
+    fetcher = Bounds(root)
+    with net.use_fetcher(fetcher):
+        result = run(builders.build_known("cve-poc-db", URL, EffectiveSettings(settings), github_token=TOKEN,
+                                          forced=True))
+    return result, fetcher
+
+
+def test_every_listing_of_the_index_reads_up_to_one_bound(tmp_path):
+    """The root listing, a folder before ``{year}`` and each year's tree: one bound, one constant."""
+    exploits = [{"name": "2021", "path": "exploits/2021", "type": "dir", "size": 0, "sha": year_sha(1999)}]
+    root = archive(tmp_path, {"api.github.com/repos/tc-fixture/cve/contents/exploits/index.json": exploits,
+                              f"api.github.com/repos/tc-fixture/cve/git/trees/{year_sha(1999)}/index.json":
+                                  tree(("CVE-2021-0042.md", 70))})
+    result, fetcher = _bounded_build(root, {"type.cve.pathPatterns": ["exploits/{year}/{cve}.md", "{year}/{cve}.json"]})
+    listings = [u for u in fetcher.bounds if "/contents" in u or "/git/trees/" in u]
+    assert f"{API}/contents" in listings and f"{API}/contents/exploits" in listings and len(listings) == 6
+    bound = builders.CVE_LISTING_MAX_BYTES
+    assert {fetcher.bounds[u] for u in listings} == {bound} and bound == int(constant("sitemapMaxBytes"))
+    assert len(result.entries) == FILES + 1
+
+
+def test_a_root_listing_over_the_bound_is_cut_like_a_tree(tmp_path, monkeypatch):
+    """Over the bound the answer would be cut at every refresh: counted, never a miss (the archive
+    keeps its other patterns' folders, and no refresh fails for it)."""
+    monkeypatch.setattr(builders, "CVE_LISTING_MAX_BYTES", 300)
+    result, fetcher = _bounded_build(FIXTURES, JSON)
+    assert fetcher.bounds[f"{API}/contents"] == 300 and not [u for u in fetcher.bounds if "/git/trees/" in u]
+    assert result.counted == {"cve_index_listing_cut": 1} and not result.index_incomplete and not result.retype
+    assert result.report_stop == "cve index: 0 of 0 files, 1 folders unread"
+
+
+def test_a_folder_listing_over_the_bound_is_cut_like_a_tree(tmp_path, monkeypatch):
+    exploits = [{"name": f"pad-{n:03d}", "path": f"exploits/pad-{n:03d}", "type": "dir", "size": 0,
+                 "sha": f"{n:040x}"} for n in range(40)]
+    root = archive(tmp_path, {"api.github.com/repos/tc-fixture/cve/contents/exploits/index.json": exploits})
+    monkeypatch.setattr(builders, "CVE_LISTING_MAX_BYTES", 2000)
+    result, fetcher = _bounded_build(root, {"type.cve.pathPatterns": ["exploits/{year}/{cve}.md"]})
+    assert fetcher.bounds[f"{API}/contents/exploits"] == 2000 and fetcher.bounds[f"{API}/contents"] == 2000
+    assert result.counted == {"cve_index_listing_cut": 1} and not result.index_incomplete
+    assert result.report_stop == "cve index: 0 of 0 files, 1 folders unread"
+
+
+@pytest.mark.parametrize("token", [TOKEN, None])
+def test_patterns_that_name_no_year_folder_say_why_there_is_no_index(token):
+    """A forced archive whose path patterns name no ``{year}`` folder is read by CVE id only, and no
+    token changes that: the report says so (a stop reason in the ``cve index:`` family the card
+    reads), and no listing is made for it."""
+    result, fetcher = build(settings={"type.cve.pathPatterns": ["{cve}.md", "pocs/{cve_lower}.json"]}, token=token)
+    assert result.entries == [] and urls(fetcher) == [API, f"{API}/contents"]
+    assert result.report_stop == builders.NO_YEAR_STOP == "cve index: none, no path pattern names a year folder"
+    assert len(result.report_stop) <= 64 and result.counted == {"cve_index_no_year_pattern": 1}
+    assert not result.index_incomplete and not result.error
+
+
+@pytest.mark.parametrize("settings,token,statuses", [
+    ({"type.cve.pathPatterns": ["{cve}.md"]}, TOKEN, None),  # no pattern with a year folder
+    (JSON, None, None),  # no GitHub token
+    (JSON, TOKEN, None),  # an index
+    ({"type.cve.pathPatterns": ["{year}/{cve}.md"]}, TOKEN, None),  # an index of nothing
+    (JSON, TOKEN, {"/repos/tc-fixture/cve/contents": 502}),  # no root listing
+])
+def test_every_exit_of_the_index_writes_a_cve_index_stop_reason(tmp_path, settings, token, statuses):
+    """The card reads a report with no ``cve index:`` stop reason as one from before the index (and
+    asks for a Refresh): every way ``index_cve`` ends writes one."""
+    result, _ = build(archive(tmp_path, statuses=statuses), settings=settings, token=token)
+    assert result.report_stop.startswith("cve index: ") and len(result.report_stop) <= 64
+
+
 def test_a_detected_repository_without_year_folders_is_not_listed():
     fetcher = FixtureFetcher()
     with net.use_fetcher(fetcher):
@@ -352,8 +432,7 @@ def test_a_first_ingestion_takes_what_it_listed(tmp_path):
 
 
 def test_a_folder_over_the_listing_bound_does_not_stop_a_refresh(tmp_path, monkeypatch):
-    real = builders.constant
-    monkeypatch.setattr(builders, "constant", lambda name: 4096 if name == "sitemapMaxBytes" else real(name))
+    monkeypatch.setattr(builders, "CVE_LISTING_MAX_BYTES", 4096)
     h = Harness(tmp_path, URL, settings=JSON)
     h.store.resources[RID]["sitemap"] = {"owner": "tc-fixture", "repo": "cve", "branch": "main"}
     outcome = h.run()
