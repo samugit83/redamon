@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from tradecraft import schema_columns as sc
 
-E, S, T, R = sc.TABLE_ENTRIES, sc.TABLE_SECTIONS, sc.TABLE_TREE, sc.TABLE_RESOURCES
+E, S, T, R, C = sc.TABLE_ENTRIES, sc.TABLE_SECTIONS, sc.TABLE_TREE, sc.TABLE_RESOURCES, sc.TABLE_CURATIONS
 CFG = sc.TEXT_SEARCH_CONFIG
 
 CARD = ("e.id, e.page_id, e.resource_id, e.url, e.title, e.title_source, e.breadcrumb, e.headings, "
@@ -75,6 +75,14 @@ STATEMENTS: dict[str, str] = {
         f"SELECT {CARD}, (SELECT count(*) FROM unnest(e.entities) AS x(v) WHERE x.v = ANY(%(ents)s::text[]))::float8 "
         f"AS rank FROM {E} e {LIVE_E} WHERE {KEYED_E} AND {FILTERS} AND e.entities && %(ents)s::text[] "
         f"ORDER BY rank DESC, e.page_id LIMIT %(limit)s"
+    ),
+    # A CVE archive's entries for the CVE ids a need names (``search.archive_entries``). An entry
+    # whose file the person blocked in the Map is left out (a block keeps the entry in the map until
+    # the next refresh), so another archive's copy of that CVE can stand for it.
+    "archive_entries": (
+        f"SELECT {CARD}, 1.0::float8 AS rank FROM {E} e {LIVE_E} WHERE {KEYED_E} AND {FILTERS} "
+        f"AND e.entities && %(ents)s::text[] AND NOT EXISTS (SELECT 1 FROM {C} c WHERE c.resource_id = e.resource_id "
+        f"AND c.url = e.url AND c.blocked) ORDER BY e.page_id LIMIT %(limit)s"
     ),
     "entries_fuzzy": (
         f"SELECT {CARD}, word_similarity(%(q)s, e.title)::float8 AS rank FROM {E} e {LIVE_E} "

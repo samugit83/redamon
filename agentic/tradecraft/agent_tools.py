@@ -168,21 +168,24 @@ def render_browse(level: BrowseLevel, resource: Any) -> str:
     lines = [BROWSE_HEADER.format(breadcrumb=" › ".join(level.breadcrumb), pages=level.page_count)]
     if level.summary is not None:
         lines.append(f"summary: {_clip(level.summary, 4000) or '(no summary)'}")
-    if resource.type == "cve-poc-db":
+    # A CVE archive's pages are its index, CVE ids in file order: a list of the first ones says
+    # nothing, and the archive is read by the CVE a finding names.
+    archive = resource.type == "cve-poc-db"
+    if archive:
         lines.append(CVE_BROWSE.format(slug=resource.slug))
     n = 0
     for folder in level.folders:
         n += 1
         lines.append(BROWSE_LINE.format(n=n, label=_clip(folder.label, 80), count=folder.page_count,
                                         description=_clip(folder.description, 100)).rstrip())
-    for card in level.pages:
+    for card in () if archive else level.pages:
         n += 1
         lines.append(f"{n:>2}. {card.page_id}  {_clip(card.title or card.url, 100)}")
-    if level.more:
+    if level.more and not archive:
         lines.append(BROWSE_MORE.format(more=level.more))
     if level.folders:
         lines.append(f'browse: tradecraft_search(resource="{resource.slug}", path="{level.folders[0].path}")')
-    if level.pages:
+    if level.pages and not archive:
         lines.append(f'read: tradecraft_lookup(page="{level.pages[0].page_id}")')
     return wrap_untrusted(lines)
 
@@ -379,7 +382,7 @@ async def tradecraft_lookup(
         part: the part of a long section to read (the result says how many)
         resource_id: slug of a resource, with query, when you have no page ID
         query: what you need; picks the page (with resource_id) or the section (with page)
-        cve_id: required for a cve-poc-db resource
+        cve_id: with resource_id, the CVE to read from a cve-poc-db resource (a page ID of that CVE reads it too)
         section_path: skip the pick; force a specific path or "page=N" for PDFs
         force_refresh: read a Stored resource's page from the site instead of its stored copy
     """

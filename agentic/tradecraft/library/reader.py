@@ -30,9 +30,9 @@ picker is not used on such a resource), and the read is still one section. An un
 resource, a forced ``section_path`` and a run without a search index keep today's title match
 (no model: the section picker left with 1.x, R-401) and today's whole-page answer; the page they
 return is recorded as seen too when it is an entry of the store (page IDs name entries). A CVE
-archive is read live, a CVE at a time; a PDF page from the store. These whole-text answers keep
-the per-read limit too: their text is cut into parts as a section is, and a ``next:`` line names
-the call that reads the next part.
+archive is read live, a CVE at a time, by its id or by the page ID of its index entry; a PDF page
+from the store. These whole-text answers keep the per-read limit too: their text is cut into
+parts as a section is, and a ``next:`` line names the call that reads the next part.
 """
 
 from __future__ import annotations
@@ -77,6 +77,12 @@ NO_SECTION = "Error: page {page_id} has no section of that name; its sections:"
 NO_PART = "Error: that section of page {page_id} has {parts} part(s); ask for part 1 to {parts}."
 NO_READ_PART = "Error: this read of resource '{slug}' has {parts} part(s); ask for part 1 to {parts}."
 CVE_BY_ID = "Error: resource '{slug}' is a cve-poc-db: read it with cve_id='CVE-YYYY-NNNNN', not by page."
+# A CVE archive's page is named by its ID: its URL holds the branch the archive's owner chose.
+PAGE_BLOCKED = "Error: refusing to read page {page_id}: it is blocked in resource '{slug}'."
+PAGE_OUTSIDE_MAP = ("Error: refusing to read page {page_id}: resource '{slug}' has a site login, and only the "
+                    "pages of its map are read with it.")
+PAGE_BAD_URL = "Error: refusing to read page {page_id}: {code}."
+CVE_BLOCKED = "Error: refusing to read {cve} in resource '{slug}': its file is blocked in this resource."
 NO_PAGE = ("Error: no page of resource '{slug}' matches {query!r}. Search it with tradecraft_search(query=..., "
            'resource="{slug}"), or browse it with tradecraft_search(resource="{slug}", path="").')
 # The other sections a read header lists: the rest are counted.
@@ -246,19 +252,34 @@ async def _pick_url(read: _Read, query: str, section_path: Optional[str]) -> tup
     return legacy_match.resolve_path(rtype, base, read.sitemap, path), picked.get("title") or path
 
 
-async def _refusal(read: _Read, url: str) -> str:
-    """Why ``url`` must not be requested at all, or ""."""
+async def _refused_because(read: _Read, url: str) -> str:
+    """Why ``url`` must not be requested at all: the address guard's code, ``blocked`` or
+    ``outside_map``; or ""."""
     problem = net.url_problem(url)
     if problem:
-        return BAD_URL.format(url=url, code=problem)
+        return problem
     # The entry's own URL: a PDF page keeps its "#page=N", which names a page of its own.
     canonical = fetch.page_url(url)
-    curation = await read.store.curation(read.owner, read.resource.id, canonical)
-    if curation and curation.get("blocked"):
-        return BLOCKED.format(url=url, slug=read.slug)
+    if await _blocked(read, canonical):
+        return "blocked"
     if read.has_login and not await read.store.in_map(read.owner, read.resource.id, canonical):
-        return OUTSIDE_MAP.format(url=url, slug=read.slug)
+        return "outside_map"
     return ""
+
+
+async def _blocked(read: _Read, url: str) -> bool:
+    curation = await read.store.curation(read.owner, read.resource.id, fetch.page_url(url))
+    return bool(curation and curation.get("blocked"))
+
+
+async def _refusal(read: _Read, url: str) -> str:
+    """Why ``url`` must not be requested at all, or ""."""
+    why = await _refused_because(read, url)
+    if why == "blocked":
+        return BLOCKED.format(url=url, slug=read.slug)
+    if why == "outside_map":
+        return OUTSIDE_MAP.format(url=url, slug=read.slug)
+    return BAD_URL.format(url=url, code=why) if why else ""
 
 
 async def _stored_copy(read: _Read, url: str) -> Optional[dict]:
@@ -379,7 +400,7 @@ async def _by_page_id(catalog: Any, text: str, *, section: Optional[str], part: 
         return DELETED.format(slug=resolved.resource.slug)
     read = _Read(catalog, resolved.resource, row, store)
     if resolved.resource.type == "cve-poc-db" or row.get("resource_type") == "cve-poc-db":
-        return CVE_BY_ID.format(slug=read.slug)
+        return await _cve_page(read, resolved, part)
     logger.info(f"[tradecraft] lookup resource={read.slug} section=page")
     with read.login():
         return await _read_section(read, resolved.page_id, resolved.url, section=section, part=part, query=query,
@@ -466,12 +487,44 @@ async def _read_section(read: _Read, page_id: str, url: str, *, section: Optiona
 # A CVE archive, and a PDF
 # --------------------------------------------------------------------------------------
 
-async def _cve(read: _Read, cve_id: Optional[str], part: Optional[int] = None) -> str:
+async def _cve_page(read: _Read, resolved: Any, part: Optional[int]) -> str:
+    """A page ID of a CVE archive names an entry of its index (``builders.index_cve``): the CVE it
+    stands for is read as ``cve_id`` reads it, live, with the same parts and refusals; the page is
+    the one recorded as seen. An entry with no CVE id (ingestion writes none) answers ``CVE_BY_ID``."""
+    why = await _refused_because(read, resolved.url)
+    if why:
+        template = {"blocked": PAGE_BLOCKED, "outside_map": PAGE_OUTSIDE_MAP}.get(why, PAGE_BAD_URL)
+        return template.format(page_id=resolved.page_id, slug=read.slug, code=why)
+    entry = await read.store.entry_by_url(read.owner, read.resource.id, resolved.url)
+    if entry is None:
+        return PAGE_GONE.format(page_id=resolved.page_id, slug=read.slug)
+    cve_id = next((e for e in entry.get("entities") or () if isinstance(e, str) and cve.CVE_ID_RE.match(e)), None)
+    if cve_id is None:
+        return CVE_BY_ID.format(slug=read.slug)
+    logger.info(f"[tradecraft] lookup resource={read.slug} section=page")
+    with read.login():
+        return await _cve(read, cve_id, part, entry=entry)
+
+
+async def _cve(read: _Read, cve_id: Optional[str], part: Optional[int] = None, *,
+               entry: Optional[dict] = None) -> str:
+    """One CVE of the archive, live. The archive's entry for it (``entry``, the page ID read, or else
+    the entry whose URL is the file read) is recorded as seen once a part is returned, so Library
+    now does not show it again; a README answer to a ``cve_id`` is no entry's."""
     if not cve_id or not cve.CVE_ID_RE.match(cve_id):
         return (f"Error: resource '{read.slug}' is a cve-poc-db; "
                 f"you must pass cve_id='CVE-YYYY-NNNNN'.")
     cve_norm = cve_id.upper()
-    content, src, api_error = await cve.lookup(cve_norm, read.sitemap, read.settings, github_token=read.token)
+
+    async def blocked(url: str) -> bool:
+        return await _blocked(read, url)
+
+    content, src, api_error = await cve.lookup(cve_norm, read.sitemap, read.settings, github_token=read.token,
+                                               blocked=blocked)
+    if api_error == cve.BLOCKED:
+        return CVE_BLOCKED.format(cve=cve_norm, slug=read.slug)
+    if content and entry is None:
+        entry = await read.store.entry_by_url(read.owner, read.resource.id, fetch.canonical_url(src))
     title = cve_norm
     if not content and api_error:
         return (f"Error: could not look up {cve_norm} in resource '{read.slug}' ({api_error}). This is NOT a "
@@ -484,7 +537,8 @@ async def _cve(read: _Read, cve_id: Optional[str], part: Optional[int] = None) -
     if not content:
         return (f"PoC not found for {cve_norm} in resource '{read.slug}' "
                 f"(no archive entry, and the repository README does not mention it).")
-    return render_parts(read, src, title, format_source("live"), content, part, _again(read, False, cve_id=cve_norm))
+    return render_parts(read, src, title, format_source("live"), content, part, _again(read, False, cve_id=cve_norm),
+                        seen=lambda: read.record_seen(entry))
 
 
 def _pdf_page_text(body: bytes, page: int) -> str:

@@ -384,7 +384,7 @@ class GitHubTokenPerRun(unittest.TestCase):
         store = MemoryStore()
         tokens = []
 
-        async def fake_lookup(cve_id, sitemap, settings, github_token=None):
+        async def fake_lookup(cve_id, sitemap, settings, github_token=None, blocked=None):
             tokens.append(github_token or "")
             return "poc body", "https://github.com/x/pocs/blob/main/poc.py", None
 

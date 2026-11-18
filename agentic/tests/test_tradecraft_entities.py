@@ -64,7 +64,7 @@ def test_stage_fills_every_card_from_its_fields_and_url():
         {"url": "https://wiki.tc-fixture.test/x/", "title": "Nothing here", "description": "plain words"},
         {"url": "https://wiki.tc-fixture.test/y/", "title": "Redis", "entities": ["CVE-2020-0001"]},
     ]
-    state = asyncio.run(entities.extract(SimpleNamespace(cards=cards)))
+    state = asyncio.run(entities.extract(SimpleNamespace(cards=cards, entries=[], site_type="agentic-crawl")))
     assert state.cards[0]["entities"] == ["CVE-2024-0001", "jenkins"]
     assert state.cards[1]["entities"] == []
     assert state.cards[2]["entities"] == ["CVE-2020-0001", "redis"]

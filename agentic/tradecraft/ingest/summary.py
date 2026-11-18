@@ -98,7 +98,10 @@ async def summarize(state: "IngestState") -> "IngestState":
         return state
     s = state.settings
     body = source_text(state)
-    titles = [e.title for e in state.entries if e.extra.get("status", "kept") == "kept"]
+    # A CVE archive's entries are CVE ids: they tell the summary nothing, and would crowd out its
+    # homepage, which says what the archive holds.
+    titles = [] if state.site_type == "cve-poc-db" else [
+        e.title for e in state.entries if e.extra.get("status", "kept") == "kept"]
     if not body and not titles:
         return state
     try:

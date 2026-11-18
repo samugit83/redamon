@@ -296,6 +296,10 @@ async def build_map(state: IngestState) -> None:
         if result.retype and not forced:
             state.site_type = result.retype
             logger.info(f"[tradecraft] job {state.request.job_id} retyped code=")
+        if result.index_incomplete:
+            await _incomplete_cve_index(state)
+        elif result.index_budget_cut:
+            await _budget_cut_cve_index(state)
         if result.crawl_fallback and not state.entries and not state.map_error:
             await _crawl_instead(state, reading_started)
     else:
@@ -324,8 +328,49 @@ def _take(state: IngestState, result: builders.MapResult) -> None:
     if result.error:
         state.map_error = result.error
         state.count_error(result.error)
+    for code, n in result.counted.items():
+        state.errors[code] += n
     if result.note:
         logger.info(f"[tradecraft] job {state.request.job_id} build_map note={result.note}")
+
+
+async def _incomplete_cve_index(state: IngestState) -> None:
+    """A CVE archive whose index missed folders this time (an error, a GitHub rate limit, an answer
+    that is not a tree) fails the job when the archive is already readable, so that with the default policy
+    its previous index stays live, as any refresh that could not read its site keeps the previous
+    version. On a first ingestion the listed part goes live: without the map's owner, repository
+    and branch, which this job writes, no CVE of the archive could be read at all."""
+    row = await state.store.legacy_sitemap(state.owner_id, state.resource_id) or {}
+    live = row.get("sitemap") if isinstance(row.get("sitemap"), dict) else {}
+    if live.get("owner") and live.get("repo") and not state.map_error:
+        state.map_error = "fetch_failed"
+        state.count_error("fetch_failed")
+
+
+BUDGET_CUT = "timeout"
+
+
+async def _budget_cut_cve_index(state: IngestState) -> None:
+    """A CVE archive whose listing the time budget cut (newest years first, so the oldest are left
+    out) fails a refresh with ``timeout`` while the previous index is whole, so that with the default
+    policy a slow refresh does not replace it. The cut goes live on a first ingestion, when the
+    archive had no index, and when the previous index or the previous refresh was cut by the budget
+    too: a listing the budget never fits is not a passing slowness, and failing it again would keep
+    the archive on an old index for ever. A refresh that failed leaves its code in ``last_error``
+    and its time in ``last_verified_at`` only (the swap sets ``last_refreshed_at`` too)."""
+    live = (await state.store.legacy_sitemap(state.owner_id, state.resource_id) or {}).get("sitemap")
+    row = await state.store.resource(state.owner_id, state.resource_id) or {}
+    report = row.get("ingestion_report") if isinstance(row.get("ingestion_report"), dict) else {}
+    if not (isinstance(live, dict) and live.get("owner") and live.get("repo")) or not report.get("kept"):
+        return
+    verified, refreshed = row.get("last_verified_at"), row.get("last_refreshed_at")
+    failed_since = row.get("last_error") == BUDGET_CUT and verified is not None and (
+        refreshed is None or verified > refreshed)
+    cut_before = any(isinstance(e, dict) and e.get("code") == builders.CVE_TIME_BUDGET for e in report.get("errors") or ())
+    if failed_since or cut_before or state.map_error:
+        return
+    state.map_error = BUDGET_CUT
+    state.count_error(BUDGET_CUT)
 
 
 def _reading_stop(state: IngestState, started: float) -> builders.Stop:
@@ -475,9 +520,9 @@ def budget_failure(state: IngestState) -> str:
 def failure_code(state: IngestState) -> str:
     """The code of a refresh that failed or came back empty, or "" for a usable result. A map
     that failed to build fails the refresh whatever else its entries hold: curation adds the
-    pinned pages to any map, an empty one included. A CVE archive has no entries by design, and a
-    map whose pages the focus all dropped was read: its dropped entries are written, for the Map
-    view."""
+    pinned pages to any map, an empty one included. A CVE archive is read by CVE id whatever its
+    index holds (its patterns may name no file it has), and a map whose pages the focus all dropped
+    was read: its dropped entries are written, for the Map view."""
     if state.map_error:
         return state.map_error
     kept = [e for e in state.entries if e.extra.get("status", "kept") == "kept"]

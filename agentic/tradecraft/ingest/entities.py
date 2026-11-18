@@ -52,8 +52,14 @@ def find(texts: Iterable[str]) -> list[str]:
 
 async def extract(state: "IngestState") -> "IngestState":
     """Every card with the entities of its title, breadcrumb, headings, description and URL,
-    added to any it already has."""
+    added to any it already has. A CVE archive's entry has one: the CVE id its file is named for
+    (the index's), whatever its title says after a rename, and not a name its URL happens to hold."""
+    archive = {e.url: e.extra["cve"] for e in state.entries if e.extra.get("cve")} \
+        if state.site_type == "cve-poc-db" else {}
     for card in state.cards:
+        if card.get("url") in archive:
+            card["entities"] = [archive[card["url"]]]
+            continue
         texts = [card.get("title", ""), *(card.get("breadcrumb") or ()), *heading_texts(card.get("headings")),
                  card.get("description", ""), card.get("url", "")]
         existing = [e for e in card.get("entities") or () if isinstance(e, str) and e]

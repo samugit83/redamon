@@ -78,7 +78,7 @@ def _state(cards, tag_every_page="rules_model"):
         return None
 
     return SimpleNamespace(cards=cards, settings=EffectiveSettings({"focus.tagEveryPage": tag_every_page}),
-                           llm_calls=0, model_calls=[], entries=[], model=no_model)
+                           llm_calls=0, model_calls=[], entries=[], model=no_model, site_type="agentic-crawl")
 
 
 def test_stage_tags_every_card_and_keeps_existing_tags():
