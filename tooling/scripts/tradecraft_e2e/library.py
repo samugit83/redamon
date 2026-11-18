@@ -820,14 +820,15 @@ def focus_mode(raw: Any) -> str:
 
 
 def kept_names_check(groups: Sequence[Sequence[str]], kept: Sequence[Mapping]) -> "report.CheckResult":
-    """Each group of words in the path or title of at least one kept entry (counts and words only)."""
+    """Each group of words in the title of at least one kept entry (a repository's titles hold its
+    path); the detail names the entries found by page ID only, never a title or a URL."""
     found, missing = [], []
     for group in groups:
         words = [str(w).lower() for w in group]
-        n = sum(1 for e in kept if any(w in f"{e.get('url', '')} {e.get('title', '')}".lower() for w in words))
-        (found if n else missing).append(f"{words[0]}: {n}")
+        ids = [str(e.get("pageId") or "?") for e in kept if any(w in str(e.get("title", "")).lower() for w in words)]
+        (found.append(f"{words[0]}: {', '.join(ids)}") if ids else missing.append(words[0]))
     return report.CheckResult("kept_names", not missing,
-                              "; ".join(found) + (f"; none kept for {', '.join(missing)}" if missing else ""))
+                              "; ".join(found + ([f"none kept for {', '.join(missing)}"] if missing else [])))
 
 
 def judge(spec: Mapping, view: Mapping, job: Optional[Mapping], kept: Optional[Sequence[Mapping]] = None) -> list:
@@ -966,8 +967,8 @@ class Builder:
             res = self.http.call("GET", f"{self.base}/{rid}/map?status=kept" + (f"&cursor={urllib.parse.quote(cursor)}"
                                                                                if cursor else ""))
             data = res.data if res.ok and isinstance(res.data, dict) else {}
-            out += [{"url": e.get("url", ""), "title": e.get("title", "")} for e in data.get("entries") or []
-                    if isinstance(e, dict)]
+            out += [{"url": e.get("url", ""), "title": e.get("title", ""), "pageId": e.get("pageId", "")}
+                    for e in data.get("entries") or [] if isinstance(e, dict)]
             cursor = str(data.get("nextCursor") or "")
             if not cursor:
                 break

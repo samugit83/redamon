@@ -461,6 +461,36 @@ def read_pages(trace: Mapping) -> set:
     return pages
 
 
+# The active built-in skill as the logged prompt names it (prompts/__init__.py, the skill's section).
+_ATTACK_SKILL = re.compile(r"^## Attack Skill: (?P<id>[a-z0-9_:-]+)", re.M)
+
+
+def _words(text: str) -> str:
+    return " ".join(re.sub(r"[-_/›>]+", " ", str(text or "").lower()).split())
+
+
+def on_class(trace: Mapping, page: str, terms: Sequence[str]) -> bool:
+    """A page read is on a class when one of its terms is a whole word or phrase of its ID,
+    resource, breadcrumb or title ("sql injection" is not in "NoSQL Injection")."""
+    card = (trace.get("pages") or {}).get(page) or {}
+    text = _words(" ".join([page, card.get("resource_name") or "", " ".join(card.get("breadcrumb") or []),
+                            card.get("title") or ""]))
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(_words(t))}(?![a-z0-9])", text) for t in terms if _words(t))
+
+
+def skill_summary(trace: Mapping, skills: Sequence[str], class_terms: Sequence[str]) -> dict:
+    """A measurement, never a gate: the built-in skill active at the run's first think (its logged
+    prompt), whether it is one of the lab's (``match``: None when the lab lists none), the pages
+    read on the lab's class, and whether such a read covered a missing or mismatched skill."""
+    prompts = trace.get("prompts") or []
+    first = _ATTACK_SKILL.search(prompts[0]) if prompts else None
+    active = first["id"] if first else None
+    match = (active in skills) if skills else None
+    class_reads = sorted(p for p in read_pages(trace) if on_class(trace, p, class_terms))
+    return {"active": active, "expected": list(skills), "match": match, "class_reads": class_reads,
+            "covered": None if match else bool(class_reads)}
+
+
 def in_blocks(trace: Mapping, slug: str) -> list[str]:
     """The pages of resource ``slug`` any Library now block showed."""
     return sorted({p for s in (trace.get("library_now") or {}).get("shown") or [] for p in s["pages"]

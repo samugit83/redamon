@@ -781,6 +781,71 @@ def test_no_block_carries_the_text_the_lab_planted():
     assert _arm_a(recorded_trace(), "L3")["no_planted_text_in_block"].ok is None
 
 
+def test_each_lab_names_the_built_in_skills_of_its_class():
+    # A measurement, not a gate: the agent's own skill ids (KNOWN_ATTACK_PATHS). L5's
+    # http_request_smuggling exists but is off by default in a project.
+    agent_state = _agent("state")
+    skills = {lab: list(oracles.specs(SCN)[lab].skills) for lab in ("L1", "L2", "L3", "L4", "L5")}
+    assert skills == {"L1": ["sql_injection"], "L2": ["ssrf"], "L3": ["path_traversal"], "L4": ["rce", "deserialization"],
+                      "L5": ["http_request_smuggling"]}
+    assert set(s for ids in skills.values() for s in ids) <= agent_state.KNOWN_ATTACK_PATHS
+    assert all(oracles.specs(SCN)[lab].class_terms for lab in skills)
+
+
+def test_the_skill_and_the_library_together_are_reported_never_gated():
+    spec = oracles.specs(SCN)["L1"]
+
+    def with_skill(skill_id, *, reads=True):
+        trace = recorded_trace()
+        trace["prompts"] = [trace["prompts"][0] + (f"\n## Attack Skill: {skill_id}\n" if skill_id else "")]
+        if not reads:
+            trace["tool_calls"] = trace["tool_calls"][:2]  # the search only: nothing read
+        return trace
+
+    got = checks.skill_summary(with_skill("sql_injection"), spec.skills, spec.class_terms)
+    assert got == {"active": "sql_injection", "expected": ["sql_injection"], "match": True,
+                   "class_reads": ["payloadsallthethings:412"], "covered": None}
+    got = checks.skill_summary(with_skill("access_control"), spec.skills, spec.class_terms)
+    assert (got["active"], got["match"], got["covered"]) == ("access_control", False, True)
+    got = checks.skill_summary(with_skill(None, reads=False), spec.skills, spec.class_terms)
+    assert (got["active"], got["match"], got["class_reads"], got["covered"]) == (None, False, [], False)
+    assert checks.skill_summary(with_skill("rce"), [], spec.class_terms)["match"] is None
+    # Whole words: "sql injection" is not in "NoSQL Injection".
+    nosql = {"pages": {"patt:1": {"resource_name": "PayloadsAllTheThings", "title": "NoSQL Injection", "breadcrumb": []}}}
+    assert not checks.on_class(nosql, "patt:1", spec.class_terms)
+    assert checks.on_class({"pages": {}}, "trickest-cve:CVE-2021-41773", oracles.specs(SCN)["L3"].class_terms)
+    # Never a check: the arm's checks are the same whatever the skill.
+    names = {c.name for c in checks.arm_checks("A", with_skill("access_control"), expected_pages=spec.expected_pages,
+                                                cfg=SCN, prompt=spec.prompt, planted=spec.planted)}
+    assert not any("skill" in n for n in names)
+    # The report: a cell per run and a section of counts.
+    assert report.skill_cell({"active": "sql_injection", "expected": ["sql_injection"], "match": True}) == "sql_injection: match"
+    assert report.skill_cell({"active": "access_control", "expected": ["http_request_smuggling"], "match": False,
+                              "class_reads": ["patt:1", "patt:2"], "covered": True}) == (
+        "access_control: not the lab's (http_request_smuggling); covered by 2 reads on the lab's class")
+    assert report.skill_cell({"active": None, "expected": ["rce", "deserialization"], "match": False, "class_reads": [],
+                              "covered": False}) == "none: not the lab's (rce, deserialization); not covered by a read on the lab's class"
+    a, b, c = _res("L1-A-1", "A", "L1", 1), _res("L5-A-1", "A", "L5", 1), _res("L4-A-1", "A", "L4", 1)
+    a.skill = {"active": "sql_injection", "expected": ["sql_injection"], "match": True, "class_reads": [], "covered": None}
+    b.skill = {"active": "access_control", "expected": ["http_request_smuggling"], "match": False, "class_reads": ["x:1"],
+               "covered": True}
+    c.skill = {"active": None, "expected": ["rce"], "match": False, "class_reads": [], "covered": False}
+    assert report.skill_lines([a, b, c]) == [
+        "- the lab's skill active: 1 of 3 runs",
+        "- a skill missing or not the lab's: 2 runs (L5-A-1, L4-A-1); a library read on the lab's class covered 1 (L5-A-1)"]
+    text = report.render(results=[a, b, c], gates=[], verdict=True, meta={}, gain_table={}, durations={},
+                         redact=report.Redactor())
+    assert "## Skills and Tradecraft (a measurement, not a gate)" in text and "| Skill |" in text
+    assert "| sql_injection: match |" in text
+
+
+def test_an_arm_run_reports_its_skill(tmp_path):
+    result, _, _ = _attack(_ctx(tmp_path), "L1-A-1", _outcome(),
+                           {**GOOD_TRACE, "prompts": ["| **execute_curl** | HTTP |\n## Attack Skill: sql_injection\n"]})
+    assert result.skill == {"active": "sql_injection", "expected": ["sql_injection"], "match": True, "class_reads": [],
+                            "covered": None}
+
+
 def test_the_planted_lists_are_the_labs_own_text():
     for lab in ("L1", "L2"):
         spec = oracles.specs(SCN)[lab]

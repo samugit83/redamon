@@ -552,7 +552,8 @@ def test_judge_checks_type_size_storage_readiness_login_and_focus():
     view = {"resourceType": "github-repo", "entryCount": 40, "storageMode": "stored", "hasLogin": False,
             "report": {"stored": {"pages": 30}, "readiness": {"realTitlesPct": 90}, "focus": {"mode": "focused", "dropped": 183}}}
     job = {"status": "succeeded"}
-    assert all(c.ok for c in library.judge(spec, view, job, BUGHUNTER_KEPT))
+    assert all(c.ok for c in library.judge(spec, view, job, BUGHUNTER_KEPT)), [
+        (c.name, c.detail) for c in library.judge(spec, view, job, BUGHUNTER_KEPT) if not c.ok]
     # The focus must have dropped most of the bundle: a focus that kept everything proves nothing.
     kept_all = dict(view, report={**view["report"], "focus": {"mode": "focused", "dropped": 7}})
     assert [c.name for c in library.judge(spec, kept_all, job, BUGHUNTER_KEPT) if not c.ok] == ["focus_dropped"]
@@ -563,20 +564,32 @@ def test_judge_checks_type_size_storage_readiness_login_and_focus():
 
 
 def test_the_focus_must_keep_both_halves_of_its_topics():
-    # A build that dropped both SSRF pages would still keep 3 entries and pass every count: the
-    # kept names see it (review of dc5ee40b).
+    # Q-D (the owner, 2026-11-18): the focus may keep as few as two entries, one SQL injection and
+    # one SSRF (the 2026-11-18 builds kept the two hunt skills only). A build that kept the floor
+    # but dropped both SSRF entries fails on the kept names, matched on the entries' titles; the
+    # check names the entries it found by page ID only.
     spec = next(s for s in LIB["resources"] if s["slug"] == "claude-bughunter")
+    assert (spec["expect"]["min_entries"], spec["expect"]["min_stored_pages"]) == (2, 2)
     assert spec["expect"]["kept_names"] == [["sqli", "sql injection"], ["ssrf", "server side request forgery"]]
-    view = {"resourceType": "github-repo", "entryCount": 3, "storageMode": "stored", "hasLogin": False,
-            "report": {"stored": {"pages": 3}, "readiness": {"a": 1}, "focus": {"mode": "focused", "dropped": 185}}}
+    view = {"resourceType": "github-repo", "entryCount": 2, "storageMode": "stored", "hasLogin": False,
+            "report": {"stored": {"pages": 2}, "readiness": {"a": 1}, "focus": {"mode": "focused", "dropped": 186}}}
     job = {"status": "succeeded"}
-    good = {c.name: c for c in library.judge(spec, view, job, BUGHUNTER_KEPT)}
-    assert good["kept_names"].ok and good["kept_names"].detail == "sqli: 2; ssrf: 2"
-    no_ssrf = [e for e in BUGHUNTER_KEPT if "ssrf" not in e["url"]]
-    got = {c.name: c for c in library.judge(spec, view, job, no_ssrf)}
+    two = [e for e in BUGHUNTER_KEPT if e["url"].endswith(("skills/hunt-sqli/SKILL.md", "skills/hunt-ssrf/SKILL.md"))]
+    good = {c.name: c for c in library.judge(spec, view, job, two)}
+    assert all(c.ok for c in good.values()), {n: c.detail for n, c in good.items() if not c.ok}
+    assert good["kept_names"].detail == "sqli: claude-bughunter:16210; ssrf: claude-bughunter:16211"
+    no_ssrf = [e for e in BUGHUNTER_KEPT if "ssrf" not in e["title"]]
+    got = {c.name: c for c in library.judge(spec, dict(view, entryCount=3, report={**view["report"], "stored": {"pages": 3}}),
+                                            job, no_ssrf)}
     assert [n for n, c in got.items() if not c.ok] == ["kept_names"]
-    assert got["kept_names"].detail == "sqli: 2; none kept for ssrf: 0"
+    assert got["kept_names"].detail == "sqli: claude-bughunter:16201, claude-bughunter:16210; none kept for ssrf"
+    # The title is what counts: an SSRF word in the URL alone is not a kept SSRF entry.
+    url_only = [dict(e, title="docs > notes") if "ssrf" in e["title"] else e for e in two]
+    assert not library.kept_names_check(spec["expect"]["kept_names"], url_only).ok
     assert not library.kept_names_check(spec["expect"]["kept_names"], []).ok
+    one = {c.name: c for c in library.judge(spec, dict(view, entryCount=1, report={**view["report"], "stored": {"pages": 1}}),
+                                            job, two[:1])}
+    assert {n for n, c in one.items() if not c.ok} == {"map_size", "stored_pages", "kept_names"}
     cve = next(s for s in LIB["resources"] if s["slug"] == "trickest-cve")
     names = {c.name for c in library.judge(cve, {"resourceType": "cve-poc-db", "entryCount": 0, "storageMode": "live"}, job)}
     assert "readiness" not in names and "map_size" in names
@@ -600,12 +613,13 @@ def test_the_build_record_holds_counts_only():
 # --------------------------------------------------------------------------------------
 
 BUGHUNTER_KEPT = [  # the build of 2026-11-17 (run/s15/live/bughunter_relevant.txt): public repository paths
-    {"url": f"https://raw.githubusercontent.com/elementalsouls/Claude-BugHunter/main/{p}", "title": t}
-    for p, t in (("docs/disclosed-reports/hunt-sqli.md", "docs > disclosed reports > hunt sqli"),
-                 ("docs/disclosed-reports/hunt-ssrf.md", "docs > disclosed reports > hunt ssrf"),
-                 ("skills/hunt-sqli/SKILL.md", "skills > hunt sqli > SKILL"),
-                 ("skills/hunt-ssrf/SKILL.md", "skills > hunt ssrf > SKILL"),
-                 ("skills/security-arsenal/SKILL.md", "skills > security arsenal > SKILL"))]
+    {"url": f"https://raw.githubusercontent.com/elementalsouls/Claude-BugHunter/main/{p}", "title": t,
+     "pageId": f"claude-bughunter:{n}"}
+    for n, p, t in ((16201, "docs/disclosed-reports/hunt-sqli.md", "docs > disclosed reports > hunt sqli"),
+                    (16202, "docs/disclosed-reports/hunt-ssrf.md", "docs > disclosed reports > hunt ssrf"),
+                    (16210, "skills/hunt-sqli/SKILL.md", "skills > hunt sqli > SKILL"),
+                    (16211, "skills/hunt-ssrf/SKILL.md", "skills > hunt ssrf > SKILL"),
+                    (16220, "skills/security-arsenal/SKILL.md", "skills > security arsenal > SKILL"))]
 
 
 class FakeWebapp:

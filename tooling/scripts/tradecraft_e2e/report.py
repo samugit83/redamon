@@ -86,6 +86,7 @@ class RunResult:
     tokens_out: Optional[int] = None
     approvals_given: int = 0
     library: dict = field(default_factory=dict)  # checks.library_now_summary: a measurement
+    skill: dict = field(default_factory=dict)  # checks.skill_summary: a measurement, never a gate
     reason: str = ""
     trace_file: str = ""
 
@@ -232,14 +233,16 @@ def render(*, results: Sequence[RunResult], gates: Sequence[Gate], verdict: bool
     for g in gates:
         mark = "pass" if g.ok else ("FAIL" if g.ok is False else "—")
         lines.append(f"| {g.name} | {mark} | {g.detail} |")
-    lines += ["", "## Runs", "", "| Run | Lane | Status | Oracle | Minutes | Iterations | Library now | Failed checks |",
-              "|---|---|---|---|---|---|---|---|"]
+    lines += ["", "## Skills and Tradecraft (a measurement, not a gate)", ""] + skill_lines(results)
+    lines += ["", "## Runs", "", "| Run | Lane | Status | Oracle | Minutes | Iterations | Skill | Library now | Failed checks |",
+              "|---|---|---|---|---|---|---|---|---|"]
     for r in sorted(results, key=lambda r: r.run_id):
         failed = ", ".join(c.name for c in r.checks if c.ok is False) or (r.reason if r.status in (NOT_RUN, SKIPPED, ERROR) else "")
         minutes = f"{r.seconds / 60:.1f}" if r.seconds is not None else "—"
         oracle = "—" if r.oracle is None else ("yes" if r.oracle else "no")
         lines.append(f"| {r.run_id} | {r.lane if r.lane is not None else '—'} | {r.status} | {oracle} | {minutes} | "
-                     f"{r.iterations if r.iterations is not None else '—'} | {library_cell(r.library)} | {failed} |")
+                     f"{r.iterations if r.iterations is not None else '—'} | {skill_cell(r.skill)} | {library_cell(r.library)} | "
+                     f"{failed} |")
     lines += ["", "## Gain, arm A against arm B (a measurement)", "", "| Lab | Arm | Runs | Success | Iterations | Tokens in | Minutes |",
               "|---|---|---|---|---|---|---|"]
     for lab, row in gain_table.items():
@@ -251,6 +254,32 @@ def render(*, results: Sequence[RunResult], gates: Sequence[Gate], verdict: bool
         lines += ["", "## Durations (for the expected times in scenarios.yaml)", ""]
         lines += [f"- {k}: {v / 60:.1f} min" for k, v in sorted(durations.items())]
     return redact("\n".join(lines) + "\n")
+
+
+def skill_cell(skill: Mapping) -> str:
+    """A run's built-in skill and the library: the skill at its first think, whether it is one the lab
+    lists, and, when it is not (or none was active), whether a page read on the lab's class covered it."""
+    if not skill:
+        return "—"
+    active = skill.get("active") or "none"
+    if skill.get("match") is True:
+        return f"{active}: match"
+    why = f"not the lab's ({', '.join(skill.get('expected') or [])})" if skill.get("expected") else "the lab lists none"
+    reads = len(skill.get("class_reads") or [])
+    return f"{active}: {why}; " + (f"covered by {reads} read{'s' if reads != 1 else ''} on the lab's class"
+                                  if skill.get("covered") else "not covered by a read on the lab's class")
+
+
+def skill_lines(results: Sequence[RunResult]) -> list:
+    judged = [r for r in results if r.skill]
+    if not judged:
+        return ["- no agent run with a lab"]
+    matched = [r for r in judged if r.skill.get("match") is True]
+    other = [r for r in judged if r.skill.get("match") is not True]
+    covered = [r for r in other if r.skill.get("covered")]
+    return [f"- the lab's skill active: {len(matched)} of {len(judged)} runs",
+            f"- a skill missing or not the lab's: {len(other)} runs ({', '.join(r.run_id for r in other) or 'none'}); "
+            f"a library read on the lab's class covered {len(covered)} ({', '.join(r.run_id for r in covered) or 'none'})"]
 
 
 def library_cell(lib: Mapping) -> str:

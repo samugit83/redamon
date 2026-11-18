@@ -1409,6 +1409,8 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
         result.iterations, result.tokens_in, result.tokens_out = ev.get("iterations"), ev.get("tokens_in"), ev.get("tokens_out")
         result.library = checks.library_now_summary(trace, inst.spec.expected_pages if inst else [])
         if inst:
+            result.skill = checks.skill_summary(trace, inst.spec.skills, inst.spec.class_terms)
+        if inst:
             o = oracles.judge(inst.spec, inst, answers=trace["answers"],
                               tool_outputs=[c.get("output", "") for c in trace["tool_calls"]], docker=ctx.docker)
             result.oracle, result.oracle_detail = o.ok, o.detail + (" (seen in a tool output)" if o.seen_in_tool_output else "")

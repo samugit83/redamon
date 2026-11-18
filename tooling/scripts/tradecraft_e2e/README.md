@@ -178,6 +178,12 @@ the owner's setting back to "Agent decides" only once no A-search run is running
 | S6 | Check URL of a lab address, on the ops account, is refused by the address guard (`unsafe_address`) |
 | Layer 1 | the 30 retrieval questions on the restored library (read-only, as the owner); on the ops account's own resource only (its librarian use "Search only"): an incremental refresh with pages unchanged by the agent's own count in its log (AC-18), Cancel mid-refresh keeps the previous version (AC-33), the stale badge after a settings change, delete leaves no row (AC-42) |
 
+**Skills and Tradecraft (a measurement, not a gate):** each lab lists the built-in skill ids of its
+class (`scenarios.yaml` `skills`; L5's `http_request_smuggling` is off by default in a project) and
+the words that put a page read on its class (`class_terms`, whole words of the page's ID, resource,
+breadcrumb or title). The report gives each run's skill at its first think, whether it is one of the
+lab's, and, when it is not or none was active, whether a library read on the lab's class covered it.
+
 **Pass rules:** arms A and A-search pass when each lab's oracle succeeds in at least 2 of its
 3 runs (a capped run fails) and every check holds in every run; single and layer-1 checks
 all pass; arm B and the A-against-B gain are a measurement. A run the budget guard did not
