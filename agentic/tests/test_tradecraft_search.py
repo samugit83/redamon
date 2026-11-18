@@ -303,6 +303,16 @@ def test_every_statement_is_keyed_and_reads_the_live_generation():
         assert "FROM" not in sql.upper().split("SELECT", 1)[1]
 
 
+def test_the_sections_statement_filters_the_pages_before_it_ranks_their_sections():
+    """Ranking every matching section is the free first pass's cost (FIX-ITER2): the entry filters
+    sit in the query that ranks, so a topic or technology wording ranks only the sections of the
+    pages it can return. The rows on Postgres: ``test_tradecraft_search_integration.py``."""
+    sql = search_sql.STATEMENTS["sections_text"]
+    ranking = sql[sql.index("FROM (") + len("FROM ("):sql.index(") b ")]
+    assert "ts_rank_cd" in ranking
+    assert search_sql.FILTERS in ranking and search_sql.KEYED_E in ranking
+
+
 def test_a_long_query_is_cut_and_its_terms_capped():
     query = " ".join(f"word{i}" for i in range(3000))
     words = search.wordings_for(query)

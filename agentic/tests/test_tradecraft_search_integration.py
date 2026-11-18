@@ -329,3 +329,49 @@ async def test_a_swap_during_one_browse_is_not_seen_by_it(pg):
     assert level.page_count == 1 and [c.title for c in level.pages] == ["Old page"]
     again = await search.browse(uid, cat, res["slug"], "")
     assert again.page_count == 3 and len(again.pages) == 3
+
+
+def _ranked_sections(plan):
+    """How many section rows the sections statement ranked: the rows that reach the sort its
+    DISTINCT ON per entry reads (each carries its rank), over every loop of the sort's input (a
+    nested loop may scan the sorted rows again without ranking them again)."""
+    stack = [plan[0]["Plan"]]
+    while stack:
+        node = stack.pop()
+        if node.get("Node Type") == "Sort" and str((node.get("Sort Key") or [""])[0]).startswith("s.entry_id"):
+            source = node["Plans"][0]
+            return source["Actual Rows"] * source["Actual Loops"]
+        stack.extend(node.get("Plans") or [])
+    raise AssertionError("no sort by entry in the plan")
+
+
+async def test_a_filtered_wording_ranks_only_the_sections_of_its_own_pages(pg):
+    """FIX-ITER2: a topic or technology wording ranks the sections of the pages it can return, not
+    every section the words match (Library now's first search ranked 5,680 sections per wording on
+    the e2e library), and returns the rows that ranking them all and filtering after gave."""
+    uid = await pg.user()
+    res = await seed(pg, uid, [
+        page(n, title=f"Page {n}", topics=["sql_injection"] if n <= 2 else ["xss"],
+             technologies=["postgresql"] if n == 3 else [],
+             sections=[(f"Part {n} one", "payload words for the probe"), (f"Part {n} two", "more payload text")])
+        for n in range(1, 13)])
+    base = {"uid": uid, "rids": [res["id"]], "q": "payload or probe", "topic": None, "kind": None, "tech": None,
+            "techs": [], "limit": 20}
+    sql = search_sql.STATEMENTS["sections_text"]
+
+    async def rows(params):
+        cur = await pg.conn.execute(sql, params)
+        return [(r["page_id"], r["section"], r["rank"], tuple(r["topics"]), tuple(r["technologies"]))
+                for r in await cur.fetchall()]
+
+    async def ranked(params):
+        cur = await pg.conn.execute("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params)
+        return _ranked_sections((await cur.fetchall())[0]["QUERY PLAN"])
+
+    every = await rows(base)
+    assert len(every) == 12 and await ranked(base) == 24
+    on_topic = await rows({**base, "topic": "sql_injection"})
+    assert on_topic == [r for r in every if "sql_injection" in r[3]] and len(on_topic) == 2
+    assert await ranked({**base, "topic": "sql_injection"}) == 4
+    on_tech = await rows({**base, "techs": ["postgresql"]})
+    assert on_tech == [r for r in every if "postgresql" in r[4]] and await ranked({**base, "techs": ["postgresql"]}) == 2

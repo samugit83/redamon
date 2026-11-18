@@ -51,14 +51,19 @@ STATEMENTS: dict[str, str] = {
         f"WHERE {KEYED_E} AND {FILTERS} AND e.search_vector @@ q.tsq "
         f"ORDER BY rank DESC, e.page_id LIMIT %(limit)s"
     ),
+    # The entry filters apply before the ranking: ranking is the statement's cost (a long,
+    # common-worded step matched 5,680 of the e2e library's 12,222 sections, 1.3 s), and a topic
+    # or technology wording would otherwise rank every matching section again only to keep its
+    # own pages' sections. Each entry's sections pass or fail together, so the rows are the same.
     "sections_text": (
         f"SELECT {CARD}, b.heading AS section, b.rank FROM ("
         f"SELECT DISTINCT ON (s.entry_id) s.entry_id, s.heading, ts_rank_cd(s.search_vector, q.tsq) AS rank "
-        f"FROM {S} s {LIVE_S} CROSS JOIN {TSQ} "
-        f"WHERE s.user_id = %(uid)s AND s.resource_id = ANY(%(rids)s::text[]) AND s.search_vector @@ q.tsq "
+        f"FROM {S} s {LIVE_S} JOIN {E} e ON e.id = s.entry_id {LIVE_E} CROSS JOIN {TSQ} "
+        f"WHERE s.user_id = %(uid)s AND s.resource_id = ANY(%(rids)s::text[]) AND {KEYED_E} AND {FILTERS} "
+        f"AND s.search_vector @@ q.tsq "
         f"ORDER BY s.entry_id, rank DESC, s.ord) b "
         f"JOIN {E} e ON e.id = b.entry_id {LIVE_E} "
-        f"WHERE {KEYED_E} AND {FILTERS} ORDER BY b.rank DESC, e.page_id LIMIT %(limit)s"
+        f"WHERE {KEYED_E} ORDER BY b.rank DESC, e.page_id LIMIT %(limit)s"
     ),
     "entries_entities": (
         f"SELECT {CARD}, (SELECT count(*) FROM unnest(e.entities) AS x(v) WHERE x.v = ANY(%(ents)s::text[]))::float8 "
