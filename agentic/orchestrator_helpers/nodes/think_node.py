@@ -81,6 +81,7 @@ from prompts.base import (
     build_workspace_rules_block,
     build_uploads_inbox_block,
     build_imports_block,
+    with_step_naming_rule,
 )
 from prompts.skill_part_seam import applied_skill_workflow
 from prompts.classification import build_skill_menu
@@ -690,8 +691,9 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     else:
         _stealth_rules_text = ""
 
-    # Tradecraft: the library's lines appear only in a run with an active resource; the rule
-    # only where Library now runs (its tools offered in this phase, hints on).
+    # Tradecraft: the library's lines appear only in a run with an active resource; the rule, and
+    # the step naming line after it, only where Library now runs (its tools offered in this phase,
+    # hints on).
     from tradecraft.library.hints import library_rule
     from tradecraft.overlay import args_examples
     from tradecraft.runtime import bound_catalog
@@ -721,7 +723,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         fireteam_plan_field=ft_plan_field,
         fireteam_example_section=ft_example,
         tradecraft_args=args_examples(),
-        library_rule=library_rule(bound_catalog(), phase),
+        library_rule=with_step_naming_rule(library_rule(bound_catalog(), phase)),
     )
 
     # Inject Deep Think section if available (from state or just computed)

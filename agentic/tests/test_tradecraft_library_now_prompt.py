@@ -5,6 +5,9 @@ is the only thing replaced, to capture them):
 
 - with a built-in skill, a user skill and no skill, the skill's block is unchanged, the main
   instructions hold the one general rule, and the Library now block ends the system message;
+- where Library now runs, and only there, the rule is followed by one general line asking each
+  todo item to name its technique and the target's technology (NQ-8, option c), naming no
+  attack class;
 - the library's line for the chosen skill sits just before the skill's block;
 - every provider adapter still sends one system message (OpenAI and OpenAI-compatible strict chat
   templates, Anthropic, Gemini, Bedrock Converse, the Agent in the Loop renderer), and the
@@ -223,6 +226,151 @@ def test_without_a_library_the_rules_read_as_before():
     rules = rules_section(system_text(messages))
     assert rules.rstrip().endswith("5. **Add exploitation steps as TODO items** and mark them in_progress/completed as you go")
     assert "Your library" not in rules
+
+
+# --------------------------------------------------------------------------------------
+# Steps that name what they are about (the owner's NQ-8, option c, 2026-11-18)
+# --------------------------------------------------------------------------------------
+
+def step_rule():
+    from prompts import base
+
+    return base.STEP_NAMING_RULE
+
+
+def test_the_step_naming_rule_follows_the_library_rule_where_library_now_runs():
+    """Library now searches with the words of the todo item in progress and the next pending one:
+    where it runs, the main instructions' rules end with rule 6 and then one general line asking
+    each todo item to name its technique and the target's technology. Every kind of skill, stealth
+    mode included; never in a Fireteam member's prompt (Library now is the main agent's, R-425)."""
+    rule = step_rule()
+    assert rule.startswith("7. ") and "\n" not in rule
+    for phrase in ("todo item's description", "technique", "target's technology", "Library now"):
+        assert phrase in rule, phrase
+    for kind, skill in SKILLS.items():
+        for stealth in (False, True):
+            st = state(attack_path_type=skill, todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+            messages, _, member = think(st, run_settings=settings(STEALTH_MODE=stealth), before=member_prompt)
+            text, rules = system_text(messages), rules_section(system_text(messages))
+            assert all_text(messages).count(rule) == 1, (kind, stealth)
+            assert f"{hints.RULE}\n{rule}" in rules and rules.rstrip().endswith(rule), (kind, stealth)
+            assert text.endswith(FOOTER), (kind, stealth)
+            assert rule not in member, (kind, stealth)
+
+
+def test_the_step_naming_rule_is_absent_where_library_now_does_not_run():
+    """No library, no active resource, hints off, or tradecraft_lookup not allowed in the phase:
+    no Library now, so the rules read as before, with neither rule 6 nor the step naming line."""
+    phase_map = json.loads(json.dumps(ps.DEFAULT_AGENT_SETTINGS["TOOL_PHASE_MAP"]))
+    phase_map["tradecraft_lookup"] = ["informational"]
+    cases = {"no library": {"cat": None},
+             "no active resource": {"cat": catalog(resources=[])},
+             "hints off": {"cat": catalog(**{"hints.enabled": False})},
+             "lookup not in this phase": {"run_settings": settings(TOOL_PHASE_MAP=phase_map)}}
+    rule = step_rule()
+    st = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+    for name, kw in cases.items():
+        messages, _, _ = think(st, **kw)
+        rules = rules_section(system_text(messages))
+        assert rule not in all_text(messages) and hints.RULE not in all_text(messages), name
+        assert "7. **" not in rules, name
+        assert rules.rstrip().endswith("as you go"), name
+
+
+def _vocabulary_names():
+    """Every attack class, technique, technology and tool the library's vocabulary or the built-in
+    skills name, lower case, as whole phrases."""
+    from state import KNOWN_ATTACK_PATHS
+    from tradecraft.vocab import load_vocab
+
+    vocab = load_vocab()
+    names = {path.replace("_", " ") for path in KNOWN_ATTACK_PATHS}
+    for topic in vocab.topics:
+        names.update({topic["id"].replace("_", " "), topic["label"]})
+    for phrases in vocab.keywords.values():
+        names.update(phrases)
+    for tech in vocab.technologies:
+        names.update([tech["id"], tech["name"], *tech.get("aliases", ())])
+    for synonym in vocab.synonyms:
+        names.update([synonym["term"], *synonym["expansions"]])
+    return {n.lower() for n in names if n}
+
+
+# Names the vocabulary does not hold but an example would reach for first: technologies,
+# protocols, languages and attack classes of several kinds.
+OUTSIDE_VOCABULARY = (
+    "http", "https", "java", "python", "javascript", "typescript", "ruby", "golang", "rust", "perl", "html",
+    "json", "xml", "yaml", "soap", "grpc", "websocket", "oauth", "openid", "oidc", "saml", "sso", "mfa", "tls",
+    "ssl", "tcp", "udp", "linux", "windows", "macos", "unix", "csrf", "race condition", "prototype pollution",
+    "buffer overflow", "open redirect", "clickjacking", "subdomain takeover", "file upload", "session fixation",
+    "account takeover", "business logic", "format string", "use after free", "type juggling", "cache deception",
+)
+# What introduces an example, in any wording.
+EXAMPLE_MARKERS = re.compile(r'"|\be\.g\.|\bi\.e\.|\bfor (example|instance)\b|\bsuch as\b|\blike\b|\bincluding\b',
+                             re.IGNORECASE)
+# A parenthesis may list kinds of thing, never names: kinds are lower-case common nouns of this closed
+# list, so a capitalised word, an acronym or any other word in a parenthesis is a name.
+CATEGORY_WORDS = frozenset({"the", "a", "an", "or", "and", "its", "product", "framework", "language", "protocol",
+                            "service", "platform", "library", "component", "server", "database", "system",
+                            "version"})
+
+
+def neutrality_problems(rule):
+    """What makes ``rule`` less than general, empty when it is: a vocabulary name, a name of
+    ``OUTSIDE_VOCABULARY``, an example marker, a parenthesis that lists names, a capitalised word
+    that does not open a sentence (a name such as an acronym or a product), more than two sentences
+    after the title."""
+    problems = []
+    lowered = rule.lower()
+
+    def named(phrase):
+        return re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", lowered)
+
+    problems += [f"name: {n}" for n in sorted(_vocabulary_names() | set(OUTSIDE_VOCABULARY)) if named(n)]
+    # Rule 6's own test word list (test_tradecraft_hints.py), held for this line too.
+    problems += [f"rule 6 word: {m}" for m in re.findall(r"WAF|CVE|SQL|blocked|bypass|injection", rule, re.I)]
+    problems += [f"example marker: {m.group(0)}" for m in EXAMPLE_MARKERS.finditer(rule)]
+    for inner in re.findall(r"\(([^)]*)\)", rule):
+        problems += [f"name in parenthesis: {w}" for w in re.findall(r"[^\s,;/]+", inner)
+                     if w not in CATEGORY_WORDS]
+    body = rule.split("**", 2)[2] if rule.count("**") >= 2 else rule
+    for m in re.finditer(r"[A-Za-z][A-Za-z0-9.+#'-]*", body.replace("Library now", "library now")):
+        word, before = m.group(0), body[:m.start()].rstrip()
+        opens_sentence = not before or before[-1] in ".!?"
+        if any(c.isupper() for c in word) and not (opens_sentence and word[1:] == word[1:].lower()):
+            problems.append(f"capitalised name: {word}")
+    if len(re.findall(r"[.!?](?=\s|$)", body)) > 2:
+        problems.append("more than two sentences")
+    return problems
+
+
+def test_the_step_naming_rule_names_no_attack_class():
+    """The owner's condition: the library can hold anything, so the line is general. It names no
+    particular attack class, technique, technology or tool, gives no example in any wording, and is
+    at most two sentences after its title. Its parenthesis lists kinds of technology (lower-case
+    words of ``CATEGORY_WORDS``), not names. Each way the line could stop being general is caught."""
+    rule = step_rule()
+    assert len(_vocabulary_names()) > 100
+    assert neutrality_problems(rule) == []
+    kinds = "(the product, framework, language or protocol)"
+    assert kinds in rule
+    mutated = {
+        "such as": rule.replace("technology it is about", "technology it is about, such as HTTP or Java"),
+        "like": rule.replace("technology it is about", "technology it is about, like OAuth"),
+        "including": rule.replace("technology it is about", "technology it is about, including TLS"),
+        "e.g. in a parenthesis": rule.replace(kinds, "(e.g. the product or protocol)"),
+        "names in the parenthesis": rule.replace(kinds, "(HTTP, Java or Python)"),
+        "lower-case names in the parenthesis": rule.replace(kinds, "(the product, nginx or golang)"),
+        "an unlisted lower-case name": rule.replace("finds little.", "finds little, as with python."),
+        "an attack class outside the vocabulary": rule.replace("finds little.", "finds little on a race condition."),
+        "a vocabulary class": rule.replace("finds little.", "finds little on SQL injection."),
+        "a capitalised name": rule.replace("finds little.", "finds little on Acme Portal."),
+        "a quoted example": rule.replace("finds little.", 'finds little ("probe the form").'),
+        "a third sentence": rule + " Keep it brief.",
+    }
+    for case, line in mutated.items():
+        assert line != rule, case
+        assert neutrality_problems(line), case
 
 
 # --------------------------------------------------------------------------------------

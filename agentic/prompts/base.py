@@ -1328,6 +1328,25 @@ Use ask_user ONLY when you need user input that cannot be determined from graph,
 {qa_history}
 """
 
+# Library now (tradecraft/library/hints.py) searches with the words of the todo item in progress and
+# the next pending one, and keeps a page only when it covers enough of the step's terms: an item that
+# describes its action without naming its subject finds little, and every extra word lowers a page's
+# share. General on purpose (the owner's NQ-8, option c): a library can hold anything, so the line
+# names no attack class.
+STEP_NAMING_RULE = (
+    "7. **Name each step.** Write each todo item's description as a short phrase that names the technique "
+    "and the target's technology it is about (the product, framework, language or protocol), as far as you "
+    "know them. Library now searches your library with the words of your step in progress and your next "
+    "step: an item that only says what to do, without naming them, finds little."
+)
+
+
+def with_step_naming_rule(library_rule: str) -> str:
+    """Rule 6 as ``hints.library_rule`` gives it, then the step naming rule, or "" when the run has
+    no Library now in this phase: the line serves only Library now's search, so a run without it
+    reads as before."""
+    return f"{library_rule}\n{STEP_NAMING_RULE}" if library_rule else ""
+
 
 # =============================================================================
 # PENDING OUTPUT ANALYSIS SECTION (injected into REACT_SYSTEM_PROMPT when tool output is pending)
