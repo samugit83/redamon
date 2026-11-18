@@ -1744,6 +1744,42 @@ def test_retrieval_looks_cve_questions_up_and_searches_the_rest():
     assert got.ok is False and got.detail == "1/2 found; missed: ssrf payloads"
 
 
+def test_the_ssrf_payloads_question_finds_hexbrains_page_by_its_title():
+    # HexBrain's titles are decoded: its SSRF page is "Server Side Request Forgery", which never says
+    # "ssrf". The question expects that one page by its title: not HexBrain's "Cross Site Request
+    # Forgery" page, nor another resource's SSRF page.
+    types = _agent("tradecraft.library.types")
+    question = next(q for q in SCN["layer1"]["retrieval"] if q["q"] == "ssrf payloads")
+    hits = {
+        "hexbrain-payloads:12643": "HexBrain payloads › Server Side Request Forgery",
+        "hexbrain-payloads:12641": "HexBrain payloads › Cross Site Request Forgery",
+        "payloadsallthethings:10355": "PayloadsAllTheThings › Server Side Request Forgery › SSRF Cloud Instances",
+        "claude-bughunter:16211": "Claude-BugHunter › skills › hunt-ssrf › skills > hunt ssrf > SKILL",
+    }
+
+    def search(*pages):
+        lines = [types.format_search_header("ssrf payloads", "FOUND", len(pages), 40)]
+        lines += [types.SEARCH_HIT.format(n=i, page_id=p, breadcrumb=hits[p], description="techniques", kind="page")
+                  for i, p in enumerate(pages, 1)]
+        return types.wrap_untrusted(lines)
+
+    def found(output):
+        res = checks.parse_result("tradecraft_search", output)
+        return [r.page_id for r in res.pages if checks.matches({}, r, question["expect"])]
+
+    assert found(search(*hits)) == ["hexbrain-payloads:12643"]
+    assert found(search("hexbrain-payloads:12641", "payloadsallthethings:10355", "claude-bughunter:16211")) == []
+
+    def fake(argv, **kw):
+        return subprocess.CompletedProcess(argv, 0, stdout="TC_E2E_RESULT=" + json.dumps(
+            {"q": "ssrf payloads", "output": search("claude-bughunter:16211", "hexbrain-payloads:12643")}) + "\n", stderr="")
+
+    import types as pytypes
+    ctx = pytypes.SimpleNamespace(sessions={"owner": (None, "u-owner")})
+    got = runner.retrieval_check(ctx, "p1", [question], run=fake)
+    assert got.ok is True and got.detail == "1/1 found"
+
+
 TIP = "3765744a" + "0" * 32
 RECORD = {"format": 1, "tip": TIP, "base": runner.PLAN_BASE, "complete": True, "differences": {"agentic/api.py": "f" * 40},
           "shared_checks": {"agentic/api.py": {"plan_lines": True, "extra_hunks": 1}},

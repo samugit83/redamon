@@ -247,7 +247,7 @@ layer1:
     - {q: mssql stacked queries xp_cmdshell, expect: {resource: payloadsallthethings, path: [mssql]}}
     - {q: ssrf bypass with decimal ip encoding, expect: {resource: payloadsallthethings, path: [server side request forgery]}}
     - {q: ssrf cloud metadata endpoint, expect: {resource: payloadsallthethings, path: [server side request forgery]}}
-    - {q: ssrf payloads, expect: {resource: hexbrain-payloads, path: [ssrf]}}
+    - {q: ssrf payloads, expect: {resource: hexbrain-payloads, path: [server side request forgery]}}
     - {q: xss payloads, expect: {resource: hexbrain-payloads, path: [xss]}}
     - {q: xss filter bypass, expect: {resource: payloadsallthethings, path: [xss]}}
     - {q: server side template injection jinja2, expect: {resource: payloadsallthethings, path: [template injection]}}
