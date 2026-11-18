@@ -22,7 +22,12 @@ clipped) and the rows sit inside an untrusted block: the model or the person wro
 the pages' resource names, breadcrumbs and titles come from the sites. No page text (descriptions,
 sections) is ever shown, and only the rows of resources the run's catalog holds at that think: a
 resume binds the catalog again for the person resuming. The main instructions carry the one rule
-that says how to use it (``library_rule``).
+that says how to use it (``library_rule``): a fitting page makes the lookup the decision's action,
+and the thought's "Library: read <page id>." goes with that call. When the last thought said it for
+a page a block showed and no read of that page ran (``unread_announced``, from the decision in the
+state and the run's read set), the next think's message carries one fixed notice
+(``UNREAD_NOTICE``), once per page in a run; it names no page, and the page, not read, may still be
+among the rows. It costs no search and no model call.
 
 Cost: at most ``goal_cap`` distinct steps searched per run, twice the run's MAX_ITERATIONS plus a
 margin, never more than ``GOAL_CAP_CEILING`` (a step searched already is searched again for new
@@ -34,7 +39,8 @@ next thinks (``MAX_RETRIES``), and again after any later search succeeds; a step
 while the step does, even when a search for new facts fails. Measurement, page IDs and
 counts only (never a step or a title): ``[tradecraft] library_now refresh=`` per round of
 searches, ``shown=`` per think with a block, ``<page> read`` when the agent reads a page a block
-showed (``run_state.record_seen``). It never fails the think node.
+showed (``run_state.record_seen``), ``unread pages=`` when the notice is shown. It never fails the
+think node.
 """
 
 from __future__ import annotations
@@ -46,6 +52,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from logging_config import get_logger
 from tradecraft import run_state
+from tradecraft.contract import SLUG_PATTERN
 from tradecraft.ingest import entities as entity_rules
 from tradecraft.library import profile
 from tradecraft.library.types import Card, wrap_untrusted
@@ -103,13 +110,29 @@ RULE = (
     "attack skill gives the method; the library gives the specifics for the steps at hand. Before each new "
     "step, look at \"Library now\" at the end of this prompt: it lists the library's pages for your step in "
     "progress and your next step (and a vulnerability a finding confirmed); it is absent when nothing in the "
-    "library matches them, and it says so when a step could not be searched. If a page there fits what you are about to do, "
-    "read it first with tradecraft_lookup(page=...); if nothing fits, go on. Whenever the active skill or any "
+    "library matches them, and it says so when a step could not be searched. If a page there fits what you "
+    "are about to do, reading it is this step: make tradecraft_lookup(page=<that page id>) this decision's "
+    "action, and act on what it returns at your next step (writing that you read a page does not read it). If "
+    "nothing fits, go on with your step. Whenever the active skill or any "
     "instruction asks you to get specifics (payloads, PoCs, exploit steps, commands) from your own knowledge, "
     "query_graph or web_search, check Library now first: a fitting page comes before those. In your "
-    "`thought`, say in one short sentence, with no line break, which page you read or that nothing fit: "
-    "\"Library: read <page id>.\" or \"Library: nothing fit.\""
+    "`thought`, say in one short sentence, with no line break, which page this decision reads or that nothing "
+    "fit: \"Library: read <page id>.\" goes only with this decision's tradecraft_lookup call for that page; "
+    "otherwise \"Library: nothing fit.\""
 )
+# For a read the last thought announced and no read carried out: models wrote rule 6's sentence as
+# if it were the read (3 of 20 e2e runs, 2026-11-18). It names no page, so it holds no site text;
+# the page, not read, may still be among the rows.
+UNREAD_NOTICE = ("Library now: your last thought named a page to read, but it was not read. If it still fits, "
+                 "make tradecraft_lookup(page=…) this decision's action; otherwise say \"Library: nothing fit.\"")
+# Rule 6's sentence for a read, whatever its case or spacing: every page ID up to the sentence's end
+# (a page ID holds no full stop). The thought is the model's: only IDs a block showed are kept.
+_ANNOUNCED = re.compile(r"\blibrary:\s*read\b([^.\n]*)", re.IGNORECASE)
+_PAGE_REF = re.compile(rf"(?<![a-z0-9-]){SLUG_PATTERN}:[1-9][0-9]{{0,17}}(?![0-9])")
+# The sentence opens the thought, after a stealth risk line at most: a long thought is read no further.
+THOUGHT_CHARS = 4000
+# The announced pages a notice was shown for, kept so that it is shown once per page in a run.
+NUDGED_CAP = 200
 
 # Words too common to tell a page apart: never shown as a match.
 _STOP = frozenset({
@@ -327,24 +350,33 @@ def _entry_of(saved: Mapping[str, Any]) -> dict:
         return {"key": key[0] if key else "", "facts": facts[0], "rows": _rows_of(item.get("rows")), "notice": notice,
                 "ids": ids, "failures": min(failures, MAX_RETRIES + 1)}
 
+    from tradecraft.library import page_ids
+
     searched = [x for x in (search_of(i) for i in (saved.get("searched") or [])[:len(profile.STEP_LABELS)]) if x]
     displayed = [r["page"] for r in _rows_of([{"page": p} for p in saved.get("displayed") or []])][:PAGES]
+    nudged = saved.get("nudged") if isinstance(saved.get("nudged"), list) else []
+    nudged = [p for p in nudged if isinstance(p, str) and p == p.strip() and page_ids.parse(p)][-NUDGED_CAP:]
     return {"refreshes": count("refreshes"), "shown": count("shown"), "goals": hexes(saved.get("goals"), GOAL_CAP_CEILING),
             "limited": saved.get("limited") is True, "searched": [x for x in searched if x["key"]],
-            "cve": search_of(saved.get("cve")), "displayed": displayed}
+            "cve": search_of(saved.get("cve")), "displayed": displayed, "nudged": nudged}
+
+
+def _held(page: str, slugs: set[str]) -> bool:
+    """Whether a page ID names a resource of the run's catalog (``slugs``)."""
+    from tradecraft.library import page_ids
+
+    parsed = page_ids.parse(page)
+    return parsed is not None and parsed[0] in slugs
 
 
 def _in_catalog(entry: dict, catalog: Any) -> dict:
     """The entry with only the rows of resources the run's catalog holds now. A resume binds the
     catalog again for the person resuming: a resource turned off since, or a login that person may
     not use (``catalog.ts``), is no longer in it, and its pages are never shown again."""
-    from tradecraft.library import page_ids
-
     slugs = {r.slug for r in catalog.resources}
 
     def held(page: str) -> bool:
-        parsed = page_ids.parse(page)
-        return parsed is not None and parsed[0] in slugs
+        return _held(page, slugs)
 
     def keep(item: Optional[dict]) -> Optional[dict]:
         return {**item, "rows": [r for r in item["rows"] if held(r["page"])]} if item else item
@@ -458,6 +490,33 @@ def assemble(focus: profile.Focus, entry: dict, read: set[str]) -> list[dict]:
     return rows
 
 
+def announced(decision: Any) -> list[str]:
+    """The page IDs the last decision's thought says it reads (rule 6's "Library: read <page id>."),
+    in order, each once; [] for any other thought or no decision."""
+    from tradecraft.library import page_ids
+
+    thought = decision.get("thought") if isinstance(decision, Mapping) else None
+    if not isinstance(thought, str):
+        return []
+    pages: list[str] = []
+    for sentence in _ANNOUNCED.finditer(thought[:THOUGHT_CHARS]):
+        for page in _PAGE_REF.findall(sentence.group(1).lower()):
+            if page_ids.parse(page) and page not in pages:
+                pages.append(page)
+    return pages
+
+
+def unread_announced(decision: Any, shown: set[str], read: set[str], nudged: Sequence[str],
+                     catalog: Any) -> list[str]:
+    """The pages the last thought announced that a block of this run showed, of a resource the
+    catalog holds now, that no read carried out (``read``: what ``run_state.record_seen`` counts, a
+    lookup by page ID, section path or query, a page the librarian returned, in a plan wave or by a
+    Fireteam member) and that no notice named yet (``nudged``)."""
+    slugs = {r.slug for r in catalog.resources}
+    return [p for p in announced(decision)
+            if p in shown and p not in read and p not in nudged and _held(p, slugs)]
+
+
 async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[str], dict]:
     """(the block, the run-state values to return with the think node's state), or (None, {})
     when nothing changed: no library in this run or phase, hints off, or no block and no change."""
@@ -472,6 +531,8 @@ async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[
             reasons = profile.changes(previous, current)
             entry = _in_catalog(_entry_of(saved), catalog)
             read = set(collector.drain()["tradecraft_seen_pages"])
+            # The pages earlier blocks showed: the last thought was written after them.
+            unread = unread_announced(state.get("_decision"), collector.hinted(), read, entry["nudged"], catalog)
             entry, searched = await _refresh(entry, catalog, settings, current, reasons, read,
                                              goal_cap(max_iterations_of(state)))
             rows = assemble(current, entry, read)
@@ -480,7 +541,11 @@ async def library_now(state: Mapping[str, Any], catalog: Any) -> tuple[Optional[
             block = render(sorted(steps, key=lambda s: ORDER.index(s[0])), shown) if rows else None
             notices = sorted({x["notice"] for x in [*entry["searched"], *([entry["cve"]] if entry["cve"] else [])]
                               if x["notice"] and not any(r["page"] for r in x["rows"] if r["page"] not in read)})
-            note = "\n".join([*([block] if block else []), *(NOTICES[n] for n in notices)]) or None
+            if unread:
+                entry["nudged"] = [*entry["nudged"], *unread][-NUDGED_CAP:]
+                logger.info(f"[tradecraft] library_now unread pages={','.join(unread)}")
+            note = "\n".join([*([block] if block else []), *([UNREAD_NOTICE] if unread else []),
+                              *(NOTICES[n] for n in notices)]) or None
             if rows:
                 entry["shown"] += 1
                 already = collector.hinted()

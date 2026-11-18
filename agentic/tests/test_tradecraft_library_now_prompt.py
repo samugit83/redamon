@@ -31,8 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import project_settings as ps  # noqa: E402
-from test_tradecraft_hints import (FOOTER, HEADER, by_goal, catalog, goal_line, library, rows_by_step,  # noqa: E402
-                                   state, todo)
+from test_tradecraft_hints import (FOOTER, HEADER, UNREAD, by_goal, catalog, goal_line, library,  # noqa: E402
+                                   rows_by_step, state, todo)
 from tradecraft import runtime  # noqa: E402
 from tradecraft.library import hints  # noqa: E402
 
@@ -79,12 +79,14 @@ class Loop:
     is_agent_in_the_loop = True
 
 
-def run(states, *, cat="default", llm=None, run_settings=None, coverage=None, answer=None, before=None, index=None):
+def run(states, *, cat="default", llm=None, run_settings=None, coverage=None, answer=None, before=None, index=None,
+        calls=None):
     """Real thinks in one run, its catalog bound once as at a run's start: ``states`` is the first
     state, then functions that make the next state from the one the previous think left. Returns
-    [(the messages sent to the model, the node's updates)] and what ``before`` built in the run."""
+    [(the messages sent to the model, the node's updates)] and what ``before`` built in the run;
+    ``calls``, when given, gets every model call's messages."""
     tn = importlib.import_module("orchestrator_helpers.nodes.think_node")
-    captured = []
+    captured = [] if calls is None else calls
 
     async def call(_llm, messages, **_kw):
         captured.append(list(messages))
@@ -265,6 +267,47 @@ def test_one_system_message_for_every_adapter():
         assert [m.role for m in parts] == ["system", "user"] and parts[0].parts[-1].text.endswith(FOOTER), shape
         document, _ = render_doc(parts, delivered=set(), full=False)
         assert document.count(HEADER) == 1 and hints.RULE in document, shape
+
+
+def test_the_notice_after_an_announced_read_for_every_adapter():
+    """FIX-ITER3 through the real think node: the first answer says "Library: read patt:401." and
+    calls tradecraft_search instead, so no read of the page runs. The second think's one system
+    message ends with the block and the fixed notice, for every adapter and the loop's renderer,
+    with one model call a think: no retry, no extra call, the same for an Agent in the Loop run."""
+    from agent_in_the_loop.prompt_doc import render as render_doc, to_parts
+    from langchain_anthropic.chat_models import _format_messages
+    from langchain_aws.chat_models.bedrock_converse import _messages_to_bedrock
+    from langchain_google_genai.chat_models import _parse_chat_history
+    from langchain_openai.chat_models.base import _convert_message_to_dict
+
+    searched_instead = {**DECISION, "tool_name": "tradecraft_search", "tool_args": {"query": "time based delay"}}
+    first = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+    for shape, llm in (("tiers", ChatAnthropic()), ("plain", Plain()), ("loop", Loop())):
+        calls = []
+        (one, _), (two, updates) = run([first, lambda st: st], llm=llm, answer=json.dumps(searched_instead),
+                                       calls=calls)[0]
+        assert len(calls) == 2 and updates["_decision"]["action"] == "use_tool", shape
+        assert UNREAD not in all_text(one), shape
+        text = system_text(two)
+        assert text.endswith(FOOTER + "\n" + UNREAD) and all_text(two).count(UNREAD) == 1, shape
+        note = text[text.rindex(HEADER):]
+        roles = [_convert_message_to_dict(m)["role"] for m in two]
+        assert roles == ["system", "user"] and _alternates(roles), shape
+        system, rest = _format_messages(two, model="claude-x")
+        assert len(rest) == 1 and rest[0]["role"] == "user", shape
+        if shape == "plain":
+            assert isinstance(system, str) and system.endswith(note)
+        else:
+            assert system[-1] == {"type": "text", "text": note}, shape
+            assert len([b for b in system if "cache_control" in b]) == (3 if shape == "tiers" else 0), shape
+        instruction, history = _parse_chat_history(two)
+        assert instruction is not None and len(history) == 1 and history[0].role == "user", shape
+        bedrock_messages, bedrock_system = _messages_to_bedrock(two)
+        assert [m["role"] for m in bedrock_messages] == ["user"] and bedrock_system[-1]["text"].endswith(UNREAD), shape
+        parts = to_parts(two)
+        assert [m.role for m in parts] == ["system", "user"] and parts[0].parts[-1].text.endswith(UNREAD), shape
+        document, _ = render_doc(parts, delivered=set(), full=False)
+        assert document.count(UNREAD) == 1 and document.count(HEADER) == 1, shape
 
 
 def test_the_thoughts_library_sentence_parses():
