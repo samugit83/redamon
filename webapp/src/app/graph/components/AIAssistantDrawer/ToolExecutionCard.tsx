@@ -96,7 +96,7 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
   const getStatusText = () => {
     switch (item.status) {
       case 'pending_approval':
-        return 'Awaiting approval'
+        return item.approving ? 'Starting...' : 'Awaiting approval'
       case 'running':
         return item.finished ? `Analyzing output (${duration}s)` : `Running... (${duration}s)`
       case 'success':
@@ -173,8 +173,14 @@ export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApi
             </div>
             {item.status === 'pending_approval' && onApprove && (
               <div className={styles.confirmActions}>
-                <button className={styles.allowBtn} onClick={(e) => { e.stopPropagation(); onApprove() }}>Allow</button>
-                <button className={styles.denyBtn} onClick={(e) => { e.stopPropagation(); onReject?.() }}>Deny</button>
+                {item.approving ? (
+                  <span className={styles.allowedChip}><Check size={11} /> Allowed</span>
+                ) : (
+                  <>
+                    <button className={styles.allowBtn} onClick={(e) => { e.stopPropagation(); onApprove() }}>Allow</button>
+                    <button className={styles.denyBtn} onClick={(e) => { e.stopPropagation(); onReject?.() }}>Deny</button>
+                  </>
+                )}
               </div>
             )}
             {toolRunning && onStop && (

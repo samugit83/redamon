@@ -61,6 +61,9 @@ export interface ToolExecutionItem {
   finishedSuccess?: boolean
   /** The run ended (stop, crash, lost events) before this tool returned. */
   interrupted?: boolean
+  /** The person clicked Allow: status stays 'pending_approval' until tool_start,
+   *  which can take seconds, so the card shows the click was taken meanwhile. */
+  approving?: boolean
 }
 
 export interface PlanWaveItem {
@@ -81,6 +84,9 @@ export interface PlanWaveItem {
   // this stale card rather than wait for plan/tool events that will never
   // arrive. See FIRETEAM.md §7.3.
   isFireteamEscalation?: boolean
+  /** The person clicked Allow and plan_start has not come yet. Only the wave is
+   *  marked: tool_start pairs its nested tools by their 'pending_approval' status. */
+  approving?: boolean
 }
 
 export interface DeepThinkItem {

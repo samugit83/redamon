@@ -26,7 +26,7 @@ export interface AnswerUndo {
   } | null
   toolConfirmation: {
     request: ToolConfirmationRequestPayload | null
-    /** The card as it was before a reject marked it; null when the answer left it as it was. */
+    /** The card as it was before the answer marked it (failed on reject, approving on approve). */
     item: ChatItem | null
     toolId: string | null
     waveId: string | null

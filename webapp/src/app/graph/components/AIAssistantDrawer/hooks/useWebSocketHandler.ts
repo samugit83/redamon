@@ -253,7 +253,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
               const wave = prev[idx] as PlanWaveItem
               return [
                 ...prev.slice(0, idx),
-                { ...wave, wave_id: message.payload.wave_id, status: 'running' as const, timestamp: new Date(), tool_count: message.payload.tool_count || wave.tool_count },
+                { ...wave, wave_id: message.payload.wave_id, status: 'running' as const, approving: undefined, timestamp: new Date(), tool_count: message.payload.tool_count || wave.tool_count },
                 ...prev.slice(idx + 1),
               ]
             }
@@ -338,7 +338,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
             pendingApprovalToolId.current = null
             setChatItems((prev: ChatItem[]) => prev.map((item: ChatItem) =>
               'type' in item && item.type === 'tool_execution' && item.id === pendingToolId
-                ? { ...item, status: 'running' as const, timestamp: new Date(), tool_args: message.payload.tool_args, step_id: message.payload.step_id }
+                ? { ...item, status: 'running' as const, approving: undefined, timestamp: new Date(), tool_args: message.payload.tool_args, step_id: message.payload.step_id }
                 : item
             ))
           } else {
@@ -744,7 +744,8 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
               pendingApprovalToolId.current = existing.id
               return [
                 ...prev.slice(0, existingIdx),
-                { ...existing, status: 'pending_approval' as const, tool_args: tool.tool_args || existing.tool_args },
+                // A new request: the Allow given to this card's last one must not hide its buttons.
+                { ...existing, status: 'pending_approval' as const, approving: undefined, tool_args: tool.tool_args || existing.tool_args },
                 ...prev.slice(existingIdx + 1),
               ]
             }

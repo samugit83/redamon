@@ -397,3 +397,25 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+.allowBtn:active:not(:disabled),
+.denyBtn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/* Takes the buttons' place the moment Allow is clicked; the agent can take
+   seconds to start the wave. */
+.allowedChip {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.188rem 0.625rem;
+  border-radius: 10px;
+  border: 1px solid var(--status-success);
+  background: var(--status-success);
+  color: white;
+  font-size: 0.688rem;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.4;
+}
