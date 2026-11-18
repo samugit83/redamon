@@ -258,7 +258,8 @@ def library_cell(lib: Mapping) -> str:
     pages among them); thoughts saying "read", "nothing fit", something else or nothing, and the
     thinks shown a block whose thought said nothing of the library; and, when there were any, the
     code lines behind a notice of a step not searched (the step limit, a library that did not answer); and
-    the notices of an announced read that did not run, with the pages read after them."""
+    the notices of an announced read that did not run, with the pages read after them; and the steps
+    Library now fitted (pages kept, steps with none, fits that failed)."""
     if not lib:
         return "—"
     return (f"{lib['blocks']} blocks / {lib['thinks_with_block']} thinks; shown {len(lib['pages_shown'])} "
@@ -268,7 +269,9 @@ def library_cell(lib: Mapping) -> str:
             + (f"; steps not searched: limit {lib['not_searched_limit']}, no answer {lib['not_searched_no_answer']}"
                if lib.get("not_searched_limit") or lib.get("not_searched_no_answer") else "")
             + (f"; unread-page notices {lib['unread_notices']} ({len(lib.get('unread_pages') or [])} pages, "
-               f"{len(lib.get('unread_read_after') or [])} read after)" if lib.get("unread_notices") else ""))
+               f"{len(lib.get('unread_read_after') or [])} read after)" if lib.get("unread_notices") else "")
+            + (f"; fit {lib['fit_steps']} steps (pages kept {lib['fit_kept']}, none kept {lib['fit_none_kept']}, "
+               f"errors {lib['fit_errors']})" if lib.get("fit_steps") or lib.get("fit_errors") else ""))
 
 
 def write_run_file(folder: Path, result: RunResult, trace: Mapping, redact: Redactor) -> Path:

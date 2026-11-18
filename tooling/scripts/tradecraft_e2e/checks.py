@@ -65,6 +65,10 @@ _NOW_SHOWN = re.compile(r"^\[tradecraft\] library_now shown=(?P<shown>\d+) block
 _NOW_READ = re.compile(rf"^\[tradecraft\] library_now (?P<page>{_PAGE}) read$")
 _NOW_CODE = re.compile(r"^\[tradecraft\] library_now code=(?P<code>[a-z_]+)(?: refresh=(?P<refresh>\d+))?")
 _NOW_UNREAD = re.compile(r"^\[tradecraft\] library_now unread pages=(?P<pages>\S+)")
+# One per step searched (hints.fit_line): page IDs and counts only; "-" when no page fits.
+_NOW_FIT = re.compile(r"^\[tradecraft\] library_now fit groups=(?P<groups>\d+) related=(?P<related>[0-9.]+) "
+                      r"kept=(?P<kept>\S+) best=(?P<best>\S+)")
+_NOW_FIT_ERROR = re.compile(r"^\[tradecraft\] library_now fit error=(?P<type>\w+)")
 # think_node.py logs each think's start before Library now runs, and its thought after.
 _THINK_START = re.compile(r"^# THINK NODE PROMPT - Iteration (?P<iteration>\d+)")
 _THOUGHT_RECORD = "THOUGHT: "
@@ -257,9 +261,11 @@ def library_now_from_log(text: str) -> dict:
     then read, ``refreshes`` (one per round of searches), ``codes``, ``unread`` one per think shown the
     notice of an announced read that did not run (its pages), ``thoughts`` one per main think
     (whether a block was shown to it, and its library sentence: read, nothing, other, or None),
-    ``thinks`` the main thinks logged and ``rounds`` the highest round number a line gives."""
+    ``thinks`` the main thinks logged, ``rounds`` the highest round number a line gives, ``fit`` one
+    per step searched (its term groups and the page IDs it kept) and ``fit_errors`` the exception
+    types of a fit that failed."""
     out: dict = {"shown": [], "reads": [], "refreshes": [], "codes": [], "unread": [], "thoughts": [], "thinks": 0,
-                 "rounds": 0}
+                 "rounds": 0, "fit": [], "fit_errors": []}
     think: Optional[dict] = None
     for at, rec in enumerate(log_records(text)):
         body = rec.rstrip("\n")
@@ -285,6 +291,15 @@ def library_now_from_log(text: str) -> dict:
             out["refreshes"].append({"at": at, "refresh": int(m["refresh"]), "reason": m["reason"],
                                      "found": int(m["found"])})
             out["rounds"] = max(out["rounds"], int(m["refresh"]))
+            continue
+        m = _NOW_FIT.match(body)
+        if m:
+            out["fit"].append({"at": at, "groups": int(m["groups"]), "related": float(m["related"]),
+                               "kept": [k.split("/")[0] for k in m["kept"].split(",") if k and k != "-"]})
+            continue
+        m = _NOW_FIT_ERROR.match(body)
+        if m:
+            out["fit_errors"].append(m["type"])
             continue
         m = _NOW_UNREAD.match(body)
         if m:
@@ -509,6 +524,9 @@ def library_now_summary(trace: Mapping, expected_pages: Sequence[Mapping]) -> di
             "not_searched_no_answer": sum(1 for c in now.get("codes") or [] if NOTICE_CODES.get(c) == "no answer"),
             "unread_notices": len(unread), "unread_pages": list(dict.fromkeys(p for u in unread for p in u["pages"])),
             "unread_read_after": read_after,
+            "fit_steps": len(now.get("fit") or []), "fit_kept": sum(len(f["kept"]) for f in now.get("fit") or []),
+            "fit_none_kept": sum(1 for f in now.get("fit") or [] if not f["kept"]),
+            "fit_errors": len(now.get("fit_errors") or []),
             "pages_shown": pages, "shown_expected": [p for p in pages if expected(p)],
             "pages_read": reads, "read_expected": [p for p in reads if expected(p)],
             "thoughts": len(thoughts), "thought_read": said("read"), "thought_nothing": said("nothing"),

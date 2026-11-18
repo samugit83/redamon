@@ -794,6 +794,7 @@ def test_the_library_now_summary_and_its_report_cell():
     lib = checks.library_now_summary(recorded_trace(), spec.expected_pages)
     assert lib == {"blocks": 1, "thinks_with_block": 3, "refreshes": 1, "codes": [], "not_searched_limit": 0,
                    "not_searched_no_answer": 0, "unread_notices": 0, "unread_pages": [], "unread_read_after": [],
+                   "fit_steps": 0, "fit_kept": 0, "fit_none_kept": 0, "fit_errors": 0,
                    "pages_shown": ["payloadsallthethings:412", "hacktricks:77"],
                    "shown_expected": ["payloadsallthethings:412"], "pages_read": ["payloadsallthethings:412"],
                    "read_expected": ["payloadsallthethings:412"], "thoughts": 4, "thought_read": 1, "thought_nothing": 1,
@@ -825,6 +826,14 @@ def test_the_library_now_summary_and_its_report_cell():
     assert (lib["unread_notices"], lib["unread_pages"], lib["unread_read_after"]) == (
         2, ["hacktricks:77", "payloadsallthethings:412", "hacktricks:5"], ["payloadsallthethings:412"])
     assert report.library_cell(lib).endswith("; unread-page notices 2 (3 pages, 1 read after)")
+    # Library now's fit, one line per step searched: pages kept, steps with none, fits that failed.
+    fitted = recorded_trace()
+    fitted["library_now"]["fit"] = [{"at": 9, "groups": 4, "related": 0.5, "kept": ["payloadsallthethings:412", "hacktricks:77"]},
+                                    {"at": 19, "groups": 2, "related": 0.5, "kept": []}]
+    fitted["library_now"]["fit_errors"] = ["KeyError"]
+    lib = checks.library_now_summary(fitted, spec.expected_pages)
+    assert (lib["fit_steps"], lib["fit_kept"], lib["fit_none_kept"], lib["fit_errors"]) == (2, 2, 1, 1)
+    assert report.library_cell(lib).endswith("; fit 2 steps (pages kept 2, none kept 1, errors 1)")
 
 
 def test_arm_b_and_a_search_checks():
@@ -937,6 +946,10 @@ def test_prompts_and_library_now_from_a_session_log():
                "--- TODO LIST ---\n1. [x] !! Map the sign-in form\n2. [ ] ! Report the canary",
                "[tradecraft] library_now code=timeout refresh=3",
                "[tradecraft] library_now unread pages=payloadsallthethings:412,hacktricks:77",
+               "[tradecraft] library_now fit groups=4 related=0.5 kept=payloadsallthethings:412/3/2/1,hacktricks:77/2/1/0 "
+               "best=payloadsallthethings:412/3/2/1/1,hacktricks:9/1/0/0/0",
+               "[tradecraft] library_now fit groups=2 related=0.5 kept=- best=-",
+               "[tradecraft] library_now fit error=KeyError",
                "THOUGHT: Report it.",
                "# THINK NODE PROMPT - Iteration 4 - Phase: exploitation",
                "[tradecraft] library_now refresh=4 reason=resume found=0",
@@ -954,6 +967,9 @@ def test_prompts_and_library_now_from_a_session_log():
         (1, "start", 4), (2, "goal+phase", 3), (4, "resume", 0)]
     assert now["codes"] == ["timeout", "limit"]
     assert [u["pages"] for u in now["unread"]] == [["payloadsallthethings:412", "hacktricks:77"]]
+    assert [(f["groups"], f["related"], f["kept"]) for f in now["fit"]] == [
+        (4, 0.5, ["payloadsallthethings:412", "hacktricks:77"]), (2, 0.5, [])]
+    assert now["fit_errors"] == ["KeyError"]
     assert (now["thinks"], now["rounds"]) == (4, 4)
     # A Fireteam member's thought is not the main agent's (members get no Library now).
     assert [(t["iteration"], t["block"], t["line"], t["page"]) for t in now["thoughts"]] == [
@@ -1084,6 +1100,21 @@ def test_the_library_now_reader_follows_the_agents_own_code(monkeypatch):
         assert not any("CVE-2099-10001" in line for line in outside)
     assert any('step in progress: "Check CVE-2099-10001' in line for line in checks.unwrap(notes[0]))
     assert notes[2] == notes[3] == checks.NOW_NOTICES[1] and notes[4] == checks.NOW_NOTICES[0]
+    # A fit line as the agent's own fit_line writes it: its kept pages are read back.
+    res = pytypes.SimpleNamespace(slug="patt")
+
+    def cand(page_id, score):
+        return pytypes.SimpleNamespace(row={"page_id": page_id, "resource_id": "r1"}, score=score, anywhere=0.5,
+                                       named=1, named_topics=0)
+
+    monkeypatch.setattr(hints, "fits", lambda c, th: c.score > 1)
+    found = pytypes.SimpleNamespace(total=4, candidates=[cand(412, 2.0), cand(9, 0.5)])
+    line = hints.fit_line(found, [("patt:412", cand(412, 2.0))], pytypes.SimpleNamespace(related=0.5), {"r1": res})
+    fit = checks.library_now_from_log(_log(line))["fit"]
+    assert [(f["groups"], f["related"], f["kept"]) for f in fit] == [(4, 0.5, ["patt:412"])]
+    none = hints.fit_line(pytypes.SimpleNamespace(total=1, candidates=[]), [], pytypes.SimpleNamespace(related=0.5), {})
+    assert checks.library_now_from_log(_log(none))["fit"][0]["kept"] == []
+    assert 'logger.warning(f"[tradecraft] library_now fit error={type(exc).__name__}")' in inspect.getsource(hints)
     # The thought sentences the main instructions ask for, read as they are written there.
     examples = re.findall(r'"(Library: [^"]+)"', hints.RULE)
     assert len(examples) == 2
@@ -1795,6 +1826,33 @@ def test_hexbrains_expected_pages_match_their_decoded_titles():
     hexbrain = [e for e in [*SCN["labs"]["L2"]["expected_pages"]]
                 + [q["expect"] for q in SCN["layer1"]["retrieval"]] if e["resource"] == "hexbrain-payloads"]
     assert [e["path"] for e in hexbrain] == [["server side request forgery"], ["server side request forgery"], ["xss"]]
+
+
+def test_l5_expects_payloadsallthethings_request_smuggling_page_by_its_title():
+    # Q-B (the owner, 2026-11-18): L5 also accepts PayloadsAllTheThings' Request Smuggling page. Of the
+    # library's 209 kept pages of that resource only that one says "request smuggling" in its title,
+    # breadcrumb, URL or description; its SSRF, HTML Smuggling and Reverse Proxy pages are not L5's.
+    types = _agent("tradecraft.library.types")
+
+    def trace(page, title, crumb):
+        output = types.wrap_untrusted([types.READ_PAGE.format(page_id=page, breadcrumb=f"PayloadsAllTheThings › {crumb} › {title}"),
+                                       types.format_read_section(title, 1, 1, []),
+                                       types.READ_SOURCE.format(source=types.format_source("stored", "2026-11-18")),
+                                       "---", "text"])
+        return {"tool_calls": [{"tool": "tradecraft_lookup", "args": {"page": page}, "success": True, "output": output}],
+                "pages": {page: {"resource_name": "PayloadsAllTheThings", "title": title, "breadcrumb": [crumb],
+                                 "description": "", "url": f"https://github.com/x/{crumb.replace(' ', '%20')}/README.md"}}}
+
+    l5 = oracles.specs(SCN)["L5"].expected_pages
+    got = checks.check_expected_page(trace("payloadsallthethings:10323", "Request Smuggling > README", "Request Smuggling"), l5)
+    assert got.ok is True and got.detail == "payloadsallthethings:10323 from tradecraft_lookup"
+    for page, title, crumb in (("payloadsallthethings:10353", "Server Side Request Forgery > README", "Server Side Request Forgery"),
+                               ("payloadsallthethings:10284", "Methodology and Resources > HTML Smuggling", "Methodology and Resources"),
+                               ("payloadsallthethings:10324", "Reverse Proxy Misconfigurations > README", "Reverse Proxy Misconfigurations")):
+        assert checks.check_expected_page(trace(page, title, crumb), l5).ok is False, page
+    assert [(e["resource"], e["path"]) for e in l5] == [
+        ("web-hacking-techniques-index", ["smuggling"]), ("web-hacking-techniques-archive-github", ["smuggling"]),
+        ("hacktricks", ["request smuggling"]), ("payloadsallthethings", ["request smuggling"])]
 
 
 def test_the_ssrf_payloads_question_finds_hexbrains_page_by_its_title():

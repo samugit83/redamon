@@ -156,6 +156,7 @@ labs:
       - {resource: web-hacking-techniques-index, path: [smuggling]}
       - {resource: web-hacking-techniques-archive-github, path: [smuggling]}
       - {resource: hacktricks, path: [request smuggling]}
+      - {resource: payloadsallthethings, path: [request smuggling]}
 
 arms:
   A:
