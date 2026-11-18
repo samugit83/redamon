@@ -45,7 +45,7 @@ the RedAmon database. During a chat, the agent reaches the library through three
 | Tool | What it does | Model cost |
 |---|---|---|
 | `tradecraft_search` | Searches the library's cards and stored sections, or browses one level of a resource's tree | none |
-| `tradecraft_lookup` | Reads one section of one page, by its page ID (or by a resource and a query) | none |
+| `tradecraft_lookup` | Reads one section of one page, by its page ID (or by a resource and a query), or one CVE of a CVE archive | none |
 | `tradecraft_ask` | The **librarian**: for a vague need, searches, reads the promising sections and answers up to three checked pages with exact excerpts | the owner's *Tradecraft librarian* model |
 
 Three things make it different from a web search:
@@ -57,6 +57,8 @@ Three things make it different from a web search:
   when to use `web_search` instead.
 - **It is cheap at run time.** Search and reading call no model; the librarian runs only when the agent asks and the
   owner allowed it.
+- **It follows the attack.** When a page fits, the agent's think step ends its prompt with **Library now**, the
+  library's best pages for the step in progress and the next one, found by code with no model call.
 
 ---
 
@@ -85,7 +87,7 @@ flowchart LR
         R1[run catalog from the webapp]
         R2[prompt: resource list,<br/>coverage map, skill line]
         R3[tradecraft_search /<br/>tradecraft_lookup /<br/>tradecraft_ask]
-        R4[library hints]
+        R4[Library now:<br/>pages for the steps at hand]
     end
 
     U1 --> U2 --> J1 --> J2 --> J3 --> J4 --> J5 --> P1
@@ -150,7 +152,8 @@ resources after an upgrade).
 
 **Check URL** (in the form) asks the agent what the URL is before anything is saved: the start page's problems, the
 detected type, the type's index (a sitemap, including one named by `robots.txt`; a repository tree with its branches
-and tags; a Sphinx search index; a PDF's page count), whether the page needs the browser, what `robots.txt` allows,
+and tags; a docs site's search index, or the sitemap its map falls back to; a PDF's page count), whether the page
+needs the browser, what `robots.txt` allows,
 the recommended storage mode and an estimated size, and for a CVE archive the first path pattern that finds a CVE id
 its README or first listing names. It calls no model and writes nothing (`agentic/tradecraft/check_url.py`).
 
@@ -172,7 +175,7 @@ An account holds at most **200 resources** (`constants.maxResourcesPerUser`). Sa
 
 The **default is Live** (`storage.defaultMode`): it keeps no copy of a third-party site unless the person chooses to.
 Two types are fixed: a **PDF is always Stored** (its pages are read once from the document), a **CVE archive is never
-stored** (a CVE's file is read live from the archive at each lookup).
+stored** (its index holds no text; a CVE's file is read live from the archive at each lookup).
 
 Storage limits (Configure ingestion → Content storage, all with ceilings): pages per resource (2,000), size per page
 (200 KB; a longer page is cut), size per resource (50 MB), and the account's quota (1 GB, at most 10 GB). Above them
@@ -186,17 +189,70 @@ stored at its next refresh.
 
 | Type | Detected by | The map comes from |
 |---|---|---|
-| Wiki (MkDocs, mdBook) | the generator's markers | the sitemap (custom URLs and the `Sitemap:` line of `robots.txt` too), else the site's menu |
-| Docs site (Sphinx, Docusaurus) | the generator's markers | the search index (`searchindex.json`, `search-index.json`, `searchindex.js`, or a custom URL) |
+| Wiki (MkDocs, mdBook) | the generator's markers | the sitemap (custom URLs and the `Sitemap:` line of `robots.txt` too), else `mkdocs.yml`'s navigation, else the site's menu |
+| Docs site (Sphinx, Docusaurus) | the generator's markers, or a Read the Docs host; a file named `searchindex.js` counts only beside a mark that only Sphinx writes, and never under another tool's generator meta (a Hugo site) | the search index (`searchindex.json`, `search-index.json`, `searchindex.js`, or a custom URL; read up to 10 MB); when it lists nothing, the sitemaps inside the resource's folder; when they list nothing but the start page, a crawl (below) |
 | GitBook | the generator's markers | the sitemap, else the menu |
 | GitHub repository | the host and path | the repository tree on the chosen branch or tag, the chosen folders and file types; optionally one entry per folder with a README |
-| CVE archive | a GitHub page naming more distinct CVE ids than `detection.cveArchiveThreshold` (20) | no map: a lookup reads one CVE's file by the path patterns (`{year}/{cve}.md`, `{year}/{cve}/README.md` by default), else the year folder's listing, else (optionally) the repository README |
+| CVE archive | a GitHub page naming more distinct CVE ids than `detection.cveArchiveThreshold` (20) | an index of its CVE files, with a GitHub token ([below](#a-cve-archives-index)); a lookup reads one CVE's file by the path patterns (`{year}/{cve}.md`, `{year}/{cve}/README.md` by default), else the year folder's listing, else (optionally) the repository README |
 | PDF | the content | the pages in the chosen range, or the chapters of its bookmarks |
 | Website | anything else | the crawl (below) |
 
 A detector can be turned off for the account (`detection.enabledDetectors`), and a homepage with too little text is
 treated as a website (`detection.thinHomepageChars`). The map of each type stops at its own limit
-(`knownTypes.maxMapEntries.*`).
+(`knownTypes.maxMapEntries.*`). A sitemap index of per-language copies (most of its children named by an ISO 639-1
+code) is read in the language the map keeps first (`knownTypes.language`: *Auto* the resource folder's language, then
+English; *Preferred* the person's; *All* the listed order), and the other languages only when those list nothing. A
+title guessed from a URL is percent-decoded once and kept on one line.
+
+**A docs site's map** (`builders.build_docs`) tries its sources in order, in one time budget
+(`crawl.timeBudgetSec`) that a cancel also ends: the search index; else the sitemaps, kept to the resource's host and
+folder (below the site root the folder's own `sitemap.xml`, then those `robots.txt` names, then the site's
+`/sitemap.xml`; at the root those `robots.txt` names first), passing over one that lists only the start page or an
+alias of it; else the crawl a website gets, model-guided where the strategy is *Auto*, inside the folder, at the docs
+map limit, on the time the reading left. A docs map left with only its start page fails the refresh (`timeout` when
+the time budget ran out, else `fetch_failed`; `docs_start_page_only` is counted), so the previous version stays. The
+report's stop reason names the source: `docs: searchindex (N pages)`, `docs: no search index, sitemap.xml|robots|site
+sitemap (N pages)` (either with `, map limit`, a sitemap's also with `, time budget`), `docs: no search index or
+sitemap, crawl (<the crawl's code>)`, `docs: no search index, time budget`.
+
+### A CVE archive's index
+
+A CVE archive's map is an **index of its CVE files** (`builders.index_cve`): one entry per CVE, whose title and entity
+are the CVE id and whose URL is the raw file the reader reads first for it. An entry holds no text, so nothing is
+downloaded or stored; it lets [`tradecraft_search`](#tradecraft_search) and [Library now](#library-now) find a CVE
+the archive holds.
+
+- **Only with a GitHub token.** The listing carries the job's GitHub token (the resource's own, else the account's
+  *GitHub Access Token* of Global Settings → API Keys), sent to GitHub's hosts only. Without one there is no index and
+  no call is made for it: GitHub allows 60 unauthenticated API calls an hour from one address, and a full archive's
+  index takes about one per year folder. The archive is then read by CVE id only, and the report's stop reason reads
+  `cve index: add a GitHub token to index this archive` (`cve_index_needs_token` among its errors).
+- **How it lists.** One git trees listing per year folder (the contents API stops at 1,000 entries of a folder),
+  newest year first, parsed on the job's thread pool; a path pattern with a folder before `{year}` costs one listing
+  more. Every listing answer, the root's and that folder's included, is read up to 10 MB
+  (`builders.CVE_LISTING_MAX_BYTES`, `constants.sitemapMaxBytes`). A CVE counts once, at the first of the archive's
+  path patterns that names its file, and only where the reader builds exactly that path for it (ASCII digits only). A
+  pattern whose first placeholder is not a `{year}` folder adds no entry; its CVEs are still read by id. An archive
+  none of whose patterns names a year folder has no index at all, with or without a token: the report counts
+  `cve_index_no_year_pattern` (not `cve_index_needs_token`), its stop reason reads `cve index: none, no path pattern
+  names a year folder`, it is read by CVE id only, and its card shows no notice (no token or refresh would change
+  it).
+- **The cap.** At most 20,000 entries, the map ceiling every site type shares (`knownTypes.maxMapEntries.*`): over it,
+  the largest files are kept (in a proof-of-concept archive a CVE's file grows with the PoCs it lists), and the stop
+  reason reads `cve index: largest 20000 of <N> files`. A CVE left out is still read by `cve_id`.
+- **Folders not listed, or listed in part,** are counted in the report by cause: `cve_index_folder_unread` (an error, a rate limit, an
+  answer that is not a tree; a GitHub rate limit also stops the listing), `cve_index_listing_cut` (a listing answer
+  over the size bound, the root's, a folder's before `{year}` or a year's tree, or a tree GitHub cut; never a miss), `cve_index_time_budget` (the crawl's time budget, `crawl.timeBudgetSec`, ran out) and
+  `cve_index_folder_missing` (a folder a pattern names before `{year}` that the repository does not have: it holds
+  nothing). The stop reason adds `, <n> folders unread` for the folders not listed at all (an error, a rate limit, an
+  answer over the size bound, the time budget, a cancel); a tree GitHub cut is listed in part and a missing folder
+  holds nothing, so neither counts there.
+- **The stages** pass an archive's entries by: no tags, focus judgement, content check or model call, no tree; the
+  entity is the file's CVE id; the summary reads the homepage, not the map's titles; the report has no readiness line.
+  Browsing an archive with `tradecraft_search` lists no CVE ids; it says to read a CVE by `cve_id`.
+- **Page IDs.** Each entry gets a page ID like any page. When the largest 20,000 change between refreshes, the IDs of
+  the files that left stay unused (an ID is never reused), so an archive's page IDs grow with its refreshes, bounded by
+  its file count.
 
 **Crawling a website** (`agentic/tradecraft/ingest/crawl.py`) has three strategies (`crawl.strategy`):
 
@@ -235,6 +291,16 @@ Each resource is a card in **Global Settings → Tradecraft**:
 - **Ingested with older settings** when the resource's live version was built with other settings, another forced type,
   another focus or another login shape than it has today; its next refresh applies them;
 - **Ingested before 2.0: refresh for headings, descriptions and search inside pages** on a resource converted from 1.x;
+- on a CVE archive with no [index](#a-cve-archives-index), read from its last report (`cveIndexHint` in
+  `webapp/src/lib/tradecraft/client.ts`): **Add a GitHub token to index this archive: the GitHub Access Token in
+  Global Settings > API Keys, or the GitHub token override in Edit > Access, then refresh** when that ingestion had
+  no GitHub token (the report counts `cve_index_needs_token`) and the resource has no token of its own; **Refresh to
+  index this archive** when the resource has its own token since, or when the ingestion did not reach the index (one
+  from before the index existed). Both carry the tooltip "An index lets search and Library now find the CVEs this
+  archive holds; without one, a CVE is read only by its id." A token added on the account shows only after the next
+  successful refresh (a failed one keeps the old report). An archive with no report yet (a first ingestion, or one
+  converted from 1.x, which reads *Ingested before 2.0*), an indexed one and one whose path patterns name no year
+  folder show neither;
 - **Map** (the Map view), **Edit**, **Delete**.
 
 The tab also holds **Add Resource**, **Configure ingestion**, **Configure search**, the librarian model line ("Librarian
@@ -271,13 +337,25 @@ writes nothing until the job ends or is cancelled.
   304 to the conditional request (its ETag or Last-Modified), or whose text is identical, is not stored again; it is
   copied forward with its sections, headings, description, tags and entities, and no model call is made for it. A 304
   is trusted only when the page was stored with the same settings.
+- **A failed map fails the refresh** (`pipeline.failure_code`) whatever pages the person pinned: curation adds pins to
+  any map, an empty one included. A GitHub repository whose API does not answer fails with `fetch_failed`, so its
+  previous tree stays; a docs map with only its start page fails too ([above](#site-types-and-how-the-map-is-built)).
+- **A CVE archive's index** (`pipeline._incomplete_cve_index`, `_budget_cut_cve_index`). A folder missed this time
+  (`cve_index_folder_unread`) fails the refresh of an archive that is already readable with `fetch_failed`, so the
+  previous index stays; on a first ingestion the listed part goes live. A cut by the time budget (newest years first,
+  so the oldest are left out) fails the refresh with `timeout` while the previous index is whole; it goes live when
+  the archive had no index, when the live index was cut by the budget too, or when the last refresh already failed
+  with that `timeout` (a listing the budget never fits would otherwise keep an old index for ever). A folder over the
+  size bound, cut by GitHub or missing would be the same at the next refresh: it is counted and the rest goes live. A
+  refresh with no GitHub token builds no index, so the archive keeps none after it and is read by CVE id only.
 
 ### The ingestion report
 
 Every job writes a report (counts and codes only, never a URL or page text): pages visited and kept, pages skipped by
 reason, why the crawl stopped (in words, for example "stopped: auto: robots (21 pages)"), model calls, duration, pages
-stored and not stored (by size, by quota), the focus's counts, errors by code, and a **readiness** line: the share of
-kept pages with a real title, with headings, with a description and with a topic. When one is low, the report
+stored and not stored (by size, by quota), the focus's counts, errors by code, and, for every type but a CVE archive,
+a **readiness** line: the share of kept pages with a real title, with headings, with a description and with a topic.
+When one is low, the report
 suggests a fix: Stored mode for a Live resource (a stored copy gives every page its headings and a description), a
 focus with content checks for a Stored one.
 
@@ -353,7 +431,7 @@ call keeps the previous one.
 
 ## Settings
 
-Every setting is defined once, in the spec (`settingsSpec.json`: 96 settings in 15 sections, plus the code constants),
+Every setting is defined once, in the spec (`settingsSpec.json`: 95 settings in 15 sections, plus the code constants),
 with its scope, its level (account, resource or both), its default, its range and its **ceiling**. A ceiling is a
 security limit: the webapp checks it on save, and the agent clamps every value again (`agentic/tradecraft/settings.py`),
 because the JSON columns have more than one writer. No setting is an environment variable.
@@ -361,12 +439,14 @@ because the JSON columns have more than one writer. No setting is an environment
 | Where | What |
 |---|---|
 | **Configure ingestion** (account) | Fetching, Site detection, Known site types, Website crawl, Content storage, Summary, Refreshing, Ingestion focus (with *My focus recipes*); a live estimate of the worst-case time and model calls of one crawl; **Save**, **Reset**, **Save & refresh all** |
-| **Configure search** (account) | Librarian (its use, model calls, pages, time limit, questions per run, and the model through the gate), Search (results, the attack session, match strictness, *My synonyms*), Reading pages, What the agent sees in its prompt, Hints during the attack; each resource's priority; a live estimate |
+| **Configure search** (account) | Librarian (its use, model calls, pages, time limit, questions per run, and the model through the gate), Search (results, the attack session, match strictness, *My synonyms*), Reading pages, What the agent sees in its prompt, Hints during the attack ([Library now](#library-now) on or off); each resource's priority; a live estimate |
 | **The resource form** (resource) | the overrides of the ingestion settings, the type's own options (`type.*`), the content selectors |
 | **Models by feature** | *Tradecraft librarian* (the librarian's model) |
 
 The account's row (`tradecraft_user_settings`) holds only the values a person changed, so a default changed in a later
-release reaches every account that never touched it. A job carries the **effective settings**: the spec's defaults, the
+release reaches every account that never touched it. A key the spec no longer has (`hints.perRun`, "Hints per run") is
+ignored when a request sends it, never refused, and the next save of the search settings drops it from the row
+(`REMOVED_KEYS` in `settingsSpec.ts`). A job carries the **effective settings**: the spec's defaults, the
 account's values, then the resource's overrides; the hash of what shaped the map is recorded at the swap, and a later
 difference shows **Ingested with older settings**.
 
@@ -492,9 +572,12 @@ next call.
 
 The catalog is bound to the run's task only (`agentic/tradecraft/runtime.py`). No catalog, an unknown project, or an
 error leaves the run without the tradecraft tools. The tools are offered in the phases the Tool Matrix gives
-`tradecraft_lookup` (exploitation and post-exploitation by default); `tradecraft_search` and `tradecraft_ask` follow
-them, and `tradecraft_ask` only while the owner's *Librarian use* is **Agent decides**. They are never offloaded to a
-sub-agent.
+`tradecraft_lookup`: all three by default (`agentToolPhaseMap` in `schema.prisma` and `DEFAULT_AGENT_SETTINGS` in
+`agentic/project_settings.py`), since they read only the owner's library and its resources' own sites, never the
+target. `tradecraft_search` and `tradecraft_ask` follow them, and `tradecraft_ask` only while the owner's *Librarian
+use* is **Agent decides**. The agent reads a project's stored map as it is, never merged with the defaults, so a
+project keeps the row it was saved with (see [Upgrading](#upgrading-from-tradecraft-1x) for the one-time move of the
+old default). They are never offloaded to a sub-agent.
 
 ### What the agent sees in its prompt
 
@@ -503,12 +586,24 @@ The tools' registry entries (`agentic/tradecraft/overlay.py`) carry:
 - **the resource list**: with *Auto* (the default), each resource's full summary while the run has at most 10
   resources, then one line each (name, type, a scope of 12 words cut from the summary by code); *Full* and *One line*
   force either;
-- **the decision guide**: outside what the library covers, `web_search`; a hint or a result names a page,
-  `tradecraft_lookup(page=…)`; a named technique, CVE or product, `tradecraft_search` then `tradecraft_lookup`; only
-  related pages or a situation ("WAF blocks SLEEP"), `tradecraft_ask` when offered;
+- **the decision guide**, which tool and never when, with no trigger tied to a topic: a page shown in the prompt or an
+  earlier result fits the step, `tradecraft_lookup(page=…)`; a need the agent can name, `tradecraft_search` then
+  `tradecraft_lookup`; it cannot tell what fits, or search shows only related pages, `tradecraft_ask` when offered
+  (else read the closest by section, or refine); clearly outside what the resources cover, `web_search`;
 - **the coverage map** (`prompt.coverageMap`, on by default): page counts by topic, kind and technology, with *Not
-  covered*, from one bounded query at the run's start (counts and fixed vocabulary names only, never a page title);
-- **the skill line**: when the run's attack skill is a topic the library covers, its pages for that topic.
+  covered*, from one bounded query at the run's start (counts and fixed vocabulary names only, never a page title).
+
+Elsewhere in the prompt:
+
+- **the skill line** (`library.coverage.skill_line`, placed by `agentic/prompts/__init__.py`): when the run's attack
+  skill is a topic the library covers, its pages for that topic, just before the skill's playbook;
+- **rules 6 and 7** of the main instructions' *Important Rules*, and **Library now** at the end of the think step's
+  system message, where Library now runs ([below](#library-now)).
+
+A run with no active resource (the owner has none, or the project turned them all off) sees no Tradecraft text at all:
+no registry entry, no skill line, no rule, no Library now, and none of the prompt's static texts that name the tools
+(the workspace rules' list of tools never spawned as jobs, the typed-arguments examples, the stealth rules' section),
+which follow `overlay.offered_catalog()`.
 
 ### `tradecraft_search`
 
@@ -529,12 +624,33 @@ read: tradecraft_lookup(page="patt:412", section="...")
 FOUND, RELATED or NOT FOUND follows the match strictness. With `path` and no query, it **browses** one level of a
 resource's tree: folders with their page counts and descriptions, then pages; the root carries the resource's summary.
 
+The agent's filters (`topic`, `kind`, `technology`) and the topic and technologies wordings' own filters apply before a
+statement ranks, so the ranking reads only the pages that can come back.
+
+**A CVE archive's index** is read apart from the wordings (`search.archive_entries`, the `archive_entries` statement
+of `search_sql.py`): no text, entity or fuzzy wording reads it (every entry's title holds "cve" and its year, and a
+fuzzy match would find a neighbouring id), only the CVE ids the query names. Each such id gives one row, however many
+archives hold it: the archive of the highest priority, then the first slug; an entry the person blocked in the Map is
+left out, so another archive's copy stands for it. The row is never cut by the merge, and it comes first among the
+pages that name that id exactly. The librarian searches without the archives (`free_first_pass(archives=False)`), since
+it cannot read them.
+
 ### `tradecraft_lookup`
 
 `tradecraft_lookup(page?, section?, part?, resource_id?, query?, cve_id?, section_path?, force_refresh?)`
 (`agentic/tradecraft/library/reader.py`) reads **one section** of one page at a time, at most `reading.charsPerRead`
 characters (12,000 by default; a longer section is cut into parts at paragraph boundaries, never inside a code block).
-The answer names the page, the section, the other sections and the source. The read path:
+The answer names the page, the section, the other sections and the source, and a section in parts says
+`part: N of M` with the call that reads the next (`next: tradecraft_lookup(page="…", section="…", part=N+1)`).
+
+The reads that return a whole text rather than a section (one CVE of an archive and its README fallback, a forced
+`section_path`, a page the 1.x title match picks, a PDF page) keep the same limit: their text is cut into parts the same
+way, their `next:` line repeats the read's own arguments with the next `part` (each text value quoted as JSON, so a
+path or a query comes back exactly), and the list of code blocks follows the text only while it fits. A part that does
+not exist is refused before the page counts as read. A refusal names the page by its ID or its URL, or the resource by
+its slug, never by a title or a heading, which are the site's text and would sit outside the untrusted envelope (a CVE
+archive's refusals of a page ID name the ID); the headings a missing section lists follow in an envelope of their own.
+The read path:
 
 1. the resource no longer exists → it says so, no request;
 2. the page is blocked, or the resource has a login and the page is not in its map → refused, no request;
@@ -542,9 +658,16 @@ The answer names the page, the section, the other sections and the source. The r
 4. otherwise → the page is downloaded and nothing is kept (`live`, or `live (not stored)`);
 5. the site cannot be reached → an error that says whether a copy exists.
 
-`resource_id` with `query` picks a page when the agent has no page ID; a `cve-poc-db` resource needs `cve_id`;
-`force_refresh` reads a Stored page from its site instead of its copy (and stores nothing). A resource not yet
-converted from 1.x is read through the 1.x title match until its conversion.
+`resource_id` with `query` picks a page when the agent has no page ID; `force_refresh` reads a Stored page from its
+site instead of its copy (and stores nothing). A resource not yet converted from 1.x is read through the 1.x title
+match until its conversion.
+
+A **CVE archive** is read one CVE at a time, live (`library/cve.py`): with `resource_id` and `cve_id`, or with the page
+ID of its index entry, which reads that entry's CVE the same way, with the same parts and refusals. Both routes refuse
+a file the person blocked in the Map before any request for it, matched on the archive's own URL for the file (never
+GitHub's spelling of the repository), and a read marks the entry of the file it returned as read in the run, so Library
+now does not show it again; the README fallback is no entry's. "PoC not found" is the answer when no path pattern, the
+year folder's listing nor (optionally) the README has the CVE; a GitHub error says it is not a "PoC not found" answer.
 
 ### `tradecraft_ask`: the librarian
 
@@ -566,6 +689,7 @@ answers PARTIAL with the best so far), questions per run (10).
 - It runs on the owner's **Tradecraft librarian** model (Models by feature), built from the run's own providers, with
   the purpose label `tradecraft_librarian`; no fallback to the chat model.
 - When the free first pass finds nothing, it answers NOT FOUND with no model call.
+- It neither searches nor reads a CVE archive (its entries hold no text to quote); the agent reads one by `cve_id`.
 - It **degrades to the plain search results**, with the reason, when there is no model, in an Agent in the Loop run,
   when the model cannot be built, on a model error, at the time limit.
 - It never writes a checkpoint and never retries a call.
@@ -575,15 +699,95 @@ answers PARTIAL with the best so far), questions per run (10).
 - **In the chat**, a librarian result shows a trail line under it ("Librarian: searched 3 queries, inspected 4 pages,
   picked 2").
 
-### Library hints
+### Library now
 
-At key moments of an attack, the main agent's think step may receive one short system note naming 1-3 library pages
-relevant now, at no model cost (`agentic/tradecraft/library/hints.py`, `profile.py`). The moments: the skill chosen or
-changed, the phase changed, a new technology or CVE id in the target's structured data, the first block (a WAF)
-seen in a tool result. Each builds 3-6 searches from fixed patterns over the session's profile and keeps the best
-pages not already read or suggested. At most one note per think and `hints.perRun` (6) per run; the skill line counts
-as the first. The note's trusted lines hold page IDs and fixed vocabulary names only; titles sit in an untrusted
-block, and a CVE id (which a target can plant) is searched but never named. Fireteam members get no hints.
+**Library now** puts the library's best pages for the steps at hand at the end of the main agent's think call, found
+by code at no model cost (`agentic/tradecraft/library/hints.py`, `profile.py`). It runs where the run has at least one
+active resource, Configure search → *Hints during the attack* → *Hints* (`hints.enabled`) is on, and the Tool Matrix
+allows `tradecraft_lookup` in the current phase (`hints.offered`). Fireteam members get none.
+
+- **The steps at hand** (`profile.steps_of`) are the ones the agent is about to take: the todo item in progress and
+  the next pending one, or the objective (the person's message) before there is a todo list; each one line of at most
+  300 characters. A step is searched with its own words, without the URLs, addresses and bare numbers that name the
+  target; the CVE ids it names stay whole. The CVE ids a confirmed finding names (a finding of a type that says a
+  vulnerability is real, its `related_cves`) get a search of their own, the newest three.
+- **When it searches.** At most one round of searches per think, waited for at most **8 seconds**
+  (`SEARCH_TIMEOUT_SEC`). A step is searched once for the session's facts (the skill's topic, the phase, the target's
+  technologies as vocabulary ids, the catalog's resources), and again only when those facts change, or when the agent
+  read every page the search kept and it kept a full set (more may fit). A search that failed or did not answer in
+  time is tried again at the next thinks, twice at most, and again after any later search succeeds; the step keeps the
+  pages it had meanwhile. A run searches at most twice its iteration limit plus 10 distinct steps (never more than
+  1,000).
+- **What fits a step** (`hints.fits`). Each search is the free first pass of [`tradecraft_search`](#tradecraft_search).
+  A page fits when the search's own scores make it related at the account's *Match strictness* (at *balanced*, half
+  of the step's term groups found on the page), and the step is named where the page names itself: one of the step's
+  terms, or a vocabulary topic the step names in any of that topic's phrases ("Directory Traversal" for "path
+  traversal"), in its title, breadcrumb or file name. Its headings do not count: a long page's headings hold planning
+  words ("Bypass Techniques") that any step uses. A page naming a CVE id of the step exactly, or a close fuzzy title,
+  fits too; for a confirmed finding only an exact CVE id fits. A [CVE archive's entry](#a-cve-archives-index) for that
+  CVE comes first.
+- **The block** holds at most 3 pages (`constants.pagesPerHint`): the best page of each step in turn (the step in
+  progress, the next step, then the confirmed finding), each under the step it fits, a page fitting two steps shown
+  once. Each search keeps its best 6 not read yet, so the next ones step in as the agent reads, with no new search. A
+  page the run read never comes back; one shown and not read may come back for another step. When nothing fits,
+  there is no block.
+
+The block:
+
+```
+Library now (pages for the steps at hand):
+<<<UNTRUSTED_TRADECRAFT_RESULT id=…>>>
+  step in progress: "Probe the search parameter for PostgreSQL time-based blind SQL injection"
+    patt:412       PayloadsAllTheThings › SQL Injection › PostgreSQL Injection   matches: postgresql, time, blind
+  next step: "Extract the users table with PostgreSQL stacked queries"
+    hacktricks:88  HackTricks › Pentesting Web › SQL Injection › PostgreSQL injection   matches: postgresql, stacked
+<<<END_UNTRUSTED_TRADECRAFT_RESULT id=…>>>
+If one fits your next step, read it with tradecraft_lookup(page=…) before acting.
+```
+
+Each row is the page ID, the resource's name with the page's breadcrumb and title, and up to six words it matched: the
+CVE ids and the words of the step the page holds, then the session's topic and technology names it is tagged with,
+never a word of the page's own. No page text (a description, a section) is shown.
+
+- **Notices**, fixed text after the block, or alone when there is none. A step that could not be searched, once it has no page left to show:
+  "Library now: a step was not searched (search limit for this run); use tradecraft_search for it yourself." or "…
+  (the library did not answer) …". The block never just disappears.
+- **Where it goes.** The block is a text block of its own at the end of the think call's one system message
+  (`hints.with_note`), after the prompt's cache tiers and with no cache marker, so every cached prefix stays as it was;
+  a plain prompt gets it as a trailing section. It is never a second system message, which chat templates that allow
+  one leading system message refuse with an HTTP 400. Every adapter, and the step an Agent in the Loop driver
+  answers, gets the same message. The rows are only those of resources the catalog holds at that think: a resume binds
+  the catalog again for the person resuming.
+- **Rule 6, *Your library*** (`hints.RULE`), in the main instructions' *Important Rules* wherever Library now runs:
+  the active attack skill gives the method, the library the specifics for the steps at hand; before each new step,
+  look at Library now; if a page there fits what the agent is about to do, reading it is this step: make
+  `tradecraft_lookup(page=<that page id>)` this decision's action, and act on what it returns at the next step
+  ("writing that you read a page does not read it"); a fitting page comes before the agent's own knowledge,
+  `query_graph` and `web_search` whenever an instruction asks for specifics. The `thought` says, in one short sentence
+  with no line break, `Library: read <page id>.` only together with that call, otherwise `Library: nothing fit.`.
+- **Rule 7, *Name each step*** (`prompts.base.STEP_NAMING_RULE`), right after rule 6 and only with it: each todo
+  item's description is a short phrase naming the technique and the target's technology it is about (the product,
+  framework, language or protocol), as far as the agent knows them, because Library now searches with the words of
+  the steps. It names no attack class. Neither rule is in a run without Library now, whose prompt reads as it does with
+  no library; both reach an Agent in the Loop driver, whose step is the same prompt, and neither is in a Fireteam
+  member's prompt.
+- **An announced read that did not happen.** When the last thought said `Library: read <page id>.` for a page a block
+  of this run showed, of a resource the catalog still holds, and no read of that page followed (by page ID, section
+  path or query, a page the librarian returned, in a plan wave or by a Fireteam member), the next think's message
+  carries, once per page in a run, the fixed notice "Library now: your last thought named a page to read, but it was
+  not read. If it still fits, make tradecraft_lookup(page=…) this decision's action; otherwise say "Library: nothing
+  fit."" It names no page, costs no search, and the page stays among the rows while it fits.
+- **It never fails the think.** Any error is logged with its code and the think goes on without the block.
+- **Log lines**, page IDs and counts only, never a step or a title: `[tradecraft] library_now refresh=<n>
+  reason=<what changed> found=<n>` per round (`start`, `goal`, `skill`, `phase`, `technology` or `cve`, several joined
+  with `+`, such as `goal+phase`; `resume` when nothing changed); one `[tradecraft] library_now fit
+  groups=<n> related=<share> kept=<page>/<covered>/<named>/<topics>,… best=<page>/<covered>/<named>/<topics>/<0|1>,…`
+  per step searched (the step's term groups, the threshold, each kept page as the term groups it covers, those named
+  in its title, breadcrumb or file name, and the topics named there; then the three best by the fused rank, and
+  whether each fits); `[tradecraft] library_now shown=<n> block=<n> pages=<ids>` per think with a block;
+  `[tradecraft] library_now <page> read` when the agent reads a page a block showed; `[tradecraft] library_now unread
+  pages=<ids>` with the notice; and `code=timeout refresh=<n>`, `code=limit goals=<n>`, `code=internal_error
+  error=<type>`, `fit error=<type>`.
 
 ### Page IDs
 
@@ -605,7 +809,7 @@ test). The webapp owns the schema.
 | `user_tradecraft_resources` | the resource: its fields, settings, login, report, the live `generation`, the claim, the 1.x columns |
 | `tradecraft_ingestion_jobs` | jobs: kind, status, stage, progress, error code, cancel flag, lease, who started it |
 | `tradecraft_page_ids` | one number per (resource, URL), never reused |
-| `tradecraft_entries` | the cards of each generation, with the stored text of a Stored page and its validators |
+| `tradecraft_entries` | the cards of each generation, with the stored text of a Stored page and its validators; a CVE archive's index entries, with no text |
 | `tradecraft_sections` | a stored page's sections |
 | `tradecraft_tree_nodes` | the folders or topics of each generation |
 | `tradecraft_curations` | pins, blocks, renames, restores, by URL |
@@ -644,6 +848,39 @@ and Settings → Tradecraft offers **Save & refresh all** once.
 
 Map versions: `1` written by 1.x, `2` converted, `3` ingested by 2.0.
 
+**The Tradecraft phases move once.** 1.x allowed `tradecraft_lookup` in exploitation and post-exploitation by
+default; 2.0 allows the three tools in every phase. Since the agent reads a project's stored phase map as it is,
+`webapp/scripts/backfill-tradecraft-phases.mjs` runs at every webapp start after `db push` and does its work once: one
+`UPDATE` gives all three phases to every project whose `tradecraft_lookup` row is exactly `[exploitation,
+post_exploitation]` (in any order) and that existed when the new code first started, keeping every other key and
+setting `updated_at`, so a form opened before the upgrade gets a stale-save refusal. Any other row is a person's choice
+and is kept: other phases, `[]`, no row (the tools then run in no phase), a value that is not a list of phases. Two
+`AuditLog` markers, kept by audit retention, record it: `system.tradecraft_phases_cutoff` (when the new code first
+started) and `system.tradecraft_phases_backfill` (`after = {projects: N, ids: [...]}`, the moved ids only), written
+with the update under an advisory lock; with the marker present a later start does nothing, so a person who puts the
+old phases back keeps them. It logs `[tradecraft] phases_default_moved projects=N` or `[tradecraft]
+phases_default_failed code=<error code>` and is never fatal (the next start tries again). The way back, for the moved
+projects that still hold exactly the three phases (a moved project whose person later ticked all three again cannot be
+told apart):
+
+```sql
+UPDATE projects
+   SET agent_tool_phase_map = jsonb_set(agent_tool_phase_map, '{tradecraft_lookup}', '["exploitation","post_exploitation"]'::jsonb),
+       updated_at = now()
+ WHERE id IN (SELECT jsonb_array_elements_text(after -> 'ids') FROM audit_log WHERE action = 'system.tradecraft_phases_backfill')
+   AND agent_tool_phase_map -> 'tradecraft_lookup' @> '["informational","exploitation","post_exploitation"]'::jsonb
+   AND agent_tool_phase_map -> 'tradecraft_lookup' <@ '["informational","exploitation","post_exploitation"]'::jsonb;
+```
+
+A saved project preset keeps the phases it was saved with, so applying an older one sets the old row again.
+
+**CVE archives get their index at their next refresh.** A CVE archive converted from 1.x is read by CVE id as before,
+and its card reads *Ingested before 2.0*, until a person refreshes it (Refresh, or Save & refresh all): nothing
+refreshes by itself. That refresh builds its [index](#a-cve-archives-index) when the resource or the account has a
+GitHub token; without one the card then reads **Add a GitHub token to index this archive: the GitHub Access Token in Global Settings > API Keys, or the GitHub token override in Edit > Access, then refresh**. An archive whose last 2.0 ingestion came before
+the index existed keeps its settings, so the card does not read *Ingested with older settings*; it reads **Refresh to
+index this archive**.
+
 **The old page-cache volume.** `./redamon.sh update` (and so `tooling/deploy/single-host/deploy.sh`) runs
 `_old_page_cache_volume_remove_once` once, after the stack was recreated and is healthy: it deletes the
 `redamon_tradecraft_cache` Docker volume, where 1.x kept its downloaded pages. Its content was derived and disposable;
@@ -671,14 +908,20 @@ the revoked sessions are 7.7.2's and do not apply to 7.8.0.
 
 **Log lines** start with `[tradecraft]` and a fixed code, never page text or a secret:
 `[tradecraft] job <id> succeeded|failed|interrupted …`, `[tradecraft] convert sweep code=… users=N resources=M`,
-`[tradecraft] convert resource=<id> code=…`, `[tradecraft] coverage code=…`. The webapp logs `[tradecraft-search]`
-when it installs the search triggers at start.
+`[tradecraft] convert resource=<id> code=…`, `[tradecraft] coverage code=…`, and Library now's lines
+([above](#library-now)). The webapp logs `[tradecraft-search]` when it installs the search triggers at start, and
+`[tradecraft] phases_default_moved projects=N` or `phases_default_failed code=…` for the
+[phases move](#upgrading-from-tradecraft-1x).
+
+**Report codes** (counted in a job's report, not a job's error code): among them `docs_start_page_only`, and a CVE
+archive's `cve_index_no_year_pattern`, `cve_index_needs_token`, `cve_index_folder_unread`, `cve_index_listing_cut`,
+`cve_index_time_budget` and `cve_index_folder_missing` ([A CVE archive's index](#a-cve-archives-index)).
 
 **Error codes** (a job's `errorCode`, shown as it is on the card, `Failed (<code>)`): `fetch_failed`, `blocked_private_address`,
 `homepage_http_error`, `thin_homepage`, `llm_budget_exhausted`, `loop_model_not_supported_here`, `model_unavailable`,
 `agent_restarted`, `agent_lost`, `agent_unreachable`, `cancelled`, `resource_deleted`, `resource_changed`,
 `quota_reached`, `timeout`, `job_running`, `userinfo_refused`, `job_not_claimed`, `queue_full`, `bad_url`,
-`page_blocked`, `outside_map`, `internal_error` (`contract.ERROR_CODES`).
+`not_implemented`, `page_blocked`, `outside_map`, `internal_error` (`contract.ERROR_CODES`).
 
 **Agent routes** (`agentic/tradecraft/api.py`), all behind the master key (`require_configured_master_auth`: with no
 key configured every caller gets 503); those that fetch a site or call a model also spend the owner's rate limit and
@@ -731,6 +974,20 @@ The webapp waits 15 seconds longer than each deadline.
   such as `__proto__` is named without them.
 - A Live resource's search sees cards only: headings and descriptions come from a stored copy, the crawl's own download
   or, for a wiki, GitBook or docs site, the card pass. Stored mode, or real titles, improve a low readiness.
+- **Library now fits a page only where the page names the step.** A step that says what to do without naming its
+  subject finds no page that names that subject only in its text or headings (rule 7 asks the agent to name the
+  technique and the technology; *Match strictness* at loose lets more pages fit). One generic word of a step in a
+  page's title, breadcrumb or file name is enough to name it, so a planning step can still be shown an off-topic page.
+- A dotted or slashed name (`Node.js`, `ASP.NET`, `/etc/passwd`) is one word in the index but split into its parts in a
+  query, so a step's `Node.js` does not match a page's `Node.js` as one word.
+- A read announced by a decision that waited for a person gets no unread notice: a resume clears the last decision.
+- A CVE archive has an index only when its last ingestion had a GitHub token, and holds at most its 20,000 largest
+  files; a CVE outside the index is found by `cve_id` only, never by search or Library now.
+- The card's index notice reads only the last report. An index that listed nothing (a revoked or invalid token, a
+  rate-limited root listing on a first ingestion) ends as `cve index: 0 of 0 files, 1 folders unread` and shows no
+  notice: the report line is the only sign. A CVE archive resource whose URL is not a GitHub repository fails with
+  `bad_url`; under the *replace* failure policy its swapped report has no `cve index:` stop reason, so **Refresh to
+  index this archive** shows next to the failure.
 - The `v2Enabled` column of `tradecraft_user_settings` and the 1.x columns of `user_tradecraft_resources` (`sitemap`,
   `cacheTtlSec`) stay in the schema for a rollback; nothing reads `v2Enabled` or `cacheTtlSec`.
 
@@ -752,4 +1009,5 @@ The webapp waits 15 seconds longer than each deadline.
 | Run catalog | the resources one chat run may use, from the webapp |
 | Coverage map | the library's page counts by topic, kind and technology in the prompt |
 | Librarian | `tradecraft_ask`'s sub-graph, on the owner's *Tradecraft librarian* model |
-| Hint | a short system note naming library pages, at a key moment |
+| Library now | the library's best pages for the steps at hand, at the end of the think step's system message |
+| CVE archive index | a CVE archive's text-less entries, one per CVE file, listed with a GitHub token |
