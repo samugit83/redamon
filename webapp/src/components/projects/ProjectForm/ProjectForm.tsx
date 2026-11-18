@@ -104,7 +104,7 @@ import { RouteExposureSection } from './sections/RouteExposureSection'
 import { PartialReconModal } from './WorkflowView/PartialReconModal'
 import { usePartialLogsRun } from './usePartialLogsRun'
 import { ReconPresetModal } from './ReconPresetModal'
-import { ProviderRequiredModal, ModelSelectionModal } from './ProjectLlmGate'
+import { GateLayer, ProviderRequiredModal, ModelSelectionModal } from './ProjectLlmGate'
 import {
   seedInitialModels, needsModelGate, hasNoConfiguredProvider, providerGateApplies,
   pipelineModelOptional, loopModelOffered, instanceModelOffered,
@@ -1840,26 +1840,28 @@ export function ProjectForm({
 
       {/* Guardrail block modal */}
       {guardrailError && (
-        <div className={styles.guardrailOverlay} onClick={() => setGuardrailError(null)}>
-          <div className={styles.guardrailModal} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.guardrailIconWrapper}>
-              <ShieldAlert size={32} />
+        <GateLayer>
+          <div className={styles.guardrailOverlay} onClick={() => setGuardrailError(null)}>
+            <div className={styles.guardrailModal} onClick={(e) => e.stopPropagation()}>
+              <div className={styles.guardrailIconWrapper}>
+                <ShieldAlert size={32} />
+              </div>
+              <h2 className={styles.guardrailTitle}>Target Blocked</h2>
+              <p className={styles.guardrailMessage}>{guardrailError}</p>
+              <p className={styles.guardrailHint}>
+                This target appears to be a well-known public service that you are unlikely authorized to test.
+                Please use a domain or IP range you own or have explicit permission to scan.
+              </p>
+              <button
+                type="button"
+                className={styles.guardrailButton}
+                onClick={() => setGuardrailError(null)}
+              >
+                Understood
+              </button>
             </div>
-            <h2 className={styles.guardrailTitle}>Target Blocked</h2>
-            <p className={styles.guardrailMessage}>{guardrailError}</p>
-            <p className={styles.guardrailHint}>
-              This target appears to be a well-known public service that you are unlikely authorized to test.
-              Please use a domain or IP range you own or have explicit permission to scan.
-            </p>
-            <button
-              type="button"
-              className={styles.guardrailButton}
-              onClick={() => setGuardrailError(null)}
-            >
-              Understood
-            </button>
           </div>
-        </div>
+        </GateLayer>
       )}
 
       {/* LLM provider gate: no provider configured -> can't create a project */}

@@ -1,11 +1,26 @@
 'use client'
 
+import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 import { Cpu, Bot, Sparkles, ArrowRight } from 'lucide-react'
 import { ModelPicker } from '@/components/shared/ModelPicker'
 import { excludeLoop } from '@/lib/agentInTheLoop'
 import { bothModelsSelected } from './projectLlmGate.logic'
 import styles from './ProjectForm.module.css'
+
+/**
+ * The layer the save gates (provider, model choice, blocked target) open in. A save can start
+ * inside a node's settings Modal on the workflow view, which is portaled to document.body at
+ * z-index 1200: a gate rendered in the form's own tree sat under it, invisible, and the save
+ * waited on it with no message. The gates go to document.body at the same z-index, so the one
+ * opened last is on top, an alert raised after a gate stays above it, and no ancestor's
+ * stacking context can hold them under.
+ */
+export function GateLayer({ children }: { children: ReactNode }) {
+  if (typeof document === 'undefined') return <>{children}</>
+  return createPortal(children, document.body)
+}
 
 /**
  * Blocking modal shown when a user tries to create a project without any
@@ -22,47 +37,49 @@ export function ProviderRequiredModal({
 }) {
   const router = useRouter()
   return (
-    <div className={styles.guardrailOverlay}>
-      <div className={styles.gateModal}>
-        <div className={styles.gateIconWrapper}>
-          <Cpu size={28} />
-        </div>
-        <h2 className={styles.gateTitle}>Configure an LLM provider first</h2>
-        <p className={styles.gateMessage}>
-          RedAmon needs at least one LLM provider (DeepSeek, Anthropic, OpenAI, ...) before
-          you can create a project. The autonomous agent and the AI recon pipeline both rely on it.
-        </p>
-        <div className={styles.gateActions}>
-          <button type="button" className="secondaryButton" onClick={onCancel}>
-            Back to Projects
-          </button>
-          {onUseLoop && (
+    <GateLayer>
+      <div className={styles.guardrailOverlay}>
+        <div className={styles.gateModal}>
+          <div className={styles.gateIconWrapper}>
+            <Cpu size={28} />
+          </div>
+          <h2 className={styles.gateTitle}>Configure an LLM provider first</h2>
+          <p className={styles.gateMessage}>
+            RedAmon needs at least one LLM provider (DeepSeek, Anthropic, OpenAI, ...) before
+            you can create a project. The autonomous agent and the AI recon pipeline both rely on it.
+          </p>
+          <div className={styles.gateActions}>
+            <button type="button" className="secondaryButton" onClick={onCancel}>
+              Back to Projects
+            </button>
+            {onUseLoop && (
+              <button
+                type="button"
+                className="secondaryButton"
+                onClick={onUseLoop}
+                title="Your own Claude Code or Codex answers each step; no API key needed"
+              >
+                Use Agent in the Loop instead
+              </button>
+            )}
             <button
               type="button"
-              className="secondaryButton"
-              onClick={onUseLoop}
-              title="Your own Claude Code or Codex answers each step; no API key needed"
+              className="primaryButton"
+              onClick={() => router.push('/settings')}
             >
-              Use Agent in the Loop instead
+              Configure Provider
+              <ArrowRight size={14} />
             </button>
+          </div>
+          {onUseLoop && (
+            <p className={styles.gateHint}>
+              With Agent in the Loop the recon AI features need a provider model too. They stay off
+              until you add one in Global Settings.
+            </p>
           )}
-          <button
-            type="button"
-            className="primaryButton"
-            onClick={() => router.push('/settings')}
-          >
-            Configure Provider
-            <ArrowRight size={14} />
-          </button>
         </div>
-        {onUseLoop && (
-          <p className={styles.gateHint}>
-            With Agent in the Loop the recon AI features need a provider model too. They stay off
-            until you add one in Global Settings.
-          </p>
-        )}
       </div>
-    </div>
+    </GateLayer>
   )
 }
 
@@ -95,70 +112,72 @@ export function ModelSelectionModal({
 }: ModelSelectionModalProps) {
   const ready = bothModelsSelected(agentModel, aiPipelineModel, pipelineOptional)
   return (
-    <div className={styles.guardrailOverlay}>
-      <div className={styles.gateModalWide}>
-        <div className={styles.gateIconWrapper}>
-          <Sparkles size={28} />
-        </div>
-        <h2 className={styles.gateTitle}>Select the AI models</h2>
-        <p className={styles.gateMessage}>
-          Choose the models RedAmon will use for this project. We&apos;ll remember them as the
-          default for your next project.
-        </p>
+    <GateLayer>
+      <div className={styles.guardrailOverlay}>
+        <div className={styles.gateModalWide}>
+          <div className={styles.gateIconWrapper}>
+            <Sparkles size={28} />
+          </div>
+          <h2 className={styles.gateTitle}>Select the AI models</h2>
+          <p className={styles.gateMessage}>
+            Choose the models RedAmon will use for this project. We&apos;ll remember them as the
+            default for your next project.
+          </p>
 
-        <div className={styles.gateField}>
-          <label className={styles.gateLabel}>
-            <Bot size={14} /> Agent model
-          </label>
-          <span className={styles.gateHint}>
-            Used by the autonomous agent (chat, graph NL-to-Cypher queries).
-          </span>
-          <ModelPicker
-            userId={userId}
-            value={agentModel}
-            onChange={onChangeAgent}
-            placeholder="Search agent models..."
-          />
-        </div>
-
-        <div className={styles.gateField}>
-          <label className={styles.gateLabel}>
-            <Cpu size={14} /> AI recon pipeline model
-          </label>
-          <span className={styles.gateHint}>
-            Used by recon AI hooks: Nuclei tag cascade, FP filter, WAF and takeover classifiers,
-            FFuf extensions.
-          </span>
-          {pipelineOptional && (
-            <span className={styles.gateHint} role="note">
-              Recon AI features need a provider model. They stay off until you add one in Global
-              Settings.
+          <div className={styles.gateField}>
+            <label className={styles.gateLabel}>
+              <Bot size={14} /> Agent model
+            </label>
+            <span className={styles.gateHint}>
+              Used by the autonomous agent (chat, graph NL-to-Cypher queries).
             </span>
-          )}
-          <ModelPicker
-            userId={userId}
-            value={aiPipelineModel}
-            onChange={onChangeAiPipeline}
-            placeholder="Search pipeline models..."
-            filter={excludeLoop}
-          />
-        </div>
+            <ModelPicker
+              userId={userId}
+              value={agentModel}
+              onChange={onChangeAgent}
+              placeholder="Search agent models..."
+            />
+          </div>
 
-        <div className={styles.gateActions}>
-          <button type="button" className="secondaryButton" onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="primaryButton"
-            disabled={!ready}
-            onClick={onConfirm}
-            title={ready ? 'Save the project with the selected models' : 'Select both models to continue'}
-          >
-            Save Project
-          </button>
+          <div className={styles.gateField}>
+            <label className={styles.gateLabel}>
+              <Cpu size={14} /> AI recon pipeline model
+            </label>
+            <span className={styles.gateHint}>
+              Used by recon AI hooks: Nuclei tag cascade, FP filter, WAF and takeover classifiers,
+              FFuf extensions.
+            </span>
+            {pipelineOptional && (
+              <span className={styles.gateHint} role="note">
+                Recon AI features need a provider model. They stay off until you add one in Global
+                Settings.
+              </span>
+            )}
+            <ModelPicker
+              userId={userId}
+              value={aiPipelineModel}
+              onChange={onChangeAiPipeline}
+              placeholder="Search pipeline models..."
+              filter={excludeLoop}
+            />
+          </div>
+
+          <div className={styles.gateActions}>
+            <button type="button" className="secondaryButton" onClick={onCancel}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primaryButton"
+              disabled={!ready}
+              onClick={onConfirm}
+              title={ready ? 'Save the project with the selected models' : 'Select both models to continue'}
+            >
+              Save Project
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </GateLayer>
   )
 }

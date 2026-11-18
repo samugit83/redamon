@@ -37,6 +37,9 @@ vi.mock('@/components/shared/ModelPicker', () => ({
   ),
 }))
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { Modal } from '@/components/ui/Modal'
 import { ProviderRequiredModal, ModelSelectionModal } from './ProjectLlmGate'
 
 beforeEach(() => {
@@ -152,5 +155,51 @@ describe('ModelSelectionModal: picker wiring', () => {
     const props = renderModal()
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
     expect(props.onCancel).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The gates' layer: a save started from a node's settings Modal on the workflow
+// view opened its gate under that Modal, invisible, and the save waited with no
+// message.
+// ---------------------------------------------------------------------------
+
+function zIndexOf(css: string, selector: string): number {
+  const block = css.match(new RegExp(`${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`))
+  const z = block?.[1].match(/z-index:\s*(\d+)/)
+  if (!z) throw new Error(`no z-index for ${selector}`)
+  return Number(z[1])
+}
+
+/** The node under document.body that holds `el`. */
+function bodyChildOf(el: Element): Element {
+  let node: Element = el
+  while (node.parentElement && node.parentElement !== document.body) node = node.parentElement
+  return node
+}
+
+describe('the gates open above an open Modal', () => {
+  test.each([
+    ['the model gate', () => <ModelSelectionModal agentModel="" aiPipelineModel="" onChangeAgent={() => {}}
+      onChangeAiPipeline={() => {}} onConfirm={() => {}} onCancel={() => {}} />, /select the ai models/i],
+    ['the provider gate', () => <ProviderRequiredModal onCancel={() => {}} />, /configure an llm provider first/i],
+  ])('%s is portaled to document.body after the Modal it was opened from', (_name, gate, title) => {
+    render(<Modal isOpen onClose={() => {}} title="Target & Modules"><p>settings</p></Modal>)
+    const modalRoot = bodyChildOf(screen.getByText('settings'))
+    const { container } = render(gate())
+    const heading = screen.getByRole('heading', { name: title })
+    // Not inside the form's own tree, where a Modal's portal covers it.
+    expect(container.contains(heading)).toBe(false)
+    const overlay = bodyChildOf(heading)
+    expect(overlay.classList.contains('guardrailOverlay')).toBe(true)
+    // Same layer, later in the body: painted on top of the Modal.
+    expect(modalRoot.compareDocumentPosition(overlay) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  test("the gates' overlay sits on the shared Modal's layer, under the toasts", () => {
+    const read = (p: string) => readFileSync(join(__dirname, p), 'utf8')
+    const gate = zIndexOf(read('ProjectForm.module.css'), '.guardrailOverlay')
+    expect(gate).toBe(zIndexOf(read('../../ui/Modal/Modal.module.css'), '.overlay'))
+    expect(gate).toBeLessThan(zIndexOf(read('../../ui/Toast/Toast.module.css'), '.container'))
   })
 })
