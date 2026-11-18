@@ -119,6 +119,24 @@ def _normalize_chain_findings(output_analysis: dict) -> None:
     output_analysis["chain_findings"] = normalized
 
 
+def _loads_first_object(json_str: str):
+    """``json.loads``, except that a complete first object followed by more (a second object, a
+    note, a brace in prose) is the decision: the rest is model text, so only its length is logged.
+    An object followed by a comma or a closing bracket is an element of a list, not a decision.
+    Anything else that does not parse raises as ``json.loads`` does."""
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise
+        data, end = json.JSONDecoder().raw_decode(json_str)
+        if json_str[end:].lstrip()[:1] in (",", "]"):
+            raise
+    logger.warning("Used the first JSON object of the LLM response; ignored %d trailing character(s)",
+                   len(json_str) - end)
+    return data
+
+
 def try_parse_llm_decision(response_text: str) -> Tuple[Optional[LLMDecision], Optional[str]]:
     """
     Attempt to parse LLM decision from JSON response.
@@ -134,7 +152,7 @@ def try_parse_llm_decision(response_text: str) -> Tuple[Optional[LLMDecision], O
         # Pre-process JSON to handle empty nested objects that would fail validation
         # LLM sometimes outputs empty objects like user_question: {} or phase_transition: {}
         try:
-            data = json.loads(json_str)
+            data = _loads_first_object(json_str)
         except json.JSONDecodeError as original_error:
             repaired_json = repair_trailing_json_delimiters(json_str)
             if not repaired_json:
