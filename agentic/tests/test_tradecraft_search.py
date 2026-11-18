@@ -304,9 +304,9 @@ def test_every_statement_is_keyed_and_reads_the_live_generation():
 
 
 def test_the_sections_statement_filters_the_pages_before_it_ranks_their_sections():
-    """Ranking every matching section is the free first pass's cost (FIX-ITER2): the entry filters
-    sit in the query that ranks, so a topic or technology wording ranks only the sections of the
-    pages it can return. The rows on Postgres: ``test_tradecraft_search_integration.py``."""
+    """Ranking every matching section is the free first pass's cost: the entry filters sit in the
+    query that ranks, so a topic or technology wording ranks only the sections of the pages it can
+    return. The rows on Postgres: ``test_tradecraft_search_integration.py``."""
     sql = search_sql.STATEMENTS["sections_text"]
     ranking = sql[sql.index("FROM (") + len("FROM ("):sql.index(") b ")]
     assert "ts_rank_cd" in ranking

@@ -1,5 +1,4 @@
-"""The think decision when the model's answer holds a complete JSON object and more after it
-(FIX-ITER2: a run ended after three answers that each failed with "Invalid JSON: Extra data").
+"""The think decision when the model's answer holds a complete JSON object and more after it.
 
 A first object complete for its own action (a tool for use_tool, a plan for plan_tools, ...) is
 the decision, whatever follows it, and only the length of what follows is logged: it is model
@@ -93,9 +92,9 @@ SPLIT = {
 
 
 def test_a_first_object_that_is_only_part_of_the_decision_fails_as_before():
-    """Review finding (FIX-ITER2 review 2): a first object without what its own action needs would
-    route to generate_response and end the run; it fails with "Extra data", so the think node asks
-    again, as it did before. The two objects are never merged."""
+    """A first object without what its own action needs would route to generate_response and end
+    the run: it fails with "Extra data", and the think node asks again. The two objects are never
+    merged."""
     for case, (first, rest) in SPLIT.items():
         decision, error = try_parse_llm_decision(json.dumps(first) + "\n" + json.dumps(rest))
         assert decision is None and error.startswith("Invalid JSON: Extra data"), case
@@ -160,9 +159,9 @@ def test_every_adapter_and_the_loop_go_on_with_one_model_call():
 
 
 def test_a_split_decision_is_asked_again_through_every_adapter_and_the_loop():
-    """The review's scenario through the real think node: the model's first answer holds the
-    thought in one object and the tool in the next; the node asks again (as before the first-object
-    rule) and goes on with the second answer, instead of a use_tool with no tool."""
+    """Through the real think node: the model's first answer holds the thought in one object and
+    the tool in the next; the node asks again and goes on with the second answer, never with a
+    use_tool that names no tool."""
     split = json.dumps(WHY) + "\n" + json.dumps({"action": "use_tool", **CURL})
     for shape, (content, llm) in {"string": (split, Plain()),
                                   "anthropic and bedrock text blocks": ([{"type": "text", "text": split}],

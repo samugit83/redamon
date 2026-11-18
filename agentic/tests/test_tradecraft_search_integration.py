@@ -346,9 +346,9 @@ def _ranked_sections(plan):
 
 
 async def test_a_filtered_wording_ranks_only_the_sections_of_its_own_pages(pg):
-    """FIX-ITER2: a topic or technology wording ranks the sections of the pages it can return, not
-    every section the words match (Library now's first search ranked 5,680 sections per wording on
-    the e2e library), and returns the rows that ranking them all and filtering after gave."""
+    """A topic or technology wording ranks the sections of the pages it can return, not every
+    section the words match, and returns the rows that ranking them all and filtering after
+    returns."""
     uid = await pg.user()
     res = await seed(pg, uid, [
         page(n, title=f"Page {n}", topics=["sql_injection"] if n <= 2 else ["xss"],

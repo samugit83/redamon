@@ -847,9 +847,8 @@ def test_a_library_back_after_a_failure_shows_the_steps_pages():
 
 
 def test_a_step_an_outage_spent_is_searched_again_once_another_search_succeeds():
-    """FIX-LIBNOW's known limit: a library down for more thinks than a step has retries left that
-    step with the notice until its facts changed. A later search that succeeds gives it its
-    retries back, so the next think searches it and shows its pages."""
+    """A step whose retries an outage spent gets them back when a later search succeeds: the next
+    think searches it again and shows its pages, and the notice goes."""
     index = Counting(library(n=20))
     index.down = True
     st = state(todo_list=[todo("Confirm time based blind SQLi", "in_progress")])
@@ -870,11 +869,10 @@ def test_a_step_an_outage_spent_is_searched_again_once_another_search_succeeds()
 
 
 def test_the_round_limit_covers_the_measured_first_round():
-    """The bound a think waits for its round (FIX-ITER2). Measured on the e2e library (6,910 pages,
-    12,222 stored sections) after the sections statement stopped ranking pages a wording filters
-    out: a run's first round, the person's whole message as the step, took 2.2-2.8 s alone and up
-    to 5.3 s with seven runs starting together (the pool has five connections). The limit keeps
-    half as much again above the worst of them; a never-ending round is still cut at it."""
+    """The bound a think waits for its round. Measured on the e2e library (6,910 pages, 12,222
+    stored sections): a run's first round, the person's whole message as the step, takes 2.2-2.8 s
+    alone and up to 5.3 s with seven runs starting together (the pool has five connections). The
+    limit is half as much again above the worst of them; a never-ending round is cut at it."""
     worst_measured_first_round_sec = 5.3
     assert hints.SEARCH_TIMEOUT_SEC >= 1.5 * worst_measured_first_round_sec
     assert hints.SEARCH_TIMEOUT_SEC <= 10.0
