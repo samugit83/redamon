@@ -927,7 +927,7 @@ def test_the_measurement_log(caplog):
 
 
 # --------------------------------------------------------------------------------------
-# A read the last thought announced and no read carried out (FIX-ITER3)
+# A read the last thought announced and no read carried out
 # --------------------------------------------------------------------------------------
 
 UNREAD = ("Library now: your last thought named a page to read, but it was not read. If it still fits, make "
@@ -937,7 +937,7 @@ STEP = "Confirm time based blind SQLi"
 
 def announcing(*pages, thought=None):
     """The last think's decision: rule 6's sentence for ``pages`` in its thought, and another tool as
-    its action, as in the e2e runs (the line written, the lookup never called)."""
+    its action (the line written, the lookup never called)."""
     return {"thought": thought or f"Library: read {' and '.join(pages)}. Its payloads fit the next probe.",
             "reasoning": "The page has the delay.", "action": "use_tool", "tool_name": "tradecraft_search",
             "tool_args": {"query": "time based delay"}}
@@ -1079,10 +1079,10 @@ def test_the_rule_and_where_it_is_given():
 
 
 def test_the_rule_says_the_read_is_the_decisions_action():
-    """The e2e runs of 2026-11-18: in 3 of 20 the thought said "Library: read <page>." and the
-    decision called something else, as if writing the line were the read. The rule says that a
-    fitting page makes the lookup this decision's action, and that the sentence goes only with
-    that call; its format stays exactly as S15's runner classifies thoughts by it."""
+    """A fitting page makes the lookup this decision's action, writing the line is no read, and
+    "Library: read <page id>." goes only with that call, otherwise "Library: nothing fit.", in the
+    exact format S15's runner classifies thoughts by; the skill's method, the library's specifics
+    and the page before other sources stay."""
     for phrase in ("If a page there fits what you are about to do, reading it is this step: make "
                    "tradecraft_lookup(page=<that page id>) this decision's action, and act on what it returns at "
                    "your next step (writing that you read a page does not read it). If nothing fits, go on with "

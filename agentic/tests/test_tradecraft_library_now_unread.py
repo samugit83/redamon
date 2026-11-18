@@ -1,4 +1,4 @@
-"""Library now's notice for an announced read, against every real read form (FIX-ITER3).
+"""Library now's notice for an announced read, against every real read form.
 
 The last thought said "Library: read <page>." for a page a block showed: the next block carries
 the fixed notice unless a read of that page ran. A read is what ``run_state.record_seen`` counts,
@@ -7,7 +7,7 @@ the way S15's ``no_read_page_shown_again`` matches reads: the real ``tradecraft_
 or today's title match turns into that page; a page the librarian returns; a read in a plan wave
 (``execute_plan_node``) or by a Fireteam member (the deploy node returns the run's pages). A lookup
 that is refused reads nothing, so the notice stays. Each test shows the notice first on the same
-run without the read, so it is red on a build without the notice.
+run without the read, then its absence after the read.
 
 The store is ``MemoryStore`` with the fixture sites (``test_tradecraft_reader.Library``); the
 search index is S05's fake (``test_tradecraft_search_tool.Index``), answering the block's pages.

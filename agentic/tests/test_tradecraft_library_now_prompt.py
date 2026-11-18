@@ -270,8 +270,8 @@ def test_one_system_message_for_every_adapter():
 
 
 def test_the_notice_after_an_announced_read_for_every_adapter():
-    """FIX-ITER3 through the real think node: the first answer says "Library: read patt:401." and
-    calls tradecraft_search instead, so no read of the page runs. The second think's one system
+    """Through the real think node: the first answer says "Library: read patt:401." and calls
+    tradecraft_search instead, so no read of the page runs. The second think's one system
     message ends with the block and the fixed notice, for every adapter and the loop's renderer,
     with one model call a think: no retry, no extra call, the same for an Agent in the Loop run."""
     from agent_in_the_loop.prompt_doc import render as render_doc, to_parts
