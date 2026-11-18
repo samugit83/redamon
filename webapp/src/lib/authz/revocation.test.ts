@@ -42,6 +42,8 @@ const matches = (row: Record<string, unknown>, where: Where) => Object.entries(w
 
 vi.mock('@/lib/prisma', () => {
   const client: Record<string, unknown> = {
+    // The account's Tradecraft jobs (T1.11): none here, so the agent is asked nothing about them.
+    tradecraftIngestionJob: { updateMany: async () => ({ count: 0 }) },
     jobQueue: {
       findMany: async ({ where }: { where: Where }) => {
         if (h.failJobs) throw Object.assign(new Error('db down'), { code: 'P1001' })

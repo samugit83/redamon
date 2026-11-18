@@ -35,12 +35,28 @@ has no row there.
 | `http-desync-expect` | Expect / obfuscation target | That skill's Expect / obfuscation leg (class 5) |
 | `skiller_sqli_csrf` | Flask app with a blind SQL injection behind a single-use form token | The Skiller plugin flow; `PROMPT.txt` is the task sent to the agent |
 | `skiller_nosql_login` | MongoDB-backed login | The Skiller plugin flow against NoSQL operator injection; `PROMPT.txt` as above |
+| `tc_sqli_pg_waf` | Flask sign-in on PostgreSQL 16 behind a signature WAF that blocks every sleep function | Tradecraft 2.0 matrix lab L1: a time-based blind SQL injection that needs a heavy-query delay (`tooling/scripts/tradecraft_e2e/`) |
+| `tc_ssrf_metadata` | Link-preview app with a literal-address SSRF filter, plus a fake cloud metadata service | Tradecraft 2.0 matrix lab L2: an SSRF that needs an encoded metadata address |
 
 Every folder except the two `skiller_*` ones has its own `README.md` with deployment and
 test steps; those two carry a `docker-compose.yml` and the prompt. Beside the folders:
 `skiller_job.sh`, `skiller_progress.sh`, `skiller_wait.sh` and `skiller_verify_override.sh`
 (helpers that read a Skiller run's state), and `triage_truth.yaml`, the ground truth
 `tooling/scripts/triage_eval.py` scores the Priority Board ranking against.
+
+### The Tradecraft end-to-end matrix
+
+The two `tc_*` labs and three older ones (`apache_2.4.49`, `node_serialize_1.0.0`,
+`http-request-smuggling`) are the targets of the Tradecraft end-to-end matrix
+(`tooling/scripts/tradecraft_e2e/`): the agent attacks each lab with the library on, off (the
+control) and in *Search only*, in parallel lanes, each run on its own Compose project with its own
+addresses and a canary secret the oracle reads back, and the checks read the agent's traces. The
+labs read their address, port and canary from `TC_*` variables, bind 127.0.0.1 only and carry a page
+of planted prompt-injection text and `CVE-2099-*` ids, so a run also shows that page text never
+steers the agent. Each lab's self-test (`testing/guinea_pigs/tc_sqli_pg_waf/tests/verify_lab.py`,
+and its twin in `tc_ssrf_metadata`) proves its own properties (the injection, the WAF's blocks, the
+metadata route). The matrix is a live run started by hand, outside the unit gate: see
+`tooling/scripts/tradecraft_e2e/README.md` for how to build the library, run it and read its report.
 
 ---
 

@@ -15,6 +15,8 @@ system.rbac_instance_settings_backfill|1
 system.rbac_legacy_grants_backfill|1
 system.rbac_legacy_grants_cutoff|1
 system.rbac_root_assigned|1
+system.tradecraft_phases_backfill|1
+system.tradecraft_phases_cutoff|1
 system.user_skill_toggles_backfill|1
 system.user_skill_toggles_cutoff|1
 == legacy grants (email, grants) [step 1.8]
@@ -69,3 +71,10 @@ project_allowlist|ARRAY[]::text[]|YES
 1|2|0|0
 == project transfers, offers or transfers of any status [step 5.12]
 1|0
+== tradecraft phases (project, tradecraft_lookup) [tradecraft phases]
+upg-PA|["informational", "exploitation", "post_exploitation"]
+upg-PADM|["informational", "exploitation", "post_exploitation"]
+== tradecraft phases marker (projects moved, ids kept, the projects those ids name), one line per marker row
+2|2|upg-PA,upg-PADM
+== projects created after the tradecraft phases cut-off
+0

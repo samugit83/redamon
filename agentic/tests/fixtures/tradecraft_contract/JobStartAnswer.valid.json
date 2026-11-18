@@ -1,0 +1,11 @@
+{
+  "accepted": [
+    "job_fake_0001"
+  ],
+  "refused": [
+    {
+      "job_id": "job_fake_0002",
+      "code": "job_not_claimed"
+    }
+  ]
+}

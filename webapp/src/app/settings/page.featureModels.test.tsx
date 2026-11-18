@@ -114,6 +114,16 @@ async function tile(id: string) {
 }
 
 describe('Models by feature section', () => {
+  test('every account has the Tradecraft librarian tile and none has the 1.x section picker\'s (T9.3, R-401): ten tiles', async () => {
+    renderPage()
+    await tile('triage')
+    await waitFor(() => expect(document.querySelectorAll('[data-feature]')).toHaveLength(10))
+    expect(document.querySelector('[data-feature="tradecraft_librarian"]')).not.toBeNull()
+    expect(document.querySelector('[data-feature="tradecraft_section_picker"]')).toBeNull()
+    // The grid no longer asks for the account's 2.0 switch.
+    expect(fetchMock.mock.calls.some(c => String(c[0]).includes('/tradecraft-settings'))).toBe(false)
+  })
+
   test('ten tiles from ONE /api/models call, with their saved state', async () => {
     renderPage()
     const triage = await tile('triage')

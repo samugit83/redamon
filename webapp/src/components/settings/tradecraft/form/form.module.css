@@ -1,0 +1,496 @@
+/* The resource form wears the settings-form palette (--form-* in
+   tokens/semantic.css and themes/light.css, as ProjectForm does): the modal is
+   the card, each collapsible section and option card is a panel one shade off
+   it, and the fields inside a panel are recessed below both, so every layer
+   reads apart from the one under it in dark and in light. */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.section {
+  border: 1px solid var(--form-panel-border);
+  border-radius: var(--radius-md);
+  background: var(--form-panel-bg);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.section :global(.textInput),
+.section :global(.textarea),
+.section :global(.select) {
+  background-color: var(--form-field-bg);
+  border-color: var(--form-field-border);
+  color: var(--form-ink);
+}
+
+.section :global(.textInput):hover:not(:disabled),
+.section :global(.textarea):hover:not(:disabled),
+.section :global(.select):hover:not(:disabled) {
+  border-color: var(--form-field-border-hover);
+}
+
+.section :global(.textInput):focus,
+.section :global(.textarea):focus,
+.section :global(.select):focus {
+  border-color: var(--form-focus);
+  box-shadow: 0 0 0 2px var(--form-focus-ring);
+}
+
+.section :global(.formHint),
+.section .inherited {
+  color: var(--form-ink-muted);
+}
+
+/* The global checkbox and radio are --bg-tertiary, the grey a panel is close
+   to: unticked ones take the field shade. Ticked ones keep their own fill. */
+.form :global(.checkbox):not(:checked),
+.form :global(.radio):not(:checked) {
+  background-color: var(--form-field-bg);
+  border-color: var(--form-field-border);
+}
+
+.form :global(.radio):checked {
+  background-color: var(--form-field-bg);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.sectionHead:hover {
+  background: color-mix(in srgb, var(--form-ink) 5%, var(--form-panel-bg));
+}
+
+.sectionHead:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.chevron {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.sectionTitle {
+  font-size: 13px;
+  font-weight: var(--font-semibold);
+}
+
+.sectionStatus {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.sectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-top: 1px solid var(--form-panel-border);
+}
+
+/* One per-resource setting; consecutive ones are split by a hairline, as the
+   rows of a credential card are. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field + .field {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--form-divider);
+}
+
+.fieldHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.fieldLabel {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+
+.overrideToggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* The value a field inherits, drawn as a read-only box in place of the input
+   that Override unlocks. */
+.inheritedValue {
+  padding: var(--space-1-5) var(--space-2);
+  border: 1px dashed var(--form-field-border);
+  border-radius: var(--radius-default);
+  background: var(--form-field-disabled-bg);
+  font-size: var(--text-xs);
+  color: var(--form-ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.inherited {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.twoCol {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-4);
+}
+
+.inputRow {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+/* The field grows, the button keeps its width; a button alone stays small. */
+.inputRow > :first-child:not(:last-child) {
+  flex: 1;
+  min-width: 0;
+}
+
+.inputRow > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* A fieldset that only groups (to disable its fields at once), drawn as nothing. */
+.plainFieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.headerRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pairRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.checkLine {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: fit-content;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.muted {
+  color: var(--text-tertiary);
+}
+
+.radioRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+/* A choice between a few options, each a card with its explanation: the
+   picked one carries the focus blue of the inputs. */
+.choiceGroup {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.choiceGroup > legend {
+  padding: 0;
+  margin-bottom: var(--space-1-5);
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-2);
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
+  border: 1px solid var(--form-panel-border);
+  border-radius: var(--radius-md);
+  background: var(--form-panel-bg);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.choice:hover {
+  border-color: var(--form-field-border-hover);
+}
+
+.choice:has(input:checked) {
+  border-color: var(--form-focus);
+  background: color-mix(in srgb, var(--form-focus) 12%, var(--form-panel-bg));
+}
+
+.choice:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.choice input {
+  margin-top: 1px;
+}
+
+.choiceBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.choiceTitle {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--form-ink);
+}
+
+.choiceDesc {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--form-ink-muted);
+}
+
+.groupNote {
+  display: block;
+  margin-top: var(--space-1-5);
+}
+
+.checkResult,
+.checkFailed {
+  display: block;
+  padding: var(--space-1-5) var(--space-2);
+  border: 1px solid;
+  border-radius: var(--radius-default);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.checkResult {
+  color: var(--status-success-text);
+  background: color-mix(in srgb, var(--status-success) 10%, transparent);
+  border-color: color-mix(in srgb, var(--status-success) 30%, transparent);
+}
+
+.checkFailed {
+  color: var(--status-error-text);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+  border-color: color-mix(in srgb, var(--status-error) 30%, transparent);
+}
+
+.presetList {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--form-panel-border);
+  border-radius: var(--radius-md);
+  background: var(--form-panel-bg);
+}
+
+.presetGroup {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--form-panel-border);
+  background: var(--form-header-bg);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.presetItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+  transition: background 0.15s ease;
+}
+
+.presetItem + .presetItem {
+  border-top: 1px solid var(--form-divider);
+}
+
+.presetItem:hover,
+.presetItem:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--form-ink) 6%, var(--form-panel-bg));
+}
+
+.presetDesc {
+  font-size: 11px;
+  font-weight: var(--font-normal);
+  color: var(--text-tertiary);
+}
+
+.presetEmpty {
+  padding: var(--space-3);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.suggestions,
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+}
+
+/* A value Check URL found: one click writes it as the override. */
+.suggest {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-default);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.suggest:hover {
+  border-color: var(--accent-secondary);
+  color: var(--text-primary);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border: 1px solid var(--form-field-border);
+  border-radius: var(--radius-full);
+  background: var(--form-field-bg);
+  font-size: 11px;
+  font-weight: var(--font-medium);
+  color: var(--form-ink-muted);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.chip:hover:not(:disabled) {
+  border-color: var(--form-field-border-hover);
+  color: var(--form-ink);
+}
+
+.chip[aria-pressed='true'] {
+  border-color: var(--form-focus);
+  color: var(--form-ink);
+  background: color-mix(in srgb, var(--form-focus) 18%, var(--form-field-bg));
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.previewBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2-5);
+  border: 1px solid var(--form-field-border);
+  border-radius: var(--radius-default);
+  background: var(--form-field-bg);
+  font-size: var(--text-xs);
+  color: var(--form-ink);
+}
+
+.previewList {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 640px) {
+  .inputRow {
+    flex-wrap: wrap;
+  }
+}

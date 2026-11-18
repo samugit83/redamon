@@ -992,7 +992,6 @@ services:
       - cypherfix-work:/app/codefix-work
       - ./services/knowledge_base/kb_config.yaml:/app/knowledge_base/kb_config.yaml:ro
       - ./services/knowledge_base/data:/app/knowledge_base/data
-      - tradecraft_cache:/app/tradecraft_cache
       # Per-project workspace — fs_* tools, output offloading, background jobs
       - ./agentic/agent-workspace:/workspace
     depends_on:
@@ -1629,8 +1628,6 @@ volumes:
   neo4j_plugins:
   kb_data:
     name: redamon_kb_data
-  tradecraft_cache:
-    name: redamon_tradecraft_cache
   # On-demand local LLM (Ollama) model weights for the AI Attack Surface layer.
   # The container is spawned/torn down per scan; this volume persists the pulled
   # judge/attacker models so restarts reload from RAM, not a re-download.

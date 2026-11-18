@@ -1,0 +1,5 @@
+{
+  "/tc-fixture/payloads/tar.gz/refs/heads/main": {
+    "content-type": "application/x-gzip"
+  }
+}

@@ -117,10 +117,14 @@ class TestAlwaysRendered(WorkspaceLayoutBase):
         self.assertIn(">60s", out)
         # The "have other work to do" condition
         self.assertIn("OTHER", out)
-        # The don't-spawn list calls out the fast-tool offenders by name
-        for tool in ("tradecraft_lookup", "query_graph", "web_search",
+        # The don't-spawn list calls out the fast-tool offenders by name. The Tradecraft
+        # tools join it only in a run that offers them (test_tradecraft_library_now_prompt.py);
+        # with no library bound here, it names none of them.
+        for tool in ("query_graph", "web_search",
                      "cve_intel", "msf_restart"):
             self.assertIn(tool, out, f"{tool} should be in the don't-spawn list")
+        self.assertNotIn("tradecraft", out)
+        self.assertNotIn("__TRADECRAFT_FAST_TOOLS__", out)
         # The live-progress caveat names the interactive tools
         for tool in ("metasploit_console", "execute_hydra", "kali_shell"):
             self.assertIn(tool, out, f"{tool} should be in the live-progress caveat")

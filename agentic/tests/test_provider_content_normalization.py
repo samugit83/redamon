@@ -174,8 +174,12 @@ class CallSitesUseNormalizeContentTests(unittest.TestCase):
     # of these files appears in the bad-pattern grep, the test fails.
     GUARDED_FILES = [
         "api.py",
-        "orchestrator_helpers/tradecraft_crawl.py",
-        "orchestrator_helpers/tradecraft_lookup.py",
+        # Tradecraft's model call sites (the 1.x crawl and lookup left at the cut-over, T9.2).
+        "tradecraft/ingest/crawl.py",
+        "tradecraft/ingest/focus.py",
+        "tradecraft/ingest/summary.py",
+        "tradecraft/ingest/tree.py",
+        "tradecraft/librarian/graph.py",
         "orchestrator_helpers/nodes/think_node.py",
         "orchestrator_helpers/nodes/generate_response_node.py",
         "orchestrator_helpers/report_summarizer.py",

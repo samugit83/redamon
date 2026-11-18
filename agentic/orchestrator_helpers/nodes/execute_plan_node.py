@@ -401,6 +401,10 @@ async def execute_plan_node(
                 session_manager_base=session_manager_base,
             )
 
+    from tradecraft import run_state as _tc_run_state
+    _tc_run_state.bind(state)
+    from tradecraft.agent_tools import bind_session as _tc_bind_session
+    _tc_bind_session(state)
     tasks = [_bounded_step(step, i) for i, step in enumerate(steps)]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -436,4 +440,4 @@ async def execute_plan_node(
     logger.info(f"PLAN COMPLETE (PARALLEL) - {successful} ok, {failed} failed out of {len(steps)}")
     logger.info(f"{'='*60}\n")
 
-    return {"_current_plan": plan_data}
+    return {"_current_plan": plan_data, **_tc_run_state.drain()}

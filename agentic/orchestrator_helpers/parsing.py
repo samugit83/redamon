@@ -119,6 +119,55 @@ def _normalize_chain_findings(output_analysis: dict) -> None:
     output_analysis["chain_findings"] = normalized
 
 
+# What each action needs before the router acts on it (``AgentOrchestrator._route_after_think``):
+# without it, a use_tool with no tool or a plan_tools with no plan ends the run in
+# generate_response. ``action`` defaults to use_tool, as in LLMDecision.
+_ACTION_NEEDS = {
+    "use_tool": "tool_name", "plan_tools": "tool_plan", "deploy_fireteam": "fireteam_plan",
+    "transition_phase": "phase_transition", "ask_user": "user_question", "switch_skill": "skill_switch",
+    "complete": None,
+}
+
+
+def _complete_for_its_action(data) -> bool:
+    action = data.get("action", "use_tool") if isinstance(data, dict) else None
+    if not isinstance(action, str) or action not in _ACTION_NEEDS:
+        return False
+    need = _ACTION_NEEDS[action]
+    if need is None:
+        return True
+    value = data.get(need)
+    if need == "tool_name":
+        return isinstance(value, str) and bool(value.strip())
+    if need in ("tool_plan", "fireteam_plan"):
+        # The checks try_parse_llm_decision downgrades a plan for: a step without a tool, a
+        # member without a name or a task.
+        items, keys = (("steps", ("tool_name",)) if need == "tool_plan" else ("members", ("name", "task")))
+        listed = value.get(items) if isinstance(value, dict) else None
+        return isinstance(listed, list) and any(isinstance(i, dict) and all(i.get(k) for k in keys) for i in listed)
+    return isinstance(value, dict) and bool(value)
+
+
+def _loads_first_object(json_str: str):
+    """``json.loads``, except that a first object complete for its own action, followed by more (a
+    second object, a note, a brace in prose), is the decision: the rest is model text, so only its
+    length is logged. A first object that is only part of a decision (its tool, plan or question
+    follows in the next one), or an element of a list (a comma or a closing bracket follows),
+    raises the "Extra data" error as before, and the think node asks again. Anything else that
+    does not parse raises as ``json.loads`` does."""
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise
+        data, end = json.JSONDecoder().raw_decode(json_str)
+        if json_str[end:].lstrip()[:1] in (",", "]") or not _complete_for_its_action(data):
+            raise
+    logger.warning("Used the first JSON object of the LLM response; ignored %d trailing character(s)",
+                   len(json_str) - end)
+    return data
+
+
 def try_parse_llm_decision(response_text: str) -> Tuple[Optional[LLMDecision], Optional[str]]:
     """
     Attempt to parse LLM decision from JSON response.
@@ -134,7 +183,7 @@ def try_parse_llm_decision(response_text: str) -> Tuple[Optional[LLMDecision], O
         # Pre-process JSON to handle empty nested objects that would fail validation
         # LLM sometimes outputs empty objects like user_question: {} or phase_transition: {}
         try:
-            data = json.loads(json_str)
+            data = _loads_first_object(json_str)
         except json.JSONDecodeError as original_error:
             repaired_json = repair_trailing_json_delimiters(json_str)
             if not repaired_json:

@@ -125,11 +125,23 @@ export interface FeatureModelGateProps {
   /** Render the body alone, for embedding in another dialog. */
   inline?: boolean
   confirmLabel?: string
+  /**
+   * A model offered first and preselected, e.g. the one another feature already runs on. Nothing
+   * is saved until the person confirms it; a model this feature may not use, or that is no longer
+   * among the person's models, is not offered.
+   */
+  suggestedModel?: string
+  /** Where the suggestion comes from, in a few words ("your Tradecraft section picker model"). */
+  suggestedFrom?: string
   onSaved: (model: string) => void
   onCancel: () => void
 }
 
 type LoadState = 'loading' | 'ready' | 'error'
+
+function listsModel(models: ModelsByProvider, id: string): boolean {
+  return Object.values(models).some(list => list.some(m => m.id === id))
+}
 
 /**
  * Asks for the model a feature runs on and saves it to the user's settings.
@@ -144,6 +156,8 @@ export function FeatureModelGate({
   message,
   inline = false,
   confirmLabel = 'Save and continue',
+  suggestedModel,
+  suggestedFrom,
   onSaved,
   onCancel,
 }: FeatureModelGateProps) {
@@ -176,6 +190,15 @@ export function FeatureModelGate({
 
   const total = countModels(models)
   const usable = countModels(models, allowed)
+  const suggestion = suggestedModel && loadState === 'ready' && allowed(suggestedModel) && listsModel(models, suggestedModel)
+    ? suggestedModel : ''
+  // Preselected once the models are read; the person may pick another before confirming.
+  const offered = useRef(false)
+  useEffect(() => {
+    if (!suggestion || offered.current) return
+    offered.current = true
+    setPicked(prev => prev || suggestion)
+  }, [suggestion])
 
   const save = async () => {
     if (!userId || !picked || saving) return
@@ -244,6 +267,12 @@ export function FeatureModelGate({
           <span className={styles.emptyTitle}>None of your models can run {feature.label}</span>
           {feature.hint && <span>{feature.hint}</span>}
           {providerActions}
+        </div>
+      )}
+
+      {suggestion && (
+        <div className={styles.message} data-testid="gate-suggestion">
+          Suggested: <strong>{suggestion}</strong>{suggestedFrom ? ` (${suggestedFrom})` : ''}. Nothing is saved until you confirm.
         </div>
       )}
 
@@ -318,6 +347,15 @@ export interface EnsureFeatureModelOptions extends PluginFeatureText {
   /** Open the gate even when a model is saved (the saved one failed, or the user asked to change it). */
   force?: boolean
   message?: string
+  /**
+   * Offer, first and preselected, the model saved under this other key of the person's
+   * `featureModels` (the Tradecraft librarian's gate offers the 1.x section picker's, Q10: the
+   * picker left Models by feature at the cut-over, R-401, but a model saved for it stays in the
+   * map). Saved only when the person confirms.
+   */
+  suggestFrom?: string
+  /** The words for where the suggestion comes from. */
+  suggestedFrom?: string
 }
 
 export interface FeatureModelGateApi {
@@ -337,6 +375,7 @@ export interface FeatureModelGateApi {
     featureId: GateFeatureId,
     doFetch: () => Promise<Response>,
     plugin?: PluginFeatureText,
+    suggest?: Pick<EnsureFeatureModelOptions, 'suggestFrom' | 'suggestedFrom'>,
   ) => Promise<Response>
   /** Whose models the gate reads and saves; null outside the provider. */
   userId: string | null
@@ -365,6 +404,8 @@ interface PendingGate {
   featureId: GateFeatureId
   plugin: PluginFeatureText
   message?: string
+  suggestedModel?: string
+  suggestedFrom?: string
   resolve: (model: string | null) => void
 }
 
@@ -377,10 +418,13 @@ export function FeatureModelGateProvider({ children }: { children: ReactNode }) 
   const pendingRef = useRef<PendingGate | null>(null)
   const seqRef = useRef(0)
 
-  const openGate = useCallback((featureId: GateFeatureId, message: string | undefined, plugin: PluginFeatureText) => {
+  const openGate = useCallback((
+    featureId: GateFeatureId, message: string | undefined, plugin: PluginFeatureText,
+    suggestion: { suggestedModel?: string; suggestedFrom?: string } = {},
+  ) => {
     return new Promise<string | null>(resolve => {
       pendingRef.current?.resolve(null)
-      const next: PendingGate = { id: ++seqRef.current, featureId, plugin, message, resolve }
+      const next: PendingGate = { id: ++seqRef.current, featureId, plugin, message, ...suggestion, resolve }
       pendingRef.current = next
       setOpen(next)
     })
@@ -401,24 +445,28 @@ export function FeatureModelGateProvider({ children }: { children: ReactNode }) 
   const ensureFeatureModel = useCallback(async (featureId: GateFeatureId, opts: EnsureFeatureModelOptions = {}) => {
     if (!userId) return null
     let message = opts.message
-    if (!opts.force) {
+    let saved: Record<string, string> | null = null
+    if (!opts.force || opts.suggestFrom) {
       try {
-        const saved = (await fetchSavedFeatureModels(userId))[featureId]
-        if (saved) return saved
+        saved = await fetchSavedFeatureModels(userId)
+        if (!opts.force && saved[featureId]) return saved[featureId]
       } catch (err) {
         // Unreadable settings: asking is better than blocking the action, but the gate
         // says why it asks, or it reads as if no model had ever been saved.
         const read = toApiError(err, 'Could not read your settings')
-        message ??= `${formatApiError({ ...read, reason: "Couldn't read your saved model" })}. Choose one to continue.`
+        if (!opts.force) message ??= `${formatApiError({ ...read, reason: "Couldn't read your saved model" })}. Choose one to continue.`
       }
     }
-    return openGate(featureId, message, { label: opts.label, description: opts.description })
+    const suggestedModel = opts.suggestFrom ? saved?.[opts.suggestFrom] || undefined : undefined
+    return openGate(featureId, message, { label: opts.label, description: opts.description },
+      suggestedModel ? { suggestedModel, suggestedFrom: opts.suggestedFrom } : {})
   }, [userId, openGate])
 
   const fetchWithFeatureModel = useCallback(async (
     featureId: GateFeatureId,
     doFetch: () => Promise<Response>,
     plugin: PluginFeatureText = {},
+    suggest: Pick<EnsureFeatureModelOptions, 'suggestFrom' | 'suggestedFrom'> = {},
   ) => {
     const res = await doFetch()
     if (res.ok) return res
@@ -428,6 +476,7 @@ export function FeatureModelGateProvider({ children }: { children: ReactNode }) 
     const failedModel = (body as { model?: unknown }).model
     const model = await ensureFeatureModel(featureId, {
       ...plugin,
+      ...suggest,
       force: true,
       message: code === 'model_unavailable'
         ? featureModelMessage('model_unavailable', typeof failedModel === 'string' ? failedModel : undefined)
@@ -452,6 +501,8 @@ export function FeatureModelGateProvider({ children }: { children: ReactNode }) 
           description={open.plugin.description}
           userId={userId}
           message={open.message}
+          suggestedModel={open.suggestedModel}
+          suggestedFrom={open.suggestedFrom}
           onSaved={model => settle(open.id, model)}
           onCancel={() => settle(open.id, null)}
         />

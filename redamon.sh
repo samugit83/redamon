@@ -4438,6 +4438,7 @@ cmd_update() {
     _confirm_root
 
     _urlscan_backfill_once
+    _old_page_cache_volume_remove_once
 
     # HTTP Traffic Capture. Order matters, and it is the reverse of what it looks
     # like: the capture pair is spawned BY THE ORCHESTRATOR, so it must be
@@ -4633,6 +4634,28 @@ _urlscan_backfill_once() {
         -e NEO4J_USER="$(_env_get NEO4J_USER | grep . || echo neo4j)" -e NEO4J_PASSWORD \
         --entrypoint python redamon-recon tooling/scripts/urlscan_backfill.py --apply \
         || warn "urlscan backfill did not finish; run it again by hand (tooling/scripts/urlscan_backfill.py)"
+}
+
+# One-off: Tradecraft 1.x kept a page cache in the volume named below; 2.0 keeps its
+# pages in Postgres and the agent no longer mounts it (T9.4). Called after the agent was
+# recreated without the mount, so nothing holds the volume. A volume still in use (an agent
+# container left from the old release) is a warning, never a failure: the marker is then not
+# written and the next update tries again. Never touches .env (R-001). The volume held only pages
+# 1.x had downloaded and could download again (§7 item 12): an operator who wants it kept anyway
+# creates the marker first (touch .tradecraft-cache-removed), and this never runs.
+OLD_PAGE_CACHE_VOLUME="redamon_tradecraft_cache"
+OLD_PAGE_CACHE_MARKER="$SCRIPT_DIR/.tradecraft-cache-removed"
+_old_page_cache_volume_remove_once() {
+    [[ -f "$OLD_PAGE_CACHE_MARKER" ]] && return 0
+    if docker volume inspect "$OLD_PAGE_CACHE_VOLUME" >/dev/null 2>&1; then
+        if ! docker volume rm "$OLD_PAGE_CACHE_VOLUME" >/dev/null 2>&1; then
+            warn "The old Tradecraft page cache (volume $OLD_PAGE_CACHE_VOLUME) is still in use; it is removed at the next update."
+            warn "  Or remove it by hand once no container uses it: docker volume rm $OLD_PAGE_CACHE_VOLUME"
+            return 0
+        fi
+        info "Removed the old Tradecraft page cache (volume $OLD_PAGE_CACHE_VOLUME)."
+    fi
+    touch "$OLD_PAGE_CACHE_MARKER" 2>/dev/null || true
 }
 
 _service_running() {

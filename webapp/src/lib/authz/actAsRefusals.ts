@@ -28,6 +28,8 @@ const ACTIONS = {
   mint_mcp_token: 'creating or widening an MCP token in their name',
   reveal_secret: 'revealing their stored secrets',
   use_github_token: 'using their GitHub token',
+  use_site_logins: 'using their saved site logins',
+  change_site_logins: 'changing their saved site logins',
   write_agent_skills: 'writing their agent skills',
   write_chat_skills: 'writing their chat skills',
   change_shares: 'changing their project shares',
@@ -110,6 +112,18 @@ export async function refuseWhileActingAsOn(targetUserId: string, action: Acting
   if (!rbacFlags().permissions) return null
   const session = await getSession()
   return session ? refuseWhileActingAs({ session, targetUserId }, action) : null
+}
+
+/**
+ * Whether the signed-in session acts as `targetUserId` (switch on), for an answer that leaves out
+ * what an acting administrator may not see rather than refusing it: the Map view of a resource
+ * with a site login shows titles and URLs only (§6.6). No audit row: nothing was refused.
+ */
+export async function actingAsOn(targetUserId: string): Promise<boolean> {
+  if (!rbacFlags().permissions) return false
+  const session = await getSession()
+  const inForce = session ? await actAsInForce(session) : null
+  return !!inForce && inForce.target.id === targetUserId
 }
 
 /** Null when allowed, else the 403 `{error, code: 'not_while_acting_as', action}` the route returns. */

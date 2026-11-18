@@ -1,0 +1,16 @@
+[
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/ssrf/README.md",
+    "name": "README.md",
+    "path": "ssrf/README.md",
+    "size": 30,
+    "type": "file"
+  },
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/ssrf/cloud-metadata.md",
+    "name": "cloud-metadata.md",
+    "path": "ssrf/cloud-metadata.md",
+    "size": 74,
+    "type": "file"
+  }
+]

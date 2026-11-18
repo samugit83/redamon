@@ -1,0 +1,127 @@
+"""The site type of a resource from its start page (port of 1.x ``detect_type``; ``detect_type``
+below keeps 1.x's signature for the workspace importer).
+
+The same rules in the same order: a CVE archive, a GitHub repository, MkDocs or mdBook,
+Sphinx or Docusaurus, GitBook, else a website for the crawl. The archive threshold is
+``detection.cveArchiveThreshold`` (20, as 1.x) and a person can turn a detector off
+(``detection.enabledDetectors``); with the defaults the answer equals 1.x's but for one rule:
+a page that loads a file named ``searchindex.js`` is Sphinx only beside a mark only Sphinx
+writes, and no Sphinx marker counts on a page whose generator meta names another tool (1.x
+typed a Hugo site Sphinx, and its map held the homepage alone). A PDF is told by its content,
+not here (``fetch.FetchedPage.is_pdf``).
+"""
+
+from __future__ import annotations
+
+import re
+import urllib.parse
+
+from tradecraft.settings import EffectiveSettings
+
+WEBSITE = "agentic-crawl"
+_CVE_ID_ANYWHERE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
+_GITHUB_REPO_RE = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)")
+
+_MKDOCS_MARKERS = (
+    'name="generator" content="mkdocs', 'name="generator" content="material',
+    "<!-- book generated using mdbook -->", 'class="mdbook"', "mdbook.js",
+)
+_SPHINX_MARKERS = ('name="generator" content="docutils', "_static/searchindex.js")
+# Other tools also ship a search script named searchindex.js (Hugo themes bundle elasticlunr
+# under that name): it says Sphinx only beside something only Sphinx writes.
+_SPHINX_INDEX_FILE = "searchindex.js"
+_SPHINX_COMPANIONS = (
+    "search.setindex", "documentation_options", "_static/doctools.js", "_static/searchtools.js",
+    "_static/sphinx_highlight.js",
+)
+# A generator meta naming none of these is another tool's page, whatever Sphinx-like file it loads.
+_SPHINX_GENERATORS = ("docutils", "sphinx", "docusaurus")
+_DOCUSAURUS_MARKERS = ('name="generator" content="docusaurus', "docusaurus.config")
+# A name starts only where a run of name characters starts: tried from every position of a long
+# run, the pattern backtracks the whole run each time (quadratic in the tag, about 13 s on a page at
+# the cap, on the job's event loop).
+_ATTR_RE = re.compile(r"""(?<![a-z-])([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
+# A generator meta sits near the top of the head: with the anchored name, these bounds keep reading
+# a hostile page linear.
+_MAX_META_TAGS = 1000
+_MAX_META_TAG_CHARS = 2000
+_GITBOOK_MARKERS = (
+    'application-name" content="gitbook"', 'name="generator" content="gitbook',
+    "static-2v.gitbook.com", "static.gitbook.com", "data-rsc-router",
+)
+
+
+def generators(raw_html: str) -> list[str]:
+    """The lowercased ``content`` of every ``<meta name="generator">``, in any attribute order
+    or quoting, among the page's first ``_MAX_META_TAGS`` tags of at most ``_MAX_META_TAG_CHARS``
+    characters each. Detection runs on the job's event loop, and one pattern over the whole page
+    is quadratic on a page of unclosed ``<meta`` tags."""
+    text = (raw_html or "").lower()
+    out: list[str] = []
+    pos = 0
+    for _ in range(_MAX_META_TAGS):
+        start = text.find("<meta", pos)
+        if start < 0:
+            break
+        end = text.find(">", start, start + _MAX_META_TAG_CHARS)
+        if end < 0:
+            pos = start + len("<meta")
+            continue
+        attrs = {m.group(1): m.group(2) or m.group(3) or m.group(4) or ""
+                 for m in _ATTR_RE.finditer(text, start + len("<meta"), end)}
+        if attrs.get("name", "").strip() == "generator" and attrs.get("content", "").strip():
+            out.append(attrs["content"].strip())
+        pos = end + 1
+    return out
+
+
+def _sphinx_page(body_lc: str, raw_html: str) -> bool:
+    if any(m in body_lc for m in _DOCUSAURUS_MARKERS):
+        return True
+    gens = generators(raw_html)
+    if gens and not any(name in g for g in gens for name in _SPHINX_GENERATORS):
+        return False
+    if any(m in body_lc for m in _SPHINX_MARKERS):
+        return True
+    sphinx_generator = any("sphinx" in g for g in gens)
+    return _SPHINX_INDEX_FILE in body_lc and (sphinx_generator or any(m in body_lc for m in _SPHINX_COMPANIONS))
+
+
+def detect(url: str, raw_html: str, status: int, settings: EffectiveSettings) -> str:
+    """One of ``cve-poc-db``, ``github-repo``, ``mkdocs-wiki``, ``sphinx-docs``, ``gitbook`` or
+    ``agentic-crawl``. ``raw_html`` is the page before cleaning: the markers live in meta tags
+    and comments that the Markdown drops."""
+    enabled = set(settings.list("detection.enabledDetectors"))
+    threshold = settings.int("detection.cveArchiveThreshold")
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return WEBSITE
+    body = raw_html or ""
+    body_lc = body.lower()
+
+    # An archive of many CVEs laid out as {year}/{CVE}.md; a repository about one or two CVEs
+    # is a plain repository (its README may repeat their ids many times).
+    if "cve" in enabled and "github.com" in host:
+        m = _GITHUB_REPO_RE.match(url)
+        if m and re.search(r"cve", m.group(2), re.IGNORECASE) and not _CVE_ID_ANYWHERE_RE.search(m.group(2)):
+            return "cve-poc-db"
+        distinct = {c.upper() for c in _CVE_ID_ANYWHERE_RE.findall(body)}
+        if len(distinct) > threshold:
+            return "cve-poc-db"
+    if "github" in enabled and host in ("github.com", "raw.githubusercontent.com"):
+        return "github-repo"
+    if "mkdocs" in enabled and any(m in body_lc for m in _MKDOCS_MARKERS):
+        return "mkdocs-wiki"
+    # ReadTheDocs always serves Sphinx: the host alone decides.
+    if "sphinx" in enabled and (host.endswith(".readthedocs.io") or _sphinx_page(body_lc, body)):
+        return "sphinx-docs"
+    if "gitbook" in enabled and ("gitbook.io" in host or any(m in body_lc for m in _GITBOOK_MARKERS)):
+        return "gitbook"
+    return WEBSITE
+
+
+def detect_type(url: str, body: str, status: int = 200) -> str:
+    """``detect`` with the default settings: 1.x's signature and answer, for the workspace
+    importer, which tells a docs site from a website by it (``workspace_import/detect.py``)."""
+    return detect(url, body, status, EffectiveSettings({}))

@@ -31,11 +31,13 @@ services:
         node scripts/db-push-locked.mjs db push --accept-data-loss || exit 1
         node scripts/apply-ingest-role.mjs
         node scripts/apply-traffic-fts.mjs
+        node scripts/apply-tradecraft-search.mjs
         node scripts/apply-engagement-immutability.mjs
         node scripts/apply-plugin-constraints.mjs || echo "[plugins] constraint script failed"
         node scripts/clamp-triage-review-budget.mjs
         node scripts/backfill-user-skill-toggles.mjs
         node scripts/backfill-jev-provider-selection.mjs
+        node scripts/backfill-tradecraft-phases.mjs
         node scripts/backfill-rbac-legacy-grants.mjs
         node scripts/backfill-nuclei-template-owners.mjs
         node scripts/backfill-rbac-instance-settings.mjs

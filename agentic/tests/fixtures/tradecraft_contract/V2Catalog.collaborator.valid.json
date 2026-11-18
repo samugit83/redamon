@@ -1,0 +1,60 @@
+{
+  "v2": true,
+  "owner_id": "user_owner_fake",
+  "person_id": "user_collaborator_fake",
+  "actor_id": null,
+  "search": {},
+  "resources": [
+    {
+      "id": "res_fake_0001",
+      "slug": "fake-wiki",
+      "name": "Fake wiki",
+      "url": "https://wiki.example.invalid/",
+      "type": "mkdocs-wiki",
+      "storage_mode": "stored",
+      "summary": "A synthetic wiki.",
+      "has_login": false,
+      "priority": "normal",
+      "map_version": 3,
+      "read_settings": {
+        "fetching.requestTimeoutSec": 30
+      },
+      "github_token": null,
+      "credentials": null
+    },
+    {
+      "id": "res_fake_0004",
+      "slug": "hacktricks-mirror-windows-local-privilege-escalation-and-active-",
+      "name": "HackTricks mirror: Windows local privilege escalation and Active Directory notes",
+      "url": "https://mirror.example.invalid/",
+      "type": "mkdocs-wiki",
+      "storage_mode": "stored",
+      "summary": "A synthetic wiki.",
+      "has_login": false,
+      "priority": "normal",
+      "map_version": 3,
+      "read_settings": {
+        "fetching.requestTimeoutSec": 30
+      },
+      "github_token": null,
+      "credentials": null
+    },
+    {
+      "id": "res_fake_0005",
+      "slug": "hacktricks-mirror-windows-local-privilege-escalation-and-active--2",
+      "name": "HackTricks mirror: Windows local privilege escalation and Active Directory notes",
+      "url": "https://mirror2.example.invalid/",
+      "type": "mkdocs-wiki",
+      "storage_mode": "stored",
+      "summary": "A synthetic wiki.",
+      "has_login": false,
+      "priority": "normal",
+      "map_version": 3,
+      "read_settings": {
+        "fetching.requestTimeoutSec": 30
+      },
+      "github_token": null,
+      "credentials": null
+    }
+  ]
+}

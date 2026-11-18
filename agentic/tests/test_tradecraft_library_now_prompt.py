@@ -1,0 +1,557 @@
+"""Library now in the real think node's prompt (owner decision 2026-11-17).
+
+The think call's messages as the real ``think_node`` and prompt builders make them (the model call
+is the only thing replaced, to capture them):
+
+- with a built-in skill, a user skill and no skill, the skill's block is unchanged, the main
+  instructions hold the one general rule, and the Library now block ends the system message;
+- where Library now runs, and only there, the rule is followed by one general line asking each
+  todo item to name its technique and the target's technology (NQ-8, option c), naming no
+  attack class;
+- the library's line for the chosen skill sits just before the skill's block;
+- every provider adapter still sends one system message (OpenAI and OpenAI-compatible strict chat
+  templates, Anthropic, Gemini, Bedrock Converse, the Agent in the Loop renderer), and the
+  thought's "Library: ..." sentence parses, through a provider and through the loop;
+- the cached prefix stays the same from think to think while the block changes;
+- a run with no active resource (none, or all turned off) sees no Tradecraft text anywhere,
+  stealth mode included, and a run with one sees the rule, the tools, the block and the stealth
+  section; the Fireteam member prompt follows the same rule.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextvars
+import importlib
+import inspect
+import json
+import re
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import project_settings as ps  # noqa: E402
+from test_tradecraft_hints import (FOOTER, HEADER, UNREAD, by_goal, catalog, goal_line, library,  # noqa: E402
+                                   rows_by_step, state, todo)
+from tradecraft import runtime  # noqa: E402
+from tradecraft.library import hints  # noqa: E402
+
+CONFIG = {"configurable": {"user_id": "owner-1", "project_id": "p-libnow", "session_id": "s-1"}}
+USER_SKILL = {"id": "abc", "name": "JWT none algorithm", "description": "Forge tokens signed with alg none.",
+              "content": "## My JWT playbook\n\n1. Decode the token.\n2. Set alg to none and drop the signature."}
+SKILLS = {"built-in": "sql_injection", "user": "user_skill:abc", "none": "web-unclassified"}
+COVERAGE = {"pages": 12, "resources": [{"slug": "patt", "type": "github-repo", "pages": 12}],
+            "topics": {"sql_injection": {"pages": 12, "kinds": {"payloads": 8}, "technologies": {"postgresql": 3}}}}
+SKILL_LINE = "Library for SQL injection: 12 pages · payloads 8 · PostgreSQL"
+DECISION = {"thought": "Library: read patt:401. Its time based payloads fit the next probe.",
+            "reasoning": "The skill says confirm with a delay; the page has the PostgreSQL one.",
+            "action": "use_tool", "tool_name": "tradecraft_lookup", "tool_args": {"page": "patt:401"},
+            "updated_todo_list": [{"description": "Confirm time based blind SQL injection", "status": "in_progress",
+                                   "priority": "high"}]}
+TRADECRAFT_TEXT = re.compile(r"tradecraft|Library now|Your library|Library for ", re.IGNORECASE)
+
+
+def settings(**extra):
+    out = dict(ps.DEFAULT_AGENT_SETTINGS)
+    config = json.loads(json.dumps(out["ATTACK_SKILL_CONFIG"]))
+    config["user"] = {"abc": True}
+    out.update({"ATTACK_SKILL_CONFIG": config, "USER_ATTACK_SKILLS": [USER_SKILL], "TRADECRAFT_V2": True,
+                "TRADECRAFT_ASK": True, "PERSISTENT_CHECKPOINTER": False})
+    out.update(extra)
+    return out
+
+
+class _Resp:
+    def __init__(self, content):
+        self.content = content
+        self.usage_metadata = {"input_tokens": 10, "output_tokens": 5}
+
+
+class ChatAnthropic:
+    """The class name ``build_system_message_content`` splits the cache tiers for."""
+
+
+class Plain:
+    pass
+
+
+class Loop:
+    is_agent_in_the_loop = True
+
+
+def run(states, *, cat="default", llm=None, run_settings=None, coverage=None, answer=None, before=None, index=None,
+        calls=None):
+    """Real thinks in one run, its catalog bound once as at a run's start: ``states`` is the first
+    state, then functions that make the next state from the one the previous think left. Returns
+    [(the messages sent to the model, the node's updates)] and what ``before`` built in the run;
+    ``calls``, when given, gets every model call's messages."""
+    tn = importlib.import_module("orchestrator_helpers.nodes.think_node")
+    captured = [] if calls is None else calls
+
+    async def call(_llm, messages, **_kw):
+        captured.append(list(messages))
+        return _Resp(answer if answer is not None else json.dumps(DECISION))
+
+    async def go():
+        ps._settings_ctx.set(run_settings if run_settings is not None else settings())
+        with runtime.use_store(object()), runtime.use_index(index if index is not None else library()):
+            runtime.bind_run_catalog(catalog() if cat == "default" else cat)
+            if coverage is not None:
+                runtime._coverage.set(coverage)
+            extra = before() if before else None
+            out, st = [], None
+            with patch.object(tn, "retry_llm_call", new=call), \
+                 patch("orchestrator_helpers.skill_loader.list_skills", return_value=[]):
+                for step in states:
+                    st = step({**st, **out[-1][1]}) if callable(step) else step
+                    updates = await tn.think_node(st, CONFIG, llm=llm if llm is not None else Plain(),
+                                                  guidance_queues={}, neo4j_creds=("bolt://tc-fixture.invalid", "u", "p"))
+                    out.append((captured[-1], updates))
+        return out, extra
+
+    return contextvars.Context().run(asyncio.run, go())
+
+
+def think(st, **kw):
+    """One real think: (the messages sent to the model, the node's updates, what ``before`` built
+    in the same run context)."""
+    out, extra = run([st], **kw)
+    return out[0][0], out[0][1], extra
+
+
+def system_text(messages):
+    content = messages[0].content
+    return content if isinstance(content, str) else "\n\n".join(b["text"] for b in content)
+
+
+def all_text(messages):
+    return "\n\n".join(system_text([m]) if m.type == "system" else str(m.content) for m in messages)
+
+
+def rules_section(text):
+    return text[text.index("### Important Rules:"):text.index("### When to Ask User")]
+
+
+def skill_block(skill, trace=()):
+    """The skill's own block as the prompt builders render it in this run."""
+    import prompts
+
+    allowed = ps.get_allowed_tools_for_phase("exploitation")
+    if skill in ("sql_injection", "cve_exploit"):
+        statefull = ps.get_setting("POST_EXPL_PHASE_TYPE", "statefull") == "statefull"
+        return prompts.build_builtin_skill_workflow(skill, allowed, statefull, list(trace))
+    if skill.startswith("user_skill:"):
+        return [f"## User Attack Skill: {USER_SKILL['name']}\n\n{USER_SKILL['content']}"]
+    return [prompts.UNCLASSIFIED_EXPLOIT_TOOLS]
+
+
+# --------------------------------------------------------------------------------------
+# The rule, the block and the skill's block, for every kind of skill
+# --------------------------------------------------------------------------------------
+
+def test_every_kind_of_skill_keeps_its_block_and_gets_the_rule_and_the_block():
+    for kind, skill in SKILLS.items():
+        st = state(attack_path_type=skill, todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+        messages, _, block = think(st, before=lambda s=skill: skill_block(s))
+        text = system_text(messages)
+        assert block and all(part in text for part in block), kind
+        # The one general rule, in the main instructions' rules, the same for every skill.
+        assert text.count(hints.RULE) == 1 and hints.RULE in rules_section(text), kind
+        assert "as you go\n6. **Your library.**" in text, kind
+        # The block ends the system message, after everything else.
+        tail = text[text.rindex(HEADER):]
+        assert goal_line(tail) == '  step in progress: "Confirm time based blind SQL injection"'
+        assert text.endswith(FOOTER) and "patt:401" in tail, kind
+        assert text.index(block[-1]) < text.index(hints.RULE) < text.rindex(HEADER)
+
+
+PRECEDENCE = ("Whenever the active skill or any instruction asks you to get specifics (payloads, PoCs, exploit "
+              "steps, commands) from your own knowledge, query_graph or web_search, check Library now first: a "
+              "fitting page comes before those.")
+
+
+def test_the_rule_comes_before_a_skills_own_order_of_sources():
+    """The CVE skill orders its sources of specifics as own knowledge, query_graph, web_search; the
+    rule, the same for every skill, puts a fitting Library now page first, and the skill's text
+    stays as it is."""
+    config = json.loads(json.dumps(ps.DEFAULT_AGENT_SETTINGS["ATTACK_SKILL_CONFIG"]))
+    config["builtIn"]["cve_exploit"] = True
+    config["user"] = {"abc": True}
+    # No Metasploit module: the skill's fallback, with its "own knowledge, query_graph, web_search".
+    trace = [{"tool_name": "metasploit_console", "tool_args": {"command": "search cve:2099-0001"},
+              "tool_output": "No results from search", "success": True, "iteration": 1, "phase": "exploitation",
+              "thought": "", "reasoning": ""}]
+    st = state(attack_path_type="cve_exploit", execution_trace=trace,
+               todo_list=[todo("Exploit the CVE on the login service", "in_progress")])
+    messages, _, block = think(st, run_settings=settings(ATTACK_SKILL_CONFIG=config),
+                               before=lambda: skill_block("cve_exploit", trace))
+    text = system_text(messages)
+    assert block and all(part in text for part in block)
+    assert "1. **Your own knowledge**" in text and "Use `web_search`" in text
+    assert PRECEDENCE in hints.RULE and text.count(PRECEDENCE) == 1 and PRECEDENCE in rules_section(text)
+
+
+def test_the_skill_line_sits_just_before_the_skills_block():
+    st = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+    messages, _, block = think(st, coverage=COVERAGE, before=lambda: skill_block("sql_injection"))
+    text = system_text(messages)
+    assert text.count(SKILL_LINE) == 1
+    line_end = text.index(SKILL_LINE) + len(SKILL_LINE)
+    assert line_end < text.index(block[0]) and text[line_end:text.index(block[0])].strip() == ""
+    # The other skills have no line: a user skill and no skill have no library topic.
+    for skill in ("user_skill:abc", "web-unclassified"):
+        messages, _, _ = think(state(attack_path_type=skill), coverage=COVERAGE)
+        assert "Library for " not in system_text(messages)
+
+
+def test_the_think_that_starts_a_step_already_shows_its_pages():
+    """Design review finding 2, through the real think node: the think whose answer takes the first
+    action of the next step was sent that step's pages."""
+    starts_bravo = {**DECISION, "tool_args": {"page": "patt:421"}, "thought": "Library: read patt:421.",
+                    "updated_todo_list": [{"description": "Probe vector alpha", "status": "completed", "priority": "high"},
+                                          {"description": "Probe vector bravo", "status": "in_progress",
+                                           "priority": "high"}]}
+    st = state(todo_list=[todo("Probe vector alpha", "in_progress"), todo("Probe vector bravo")])
+    messages, updates, _ = think(st, index=by_goal(), answer=json.dumps(starts_bravo))
+    tail = system_text(messages)[system_text(messages).rindex(HEADER):]
+    assert "patt:421" in rows_by_step(tail)["next step"]
+    assert [t["status"] for t in updates["todo_list"]] == ["completed", "in_progress"]
+
+
+def test_without_a_library_the_rules_read_as_before():
+    messages, _, _ = think(state(), cat=None)
+    rules = rules_section(system_text(messages))
+    assert rules.rstrip().endswith("5. **Add exploitation steps as TODO items** and mark them in_progress/completed as you go")
+    assert "Your library" not in rules
+
+
+# --------------------------------------------------------------------------------------
+# Steps that name what they are about (the owner's NQ-8, option c, 2026-11-18)
+# --------------------------------------------------------------------------------------
+
+def step_rule():
+    from prompts import base
+
+    return base.STEP_NAMING_RULE
+
+
+def test_the_step_naming_rule_follows_the_library_rule_where_library_now_runs():
+    """Library now searches with the words of the todo item in progress and the next pending one:
+    where it runs, the main instructions' rules end with rule 6 and then one general line asking
+    each todo item to name its technique and the target's technology. Every kind of skill, stealth
+    mode included; never in a Fireteam member's prompt (Library now is the main agent's, R-425)."""
+    rule = step_rule()
+    assert rule.startswith("7. ") and "\n" not in rule
+    for phrase in ("todo item's description", "technique", "target's technology", "Library now"):
+        assert phrase in rule, phrase
+    for kind, skill in SKILLS.items():
+        for stealth in (False, True):
+            st = state(attack_path_type=skill, todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+            messages, _, member = think(st, run_settings=settings(STEALTH_MODE=stealth), before=member_prompt)
+            text, rules = system_text(messages), rules_section(system_text(messages))
+            assert all_text(messages).count(rule) == 1, (kind, stealth)
+            assert f"{hints.RULE}\n{rule}" in rules and rules.rstrip().endswith(rule), (kind, stealth)
+            assert text.endswith(FOOTER), (kind, stealth)
+            assert rule not in member, (kind, stealth)
+
+
+def test_the_step_naming_rule_is_absent_where_library_now_does_not_run():
+    """No library, no active resource, hints off, or tradecraft_lookup not allowed in the phase:
+    no Library now, so the rules read as before, with neither rule 6 nor the step naming line."""
+    phase_map = json.loads(json.dumps(ps.DEFAULT_AGENT_SETTINGS["TOOL_PHASE_MAP"]))
+    phase_map["tradecraft_lookup"] = ["informational"]
+    cases = {"no library": {"cat": None},
+             "no active resource": {"cat": catalog(resources=[])},
+             "hints off": {"cat": catalog(**{"hints.enabled": False})},
+             "lookup not in this phase": {"run_settings": settings(TOOL_PHASE_MAP=phase_map)}}
+    rule = step_rule()
+    st = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+    for name, kw in cases.items():
+        messages, _, _ = think(st, **kw)
+        rules = rules_section(system_text(messages))
+        assert rule not in all_text(messages) and hints.RULE not in all_text(messages), name
+        assert "7. **" not in rules, name
+        assert rules.rstrip().endswith("as you go"), name
+
+
+def _vocabulary_names():
+    """Every attack class, technique, technology and tool the library's vocabulary or the built-in
+    skills name, lower case, as whole phrases."""
+    from state import KNOWN_ATTACK_PATHS
+    from tradecraft.vocab import load_vocab
+
+    vocab = load_vocab()
+    names = {path.replace("_", " ") for path in KNOWN_ATTACK_PATHS}
+    for topic in vocab.topics:
+        names.update({topic["id"].replace("_", " "), topic["label"]})
+    for phrases in vocab.keywords.values():
+        names.update(phrases)
+    for tech in vocab.technologies:
+        names.update([tech["id"], tech["name"], *tech.get("aliases", ())])
+    for synonym in vocab.synonyms:
+        names.update([synonym["term"], *synonym["expansions"]])
+    return {n.lower() for n in names if n}
+
+
+# Names the vocabulary does not hold but an example would reach for first: technologies,
+# protocols, languages and attack classes of several kinds.
+OUTSIDE_VOCABULARY = (
+    "http", "https", "java", "python", "javascript", "typescript", "ruby", "golang", "rust", "perl", "html",
+    "json", "xml", "yaml", "soap", "grpc", "websocket", "oauth", "openid", "oidc", "saml", "sso", "mfa", "tls",
+    "ssl", "tcp", "udp", "linux", "windows", "macos", "unix", "csrf", "race condition", "prototype pollution",
+    "buffer overflow", "open redirect", "clickjacking", "subdomain takeover", "file upload", "session fixation",
+    "account takeover", "business logic", "format string", "use after free", "type juggling", "cache deception",
+)
+# What introduces an example, in any wording.
+EXAMPLE_MARKERS = re.compile(r'"|\be\.g\.|\bi\.e\.|\bfor (example|instance)\b|\bsuch as\b|\blike\b|\bincluding\b',
+                             re.IGNORECASE)
+# A parenthesis may list kinds of thing, never names: kinds are lower-case common nouns of this closed
+# list, so a capitalised word, an acronym or any other word in a parenthesis is a name.
+CATEGORY_WORDS = frozenset({"the", "a", "an", "or", "and", "its", "product", "framework", "language", "protocol",
+                            "service", "platform", "library", "component", "server", "database", "system",
+                            "version"})
+
+
+def neutrality_problems(rule):
+    """What makes ``rule`` less than general, empty when it is: a vocabulary name, a name of
+    ``OUTSIDE_VOCABULARY``, an example marker, a parenthesis that lists names, a capitalised word
+    that does not open a sentence (a name such as an acronym or a product), more than two sentences
+    after the title."""
+    problems = []
+    lowered = rule.lower()
+
+    def named(phrase):
+        return re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", lowered)
+
+    problems += [f"name: {n}" for n in sorted(_vocabulary_names() | set(OUTSIDE_VOCABULARY)) if named(n)]
+    # Rule 6's own test word list (test_tradecraft_hints.py), held for this line too.
+    problems += [f"rule 6 word: {m}" for m in re.findall(r"WAF|CVE|SQL|blocked|bypass|injection", rule, re.I)]
+    problems += [f"example marker: {m.group(0)}" for m in EXAMPLE_MARKERS.finditer(rule)]
+    for inner in re.findall(r"\(([^)]*)\)", rule):
+        problems += [f"name in parenthesis: {w}" for w in re.findall(r"[^\s,;/]+", inner)
+                     if w not in CATEGORY_WORDS]
+    body = rule.split("**", 2)[2] if rule.count("**") >= 2 else rule
+    for m in re.finditer(r"[A-Za-z][A-Za-z0-9.+#'-]*", body.replace("Library now", "library now")):
+        word, before = m.group(0), body[:m.start()].rstrip()
+        opens_sentence = not before or before[-1] in ".!?"
+        if any(c.isupper() for c in word) and not (opens_sentence and word[1:] == word[1:].lower()):
+            problems.append(f"capitalised name: {word}")
+    if len(re.findall(r"[.!?](?=\s|$)", body)) > 2:
+        problems.append("more than two sentences")
+    return problems
+
+
+def test_the_step_naming_rule_names_no_attack_class():
+    """The owner's condition: the library can hold anything, so the line is general. It names no
+    particular attack class, technique, technology or tool, gives no example in any wording, and is
+    at most two sentences after its title. Its parenthesis lists kinds of technology (lower-case
+    words of ``CATEGORY_WORDS``), not names. Each way the line could stop being general is caught."""
+    rule = step_rule()
+    assert len(_vocabulary_names()) > 100
+    assert neutrality_problems(rule) == []
+    kinds = "(the product, framework, language or protocol)"
+    assert kinds in rule
+    mutated = {
+        "such as": rule.replace("technology it is about", "technology it is about, such as HTTP or Java"),
+        "like": rule.replace("technology it is about", "technology it is about, like OAuth"),
+        "including": rule.replace("technology it is about", "technology it is about, including TLS"),
+        "e.g. in a parenthesis": rule.replace(kinds, "(e.g. the product or protocol)"),
+        "names in the parenthesis": rule.replace(kinds, "(HTTP, Java or Python)"),
+        "lower-case names in the parenthesis": rule.replace(kinds, "(the product, nginx or golang)"),
+        "an unlisted lower-case name": rule.replace("finds little.", "finds little, as with python."),
+        "an attack class outside the vocabulary": rule.replace("finds little.", "finds little on a race condition."),
+        "a vocabulary class": rule.replace("finds little.", "finds little on SQL injection."),
+        "a capitalised name": rule.replace("finds little.", "finds little on Acme Portal."),
+        "a quoted example": rule.replace("finds little.", 'finds little ("probe the form").'),
+        "a third sentence": rule + " Keep it brief.",
+    }
+    for case, line in mutated.items():
+        assert line != rule, case
+        assert neutrality_problems(line), case
+
+
+# --------------------------------------------------------------------------------------
+# Valid messages for every adapter; the thought's sentence parses
+# --------------------------------------------------------------------------------------
+
+def _alternates(roles):
+    """The rule of the chat templates that allow one leading system message (Mistral, Gemma 3,
+    Llama 2, as vLLM, LM Studio and llama.cpp render them): then user, assistant, user, ..."""
+    rest = roles[1:] if roles and roles[0] == "system" else roles
+    return all(role == ("user" if i % 2 == 0 else "assistant") for i, role in enumerate(rest))
+
+
+def test_one_system_message_for_every_adapter():
+    from agent_in_the_loop.prompt_doc import render as render_doc, to_parts
+    from langchain_anthropic.chat_models import _format_messages
+    from langchain_aws.chat_models.bedrock_converse import _messages_to_bedrock
+    from langchain_google_genai.chat_models import _parse_chat_history
+    from langchain_openai.chat_models.base import _convert_message_to_dict
+
+    st = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+    for shape, llm in (("tiers", ChatAnthropic()), ("plain", Plain()), ("loop", Loop())):
+        messages, updates, _ = think(st, llm=llm)
+        assert updates["_decision"]["action"] == "use_tool", shape
+        note = system_text(messages)[system_text(messages).rindex(HEADER):]
+        roles = [_convert_message_to_dict(m)["role"] for m in messages]
+        assert roles == ["system", "user"] and _alternates(roles), shape
+        system, rest = _format_messages(messages, model="claude-x")
+        assert len(rest) == 1 and rest[0]["role"] == "user", shape
+        if shape == "plain":
+            assert isinstance(system, str) and system.endswith(note)
+        else:
+            # The block is one more text block after the tiers, with no cache_control.
+            assert system[-1] == {"type": "text", "text": note}, shape
+            cached = [b for b in system if "cache_control" in b]
+            assert len(cached) == (3 if shape == "tiers" else 0), shape
+        instruction, history = _parse_chat_history(messages)
+        assert instruction is not None and len(history) == 1 and history[0].role == "user", shape
+        bedrock_messages, bedrock_system = _messages_to_bedrock(messages)
+        assert [m["role"] for m in bedrock_messages] == ["user"] and note in bedrock_system[-1]["text"], shape
+        parts = to_parts(messages)
+        assert [m.role for m in parts] == ["system", "user"] and parts[0].parts[-1].text.endswith(FOOTER), shape
+        document, _ = render_doc(parts, delivered=set(), full=False)
+        assert document.count(HEADER) == 1 and hints.RULE in document, shape
+
+
+def test_the_notice_after_an_announced_read_for_every_adapter():
+    """Through the real think node: the first answer says "Library: read patt:401." and calls
+    tradecraft_search instead, so no read of the page runs. The second think's one system
+    message ends with the block and the fixed notice, for every adapter and the loop's renderer,
+    with one model call a think: no retry, no extra call, the same for an Agent in the Loop run."""
+    from agent_in_the_loop.prompt_doc import render as render_doc, to_parts
+    from langchain_anthropic.chat_models import _format_messages
+    from langchain_aws.chat_models.bedrock_converse import _messages_to_bedrock
+    from langchain_google_genai.chat_models import _parse_chat_history
+    from langchain_openai.chat_models.base import _convert_message_to_dict
+
+    searched_instead = {**DECISION, "tool_name": "tradecraft_search", "tool_args": {"query": "time based delay"}}
+    first = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+    for shape, llm in (("tiers", ChatAnthropic()), ("plain", Plain()), ("loop", Loop())):
+        calls = []
+        (one, _), (two, updates) = run([first, lambda st: st], llm=llm, answer=json.dumps(searched_instead),
+                                       calls=calls)[0]
+        assert len(calls) == 2 and updates["_decision"]["action"] == "use_tool", shape
+        assert UNREAD not in all_text(one), shape
+        text = system_text(two)
+        assert text.endswith(FOOTER + "\n" + UNREAD) and all_text(two).count(UNREAD) == 1, shape
+        note = text[text.rindex(HEADER):]
+        roles = [_convert_message_to_dict(m)["role"] for m in two]
+        assert roles == ["system", "user"] and _alternates(roles), shape
+        system, rest = _format_messages(two, model="claude-x")
+        assert len(rest) == 1 and rest[0]["role"] == "user", shape
+        if shape == "plain":
+            assert isinstance(system, str) and system.endswith(note)
+        else:
+            assert system[-1] == {"type": "text", "text": note}, shape
+            assert len([b for b in system if "cache_control" in b]) == (3 if shape == "tiers" else 0), shape
+        instruction, history = _parse_chat_history(two)
+        assert instruction is not None and len(history) == 1 and history[0].role == "user", shape
+        bedrock_messages, bedrock_system = _messages_to_bedrock(two)
+        assert [m["role"] for m in bedrock_messages] == ["user"] and bedrock_system[-1]["text"].endswith(UNREAD), shape
+        parts = to_parts(two)
+        assert [m.role for m in parts] == ["system", "user"] and parts[0].parts[-1].text.endswith(UNREAD), shape
+        document, _ = render_doc(parts, delivered=set(), full=False)
+        assert document.count(UNREAD) == 1 and document.count(HEADER) == 1, shape
+
+
+def test_the_thoughts_library_sentence_parses():
+    from orchestrator_helpers.parsing import try_parse_llm_decision
+
+    st = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+    for llm in (Plain(), Loop()):
+        _, updates, _ = think(st, llm=llm)
+        assert updates["_decision"]["thought"].startswith("Library: read patt:401. ")
+        assert updates["_decision"]["tool_args"] == {"page": "patt:401"}
+    nothing = {**DECISION, "thought": "Library: nothing fit. Probe the delay by hand."}
+    for answer in (json.dumps(nothing), "Library: nothing fit.\n" + json.dumps(nothing),
+                   "```json\n" + json.dumps(nothing, indent=2) + "\n```"):
+        decision, error = try_parse_llm_decision(answer)
+        assert error is None and decision.thought.startswith("Library: nothing fit."), answer[:40]
+    # With stealth on, the thought still begins with its risk line and holds the library sentence.
+    stealthy = {**DECISION, "thought": "STEALTH RISK: LOW — a library read. Library: read patt:401."}
+    decision, error = try_parse_llm_decision(json.dumps(stealthy))
+    assert error is None and "Library: read patt:401." in decision.thought
+
+
+# --------------------------------------------------------------------------------------
+# The cached prefix from think to think
+# --------------------------------------------------------------------------------------
+
+def test_the_cached_prefix_stays_while_the_block_changes():
+    first_goal = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+
+    def second_goal(st):
+        return {**st, "todo_list": [todo("Confirm time based blind SQL injection", "completed"),
+                                    todo("Dump the users table with stacked queries", "in_progress")]}
+
+    (one, _), (two, _) = run([first_goal, second_goal], llm=ChatAnthropic())[0]
+    cached = [[b for b in m[0].content if "cache_control" in b] for m in (one, two)]
+    assert len(cached[0]) == 3 and cached[0] == cached[1]
+    assert one[0].content[-1] != two[0].content[-1]
+    assert goal_line(two[0].content[-1]["text"]) == '  step in progress: "Dump the users table with stacked queries"'
+
+
+# --------------------------------------------------------------------------------------
+# No active resource: no Tradecraft at all; one: all of it
+# --------------------------------------------------------------------------------------
+
+def member_prompt():
+    tn = importlib.import_module("orchestrator_helpers.nodes.fireteam_member_think_node")
+    return tn._build_member_prompt({"current_phase": "exploitation", "task": "check the login form",
+                                    "attack_path_type": "xss", "tools": [], "max_iterations": 5})
+
+
+def test_no_active_resource_no_tradecraft_text():
+    """The owner has no resource, or the project turned them all off (the webapp's catalog is 2.0
+    with no resource then): not a word of Tradecraft reaches the model, stealth mode included."""
+    for cat in (None, catalog(resources=[])):
+        for skill in ("xss", "web-unclassified"):
+            messages, updates, member = think(state(attack_path_type=skill), cat=cat,
+                                              run_settings=settings(STEALTH_MODE=True), before=member_prompt)
+            found = TRADECRAFT_TEXT.findall(all_text(messages))
+            assert not found, (cat and "empty catalog", skill, found[:3])
+            assert "STEALTH MODE" in system_text(messages)
+            assert not TRADECRAFT_TEXT.findall(member), member[:200]
+            assert not any(k.startswith("tradecraft_") and v for k, v in updates.items() if k != "tradecraft_run_key")
+
+
+def test_one_active_resource_shows_the_rule_the_tools_the_block_and_the_stealth_section():
+    st = state(todo_list=[todo("Confirm time based blind SQL injection", "in_progress")])
+    messages, _, member = think(st, run_settings=settings(STEALTH_MODE=True), before=member_prompt)
+    text = system_text(messages)
+    assert hints.RULE in text and text.endswith(FOOTER)
+    for tool in ("tradecraft_lookup", "tradecraft_search", "tradecraft_ask"):
+        assert f"| **{tool}** |" in text, tool
+    assert "### tradecraft_search, tradecraft_lookup, tradecraft_ask — NO RESTRICTIONS" in text
+    assert "  - tradecraft_search, tradecraft_lookup, query_graph, web_search" in text
+    assert '    tradecraft_lookup  -> {"page": "slug:N", "section": "..."}' in text
+    assert '    tradecraft_lookup  -> {"page": "slug:N", "section": "..."}' in member
+    # Search only: the librarian is named nowhere.
+    search_only, _, _ = think(st, cat=catalog(**{"librarian.use": "search_only"}),
+                              run_settings=settings(STEALTH_MODE=True, TRADECRAFT_ASK=False))
+    assert "tradecraft_ask" not in all_text(search_only)
+    # Hints off: the tools stay, with no rule and no block.
+    off, _, _ = think(st, cat=catalog(**{"hints.enabled": False}))
+    assert "| **tradecraft_lookup** |" in system_text(off)
+    assert hints.RULE not in system_text(off) and HEADER not in system_text(off)
+
+
+# --------------------------------------------------------------------------------------
+# Where the hook sits
+# --------------------------------------------------------------------------------------
+
+def test_the_block_is_the_main_think_nodes_only():
+    tn = importlib.import_module("orchestrator_helpers.nodes.think_node")
+    src = inspect.getsource(tn.think_node)
+    content = src.index("system_message_content = build_system_message_content(")
+    hook = src.index("_tc_note, _tc_hint_updates = await library_now(state, bound_catalog())")
+    built = src.index("messages = think_messages(system_message_content, _tc_note)")
+    assert content < hook < built < src.index("for attempt in range(max_retries):")
+    assert src.index("    updates = {\n") < src.index("updates.update(_tc_hint_updates)") < src.index("return updates")
+    assert "SystemMessage(content=_tc_note)" not in inspect.getsource(tn)
+    member = importlib.import_module("orchestrator_helpers.nodes.fireteam_member_think_node")
+    assert "library_now" not in inspect.getsource(member) and "library_rule" not in inspect.getsource(member)

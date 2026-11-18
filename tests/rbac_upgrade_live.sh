@@ -163,7 +163,8 @@ FAIL_LOG="${RBAC_UPGRADE_FAIL_LOG:-$d_log}"
 # instead, by count, in checks.sql's markers and by checks_after.sql.
 UPGRADE_AUDIT_ACTIONS=(system.rbac_legacy_grants_cutoff system.rbac_legacy_grants_backfill
                        system.nuclei_template_owners_backfill system.rbac_instance_settings_backfill
-                       system.rbac_root_assigned system.rbac_legacy_overrides_backfill)
+                       system.rbac_root_assigned system.rbac_legacy_overrides_backfill
+                       system.tradecraft_phases_cutoff system.tradecraft_phases_backfill)
 UPGRADE_AUDIT_SQL="$(printf "'%s'," "${UPGRADE_AUDIT_ACTIONS[@]}")"
 UPGRADE_AUDIT_SQL="${UPGRADE_AUDIT_SQL%,}"
 

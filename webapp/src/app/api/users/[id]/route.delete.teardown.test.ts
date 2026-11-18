@@ -43,6 +43,8 @@ vi.mock('@/lib/prisma', () => {
   const pick = (row: Record<string, unknown>, select?: Record<string, boolean>) =>
     select ? Object.fromEntries(Object.keys(select).filter(k => select[k]).map(k => [k, row[k]])) : { ...row }
   const db: Record<string, unknown> = {
+    // The account's Tradecraft jobs (T1.11): none here, so the agent is asked nothing about them.
+    tradecraftIngestionJob: { updateMany: async () => ({ count: 0 }) },
     user: {
       findUnique: async ({ where, select }: { where: { id: string }; select?: Record<string, boolean> }) => {
         const row = h.users.get(where.id)

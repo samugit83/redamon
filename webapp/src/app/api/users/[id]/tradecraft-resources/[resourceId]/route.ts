@@ -1,54 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/prisma'
-import { isInternalRequest, requireUserAccess } from '@/lib/session'
+import { requireUserAccess } from '@/lib/session'
 import { internalError } from '@/lib/routeErrors'
-import { isLoopModel } from '@/lib/agentInTheLoop'
 import { requireSelfPermission } from '@/lib/authz/selfService'
+import { auditActor } from '@/lib/auditActor'
+import { readJsonBody } from '@/lib/jsonBody'
+import { jobActorOf } from '@/lib/tradecraft/jobs'
+import { resourceViewOf } from '@/lib/tradecraft/v2/list'
+import { updateResourceV2 } from '@/lib/tradecraft/v2/update'
+import { removeResourceV2 } from '@/lib/tradecraft/v2/remove'
 
 interface RouteParams {
   params: Promise<{ id: string; resourceId: string }>
 }
 
-/**
- * The fields a PUT may write; the rest (slug, type, summary, sitemap, crawl data, errors)
- * belong to the server. A spread body would also carry a relation input Prisma applies as
- * a nested write: `user: {connect}` moves the resource to another account.
- */
-const UPDATABLE_FIELDS = ['name', 'url', 'enabled', 'cacheTtlSec', 'llmModel', 'githubTokenOverride'] as const
-
-function maskSecret(value: string): string {
-  if (!value || value.length <= 4) return value ? '••••' : ''
-  return '••••••••' + value.slice(-4)
-}
-
-function maskResource(r: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...r,
-    githubTokenOverride: maskSecret(r.githubTokenOverride as string),
-  }
-}
-
 // GET /api/users/[id]/tradecraft-resources/[resourceId]
+// Every caller gets the masked 2.0 view (T9.3: no unmasked read exists any more).
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, resourceId } = await params
-
     const denied = await requireUserAccess(request, id, { mode: 'read' })
     if (denied) return denied
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
-
-    const resource = await prisma.userTradecraftResource.findFirst({
-      where: { id: resourceId, userId: id },
-    })
-    if (!resource) {
-      return NextResponse.json({ error: 'Resource not found' }, { status: 404 })
-    }
-    // Unmasked only for trusted internal-key callers, never the ?internal=true param.
-    if (isInternalRequest(request)) {
-      return NextResponse.json(resource)
-    }
-    return NextResponse.json(maskResource(resource as unknown as Record<string, unknown>))
+    const view = await resourceViewOf(id, resourceId)
+    if (!view) return NextResponse.json({ error: 'Resource not found' }, { status: 404 })
+    return NextResponse.json(view)
   } catch (error) {
     return internalError(error, 'Failed to fetch tradecraft resource')
   }
@@ -58,59 +34,16 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, resourceId } = await params
-
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
-
-    const body = await request.json()
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      return NextResponse.json({ error: 'The body must be a JSON object' }, { status: 400 })
-    }
-
-    const existing = await prisma.userTradecraftResource.findFirst({
-      where: { id: resourceId, userId: id },
-    })
-    if (!existing) {
-      return NextResponse.json({ error: 'Resource not found' }, { status: 404 })
-    }
-
-    const updateData: Record<string, unknown> = {}
-    for (const field of UPDATABLE_FIELDS) {
-      if (field in body) updateData[field] = body[field]
-    }
-
-    // Preserve masked github token
-    if ('githubTokenOverride' in updateData) {
-      const val = updateData.githubTokenOverride as string
-      if (typeof val === 'string' && val.startsWith('••••')) {
-        updateData.githubTokenOverride = existing.githubTokenOverride
-      }
-    }
-
-    // llmModel is required if explicitly being updated. Empty string would
-    // make the resource unusable, so reject it. Callers that don't touch
-    // llmModel just omit the key - existing value is preserved.
-    if ('llmModel' in updateData) {
-      const val = updateData.llmModel
-      if (typeof val !== 'string' || !val.trim()) {
-        return NextResponse.json(
-          { error: 'llmModel cannot be empty' },
-          { status: 400 }
-        )
-      }
-      if (isLoopModel(val)) {
-        return NextResponse.json({ error: 'Agent in the Loop answers only inside a chat run; pick a provider model for this resource', code: 'loop_model_not_allowed' }, { status: 400 })
-      }
-      updateData.llmModel = val.trim()
-    }
-
-    const updated = await prisma.userTradecraftResource.update({
-      where: { id: resourceId },
-      data: updateData,
-    })
-    return NextResponse.json(maskResource(updated as unknown as Record<string, unknown>))
+    // A URL change starts a job, which names the person: the internal key alone edits nothing.
+    const actor = jobActorOf(await auditActor())
+    if (!actor) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const parsed = await readJsonBody(request)
+    if (parsed instanceof NextResponse) return parsed
+    return await updateResourceV2({ ownerId: id, resourceId, body: parsed.body, actor })
   } catch (error) {
     return internalError(error, 'Failed to update tradecraft resource')
   }
@@ -120,20 +53,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   try {
     const { id, resourceId } = await params
-
     const denied = await requireUserAccess(request, id, { mode: 'write' })
     if (denied) return denied
     const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
     if (selfRefused) return selfRefused
-
-    const existing = await prisma.userTradecraftResource.findFirst({
-      where: { id: resourceId, userId: id },
-    })
-    if (!existing) {
-      return NextResponse.json({ error: 'Resource not found' }, { status: 404 })
-    }
-    await prisma.userTradecraftResource.delete({ where: { id: resourceId } })
-    return NextResponse.json({ success: true })
+    return await removeResourceV2({ ownerId: id, resourceId })
   } catch (error) {
     return internalError(error, 'Failed to delete tradecraft resource')
   }

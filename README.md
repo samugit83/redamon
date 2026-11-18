@@ -631,7 +631,9 @@ A **LangGraph-based autonomous agent** implementing the ReAct pattern. It progre
 | **Intelligence** | **query_graph** | Neo4j graph queries -- primary source of truth for recon data | All | -- |
 | | **web_search** | Internet search via Tavily for CVE details, exploit PoCs, advisories | All | -- |
 | | **cve_intel** | ProjectDiscovery `vulnx` -- structured CVE intelligence aggregating NVD + CISA KEV + EPSS + HackerOne + GitHub PoCs + Nuclei template availability. 69 lucene-filterable fields. Optional PDCP key (per-user, anonymous mode = 10 req/min) | All | network_recon :8000 |
-| | **tradecraft_lookup** | User-curated catalog of trusted security knowledge URLs (HackTricks, PayloadsAllTheThings, CVE PoC repos, vendor blogs) -- 6 auto-detected resource types, sitemap-driven section pick, sqlite+disk cache | Exploit, Post | -- |
+| | **tradecraft_search** | Searches your Tradecraft library (the knowledge sites you added: HackTricks, PayloadsAllTheThings, CVE PoC archives, vendor docs, PDFs) by technique, CVE, product or tool, or browses a resource's tree -- no model call | Exploit, Post | -- |
+| | **tradecraft_lookup** | Reads one section of a library page by its page ID: the stored copy of a Stored resource, or the page live from its site | Exploit, Post | -- |
+| | **tradecraft_ask** | The Tradecraft librarian: for a vague need ("the WAF blocks SLEEP"), searches, reads the promising sections and answers up to three checked pages with exact excerpts, on your *Tradecraft librarian* model | Exploit, Post | -- |
 | | **shodan** | Shodan OSINT -- host details, reverse DNS, device search | Info, Exploit | -- |
 | | **google_dork** | Google dorking via SerpAPI -- exposed files, admin panels, directory listings | Info | -- |
 | **Recon & OSINT** | **execute_subfinder** | Passive subdomain enumeration via OSINT (CT logs, DNS datasets). No traffic to target | Info, Exploit | network_recon :8000 |
@@ -805,6 +807,12 @@ An **LLM-powered Intent Router** classifies user requests into agent skills: CVE
 **On-demand reference injection** via `/skill` command in the agent chat. Chat Skills are tactical reference docs -- tool playbooks, vulnerability guides, framework-specific notes -- that you inject into the agent's context exactly when you need them. Type `/skill ssrf` to load SSRF expertise, or click the skill picker button for a browsable list. **46 reference skills** ship with RedAmon covering vulnerabilities (JWT, OAuth/OIDC, CSRF, race conditions, business logic, prototype pollution, ReDoS, 2FA bypass, LDAP/XPath injection, web cache poisoning, CORS, host header injection, clickjacking, CRLF, and more), tooling (sqlmap, nuclei, ffuf, nmap, httpx, naabu, katana, subfinder, semgrep), protocols (GraphQL, WebSocket, SOAP/WS-Security, SAML), technologies (Firebase, Supabase), frameworks (Next.js, FastAPI, NestJS), Active Directory (kill chain, Kerberoasting/ASREPRoast, AD-CS ESC1-15, BloodHound path-to-DA), cloud (AWS, Azure, GCP), and post-exploitation (Docker escape, Linux / Windows privesc). Unlike Agent Skills (which drive classification and phase-aware workflows), Chat Skills are supplementary context that persists until you change or remove them.
 
 > **[Wiki: Chat Skills](https://github.com/samugit83/redamon/wiki/Chat-Skills)** | **[Community Chat Skills](agentic/skills/)**
+
+### Tradecraft: Your Own Knowledge Library
+
+Add the sites you trust for attack techniques, payloads and PoCs -- wikis, docs sites, GitBooks, GitHub repositories, CVE PoC archives, PDFs, blogs -- in **Global Settings > Tradecraft**, from curated presets or any URL. RedAmon ingests each one in the background: it maps the pages, cards and tags them by topic, content kind and technology, and, for a **Stored** resource, keeps a copy of every page in your database (**Live** resources are read from their site at each read). During an engagement the agent searches the library and reads pages one section at a time with no model call, asks its **librarian** when the need is vague, and gets short **hints** naming relevant pages at key moments of an attack. You choose what each resource keeps (an ingestion focus by topic and content kind), curate its map (pin, block, rename), give a private site its login (used only in your own chats, never shown back), and turn resources off per project.
+
+> **[Wiki: Tradecraft Lookup](https://github.com/samugit83/redamon/wiki/Tradecraft-Lookup)** | **[Technical reference](docs/readmes/README.TRADECRAFT.md)**
 
 ### Plugins: Extend RedAmon Without Forking It
 

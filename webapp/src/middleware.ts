@@ -39,7 +39,8 @@ const TOKEN_AUTH_PREFIXES = ['/api/plugin-gateway/v1/', '/api/plugin-runner/v1/'
 const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: /^\/api\/users\/[^/]+\/llm-providers$/ },
   { method: 'GET', pattern: /^\/api\/users\/[^/]+\/settings$/ },
-  { method: 'GET', pattern: /^\/api\/users\/[^/]+\/tradecraft-resources$/ },
+  // The run's tradecraft catalog (lib/tradecraft/catalog.ts); the route re-checks the key.
+  { method: 'GET', pattern: /^\/api\/internal\/agent\/tradecraft\/catalog$/ },
   { method: 'GET', pattern: /^\/api\/projects\/[^/]+$/ },
   { method: 'ANY', pattern: /^\/api\/internal\/codefix-sandbox\// },
   // Agent-driven one-shot GuardDog (execute_guarddog, L3): X-Internal-Key

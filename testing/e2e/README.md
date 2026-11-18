@@ -46,3 +46,11 @@ is reachable.
 - `filtersSynthetic.spec.ts` - the same journey with the analytics API stubbed,
   so all 19 pages are really rendered, filtered, reloaded and re-checked
   regardless of project data.
+- `tradecraftSettings.spec.ts`, `tradecraftProjects.spec.ts`, `tradecraftMap.spec.ts` -
+  Tradecraft in Global Settings (Configure ingestion, a card's stale badge and report, the
+  delete confirmation), in a project (the per-project switches, the drawer's window, the counter
+  badge) and the Map view (search, block all matching, unblock, restore a dropped page, the
+  accordion's read-only Pages, and no answer carrying the fake site login).
+  They run on synthetic accounts and resources written straight into the database by
+  `webapp/scripts/e2e-tradecraft-seed.mjs` (removed by `e2e-tradecraft-cleanup.mjs`): no agent
+  and no site is reached. Each file's header has its command.

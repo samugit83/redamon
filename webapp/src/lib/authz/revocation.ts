@@ -44,6 +44,7 @@ import { now } from './clock'
 import { rbacFlags } from './flags'
 import { queuedJobPermissions } from './queuedJobPermissions'
 import { actorScanRefusal, actorScanRefusalReason, noticeSchedulePaused, type ActorScanRefusal } from './scanActor'
+import { cancelUserTradecraftJobs } from '@/lib/tradecraft/deleteCleanup'
 
 /** What ended the person's access to one project. */
 export type ProjectReduction =
@@ -60,6 +61,7 @@ export type AccessReducedReason = ProjectReduction | AccountReduction
 
 export type RevocationStep =
   | 'stop_runs' | 'close_sockets' | 'cancel_queued_scans' | 'pause_schedules' | 'stop_triage_run' | 'stop_navigator_runs'
+  | 'cancel_tradecraft_jobs'
 
 export type Counted<K extends string> = { [P in K]: number } | { error: string }
 
@@ -73,6 +75,8 @@ export interface LiveWorkStopped {
   triage?: Counted<'stopped'>
   /** AI Navigator answers being written, ended in every plan (a stream outlives its login like a socket). */
   navigator?: Counted<'stopped'>
+  /** The account's Tradecraft ingestion jobs flagged as cancelled; absent when the plan keeps them. */
+  tradecraft?: Counted<'cancelled'>
   /** The steps that failed, each logged. */
   failed: RevocationStep[]
 }
@@ -91,10 +95,15 @@ interface Plan {
   triage: boolean
   /** The account's own impersonations as an admin end: every caller that ends its sessions. */
   endImpersonations: boolean
+  /**
+   * The account's own Tradecraft ingestion jobs stop (D-10): its library is its own, so only an
+   * account that can no longer act (disabled, deleted) loses them; a share's loss touches none.
+   */
+  tradecraftJobs: boolean
 }
 
-const PROJECT: Plan = { stopRuns: true, closeScope: 'access', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false }
-const SESSIONS: Plan = { stopRuns: false, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: false, triage: false, endImpersonations: true }
+const PROJECT: Plan = { stopRuns: true, closeScope: 'access', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: false }
+const SESSIONS: Plan = { stopRuns: false, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: false, triage: false, endImpersonations: true, tradecraftJobs: false }
 
 export const PLANS: Readonly<Record<AccessReducedReason, Readonly<Plan>>> = Object.freeze({
   share_revoked: PROJECT,
@@ -105,11 +114,11 @@ export const PLANS: Readonly<Record<AccessReducedReason, Readonly<Plan>>> = Obje
   consent_withdrawn: PROJECT,
   // The owner turned "AI Navigator for collaborators" off: only the Navigator step, no agent run,
   // socket or scan of the collaborator is touched.
-  navigator_disallowed: { stopRuns: false, closeScope: 'access', kinds: [], deferredScans: false, triage: false, endImpersonations: false },
-  account_disabled: { ...SESSIONS, stopRuns: true },
+  navigator_disallowed: { stopRuns: false, closeScope: 'access', kinds: [], deferredScans: false, triage: false, endImpersonations: false, tradecraftJobs: false },
+  account_disabled: { ...SESSIONS, stopRuns: true, tradecraftJobs: true },
   // The user DELETE ends a deleted admin's impersonations itself, closing what they opened.
-  account_deleted: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false },
-  capability_removed: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: true },
+  account_deleted: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: true },
+  capability_removed: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: true, tradecraftJobs: false },
   sessions_revoked: SESSIONS,
   credentials_reset: SESSIONS,
   reset_link_used: SESSIONS,
@@ -325,13 +334,17 @@ export async function onAccessReduced(
     out.schedules = await attempt('pause_schedules', 'paused', () => pauseSchedules(userId, projectId, reason, refused))
   }
   if (plan.triage) out.triage = await attempt('stop_triage_run', 'stopped', () => stopTriageRuns(userId, projectId, ownerId))
+  if (plan.tradecraftJobs) {
+    const { flagged } = await cancelUserTradecraftJobs(userId)
+    out.tradecraft = typeof flagged === 'number' ? { cancelled: flagged } : fail('cancel_tradecraft_jobs', flagged.error)
+  }
 
   const n = (c: Counted<string> | undefined) => (c && !('error' in c) ? Object.values(c)[0] : 0)
-  const total = n(out.runs) + n(out.sockets) + n(out.scans) + n(out.schedules) + n(out.triage) + n(out.navigator)
+  const total = n(out.runs) + n(out.sockets) + n(out.scans) + n(out.schedules) + n(out.triage) + n(out.navigator) + n(out.tradecraft)
   if (total > 0) {
     console.info(
       `[rbac] revocation ${where} runs=${n(out.runs)} sockets=${n(out.sockets)} scans=${n(out.scans)} `
-      + `schedules=${n(out.schedules)} triage=${n(out.triage)} navigator=${n(out.navigator)}`
+      + `schedules=${n(out.schedules)} triage=${n(out.triage)} navigator=${n(out.navigator)} tradecraft=${n(out.tradecraft)}`
       + `${out.failed.length ? ` failed=${out.failed.join(',')}` : ''}`,
     )
   }

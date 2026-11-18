@@ -1,8 +1,9 @@
 """Unit + regression tests for _build_llm_for_user / _pick_custom_provider.
 
-Covers the bug where the Tradecraft verify endpoint hardcoded the
-default model (claude-opus-4-6) even when the user had configured an
-OpenAI-compatible custom provider — crashing with
+Covers the bug where an out-of-run endpoint (the 1.x Tradecraft verify, gone since
+the cut-over, T9.2; the guardrail today) hardcoded the default model
+(claude-opus-4-6) even when the user had configured an OpenAI-compatible custom
+provider — crashing with
 ``LLM not configured: Anthropic API key is required for model 'claude-opus-4-6'``.
 
 These tests do NOT instantiate real LLM clients; they patch

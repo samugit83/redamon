@@ -246,49 +246,12 @@ class AgentOrchestrator:
         """
         apply_project_settings(self, project_id)
 
-        if self._tradecraft_manager and self.tool_executor:
-            # The tradecraft tool stays permanently registered on the executor
-            # (get_tool no longer swapped per turn, which raced). Per session we
-            # only bind this project's resources + prompt catalog; a disabled
-            # project clears its own resources so the always-registered tool
-            # returns "resource not configured".
-            if get_setting('TRADECRAFT_TOOL_ENABLED', True):
-                self._tradecraft_manager.set_resources(get_setting('TRADECRAFT_RESOURCES', []) or [])
-                self._tradecraft_manager.section_picker_llm = self._build_section_picker_llm()
-                # tier2_threshold_bytes / fetch_timeout / default_ttl are read per
-                # session at use-time from the task-isolated TRADECRAFT_* settings.
-                # Swap this session's per-resource catalog into the prompt (overlay).
-                from prompts.tool_registry import swap_tradecraft_entry
-                swap_tradecraft_entry(self._tradecraft_manager.build_registry_entry())
-                logger.info(
-                    f"Tradecraft Lookup: {len(self._tradecraft_manager._resources)} resources"
-                )
-            else:
-                self._tradecraft_manager.set_resources([])
-                from prompts.tool_registry import pop_tradecraft_entry
-                pop_tradecraft_entry()
-
-    def _build_section_picker_llm(self):
-        """This session's "Tradecraft section picker" LLM, or None.
-
-        Read from the task-isolated USER_SETTINGS / USER_LLM_PROVIDERS, never
-        another run's. None means no model is set or it cannot be built, and the
-        picker then chooses the page by text match.
-        """
-        from feature_models import feature_model
-        user_settings = get_setting('USER_SETTINGS', {}) or {}
-        model = feature_model(user_settings, 'tradecraft_section_picker')
-        if not model:
-            return None
-        try:
-            from llm_builder import build_llm_from_providers
-            providers = get_setting('USER_LLM_PROVIDERS', []) or []
-            return build_llm_from_providers(model, providers)
-        except Exception as e:                                    # noqa: BLE001
-            logger.warning(
-                f"Section picker model {model} could not be built "
-                f"({e.__class__.__name__}); pages are picked by text match")
-            return None
+        # Tradecraft 2.0 (T9.2): the run's catalog binds the library and its registry entries to
+        # this task; nothing bound (no catalog) offers no tradecraft tool. Read from this task's
+        # settings only: the catalog carries secrets.
+        from tradecraft.runtime import bind_run_catalog
+        import project_settings as _ps
+        bind_run_catalog((_ps._settings_ctx.get() or {}).get('TRADECRAFT_CATALOG'))
 
     # =========================================================================
     # TOOLS & GRAPH SETUP
@@ -347,25 +310,14 @@ class AgentOrchestrator:
         self._google_dork_manager = GoogleDorkToolManager()
         google_dork_tool = self._google_dork_manager.get_tool()
 
-        # Setup Tradecraft Lookup tool (resources resolved later via _apply_project_settings).
-        # get_tool() returns None until at least one enabled resource is loaded.
-        from orchestrator_helpers.tradecraft_lookup import TradecraftLookupManager
-        self._tradecraft_manager = TradecraftLookupManager(mcp_manager=mcp_manager)
-        # Tool starts as None; orchestrator hot-swaps it once resources load.
-        tradecraft_tool = self._tradecraft_manager.get_tool()
-        # Strip the registry entry until resources are loaded so the
-        # baseline empty entry doesn't reach the system prompt.
-        from prompts.tool_registry import pop_tradecraft_entry
-        pop_tradecraft_entry()
-
-        # Stash the MCP manager so the /tradecraft/verify HTTP endpoint can reach it.
+        # The tradecraft jobs and synchronous routes reach the sandbox browser through it
+        # (tradecraft.jobs._agent_mcp_manager).
         self._mcp_manager = mcp_manager
 
         # Create phase-aware tool executor
         self.tool_executor = PhaseAwareToolExecutor(
             mcp_manager, graph_tool, web_search_tool,
             shodan_tool, google_dork_tool,
-            tradecraft_tool,
             graph_schema_tool=graph_schema_tool,
             graph_summary_tool=graph_summary_tool,
         )

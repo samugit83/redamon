@@ -23,7 +23,7 @@ import {
 } from './llmFeatures'
 
 describe('registry', () => {
-  test('the ten features, in the grid order', () => {
+  test('the ten features, in the grid order (the 1.x section picker left at the cut-over, R-401)', () => {
     expect(FEATURE_IDS).toEqual([
       'triage',
       'codefix',
@@ -33,7 +33,7 @@ describe('registry', () => {
       'preset_generator',
       'command_whisperer',
       'navigator',
-      'tradecraft_section_picker',
+      'tradecraft_librarian',
       'skill_metadata',
     ])
     expect(LLM_FEATURES.map(f => f.label)).toEqual([
@@ -45,7 +45,7 @@ describe('registry', () => {
       'Recon preset generator',
       'Command whisperer',
       'AI Navigator',
-      'Tradecraft section picker',
+      'Tradecraft librarian',
       'Skill names & descriptions',
     ])
   })
@@ -74,6 +74,29 @@ describe('registry', () => {
 
   test('the max model length is 200', () => {
     expect(FEATURE_MODEL_MAX_LEN).toBe(200)
+  })
+})
+
+describe('the Tradecraft librarian (Q10, T7.1)', () => {
+  test('librarian: its label, description and where else it is edited; no fallback model', () => {
+    expect(getLlmFeature('tradecraft_librarian')).toEqual({
+      id: 'tradecraft_librarian',
+      label: 'Tradecraft librarian',
+      description: 'Finds and checks library pages for vague needs while the agent works.',
+      hint: expect.any(String),
+      alsoEditedIn: ['Settings → Tradecraft', 'Configure search'],
+      excludeModelPrefixes: [],
+    })
+  })
+
+  test('librarian_hint: the tile text of Q10', () => {
+    expect(getLlmFeature('tradecraft_librarian').hint).toBe(
+      'A small or mid-size fast model is enough, but it must follow instructions well: it judges which section answers the need and quotes it exactly. It runs while the agent waits, so speed matters more than size.')
+  })
+
+  test('loop_model_refused_for_librarian: Agent in the Loop answers only inside a chat run', () => {
+    expect(modelAllowedForFeature('tradecraft_librarian', 'loop/mcp')).toBe(false)
+    expect(modelAllowedForFeature('tradecraft_librarian', 'gpt-4o-mini')).toBe(true)
   })
 })
 

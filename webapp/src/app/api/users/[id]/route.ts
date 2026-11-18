@@ -32,6 +32,7 @@ import { reassignConversationsOfDeletedAuthor } from '@/lib/authz/conversationAc
 import { onAccessReduced } from '@/lib/authz/revocation'
 import { deletionWizardOff, endDeletedAccountWork, resolveSharedProjects, unresolvedResponse } from '@/lib/authz/userDeletion'
 import type { Session } from '@/lib/session'
+import { cancelUserTradecraftJobs } from '@/lib/tradecraft/deleteCleanup'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -590,6 +591,10 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     // each project's owner with the former author kept (T24, step 5.8; write switch on), before the
     // account row whose cascade would delete them. In the delete's transaction, so a deletion
     // that fails leaves both with their owner.
+    // Its Tradecraft ingestion jobs stop before the row goes, whatever the switches (R-208); the
+    // delete does not wait for them, and a job that ends late finds nothing left to write.
+    await cancelUserTradecraftJobs(id)
+
     let conversationsReassigned: number | null = null
     const deleteAccount = async (tx: Prisma.TransactionClient) => {
       const { count } = await tx.nucleiTemplate.updateMany({

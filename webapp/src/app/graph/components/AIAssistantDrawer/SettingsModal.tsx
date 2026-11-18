@@ -5,6 +5,7 @@ import { X, Loader2, AlertCircle } from 'lucide-react'
 import { AgentBehaviourSection } from '@/components/projects/ProjectForm/sections/AgentBehaviourSection'
 import { AttackSkillsSection } from '@/components/projects/ProjectForm/sections/AttackSkillsSection'
 import { ToolMatrixSection } from '@/components/projects/ProjectForm/sections/ToolMatrixSection'
+import { TAB_LABEL_V2, useTradecraftV2 } from '@/components/projects/ProjectForm/sections/TradecraftResourcesAccordion'
 import type { ProjectFormData } from './hooks/useSettingsModal'
 import { useDetectedHostIp } from '@/hooks/useDetectedHostIp'
 import styles from './AIAssistantDrawer.module.css'
@@ -31,6 +32,8 @@ export function SettingsModal({
   // Suggested LHOST for the Agent Behaviour form (issue #180). Fetch only while the
   // agent modal is open; refetches each open so it tracks the last `redamon.sh up`.
   const detectedHostIp = useDetectedHostIp(settingsModal === 'agent')
+  // The window takes the new name once the project's tradecraft view has loaded (§3.4).
+  const tradecraftV2 = useTradecraftV2(settingsModal === 'attack' ? projectId ?? null : null)
   if (!settingsModal) return null
 
   return (
@@ -38,7 +41,7 @@ export function SettingsModal({
       <div className={styles.settingsModal} onClick={e => e.stopPropagation()}>
         <div className={styles.settingsModalHeader}>
           <h2 className={styles.settingsModalTitle}>
-            {settingsModal === 'agent' ? 'Agent Behaviour' : settingsModal === 'toolmatrix' ? 'Tool Matrix' : 'Agent Skills'}
+            {settingsModal === 'agent' ? 'Agent Behaviour' : settingsModal === 'toolmatrix' ? 'Tool Matrix' : tradecraftV2 ? TAB_LABEL_V2 : 'Agent Skills'}
           </h2>
           <button className={styles.settingsModalClose} onClick={() => setSettingsModal(null)}>
             <X size={16} />
@@ -51,7 +54,7 @@ export function SettingsModal({
             ) : settingsModal === 'toolmatrix' ? (
               <ToolMatrixSection data={projectFormData} updateField={updateProjectField} />
             ) : (
-              <AttackSkillsSection data={projectFormData} updateField={updateProjectField} projectId={projectId} />
+              <AttackSkillsSection data={projectFormData} updateField={updateProjectField} projectId={projectId} inDrawer />
             )
           ) : loadError ? (
             <div role="alert" style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', padding: '2rem', color: 'var(--status-error, #ef4444)' }}>

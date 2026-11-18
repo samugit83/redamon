@@ -1,0 +1,23 @@
+[
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/xss/README.md",
+    "name": "README.md",
+    "path": "xss/README.md",
+    "size": 28,
+    "type": "file"
+  },
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/xss/filters.yml",
+    "name": "filters.yml",
+    "path": "xss/filters.yml",
+    "size": 48,
+    "type": "file"
+  },
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/xss/polyglots.md",
+    "name": "polyglots.md",
+    "path": "xss/polyglots.md",
+    "size": 74,
+    "type": "file"
+  }
+]

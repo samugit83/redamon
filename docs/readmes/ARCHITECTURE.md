@@ -73,6 +73,7 @@ flowchart TB
     Agent -->|API| OpenRouter
     Agent -->|API| Bedrock
     Agent --> Neo4j
+    Agent -->|Tradecraft page store| Postgres
     Agent -->|MCP Protocol| NetworkRecon
     Agent -->|MCP Protocol| Nuclei
     Agent -->|MCP Protocol| Metasploit
@@ -430,6 +431,35 @@ sequenceDiagram
     Agent->>Agent: Analyze Results
     Agent-->>User: "Found ports 22, 80, 443..."
 ```
+
+## Tradecraft Library
+
+Each account keeps a library of knowledge sites (Global Settings → Tradecraft). The webapp writes the resources and
+starts an ingestion job on the agent; the agent's job runner (`agentic/tradecraft/jobs.py`, 2 jobs per copy) maps the
+site, cards and tags its pages and, for a Stored resource, keeps their text, writing straight to Postgres (its own pool
+of at most 5 connections). During a chat the agent reads the library through three tools that call no model except the
+librarian: `tradecraft_search`, `tradecraft_lookup` (one section of one page) and `tradecraft_ask` (the librarian, on
+the owner's *Tradecraft librarian* model). Every read is keyed by the run's owner and its catalog, which the webapp
+answers at the run's start.
+
+```mermaid
+sequenceDiagram
+    participant Webapp
+    participant Agent as Agent (job runner)
+    participant Site as Resource site
+    participant PG as PostgreSQL
+    participant Run as Agent (chat run)
+
+    Webapp->>PG: resource row, job row, claim
+    Webapp->>Agent: POST /tradecraft/v2/jobs
+    Agent->>Site: fetch pages (plain requests guarded per hop, the browser by its guard script)
+    Agent->>PG: new generation (entries, sections, tree), then swap
+    Run->>Webapp: GET /api/internal/agent/tradecraft/catalog
+    Run->>PG: tradecraft_search / tradecraft_lookup (keyed by owner)
+    Run->>Site: a Live page, read on demand
+```
+
+See [README.TRADECRAFT.md](README.TRADECRAFT.md).
 
 ## Agent in the Loop (an External Brain)
 

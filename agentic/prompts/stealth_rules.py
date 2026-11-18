@@ -4,6 +4,9 @@ RedAmon Stealth Mode Rules
 Comprehensive stealth constraints injected into the agent system prompt
 when STEALTH_MODE is enabled. Prepended BEFORE the main REACT_SYSTEM_PROMPT
 to establish maximum priority.
+
+The Tradecraft tools' section is added by ``stealth_mode_rules`` only in a run that offers them:
+a run with no Tradecraft resource sees no Tradecraft text at all.
 """
 
 
@@ -38,11 +41,6 @@ stop and inform the user honestly — do NOT proceed with noisy techniques.
 - Passive query against the ProjectDiscovery vulnx API. Sends NO traffic to the pentest target.
 - Returns structured CVE intelligence (NVD + CISA KEV + EPSS + PoC + Nuclei template availability).
 - Use freely in all allowed phases for CVE triage and exploit prioritization.
-
-### tradecraft_lookup — NO RESTRICTIONS
-- Fetches curated third-party knowledge sites (HackTricks, PayloadsAllTheThings, CVE PoC repos, ...) configured in the user's Global Settings.
-- Never sends traffic to the pentest target. All requests go to the user-trusted resource hosts.
-- Use freely whenever you need a specific exploitation technique, payload, or CVE PoC.
 
 ### execute_jsluice -- NO RESTRICTIONS
 - Passive local file analysis only. No network traffic. Use freely.
@@ -249,3 +247,17 @@ STEALTH RISK: LOW|MEDIUM|HIGH — [brief justification]
 
 If STEALTH RISK is HIGH, you MUST explain why there is no lower-risk alternative before proceeding.
 """
+
+
+# The library's section goes right before this one, where it sat when it was static.
+_TRADECRAFT_SECTION_BEFORE = "### execute_jsluice -- NO RESTRICTIONS"
+
+
+def stealth_mode_rules() -> str:
+    """The stealth rules of this run: with the Tradecraft tools' section when the run offers them."""
+    from tradecraft.overlay import stealth_section
+
+    section = stealth_section()
+    if not section:
+        return STEALTH_MODE_RULES
+    return STEALTH_MODE_RULES.replace(_TRADECRAFT_SECTION_BEFORE, f"{section}\n\n{_TRADECRAFT_SECTION_BEFORE}", 1)

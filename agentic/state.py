@@ -729,6 +729,15 @@ class FireteamMemberState(TypedDict):
     _input_tokens_this_turn: int
     _output_tokens_this_turn: int
 
+    # Tradecraft 2.0 per-run counters and pages, the same fields as AgentState: the Fireteam
+    # deploy node seeds them from the run and merges them back, so members count against the
+    # run's limits (TD-13, tradecraft/run_state.py).
+    tradecraft_seen_pages: List[str]
+    tradecraft_ask_count: int
+    tradecraft_hint_count: int
+    tradecraft_hint_log: List[dict]
+    tradecraft_run_key: Optional[str]
+
 
 class LLMDecision(BaseModel):
     """
@@ -1205,6 +1214,21 @@ class AgentState(TypedDict):
     # LATS_RESET_DEBOUNCE, so transient jitter (a one-turn blank/oscillation in
     # phase/skill/target) never falsely resets a healthy tree.
     _lats_reset_streak: Optional[int]
+
+    # Tradecraft 2.0 (Q6, TD-13): the library pages already read or suggested in this run,
+    # and the run's librarian questions and hints, with the hints' log. Saved with the
+    # checkpoint so approvals, answers and confirmations resume them, and shared by plan
+    # waves and Fireteam members. No reducer: the node that ran the tools writes the full
+    # merged values from tradecraft/run_state.py (an additive reducer would count again
+    # what an earlier step wrote). tradecraft_run_key names the run the values belong to
+    # (the objective of the message), so a new message starts from empty values. A
+    # checkpoint from before them has none: readers use run_state.bind, which reads a
+    # missing field as empty or zero.
+    tradecraft_seen_pages: List[str]
+    tradecraft_ask_count: int
+    tradecraft_hint_count: int
+    tradecraft_hint_log: List[dict]
+    tradecraft_run_key: Optional[str]
 
 
 # A request the agent raises starts with no answer. An answer stored before it (a stray one,

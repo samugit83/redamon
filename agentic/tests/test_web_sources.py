@@ -4,27 +4,56 @@ from __future__ import annotations
 import io
 import unittest
 
-from orchestrator_helpers import tradecraft_lookup as tl
 from orchestrator_helpers import web_sources as ws
+from tradecraft.ingest import builders, crawl, fetch
 
 
 class SharedObjects(unittest.TestCase):
     def test_tradecraft_names_are_the_shared_objects(self):
-        pairs = {
-            "_GITHUB_TOKEN_HOSTS": "GITHUB_TOKEN_HOSTS",
-            "_url_host": "url_host",
-            "_is_github_token_url": "is_github_token_url",
-            "_rewrite_github_url": "rewrite_github_url",
-            "_split_github_url": "split_github_url",
-            "_prefer_english": "prefer_english",
-            "_html_to_markdown": "html_to_markdown",
-            "_extract_pdf_pages": "extract_pdf_pages",
-            "PDF_MAX_PAGES": "PDF_MAX_PAGES",
-            "parse_sitemap_xml": "parse_sitemap_xml",
-            "resolve_link": "resolve_link",
-        }
-        for old, new in pairs.items():
-            self.assertIs(getattr(tl, old), getattr(ws, new), old)
+        # Tradecraft 1.x re-exported these under its own names until the cut-over (T9.2); its 2.0
+        # modules import the shared objects themselves.
+        pairs = [
+            (fetch, "url_host"), (fetch, "is_github_token_url"), (fetch, "rewrite_github_url"),
+            (fetch, "html_to_markdown"), (builders, "split_github_url"), (builders, "prefer_english"),
+            (builders, "parse_sitemap_xml"), (builders, "resolve_link"), (crawl, "resolve_link"),
+        ]
+        for module, name in pairs:
+            self.assertIs(getattr(module, name), getattr(ws, name), f"{module.__name__}.{name}")
+
+
+class SplitGithubUrl(unittest.TestCase):
+    """Owner/repo parsing (issue #153), moved from the 1.x lookup tests when they left (T9.2): the
+    function is still the title match's and the GitHub builder's."""
+
+    def test_plain_repo_and_suffix(self):
+        self.assertEqual(ws.split_github_url("https://github.com/pallets/flask"), ("pallets", "flask"))
+        self.assertEqual(ws.split_github_url("https://github.com/redamon/redamon.git"), ("redamon", "redamon"))
+
+    def test_names_ending_in_stripped_letters_are_kept(self):
+        for url, want in [("https://github.com/streamlit/streamlit", ("streamlit", "streamlit")),
+                          ("https://github.com/projectdiscovery/nuclei", ("projectdiscovery", "nuclei")),
+                          ("https://github.com/spring-projects/spring", ("spring-projects", "spring"))]:
+            self.assertEqual(ws.split_github_url(url), want, url)
+
+    def test_a_repo_of_stripped_letters_only_is_not_emptied(self):
+        self.assertEqual(ws.split_github_url("https://github.com/git/git"), ("git", "git"))
+
+    def test_only_one_dot_git_suffix_is_stripped(self):
+        self.assertEqual(ws.split_github_url("https://github.com/owner/digit.git"), ("owner", "digit"))
+
+    def test_trailing_slash_and_subpath(self):
+        self.assertEqual(ws.split_github_url("https://github.com/owner/routing/tree/main"), ("owner", "routing"))
+        self.assertEqual(ws.split_github_url("https://github.com/owner/routing/"), ("owner", "routing"))
+
+    def test_http_scheme_accepted(self):
+        self.assertEqual(ws.split_github_url("http://github.com/owner/digit"), ("owner", "digit"))
+
+    def test_non_github_url_returns_none(self):
+        self.assertIsNone(ws.split_github_url("https://gitlab.com/owner/repo"))
+        self.assertIsNone(ws.split_github_url("https://example.com/owner/repo"))
+
+    def test_owner_never_truncated(self):
+        self.assertEqual(ws.split_github_url("https://github.com/digit/flask"), ("digit", "flask"))
 
 
 class GithubUrls(unittest.TestCase):

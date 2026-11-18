@@ -13,15 +13,14 @@ from typing import Optional
 # load, so a subsequent load can remove them cleanly before applying the new set.
 _mcp_injected_keys: set = set()
 
-# Per-session tradecraft catalog. The `tradecraft_lookup` registry entry is the
-# per-PROJECT resource catalog rendered into the system prompt, so it must NOT be
-# stored on the shared global dict (concurrent projects raced, leaking one
-# project's catalog into another's prompt). It is bound to the current asyncio
-# task via this ContextVar; prompt builders read the merged view (visible_registry).
-# Default None == no tradecraft entry, and visible_registry() then returns the
-# global dict unchanged (byte-identical to the pre-overlay behaviour).
-_tradecraft_overlay: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
-    "tradecraft_overlay", default=None
+# Per-session tradecraft entries ({tool name: entry}): the `tradecraft_*` registry entries
+# render the run's own resource catalog into the system prompt, so they must NOT be stored on
+# the shared global dict (concurrent projects raced, leaking one project's catalog into
+# another's prompt). They are bound to the current asyncio task via this ContextVar; prompt
+# builders read the merged view (visible_registry). Default None == no tradecraft entry, and
+# visible_registry() then returns the global dict unchanged.
+_tradecraft_v2_overlay: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "tradecraft_v2_overlay", default=None
 )
 
 # Serialises mutations (apply / remove) so concurrent fireteam reads never
@@ -1010,60 +1009,42 @@ TOOL_REGISTRY = {
 }
 
 # =========================================================================
-# Tradecraft Lookup (dynamic registry entry)
+# Tradecraft (dynamic registry entries)
 # =========================================================================
 #
-# The tradecraft_lookup tool's description is rebuilt at runtime from the
-# user's enabled tradecraft resources (see TradecraftLookupManager.build_registry_entry).
-# `swap_tradecraft_entry()` is called from the orchestrator's
-# `_apply_project_settings()` after resources are loaded.
-#
-# When zero resources: the entry is removed via `pop_tradecraft_entry()` so the
-# agent does not see a registry entry that promises capabilities the tool
-# cannot deliver.
+# The tradecraft entries are rebuilt for each run from its catalog
+# (`tradecraft.overlay.build_entries`, bound by `tradecraft.runtime.bind_run_catalog`).
+# A run with no catalog has none, so the agent never sees an entry that promises
+# capabilities the tools cannot deliver.
 
-def swap_tradecraft_entry(rich_entry: dict) -> None:
-    """Bind this session's per-resource tradecraft catalog to the current task.
-
-    `rich_entry` must contain keys: purpose, when_to_use, args_format, description.
-    Empty dict -> no tradecraft entry for this session.
-
-    Per-session (ContextVar) rather than a global mutation, so concurrent
-    projects never leak each other's resource catalog into the prompt.
-    """
-    _tradecraft_overlay.set(rich_entry or None)
-
-
-def pop_tradecraft_entry() -> None:
-    _tradecraft_overlay.set(None)
+def swap_tradecraft_v2_entries(entries): _tradecraft_v2_overlay.set(dict(entries) if entries else None)
 
 
 def visible_registry() -> dict:
     """The tool registry as the CURRENT session sees it: the shared/global
     registry (built-ins + startup web_search swap + MCP-injected entries) with
-    this task's `tradecraft_lookup` catalog merged in.
+    this task's tradecraft entries merged in.
 
-    Returns the global dict object unchanged when no tradecraft overlay is set,
-    so the default path is byte-identical to the pre-overlay behaviour. When an
-    overlay is set, `tradecraft_lookup` is inserted just before the first
-    MCP-injected entry (or appended when there are none) to preserve the
-    historical tool order [built-ins, tradecraft, mcp] and thus prompt-prefix
-    stability.
+    Returns the global dict object unchanged when no tradecraft entry is set,
+    so the default path is byte-identical to the pre-overlay behaviour. When
+    entries are set, they are inserted just before the first MCP-injected entry
+    (or appended when there are none) to preserve the historical tool order
+    [built-ins, tradecraft, mcp] and thus prompt-prefix stability.
     """
-    tc = _tradecraft_overlay.get()
-    if not tc:
+    entries = _tradecraft_v2_overlay.get()
+    if not entries:
         return TOOL_REGISTRY
     merged: dict = {}
     inserted = False
     for name, info in TOOL_REGISTRY.items():
-        if name == "tradecraft_lookup":
+        if name in entries or name == "tradecraft_lookup":
             continue  # overlay is authoritative; never duplicate a stale global one
         if not inserted and name in _mcp_injected_keys:
-            merged["tradecraft_lookup"] = tc
+            merged.update(entries)
             inserted = True
         merged[name] = info
     if not inserted:
-        merged["tradecraft_lookup"] = tc
+        merged.update(entries)
     return merged
 
 

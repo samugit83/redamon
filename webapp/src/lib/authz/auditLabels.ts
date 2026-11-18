@@ -139,6 +139,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'workspace.upload': 'Uploaded files to the workspace',
     'workspace.import': 'Imported a link into the workspace',
     'workspace.resync': 'Refreshed a workspace import',
+    'tradecraft.v2_switched': 'Turned Tradecraft 2.0 on or off',
+    'tradecraft.credentials_changed': "Changed a Tradecraft resource's site login",
   }),
   ...g('mcp', {
     'mcp.auth.denied': 'An MCP request was refused at sign-in',
@@ -267,6 +269,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'system.user_skill_toggles_backfill': 'Attack skill toggles set at the upgrade',
     'system.jev_provider_selection_cutoff': 'Model provider choice cut-off recorded',
     'system.jev_provider_selection_backfill': 'Model provider choices set at the upgrade',
+    'system.tradecraft_phases_cutoff': 'Tradecraft phases cut-off recorded',
+    'system.tradecraft_phases_backfill': 'Tradecraft tools moved to every phase at the upgrade',
   }),
 })
 

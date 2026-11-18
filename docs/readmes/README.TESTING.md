@@ -493,6 +493,49 @@ real services and skip in the gate. Run them after touching the engine
 | the sweep's real Cypher: keyset paging, the guard re-check in the mute write, tenant scoping, `updated_at` never touched (`tests/test_node_filters_graph_live.py`) | Neo4j | the command in the file's docstring (agent image, on `redamon-network`) |
 | one live apply per project, decided by Postgres's serializable transaction (`webapp/src/lib/nodeFilterRun.integration.test.ts`) | Postgres | set `DATABASE_URL`; the command is in the file's header |
 
+### Tradecraft
+
+Tradecraft ([README.TRADECRAFT.md](README.TRADECRAFT.md)) is tested at four levels:
+
+| Layer | Where | Tier |
+|---|---|---|
+| Agent units: ingestion stages, search, reading, the librarian, hints, the job runner, the conversion | `agentic/tests/test_tradecraft_*.py`, on doubles: the web through `tradecraft_doubles.py` (`FixtureFetcher`, the generated fixture sites of `fixtures/tradecraft_sites/`), the page store through `tradecraft_memory_store.py`, the clock through `tradecraft/clock.py` (`FakeClock`), a scripted fake model | unit |
+| Contracts | `agentic/tests/fixtures/tradecraft_contract/` (valid and invalid bodies, `enums.json`) parsed by `test_tradecraft_contract.py` and by the webapp's `agentContract` tests; the web double and the real `GuardedFetcher` held to one behaviour (`test_tradecraft_fetcher_contract*.py`, the integration half against a local `http.server`) | unit / integration |
+| Webapp: routes, the field parsers, the catalog, the screens | `webapp/src/lib/tradecraft`, `src/app/api/users/[id]/tradecraft-resources`, `src/components/settings/tradecraft`, on the in-memory Prisma double `src/lib/tradecraft/__testing__/tradecraftDb.ts` and the agent double `agentDouble.ts` | vitest |
+| Postgres: the page store's statements, search, the swap, claims, the conversion | `agentic/tests/test_tradecraft_*_integration.py`, `webapp/src/**/*.pg.integration.test.ts` | integration (skip without their database) |
+
+The Postgres files run on a disposable database, never on the stack's:
+
+```bash
+tooling/scripts/tradecraft_pg_testdb.sh up        # start (or reuse) redamon-tc-pgtest, 127.0.0.1 only
+tooling/scripts/tradecraft_pg_testdb.sh push      # push webapp/prisma/schema.prisma into the template
+TC_PG_DB=tc_mine tooling/scripts/tradecraft_pg_testdb.sh db                     # your own copy of the template
+TC_PG_DB=tc_mine tooling/scripts/tradecraft_pg_testdb.sh agent tests/test_tradecraft_store_integration.py
+TC_PG_DB=tc_mine tooling/scripts/tradecraft_pg_testdb.sh web src/lib/tradecraft/curation.pg.integration.test.ts
+tooling/scripts/tradecraft_pg_testdb.sh down      # remove the container and its state file
+```
+
+`up`, `push` and `reset` are heavy (one at a time); each copy made with `db` is a database of its own, so several
+people or sessions can run at once. The password lives in a mode-600 state file outside the repository and reaches the
+tests through their environment only.
+
+Two measurements run by hand: the search measurement (`agentic/tests/test_tradecraft_eval_integration.py`, 100
+questions over a fixed corpus, on the harness) and `tooling/scripts/tradecraft_store_perf.sh` (the page store at
+volume). **The end-to-end matrix** (`tooling/scripts/tradecraft_e2e/README.md`) attacks two Tradecraft labs
+(`testing/guinea_pigs/tc_sqli_pg_waf`, `tc_ssrf_metadata`) and the older labs with the library on, off and in Search
+only, in parallel lanes, and checks the agent's traces. It needs the stack, a real model and a library built once from
+the default presets for the e2e owner only (`tooling/scripts/tradecraft_e2e/library.py`: `plan`, `models`, `build`,
+`snapshot`, `restore`, `status`; each matrix run restores the snapshot), so it is a live run started by hand, never part
+of the gate. Its unit tests (`tests/test_tradecraft_matrix_runner.py`, `tests/test_tradecraft_matrix_library.py`) are in
+the gate; a root test file whose name holds `_e2e` would be tiered
+`integration` and never run by `./redamon.sh test unit`.
+
+The shell section holds three Tradecraft guards: `tests/tradecraft_cache_volume_test.sh` (the old page-cache volume is
+removed once by `redamon.sh update`, with `docker` stubbed), `tradecraft_no_cache_names_test.sh` (no page-cache name in
+the code) and `tradecraft_no_new_env_test.sh` (no new environment key in the agent, the webapp or `.env.example`).
+`tests/rbac_scripts_db_test.sh` runs on a throwaway database, and it and `tests/scan_timeline_db_test.sh` skip when
+their containers or the repository are not there (an export).
+
 A failing file is reported with the command to re-run it on its own:
 
 ```

@@ -13,6 +13,7 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 
 | Action | Skill |
 | ------ | ----- |
+| Adding a Tradecraft setting, table or column | `tradecraft-library` |
 | Adding a node label, relationship, or property to the graph schema | `graph-db-writes` |
 | Adding a path a project collaborator can reach, or a ticket, token or job that carries a tenant and an actor | `rbac-authz` |
 | Adding a tool AI Navigator can call | `navigator` |
@@ -23,6 +24,7 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 | Changing test tiers, conftest.py, pytest.ini, or the runner in redamon.sh | `redamon-testing` |
 | Checking or ratcheting a coverage floor | `redamon-testing` |
 | Editing AI Navigator (agentic/navigator, lib/navigator, the navigator routes or components) | `navigator` |
+| Editing Tradecraft (agentic/tradecraft, lib/tradecraft, the tradecraft routes or components) | `tradecraft-library` |
 | Editing the Agent in the Loop broker, adapter, routes or loop MCP tools | `agent-in-the-loop` |
 | Editing the Priority Board, the triage graph mixin, or the MCP triage tools | `priority-board-triage` |
 | Editing the caller-supplied Cypher filters (injectProjectFilter.ts, graph_db/tenant_filter.py) | `rbac-authz` |
@@ -198,4 +200,5 @@ Maintained by hand (not touched by `sync.sh`). One row per skill.
 | `plugin-platform` | Plugin platform: no plugin logic in the base, plugin services only via plugins_converge, overlay-only webapp wiring, every Gateway call re-authorized, plugins only propose | [SKILL.md](skills/plugin-platform/SKILL.md) |
 | `agent-in-the-loop` | Agent in the Loop (an external MCP client answers the agent's model calls): only inside its own run scope, never retried, refused on every session-less builder, a driver token holds read scopes only, a person picks the brain and answers every approval | [SKILL.md](skills/agent-in-the-loop/SKILL.md) |
 | `navigator` | AI Navigator, the read-only docs and project-data chat: every project read is a webapp callback re-authorized fresh, the person's own model only, no write tool, each tool declares its permissions, exact MCP scopes and level, nothing a chat calls takes a process-wide resource | [SKILL.md](skills/navigator/SKILL.md) |
+| `tradecraft-library` | Tradecraft, each account's library of knowledge sites: every page-store statement keyed by owner and resource, reads never write, page text always untrusted, a login only to its own host and its owner's runs, one catalog policy, model calls labelled and never retried, settings only in the generated spec | [SKILL.md](skills/tradecraft-library/SKILL.md) |
 | `rbac-authz` | Authorization: every check through lib/authz (the helper per case), the read views for non-owners, the Cypher allowlists, tenant vs actor in every hop, onAccessReduced on every access loss, audit inside auditedTransaction, a switch with its flags-off test, the route manifest | [SKILL.md](skills/rbac-authz/SKILL.md) |

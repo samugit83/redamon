@@ -1,0 +1,1314 @@
+[
+  {
+    "model": "JobStartBatch",
+    "why": "an empty jobs list",
+    "value": {
+      "jobs": []
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "two jobs with one id",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        },
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "a masked GitHub token",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": "set",
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "a masked header value",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": {
+              "cookie": "",
+              "headers": [
+                {
+                  "name": "X-Api-Key",
+                  "value": "set"
+                }
+              ],
+              "basic_auth": null
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "a masked cookie",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": {
+              "cookie": "set",
+              "headers": [],
+              "basic_auth": null
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "a conversion is not started through /jobs",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "convert",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "an unknown kind",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "crawl",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "a hash that is not 16 hex characters",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "xyz",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "an unknown storage mode",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "cached",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "an unknown forced type",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "wordpress",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "no person who started it",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "an unknown provenance",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "admin",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "an unknown field",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake-wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          },
+          "generation": 2
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartAnswer",
+    "why": "an unknown refusal code",
+    "value": {
+      "accepted": [],
+      "refused": [
+        {
+          "job_id": "j",
+          "code": "nope"
+        }
+      ]
+    }
+  },
+  {
+    "model": "CancelAnswer",
+    "why": "ok false",
+    "value": {
+      "ok": false
+    }
+  },
+  {
+    "model": "UserCancelAnswer",
+    "why": "a negative count",
+    "value": {
+      "cancelled": -1
+    }
+  },
+  {
+    "model": "JobProgress",
+    "why": "a URL in the progress",
+    "value": {
+      "done": 1,
+      "total": 2,
+      "unit": "pages",
+      "url": "https://wiki.example.invalid/?q=1"
+    }
+  },
+  {
+    "model": "IngestionReport",
+    "why": "an error code carrying a URL",
+    "value": {
+      "errors": [
+        {
+          "code": "https://wiki.example.invalid/x",
+          "count": 1
+        }
+      ]
+    }
+  },
+  {
+    "model": "CheckUrlRequest",
+    "why": "a masked basic-auth password",
+    "value": {
+      "user_id": "u",
+      "url": "https://kb.example.invalid/",
+      "secrets": {
+        "github_token": null,
+        "credentials": {
+          "cookie": "",
+          "headers": [],
+          "basic_auth": {
+            "username": "fake-user",
+            "password": "set"
+          }
+        }
+      }
+    }
+  },
+  {
+    "model": "CheckUrlResult",
+    "why": "ok with an error code",
+    "value": {
+      "ok": true,
+      "error_code": "timeout"
+    }
+  },
+  {
+    "model": "CheckUrlResult",
+    "why": "a failure without its code",
+    "value": {
+      "ok": false,
+      "error_code": ""
+    }
+  },
+  {
+    "model": "CheckUrlResult",
+    "why": "an unknown error code",
+    "value": {
+      "ok": false,
+      "error_code": "boom"
+    }
+  },
+  {
+    "model": "PreviewRequest",
+    "why": "no entries",
+    "value": {
+      "user_id": "u",
+      "model": "openai/fake-small-model",
+      "focus": {},
+      "entries": []
+    }
+  },
+  {
+    "model": "ReadNowRequest",
+    "why": "a masked cookie",
+    "value": {
+      "user_id": "u",
+      "resource_id": "r",
+      "url": "https://kb.example.invalid/a",
+      "secrets": {
+        "credentials": {
+          "cookie": "set"
+        }
+      }
+    }
+  },
+  {
+    "model": "ReadNowResult",
+    "why": "a cache as the source",
+    "value": {
+      "text": "x",
+      "source": "cache"
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "a catalog resource naming a generation",
+    "value": {
+      "v2": true,
+      "owner_id": "o",
+      "person_id": "o",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0001",
+          "slug": "fake-wiki",
+          "name": "Fake wiki",
+          "url": "https://wiki.example.invalid/",
+          "type": "mkdocs-wiki",
+          "storage_mode": "stored",
+          "summary": "A synthetic wiki.",
+          "has_login": false,
+          "priority": "normal",
+          "map_version": 3,
+          "read_settings": {
+            "fetching.requestTimeoutSec": 30
+          },
+          "github_token": null,
+          "credentials": null,
+          "generation": 4
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "a login in a collaborator's run",
+    "value": {
+      "v2": true,
+      "owner_id": "user_owner_fake",
+      "person_id": "user_collaborator_fake",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0003",
+          "slug": "fake-private-kb",
+          "name": "Fake private KB",
+          "url": "https://kb.example.invalid/",
+          "type": "agentic-crawl",
+          "storage_mode": "live",
+          "summary": "A synthetic private knowledge base.",
+          "has_login": true,
+          "priority": "high",
+          "map_version": 3,
+          "read_settings": {},
+          "github_token": null,
+          "credentials": {
+            "cookie": "session=fake-session",
+            "headers": [],
+            "basic_auth": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "a login while an administrator acts as the owner",
+    "value": {
+      "v2": true,
+      "owner_id": "user_owner_fake",
+      "person_id": "user_owner_fake",
+      "actor_id": "user_admin_fake",
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0003",
+          "slug": "fake-private-kb",
+          "name": "Fake private KB",
+          "url": "https://kb.example.invalid/",
+          "type": "agentic-crawl",
+          "storage_mode": "live",
+          "summary": "A synthetic private knowledge base.",
+          "has_login": true,
+          "priority": "high",
+          "map_version": 3,
+          "read_settings": {},
+          "github_token": null,
+          "credentials": {
+            "cookie": "session=fake-session",
+            "headers": [],
+            "basic_auth": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "credentials on a resource without a login",
+    "value": {
+      "v2": true,
+      "owner_id": "o",
+      "person_id": "o",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0003",
+          "slug": "fake-private-kb",
+          "name": "Fake private KB",
+          "url": "https://kb.example.invalid/",
+          "type": "agentic-crawl",
+          "storage_mode": "live",
+          "summary": "A synthetic private knowledge base.",
+          "has_login": false,
+          "priority": "high",
+          "map_version": 3,
+          "read_settings": {},
+          "github_token": null,
+          "credentials": {
+            "cookie": "session=fake-session",
+            "headers": [],
+            "basic_auth": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "a masked GitHub token in the catalog",
+    "value": {
+      "v2": true,
+      "owner_id": "o",
+      "person_id": "o",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0001",
+          "slug": "fake-wiki",
+          "name": "Fake wiki",
+          "url": "https://wiki.example.invalid/",
+          "type": "mkdocs-wiki",
+          "storage_mode": "stored",
+          "summary": "A synthetic wiki.",
+          "has_login": false,
+          "priority": "normal",
+          "map_version": 3,
+          "read_settings": {
+            "fetching.requestTimeoutSec": 30
+          },
+          "github_token": "set",
+          "credentials": null
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "an unknown map version",
+    "value": {
+      "v2": true,
+      "owner_id": "o",
+      "person_id": "o",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0001",
+          "slug": "fake-wiki",
+          "name": "Fake wiki",
+          "url": "https://wiki.example.invalid/",
+          "type": "mkdocs-wiki",
+          "storage_mode": "stored",
+          "summary": "A synthetic wiki.",
+          "has_login": false,
+          "priority": "normal",
+          "map_version": 4,
+          "read_settings": {
+            "fetching.requestTimeoutSec": 30
+          },
+          "github_token": null,
+          "credentials": null
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "a slug the webapp never makes (upper case, a space)",
+    "value": {
+      "v2": true,
+      "owner_id": "o",
+      "person_id": "o",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0001",
+          "slug": "Fake Wiki",
+          "name": "Fake wiki",
+          "url": "https://wiki.example.invalid/",
+          "type": "mkdocs-wiki",
+          "storage_mode": "stored",
+          "summary": "A synthetic wiki.",
+          "has_login": false,
+          "priority": "normal",
+          "map_version": 3,
+          "read_settings": {
+            "fetching.requestTimeoutSec": 30
+          },
+          "github_token": null,
+          "credentials": null
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "a slug that starts with a dash",
+    "value": {
+      "v2": true,
+      "owner_id": "o",
+      "person_id": "o",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0001",
+          "slug": "-starts-with-a-dash",
+          "name": "Fake wiki",
+          "url": "https://wiki.example.invalid/",
+          "type": "mkdocs-wiki",
+          "storage_mode": "stored",
+          "summary": "A synthetic wiki.",
+          "has_login": false,
+          "priority": "normal",
+          "map_version": 3,
+          "read_settings": {
+            "fetching.requestTimeoutSec": 30
+          },
+          "github_token": null,
+          "credentials": null
+        }
+      ]
+    }
+  },
+  {
+    "model": "JobStartBatch",
+    "why": "a slug with a colon, which would make page IDs ambiguous",
+    "value": {
+      "jobs": [
+        {
+          "job_id": "job_fake_0001",
+          "user_id": "user_owner_fake",
+          "resource_id": "res_fake_0001",
+          "kind": "refresh",
+          "actor_user_id": "user_owner_fake",
+          "real_actor_user_id": null,
+          "bulk_id": null,
+          "settings": {
+            "crawl.maxPages": 200,
+            "crawl.strategy": "llm",
+            "knownTypes.githubFileTypes": [
+              ".md",
+              ".txt",
+              ".rst"
+            ]
+          },
+          "settings_snapshot": {
+            "values": {
+              "crawl.maxPages": 200,
+              "crawl.strategy": "llm",
+              "knownTypes.githubFileTypes": [
+                ".md",
+                ".txt",
+                ".rst"
+              ]
+            },
+            "provenance": {
+              "crawl.maxPages": "system",
+              "crawl.strategy": "user",
+              "knownTypes.githubFileTypes": "resource"
+            }
+          },
+          "settings_hash": "0123456789abcdef",
+          "resource": {
+            "url": "https://wiki.example.invalid/",
+            "slug": "fake:wiki",
+            "name": "Fake wiki",
+            "storage_mode": "stored",
+            "forced_type": "",
+            "type_options": {},
+            "focus": {
+              "mode": "everything"
+            },
+            "summary": "A synthetic wiki used by the contract tests.",
+            "summary_source": "generated",
+            "summary_locked": false,
+            "model": "openai/fake-small-model"
+          },
+          "secrets": {
+            "github_token": null,
+            "credentials": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "a login in a run whose person is unknown",
+    "value": {
+      "v2": true,
+      "owner_id": "user_owner_fake",
+      "person_id": null,
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0003",
+          "slug": "fake-private-kb",
+          "name": "Fake private KB",
+          "url": "https://kb.example.invalid/",
+          "type": "agentic-crawl",
+          "storage_mode": "live",
+          "summary": "A synthetic private knowledge base.",
+          "has_login": true,
+          "priority": "high",
+          "map_version": 3,
+          "read_settings": {},
+          "github_token": null,
+          "credentials": {
+            "cookie": "session=fake-session",
+            "headers": [],
+            "basic_auth": null
+          }
+        }
+      ]
+    }
+  },
+  {
+    "model": "V2Catalog",
+    "why": "no person_id key at all (null says the person is unknown)",
+    "value": {
+      "v2": true,
+      "owner_id": "user_owner_fake",
+      "actor_id": null,
+      "search": {},
+      "resources": [
+        {
+          "id": "res_fake_0001",
+          "slug": "fake-wiki",
+          "name": "Fake wiki",
+          "url": "https://wiki.example.invalid/",
+          "type": "mkdocs-wiki",
+          "storage_mode": "stored",
+          "summary": "A synthetic wiki.",
+          "has_login": false,
+          "priority": "normal",
+          "map_version": 3,
+          "read_settings": {
+            "fetching.requestTimeoutSec": 30
+          },
+          "github_token": null,
+          "credentials": null
+        }
+      ]
+    }
+  }
+]
