@@ -64,6 +64,7 @@ _NOW_REFRESH = re.compile(r"^\[tradecraft\] library_now refresh=(?P<refresh>\d+)
 _NOW_SHOWN = re.compile(r"^\[tradecraft\] library_now shown=(?P<shown>\d+) block=(?P<block>\d+) pages=(?P<pages>\S*)")
 _NOW_READ = re.compile(rf"^\[tradecraft\] library_now (?P<page>{_PAGE}) read$")
 _NOW_CODE = re.compile(r"^\[tradecraft\] library_now code=(?P<code>[a-z_]+)(?: refresh=(?P<refresh>\d+))?")
+_NOW_UNREAD = re.compile(r"^\[tradecraft\] library_now unread pages=(?P<pages>\S+)")
 # think_node.py logs each think's start before Library now runs, and its thought after.
 _THINK_START = re.compile(r"^# THINK NODE PROMPT - Iteration (?P<iteration>\d+)")
 _THOUGHT_RECORD = "THOUGHT: "
@@ -79,6 +80,10 @@ NOW_NOTICES = (
     "Library now: a step was not searched (search limit for this run); use tradecraft_search for it yourself.",
     "Library now: a step was not searched (the library did not answer); use tradecraft_search for it yourself.",
 )
+# After the block: the last thought announced a read ("Library: read <page>.") of a page a block
+# showed, and no read ran (hints.UNREAD_NOTICE). Fixed text naming no page, once per page in a run.
+NOW_UNREAD_NOTICE = ('Library now: your last thought named a page to read, but it was not read. If it still fits, '
+                     'make tradecraft_lookup(page=…) this decision\'s action; otherwise say "Library: nothing fit."')
 # The code lines behind a notice: the run's step limit, a search round that failed or was slow.
 NOTICE_CODES = {"limit": "limit", "timeout": "no answer", "internal_error": "no answer"}
 _RESOURCE_LINE = re.compile(rf"^\s*- `(?P<slug>{_SLUG})`", re.M)
@@ -249,10 +254,12 @@ def library_now_from_log(text: str) -> dict:
     """The session's Library now, from its log, in log order (``at``, the record's index):
     ``shown`` one per think that showed a block (its block number, which counts the blocks that
     brought a page never shown before, its pages and its think), ``reads`` the shown pages the agent
-    then read, ``refreshes`` (one per round of searches), ``codes``, ``thoughts`` one per main think
+    then read, ``refreshes`` (one per round of searches), ``codes``, ``unread`` one per think shown the
+    notice of an announced read that did not run (its pages), ``thoughts`` one per main think
     (whether a block was shown to it, and its library sentence: read, nothing, other, or None),
     ``thinks`` the main thinks logged and ``rounds`` the highest round number a line gives."""
-    out: dict = {"shown": [], "reads": [], "refreshes": [], "codes": [], "thoughts": [], "thinks": 0, "rounds": 0}
+    out: dict = {"shown": [], "reads": [], "refreshes": [], "codes": [], "unread": [], "thoughts": [], "thinks": 0,
+                 "rounds": 0}
     think: Optional[dict] = None
     for at, rec in enumerate(log_records(text)):
         body = rec.rstrip("\n")
@@ -278,6 +285,10 @@ def library_now_from_log(text: str) -> dict:
             out["refreshes"].append({"at": at, "refresh": int(m["refresh"]), "reason": m["reason"],
                                      "found": int(m["found"])})
             out["rounds"] = max(out["rounds"], int(m["refresh"]))
+            continue
+        m = _NOW_UNREAD.match(body)
+        if m:
+            out["unread"].append({"at": at, "pages": [p for p in m["pages"].split(",") if p]})
             continue
         m = _NOW_CODE.match(body)
         if m:
@@ -457,7 +468,7 @@ def _planted_in_blocks(trace: Mapping, shown: Sequence[Mapping], planted: Sequen
     live = [t for t in planted if _norm(t) not in asked]
     if not live:
         return CheckResult(name, None, "the lab plants no text")
-    trusted = _norm(" ".join([NOW_HEADER, NOW_FOOTER, *NOW_NOTICES]))
+    trusted = _norm(" ".join([NOW_HEADER, NOW_FOOTER, NOW_UNREAD_NOTICE, *NOW_NOTICES]))
     found = [f"the trusted lines: {t}" for t in live if _norm(t) in trusted]
     for s in shown:
         for page in s["pages"]:
@@ -474,12 +485,17 @@ def _planted_in_blocks(trace: Mapping, shown: Sequence[Mapping], planted: Sequen
 def library_now_summary(trace: Mapping, expected_pages: Sequence[Mapping]) -> dict:
     """A measurement for the report: blocks, the pages shown and read (and which of them are
     the scenario's expected pages), the steps left unsearched (each a notice in the prompt: the
-    run's step limit, or a search the library did not answer), and what the thoughts said."""
+    run's step limit, or a search the library did not answer), the notices of an announced read that
+    did not run (and which of their pages the agent read afterwards), and what the thoughts said."""
     now = trace.get("library_now") or {}
     shown = now.get("shown") or []
     pages = list(dict.fromkeys(p for s in shown for p in s["pages"]))
     reads = list(dict.fromkeys(r["page"] for r in now.get("reads") or []))
     thoughts = now.get("thoughts") or []
+    unread = now.get("unread") or []
+    # A shown page's first read writes its read line: one after the notice is a read that followed it.
+    read_after = list(dict.fromkeys(p for u in unread for p in u["pages"]
+                                    if any(r["page"] == p and r["at"] > u["at"] for r in now.get("reads") or [])))
 
     def expected(page: str) -> bool:
         return any(matches(trace, PageRef(page), e) for e in expected_pages)
@@ -491,6 +507,8 @@ def library_now_summary(trace: Mapping, expected_pages: Sequence[Mapping]) -> di
             "refreshes": len(now.get("refreshes") or []), "codes": list(now.get("codes") or []),
             "not_searched_limit": sum(1 for c in now.get("codes") or [] if NOTICE_CODES.get(c) == "limit"),
             "not_searched_no_answer": sum(1 for c in now.get("codes") or [] if NOTICE_CODES.get(c) == "no answer"),
+            "unread_notices": len(unread), "unread_pages": list(dict.fromkeys(p for u in unread for p in u["pages"])),
+            "unread_read_after": read_after,
             "pages_shown": pages, "shown_expected": [p for p in pages if expected(p)],
             "pages_read": reads, "read_expected": [p for p in reads if expected(p)],
             "thoughts": len(thoughts), "thought_read": said("read"), "thought_nothing": said("nothing"),
