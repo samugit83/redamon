@@ -205,6 +205,11 @@ singles:
     needs: [sharing]
     cap_min: 20
     expected_min: 16
+  # S3 follows README.TRADECRAFT.md's act-as table for an account that can sign in (the e2e owner has
+  # a password): Refresh and Check URL are writes, refused 403 own_account_only with no act_as.refused
+  # row; View and Read now of the login resource are reads, refused 403 not_while_acting_as for
+  # use_site_logins with an act_as.refused row each (checks.S3_REFUSALS). A passwordless managed
+  # account, whose writes the act-as list refuses instead, is not covered here.
   S3:
     title: an administrator acting as the owner cannot use the login resource, and the acting chat does not list it
     lab: null

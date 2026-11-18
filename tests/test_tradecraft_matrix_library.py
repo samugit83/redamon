@@ -563,6 +563,77 @@ def test_judge_checks_type_size_storage_readiness_login_and_focus():
                       "kept_names"}
 
 
+CVE_INDEX_REPORT = {"stopReason": "cve index: largest 20000 of 183412 files", "skipped": {}, "errors": []}
+
+
+def test_the_cve_archive_refresh_must_index_it():
+    # FIX-CVEIDX: a refresh with the owner's GitHub token indexes the archive's CVE files, the
+    # largest 20,000. The build runs without a token and checks the type only (min_entries 0); the
+    # refresh check is separate and asks the index: its size, two CVEs the labs use, and the stop
+    # reason of a capped index, never cve_index_needs_token. Page IDs only in its details.
+    spec = next(s for s in LIB["resources"] if s["slug"] == "trickest-cve")
+    assert spec["expect"]["min_entries"] == 0
+    assert spec["refresh_expect"] == {"min_entries": 10000, "cves": ["CVE-2021-41773", "CVE-2021-42013"],
+                                      "stop_reason": "cve index: largest 20000 of ", "not_in_report": ["cve_index_needs_token"]}
+    view = {"entryCount": 20000, "report": CVE_INDEX_REPORT}
+    job = {"status": "succeeded"}
+    found = {"CVE-2021-41773": ["trickest-cve:31001"], "CVE-2021-42013": ["trickest-cve:31002"]}
+    good = {c.name: c for c in library.refresh_checks(spec, view, job, found)}
+    assert all(c.ok for c in good.values()), {n: c.detail for n, c in good.items() if not c.ok}
+    assert good["index_has_CVE-2021-41773"].detail == "trickest-cve:31001"
+    assert good["index_stop_reason"].detail == "largest 20000 of 183412 files"
+    small = {c.name: c for c in library.refresh_checks(spec, dict(view, entryCount=9999), job, found)}
+    assert [n for n, c in small.items() if not c.ok] == ["index_entries"]
+    missing = {c.name: c for c in library.refresh_checks(spec, view, job, {**found, "CVE-2021-42013": []})}
+    assert [n for n, c in missing.items() if not c.ok] == ["index_has_CVE-2021-42013"]
+    no_token = {"stopReason": "", "skipped": {"cve_index_needs_token": 1}, "errors": []}
+    got = {c.name: c for c in library.refresh_checks(spec, {"entryCount": 0, "report": no_token}, job, {})}
+    assert not got["index_stop_reason"].ok and "cve_index_needs_token" in got["index_stop_reason"].detail
+    under_cap = {"stopReason": "cve index: 9000 of 9000 files"}
+    assert not {c.name: c for c in library.refresh_checks(spec, dict(view, report=under_cap), job, found)}[
+        "index_stop_reason"].ok
+    assert not {c.name: c for c in library.refresh_checks(spec, view, {"status": "failed"}, found)}["refresh_succeeded"].ok
+
+
+def test_the_refresh_command_waits_for_its_own_job_and_records_the_checks(tmp_path):
+    spec = next(s for s in LIB["resources"] if s["slug"] == "trickest-cve")
+    calls = []
+    state = {"job": {"id": "j-old", "status": "succeeded"}, "entryCount": 0, "report": {}, "polls": 0}
+
+    class Web:
+        def call(self, method, path, body=None, **kw):
+            calls.append((method, path))
+            R = runner.Response
+            if path.endswith("/rt/refresh") and method == "POST":
+                state["started"] = state["polls"]
+                return R(202, {"job": {"id": "j-new", "status": "queued"}})
+            if path.endswith("/tradecraft-resources") and method == "GET":
+                state["polls"] += 1
+                # The listing still shows the old, finished job for a poll, then the new one runs.
+                since = state["polls"] - state.get("started", 10 ** 6)
+                if since == 2:
+                    state["job"] = {"id": "j-new", "status": "running"}
+                elif since >= 3:
+                    state.update(job={"id": "j-new", "status": "succeeded"}, entryCount=20000, report=CVE_INDEX_REPORT)
+                return R(200, [{"id": "rt", "slug": "trickest-cve", **{k: state[k] for k in ("job", "entryCount", "report")}}])
+            if "/rt/map?status=kept&query=" in path:
+                cve = path.rsplit("=", 1)[1]
+                return R(200, {"entries": [{"pageId": f"trickest-cve:{31000 + int(cve[-1])}", "title": cve}], "nextCursor": None})
+            raise AssertionError(path)
+
+    lines = []
+    builder = library.Builder(LIB, SCN, Web(), "u-owner", "", lines.append, clock=iter(range(0, 10 ** 6, 20)).__next__,
+                              sleep=lambda s: None)
+    record = tmp_path / "refresh.json"
+    checks = builder.refresh(spec, record=record)
+    assert [c.name for c in checks if not c.ok] == []
+    assert ("POST", "/api/users/u-owner/tradecraft-resources/rt/refresh") in calls
+    assert state["polls"] >= 3  # the old job's "succeeded" did not end the wait
+    saved = json.loads(record.read_text())
+    assert saved["slug"] == "trickest-cve" and all(c["ok"] for c in saved["checks"])
+    assert "https" not in record.read_text() and not any("https" in line for line in lines)
+
+
 def test_the_focus_must_keep_both_halves_of_its_topics():
     # Q-D (the owner, 2026-11-18): the focus may keep as few as two entries, one SQL injection and
     # one SSRF (the 2026-11-18 builds kept the two hunt skills only). A build that kept the floor

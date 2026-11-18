@@ -71,6 +71,7 @@ archive (Live) needs the internet during a run.
 python3 tooling/scripts/tradecraft_e2e/library.py plan --model <id>    # what build would send; starts nothing
 python3 tooling/scripts/tradecraft_e2e/library.py models               # the model ids the e2e owner may pick
 flock "<PLAN>/run/heavy.lock" python3 tooling/scripts/tradecraft_e2e/library.py build --model <id>
+flock "<PLAN>/run/heavy.lock" python3 tooling/scripts/tradecraft_e2e/library.py refresh --slug trickest-cve
 python3 tooling/scripts/tradecraft_e2e/library.py snapshot
 python3 tooling/scripts/tradecraft_e2e/library.py restore              # the preflight runs it
 python3 tooling/scripts/tradecraft_e2e/library.py status               # the stamp; warns when ingestion changed
@@ -85,6 +86,13 @@ and judges each report: the job, the type, the map size, the storage, the stored
 readiness line, the login and the focus. It resumes: a resource already built is judged
 again, one whose job failed is deleted and added again, one not in `library.yaml` is
 deleted. The record, counts only, goes to `_local/tradecraft-e2e/library-build.json`.
+
+`refresh --slug <slug>` refreshes one resource that has a `refresh_expect` and judges that job
+alone (not the one before it). trickest-cve's build runs without a GitHub token and has no CVE
+index; with the owner's token a refresh builds it, and the check asks at least 10,000 entries,
+CVE-2021-41773 and CVE-2021-42013 among them, and the stop reason of a capped index
+(`cve index: largest 20000 of N files`), never `cve_index_needs_token`. Page IDs and counts only,
+to `_local/tradecraft-e2e/library-refresh.json`.
 
 `snapshot` and `restore` act on one library only, the e2e owner's (`tc-e2e-owner@e2e.local`):
 no option names another account, and restore refuses a snapshot of any other. `snapshot`
@@ -172,7 +180,7 @@ the owner's setting back to "Agent decides" only once no A-search run is running
 | B | no tradecraft tool offered or called; no coverage map in the prompt (a measurement: the oracle is not a gate) |
 | S1 | a resource turned off in the project is neither listed nor read |
 | S2 | in a project shared with the collaborator (Read + Write, Use the agent), the resource with a login is neither listed nor read, and a public resource answers |
-| S3 | the administrator of `.env`, acting as the owner: Refresh, Check URL and Read now on the login resource answer 403 and write `act_as.refused` audit rows; the acting chat does not list it |
+| S3 | the administrator of `.env`, acting as the owner (an account that can sign in), on the login resource, as `docs/readmes/README.TRADECRAFT.md`'s act-as table has it: Refresh and Check URL answer 403 `own_account_only` (writes, no audit row); View and Read now answer 403 `not_while_acting_as` for `use_site_logins` with an `act_as.refused` row each (at least 2 rows); the acting chat neither lists the login resource nor shows it in a Library now block |
 | S4 | an Agent in the Loop run (the runner answers its model calls over `/api/mcp-server`, as `testing/e2e/tests/aitlDriver.ts` does): `tradecraft_ask` is offered and answers the plain search results with the loop-run reason |
 | S5 | a request on a "Not covered" topic (wireless) makes no tradecraft call |
 | S6 | Check URL of a lab address, on the ops account, is refused by the address guard (`unsafe_address`) |

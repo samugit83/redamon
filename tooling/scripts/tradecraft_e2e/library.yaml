@@ -96,7 +96,15 @@ resources:
     forcedType: cve-poc-db
     storage: live
     # No path pattern here: Check URL's cve_pattern fills it, as the form does (prefillFromCheck).
+    # The build runs without a GitHub token, so the archive has no index (FIX-CVEIDX builds it only
+    # with one): the build checks the type, and `library.py refresh --slug trickest-cve`, run with
+    # the owner's token, checks the index separately (library.refresh_checks).
     expect: {type: cve-poc-db, min_entries: 0}
+    refresh_expect:
+      min_entries: 10000
+      cves: [CVE-2021-41773, CVE-2021-42013]
+      stop_reason: 'cve index: largest 20000 of '
+      not_in_report: [cve_index_needs_token]
   # The Sphinx preset (the card's "chosen by T10.2"): a Sphinx site whose search index lists its
   # pages. Mitmproxy docs, the first choice, is a Hugo site whose searchindex.js is elasticlunr,
   # not Sphinx's index (its 1-entry map was routed as a product finding on 2026-11-17).

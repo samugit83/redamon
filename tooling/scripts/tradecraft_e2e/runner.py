@@ -1476,9 +1476,12 @@ def run_acting(ctx: Context, run: lanes.Run, deadline: float) -> report.RunResul
             ("refresh_login_resource", "POST", f"{base}/{rid}/refresh", {}),
             ("check_url_login_resource", "POST", f"{base}/check-url", {"resourceId": rid}),
             ("read_now_login_resource", "POST", f"{base}/{rid}/pages/{urllib.parse.quote(page)}", None),
+            ("view_login_resource", "GET", f"{base}/{rid}/pages/{urllib.parse.quote(page)}", None),
         ]:
             res = admin.call(method, path, body)
-            trace["api"].append({"name": name, "status": res.status, "code": res.code})
+            action = res.data.get("action") if isinstance(res.data, dict) else None
+            trace["api"].append({"name": name, "status": res.status, "code": res.code,
+                                 **({"action": str(action)} if action else {})})
         rows = ctx.db.json("SELECT count(*) AS n FROM audit_log WHERE action = 'act_as.refused' "
                            f"AND on_behalf_of_user_id = {lit(owner_id)} AND created_at >= {lit(since)}::timestamptz")
         trace["audit"] = {"act_as_refused": int(rows[0]["n"]) if rows else 0}

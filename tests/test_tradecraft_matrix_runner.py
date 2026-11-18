@@ -336,6 +336,81 @@ def test_s3_a_refused_act_as_with_permissions_on_is_a_failure(tmp_path):
     assert report.pass_rules([result])[1][0].ok is False
 
 
+# S3 as README.TRADECRAFT.md's act-as table documents it for an account that can sign in: the
+# writes answer own_account_only and write no audit row; View and Read now of the login resource
+# answer not_while_acting_as for use_site_logins, each with an act_as.refused row.
+S3_REFUSALS = (
+    {"name": "refresh_login_resource", "status": 403, "code": "own_account_only"},
+    {"name": "check_url_login_resource", "status": 403, "code": "own_account_only"},
+    {"name": "read_now_login_resource", "status": 403, "code": "not_while_acting_as", "action": "use_site_logins"},
+    {"name": "view_login_resource", "status": 403, "code": "not_while_acting_as", "action": "use_site_logins"},
+)
+
+
+@pytest.mark.parametrize("name, change, failed", [
+    ("refresh_login_resource", {"code": "not_while_acting_as"}, "refresh_login_resource"),
+    ("refresh_login_resource", {"code": "use_site_logins"}, "refresh_login_resource"),
+    ("check_url_login_resource", {"status": 200, "code": ""}, "check_url_login_resource"),
+    ("check_url_login_resource", {"code": "not_while_acting_as"}, "check_url_login_resource"),
+    ("read_now_login_resource", {"code": "own_account_only", "action": None}, "read_now_login_resource"),
+    ("read_now_login_resource", {"action": "use_github_token"}, "read_now_login_resource"),
+    ("view_login_resource", {"status": 200, "code": "", "action": None}, "view_login_resource"),
+    ("view_login_resource", None, "view_login_resource"),
+])
+def test_s3_holds_each_call_to_its_documented_refusal(name, change, failed):
+    rows = [dict(r) for r in S3_REFUSALS if not (r["name"] == name and change is None)]
+    for row in rows:
+        if row["name"] == name:
+            row.update(change)
+    trace = {"api": rows, "audit": {"act_as_refused": 2}, "prompts": ["- `hacktricks`  (mkdocs-wiki, Live)"]}
+    got = {c.name: c for c in checks.single_checks("S3", trace, cfg=SCN, spec=SCN["singles"]["S3"])}
+    assert [n for n, c in got.items() if c.ok is False] == [failed]
+    good = {c.name: c for c in checks.single_checks("S3", dict(trace, api=[dict(r) for r in S3_REFUSALS]), cfg=SCN,
+                                                    spec=SCN["singles"]["S3"])}
+    assert all(c.ok for c in good.values()), {n: c.detail for n, c in good.items() if not c.ok}
+    assert good["read_now_login_resource"].detail == "403 not_while_acting_as (use_site_logins)"
+    # The two refused reads write an audit row each; the writes write none.
+    low = {c.name: c for c in checks.single_checks("S3", dict(trace, api=[dict(r) for r in S3_REFUSALS],
+                                                              audit={"act_as_refused": 1}), cfg=SCN, spec=SCN["singles"]["S3"])}
+    assert low["refusals_audited"].ok is False and low["refusals_audited"].detail == "1 act_as.refused rows (at least 2)"
+
+
+def test_s3_the_runner_views_and_reads_the_login_resource_and_records_each_refusal(tmp_path):
+    ctx = _ctx(tmp_path, env=ON)
+    ctx.resource_ids[SCN["library"]["login_resource"]] = "rid-login"
+    by_name = {r["name"]: r for r in S3_REFUSALS}
+    sent = []
+    paths = {"/refresh": "refresh_login_resource", "/check-url": "check_url_login_resource"}
+
+    def call(method, path, body=None, **kw):
+        sent.append((method, path))
+        if path == "/api/auth/act-as":
+            return runner.Response(200, {})
+        name = next((n for suffix, n in paths.items() if path.endswith(suffix)), None) or (
+            "read_now_login_resource" if method == "POST" else "view_login_resource")
+        row = by_name[name]
+        return runner.Response(row["status"], {k: v for k, v in (("code", row["code"]), ("action", row.get("action"))) if v})
+
+    admin = mock.Mock()
+    admin.call.side_effect = call
+    admin.cookies = {}
+    ctx.stack.session.return_value = (admin, "u-admin")
+    ctx.db.json.return_value = [{"n": 2}]
+    with mock.patch.object(runner.Stack, "create_project", return_value="p1"), \
+            mock.patch.object(runner, "apply_phase_map"), \
+            mock.patch.object(runner, "_any_page_id", return_value="ired-team:7"), \
+            mock.patch.object(runner, "run_chat", return_value=_outcome()), \
+            mock.patch.object(runner, "wait_until_idle", return_value=True), \
+            mock.patch.object(runner, "build_trace", return_value=dict(GOOD_TRACE)), \
+            mock.patch.object(runner.Stack, "delete_project", return_value=runner.Response(200, {})):
+        result = runner.run_acting(ctx, next(r for r in RUNS if r.id == "S3"), runner.time.monotonic() + 1200)
+    page = "/api/users/u-owner/tradecraft-resources/rid-login/pages/ired-team%3A7"
+    assert ("GET", page) in sent and ("POST", page) in sent
+    assert [c.name for c in result.checks if c.ok is False] == [], {c.name: c.detail for c in result.checks}
+    assert {c.name for c in result.checks} >= {"refresh_login_resource", "check_url_login_resource",
+                                               "read_now_login_resource", "view_login_resource", "refusals_audited"}
+
+
 def test_s4_a_refused_driver_token_with_the_loop_on_is_a_failure(tmp_path):
     off = runner.run_loop(_ctx(tmp_path), next(r for r in RUNS if r.id == "S4"), runner.time.monotonic() + 1200)
     assert off.status == report.SKIPPED and off.reason.startswith(report.SKIP_SWITCH_OFF)
@@ -932,9 +1007,8 @@ def test_single_checks():
     s2 = {c.name: c for c in checks.single_checks("S2", shared, cfg=SCN, spec=SCN["singles"]["S2"])}
     assert s2["login_resource_not_listed"].ok is False
 
-    acting = {"api": [{"name": n, "status": 403, "code": "use_site_logins"} for n in
-                      ("refresh_login_resource", "check_url_login_resource", "read_now_login_resource")],
-              "audit": {"act_as_refused": 3}, "prompts": ["- `hacktricks`  (mkdocs-wiki, Live)"]}
+    acting = {"api": [dict(row) for row in S3_REFUSALS], "audit": {"act_as_refused": 2},
+              "prompts": ["- `hacktricks`  (mkdocs-wiki, Live)"]}
     assert all(c.ok for c in checks.single_checks("S3", acting, cfg=SCN, spec=SCN["singles"]["S3"]))
     acting["api"][1]["status"] = 200
     assert not all(c.ok for c in checks.single_checks("S3", acting, cfg=SCN, spec=SCN["singles"]["S3"]))

@@ -682,13 +682,30 @@ def check_public_works(trace: Mapping, login_slug: str) -> CheckResult:
     return CheckResult("public_resources_work", bool(other), ", ".join(other) or "no result from a public resource")
 
 
-def check_api(trace: Mapping, name: str, *, status: int, codes: Sequence[str] = ()) -> CheckResult:
+def check_api(trace: Mapping, name: str, *, status: int, codes: Sequence[str] = (),
+              action: Optional[str] = None) -> CheckResult:
+    """Every call ``name`` answered ``status`` with one of ``codes`` and, when given, the refusal's
+    ``action`` (an act-as refusal names the action it refused)."""
     rows = [a for a in trace.get("api", []) if a.get("name") == name]
     if not rows:
         return CheckResult(name, False, "not called")
-    bad = [a for a in rows if a.get("status") != status or (codes and a.get("code") not in codes)]
-    detail = "; ".join(f"{a.get('status')} {a.get('code') or ''}".strip() for a in rows)
+    bad = [a for a in rows if a.get("status") != status or (codes and a.get("code") not in codes)
+           or (action is not None and a.get("action") != action)]
+    detail = "; ".join(f"{a.get('status')} {a.get('code') or ''}".strip() + (f" ({a['action']})" if a.get("action") else "")
+                       for a in rows)
     return CheckResult(name, not bad, detail)
+
+
+# S3, as README.TRADECRAFT.md's act-as table has it for an account that can sign in (the e2e owner):
+# the writes answer own_account_only and write no audit row; View and Read now of a login resource
+# answer not_while_acting_as for use_site_logins, each with an act_as.refused row.
+S3_REFUSALS = {
+    "refresh_login_resource": ("own_account_only", None),
+    "check_url_login_resource": ("own_account_only", None),
+    "read_now_login_resource": ("not_while_acting_as", "use_site_logins"),
+    "view_login_resource": ("not_while_acting_as", "use_site_logins"),
+}
+S3_MIN_AUDITED = sum(1 for _code, action in S3_REFUSALS.values() if action)
 
 
 # The webapp's guard refuses a literal private address before any fetch (lib/tradecraft/urls.ts
@@ -719,11 +736,11 @@ def single_checks(check: str, trace: Mapping, *, cfg: Mapping, spec: Mapping) ->
     if check == "S2":
         return check_slug_absent(trace, login, "login_resource") + [check_public_works(trace, login)]
     if check == "S3":
-        out = [check_api(trace, n, status=403, codes=["not_while_acting_as", "use_site_logins"])
-               for n in ("refresh_login_resource", "check_url_login_resource", "read_now_login_resource")]
+        out = [check_api(trace, n, status=403, codes=[code], action=action) for n, (code, action) in S3_REFUSALS.items()]
         audits = (trace.get("audit") or {}).get("act_as_refused")
-        out.append(CheckResult("refusals_audited", None if audits is None else audits >= 3,
-                               "audit not read" if audits is None else f"{audits} act_as.refused rows"))
+        out.append(CheckResult("refusals_audited", None if audits is None else audits >= S3_MIN_AUDITED,
+                               "audit not read" if audits is None
+                               else f"{audits} act_as.refused rows (at least {S3_MIN_AUDITED})"))
         out.append(_not_listed(trace, login, "acting_chat_does_not_list_login_resource"))
         return out
     if check == "S4":
