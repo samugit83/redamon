@@ -139,6 +139,34 @@ async def test_named_counts_the_title_and_the_breadcrumb_never_the_headings(pg):
     assert fp.total == 1
 
 
+async def test_named_reads_the_pages_own_file_name_and_the_steps_vocabulary_topic(pg):
+    """FIX-ITER4 review: a page stored under its site's name names itself in its file name (the
+    URL's last segment, its extension dropped, a folder's name when the URL ends with a slash); and a
+    step that names a vocabulary topic ("path traversal") names a page whose title says it in other
+    words of that topic ("Directory Traversal")."""
+    uid = await pg.user()
+    res = await seed(pg, uid, [
+        page(1, title="Directory Traversal > README", breadcrumb=["Directory Traversal"],
+             url="https://lib.tc-fixture.test/Directory%20Traversal/README.md"),
+        page(2, title="HackTricks", breadcrumb=["linux hardening"],
+             url="https://lib.tc-fixture.test/en/linux-hardening/docker-breakout-privilege-escalation.html",
+             sections=[("Intro", "Abusing the docker socket for a breakout.")]),
+        page(3, title="Index", breadcrumb=["research"], url="https://lib.tc-fixture.test/research/container-escapes/",
+             description="docker breakout research"),
+        page(4, title="Ticket notes", headings=[{"level": 2, "text": "Path traversal"}],
+             url="https://lib.tc-fixture.test/notes.html"),
+    ])
+    cat = catalog(uid, res)
+    traversal = await search.free_first_pass(uid, cat, "check the path traversal on the download")
+    got = {c.row["title"]: (c.named, c.named_topics) for c in traversal.candidates}
+    assert got["Directory Traversal > README"] == (0, 1) and got["Ticket notes"] == (0, 0)
+    breakout = await search.free_first_pass(uid, cat, "docker breakout to the host")
+    got = {c.row["title"]: c.named for c in breakout.candidates}
+    # docker and breakout in the first one's file name; container (the topic's word) in the folder's.
+    assert got["HackTricks"] == 2 and got["Index"] == 0
+    assert {c.row["title"]: c.named_topics for c in breakout.candidates}["Index"] == 1
+
+
 async def test_synonyms_same_pages(pg):
     """AC-62: "sqli", "SQLi" and "SQL injection" find the same pages."""
     uid = await pg.user()

@@ -36,7 +36,7 @@ from typing import Any, AsyncContextManager, AsyncIterator, Callable, Iterable, 
 
 from tradecraft import db
 from tradecraft.ingest import entities as entity_rules
-from tradecraft.ingest.tags import PhraseMatcher, normalize, technology_words
+from tradecraft.ingest.tags import PhraseMatcher, classify, normalize, technology_words
 from tradecraft.library import search_sql, synonyms
 from tradecraft.library.types import BrowseFolder, BrowseLevel, Card, SearchAnswer, SearchHit
 from tradecraft.settings import EffectiveSettings, constant
@@ -115,9 +115,12 @@ class Candidate:
     title: float = 0.0
     strong: float = 0.0
     anywhere: float = 0.0
-    # How many of the need's term groups the page's title or breadcrumb holds: Library now's fit
-    # reads it (``hints.fits``); the shares above, the verdict and the order do not.
+    # Where a page names itself (its title, breadcrumb or own file name): how many of the need's
+    # term groups it holds there, and how many vocabulary topics it names there that the need names
+    # too, each in any of the topic's phrases ("Directory Traversal" for "path traversal"). Library
+    # now's fit reads them (``hints.fits``); the shares above, the verdict and the order do not.
     named: int = 0
+    named_topics: int = 0
     snippet: str = ""
 
 
@@ -440,6 +443,7 @@ async def free_first_pass(owner_id: str, catalog: Any, query: str, *, resource: 
     groups_total = 0
     if candidates and groups:
         coverage = {r["id"]: r for r in rows}
+        need_topics = set(classify(query).topics)
         for cand in candidates:
             got = coverage.get(cand.row["id"])
             total = int(got["total"]) if got else 0
@@ -449,7 +453,18 @@ async def free_first_pass(owner_id: str, catalog: Any, query: str, *, resource: 
                 cand.strong = int(got["strong"]) / total
                 cand.anywhere = int(got["anywhere"]) / total
                 cand.named = int(got.get("named") or 0)
+                cand.named_topics = named_topics(need_topics, cand.row, got.get("file_name"))
     return FirstPass(tuple(wordings), candidates, groups, cves, groups_total)
+
+
+def named_topics(need_topics: set, row: Mapping[str, Any], file_name: Any) -> int:
+    """The vocabulary topics the need names that the page names where it names itself (its title,
+    breadcrumb or file name), with the rules that tag pages (``tags.classify``); never its headings."""
+    if not need_topics:
+        return 0
+    crumbs = [str(b) for b in row.get("breadcrumb") or ()]
+    found = classify(str(row.get("title") or ""), [*crumbs, str(file_name or "")]).topics
+    return len(need_topics & set(found))
 
 
 def is_related(cand: Candidate, th: Thresholds) -> bool:

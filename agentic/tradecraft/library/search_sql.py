@@ -43,6 +43,12 @@ TSQ = f"(SELECT websearch_to_tsquery('{CFG}', %(q)s) AS tsq) q"
 # a lexeme at all (a stop word has none, and counts neither way).
 GROUP = f"websearch_to_tsquery('{CFG}', g)"
 GROUPS = "unnest(%(groups)s::text[]) AS gs(g)"
+# The page's own file name, from its row's URL: the last path segment (a folder's when the URL ends
+# with a slash), its extension dropped, "%20", "-", "_", "." and "+" read as spaces. A page stored under
+# its site's name ("HackTricks", "Index") names itself there; the breadcrumb holds only the folders.
+# ``%%`` is a literal percent sign for the driver.
+FILE_NAME = ("translate(replace(regexp_replace(regexp_replace(regexp_replace(e.url, '/+$', ''), '^.*/', ''), "
+             "'\\.[A-Za-z0-9]{1,5}$', ''), '%%20', ' '), '-_.%%+', '     ')")
 
 STATEMENTS: dict[str, str] = {
     # --- the free first pass: one statement per kind of wording ---------------------------
@@ -77,8 +83,9 @@ STATEMENTS: dict[str, str] = {
     ),
     # How much of the agent's need each candidate covers: its term groups found in the title
     # (weight A), in the title, breadcrumb and headings (A and B), anywhere (the card or a
-    # section), and in the title or breadcrumb (``named``: where a page names itself; weight B
-    # also holds the headings, so the breadcrumb is read on its own).
+    # section), and in the title, breadcrumb or file name (``named``: where a page names itself;
+    # weight B also holds the headings, so the breadcrumb is read on its own). The file name comes
+    # back too, for the vocabulary topics the page names (``search.free_first_pass``).
     "assess": (
         f"SELECT e.id, "
         f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0) AS total, "
@@ -91,7 +98,9 @@ STATEMENTS: dict[str, str] = {
         f"AND s.resource_id = e.resource_id AND s.generation = e.generation AND s.search_vector @@ {GROUP}))) "
         f"AS anywhere, "
         f"(SELECT count(*) FROM {GROUPS} WHERE numnode({GROUP}) > 0 AND (ts_filter(e.search_vector, '{{a}}') @@ {GROUP} "
-        f"OR to_tsvector('{CFG}', array_to_string(e.breadcrumb, ' ')) @@ {GROUP})) AS named "
+        f"OR to_tsvector('{CFG}', array_to_string(e.breadcrumb, ' ')) @@ {GROUP} "
+        f"OR to_tsvector('{CFG}', {FILE_NAME}) @@ {GROUP})) AS named, "
+        f"{FILE_NAME} AS file_name "
         f"FROM {E} e {LIVE_E} WHERE {KEYED_E} AND e.id = ANY(%(ids)s::bigint[])"
     ),
     # A few words of the stored section that matched best, for the hits shown (R-091).

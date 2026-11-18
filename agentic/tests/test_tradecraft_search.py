@@ -63,7 +63,7 @@ class FakeIndex:
             for i in params["ids"]:
                 strong, anywhere, *rest = self.coverage.get(i, (0, 0))
                 out.append(dict(id=i, strong=strong, anywhere=anywhere, total=rest[0] if rest else 1,
-                                named=rest[1] if len(rest) > 1 else 0))
+                                named=rest[1] if len(rest) > 1 else 0, file_name=rest[2] if len(rest) > 2 else ""))
             return out
         answer = self.answers.get(name, [])
         return [dict(r) for r in (answer(params) if callable(answer) else answer)]
@@ -268,7 +268,9 @@ def test_query_text_only_bound():
     text reaches Postgres only as a bound parameter."""
     tree = ast.parse((LIB / "search_sql.py").read_text())
     allowed = {"E", "S", "T", "R", "CFG", "CARD", "LIVE_E", "LIVE_S", "LIVE_T", "KEYED_E", "FILTERS", "TSQ", "GROUP",
-               "GROUPS"}
+               "GROUPS", "FILE_NAME"}
+    # Each fragment is itself fixed text: a literal, or an f-string of the fragments above.
+    assert isinstance(search_sql.FILE_NAME, str) and "%(" not in search_sql.FILE_NAME
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):
             for part in node.values:
@@ -325,14 +327,37 @@ def test_the_first_pass_reads_the_groups_a_pages_title_or_breadcrumb_names():
     assert got == {1: (1, 0.5, 0.75), 2: (0, 0.5, 0.75)} and fp.total == 4
     assessed = search_sql.STATEMENTS["assess"]
     named = assessed[assessed.index("AS anywhere"):assessed.index("AS named")]
-    # The title's weight and the breadcrumb, never the headings' weight B (which also holds the breadcrumb).
-    assert "'{a}'" in named and "e.breadcrumb" in named and "'{a,b}'" not in named
+    # The title's weight, the breadcrumb and the page's own file name (its URL's last segment), never
+    # the headings' weight B (which also holds the breadcrumb).
+    assert "'{a}'" in named and "e.breadcrumb" in named and "e.url" in named and "'{a,b}'" not in named
+    assert "AS file_name" in assessed
     answers = [run(search.search(OWNER, catalog(("r1", "patt", "normal")), "time based blind injection",
                                  index=FakeIndex({"entries_text": [row(1), row(2)]},
                                                  coverage={1: (2, 3, 4, a), 2: (2, 3, 4, b)})))
                for a, b in ((1, 0), (0, 1), (0, 0))]
     assert len({(a.verdict, tuple(h.card.page_id for h in a.hits)) for a in answers}) == 1
     assert [h.card.page_id for h in answers[0].hits] == ["patt:1", "patt:2"]
+
+
+def test_a_page_named_in_other_words_of_the_steps_vocabulary_topic_or_by_its_file_name():
+    """FIX-ITER4 review: the step names a vocabulary topic by one of its phrases ("path traversal");
+    a page whose title, breadcrumb or own file name names the same topic by another of them
+    ("Directory Traversal", "local file inclusion") is named too. A heading still never names, and a
+    page of another topic is not named."""
+    rows = [row(1, title="Directory Traversal > README", breadcrumb=["Directory Traversal"]),
+            row(2, title="Kerberoasting", breadcrumb=["Kerberos"]),
+            row(3, title="HackTricks", breadcrumb=["linux hardening"]),
+            row(4, title="Notes", headings=[{"level": 2, "text": "Directory traversal"}])]
+    index = FakeIndex({"entries_text": rows}, coverage={1: (0, 2, 4, 0, "README"), 2: (0, 2, 4, 0, "t1208 kerberoasting"),
+                                                       3: (0, 2, 4, 0, "local file inclusion tricks"),
+                                                       4: (1, 2, 4, 0, "notes")})
+    fp = run(search.free_first_pass(OWNER, catalog(("r1", "patt", "normal")), "check the path traversal on the download",
+                                    index=index))
+    assert {c.row["id"]: (c.named, c.named_topics) for c in fp.candidates} == {1: (0, 1), 2: (0, 0), 3: (0, 1),
+                                                                                  4: (0, 0)}
+    # A step that names no vocabulary topic names none this way.
+    plain = run(search.free_first_pass(OWNER, catalog(("r1", "patt", "normal")), "check the download", index=index))
+    assert {c.named_topics for c in plain.candidates} == {0}
 
 
 def test_a_long_query_is_cut_and_its_terms_capped():

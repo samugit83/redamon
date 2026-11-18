@@ -9,10 +9,11 @@ still the next one. Each step is searched once with the session's facts (topic, 
 technologies, the catalog's resources) through the free first pass (Q7.2), and again only when
 those facts change, or when the agent has read every page the search kept and it kept a full set
 (more may fit); the CVE ids a finding confirmed get a search of their own. A page is kept when the
-search's own scores pass the run's match strictness (``search.is_related``) and something of the
-step is in its title or breadcrumb, where a page names itself (a heading only lists what a long
-page contains), or it names a CVE id exactly, or its title is a close fuzzy match (``fits``). Each
-search keeps its best ``STANDING`` pages not read yet; the block shows
+search's own scores pass the run's match strictness (``search.is_related``) and the page names
+something of the step where it names itself, its title, breadcrumb or file name (a term of the
+step, or a vocabulary topic the step names, in any of that topic's phrases; a heading only lists
+what a long page contains), or it names a CVE id exactly, or its title is a close fuzzy match
+(``fits``). Each search keeps its best ``STANDING`` pages not read yet; the block shows
 ``constants.pagesPerHint`` (3), the best of each step in turn, labelled by the step they fit. A
 page the run read never comes back; one shown and not read may, for another step.
 
@@ -207,20 +208,23 @@ def render(steps: Sequence[tuple[str, str]], rows: Sequence[Mapping[str, Any]]) 
 
 def fits(cand: Any, th: Any) -> bool:
     """The threshold, from the search's own scores: related at the run's match strictness, and
-    about something the goal names (one of its terms in the title or the breadcrumb), or an exact
-    CVE id, or a close title. A heading does not count: a long page's headings hold planning words
-    ("Payload & Detection Patterns", "Bypass Techniques") that any step uses, and fitted it to steps
-    of another subject (FIX-ITER4, measured on 62 steps: 14 fewer off-topic rows, 8 more relevant)."""
+    about something the goal names where the page names itself (one of the goal's terms, or a
+    vocabulary topic the goal names, in its title, breadcrumb or file name), or an exact CVE id, or
+    a close title. A heading does not count: a long page's headings hold planning words ("Payload &
+    Detection Patterns", "Bypass Techniques") that any step uses, and would fit it to steps of
+    another subject."""
     from tradecraft.library import search
 
-    return search.is_related(cand, th) and (cand.entity_match or cand.named > 0 or cand.fuzzy >= th.fuzzy)
+    return search.is_related(cand, th) and (cand.entity_match or cand.named > 0 or cand.named_topics > 0
+                                            or cand.fuzzy >= th.fuzzy)
 
 
 def fit_line(found: Any, kept: Sequence[tuple[str, Any]], th: Any, by_id: Mapping[str, Any]) -> str:
     """The measurement of one step's search, page IDs and counts only: the step's term groups, the
-    threshold, each kept page as ``<page>/<groups covered>/<groups its title or breadcrumb names>``,
-    and the ``FIT_LOG_BEST`` best by the fused rank with ``/<1 if it fits>``: the threshold can be
-    measured on real runs from the log alone, without the step's or a page's words."""
+    threshold, each kept page as ``<page>/<groups covered>/<groups named>/<topics named>`` (named:
+    in its title, breadcrumb or file name), and the ``FIT_LOG_BEST`` best by the fused rank with
+    ``/<1 if it fits>``: the threshold can be measured on real runs from the log alone, without the
+    step's or a page's words."""
     from tradecraft.library import page_ids
 
     def ref(cand: Any) -> Optional[str]:
@@ -228,7 +232,7 @@ def fit_line(found: Any, kept: Sequence[tuple[str, Any]], th: Any, by_id: Mappin
         return page_ids.format(res.slug, int(cand.row["page_id"])) if res is not None else None
 
     def counts(cand: Any) -> str:
-        return f"{round(cand.anywhere * found.total)}/{cand.named}"
+        return f"{round(cand.anywhere * found.total)}/{cand.named}/{cand.named_topics}"
 
     keep = ",".join(f"{page}/{counts(cand)}" for page, cand in kept) or "-"
     top = sorted(found.candidates, key=lambda c: (-c.score, c.row["page_id"]))[:FIT_LOG_BEST]
@@ -338,7 +342,10 @@ async def _pass(catalog: Any, settings: EffectiveSettings, focus: profile.Focus,
         if len(rows) >= STANDING:
             break
     if not exact:
-        logger.info(fit_line(found, kept, th, by_id))
+        try:
+            logger.info(fit_line(found, kept, th, by_id))
+        except Exception as exc:  # the measurement never costs the step the pages it measures
+            logger.warning(f"[tradecraft] library_now fit error={type(exc).__name__}")
     return rows
 
 
