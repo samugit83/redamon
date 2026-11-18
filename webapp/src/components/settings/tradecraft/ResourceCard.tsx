@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { List, Loader2, Pencil, RotateCw, Square, Trash2 } from 'lucide-react'
 import { Toggle } from '@/components/ui'
-import { isRunning, jobLabel, lastRefreshedOf, relTime, type ResourceView } from '@/lib/tradecraft/client'
+import { cveIndexHint, isRunning, jobLabel, lastRefreshedOf, relTime, type ResourceView } from '@/lib/tradecraft/client'
 import { useEnabledImpactConfirm } from './EnabledImpactAlert'
 import { IngestionReport } from './IngestionReport'
 import { MapView } from './MapView'
@@ -11,6 +11,12 @@ import css from './tradecraft.module.css'
 
 export const STALE_TEXT = 'Ingested with older settings'
 export const LEGACY_TEXT = 'Ingested before 2.0: refresh for headings, descriptions and search inside pages'
+export const CVE_REFRESH_TEXT = 'Refresh to index this archive'
+// Where a token goes is in the text itself, not only in the tooltip: a keyboard or touch user never sees a title.
+export const CVE_TOKEN_TEXT =
+  'Add a GitHub token to index this archive: the GitHub Access Token in Global Settings > API Keys, or the GitHub token override in Edit > Access, then refresh'
+export const CVE_INDEX_WHY = 'An index lets search and Library now find the CVEs this archive holds; without one, a CVE is read only by its id.'
+const CVE_HINT_TEXT = { refresh: CVE_REFRESH_TEXT, token: CVE_TOKEN_TEXT } as const
 
 export interface ResourceCardProps {
   /** The account: the Enabled alert reads its projects. */
@@ -35,6 +41,7 @@ export function ResourceCard({ userId, resource: r, busy = false, onRefresh, onC
   const confirmEnabled = useEnabledImpactConfirm(userId)
   const refreshedAt = lastRefreshedOf(r)
   const report = r.report
+  const cveHint = cveIndexHint(r)
   return (
     <div className={`${css.card} ${r.enabled ? '' : css.cardDisabled}`} data-testid={`tc-card-${r.id}`}>
       <div className={css.cardHead}>
@@ -50,6 +57,11 @@ export function ResourceCard({ userId, resource: r, busy = false, onRefresh, onC
           </span>
         )}
         {r.mapVersion === 2 && <span className={`${css.badge} ${css.badgeInfo}`}>{LEGACY_TEXT}</span>}
+        {cveHint && (
+          <span className={`${css.badge} ${css.badgeInfo}`} title={CVE_INDEX_WHY} data-testid="tc-cve-index-hint">
+            {CVE_HINT_TEXT[cveHint]}
+          </span>
+        )}
         <div className={css.cardActions}>
           <Toggle
             checked={r.enabled} size="small" aria-label={`Enabled: ${r.name}`}
