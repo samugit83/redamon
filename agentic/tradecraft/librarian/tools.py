@@ -74,8 +74,10 @@ class LibraryTools:
         ``constants.mergedCandidates`` cards, the related ones in their order, then the rest."""
         if self.index is None:
             return Found("NOT FOUND", ())
+        # A CVE archive's entry has no text the librarian could outline or read: its cards would
+        # spend a model call and a page read to answer nothing (``tradecraft_lookup`` reads a CVE).
         first = await search.free_first_pass(self.owner_id, self.catalog, query, session=self.session,
-                                             settings=self.settings, index=self.index)
+                                             settings=self.settings, index=self.index, archives=False)
         verdict, related = search.verdict_of(first.candidates, self.settings.str("search.strictness"))
         seen = {c.row["id"] for c in related}
         ranked = list(related) + [c for c in first.candidates if c.row["id"] not in seen]

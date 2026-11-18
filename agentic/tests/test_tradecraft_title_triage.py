@@ -194,7 +194,7 @@ class TagState(SimpleNamespace):
     def __init__(self, cards, tag_every_page="rules_model", model=None, entries=()):
         super().__init__(cards=cards, entries=list(entries), llm_calls=0, errors={}, progressed=[],
                          settings=EffectiveSettings({"focus.tagEveryPage": tag_every_page}),
-                         request=SimpleNamespace(job_id="job-1"))
+                         request=SimpleNamespace(job_id="job-1"), site_type="agentic-crawl")
         self._model = model
 
     async def model(self):

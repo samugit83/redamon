@@ -376,11 +376,21 @@ def _gh_repo_meta(repo: str, size_kb: int) -> dict:
             "size": size_kb, "private": False, "html_url": f"https://github.com/tc-fixture/{repo}"}
 
 
-def _contents_entry(repo: str, path: str, kind: str, size: int) -> dict:
+def _contents_entry(repo: str, path: str, kind: str, size: int, sha: str = "") -> dict:
     entry = {"name": path.rsplit("/", 1)[-1], "path": path, "type": kind, "size": size}
     if kind == "file":
         entry["download_url"] = f"https://raw.githubusercontent.com/tc-fixture/{repo}/main/{path}"
+    if sha:
+        entry["sha"] = sha
     return entry
+
+
+def _cve_year_sha(year: str) -> str:
+    return _blob_sha(5000 + int(year))
+
+
+def _cve_file(cve: str) -> str:
+    return _json({"id": cve, "summary": f"Synthetic entry {cve}.", "poc": [f"https://github.com/tc-fixture/poc-{cve.lower()}"]})
 
 
 def _tarball(repo: str, members: Dict[str, bytes]) -> bytes:
@@ -433,7 +443,7 @@ def github_sites(files: Files) -> None:
     _w(files, f"{api}/cve/index.json", _json(_gh_repo_meta("cve", 2048)))
     readme = "# tc-fixture/cve\n\nSynthetic CVE proof-of-concept archive laid out as {year}/{cve}.json.\n"
     root = [_contents_entry("cve", "README.md", "file", len(readme))]
-    root += [_contents_entry("cve", y, "dir", 0) for y in CVE_YEARS]
+    root += [_contents_entry("cve", y, "dir", 0, sha=_cve_year_sha(y)) for y in CVE_YEARS]
     _w(files, f"{api}/cve/contents/index.json", _json(sorted(root, key=lambda e: e["path"])))
     _w(files, f"{raw}/cve/main/README.md", readme)
     _w(files, "github.com/tc-fixture/cve/index.html",
@@ -443,11 +453,15 @@ def github_sites(files: Files) -> None:
         ids = [f"CVE-{year}-{n:04d}" for n in range(1, count + 1)]
         listing = [_contents_entry("cve", f"{year}/{cve}.json", "file", 120) for cve in ids]
         _w(files, f"{api}/cve/contents/{year}/index.json", _json(listing[:CVE_LISTING_CAP], compact=True))
+        # The git trees API lists a folder whole, where the contents API stops at 1,000: the
+        # archive's index (ingestion) reads the year folders this way.
+        tree = [{"path": f"{cve}.json", "type": "blob", "mode": "100644", "size": len(_cve_file(cve)),
+                 "sha": _blob_sha(20000 + int(year) * 10 + i)} for i, cve in enumerate(ids)]
+        _w(files, f"{api}/cve/git/trees/{_cve_year_sha(year)}/index.json",
+           _json({"sha": _cve_year_sha(year), "tree": tree, "truncated": False}, compact=True))
         kept = ids if count <= CVE_LISTING_CAP else ids[:CVE_RAW_PER_BIG_YEAR] + ids[-CVE_RAW_PER_BIG_YEAR:]
         for cve in kept:
-            _w(files, f"{raw}/cve/main/{year}/{cve}.json",
-               _json({"id": cve, "summary": f"Synthetic entry {cve}.",
-                      "poc": [f"https://github.com/tc-fixture/poc-{cve.lower()}"]}))
+            _w(files, f"{raw}/cve/main/{year}/{cve}.json", _cve_file(cve))
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +566,7 @@ page names a real target. Regenerate with `make_fixtures.py`; never edit the out
 | `docs.tc-fixture.test` | Sphinx docs with `searchindex.js` |
 | `book.tc-fixture.test` | a GitBook with `sitemap.xml` |
 | `blog.tc-fixture.test` | a website: 60 posts, `/page/2/` pagination, tag pages, `robots.txt` (a `Disallow` and a `Sitemap:` line), `sitemap.xml`; post 42 is JavaScript-only (its article is in `_rendered/`), post 13 carries prompt-injection text, post 7 names planted CVE ids |
-| `github.com`, `api.github.com`, `raw.githubusercontent.com`, `codeload.github.com` | `tc-fixture/payloads` (tree with `.md`, `.yml`, `.yar`, folder READMEs, a tar.gz archive behind a redirect) and `tc-fixture/cve` (year folders; the 2023 listing is cut at 1,000 of its 1,050 entries, like the GitHub contents API; raw files exist for the small years and the first and last five of 2023) |
+| `github.com`, `api.github.com`, `raw.githubusercontent.com`, `codeload.github.com` | `tc-fixture/payloads` (tree with `.md`, `.yml`, `.yar`, folder READMEs, a tar.gz archive behind a redirect) and `tc-fixture/cve` (year folders; the 2023 listing is cut at 1,000 of its 1,050 entries, like the GitHub contents API, and each year folder's git tree lists it whole; raw files exist for the small years and the first and last five of 2023) |
 | `files.tc-fixture.test` | `guide.pdf`, three pages with bookmarks |
 """
 

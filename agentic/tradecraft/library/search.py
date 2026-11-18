@@ -17,7 +17,9 @@ session boosts and never filters: a page of the current skill's topic, of the ph
 preferred kind, or naming the target's technologies ranks higher, and so does a resource of
 High priority (Low ranks lower). The verdict, FOUND, RELATED or NOT FOUND, measures how much of
 the agent's need the best pages cover; ``search.strictness`` is the one control over it, and
-the weights, thresholds and merge stay internal (Q11, R-418).
+the weights, thresholds and merge stay internal (Q11, R-418). A CVE archive's index, a text-less
+entry per CVE, is read apart from the wordings: one entry for each CVE id the need names
+(``archive_entries``), never cut by the merge, ahead of the other pages that name that id.
 
 Every statement is in ``search_sql``: keyed by the owner and the catalog's resources, joined to
 each resource's live generation, the query text bound as a parameter only. Wordings 3 and 4 add
@@ -122,6 +124,8 @@ class Candidate:
     named: int = 0
     named_topics: int = 0
     snippet: str = ""
+    # A CVE archive's entry for a CVE id the need names (``archive_entries``).
+    archive: bool = False
 
 
 # The first statement of a call's transaction: one snapshot for every statement after it, and
@@ -353,8 +357,17 @@ def _user_synonyms(catalog: Any) -> list[synonyms.Synonym]:
     return synonyms.parse_user((getattr(catalog, "search", None) or {}).get("synonyms"))
 
 
+# A CVE archive's index (``builders.index_cve``): one text-less entry per CVE file, up to 20,000, its
+# title the CVE id. No wording reads it: every such title holds "cve" and its year, so a text
+# wording would rank the whole index for any step that says "CVE", and a fuzzy one would match a
+# neighbouring id (CVE-2021-41774 for CVE-2021-41773). ``archive_entries`` reads it by CVE id.
+ARCHIVE_TYPES = ("cve-poc-db",)
+
+
 async def _run_wording(index: Any, wording: Wording, base: Mapping[str, Any]) -> list[dict]:
     params = {**base, **wording.params}
+    if not params["rids"]:
+        return []
     if wording.kind == "entities":
         return await index.rows("entries_entities", params)
     if wording.kind == "fuzzy":
@@ -417,8 +430,9 @@ def merge(results: Sequence[tuple[Wording, list[dict]]], priorities: Mapping[str
 async def free_first_pass(owner_id: str, catalog: Any, query: str, *, resource: Optional[str] = None,
                           topic: Optional[str] = None, kind: Optional[str] = None, technology: Optional[str] = None,
                           session: Optional[Session] = None, settings: Optional[EffectiveSettings] = None,
-                          index: Any = None) -> FirstPass:
-    """The merged candidates of one need, with their coverage of it; no model call."""
+                          index: Any = None, archives: bool = True) -> FirstPass:
+    """The merged candidates of one need, with their coverage of it; no model call. ``archives``
+    False leaves the CVE archives' entries out (a reader that cannot read them: the librarian)."""
     scope = _scope(catalog, resource)
     settings = _search_settings(catalog, settings)
     topic, kind, technology = resolve_topic(topic), resolve_kind(kind), resolve_technology(technology)
@@ -430,15 +444,18 @@ async def free_first_pass(owner_id: str, catalog: Any, query: str, *, resource: 
     cves = frozenset(entity_rules.cve_ids(query))
     if not scope or not wordings:
         return FirstPass(tuple(wordings), [], groups, cves)
-    base = {"uid": owner_id, "rids": [r.id for r in scope], "topic": topic, "kind": kind, "tech": technology,
-            "techs": [], "limit": PER_WORDING}
+    held = [r for r in scope if getattr(r, "type", "") in ARCHIVE_TYPES]
+    base = {"uid": owner_id, "rids": [r.id for r in scope if r not in held], "topic": topic, "kind": kind,
+            "tech": technology, "techs": [], "limit": PER_WORDING}
     async with one_snapshot(index or LibraryIndex()) as ix:
         results = [(w, await _run_wording(ix, w, base)) for w in wordings]
         priorities = {r.id: getattr(r, "priority", "normal") for r in scope}
         candidates = merge(results, priorities, session if use_session else None, cves)
+        if archives:
+            candidates += await archive_entries(ix, base, held, cves)
         rows = []
         if candidates and groups:
-            rows = await ix.rows("assess", {"uid": owner_id, "rids": base["rids"], "groups": groups,
+            rows = await ix.rows("assess", {"uid": owner_id, "rids": [r.id for r in scope], "groups": groups,
                                             "ids": [c.row["id"] for c in candidates]})
     groups_total = 0
     if candidates and groups:
@@ -513,15 +530,45 @@ async def _snippets(index: Any, owner_id: str, shown: Sequence[Candidate], group
             cand.section = cand.section or got.get("heading") or None
 
 
+# The archive that answers for a CVE several archives hold: the highest priority, then the first
+# slug. Both are the person's to set, and neither changes with a refresh.
+_PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
+
+
+async def archive_entries(index: Any, params: Mapping[str, Any], archives: Sequence[Any],
+                          cves: Iterable[str]) -> list[Candidate]:
+    """The CVE archives' entries for the CVE ids the need names, one per id: a list of PoCs for a
+    CVE is one row, however many archives hold it (the reader reads it from that archive; another
+    archive's copy is still read by its ``cve_id``), and an entry the person blocked stands for none. Each is scored as the first of a wording's list,
+    and kept apart from the merge, whose cut the step's other words decide (a step that names a CVE
+    and a product loses it there)."""
+    ids = sorted(cves)
+    if not ids or not archives:
+        return []
+    priority = {r.id: getattr(r, "priority", "normal") for r in archives}
+    rank = {r.id: (_PRIORITY_RANK.get(priority[r.id], 1), r.slug) for r in archives}
+    rows = await index.rows("archive_entries", {**params, "rids": list(rank), "ents": ids,
+                                                "limit": len(ids) * len(rank)})
+    best: dict[str, dict] = {}
+    for row in sorted((r for r in rows if r["resource_id"] in rank), key=lambda r: rank[r["resource_id"]]):
+        for cve_id in row.get("entities") or ():
+            if cve_id in ids:
+                best.setdefault(cve_id, row)
+    chosen = {row["id"]: row for row in best.values()}
+    return [Candidate(row=dict(row), score=PRIORITY_BOOST.get(priority[row["resource_id"]], 1.0) / (RRF_K + 1),
+                      wordings={"entities"}, entity_match=True, archive=True) for row in chosen.values()]
+
+
 def _order(cand: Candidate) -> tuple:
-    """Related pages, the ones that hold more of the need first: an exact CVE, then the share
-    of the need found anywhere on the page, then in its title, then in its title and headings;
-    among equals the fused rank with its boosts decides. The fuzzy title similarity is
+    """Related pages, the ones that hold more of the need first: an exact CVE (a CVE archive's
+    entry for it first: the archive's answer for that CVE, where another page only names it),
+    then the share of the need found anywhere on the page, then in its title, then in its title
+    and headings; among equals the fused rank with its boosts decides. The fuzzy title similarity is
     continuous: ahead of the fused rank it would leave priority, the session and the wordings'
     agreement nothing to decide, so it only breaks the fused rank's ties (it is in that rank
     already, as the fuzzy wording's list)."""
-    return (not cand.entity_match, -round(cand.anywhere, 3), -round(cand.title, 3), -round(cand.strong, 3),
-            -cand.score, -cand.fuzzy, cand.row["page_id"])
+    return (not cand.entity_match, not cand.archive, -round(cand.anywhere, 3), -round(cand.title, 3),
+            -round(cand.strong, 3), -cand.score, -cand.fuzzy, cand.row["page_id"])
 
 
 def verdict_of(candidates: Sequence[Candidate], strictness: str) -> tuple[str, list[Candidate]]:

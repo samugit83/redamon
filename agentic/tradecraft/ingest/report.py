@@ -37,10 +37,10 @@ def _pct(n: int, total: int) -> int:
 
 
 def readiness(cards: list[dict], storage_mode: str, site_type: str) -> dict:
-    """Q4's readiness line over the kept cards; {} when none was kept (a CVE archive has no
-    pages to search)."""
+    """Q4's readiness line over the kept cards; {} when none was kept, and for a CVE archive,
+    whose entries are CVE ids found by their id, never by text (and Stored is not offered)."""
     kept = [c for c in cards if c.get("status", "kept") == "kept"]
-    if not kept:
+    if not kept or site_type == "cve-poc-db":
         return {}
     total = len(kept)
     line = {

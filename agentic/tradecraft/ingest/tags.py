@@ -98,7 +98,11 @@ def _merged(existing: Optional[Iterable[str]], found: Iterable[str]) -> list[str
 
 async def tag(state: "IngestState") -> "IngestState":
     """Every card with its rules' tags, added to any it already has (a curation or the focus's
-    triage may have set some); then the model pass for the kept cards left without a topic."""
+    triage may have set some); then the model pass for the kept cards left without a topic. A CVE
+    archive's entries are CVE ids: no vocabulary word to find, and up to 20,000 titles no model is
+    asked about."""
+    if state.site_type == "cve-poc-db":
+        return state
     from_focus = {e.url: e.extra for e in state.entries if "focus_topics" in e.extra or "focus_kinds" in e.extra}
     untagged = []
     for card in state.cards:

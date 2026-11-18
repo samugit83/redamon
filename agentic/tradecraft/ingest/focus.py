@@ -372,7 +372,10 @@ def _judges(focus: Focus) -> bool:
 async def select(state: "IngestState") -> "IngestState":
     """The entries with the focus's decisions (Focused mode), or its tags (Tag only); the map as
     built otherwise. An entry that already carries a decision (the focus-aware crawl judged it on
-    its content, T5.2) is not judged again."""
+    its content, T5.2) is not judged again. A CVE archive has nothing to focus (the form hides
+    the section): a focus sent to one through the API judges none of its CVE ids."""
+    if state.site_type == "cve-poc-db":
+        return state
     focus = focus_of(state.request.resource.focus, state.settings)
     if focus.mode == "tag_only":
         return await _tag_only(state, focus)
@@ -579,7 +582,10 @@ def _drop_checked(state: "IngestState", entry: Any, card: dict, reason: str) -> 
 
 async def content_check(state: "IngestState") -> "IngestState":
     """Step 3: the kept pages the triage could not decide (with Strict, every kept page) judged on
-    their start, each with a one-line description; Tag only writes the descriptions and drops nothing."""
+    their start, each with a one-line description; Tag only writes the descriptions and drops nothing.
+    None for a CVE archive, as ``select``."""
+    if state.site_type == "cve-poc-db":
+        return state
     focus = focus_of(state.request.resource.focus, state.settings)
     tag_only = focus.mode == "tag_only"
     if not (focus.filters or (tag_only and _judges(focus))):

@@ -267,8 +267,8 @@ def test_query_text_only_bound():
     """D-56: every statement is fixed at import from table names and fixed fragments; the query
     text reaches Postgres only as a bound parameter."""
     tree = ast.parse((LIB / "search_sql.py").read_text())
-    allowed = {"E", "S", "T", "R", "CFG", "CARD", "LIVE_E", "LIVE_S", "LIVE_T", "KEYED_E", "FILTERS", "TSQ", "GROUP",
-               "GROUPS", "FILE_NAME"}
+    allowed = {"E", "S", "T", "R", "C", "CFG", "CARD", "LIVE_E", "LIVE_S", "LIVE_T", "KEYED_E", "FILTERS", "TSQ",
+               "GROUP", "GROUPS", "FILE_NAME"}
     # Each fragment is itself fixed text: a literal, or an f-string of the fragments above.
     assert isinstance(search_sql.FILE_NAME, str) and "%(" not in search_sql.FILE_NAME
     for node in ast.walk(tree):

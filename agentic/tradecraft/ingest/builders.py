@@ -6,7 +6,8 @@ URL of a Sphinx site). Every request goes through ``fetch.fetch_raw`` (the GitHu
 only to GitHub hosts) and every cap is a setting whose default is 1.x's value; the wiki's
 sitemap, unlimited in 1.x, stops at ``knownTypes.maxMapEntries.wiki`` (20,000). Where 1.x left
 a docs site whose search index listed nothing with its homepage alone, its sitemaps map it,
-else the pipeline crawls it.
+else the pipeline crawls it. A CVE archive, which 1.x never listed, is indexed up to the map
+ceiling every type shares (``cve_index_cap``).
 
 Parsing (XML, HTML, PDF) is CPU work: the pipeline passes ``blocking``, which runs it on
 the job runner's thread pool; called alone, a builder parses inline.
@@ -14,6 +15,7 @@ the job runner's thread pool; called alone, a builder parses inline.
 
 from __future__ import annotations
 
+import heapq
 import io
 import json
 import re
@@ -33,7 +35,7 @@ from orchestrator_helpers.web_sources import (
     split_github_url,
 )
 from tradecraft.ingest import fetch, robots
-from tradecraft.settings import EffectiveSettings, constant
+from tradecraft.settings import EffectiveSettings, constant, keys, setting
 
 Blocking = Callable[..., Awaitable[Any]]
 
@@ -75,9 +77,17 @@ class MapResult:
     # The report's stopReason when the type can build its map more than one way: which source did.
     # Fixed words, codes and counts, never a URL; at most 64 characters.
     report_stop: str = ""
+    # Errors counted by code in the report, apart from ``error`` (which also fails the map).
+    counted: dict = field(default_factory=dict)
+    # A CVE archive whose index missed folders this time only (an error, a rate limit, an answer
+    # that is not a tree): a refresh then keeps the previous index (``pipeline._incomplete_cve_index``).
+    index_incomplete: bool = False
+    # A CVE archive whose listing the time budget cut: a refresh keeps a previous index the budget
+    # did not cut (``pipeline._budget_cut_cve_index``).
+    index_budget_cut: bool = False
 
 
-_YEAR_DIR_RE = re.compile(r"(?:19|20)\d{2}")
+_YEAR_DIR_RE = re.compile(r"(?:19|20)\d{2}", re.ASCII)
 _WIKI_NAV = ".md-nav__link, nav a"
 _GITBOOK_NAV = "aside nav a, nav a, [role='navigation'] a"
 _SPHINX_INDEXES = ("/searchindex.json", "/search-index.json", "/searchindex.js")
@@ -678,9 +688,12 @@ async def build_github(url: str, settings: EffectiveSettings, *, github_token: O
     return result
 
 
-async def build_cve(url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None) -> MapResult:
-    """A CVE archive is not listed: lookups probe its year folders. A repository with no year
-    folder at its root is a plain repository (only a definite listing decides)."""
+async def build_cve(url: str, settings: EffectiveSettings, *, github_token: Optional[str] = None,
+                    blocking: Blocking = inline, forced: bool = False, should_stop: Optional[Stop] = None) -> MapResult:
+    """A CVE archive's lookups probe its year folders at read time; its map is an index of the
+    CVE files its path patterns name (``index_cve``): text-less entries that let search and
+    Library now find a CVE id the archive holds. A repository with no year folder at its root
+    is a plain repository (only a definite listing decides), unless the person forced the type."""
     parsed = split_github_url(url)
     if not parsed:
         return MapResult("cve-poc-db", error="bad_url", note="github_url_unparsed")
@@ -693,13 +706,256 @@ async def build_cve(url: str, settings: EffectiveSettings, *, github_token: Opti
             branch = str(info["default_branch"])
     result = MapResult("cve-poc-db", meta={"owner": owner, "repo": repo, "branch": branch}, index_kind="none",
                        index_url=f"https://github.com/{owner}/{repo}")
-    resp = await fetch.fetch_raw(_api(owner, repo, "/contents"), settings, github_token=github_token)
+    resp = await fetch.fetch_raw(_api(owner, repo, "/contents" + _ref(settings, branch)), settings,
+                                 github_token=github_token)
     listing = _json_or_none(resp) if resp.status == 200 else None
     if isinstance(listing, list) and not any(
             isinstance(it, dict) and it.get("type") == "dir" and _YEAR_DIR_RE.fullmatch(str(it.get("name", "")))
             for it in listing):
         result.retype = "github-repo"
+        if not forced:
+            return result
+    root_error = "" if isinstance(listing, list) else (resp.error or _status_note(resp.status))
+    await index_cve(result, owner, repo, listing if isinstance(listing, list) else None, root_error, settings,
+                    github_token=github_token, blocking=blocking, should_stop=should_stop,
+                    rate_limited=resp.status in _RATE_LIMITED)
     return result
+
+
+# --------------------------------------------------------------------------------------
+# A CVE archive's index (the owner's decision Q-C, 2026-11-18: option A of NQ-6)
+# --------------------------------------------------------------------------------------
+
+# Codes counted in the report when the index did not list a folder, by cause; the job's log note
+# names the first one. A folder missed this time (an error, a rate limit, an answer that is not a
+# tree) makes the index incomplete; one over the size bound or cut by GitHub would be missed again at
+# the next refresh, so it is counted and the rest goes live; the time budget's cut has its own rule
+# (``index_budget_cut``). A folder a pattern names before ``{year}`` that the repository does not
+# have holds nothing: it is counted, never a miss.
+CVE_FOLDER_UNREAD = "cve_index_folder_unread"
+CVE_LISTING_CUT = "cve_index_listing_cut"
+CVE_TIME_BUDGET = "cve_index_time_budget"
+CVE_FOLDER_MISSING = "cve_index_folder_missing"
+# No GitHub token: no index (the owner's decision of 2026-11-18 on an index's GitHub calls). GitHub
+# allows 60 API calls an hour from one address without one, and a full archive's index takes one per
+# year folder (about 30): the archive is read by CVE id as it always was, and the report says what to add.
+CVE_NEEDS_TOKEN = "cve_index_needs_token"
+NEEDS_TOKEN_STOP = "cve index: add a GitHub token to index this archive"
+# Statuses after which every further listing call would be refused too (GitHub's rate limits).
+_RATE_LIMITED = (403, 429)
+_SHA_RE = re.compile(r"[0-9a-f]{40}")
+_PLACEHOLDER_RE = {"year": r"(?:19|20)\d{2}", "cve": r"(CVE-\d{4}-\d{4,7})", "cve_lower": r"(cve-\d{4}-\d{4,7})"}
+
+
+def cve_index_cap() -> int:
+    """The most CVE files an archive's index holds: the map ceiling every site type shares
+    (``knownTypes.maxMapEntries.*``, 20,000). Its entries hold no text, so the per-type defaults,
+    which bound downloads, stored text and model calls, do not apply; the ceiling bounds the one
+    cost left, the page store's rows (a full public archive lists more than 180,000 files)."""
+    return min(setting(k)["ceiling"] for k in keys("ingestion") if k.startswith("knownTypes.maxMapEntries."))
+
+
+@dataclass(frozen=True)
+class IndexPattern:
+    """A path pattern as the index lists it: its place in the archive's list (the reader probes
+    in that order), the folder that holds its year folders (``head``, "" for the root), the
+    pattern from its year folder down as a regular expression whose first group is the CVE id,
+    and whether the file sits deeper than directly in the year folder."""
+
+    rank: int
+    pattern: str
+    head: str
+    regex: re.Pattern
+    deep: bool
+
+
+def index_patterns(patterns: Sequence[str]) -> list[IndexPattern]:
+    """The archive's path patterns whose first placeholder is a ``{year}`` folder, in order. A
+    pattern the reader skips (``library.cve.pattern_path``), or one with no year folder, is not
+    listed: its CVEs are still read by id, they get no entry."""
+    from tradecraft.library import cve
+
+    out: list[IndexPattern] = []
+    for rank, pattern in enumerate(patterns):
+        if cve.pattern_path(pattern, "CVE-2000-0001") is None:
+            continue
+        segments = pattern.strip().split("/")
+        first = next(i for i, seg in enumerate(segments) if "{" in seg)
+        rest = segments[first:]
+        if rest[0] != "{year}" or len(rest) < 2:
+            continue
+        parts = []
+        for seg in rest:
+            pieces = re.split(r"\{([a-z_]+)\}", seg)
+            parts.append("".join(re.escape(p) if i % 2 == 0 else _PLACEHOLDER_RE[p] for i, p in enumerate(pieces)))
+        out.append(IndexPattern(rank, pattern, "/".join(segments[:first]), re.compile("/".join(parts), re.ASCII),
+                                len(rest) > 2))
+    return out
+
+
+def _ref(settings: EffectiveSettings, branch: str) -> str:
+    # As the reader lists: the archive's own branch when one is set, else the default branch.
+    return f"?ref={urllib.parse.quote(branch, safe='')}" if settings.str("type.cve.branch") else ""
+
+
+def _year_folders(listing: Any) -> dict[str, str]:
+    """{year: tree sha} of a contents listing's year folders."""
+    out: dict[str, str] = {}
+    for it in listing if isinstance(listing, list) else ():
+        if (isinstance(it, dict) and it.get("type") == "dir" and _YEAR_DIR_RE.fullmatch(str(it.get("name", "")))
+                and _SHA_RE.fullmatch(str(it.get("sha", "")))):
+            out[str(it["name"])] = str(it["sha"])
+    return out
+
+
+def year_files(body: bytes, head: str, year: str, patterns: Sequence[IndexPattern]) -> Optional[tuple[list, bool]]:
+    """([(CVE id, path, size, pattern rank)], GitHub cut the tree) of one year folder's tree, each
+    CVE once, at the first pattern that names its file; None for an answer that is not a tree. A file
+    counts only when the reader builds exactly its path for that CVE (``pattern_path``: the year
+    folder is the CVE's year). CPU work over tens of thousands of files: the caller runs it through
+    ``blocking``."""
+    from tradecraft.library import cve
+
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError, UnicodeDecodeError):
+        data = None
+    if not (isinstance(data, dict) and isinstance(data.get("tree"), list)):
+        return None
+    items = data["tree"]
+    prefix = f"{head}/{year}" if head else year
+    best: dict[str, tuple[str, int, int]] = {}
+    for item in items:
+        if not (isinstance(item, dict) and item.get("type") == "blob" and isinstance(item.get("path"), str)):
+            continue
+        below = f"{year}/{item['path']}"
+        for pat in patterns:
+            m = pat.regex.fullmatch(below)
+            if m is None:
+                continue
+            cve_id, path = m.group(1).upper(), f"{prefix}/{item['path']}"
+            if cve.pattern_path(pat.pattern, cve_id) != path:
+                continue
+            if cve_id not in best or pat.rank < best[cve_id][2]:
+                size = item.get("size")
+                best[cve_id] = (path, size if isinstance(size, int) and size >= 0 else 0, pat.rank)
+            break
+    found = [(c, p, s, r) for c, (p, s, r) in best.items()]
+    return found, bool(data.get("truncated"))
+
+
+def _count(result: MapResult, code: str, n: int = 1) -> None:
+    result.counted[code] = result.counted.get(code, 0) + n
+
+
+async def index_cve(result: MapResult, owner: str, repo: str, root: Optional[list], root_error: str,
+                    settings: EffectiveSettings, *, github_token: Optional[str] = None, blocking: Blocking = inline,
+                    should_stop: Optional[Stop] = None, rate_limited: bool = False) -> None:
+    """The archive's CVE files as text-less entries of ``result``: title the CVE id, URL the raw
+    file the reader reads first for it, no page text (R-082 holds: nothing is downloaded or stored).
+
+    One listing per year folder, through the git trees API (the contents API stops at 1,000 entries
+    of a folder), newest year first, each answer read up to ``constants.sitemapMaxBytes`` and parsed
+    off the event loop; a folder before ``{year}`` other than the root costs one listing more. Every
+    call carries the job's GitHub token (the resource's own, else the account's), as the archive's
+    other calls do; without one there is no index (``CVE_NEEDS_TOKEN``), and no call is made for
+    it. Rules:
+
+    - a CVE counts once, at the first of the archive's patterns that names its file;
+    - over ``cve_index_cap()`` files, the largest are kept: in a proof-of-concept archive a CVE's
+      file grows with the PoCs and references it lists; the report's stop reason says so;
+    - a folder not listed is counted by its cause (the codes above); one missed this time makes
+      the index incomplete, and a refresh then keeps the previous one (``pipeline.build_map``); a
+      GitHub rate limit also stops the listing."""
+    patterns = index_patterns(settings.list("type.cve.pathPatterns"))
+    if not patterns:
+        return
+    from tradecraft.library import cve
+
+    if not github_token:
+        _count(result, CVE_NEEDS_TOKEN)
+        result.report_stop = NEEDS_TOKEN_STOP
+        return
+    branch = str(result.meta.get("branch") or "main")
+    folders: dict[str, list[tuple[str, str]]] = {}
+    # Folders not listed, and of them the ones a later refresh may list (``missed``).
+    unread = missed = 0
+    for head in dict.fromkeys(p.head for p in patterns):
+        listing, error = root, root_error
+        if head:
+            resp = await fetch.fetch_raw(
+                _api(owner, repo, f"/contents/{urllib.parse.quote(head)}" + _ref(settings, branch)), settings,
+                github_token=github_token)
+            listing = _json_or_none(resp) if resp.status == 200 else None
+            error = resp.error or _status_note(resp.status)
+            rate_limited = rate_limited or resp.status in _RATE_LIMITED
+            if resp.status == 404:
+                _count(result, CVE_FOLDER_MISSING)
+                continue
+        if not isinstance(listing, list):
+            unread += 1
+            missed += 1
+            result.note = result.note or error or "cve_index_unlisted"
+            continue
+        for year, sha in _year_folders(listing).items():
+            folders.setdefault(year, []).append((head, sha))
+    cap = cve_index_cap()
+    largest: list[tuple[int, str, str]] = []  # a min-heap of (size, CVE id, path), at most ``cap``
+    total = 0
+    for year in sorted(folders, reverse=True):
+        found: dict[str, tuple[int, str, int]] = {}
+        for head, sha in folders[year]:
+            reason = "rate_limited" if rate_limited else (await should_stop() if should_stop is not None else "")
+            if reason:
+                unread += 1
+                if reason == "time_budget":
+                    _count(result, CVE_TIME_BUDGET)
+                    result.index_budget_cut = True
+                elif reason == "rate_limited":
+                    missed += 1
+                result.note = result.note or f"cve_index_{reason}"
+                continue
+            mine = [p for p in patterns if p.head == head]
+            tree = _api(owner, repo, f"/git/trees/{sha}" + ("?recursive=1" if any(p.deep for p in mine) else ""))
+            resp = await fetch.fetch_raw(tree, settings, github_token=github_token,
+                                         max_bytes=int(constant("sitemapMaxBytes")))
+            if resp.status == 200 and resp.truncated:
+                unread += 1
+                _count(result, CVE_LISTING_CUT)
+                result.note = result.note or "cve_index_listing_too_large"
+                continue
+            listed = await blocking(year_files, resp.body, head, year, mine) if resp.status == 200 else None
+            if listed is None:
+                rate_limited = rate_limited or resp.status in _RATE_LIMITED
+                unread += 1
+                missed += 1
+                result.note = result.note or ("cve_index_listing_unparsed" if resp.status == 200
+                                              else resp.error or _status_note(resp.status))
+                continue
+            files, cut = listed
+            if cut:
+                _count(result, CVE_LISTING_CUT)
+            for cve_id, path, size, rank in files:
+                if cve_id not in found or rank < found[cve_id][2]:
+                    found[cve_id] = (size, path, rank)
+        for cve_id, (size, path, _rank) in found.items():
+            total += 1
+            if len(largest) < cap:
+                heapq.heappush(largest, (size, cve_id, path))
+            elif (size, cve_id, path) > largest[0]:
+                heapq.heapreplace(largest, (size, cve_id, path))
+    if missed:
+        _count(result, CVE_FOLDER_UNREAD, missed)
+    result.index_incomplete = missed > 0
+    for _size, cve_id, path in sorted(largest, key=lambda item: item[2]):
+        url = fetch.canonical_url(cve.raw_url(owner, repo, branch, path))
+        if fetch.entry_url_ok(url):
+            result.entries.append(Candidate(url, cve_id, "tree", path, {"cve": cve_id}))
+    result.truncated = total > cap
+    words = [f"cve index: {'largest ' if total > cap else ''}{len(result.entries)} of {total} files"]
+    if unread:
+        words.append(f", {unread} folders unread")
+    result.report_stop = "".join(words)[:64]
 
 
 # --------------------------------------------------------------------------------------
@@ -820,7 +1076,8 @@ async def build_known(site_type: str, url: str, settings: EffectiveSettings, *, 
     crawl of ``crawl.py``). A ``forced`` type is the person's choice (R-144): a CVE archive
     without year folders at its root stays one (its files may sit under a path its pattern
     names), where a detected one becomes a plain repository. ``should_stop`` ends a docs site's
-    sitemap reading (the one builder that hands a site on to the crawl)."""
+    sitemap reading (the one builder that hands a site on to the crawl) and a CVE archive's
+    listing for its index."""
     if site_type == "mkdocs-wiki":
         return await build_wiki(url, settings, home_html=home_html, home_final_url=home_final_url, blocking=blocking)
     if site_type == "sphinx-docs":
@@ -831,7 +1088,8 @@ async def build_known(site_type: str, url: str, settings: EffectiveSettings, *, 
     if site_type == "github-repo":
         return await build_github(url, settings, github_token=github_token, blocking=blocking)
     if site_type == "cve-poc-db":
-        result = await build_cve(url, settings, github_token=github_token)
+        result = await build_cve(url, settings, github_token=github_token, blocking=blocking, forced=forced,
+                                 should_stop=should_stop)
         if forced:
             result.retype = ""
         if result.retype == "github-repo":
