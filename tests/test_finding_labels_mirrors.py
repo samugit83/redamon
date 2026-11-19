@@ -121,6 +121,10 @@ PYTHON_COPIES = (
     ("tooling/scripts/mute_provenance_cleanup.py FINDING_LABELS",
      lambda: _py_tuple("tooling/scripts/mute_provenance_cleanup.py", "FINDING_LABELS"),
      "the cleanup never reaches mutes on that label"),
+    ("recon/tests/test_partial_recon_excludes_muted.py MUTEABLE",
+     lambda: _py_tuple("recon/tests/test_partial_recon_excludes_muted.py", "MUTEABLE"),
+     "a partial-recon query that seeds a scan from a muted finding of that "
+     "label goes unnoticed"),
 )
 
 TS_COPIES = (
@@ -136,6 +140,13 @@ TS_COPIES = (
     ("webapp/src/lib/report/reportData.ts queryTriageRisks",
      _report_risk_union,
      "the report's project risk ignores that label's triage risk"),
+    ("webapp/src/lib/report/reportCountable.test.ts FINDING_LABELS",
+     lambda: _ts_list("webapp/src/lib/report/reportCountable.test.ts", "FINDING_LABELS"),
+     "a report or Insights query of that label that ignores the board's "
+     "verdict goes unnoticed"),
+    ("webapp/src/lib/report/reportData.test.ts MUTEABLE",
+     lambda: _ts_list("webapp/src/lib/report/reportData.test.ts", "MUTEABLE"),
+     "a reportData.ts query of that label that ignores :Muted goes unnoticed"),
 )
 
 

@@ -109,10 +109,6 @@ reasoned from the code and not reproduced.
 
 | # | What | Both sides | Effect |
 |---|---|---|---|
-| 97 | Four `test_key_rotation.py` classes never run | `tests/test_key_rotation.py:232,303,364,458` are `skipUnless(_RECON_AVAILABLE)`, set by `_importable("shodan_enrich")` (`:60`); the module is `recon/main_recon_modules/shodan_enrich.py`, which is on neither root-agent's PYTHONPATH (`redamon.sh:5440`) nor the test's own inserts (`:26-27`), and the file is not in `_ROOT_RECON_TESTS` | The Shodan, CVE-helper and URLScan key-rotation tests always skip, in every image (verified by reading) |
-| 98 | The finding-label mirror test misses three copies that are guards themselves | Not in `PYTHON_COPIES` / `TS_COPIES` of `tests/test_finding_labels_mirrors.py`: `MUTEABLE` (`recon/tests/test_partial_recon_excludes_muted.py:33`, "Mirrors MUTEABLE_LABELS"), `FINDING_LABELS` (`webapp/src/lib/report/reportCountable.test.ts:16`), `MUTEABLE` (`webapp/src/lib/report/reportData.test.ts:292`); all 8 labels today | A ninth label passes the mirror test while the partial-recon mute exclusion and the report checks silently skip it |
-| 99 | The docs test's list of generated files misses every new generator's output | `_GENERATED` (`tests/test_docs_not_stale.py:180-192`, 11 entries) lacks `agentic/tradecraft/settings_spec.json`, `vocab.json`, `webapp/src/lib/authz/permissionCatalog.json`, `routeManifest.json`, `routeManifest.ts` and `tests/fixtures/rbac_matrix/p{3,4,5}_generated.tsv` (section 3.1) | A guide that tells an agent to hand-edit one passes P19; none does today |
-| 100 | The docs test checks less than this page credited it with | For a `github.com/.../blob/...#anchor` link P21 checks only that the file is tracked, never the anchor (`test_docs_not_stale.py:462-465`), so #117 passes; `_COUNT_CLAIMS` has four kinds (recon presets, MCP presets in `MCP-Tool-Plugins.md` and `README.md` only, node types, settings) and none for MCP tools or scopes, permissions, providers or agent tools, so section 4.8's "counts: TEST" was wrong | #110-#114 pass the gate |
 
 ### 2.3 Agent-facing and developer text (produces wrong code)
 
@@ -124,7 +120,6 @@ reasoned from the code and not reproduced.
 
 | # | What | Doc | Truth |
 |---|---|---|---|
-| 107 | Settings-mapping counts | `README.SETTINGS_REGISTRY.md:80-88` "All but three of the 541 settings mappings", `:101-103` "Three mappings use the second form"; docstrings `recon/tests/test_settings_mapping_coverage.py:191-193` ("Three"), `:222` ("524") | `parse_settings_mappings.py`: 575 mappings, 4 non-canonical (`JS_RECON_TRUFFLEHOG_RESULTS` added) |
 
 ### 2.5 Dead or diverging data
 
@@ -208,7 +203,7 @@ so did the four generator suites added since (63 tests).
 | every relationship Python or webapp Cypher reads (every member of `A\|B`) is written somewhere; a named allowlist for legacy aliases | `recon/tests/test_graph_writes_documented.py` |
 | no unconditional legacy drop names a live constraint or index; index names unique | `tests/test_schema_legacy_drops.py` |
 | global reference labels: `schema.py` reads `GLOBAL_REFERENCE_LABELS`; the TS copies (`injectProjectFilter.ts`, `graphRestore.ts`, `mcp/graphGuard.ts`) equal it, and no exempt label has a per-project key | `tests/test_reference_labels_mirrors.py` |
-| the finding-label set: 11 copies (`agentic/api.py`, `chain_graph_writer.py`, `fact_queries.py`, the triage mixin, `actions.ts`, `findingLabels.ts`, `reportData.ts`, ...) equal `MUTEABLE_LABELS`; the Multi mute pool is it minus `ExploitGvm` | `tests/test_finding_labels_mirrors.py` |
+| the finding-label set: 14 copies (`agentic/api.py`, `chain_graph_writer.py`, `fact_queries.py`, the triage mixin, `actions.ts`, `findingLabels.ts`, `reportData.ts`, the copies in `test_partial_recon_excludes_muted.py`, `reportCountable.test.ts` and `reportData.test.ts`, ...) equal `MUTEABLE_LABELS`; the Multi mute pool is it minus `ExploitGvm` | `tests/test_finding_labels_mirrors.py` |
 | `graph_db/schema_sections.md` <-> `graph_db/schema_catalog.py` | `recon/tests/test_schema_catalog.py` (`seed_schema_catalog.py --check`) |
 | Red Zone network-initial-access ports and finding types <-> `security_checks.py` | `recon/tests/test_net_init_access_parity.py` |
 | deleted bundled data stays deleted; `cpe_resolver` reads the cache `http_probe` refreshes | `recon/tests/test_dead_bundled_data.py` |
@@ -233,9 +228,9 @@ so did the four generator suites added since (63 tests).
 | every preset decides each default-on active toggle, and passive or stealth presets run none (allowlist with reasons) | `webapp/src/lib/recon-presets/traffic-decisions.test.ts` |
 | every webapp route Python calls with the internal or scanner key matches the middleware allowlists, computed from the callers | `webapp/src/middleware.internalCallers.test.ts` |
 | one version per pinned tool (TruffleHog, osv-scanner, guarddog, retire.js) across Dockerfiles, prose, the licence file and fixtures | `tests/test_tool_version_pins.py` |
-| wiki links, anchors, images and doc counts; an empty `(#)` link fails | `tests/test_docs_not_stale.py` (P21; `tests/fixtures/docs_drift_*.json` are empty after wave 3) |
+| wiki links, anchors (the anchor of a `github.com/.../blob/...#...` link too), images and doc counts (recon presets, MCP presets on every page, node types, settings, RBAC permissions, MCP scopes, LLM providers, chat skills; guard 29); an empty `(#)` link fails; every file a generator owns is in `_GENERATED` (P19) | `tests/test_docs_not_stale.py` (P21; `tests/fixtures/docs_drift_*.json` are empty after wave 3) |
 | the `README.md` version badge names the release in `VERSION` | `tests/test_readme_version_badge.py` |
-| no `SKILL.md` or `AGENTS.md` links a `file#L<n>` line number | `tests/test_ruleset_line_anchors.py` |
+| no `SKILL.md` or `AGENTS.md` links a `file#L<n>` line number; every `` [`symbol`](path#L<n>) `` link in `docs/readmes/**` lands within 3 lines of its symbol (guard 29; a link whose text names a file and line, not a symbol, is not checked) | `tests/test_ruleset_line_anchors.py` |
 | every memory-governor knob compose hands the orchestrator reaches both recon spawn sites, and every knob the governor reads is forwarded | `recon_orchestrator/tests/test_governor_env_forwarding.py` |
 | every graph label is produced by a tool (from `SECTION_NODE_MAP`) or named with its writer in `WRITTEN_OUTSIDE_A_SECTION` | `tests/test_registry_tool_wiring.py` |
 | `testing/guinea_pigs/README.md` lists every tracked lab, and only those | `tests/test_guinea_pigs_index.py` |
@@ -562,7 +557,7 @@ relationships) and `graph_db/schema_keys.py` (uniqueness keys, 45 labels).
 | Relationships read by Python code | all `*.py` | TEST (`test_graph_writes_documented.py`, every member of `A\|B`) | |
 | Relationships read by **webapp** Cypher | `webapp/src/**/*.ts(x)` | TEST (the same test; the legacy `HAS_BASEURL` alias is allowlisted). It reads line by line (a type must sit on the `-[` line), skips `mcp/`, `tooling/`, `services/` and `testing/`, and never counts a dynamic write (`{rel}`, `apoc.create.relationship`) as written; none hides a phantom today | |
 | Legacy alias reads | `HAS_BASE_URL\|HAS_BASEURL` in `agentic/cypherfix_triage/fact_queries.py:69,251`, `recon/partial_recon_modules/origin_enrichment.py:59,61`, the graph-inputs route `:342,361,392`, `clusterNodes.ts:43`, and the agent's prompt Cypher `agentic/prompts/base.py:2246` (teaches the old spelling) | intentional until `tooling/scripts/triage_graph_migrate.py` has run everywhere | |
-| **The finding-label set (8 labels)** | `MUTEABLE_LABELS` (`graph_db/mixins/recon/triage_mixin.py:47`, the source), `graph_db/node_filters/catalog.py`, `FINDING_LABELS` (`base_mixin.py`), `_FINDING_LABELS` (`agentic/api.py`), `_CONFIRMABLE_LABELS` (`chain_graph_writer.py`), `fact_queries.py`, `FINDING_LABELS` (`webapp/src/lib/triage/actions.ts`), `MUTEABLE_FINDING_LABELS` (`webapp/src/lib/mcp/findingLabels.ts`), `reportData.ts`, and test/tooling copies | TEST (`tests/test_finding_labels_mirrors.py`, 11 copies, plus the three older Python tests); three copies that are guards themselves are outside it (#98) | A new finding label must be added everywhere or it cannot be muted, triaged, confirmed or counted |
+| **The finding-label set (8 labels)** | `MUTEABLE_LABELS` (`graph_db/mixins/recon/triage_mixin.py:47`, the source), `graph_db/node_filters/catalog.py`, `FINDING_LABELS` (`base_mixin.py`), `_FINDING_LABELS` (`agentic/api.py`), `_CONFIRMABLE_LABELS` (`chain_graph_writer.py`), `fact_queries.py`, `FINDING_LABELS` (`webapp/src/lib/triage/actions.ts`), `MUTEABLE_FINDING_LABELS` (`webapp/src/lib/mcp/findingLabels.ts`), `reportData.ts`, and test/tooling copies | TEST (`tests/test_finding_labels_mirrors.py`, 14 copies, plus the three older Python tests) | A new finding label must be added everywhere or it cannot be muted, triaged, confirmed or counted |
 | Global reference labels (6 copies) | `GLOBAL_REFERENCE_LABELS` (`graph_db/tenant_filter.py:289`), read by `graph_db/schema.py`; `GLOBAL_LABELS` (`webapp/src/app/api/graph-views/execute/injectProjectFilter.ts`), `graphRestore.ts`, `webapp/src/lib/mcp/graphGuard.ts`, `REFERENCE_KEY_PROPERTY` (`webapp/src/lib/graphReferenceLinks.ts:19`) | TEST (`tests/test_reference_labels_mirrors.py`; the `graphReferenceLinks.ts` labels transitively through `graphReferenceLinks.test.ts`) | Exempting a per-tenant label is a cross-tenant read; the test also fails an exempt label with a per-project key |
 | Reference-node natural keys and id formats | `REFERENCE_KEY_PROPERTY` / `REFERENCE_KEY_PATTERN` (`graphReferenceLinks.ts:19-28`) <-> `schema_keys.py` (CVE `id`, MitreData `id`, Capec `capec_id`) and the writers in `vuln_mixin.py` | NONE for the keys and formats | A renamed key or a new id format drops every restored reference link silently |
 | Saved-view and agent call gates | `_SAFE_CALL_NAMESPACES` and `find_disallowed_call` (`tenant_filter.py`) <-> `FUNCTION_ALLOWLIST` / `PURE_NAMESPACES` (`injectProjectFilter.ts`); the `NOT_A_CALL` keyword lists on both sides | NONE by design: two policies, each documented in its file as such; the saved-view gate is the stricter (a whole-function allowlist, two `vector.similarity.*` functions, no `db.*`). The keyword lists are kept by hand (the webapp's adds `OFFSET`, `CONTAINS`, `STARTS`, `ENDS`) | Loosening the saved-view gate to match the agent's would widen what a saved view can call |
@@ -587,7 +582,7 @@ the live surface.
 
 | Item | Where | Guard |
 |---|---|---|
-| Server narrative, the scope count and the default on/off | `docs/readmes/README.MCP.SERVER.md`, `redamon.wiki/MCP-Server.md`, `README.md:703-705`, `README.TM.SYSTEM_OVERVIEW.md`, `Global-Settings.md` | NONE: P21 has no MCP tools or scopes kind (#100, #111) |
+| Server narrative, the scope count and the default on/off | `docs/readmes/README.MCP.SERVER.md`, `redamon.wiki/MCP-Server.md`, `README.md:703-705`, `README.TM.SYSTEM_OVERVIEW.md`, `Global-Settings.md` | the scope count: TEST (P21's MCP-scope kind); the tool count and the default on/off: NONE |
 | Playbook prose | `webapp/src/lib/mcp/playbook.ts`, `onboarding.ts` | PART (tool names only) |
 | Scope labels and blurbs | `webapp/src/lib/mcp/scopeCopy.ts` | TEST |
 | Canonical banner bytes | `CANONICAL_BANNER` (`apiReference.ts`) == `DevergoLabs/scripts/add-wiki-canonical.mjs` | the byte-compare fails if they differ |
@@ -732,7 +727,7 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | Webapp startup scripts | the inline entrypoint `webapp/Dockerfile:139` and the dev copy in `docker-compose.dev.yml` | TEST (`tests/webapp_dev_startup_parity_test.sh`) | |
 | Prisma migrations | `webapp/prisma/migrations/` (17, last 2026-09-24) | none; the schema is applied with `db push`; backfills now run as startup scripts (`webapp/scripts/backfill-*.mjs`) | historical record only |
 | Test sections | `_TEST_SECTIONS` `redamon.sh:5438` | PART (`redamon_gate_unskippable_test.sh` stops a known section skipping silently); a shell suite that cannot run exits 77 and fails the gate unless `REDAMON_TEST_ALLOW_MISSING` names it (guard 28) | every tracked test file (1,415) falls in some section today |
-| Root tests routed to the recon image | `_ROOT_RECON_TESTS` `redamon.sh:5435` (14) | NONE | 6 more reach into `recon/` via `sys.path` and run in the agent image; `test_key_rotation.py` is one, and its recon classes always skip (#97) |
+| Root tests routed to the recon image | `_ROOT_RECON_TESTS` `redamon.sh:5435` (14) | NONE | 6 more reach into `recon/` via `sys.path` and run in the agent image; `test_key_rotation.py` is one and puts `recon/main_recon_modules` on its own path, so all its classes run (they skipped in every image until 2026-11-19, #97) |
 | Coverage floors | `REDAMON_COV_FLOOR`, `docs/readmes/README.TESTING.md` | manual ratchet | |
 | Memory calibration | `recon_orchestrator/resource_profile.json` (gitignored, host-local) | `tests/redamon_mem_calibrate.sh baseline` / `scan` | measured peaks age as services grow |
 | End-to-end suites | 49 Playwright specs in `testing/e2e/tests/` | not in the unit gate | selectors break with UI changes |
@@ -760,10 +755,10 @@ and the webapp build cannot import across its root. So shared facts are copied.
 
 | Item | Risk |
 |---|---|
-| Count claims in README and wiki | four kinds checked against the code (P21: recon presets, MCP presets in two files, node types, settings); any other count is prose. Counts with several copies and no guard: permissions (#110), MCP scopes (#111), LLM providers (#112), agent tools (#113), MCP presets elsewhere (#114), chat skills (#115), Tradecraft and loop tools (4.10, 4.8) |
+| Count claims in README and wiki | eight kinds checked against the code (P21: recon presets, MCP presets on every page, node types, settings, RBAC permissions, MCP scopes, LLM providers, chat skills); any other count is prose. Counts with several copies and still no guard: agent tools (no single set to count; the 2026-11-19 fixes dropped those numbers, #113), Tradecraft and loop tools (4.10, 4.8) |
 | `README.md` (117 KB): features, tool tables, screenshots, wiki links, badge | links, anchors and counts: P21; the badge: TEST (`tests/test_readme_version_badge.py`) |
-| Subsystem docs (37 tracked, this page included) | cited paths: TEST; `#L<n>` anchors: NONE (`test_ruleset_line_anchors.py` scans only `SKILL.md` and `AGENTS.md`; #118); function-by-function sections are prose, unguarded (the recon and KB ones were rewritten from the code on 2026-10-25); `README.DEV.md` §9 indexes all |
-| Anchors | TEST (P21, GitHub's slug rules, combining marks kept) for wiki and relative links; not for the anchor of a `github.com/.../blob/...` URL (#100, #117); a heading rename still breaks every incoming `Page#anchor` until someone runs the gate |
+| Subsystem docs (37 tracked, this page included) | cited paths: TEST; `` [`symbol`](path#L<n>) `` anchors: TEST (`test_ruleset_line_anchors.py`); a link naming `file:line` instead of a symbol: NONE; function-by-function sections are prose, unguarded (the recon and KB ones were rewritten from the code on 2026-10-25); `README.DEV.md` §9 indexes all |
+| Anchors | TEST (P21, GitHub's slug rules, combining marks kept) for wiki and relative links and for the anchor of a `github.com/.../blob/...` URL; a heading rename still breaks every incoming `Page#anchor` until someone runs the gate |
 | Wiki file links and images | TEST (P21 for images and repo URLs, `docs_cited_paths_test.sh` for paths); screenshots age with every UI change |
 | Doc screenshots generated by Playwright | `testing/e2e/tests/capture{Auth,Jev,McpServer,Tlsx,AgentInTheLoop,Urlscan}DocsShots.spec.ts`; every other screenshot is manual |
 | Links into `_local/` (untracked) | none left; the path audit treats any `_local/` path as dead |
@@ -846,8 +841,7 @@ NONE in section 4.
 |---|---|---|
 | 22 | A Kali tool-presence smoke step: `command -v` every CLI the `kali_shell` description and the skill prompts name (checked by hand on 2026-10-25) | 4.1 |
 | 23 | Decide whether runtime caches (`mitre_db/resources`, `wappalyzer_cache`) belong in git (the dead data is deleted and `cpe_resolver.py` reads the refreshed cache) | 4.11 |
-| 24 | Derive `_ROOT_RECON_TESTS` from imports; one default model id constant per language | 4.3, 4.13, #97 |
-| 29 | Widen P21: count kinds for permissions, MCP tools and scopes, LLM providers, agent tools and chat skills; MCP presets on every page; the anchor of every `github.com/.../blob/...#...` link; `#L<n>` anchors in `docs/readmes/**` | #100, #110-#118 |
+| 24 | Derive `_ROOT_RECON_TESTS` from imports; one default model id constant per language | 4.3, 4.13 |
 
 ---
 
