@@ -2305,6 +2305,24 @@ def _repo_with_plan(tmp_path, base: dict, plan: dict, moves=()):
     return root, base_sha, tip
 
 
+def test_the_build_record_keeps_the_plans_base_when_the_checkout_merged_the_plan(tmp_path):
+    # The shared checkout's branch merged the plan branch (2026-11-18): the merge base of the tip and
+    # HEAD is then the tip, the plan's diff empty, and the record named no plan file. The plan's own
+    # base (PLAN_BASE) is the base whenever the tip descends from it.
+    root, base, tip = _plan_repo(tmp_path)
+    _git(root, "merge", "-q", "--no-ff", "-m", "merge the plan", "feature/tradecraft-2.0")
+    assert _git(root, "merge-base", tip, "HEAD") == tip
+    path = tmp_path / "record.json"
+    with mock.patch.object(runner, "PLAN_BASE", base), mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
+        runner.record_build("before", path=path, root=root)
+    rec = json.loads(path.read_text())
+    assert rec["base"] == base and set(rec["plan_files"]) >= {"agentic/feature_models.py", "agentic/api.py", FORM}
+    # A tip that does not descend from PLAN_BASE keeps the merge base, which the code check then refuses.
+    with mock.patch.object(runner, "PLAN_BASE", "f" * 40), mock.patch.object(runner, "image_ids", return_value=RECORD["images"]):
+        runner.record_build("before", path=path, root=root)
+    assert json.loads(path.read_text())["base"] == tip
+
+
 def test_a_renamed_or_spaced_plan_file_is_still_a_plan_file(tmp_path):
     # A rename's old path is a plan file too (git diff would show only the new one): a tree that still
     # holds it carries the plan's removed lines. A path with a space is one name, not two.
