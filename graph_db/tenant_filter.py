@@ -57,10 +57,11 @@ _WRITE_PROCEDURE_RE = re.compile(
 #: keyword from `_WRITE_CLAUSE_RE`, which scans raw text. `apoc.load.json` turns
 #: the same hole into an SSRF from inside the database container.
 #:
-#: APOC ships enabled and unrestricted in this deployment
-#: (docker-compose.yml NEO4J_PLUGINS / procedures_unrestricted), so none of this
-#: is theoretical. No agent or MCP read needs any of it: the legitimate graph
-#: queries are MATCH/RETURN over labelled patterns.
+#: APOC shipped enabled and unrestricted when this was found. Neo4j now loads only
+#: the APOC RedAmon itself calls (docker-compose.yml procedures_allowlist), so
+#: apoc.cypher.* and apoc.load.* are gone from the database too; this allowlist
+#: stays the first line. No agent or MCP read needs any of it: the legitimate
+#: graph queries are MATCH/RETURN over labelled patterns.
 _ALLOWED_PROCEDURES = frozenset({
     # The fixed schema op, which is server-controlled and never caller Cypher.
     "db.schema.visualization",
@@ -170,6 +171,15 @@ def find_disallowed_call(cypher: str) -> Optional[str]:
     `find_disallowed_procedure` only gates `CALL <proc>`. APOC exposes the same
     danger as FUNCTIONS, which need no CALL, so this gates every namespaced call
     by the same positive allowlist, on a normalised view of the query.
+
+    This is the call gate of `scope_query`: the agent, MCP `graph:cypher`
+    (`/graph/exec`) and Navigator's `run_cypher`. It passes any unqualified
+    function, every function in `_SAFE_CALL_NAMESPACES` (all of `vector.*`) and
+    the `db.*` schema calls in `_ALLOWED_PROCEDURES`. The webapp's saved-view
+    gate (`findDisallowedCall` in injectProjectFilter.ts) is a separate policy
+    and deliberately stricter: a whole-function allowlist, only the two
+    `vector.similarity.*` functions, no `db.*`. A query that passes here can
+    therefore be refused as a saved view; that difference is intended.
     """
     for m in _NAMESPACED_CALL_RE.finditer(_normalise_calls(cypher)):
         name = m.group(1)
@@ -352,7 +362,8 @@ _SUBQUERY_WORDS = _PATTERN_SUBQUERY_WORDS | {'CALL'}
 
 #: Words after which `(` opens a pattern or an expression, never a call's
 #: arguments: `MATCH(n)` is a node pattern although no space separates them.
-#: Mirrors NOT_A_CALL in the webapp's injectProjectFilter.ts.
+#: The webapp's NOT_A_CALL (injectProjectFilter.ts) holds these words plus
+#: OFFSET, CONTAINS, STARTS and ENDS; the two lists are kept by hand.
 _NOT_A_CALL = frozenset({
     'MATCH', 'OPTIONAL', 'MERGE', 'CREATE', 'WHERE', 'AND', 'OR', 'XOR', 'NOT',
     'RETURN', 'WITH', 'UNWIND', 'IN', 'AS', 'DISTINCT', 'BY', 'SKIP', 'LIMIT',
@@ -1327,7 +1338,22 @@ def scope_query(cypher: str, user_id: str, project_id: str) -> str:
         ) from exc
 
 
+#: Neo4j decodes `\uXXXX` before it lexes the query, so `'x\u0027 ...'` ends a
+#: string literal for Neo4j but not for `code_positions()`, and every check below
+#: would judge another query than the one that runs (an unscoped UNION branch, a
+#: procedure, a display-only name spelled with an escape). Refused, never decoded:
+#: no graph read needs one, and a decoder of our own is a second parser to trust.
+#: Matched even after an escaped backslash (`\\u0041`), which Neo4j leaves alone.
+_UNICODE_ESCAPE_RE = re.compile(r"\\u[0-9A-Fa-f]{4}")
+
+
 def _scope_query(cypher: str, user_id: str, project_id: str) -> str:
+    if _UNICODE_ESCAPE_RE.search(cypher):
+        raise TenantScopeError(
+            "Query rejected: a \\uXXXX escape is not allowed in a graph query. Write the "
+            "character itself, inside a string literal if it is not plain ASCII."
+        )
+
     bad_char = find_disallowed_character(cypher)
     if bad_char is not None:
         raise TenantScopeError(

@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "error_code": "",
+  "final_url": "https://github.com/example-org/fake-repo",
+  "detected_type": "github-repo",
+  "needs_browser": false,
+  "robots_allows": true,
+  "index": {
+    "kind": "github_tree",
+    "url": "https://api.github.com/repos/example-org/fake-repo/git/trees/main",
+    "count": 412
+  },
+  "sample_entries": [
+    {
+      "url": "https://github.com/example-org/fake-repo/blob/main/SQL%20Injection/README.md",
+      "title": "SQL Injection"
+    }
+  ],
+  "github": {
+    "default_branch": "main",
+    "branches": [
+      "main",
+      "dev"
+    ],
+    "tags": [
+      "v1.0"
+    ],
+    "top_folders": [
+      "SQL Injection",
+      "XSS Injection"
+    ]
+  },
+  "pdf_pages": null,
+  "recommended_storage": "stored",
+  "estimated_bytes": 6291456,
+  "cve_pattern": null
+}

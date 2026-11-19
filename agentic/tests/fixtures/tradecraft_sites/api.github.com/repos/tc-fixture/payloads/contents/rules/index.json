@@ -1,0 +1,16 @@
+[
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/rules/README.md",
+    "name": "README.md",
+    "path": "rules/README.md",
+    "size": 26,
+    "type": "file"
+  },
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/rules/webshell.yar",
+    "name": "webshell.yar",
+    "path": "rules/webshell.yar",
+    "size": 77,
+    "type": "file"
+  }
+]

@@ -184,14 +184,15 @@ def test_every_mapping_agrees_with_the_registry_about_its_column():
     assert problems == [], problems
 
 
-# --- the three keys that exist because uniformity is a lie --------------------------
+# --- the keys that exist because uniformity is a lie --------------------------------
 
 def test_the_falsy_fallbacks_are_recorded():
     """
     `project.get(k) or D` replaces a stored empty value with the default;
-    `project.get(k, D)` honours it. Three mappings use the first form, so an
-    operator who sets an empty list gets the default back rather than an empty
-    list, and a caller told otherwise would be surprised by a live scan.
+    `project.get(k, D)` honours it. A few mappings use the first form (each one
+    `fallback: falsy` in the registry), so an operator who sets an empty list
+    gets the default back rather than an empty list, and a caller told otherwise
+    would be surprised by a live scan.
     """
     problems = []
     for key, mapping in RECON_MAPPINGS.items():
@@ -219,8 +220,10 @@ def test_the_coercions_are_recorded():
 
 def test_the_non_canonical_mappings_are_the_ones_the_registry_names():
     """
-    524 of the mappings are byte-identical in form, which is what would make
-    generating them feasible. The registry has to carry the ones that are not,
+    All but a handful of the mappings are byte-identical in form, which is what
+    would make generating them feasible (`python3
+    tooling/scripts/parse_settings_mappings.py` prints the count and the
+    exceptions). The registry has to carry the ones that are not,
     because a generator emitting the canonical form for them would change
     behaviour with nothing failing.
     """

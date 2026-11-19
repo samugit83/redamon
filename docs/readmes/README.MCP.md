@@ -164,8 +164,8 @@ docker-compose logs -f kali-sandbox
 # Test a server (SSE servers require the bearer token; without it you get 401)
 curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://127.0.0.1:8000/sse
 
-# Test commmands run for each server:
-python mcp/test_mcp.py https://testphp.vulnweb.com
+# The servers' unit tests (mcp/tests/) run in the Docker unit gate:
+./redamon.sh test unit
 ```
 
 ### 3. Connect AI Agent

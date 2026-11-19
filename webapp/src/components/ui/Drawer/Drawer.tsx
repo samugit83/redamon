@@ -2,6 +2,7 @@
 
 import { ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import styles from './Drawer.module.css'
+import { useNavigatorObstacle } from '@/components/navigator/obstacles'
 
 export interface DrawerProps {
   /** Whether the drawer is open */
@@ -53,6 +54,8 @@ export function Drawer({
   const positionClass = position === 'left' ? styles.drawerLeft : styles.drawerRight
   const modeClass = mode === 'overlay' ? styles.drawerOverlay : styles.drawerPush
   const drawerRef = useRef<HTMLDivElement | null>(null)
+  // AI Navigator steps aside while this drawer is open (components/navigator/obstacles.ts).
+  useNavigatorObstacle(drawerRef, isOpen)
   const [isResizing, setIsResizing] = useState(false)
   const lastWidthRef = useRef<number | null>(null)
 

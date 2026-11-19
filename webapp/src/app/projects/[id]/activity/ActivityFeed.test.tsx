@@ -52,7 +52,7 @@ describe('states', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Loading the project activity')
     answer(json(page([event({})])))
     expect(await screen.findByText('Changed the project settings')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Activity: Acme external' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Activity Acme external' })).toBeInTheDocument()
     expect(urls()).toEqual(['/api/projects/P1/activity'])
   })
 
@@ -130,6 +130,26 @@ describe('rows', () => {
     const { container } = renderFeed()
     await screen.findByText('Changed the project settings')
     expect(container.querySelector('time')).toHaveAttribute('datetime', '2026-11-13T11:00:00.000Z')
+  })
+
+  test('rows sit under a heading per day, newest first, each naming its kind', async () => {
+    // Ten minutes apart at midday UTC: the same local day under any real time zone.
+    fetchMock.mockResolvedValueOnce(json(page([
+      event({ id: 'e1', at: '2026-11-13T12:20:00.000Z', label: 'Changed the project settings', group: 'project' }),
+      event({ id: 'e2', at: '2026-11-13T12:10:00.000Z', label: 'Started a scan', group: 'scans' }),
+      event({ id: 'e3', at: '2026-09-24T12:10:00.000Z', action: 'project.share.grant', label: 'Shared the project', group: 'sharing', target: bob }),
+    ])))
+    renderFeed()
+    await screen.findByText('Shared the project')
+    const days = screen.getAllByRole('heading', { level: 2 })
+    expect(days).toHaveLength(2)
+    expect(days[0]).toHaveTextContent('2 events')
+    expect(days[1]).toHaveTextContent('1 event')
+    const items = screen.getAllByRole('listitem')
+    expect(within(items[0]).getByText('Project settings')).toBeInTheDocument()
+    expect(within(items[1]).getByText('Scans and versions')).toBeInTheDocument()
+    expect(within(items[2]).getByText('Sharing')).toBeInTheDocument()
+    expect(screen.getByText('Showing all 3 events')).toBeInTheDocument()
   })
 
   test("shares hidden by Root's policy: the page says so", async () => {

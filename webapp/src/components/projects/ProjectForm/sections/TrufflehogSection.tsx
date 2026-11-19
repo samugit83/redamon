@@ -5,6 +5,7 @@ import { ChevronDown, Plus, Search, Trash2, AlertTriangle, List, X, Check } from
 import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
+import { numericDefault } from '../formDefaults'
 import Link from 'next/link'
 import { SETTINGS_KEYS_HREF } from '@/lib/settingsLinks'
 import { CredentialShortcut } from '@/components/settings/CredentialShortcut'
@@ -496,9 +497,14 @@ export function TrufflehogSection({ data, updateField, projectId, mode = 'edit',
                 min={0}
                 max={50}
                 value={Number(get(data, 'trufflehogMaxDecodeDepth') ?? 5)}
-                onChange={(e) => setField(
-                  updateField, 'trufflehogMaxDecodeDepth', parseInt(e.target.value) || 0
-                )}
+                onChange={(e) => {
+                  // Not `||`: a typed 0 is a real depth (decode nothing).
+                  const n = parseInt(e.target.value, 10)
+                  setField(
+                    updateField, 'trufflehogMaxDecodeDepth',
+                    Number.isNaN(n) ? numericDefault('trufflehogMaxDecodeDepth') : n
+                  )
+                }}
               />
               <span className={styles.fieldHint}>
                 How many layers of base64 and friends to unwrap.

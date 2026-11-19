@@ -144,11 +144,15 @@ The owner helpers keep their signatures and ask the same policy instead of compa
 - **Per-plugin allowlists**: `lib/plugins/accessRules.ts` and `/api/plugins/[pluginId]/access-rules` ([README.PLUGINS.md](README.PLUGINS.md) §7.1).
 - **Audit retention and forwarding**: Root's `auditRetentionDays` (null = forever, else 90 to 36 500 days) waits 7 days in `auditRetentionPending` before the expiry sweep applies it, and `auditRetention.ts` keeps every action a `prisma.auditLog.find*` reads back (its static test fails on a new reader whose action is not kept). `AUDIT_FORWARD` ([README.DEV.md](README.DEV.md) §8): every audit-table write goes through `lib/auditForward.ts`, and a transaction that writes a row runs in `auditedTransaction` (`lib/auditWriters.static.test.ts`).
 
-**Internal callers (STRIDE S2/E2 + S3/E6).** The agent, cypherfix and the orchestrator present `X-Internal-Key` (constant-time compared) and are carved out via `isInternalRequest(request)`, restricted to an **allowlist** of the exact routes they call. `INTERNAL_ALLOWLIST` in `webapp/src/middleware.ts` is that list; it covers the user and project reads (llm-providers, settings, tradecraft, project GET), codefix-sandbox and GuardDog, capture config and traffic ingest, conversations/by-session and remediations, the tunnel config, the scan scheduler and scan queue, MCP token pruning, and the tracked graph writers' check-ins: `/api/internal/triage-runs/*` and `/api/internal/node-filter-runs/*` (the agent reads the Mute Rules apply run it was handed, heartbeats it and reports how it ended). Each of those routes re-checks `isInternalRequest` itself, because the key is global and not a tenant boundary. The allowlist is **log-only by default**; set `INTERNAL_KEY_ALLOWLIST_ENFORCE=true` to block off-allowlist internal-key requests once logs confirm only known routes. Scanners instead present a **lower-tier `SCANNER_API_KEY`** (`isScannerRequest`), accepted ONLY on GET `/api/users/[id]/settings` and GET `/api/projects/[id]` - never llm-providers or user-CRUD, so a compromised scanner cannot harvest LLM keys or mint an admin.
+**Internal callers (STRIDE S2/E2 + S3/E6).** The agent, cypherfix and the orchestrator present `X-Internal-Key` (constant-time compared) and are carved out via `isInternalRequest(request)`, restricted to an **allowlist** of the exact routes they call. `INTERNAL_ALLOWLIST` in `webapp/src/middleware.ts` is that list; it covers the user and project reads (llm-providers, settings, the run's tradecraft catalog `GET /api/internal/agent/tradecraft/catalog`, whose route checks the key itself, project GET), codefix-sandbox and GuardDog, capture config and traffic ingest, conversations/by-session and remediations, the tunnel config, the scan scheduler and scan queue, MCP token pruning, and the tracked graph writers' check-ins: `/api/internal/triage-runs/*` and `/api/internal/node-filter-runs/*` (the agent reads the Mute Rules apply run it was handed, heartbeats it and reports how it ended). Each of those routes re-checks `isInternalRequest` itself, because the key is global and not a tenant boundary. The allowlist is **log-only by default**; set `INTERNAL_KEY_ALLOWLIST_ENFORCE=true` to block off-allowlist internal-key requests once logs confirm only known routes. Scanners instead present a **lower-tier `SCANNER_API_KEY`** (`isScannerRequest`), accepted ONLY on GET `/api/users/[id]/settings` and GET `/api/projects/[id]` - never llm-providers or user-CRUD, so a compromised scanner cannot harvest LLM keys or mint an admin.
 
 **When adding a route:** with sharing in mind, a read route answers a collaborator and an overseer too, so take the tenant from the access and run its output through the read views above; derive identity from `getEffectiveUser()`/`requireUserAccess`, never from a query/body `userId`/`projectId`; ask its permission through one of the checks above before any data read (never an inline owner or role check); add its manifest entry with that permission (`node scripts/gen-route-manifest.mjs`); and cover it with a cross-user 403/404 test and its family's `*.permissions.test.ts` case. The live end-to-end checks are `tests/test_e2e_bola_live.sh` and `tests/rbac_matrix_live.sh`.
 
 ---
+
+## AI Navigator
+
+A draggable chat overlay (`src/components/navigator/`, mounted in `AppLayout` inside the disclaimer gate) that answers questions about RedAmon's docs and the selected project's data. The browser talks to `/api/navigator/projects/:pid/*` (threads, messages as `text/event-stream`, stop, status, the owner's collaborator policy); the messages route relays the agent's NDJSON (`agentic/navigator/`) after validating every event (`src/lib/navigator/events.ts`, `stream.ts`). Project reads are the agent's callbacks to `/api/internal/navigator/tools/:name`, authorized fresh per call (`src/lib/navigator/tools/run.ts`) and served by the inbound MCP server's read functions through a session context (`tools/sessionContext.ts`). Live runs live in an in-memory registry on `globalThis` (`runRegistry.ts`): the webapp is a single replica. Rules: the `navigator` skill.
 
 ## Prerequisites
 
@@ -579,6 +583,40 @@ only.
 **For the recon orchestrator** (`POST /api/internal/plugins/reconcile`): the master internal key.
 Crash recovery, heals, revocations and clean-up; one at a time (`202 {skipped: "busy"}` while
 another runs).
+
+### Tradecraft API
+
+The design is in [README.TRADECRAFT.md](README.TRADECRAFT.md). The account's routes take the session and
+`self:tradecraft` on the path's account (`requireUserAccess`, `requireSelfPermission`), read a resource only by its id
+and that account (`lib/tradecraft/resourceAccess.ts`), and never return a secret: a set cookie, header value,
+password or GitHub token reads `"set"`. Errors are `{error, code}`; a write that a running job would undo answers 409
+`job_running`, an add or an Enabled change without a librarian model (while Librarian use is Agent decides) answers
+409 `model_required`.
+
+| Route | What it does |
+|---|---|
+| `GET, POST /api/users/[id]/tradecraft-resources` | The account's resources with their latest job; add one (the row, then an `add` job; at most 200 per account) |
+| `GET, PUT, DELETE …/tradecraft-resources/[resourceId]` | One resource; edit it (what each field does: README.TRADECRAFT.md "Editing a resource"); delete it (its job cancelled, the cascade removes everything) |
+| `POST …/[resourceId]/refresh` (and `…/verify`, the same) | Start a refresh job; answered at once with the job's view |
+| `GET, DELETE …/[resourceId]/jobs` | The resource's job view; cancel its running job |
+| `GET …/[resourceId]/enabled-impact` | The projects a change of Enabled would reset |
+| `PUT …/[resourceId]/summary`, `POST …/[resourceId]/summary/regenerate` | A written or locked summary; a new generated one |
+| `GET, POST …/[resourceId]/map` | The live map (search, filters, the Blocked and Dropped views); curation: pin, block (one, several, all matching with the confirmed count), unblock, rename, restore |
+| `GET, POST …/[resourceId]/pages/[pageId]` | A page's stored text (View); Read now through the agent |
+| `POST …/tradecraft-resources/check-url` | Check URL through the agent (no model, nothing written) |
+| `POST …/tradecraft-resources/focus-preview` | The focus preview through the agent (nothing written) |
+| `POST …/tradecraft-resources/refresh-all` | Save & refresh all: one `bulk` job per chosen resource, one request to the agent |
+| `GET, PUT /api/users/[id]/tradecraft-settings` | The account's ingestion and search settings, recipes and the conversion offer; `PUT` takes exactly one of `{ingestion}`, `{search}` (with `synonyms`), `{reset}`, `{recipes}`, `{bulkRefreshOffered: true}` |
+| `GET /api/projects/[id]/tradecraft` | A project's accordion and the chat counter (`recon:read`): the owner's resources with their switch; details for the owner, names and on/off for anyone else |
+| `GET /api/internal/agent/tradecraft/catalog` | The run catalog, for the agent only (the internal key, checked in the route; the owner read from the project row) |
+
+A project's per-resource switches travel in the project's own `GET`/`PUT` as `tradecraftOff` (needs
+`project:settings`). Every write route answers 403 `own_account_only` to an administrator acting as an account that can sign in
+(`requireAccountWrite`; no `act_as.refused` row). With `RBAC_PERMISSIONS_ENABLED` on, a resource with a site login also
+refuses, while an administrator acts as the account, the reads that would show its page text or send its login (View,
+Read now: 403 `not_while_acting_as`, `use_site_logins`, an `act_as.refused` row), the Map view lists only its titles and
+URLs, and on a passwordless managed account the writes that would use or change the login are refused the same way
+(`use_site_logins`, `change_site_logins`). With that switch off, none of these act-as refusals applies.
 
 ---
 

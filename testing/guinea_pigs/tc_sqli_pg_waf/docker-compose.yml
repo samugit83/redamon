@@ -1,0 +1,56 @@
+# L1 of the Tradecraft 2.0 end-to-end matrix (phase 10): a time-based blind SQL injection
+# on PostgreSQL 16 behind a WAF that refuses every sleep function. See README.md.
+#
+#   docker compose up -d --build && python3 tests/verify_lab.py
+#
+# The app is on the pentest network at a fixed address, so the agent's Kali sandbox can
+# reach it, and on 127.0.0.1 for the lab's own test. The database is on an internal
+# network only: the app reaches it, nothing else does. No container_name and no named
+# networks, so the matrix runner can start several copies under their own Compose
+# projects; TC_SQLI_IP, TC_SQLI_PORT and TC_CANARY are what it sets for each copy.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tclab
+      POSTGRES_USER: tclab
+      POSTGRES_PASSWORD: tc-lab-db-pass
+      TC_CANARY: ${TC_CANARY:-tcq-default-canary-0000}
+    volumes:
+      - ./db/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    networks:
+      - lab
+    healthcheck:
+      # Over TCP: during the first start the init scripts run on a socket-only server, which
+      # a socket check would already call ready.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U tclab -d tclab"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build: .
+    # One tag for every copy: the runner builds it once and its instances reuse it.
+    image: tc-lab-sqli-pg-waf:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      lab:
+      pentest:
+        ipv4_address: ${TC_SQLI_IP:-172.28.0.97}
+    ports:
+      - "127.0.0.1:${TC_SQLI_PORT:-9211}:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+networks:
+  lab:
+    internal: true
+  pentest:
+    external: true
+    name: redamon_pentest-net

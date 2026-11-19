@@ -754,7 +754,9 @@ function renderTokenPowers(tools: Tool[], scopes: readonly McpScope[]): string {
 
 // --- G. connecting, limits, errors -------------------------------------------
 
-const BUCKET_COPY: Record<McpBucketName, string> = {
+// The AI Navigator buckets count a person's chat messages, never an MCP call: not on this surface.
+type McpCallBucket = Exclude<McpBucketName, 'navigator' | 'navigator_day'>
+const BUCKET_COPY: Record<McpCallBucket, string> = {
   read: 'ordinary reads',
   query: 'natural-language questions and raw Cypher',
   write: 'settings changes, verdicts, reviews, triage run starts and stops',
@@ -773,7 +775,7 @@ function perWindow(bucket: McpBucketName): string {
 }
 
 function renderLimits(tools: Tool[], scopes: readonly McpScope[]): string {
-  const rows = (Object.keys(BUCKET_COPY) as McpBucketName[]).map(
+  const rows = (Object.keys(BUCKET_COPY) as McpCallBucket[]).map(
     b => `| \`${b}\` | ${BUCKET_COPY[b]} | ${perWindow(b)} |`
   )
   const canMute = tools.some(t => t.name === 'mute_findings' && canCall(t, scopes))

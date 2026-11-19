@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import os
+import re
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from agent_in_the_loop import (
     LOOP_MODEL_ID,
     LOOP_PREFIX,
+    _TUNABLES,
     is_loop_model,
     loop_enabled,
     settings,
@@ -114,6 +117,39 @@ class Settings(unittest.TestCase):
         with _clean_env(LOOP_STEP_DEADLINE_S="nine hundred", LOOP_LEASE_S="1e9"):
             s = settings()
         self.assertEqual((s.step_deadline_s, s.lease_s), (3600, 90))
+
+
+_LOOP_TOOLS_TS = Path(__file__).resolve().parents[2] / "webapp" / "src" / "lib" / "mcp" / "loopTools.ts"
+
+
+def _webapp_answer_cap() -> int:
+    src = _LOOP_TOOLS_TS.read_text(encoding="utf-8")
+    match = re.search(r"^export const LOOP_ANSWER_MAX_CHARS\s*=\s*([0-9_]+)\s*$", src, re.M)
+    assert match, f"LOOP_ANSWER_MAX_CHARS could not be read from {_LOOP_TOOLS_TS}"
+    return int(match.group(1).replace("_", ""))
+
+
+class AnswerCapMatchesTheWebapp(unittest.TestCase):
+    """Drift-map #92: the webapp refuses an answer above its fixed cap before the agent
+    sees it, so an agent bound above that cap let an operator set a value that did
+    nothing. The agent's default and maximum both equal the webapp's constant."""
+
+    def test_the_default_and_the_maximum_are_the_webapps_cap(self):
+        cap = _webapp_answer_cap()
+        _key, default, _lo, hi = _TUNABLES["answer_max_chars"]
+        self.assertEqual((default, hi), (cap, cap))
+        with _clean_env():
+            self.assertEqual(settings().answer_max_chars, cap)
+
+    def test_a_value_above_the_webapps_cap_is_refused(self):
+        cap = _webapp_answer_cap()
+        with _clean_env(LOOP_ANSWER_MAX_CHARS=str(cap + 1)), \
+                self.assertLogs("agent_in_the_loop", level="WARNING"):
+            self.assertEqual(settings().answer_max_chars, cap)
+
+    def test_an_operator_may_lower_it(self):
+        with _clean_env(LOOP_ANSWER_MAX_CHARS="65536"):
+            self.assertEqual(settings().answer_max_chars, 65536)
 
 
 class _no_logs:

@@ -1,0 +1,485 @@
+{
+ "_about": "Synthetic AI Navigator documentation questions (plan \u00a711 Phase 3): each names the wiki sections a good answer reads (page#anchor; a sub-section of one counts). No target data.",
+ "questions": [
+  {
+   "id": "doc01",
+   "question": "How do I schedule a recurring scan every week?",
+   "expect": [
+    "Scan-Timeline#scans"
+   ]
+  },
+  {
+   "id": "doc02",
+   "question": "How can I compare two scan versions to see what changed?",
+   "expect": [
+    "Scan-Timeline#recon-delta-comparing-two-versions"
+   ]
+  },
+  {
+   "id": "doc03",
+   "question": "Where do I add my OpenAI API key?",
+   "expect": [
+    "Global-Settings#llm-providers",
+    "AI-Model-Providers#provider-setup"
+   ]
+  },
+  {
+   "id": "doc04",
+   "question": "Can I run a local model with Ollama instead of a cloud provider?",
+   "expect": [
+    "AI-Model-Providers#local-models--self-hosted-options"
+   ]
+  },
+  {
+   "id": "doc05",
+   "question": "What does the Raw data & files access level let a collaborator see?",
+   "expect": [
+    "Sharing-Projects#access-levels"
+   ]
+  },
+  {
+   "id": "doc06",
+   "question": "How do I share a project with a teammate?",
+   "expect": [
+    "Sharing-Projects#sharing-a-project"
+   ]
+  },
+  {
+   "id": "doc07",
+   "question": "How do I transfer ownership of a project to someone else?",
+   "expect": [
+    "Sharing-Projects#transferring-a-project"
+   ]
+  },
+  {
+   "id": "doc08",
+   "question": "How do I write a rule that hides findings from a noisy subdomain?",
+   "expect": [
+    "Mute-Rules#writing-a-rule"
+   ]
+  },
+  {
+   "id": "doc09",
+   "question": "How do I unmute a node I muted by mistake?",
+   "expect": [
+    "Muted-Nodes#unmuting"
+   ]
+  },
+  {
+   "id": "doc10",
+   "question": "How is the Priority Board ranking computed?",
+   "expect": [
+    "Priority-Board#how-the-ranking-works"
+   ]
+  },
+  {
+   "id": "doc11",
+   "question": "Can an external agent triage findings through MCP?",
+   "expect": [
+    "Priority-Board#triage-from-an-external-agent-mcp"
+   ]
+  },
+  {
+   "id": "doc12",
+   "question": "How do I mint a token for the MCP server?",
+   "expect": [
+    "MCP-Server#minting-a-token"
+   ]
+  },
+  {
+   "id": "doc13",
+   "question": "What rate limits and budgets apply to MCP tokens?",
+   "expect": [
+    "MCP-Server#rate-limits-and-budgets"
+   ]
+  },
+  {
+   "id": "doc14",
+   "question": "Can I run raw Cypher queries over MCP?",
+   "expect": [
+    "MCP-Server#raw-cypher-graphcypher",
+    "MCP-Server#query_graph-a-question-or-raw-cypher"
+   ]
+  },
+  {
+   "id": "doc15",
+   "question": "How do I connect Claude Code so it answers the agent's model calls?",
+   "expect": [
+    "Agent-in-the-Loop#setup-step-by-step",
+    "Agent-in-the-Loop#how-it-works"
+   ]
+  },
+  {
+   "id": "doc16",
+   "question": "Who approves dangerous actions when an external agent drives the chat?",
+   "expect": [
+    "Agent-in-the-Loop#human-approvals"
+   ]
+  },
+  {
+   "id": "doc17",
+   "question": "How do I generate a pentest report?",
+   "expect": [
+    "Pentest-Reports#generating-a-report"
+   ]
+  },
+  {
+   "id": "doc18",
+   "question": "Can I export a report as PDF?",
+   "expect": [
+    "Pentest-Reports#print--pdf-export"
+   ]
+  },
+  {
+   "id": "doc19",
+   "question": "How do I export a project and import it on another instance?",
+   "expect": [
+    "Data-Export-and-Import#project-export",
+    "Data-Export-and-Import#project-import"
+   ]
+  },
+  {
+   "id": "doc20",
+   "question": "How do I set up GVM OpenVAS the first time?",
+   "expect": [
+    "GVM-Vulnerability-Scanning#first-time-setup"
+   ]
+  },
+  {
+   "id": "doc21",
+   "question": "What GitHub personal access token do I need for secret hunting?",
+   "expect": [
+    "GitHub-Secret-Hunting#step-1-create-a-github-personal-access-token"
+   ]
+  },
+  {
+   "id": "doc22",
+   "question": "How does subdomain takeover detection score and deduplicate results?",
+   "expect": [
+    "Subdomain-Takeover-Detection#deduplication--scoring"
+   ]
+  },
+  {
+   "id": "doc23",
+   "question": "How do I deploy RedAmon on a cloud server?",
+   "expect": [
+    "Deploying-to-a-Server#the-short-version",
+    "Deploying-to-a-Server#step-3-deploy"
+   ]
+  },
+  {
+   "id": "doc24",
+   "question": "Which ports must be open on the cloud firewall for a server deployment?",
+   "expect": [
+    "Deploying-to-a-Server#step-1-open-the-right-ports-on-your-cloud-firewall"
+   ]
+  },
+  {
+   "id": "doc25",
+   "question": "How do I roll back an update without losing data?",
+   "expect": [
+    "Deploying-to-a-Server#updating-data-safety-and-rollback"
+   ]
+  },
+  {
+   "id": "doc26",
+   "question": "What are the three phases the AI agent goes through?",
+   "expect": [
+    "AI-Agent-Guide#the-three-phases"
+   ]
+  },
+  {
+   "id": "doc27",
+   "question": "How do I approve or reject a tool the agent wants to run?",
+   "expect": [
+    "AI-Agent-Guide#approval-workflows"
+   ]
+  },
+  {
+   "id": "doc28",
+   "question": "How do I start an agent session from a node in the graph?",
+   "expect": [
+    "AI-Agent-Guide#starting-a-session-from-a-graph-node"
+   ]
+  },
+  {
+   "id": "doc29",
+   "question": "When does the agent deploy a Fireteam of parallel specialists?",
+   "expect": [
+    "Fireteam-Parallel-Specialists#when-the-agent-chooses-to-deploy-a-fireteam",
+    "Fireteam-Parallel-Specialists#what-fireteam-is-and-what-it-is-not"
+   ]
+  },
+  {
+   "id": "doc30",
+   "question": "What does exploit path search with LATS do?",
+   "expect": [
+    "Exploit-Path-Search-LATS#what-exploit-path-search-is-and-what-it-is-not",
+    "Exploit-Path-Search-LATS#how-the-search-works-at-a-high-level"
+   ]
+  },
+  {
+   "id": "doc31",
+   "question": "How do I upload files for the agent to use?",
+   "expect": [
+    "Agent-Workspace#uploading-files-for-the-agent"
+   ]
+  },
+  {
+   "id": "doc32",
+   "question": "What are the folders of the agent workspace?",
+   "expect": [
+    "Agent-Workspace#workspace-layout--the-four-folders"
+   ]
+  },
+  {
+   "id": "doc33",
+   "question": "How do I write my own chat skill file?",
+   "expect": [
+    "Chat-Skills#writing-a-chat-skill-file"
+   ]
+  },
+  {
+   "id": "doc34",
+   "question": "What is the difference between agent skills and chat skills?",
+   "expect": [
+    "Agent-Skills#agent-skills-vs-chat-skills",
+    "Chat-Skills#agent-skills-vs-chat-skills"
+   ]
+  },
+  {
+   "id": "doc35",
+   "question": "How does the agent classify which attack skill to use?",
+   "expect": [
+    "Agent-Skills#how-classification-works"
+   ]
+  },
+  {
+   "id": "doc36",
+   "question": "How do I create a new project?",
+   "expect": [
+    "Creating-a-Project#starting-a-new-project"
+   ]
+  },
+  {
+   "id": "doc37",
+   "question": "What is the target guardrail when I create a project?",
+   "expect": [
+    "Creating-a-Project#target-guardrail"
+   ]
+  },
+  {
+   "id": "doc38",
+   "question": "Which built-in recon presets are there?",
+   "expect": [
+    "Recon-Presets#built-in-presets"
+   ]
+  },
+  {
+   "id": "doc39",
+   "question": "Can AI generate a recon preset for me?",
+   "expect": [
+    "Recon-Presets#ai-generated-presets"
+   ]
+  },
+  {
+   "id": "doc40",
+   "question": "How do I rerun only one phase of the recon pipeline?",
+   "expect": [
+    "Recon-Pipeline-Workflow#partial-recon"
+   ]
+  },
+  {
+   "id": "doc41",
+   "question": "How do I stop or pause a running scan?",
+   "expect": [
+    "Running-Reconnaissance#stopping-and-pausing-a-scan"
+   ]
+  },
+  {
+   "id": "doc42",
+   "question": "How long does a reconnaissance scan take?",
+   "expect": [
+    "Running-Reconnaissance#scan-duration-estimates"
+   ]
+  },
+  {
+   "id": "doc43",
+   "question": "How do I scan many domains in a single run?",
+   "expect": [
+    "Running-Reconnaissance#domain-batch-scanning-many-domains-in-one-run"
+   ]
+  },
+  {
+   "id": "doc44",
+   "question": "How are the rules of engagement enforced?",
+   "expect": [
+    "Rules-of-Engagement#enforcement-layers"
+   ]
+  },
+  {
+   "id": "doc45",
+   "question": "Can I upload a rules of engagement document and have it parsed?",
+   "expect": [
+    "Rules-of-Engagement#document-upload-and-parsing"
+   ]
+  },
+  {
+   "id": "doc46",
+   "question": "How many scans can I run at once on my machine?",
+   "expect": [
+    "Memory-Management#how-many-scans-can-i-run-at-once"
+   ]
+  },
+  {
+   "id": "doc47",
+   "question": "How do I install a plugin?",
+   "expect": [
+    "Plugins#installing-a-plugin"
+   ]
+  },
+  {
+   "id": "doc48",
+   "question": "How do I turn on TrafficMind?",
+   "expect": [
+    "TrafficMind#turning-it-on"
+   ]
+  },
+  {
+   "id": "doc49",
+   "question": "How do I record an authenticated login session for the scanners?",
+   "expect": [
+    "Authenticated-Session-Recording#recording-a-login-step-by-step"
+   ]
+  },
+  {
+   "id": "doc50",
+   "question": "How does origin discovery find the real server behind a CDN or WAF?",
+   "expect": [
+    "Origin-Discovery#the-core-concept",
+    "Origin-Discovery#discovery-sources"
+   ]
+  },
+  {
+   "id": "doc51",
+   "question": "How does RedAmon test for web cache poisoning?",
+   "expect": [
+    "Web-Cache-Poisoning#the-core-concept",
+    "Web-Cache-Poisoning#how-a-scan-flows-the-macro-view"
+   ]
+  },
+  {
+   "id": "doc52",
+   "question": "How can an admin act as another user?",
+   "expect": [
+    "Identity-and-Access-Management#acting-as-another-user"
+   ]
+  },
+  {
+   "id": "doc53",
+   "question": "What is Root and what can only Root do?",
+   "expect": [
+    "Identity-and-Access-Management#root"
+   ]
+  },
+  {
+   "id": "doc54",
+   "question": "How do I add a new user account?",
+   "expect": [
+    "Identity-and-Access-Management#adding-people"
+   ]
+  },
+  {
+   "id": "doc55",
+   "question": "Where do I see the audit log?",
+   "expect": [
+    "Admin-Console#audit"
+   ]
+  },
+  {
+   "id": "doc56",
+   "question": "How do I revoke a device session?",
+   "expect": [
+    "Admin-Console#device-sessions"
+   ]
+  },
+  {
+   "id": "doc57",
+   "question": "How do I turn AI Navigator off for everyone?",
+   "expect": [
+    "AI-Navigator#turning-it-off-for-everyone"
+   ]
+  },
+  {
+   "id": "doc58",
+   "question": "Which model does AI Navigator use and how do I change it?",
+   "expect": [
+    "AI-Navigator#choosing-its-model"
+   ]
+  },
+  {
+   "id": "doc59",
+   "question": "Can collaborators use AI Navigator on a project I shared?",
+   "expect": [
+    "AI-Navigator#shared-projects",
+    "Sharing-Projects#ai-navigator"
+   ]
+  },
+  {
+   "id": "doc60",
+   "question": "What do the KPI cards on the insights dashboard show?",
+   "expect": [
+    "Insights-Dashboard#kpi-cards"
+   ]
+  },
+  {
+   "id": "doc61",
+   "question": "How do I query the graph from the terminal in the Red Zone?",
+   "expect": [
+    "Red-Zone#redagraph-cli-in-terminal-graph-queries"
+   ]
+  },
+  {
+   "id": "doc62",
+   "question": "What node types does the attack surface graph have?",
+   "expect": [
+    "Attack-Surface-Graph#node-types"
+   ]
+  },
+  {
+   "id": "doc63",
+   "question": "How does the graph keep projects of different users apart?",
+   "expect": [
+    "Attack-Surface-Graph#multi-tenant-design"
+   ]
+  },
+  {
+   "id": "doc64",
+   "question": "The web app does not reflect my code changes, what should I do?",
+   "expect": [
+    "Troubleshooting#webapp-not-reflecting-changes"
+   ]
+  },
+  {
+   "id": "doc65",
+   "question": "How do I reset everything and start from scratch?",
+   "expect": [
+    "Troubleshooting#full-reset"
+   ]
+  },
+  {
+   "id": "doc66",
+   "question": "How does CypherFix create the pull request with the fix?",
+   "expect": [
+    "CypherFix-Automated-Remediation#step-8-pull-request-creation"
+   ]
+  },
+  {
+   "id": "doc67",
+   "question": "What one-time setup does the supply chain scanner need?",
+   "expect": [
+    "Supply-Chain-Scanning#one-time-setup-the-offline-osv-database"
+   ]
+  }
+ ]
+}

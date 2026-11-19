@@ -235,10 +235,6 @@ describe('chat skills (U-10, U-30, U-31, U-32)', () => {
 
 describe('Tradecraft (U-13, U-61, U-62)', () => {
   beforeEach(() => { nav.tab = 'tradecraft' })
-  const RES = {
-    id: 'r1', name: 'HackTricks', url: 'https://book.hacktricks.wiki', enabled: true, llmModel: 'm',
-    lastVerifiedAt: '2026-01-01T00:00:00Z', summary: 's', resourceType: 'mkdocs-wiki',
-  }
 
   test('a list that failed says why', async () => {
     routes[`GET ${BASE}/tradecraft-resources`] = { status: 500, body: { error: 'Failed to fetch tradecraft resources', code: 'P1001' } }
@@ -246,29 +242,8 @@ describe('Tradecraft (U-13, U-61, U-62)', () => {
     expect(await screen.findByText(/Couldn't load your tradecraft resources \(P1001 · HTTP 500\)\./)).toBeInTheDocument()
   })
 
-  test('a refresh the agent could not do names the cause and re-reads the row', async () => {
-    routes[`GET ${BASE}/tradecraft-resources`] = { status: 200, body: [RES] }
-    routes[`POST ${BASE}/tradecraft-resources/r1/refresh`] = {
-      status: 502, body: { error: 'The agent could not refresh this resource', code: 'agent_error', upstreamStatus: 503 },
-    }
-    renderPage()
-    await screen.findByText('HackTricks')
-    const listReads = () => fetchMock.mock.calls.filter(c => c[0] === `${BASE}/tradecraft-resources` && !(c[1] as RequestInit | undefined)?.method).length
-    const before = listReads()
-    fireEvent.click(screen.getByTitle('Re-fetch and rebuild the sitemap + summary'))
-    expect(await screen.findByText(
-      'Refresh failed: The agent could not refresh this resource (agent_error · HTTP 502 · upstream HTTP 503)')).toBeInTheDocument()
-    await waitFor(() => expect(listReads()).toBeGreaterThan(before))
-  })
-
-  test('a refused delete names the code', async () => {
-    routes[`GET ${BASE}/tradecraft-resources`] = { status: 200, body: [RES] }
-    routes[`DELETE ${BASE}/tradecraft-resources/r1`] = { status: 500, body: { error: 'Failed to delete tradecraft resource', code: 'P2024' } }
-    renderPage()
-    const row = (await screen.findByText('HackTricks')).closest('div')!.parentElement!
-    fireEvent.click(within(row.parentElement ?? row).getByTitle('Delete'))
-    expect(await screen.findByText('Delete failed: Failed to delete tradecraft resource (P2024 · HTTP 500)')).toBeInTheDocument()
-  })
+  // The 1.x tab's refresh and delete error texts moved with the tab's removal (T9.3) to
+  // CMP/ResourceListV2.test.tsx ('a refresh the agent could not start …', 'a refused delete names the code').
 })
 
 describe('HD-24: a new chisel URL with the masked auth asks for it again', () => {

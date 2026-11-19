@@ -35,6 +35,7 @@ import { createActAsToken, readActAsToken, type ActAsClaims } from '@/lib/auth'
 import { writeAudit } from '@/lib/audit'
 import { auditedTransaction, createActAsAuditRow } from '@/lib/auditForward'
 import { closeAgentSockets } from '@/lib/agentSockets'
+import { navigatorRuns } from '@/lib/navigator/runRegistry'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { WS_SOCKETS } from '@/lib/wsTicket'
 import { rbacFlags } from './flags'
@@ -292,6 +293,11 @@ export async function recordActAsEnd(input: ActAsEndInput): Promise<boolean> {
     await lockAdmin(tx, adminId)
     return endInTx(tx, input)
   })
+  // An AI Navigator answer is a live connection like a socket, closed with the impersonation it
+  // came from, also when the caller closes the sockets itself (closeSockets: false). A binding that
+  // names its start ends only that start's runs; without one, the pair's runs when this ended it.
+  const startId = input.binding && 'startId' in input.binding ? input.binding.startId : null
+  if (wrote || startId) navigatorRuns().abortActAs({ startId, adminId, targetUserId })
   if (!wrote) return false
   loggedEnd(input)
   await closeActAsSockets(input)

@@ -509,7 +509,7 @@ export function useSendHandlers(deps: SendHandlersDeps) {
     } else {
       answerUndo.current.toolConfirmation = {
         request: toolConfirmationRequest,
-        item: decision === 'reject' ? chatItems.find((it: ChatItem) => it.id === itemId) ?? null : null,
+        item: chatItems.find((it: ChatItem) => it.id === itemId) ?? null,
         toolId: pendingApprovalToolId.current,
         waveId: pendingApprovalWaveId.current,
       }
@@ -589,22 +589,20 @@ export function useSendHandlers(deps: SendHandlersDeps) {
       pendingApprovalToolId.current = null
       pendingApprovalWaveId.current = null
     } else {
-      setChatItems((prev: ChatItem[]) => {
-        const matchingItem = prev.find(
-          (item: ChatItem) => 'type' in item && item.id === itemId
-            && (item.type === 'plan_wave' || item.type === 'tool_execution'),
-        )
-        if (matchingItem && 'type' in matchingItem) {
-          if (matchingItem.type === 'plan_wave') {
-            pendingApprovalWaveId.current = itemId
-            pendingApprovalToolId.current = null
-          } else {
-            pendingApprovalToolId.current = itemId
-            pendingApprovalWaveId.current = null
-          }
+      setChatItems((prev: ChatItem[]) => prev.map((item: ChatItem) => {
+        if (!('type' in item) || item.id !== itemId) return item
+        if (item.type === 'plan_wave') {
+          pendingApprovalWaveId.current = itemId
+          pendingApprovalToolId.current = null
+          return { ...item, approving: true }
         }
-        return prev
-      })
+        if (item.type === 'tool_execution') {
+          pendingApprovalToolId.current = itemId
+          pendingApprovalWaveId.current = null
+          return { ...item, approving: true }
+        }
+        return item
+      }))
     }
 
     try {

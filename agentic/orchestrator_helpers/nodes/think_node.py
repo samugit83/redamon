@@ -81,6 +81,7 @@ from prompts.base import (
     build_workspace_rules_block,
     build_uploads_inbox_block,
     build_imports_block,
+    with_step_naming_rule,
 )
 from prompts.skill_part_seam import applied_skill_workflow
 from prompts.classification import build_skill_menu
@@ -261,6 +262,21 @@ def build_system_message_content(system_prompt: str, llm, anthropic_caching: boo
     return content
 
 
+def think_messages(system_message_content, hint_note=None) -> list:
+    """The think call's messages: one system message, then the ask.
+
+    The Tradecraft "Library now" block goes at the end of that one system message, after the
+    cache tiers: a second system message is refused by chat templates that allow a single leading
+    one, and the provider's 400 would end the run.
+    """
+    from tradecraft.library.hints import with_note
+
+    return [
+        SystemMessage(content=with_note(system_message_content, hint_note)),
+        HumanMessage(content="Based on the current state, what is your next action? Output EXACTLY ONE valid JSON object and nothing else. Do NOT simulate tool execution - you will receive actual tool output after submitting your decision. Do NOT output multiple JSON objects or continue the conversation - just ONE decision JSON.")
+    ]
+
+
 def scope_guardrail_section() -> str:
     """The SCOPE GUARDRAIL block of the system prompt, or '' when there is no
     scope to show and the guardrail is off.
@@ -321,7 +337,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     logger.info(f"[{user_id}/{project_id}/{session_id}] Think node - iteration {iteration}, phase: {phase}")
 
     # Set context for tools
-    set_tenant_context(tenant_id, project_id)
+    set_tenant_context(tenant_id, project_id, session_id)
     set_phase_context(phase)
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))
@@ -670,10 +686,17 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     # Stealth rules now live in the cached Tier-1 segment (previously prepended
     # to the whole prompt). Empty string when stealth mode is off.
     if get_setting('STEALTH_MODE', False):
-        from prompts.stealth_rules import STEALTH_MODE_RULES
-        _stealth_rules_text = STEALTH_MODE_RULES
+        from prompts.stealth_rules import stealth_mode_rules
+        _stealth_rules_text = stealth_mode_rules()
     else:
         _stealth_rules_text = ""
+
+    # Tradecraft: the library's lines appear only in a run with an active resource; the rule, and
+    # the step naming line after it, only where Library now runs (its tools offered in this phase,
+    # hints on).
+    from tradecraft.library.hints import library_rule
+    from tradecraft.overlay import args_examples
+    from tradecraft.runtime import bound_catalog
 
     system_prompt = REACT_SYSTEM_PROMPT.format(
         current_phase=phase,
@@ -699,6 +722,8 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         fireteam_action_enum=ft_action_enum,
         fireteam_plan_field=ft_plan_field,
         fireteam_example_section=ft_example,
+        tradecraft_args=args_examples(),
+        library_rule=with_step_naming_rule(library_rule(bound_catalog(), phase)),
     )
 
     # Inject Deep Think section if available (from state or just computed)
@@ -1025,11 +1050,13 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     system_message_content = build_system_message_content(
         system_prompt, llm, get_setting('ANTHROPIC_PROMPT_CACHING_ENABLED', True))
 
+    # Tradecraft, Library now (owner decision 2026-11-17): the library's best pages for the
+    # current goal, searched again only when the goal or the session's facts changed.
+    from tradecraft.library.hints import library_now
+    _tc_note, _tc_hint_updates = await library_now(state, bound_catalog())
+
     # Get LLM decision with retry on parse failures
-    messages = [
-        SystemMessage(content=system_message_content),
-        HumanMessage(content="Based on the current state, what is your next action? Output EXACTLY ONE valid JSON object and nothing else. Do NOT simulate tool execution - you will receive actual tool output after submitting your decision. Do NOT output multiple JSON objects or continue the conversation - just ONE decision JSON.")
-    ]
+    messages = think_messages(system_message_content, _tc_note)
 
     max_retries = get_setting('LLM_PARSE_MAX_RETRIES', 3)
     decision = None
@@ -1273,6 +1300,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         "_output_tokens_this_turn": output_tokens_this_turn,
         "_skill_workflow": skill_workflow,
     }
+    updates.update(_tc_hint_updates)
 
     # LATS state pass-through (declared keys, or LangGraph strips them, §20.1).
     # Only written when LATS_ENABLED so the disabled path is a strict no-op.

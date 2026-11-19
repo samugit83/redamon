@@ -81,6 +81,23 @@ def _validate_mutex_groups(plan_members: list) -> Optional[str]:
     return None
 
 
+def _tradecraft_seed(parent_state: AgentState) -> dict:
+    """The five Tradecraft run-state fields a member starts from: the values of the run's
+    collector, which the deploy node bound before the members start (a fresh run's, when the
+    parent state still holds an earlier message's), else the parent state's own."""
+    from tradecraft import run_state as _tc_run_state
+
+    collector = _tc_run_state.current()
+    if collector is not None and collector.session_id == str(parent_state.get("session_id") or ""):
+        return collector.drain()
+    seed = _tc_run_state.fresh_values(parent_state.get("tradecraft_run_key"))
+    for field in _tc_run_state.FIELDS:
+        value = parent_state.get(field)
+        if value is not None:
+            seed[field] = list(value) if isinstance(value, list) else value
+    return seed
+
+
 def _build_member_state(
     parent_state: AgentState,
     spec: dict,
@@ -127,6 +144,9 @@ def _build_member_state(
     )
 
     base: dict = {
+        # The run's Tradecraft pages and counts (TD-13): a member counts against the same
+        # per-run limits as the main agent, and the deploy node returns the merged values.
+        **_tradecraft_seed(parent_state),
         "messages": [],
         "current_iteration": 0,
         "max_iterations": _resolved_max_iter,
@@ -530,10 +550,12 @@ async def fireteam_deploy_node(
     logger.info(f"{'=' * 80}")
 
     # Propagate ContextVars BEFORE create_task so children inherit them.
-    set_tenant_context(tenant_id, project_id)
+    set_tenant_context(tenant_id, project_id, session_id)
     set_phase_context(state.get("current_phase", "informational"))
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))
+    from tradecraft import run_state as _tc_run_state
+    _tc_run_state.bind(state)
 
     # Assign stable member IDs up front (used by UI, DB, Neo4j).
     member_ids = [_mk_member_id(i) for i in range(len(members))]
@@ -958,4 +980,5 @@ async def fireteam_deploy_node(
         "_current_fireteam_plan": plan_data,
         "_current_fireteam_results": results,
         "_fireteam_id": fireteam_id_key,
+        **_tc_run_state.drain(),
     }

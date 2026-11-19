@@ -212,6 +212,10 @@ const READ_LEVEL_WRITES: Readonly<Record<string, string>> = {
   'POST /api/agent/workspace/bulk-archive': 'streams an archive of the files named, as the archive-download GET does at the same permission (workspace:read, R*); writes nothing',
   'POST /api/analytics/unseen': 'a POST only to carry the per-tab watermarks: label counts and the Red Zone GETs called in-process (graph:read); writes nothing',
   'POST /api/graph-views/execute': 'read-only Neo4j session (fix of review finding 1)',
+  // AI Navigator (D13): these write only the person's own private conversation, never project data.
+  'POST /api/navigator/projects/[projectId]/messages': "writes the person's own private AI Navigator thread (rowOwner-scoped); every project read behind it is a read tool re-checked per call",
+  'DELETE /api/navigator/projects/[projectId]/threads/[threadId]': "deletes the person's own private AI Navigator thread ({id, projectId} plus ownsRow); no project data",
+  'POST /api/navigator/projects/[projectId]/threads/[threadId]/stop': "ends the person's own AI Navigator answer in flight; writes no project data",
 }
 
 const SOURCES = files(path.join(WEBAPP, 'src'), (f) => /\.(ts|tsx)$/.test(f)).map(relative)

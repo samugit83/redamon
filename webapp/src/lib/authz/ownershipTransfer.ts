@@ -49,6 +49,7 @@ import { rbacFlags } from './flags'
 import type { PermissionContext } from './guards'
 import { projectAccess } from './projectAccess'
 import { onAccessReduced } from './revocation'
+import { navigatorRuns } from '@/lib/navigator/runRegistry'
 import { maxShareLevel, sharingPolicyInForce } from './sharingPolicy'
 import { requireStepUp } from './stepUp'
 
@@ -487,6 +488,7 @@ async function withdrawUnderLock(
   if (!offer || (by === 'recipient' && offer.toUserId !== effectiveUserId)) return NO_OFFER()
   const lock = await acquireTransferLock(projectId, offer.id, offer.fromUserId)
   if (!lock.acquired) return lockRefusal(projectId)
+  navigatorRuns().abortProject(projectId)
   try {
     if (lock.split) {
       const busy = await transferBusy(projectId)
@@ -721,6 +723,9 @@ async function acceptUnderLock(offer: TransferRow, actor: AuditActor, { forced =
   const { projectId } = offer
   const lock = await acquireTransferLock(projectId, offer.id, offer.fromUserId)
   if (!lock.acquired) return lockRefusal(projectId)
+  // No AI Navigator answer outlives the owner it was reading for; while the lock is held a new one
+  // cannot start and a tool call refuses (activationBusy covers the transfer).
+  navigatorRuns().abortProject(projectId)
   // Whether the graph may already sit partly under each owner (an earlier attempt of this transfer): every
   // failure of this attempt then leaves it so, and only a completed move or a run back ends the hold.
   let split = lock.split
@@ -867,8 +872,8 @@ interface MoveResult {
  * `custom/<providerId>` model of the old owner's providers (set back to its default), the Jev provider,
  * the user attack-skill toggles (normalizeUserSkillToggles keeps only the new owner's skills), the old
  * owner's own Nuclei templates (an instance template stays) and the CypherFix GitHub token (a person's
- * credential never passes on). Tradecraft has no project column; target credentials stay with the
- * engagement.
+ * credential never passes on). Target credentials stay with the engagement. The project's tradecraft
+ * choices name the old owner's resources and are cleared by moveInPostgres (§3.4).
  */
 export async function clearedForNewOwner(tx: Tx, project: MovingProject, newOwnerId: string): Promise<{
   data: Record<string, unknown>; cleared: ClearedSetting[]
@@ -974,6 +979,12 @@ async function moveInPostgres(
   })
   if (count !== 1) throw new MoveAborted('project_changed')
 
+  // Each choice names one of the old owner's resources: all of the new owner's start on (§3.4, R-068).
+  const { count: tradecraftChoices } = await tx.tradecraftProjectChoice.deleteMany({ where: { projectId } })
+  if (tradecraftChoices > 0) {
+    cleared.push({ field: 'tradecraftOff', label: 'Tradecraft resources of the previous owner turned off in this project' })
+  }
+
   await tx.projectCollaborator.deleteMany({ where: { projectId, userId: { in: [to, from] } } })
   if (offer.oldOwnerRole === 'co-owner') {
     await tx.projectCollaborator.create({
@@ -994,6 +1005,12 @@ async function moveInPostgres(
   const consent = await tx.projectAccessPolicy.updateMany({
     where: { projectId, ownerCredentialConsentAt: { not: null } },
     data: { ownerCredentialConsentAt: null, ownerCredentialConsentById: null },
+  })
+  // The old owner's choice to send this project's data to collaborators' AI providers (AI Navigator,
+  // D3) is not the new owner's to inherit. Not in `cleared`: it used none of the old owner's keys.
+  await tx.navigatorProjectPolicy.updateMany({
+    where: { projectId, collaboratorsAllowed: true },
+    data: { collaboratorsAllowed: false, updatedById: to },
   })
   await tx.projectAuthProfile.updateMany({ where: { projectId, userId: from }, data: { userId: to } })
   // Conversations reassigned to the project's owner from a deleted account (T24) follow the project;

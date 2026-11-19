@@ -14,10 +14,11 @@ export type FeatureId =
   | 'triage'
   | 'codefix'
   | 'command_whisperer'
-  | 'tradecraft_section_picker'
+  | 'tradecraft_librarian'
   | 'report_narratives'
   | 'multi_mute'
   | 'skill_metadata'
+  | 'navigator'
 
 /**
  * A plugin's own entry in Models by feature: `plugin:<pluginId>` (README.PLUGINS.md §7.3,
@@ -110,11 +111,20 @@ export const LLM_FEATURES: readonly LlmFeature[] = [
     excludeModelPrefixes: [],
   },
   {
-    id: 'tradecraft_section_picker',
-    label: 'Tradecraft section picker',
-    description: 'Picks which page of a Tradecraft resource the agent reads.',
-    hint: 'The smallest model is enough: it answers with one number. Not set: pages are picked by text match.',
-    alsoEditedIn: ['Tradecraft resource form'],
+    id: 'navigator',
+    label: 'AI Navigator',
+    description: 'Answers questions about RedAmon and your projects in the AI Navigator chat.',
+    hint: 'Needs a model that can call tools. A mid-size model is enough.',
+    alsoEditedIn: ['AI Navigator (asked on your first message)'],
+    excludeModelPrefixes: [],
+  },
+  {
+    // Q10: no fallback to the chat or an ingestion model; required while the librarian is in use.
+    id: 'tradecraft_librarian',
+    label: 'Tradecraft librarian',
+    description: 'Finds and checks library pages for vague needs while the agent works.',
+    hint: 'A small or mid-size fast model is enough, but it must follow instructions well: it judges which section answers the need and quotes it exactly. It runs while the agent waits, so speed matters more than size.',
+    alsoEditedIn: ['Settings → Tradecraft', 'Configure search'],
     excludeModelPrefixes: [],
   },
   {

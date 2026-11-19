@@ -270,6 +270,7 @@ export function DeleteUserWizard({ isOpen, userId, userName, targetIsAdmin, onCl
                   </li>
                   <li>{plural(plan.endsWithAccount.mcpTokens, 'MCP token')} and {plural(plan.endsWithAccount.deviceSessions, 'device session')} end with the account.</li>
                   <li>{plural(plan.endsWithAccount.nucleiTemplates, 'own Nuclei template')} move to you.</li>
+                  <li>AI Navigator conversations are private to the account and are deleted with it.</li>
                   <li>The deletion is recorded in the audit log.</li>
                 </ul>
               </section>

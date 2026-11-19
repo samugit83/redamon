@@ -111,6 +111,59 @@ else
 fi
 
 # =============================================================================
+section "a shell suite that cannot run fails the shell section (exit 77)"
+# =============================================================================
+# Suites used to print SKIP and succeed when python3, PyYAML or git was missing,
+# and _test_run_shell printed "ok" for them: green, checking nothing.
+
+_saved_dir="$SCRIPT_DIR"
+SCRIPT_DIR="$(mktemp -d)"
+mkdir -p "$SCRIPT_DIR/tests"
+printf '#!/usr/bin/env bash\necho "  ok   one check"\nexit 0\n' > "$SCRIPT_DIR/tests/fine_test.sh"
+printf '#!/usr/bin/env bash\necho "  CANNOT RUN  needs the demo tool"\nexit %s\n' \
+    "$_TEST_SHELL_CANNOT_RUN" > "$SCRIPT_DIR/tests/demo_test.sh"
+
+assert_eq "the cannot-run code is the conventional 77" "$_TEST_SHELL_CANNOT_RUN" "77"
+
+out="$(_test_run_shell unit 2>&1)"
+assert_eq "a suite exiting 77 fails the shell section" "$?" "1"
+assert_contains "it is reported as unable to run, not ok" "$out" "CANNOT RUN"
+assert_contains "it names the suite" "$out" "demo_test.sh"
+assert_contains "it carries the suite's own reason" "$out" "needs the demo tool"
+assert_contains "it names the opt-out" "$out" "REDAMON_TEST_ALLOW_MISSING=demo_test.sh"
+assert_eq "it is never printed as ok" "$(grep -c 'ok.*demo_test.sh' <<< "$out")" "0"
+assert_contains "the suite that ran is still ok" "$out" "fine_test.sh"
+
+for allow in shell demo_test.sh demo_test all; do
+    out="$(REDAMON_TEST_ALLOW_MISSING="$allow" _test_run_shell unit 2>&1)"
+    assert_eq "REDAMON_TEST_ALLOW_MISSING=$allow lets it pass" "$?" "0"
+    assert_contains "  ...and prints SKIPPED" "$out" "SKIPPED"
+done
+out="$(REDAMON_TEST_ALLOW_MISSING=webapp _test_run_shell unit 2>&1)"
+assert_eq "an opt-out naming something else does not" "$?" "1"
+
+out="$(_test_run_shell live 2>&1)"
+assert_eq "outside the gate tiers it is a skip" "$?" "0"
+
+# The opt-out excuses a suite that could not run, never one that failed.
+printf '#!/usr/bin/env bash\nexit 1\n' > "$SCRIPT_DIR/tests/demo_test.sh"
+out="$(REDAMON_TEST_ALLOW_MISSING=shell _test_run_shell unit 2>&1)"
+assert_eq "a failing suite still fails with the opt-out" "$?" "1"
+assert_contains "and is reported as FAIL" "$out" "FAIL"
+
+rm -rf "$SCRIPT_DIR"
+SCRIPT_DIR="$_saved_dir"
+
+# Every suite that stops early because a gate prerequisite (python3, PyYAML,
+# git) is missing must say so with 77, not with exit 0.
+silent_skips="$(awk '
+    FNR == 1 { prev = "" }
+    function prereq(s) { return s ~ /SKIP/ && s ~ /(python3|[Pp][Yy][Yy][Aa][Mm][Ll]|(^|[^a-z])git([^a-z]|$))/ }
+    (prereq($0) && /exit 0/) || (prereq(prev) && /^[[:space:]]*exit 0/) { print FILENAME ":" FNR }
+    { prev = $0 }' "$REPO_ROOT"/tests/*_test.sh)"
+assert_eq "no shell suite exits 0 after a SKIP for python3, PyYAML or git" "$silent_skips" ""
+
+# =============================================================================
 section "T27: the runner reports an executed-test count"
 # =============================================================================
 

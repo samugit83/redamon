@@ -7,7 +7,7 @@
  */
 
 export interface SchemaField {
-  /** The declared type with its modifier, as written: `String`, `String?`, `String[]`. */
+  /** The declared type with its modifier, as written: `String`, `String?`, `String[]`, `Unsupported("tsvector")?`. */
   type: string
   /** The database column: the `@map` name, or the field name when it has none. */
   column: string
@@ -35,7 +35,8 @@ function withoutComment(line: string): string {
   return line
 }
 
-const FIELD = /^(\w+)\s+(\w+(?:\[\])?\??)(?:\s|$)/
+// `Unsupported("tsvector")?` is a column Prisma cannot type (the Tradecraft search vectors).
+const FIELD = /^(\w+)\s+(Unsupported\("[^"]*"\)\??|\w+(?:\[\])?\??)(?:\s|$)/
 
 export function parsePrismaModels(text: string): Record<string, SchemaModel> {
   const models: Record<string, SchemaModel> = {}

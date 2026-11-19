@@ -21,7 +21,10 @@ has no row there.
 | `php2shell_upload_progress` | PHP target for the session upload-progress use-after-free its README names | The agent's exploitation phase end to end |
 | `fp_regression_target` | IP-mode recon target, driven over MCP | The false-positive filters drop the noise and keep the real findings |
 | `nested_wildcard_lab` | Self-contained DNS + web lab | Domain-batch scope groups: nested wildcards, scan roots below the org domain |
+| `js_secret_lab` | Four hosts on `192.88.96.0/24`: a webpack bundle and source map planting invented real-format keys beside the look-alike noise, library-only and clean controls, and SSRF-bait connection strings aimed at a canary that logs every connection; the keys are generated at run time into a git-ignored folder | JS Recon secret detection, its regex engine and TruffleHog, in full recon over MCP and in partial recon with an upload |
+| `urlscan_lab` | A fake urlscan.io answering the search API with planted visits (leaked links and secrets in URLs, exposed files, takeover pages, an old origin IP), and the lab hosts behind it on their own CoreDNS for `*.uslab.test` (`192.88.97.0/24`), with an outsider that must receive nothing; needs three lab-only orchestrator hooks, never set in a deployment | The urlscan integrations end to end, in domain mode over MCP and in partial recon |
 | `ip_hostnames_lab` | Self-contained DNS + web lab on `192.88.98.0/24`: a shared host with SNI vhosts and two PTR names, a no-PTR host, names that resolve to an outsider, a CDN-like edge, a urlscan stub, a private target, and an outsider that must receive nothing | The four Hostnames on target IPs modes of an IP project, over MCP and partial recon; needs the lab host DNS setup of its index |
+| `zap_ajax_lab` | Three hosts on `192.88.95.0/24`: an app shell whose routes only a browser can assemble, a reflective catch-all, and a twin the seed cap leaves uncrawled | The ZAP Ajax Spider in resource enumeration: browser-only discovery, the reflected-payload seed filter, the seed cap, the per-container memory limits and the timeout kill |
 | `supply_chain_target` | Deterministic HTTP target | Every branch of the L2 supply-chain harvest, each once, with a known outcome |
 | `serialized_target` | App that leaks serialized objects | `recon/serialized_scan` and the agent's `deserialization` skill |
 | `route_exposure_lab` | Four services: an app with open internal, admin and debug routes and exposed files (and, for v2 and v3, a Spring and Laravel fingerprint, an actuator route catalog, a client-side admin router, a credentialed CORS reflection, a cacheable logged-in profile and a disguised login wall), its twin, a hostile host (connection resets, a zlib bomb behind `.git`, a false Ignition, a `*` CORS route), and an outsider that must receive nothing | `recon/route_exposure`, its Jev hooks, and the agent's route-exposure parts in `access_control`, `path_traversal` and `rce` |
@@ -35,12 +38,28 @@ has no row there.
 | `http-desync-expect` | Expect / obfuscation target | That skill's Expect / obfuscation leg (class 5) |
 | `skiller_sqli_csrf` | Flask app with a blind SQL injection behind a single-use form token | The Skiller plugin flow; `PROMPT.txt` is the task sent to the agent |
 | `skiller_nosql_login` | MongoDB-backed login | The Skiller plugin flow against NoSQL operator injection; `PROMPT.txt` as above |
+| `tc_sqli_pg_waf` | Flask sign-in on PostgreSQL 16 behind a signature WAF that blocks every sleep function | Tradecraft 2.0 matrix lab L1: a time-based blind SQL injection that needs a heavy-query delay (`tooling/scripts/tradecraft_e2e/`) |
+| `tc_ssrf_metadata` | Link-preview app with a literal-address SSRF filter, plus a fake cloud metadata service | Tradecraft 2.0 matrix lab L2: an SSRF that needs an encoded metadata address |
 
 Every folder except the two `skiller_*` ones has its own `README.md` with deployment and
 test steps; those two carry a `docker-compose.yml` and the prompt. Beside the folders:
 `skiller_job.sh`, `skiller_progress.sh`, `skiller_wait.sh` and `skiller_verify_override.sh`
 (helpers that read a Skiller run's state), and `triage_truth.yaml`, the ground truth
 `tooling/scripts/triage_eval.py` scores the Priority Board ranking against.
+
+### The Tradecraft end-to-end matrix
+
+The two `tc_*` labs and three older ones (`apache_2.4.49`, `node_serialize_1.0.0`,
+`http-request-smuggling`) are the targets of the Tradecraft end-to-end matrix
+(`tooling/scripts/tradecraft_e2e/`): the agent attacks each lab with the library on, off (the
+control) and in *Search only*, in parallel lanes, each run on its own Compose project with its own
+addresses and a canary secret the oracle reads back, and the checks read the agent's traces. The
+labs read their address, port and canary from `TC_*` variables, bind 127.0.0.1 only and carry a page
+of planted prompt-injection text and `CVE-2099-*` ids, so a run also shows that page text never
+steers the agent. Each lab's self-test (`testing/guinea_pigs/tc_sqli_pg_waf/tests/verify_lab.py`,
+and its twin in `tc_ssrf_metadata`) proves its own properties (the injection, the WAF's blocks, the
+metadata route). The matrix is a live run started by hand, outside the unit gate: see
+`tooling/scripts/tradecraft_e2e/README.md` for how to build the library, run it and read its report.
 
 ---
 

@@ -8,6 +8,7 @@ The PostgreSQL database stores:
 
 - **Users** - User accounts for project ownership
 - **Projects** - Target configurations and their tunable parameters (each described in `recon_settings/registry.yaml`)
+- **Tradecraft libraries** - each account's knowledge resources, their pages, sections and ingestion jobs, written by the webapp and the agent ([Tradecraft Tables](#tradecraft-tables))
 
 This replaces the need for `params.py` configuration files, allowing project-specific settings to be managed through the webapp UI.
 
@@ -135,6 +136,24 @@ Five tables hold the plugin platform's state ([README.PLUGINS.md](README.PLUGINS
 `installed_by`, `created_by` and `decided_by` deliberately have no foreign key: deleting the admin who installed a plugin or decided a version must not uninstall it for everyone or remove a version from its owner's scope. Uninstalling asks whether to keep the plugin's data: **keep** sets the install back to `available` and leaves its rows dormant for a reinstall; **purge** deletes its `plugin_data`, `plugin_overrides` and `plugin_installs` rows for every user and project (an admin can export them first).
 
 For the complete schema, see [webapp/prisma/schema.prisma](../../webapp/prisma/schema.prisma).
+
+### Tradecraft Tables
+
+Tradecraft keeps each account's library ([README.TRADECRAFT.md](README.TRADECRAFT.md)). The webapp owns the schema and writes the resources, settings, curations and project choices; the agent writes the ingestion output itself with raw SQL over its own `DATABASE_URL` (`agentic/tradecraft/store.py`, at most 5 connections per agent copy, sessions in UTC), every name from `agentic/tradecraft/schema_columns.py`, which a test checks against `schema.prisma`. Every statement is keyed by the owner and the resource, and reads join the resource's live `generation`.
+
+| Table (model) | One row per | What it holds |
+|---|---|---|
+| `user_tradecraft_resources` (`UserTradecraftResource`) | resource | Name, slug (unique per account, fixed), URL (unique per account), Enabled, model, the GitHub token override; storage mode, forced type, overrides, type options, focus, the site login (`credentials`, with `has_login`), the summary and its source and lock, priority, preset key; the settings and their hash at the last ingestion, the ingestion report, the live `generation`, the claim (`active_job_id`), `map_version` (1 written by 1.x, 2 converted, 3 ingested by 2.0) and `legacy_map_hash`. The 1.x columns (`sitemap`, `resource_type`, `crawl_stats`, `crawl_stopped_because`, `last_verified_at`) are written by every ingestion, so a rollback reads them; `cache_ttl_sec` is kept and read by nothing |
+| `tradecraft_ingestion_jobs` (`TradecraftIngestionJob`) | job | Kind, status, stage, progress, error code, the cancel flag, the lease and the agent copy holding it, the batch (`bulk_id`), the generation it writes, who started it and the administrator acting as them |
+| `tradecraft_page_ids` (`TradecraftPageId`) | resource and URL | The number of a page ID (`<slug>:<n>`), an autoincrement never reused |
+| `tradecraft_entries` (`TradecraftEntry`) | page of a generation | The card (title and its source, breadcrumb, headings, description, tags, entities), the status (kept or dropped, with the reason), the stored text and its size, hash, ETag and Last-Modified for a Stored page, and `search_vector`; a CVE archive's index has one entry per CVE file, its title and entity the CVE id, with no text |
+| `tradecraft_sections` (`TradecraftSection`) | section of a stored page | Heading, level, anchor, text, size, `search_vector` |
+| `tradecraft_tree_nodes` (`TradecraftTreeNode`) | folder or topic of a generation | Path, parent, label, page count, description |
+| `tradecraft_curations` (`TradecraftCuration`) | resource and URL | Pinned, blocked, renamed title, restored from a drop; kept across every refresh |
+| `tradecraft_project_choices` (`TradecraftProjectChoice`) | project and resource | A resource turned off in that project (no row means on) |
+| `tradecraft_user_settings` (`TradecraftUserSettings`) | account | The ingestion and search settings the person changed (only those), focus recipes, synonyms, when the Save & refresh all offer was answered; `v2_enabled` is kept and read by nothing |
+
+Every table cascades from its user and its resource (or project), so deleting a resource or an account leaves no row. The ingestion writes a new generation beside the live one and swaps it in in one transaction on the resource and job rows; the old generation's rows are deleted afterwards in batches. Search uses `pg_trgm` (declared in the schema's `extensions`) and the full-text triggers that `webapp/scripts/apply-tradecraft-search.mjs` installs after `prisma db push` at every webapp start (idempotent; logged `[tradecraft-search]`). The downgrade report (`node scripts/rbac-upgrade-preview.mjs --downgrade` in the webapp container) lists these tables and columns, with their rows, among what a downgrade loses; it targets 7.7.2, so its RBAC lines do not apply to a roll-back to 7.8.0, whose own `db push` drops the Tradecraft tables and columns all the same.
 
 ### Device Session Table
 

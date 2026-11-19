@@ -1,0 +1,26 @@
+{
+  "v2": true,
+  "owner_id": "user_owner_fake",
+  "person_id": null,
+  "actor_id": null,
+  "search": {},
+  "resources": [
+    {
+      "id": "res_fake_0001",
+      "slug": "fake-wiki",
+      "name": "Fake wiki",
+      "url": "https://wiki.example.invalid/",
+      "type": "mkdocs-wiki",
+      "storage_mode": "stored",
+      "summary": "A synthetic wiki.",
+      "has_login": false,
+      "priority": "normal",
+      "map_version": 3,
+      "read_settings": {
+        "fetching.requestTimeoutSec": 30
+      },
+      "github_token": null,
+      "credentials": null
+    }
+  ]
+}

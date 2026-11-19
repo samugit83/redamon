@@ -1,0 +1,39 @@
+[
+  {
+    "download_url": "https://raw.githubusercontent.com/tc-fixture/payloads/main/README.md",
+    "name": "README.md",
+    "path": "README.md",
+    "size": 63,
+    "type": "file"
+  },
+  {
+    "name": "recon",
+    "path": "recon",
+    "size": 0,
+    "type": "dir"
+  },
+  {
+    "name": "rules",
+    "path": "rules",
+    "size": 0,
+    "type": "dir"
+  },
+  {
+    "name": "sqli",
+    "path": "sqli",
+    "size": 0,
+    "type": "dir"
+  },
+  {
+    "name": "ssrf",
+    "path": "ssrf",
+    "size": 0,
+    "type": "dir"
+  },
+  {
+    "name": "xss",
+    "path": "xss",
+    "size": 0,
+    "type": "dir"
+  }
+]

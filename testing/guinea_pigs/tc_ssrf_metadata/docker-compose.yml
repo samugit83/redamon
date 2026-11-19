@@ -1,0 +1,56 @@
+# L2 of the Tradecraft 2.0 end-to-end matrix (phase 10): an SSRF in a link-preview app
+# whose filter blocks only the literal 169.254.169.254 and "localhost", in front of a fake
+# cloud metadata service. See README.md.
+#
+#   docker compose up -d --build && python3 tests/verify_lab.py
+#
+# The app is on the pentest network at a fixed address, so the agent's Kali sandbox can
+# reach it, and on 127.0.0.1 for the lab's own test. The metadata service is on an
+# internal network only: the app reaches it, nothing else does. No container_name and no
+# named networks, so the matrix runner can start several copies under their own Compose
+# projects; TC_SSRF_IP, TC_SSRF_PORT and TC_CANARY are what it sets for each copy.
+
+services:
+  metadata:
+    image: python:3.12-slim
+    command: ["python", "-u", "/srv/metadata.py"]
+    user: "65534:65534"
+    environment:
+      TC_CANARY: ${TC_CANARY:-tcm-default-canary-0000}
+    volumes:
+      - ./metadata.py:/srv/metadata.py:ro
+    networks:
+      - lab
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  app:
+    build: .
+    # One tag for every copy: the runner builds it once and its instances reuse it.
+    image: tc-lab-ssrf-metadata:latest
+    environment:
+      TC_METADATA_UPSTREAM: metadata:8080
+    depends_on:
+      metadata:
+        condition: service_healthy
+    networks:
+      lab:
+      pentest:
+        ipv4_address: ${TC_SSRF_IP:-172.28.0.98}
+    ports:
+      - "127.0.0.1:${TC_SSRF_PORT:-9212}:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+networks:
+  lab:
+    internal: true
+  pentest:
+    external: true
+    name: redamon_pentest-net

@@ -21,6 +21,7 @@ import { TrafficMindPanel } from './TrafficMindPanel'
 import { LlmProvidersPanel } from './LlmProvidersPanel'
 import { QuotasPanel } from './QuotasPanel'
 import { AuditRetentionPanel } from './AuditRetentionPanel'
+import { NavigatorInstancePanel } from './NavigatorPanel'
 import { PANEL_ICONS } from './panelIcons'
 import { ConsoleHeader } from '../ConsoleHeader'
 import { SECTION_ICONS } from '../consoleIcons'
@@ -42,6 +43,7 @@ const TITLES: Record<PanelId, string> = {
   'public-url': 'Public address',
   sharing: 'Sharing policy',
   retention: 'Audit retention',
+  navigator: 'AI Navigator',
   'default-set': 'Defaults for new members',
   'llm-providers': 'Instance LLM providers',
   quotas: 'Quotas',
@@ -120,6 +122,11 @@ export default function InstancePage() {
         return <SharingPolicyPanel key={id} settings={settings!} unconfirmedRoot={unconfirmedRoot} onSaved={onSaved} />
       case 'retention':
         return <AuditRetentionPanel key={id} settings={settings!} unconfirmedRoot={unconfirmedRoot} onSaved={onSaved} />
+      case 'navigator':
+        return (
+          <NavigatorInstancePanel key={id} settings={settings!} unconfirmedRoot={unconfirmedRoot} onSaved={onSaved}
+            canReadHealth={holds('instance:settings')} />
+        )
       case 'default-set':
         return <DefaultSetPanel key={id} canEdit={isConfirmedRoot && holds('roles:manage')} unconfirmedRoot={unconfirmedRoot} />
       case 'llm-providers':

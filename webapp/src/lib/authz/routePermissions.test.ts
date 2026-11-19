@@ -59,6 +59,7 @@ const SESSION_ONLY: Readonly<Record<string, string>> = {
   'DELETE /api/account/sessions/[sid]': "signing one of one's own browsers out (404 with RBAC_GOVERNANCE_ENABLED off): always one's own, and taking access away is never refused (step 6.10)",
   'GET /api/account/llm-providers': "the instance LLM providers an administrator made available to the account through a set it holds, by name and kind only (404 with RBAC_GOVERNANCE_ENABLED off): an account reads what it may already use (step 6.11)",
   'GET /api/agent/health': 'whether the agent answers: an instance fact the drawer shows, no project data',
+  'GET /api/navigator/status': "only whether Root's AI Navigator switch is on, for the launcher: an instance fact, no project data",
   'GET /api/agent/host-ip': "the host's address the drawer offers as a callback address: an instance fact, nothing written",
   'GET /api/agent/tunnel-status': 'whether the instance tunnel is up, for the drawer: an instance fact; changing the tunnel is platform:tunnels',
   'GET /api/auth/me': 'the signed-in account, its capabilities and the switches: what every screen reads to decide what to offer',
@@ -118,6 +119,7 @@ const ASKED_IN_LIB: Readonly<Record<string, string>> = {
  * that changes nothing.
  */
 const NO_ROWS: Readonly<Record<string, string>> = {
+  'navigator:use': "a collaborator's answer depends on the owner's AI Navigator policy (403 owner_disallowed) and Root's switch as well as the permission, which a generated row cannot express; route-tested (src/app/api/navigator/navigator.routes.test.ts)",
   'graph:views': 'every request that passes the route\'s own checks creates or changes a saved view',
   'remediation:write': 'every request that passes the route\'s own checks writes a remediation (the row checks come before the permission)',
   'reports:generate': 'generating a report writes it and may spend the owner\'s model credits',
@@ -310,7 +312,7 @@ describe('route permissions: every route (steps 3.8, 3.9; PE-19, PE-22)', () => 
     }
     // A later phase's feature is that phase's to wire (each later manifest test requires its own); the
     // ones a step has wired are listed here.
-    const WIRED_NEW_FEATURES = new Set<string>(['project:share', 'audit:read', 'audit:export', 'projects:oversee', 'projects:administer', 'platform:operations', 'agent:conversations_share', 'project:transfer'])
+    const WIRED_NEW_FEATURES = new Set<string>(['project:share', 'audit:read', 'audit:export', 'projects:oversee', 'projects:administer', 'platform:operations', 'agent:conversations_share', 'project:transfer', 'navigator:use'])
     expect(PERMISSION_IDS.filter(p => !PERMISSIONS[p].gatesExisting && named().includes(p) && !WIRED_NEW_FEATURES.has(p))).toEqual([])
   })
 

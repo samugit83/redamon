@@ -11,6 +11,7 @@ import type { ShareGrantable, ShareView } from '@/lib/authz/projectShares'
 import { AccessPicker, choiceOf, termsOf, type AccessChoice } from './AccessPicker'
 import { CollaboratorList, displayName, type SharePatch } from './CollaboratorList'
 import { TransferSection } from '@/components/projects/OwnershipTransfer/TransferSection'
+import { NavigatorPolicyToggle } from './NavigatorPolicyToggle'
 import {
   CONSENT_PROMPT,
   COPY_WARNING,
@@ -368,6 +369,12 @@ export function ShareDialog({ project, onClose }: ShareDialogProps) {
                 )}
               </div>
             )}
+
+            <NavigatorPolicyToggle
+              projectId={project.id}
+              canChange={grantable?.grantor === 'owner' && !readOnly}
+              askPassword={askPassword}
+            />
 
             <section className={styles.section} aria-labelledby={ids.people}>
               <h3 id={ids.people} className={styles.sectionTitle}>People with access</h3>

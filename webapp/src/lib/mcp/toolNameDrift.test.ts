@@ -73,6 +73,8 @@ const AGENT_FACING = [
   // traps the pack renders. Both were outside the sweep while claiming "nothing
   // here can mute".
   'server.ts',
+  // Shared with AI Navigator's tool descriptions (lib/navigator/tools/registry.ts).
+  'toolText.ts',
   'profiles.ts',
   'muteTools.ts',
   'verdictTools.ts',

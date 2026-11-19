@@ -65,6 +65,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'conversation.share': 'Shared a conversation with the project',
     'conversation.unshare': 'Stopped sharing a conversation',
     'project.conversations_policy': 'Changed whether co-owners read every conversation',
+    'project.navigator_collaborators.allow': 'Let collaborators use AI Navigator on a project',
+    'project.navigator_collaborators.disallow': 'Stopped collaborators using AI Navigator on a project',
   }),
   // Step 4.14: one row per admin, project and day of oversight reads; Root's break-glass, opened and
   // closed early (its expiry is named by the opening row).
@@ -127,6 +129,7 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'agent.approval': 'Answered an agent phase approval',
     'agent.tool_confirmation': 'Answered an agent tool confirmation',
     'agent.decision_refused': 'An answer to the agent was refused when it was made',
+    'navigator.refused': 'An AI Navigator read was refused',
     'agent.emergency_stop': 'Pressed the emergency stop',
     'agent.run_stop': 'Stopped an agent run from the operations view',
     'agent.session_interact': 'Sent input to an agent session',
@@ -136,6 +139,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'workspace.upload': 'Uploaded files to the workspace',
     'workspace.import': 'Imported a link into the workspace',
     'workspace.resync': 'Refreshed a workspace import',
+    'tradecraft.v2_switched': 'Turned Tradecraft 2.0 on or off',
+    'tradecraft.credentials_changed': "Changed a Tradecraft resource's site login",
   }),
   ...g('mcp', {
     'mcp.auth.denied': 'An MCP request was refused at sign-in',
@@ -264,6 +269,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'system.user_skill_toggles_backfill': 'Attack skill toggles set at the upgrade',
     'system.jev_provider_selection_cutoff': 'Model provider choice cut-off recorded',
     'system.jev_provider_selection_backfill': 'Model provider choices set at the upgrade',
+    'system.tradecraft_phases_cutoff': 'Tradecraft phases cut-off recorded',
+    'system.tradecraft_phases_backfill': 'Tradecraft tools moved to every phase at the upgrade',
   }),
 })
 

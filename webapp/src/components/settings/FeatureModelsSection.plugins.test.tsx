@@ -37,6 +37,8 @@ beforeEach(() => {
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     if (url === '/api/models') return json(200, MODELS)
+    // Tradecraft 2.0 on: every core feature has its tile (the librarian's shows only then, T7.1).
+    if (url === '/api/users/user-1/tradecraft-settings') return json(200, { v2Enabled: true })
     if (url === '/api/plugins/llm-features') return json(pluginFeatures.status, pluginFeatures.body)
     if (url === '/api/users/user-1/settings' && method === 'GET') return json(200, { featureModels: { ...saved } })
     if (url === '/api/users/user-1/settings' && method === 'PUT') {

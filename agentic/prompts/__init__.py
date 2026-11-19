@@ -710,6 +710,8 @@ def get_phase_tools(
     # four fields (purpose, when_to_use, args_format, description) — same
     # contract across the three phases.
     parts.append(build_informational_tool_descriptions(allowed_tools))
+    # Where the skill's playbook starts: the library's line for the skill goes right before it.
+    skill_at = len(parts)
 
     # Skill workflows are now ADDITIVE on top of the descriptions, not
     # replacements. The descriptions teach the LLM what each tool does;
@@ -758,6 +760,15 @@ def get_phase_tools(
             else:
                 parts.append(POST_EXPLOITATION_TOOLS_STATELESS)
         # else: descriptions above are sufficient
+
+    # Tradecraft (Q5): the library's line for the chosen skill, where its tools are offered, just
+    # before the skill's playbook (owner decision 2026-11-17: at its end, after hundreds of lines,
+    # it went unread). A run with no active resource binds no coverage, so its prompt has none.
+    if "tradecraft_lookup" in allowed_tools or "tradecraft_search" in allowed_tools:
+        from tradecraft.library.coverage import skill_line
+        _tc_line = skill_line(attack_path_type)
+        if _tc_line:
+            parts.insert(skill_at, _tc_line)
 
     return "\n".join(parts)
 

@@ -10,6 +10,7 @@ import { FileImportButton } from '../FileImportButton'
 import { AiToggleLabel } from '../AiToggleLabel'
 import { JevEngineControl } from '../JevEngineControl'
 import { useHasJevProvider } from '@/hooks/useHasJevProvider'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -123,8 +124,8 @@ export function HakrawlerSection({ data, updateField, onRun }: HakrawlerSectionP
                   <input
                     type="number"
                     className="textInput"
-                    value={data.hakrawlerParallelism ?? 4}
-                    onChange={(e) => updateField('hakrawlerParallelism', parseInt(e.target.value) || 4)}
+                    value={data.hakrawlerParallelism ?? numericDefault('hakrawlerParallelism')}
+                    onChange={(e) => updateField('hakrawlerParallelism', parseInt(e.target.value) || numericDefault('hakrawlerParallelism'))}
                     min={1}
                     max={10}
                   />

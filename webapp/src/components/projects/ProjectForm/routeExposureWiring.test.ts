@@ -53,7 +53,8 @@ describe('RouteExposure wiring', () => {
   test('the partial modal disables Run with graph targets off and no URL', () => {
     const modal = readFileSync(join(__dirname, 'WorkflowView/PartialReconModal.tsx'), 'utf8')
     expect(modal).toContain("const routeExposureNoUrls = isRouteExposure && !includeGraphTargets && !customUrls.trim()")
-    const disabled = modal.match(/disabled=\{!runDomains\.length[^}]*\}/)
-    expect(disabled?.[0]).toContain('routeExposureNoUrls')
+    const runDisabled = modal.match(/const runDisabled = [^\n]*/)
+    expect(runDisabled?.[0]).toContain('routeExposureNoUrls')
+    expect(modal).toContain('disabled={runDisabled}')
   })
 })

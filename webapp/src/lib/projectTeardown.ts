@@ -29,6 +29,7 @@ import { clearProjectGraph } from '@/lib/graphRestore'
 import { orchestratorFetch } from '@/lib/orchestrator'
 import { purgeProjectWorkspace } from '@/lib/workspacePurge'
 import { graphTriage } from '@/lib/triageClient'
+import { navigatorRuns } from '@/lib/navigator/runRegistry'
 
 // Fallback for the file deletion when the orchestrator is unreachable.
 const RECON_OUTPUT_PATH = process.env.RECON_OUTPUT_PATH || '/data/recon-output'
@@ -42,6 +43,7 @@ export const TEARDOWN_STEPS = [
   'cancel_jobs',
   'stop_triage',
   'stop_chats',
+  'stop_navigator',
   'stop_scans',
   'archive_authorizations',
   'delete_project',
@@ -234,6 +236,9 @@ export async function teardownProject(
   // the owner's agent. Stopped the way a conversation delete stops its run.
   // The conversations cascade with the project, so they are read first.
   record('stop_chats', await stopProjectChatRuns(id))
+  // AI Navigator answers on the project end before its threads cascade with the row.
+  navigatorRuns().abortProject(id)
+  record('stop_navigator', true)
   // Best-effort stop of each PROJECT-LEVEL scan container. ai_attack runs are
   // keyed by run-id, not project, so they are not stopped here; they finish on
   // their own and their orphaned nodes are swept by the graph read-path

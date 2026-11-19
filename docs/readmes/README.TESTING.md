@@ -112,7 +112,12 @@ the command dispatch from firing) and need no image.
 They run in the same tiers as webapp (`unit`, `all`, `coverage`), so the
 canonical `./redamon.sh test` gate covers them. Every suite matched by the glob
 must be **hermetic or self-skipping**: one that needs a live stack (e.g.
-`scan_timeline_db_test.sh` without postgres) prints a `SKIP` line and exits 0.
+`scan_timeline_db_test.sh` without postgres) prints a `SKIP` line and exits 0,
+the shell equivalent of the live tier. A suite that cannot run because an input
+of its own is missing (python3, PyYAML, git, a tracked file) exits **77**
+instead, and the runner fails the gate on it unless `REDAMON_TEST_ALLOW_MISSING`
+names `shell` or that suite, in which case it prints `SKIPPED` with the suite's
+reason. Exiting 0 there would report a guard as green while it checked nothing.
 Smoke/live shell suites are named `*_smoke.sh` / `*_live.sh` and are deliberately
 not matched.
 
@@ -163,6 +168,18 @@ Agent in the Loop (the `loop/mcp` brain, the `agent-in-the-loop` skill) is teste
 Every MCP test that stubs `MCP_KALI_EXEC_ENABLED` also stubs `AGENT_IN_THE_LOOP_ENABLED`: both
 switches change `tools/list`, and a host whose `.env` turns one on would otherwise see a different
 tool count from the one the test pins.
+
+### AI Navigator
+
+AI Navigator (the `navigator` skill) is tested at five levels:
+
+| Layer | Where | Tier |
+|---|---|---|
+| Agent: router, specialists, budget, citations, wiki index, API, logging | `agentic/tests/test_navigator_*.py` (a scripted fake chat model in `navigator_fakes.py`) | unit |
+| Documentation retrieval | `agentic/tests/test_navigator_docs_eval.py`: hit@3 of `wiki_search` on 67 synthetic questions (`fixtures/navigator_eval/docs_questions.json`) against floors under the measured baseline; skips without the wiki checkout | unit |
+| Webapp: routes, tool callbacks, registry, relay, panel and states | `webapp/src/lib/navigator`, `src/app/api/navigator`, `src/app/api/internal/navigator`, `src/components/navigator` | vitest |
+| Two tenants through the real tool callback | `webapp/src/app/api/internal/navigator/tools/tenancy.integration.test.ts`: crafted Cypher against a running agent and Neo4j; skips unless `NEO4J_PASSWORD`, `INTERNAL_API_KEY` and `AGENT_API_URL` reach them | integration |
+| End to end | `testing/e2e/tests/navigator.spec.ts` (no model needed); `testing/navigator_eval/run.mjs --user <id>`: 73 cases on a real model against a synthetic seeded project, graded and written to `summary.md`, run by hand (it honours the 20 messages / 5 min limit, about 20 to 40 minutes) | Playwright / manual |
 
 ### The live RBAC route matrix
 
@@ -480,6 +497,49 @@ real services and skip in the gate. Run them after touching the engine
 |---|---|---|
 | the sweep's real Cypher: keyset paging, the guard re-check in the mute write, tenant scoping, `updated_at` never touched (`tests/test_node_filters_graph_live.py`) | Neo4j | the command in the file's docstring (agent image, on `redamon-network`) |
 | one live apply per project, decided by Postgres's serializable transaction (`webapp/src/lib/nodeFilterRun.integration.test.ts`) | Postgres | set `DATABASE_URL`; the command is in the file's header |
+
+### Tradecraft
+
+Tradecraft ([README.TRADECRAFT.md](README.TRADECRAFT.md)) is tested at four levels:
+
+| Layer | Where | Tier |
+|---|---|---|
+| Agent units: ingestion stages, search, reading, the librarian, Library now (with the real think node and prompt builders), the job runner, the conversion | `agentic/tests/test_tradecraft_*.py`, on doubles: the web through `tradecraft_doubles.py` (`FixtureFetcher`, the generated fixture sites of `fixtures/tradecraft_sites/`), the page store through `tradecraft_memory_store.py`, the clock through `tradecraft/clock.py` (`FakeClock`), a scripted fake model | unit |
+| Contracts | `agentic/tests/fixtures/tradecraft_contract/` (valid and invalid bodies, `enums.json`) parsed by `test_tradecraft_contract.py` and by the webapp's `agentContract` tests; the web double and the real `GuardedFetcher` held to one behaviour (`test_tradecraft_fetcher_contract*.py`, the integration half against a local `http.server`) | unit / integration |
+| Webapp: routes, the field parsers, the catalog, the screens | `webapp/src/lib/tradecraft`, `src/app/api/users/[id]/tradecraft-resources`, `src/components/settings/tradecraft`, on the in-memory Prisma double `src/lib/tradecraft/__testing__/tradecraftDb.ts` and the agent double `agentDouble.ts` | vitest |
+| Postgres: the page store's statements, search, the swap, claims, the conversion | `agentic/tests/test_tradecraft_*_integration.py`, `webapp/src/**/*.pg.integration.test.ts` | integration (skip without their database) |
+
+The Postgres files run on a disposable database, never on the stack's:
+
+```bash
+tooling/scripts/tradecraft_pg_testdb.sh up        # start (or reuse) redamon-tc-pgtest, 127.0.0.1 only
+tooling/scripts/tradecraft_pg_testdb.sh push      # push webapp/prisma/schema.prisma into the template
+TC_PG_DB=tc_mine tooling/scripts/tradecraft_pg_testdb.sh db                     # your own copy of the template
+TC_PG_DB=tc_mine tooling/scripts/tradecraft_pg_testdb.sh agent tests/test_tradecraft_store_integration.py
+TC_PG_DB=tc_mine tooling/scripts/tradecraft_pg_testdb.sh web src/lib/tradecraft/curation.pg.integration.test.ts
+tooling/scripts/tradecraft_pg_testdb.sh down      # remove the container and its state file
+```
+
+`up`, `push` and `reset` are heavy (one at a time); each copy made with `db` is a database of its own, so several
+people or sessions can run at once. The password lives in a mode-600 state file outside the repository and reaches the
+tests through their environment only.
+
+Two measurements run by hand: the search measurement (`agentic/tests/test_tradecraft_eval_integration.py`, 100
+questions over a fixed corpus, on the harness) and `tooling/scripts/tradecraft_store_perf.sh` (the page store at
+volume). **The end-to-end matrix** (`tooling/scripts/tradecraft_e2e/README.md`) attacks two Tradecraft labs
+(`testing/guinea_pigs/tc_sqli_pg_waf`, `tc_ssrf_metadata`) and the older labs with the library on, off and in Search
+only, in parallel lanes, and checks the agent's traces. It needs the stack, a real model and a library built once from
+the default presets for the e2e owner only (`tooling/scripts/tradecraft_e2e/library.py`: `plan`, `models`, `build`,
+`snapshot`, `restore`, `status`; each matrix run restores the snapshot), so it is a live run started by hand, never part
+of the gate. Its unit tests (`tests/test_tradecraft_matrix_runner.py`, `tests/test_tradecraft_matrix_library.py`) are in
+the gate; a root test file whose name holds `_e2e` would be tiered
+`integration` and never run by `./redamon.sh test unit`.
+
+The shell section holds three Tradecraft guards: `tests/tradecraft_cache_volume_test.sh` (the old page-cache volume is
+removed once by `redamon.sh update`, with `docker` stubbed), `tradecraft_no_cache_names_test.sh` (no page-cache name in
+the code) and `tradecraft_no_new_env_test.sh` (no new environment key in the agent, the webapp or `.env.example`).
+`tests/rbac_scripts_db_test.sh` runs on a throwaway database, and it and `tests/scan_timeline_db_test.sh` skip when
+their containers or the repository are not there (an export).
 
 A failing file is reported with the command to re-run it on its own:
 

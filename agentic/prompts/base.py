@@ -115,7 +115,7 @@ SPAWN with job_spawn when ALL hold:
   - You don't need live step-by-step feedback in the chat stream
 
 DO NOT spawn these (overhead > benefit; they return in <2s):
-  - tradecraft_lookup, query_graph, web_search, cve_intel, shodan,
+  - __TRADECRAFT_FAST_TOOLS__query_graph, web_search, cve_intel, shodan,
     google_dork, msf_restart, fs_* tools, any HTTP single-shot
     (execute_curl, execute_httpx for one URL)
 
@@ -154,6 +154,18 @@ jobs/<id>.log`.
 Inside a plan_tools wave this matters most: the wave does NOT return until
 the SLOWEST step finishes. One unwrapped slow tool blocks every fast probe
 in the same wave for the slow tool's full duration."""
+
+# The library's tools join the list of fast tools only in a run that offers them: a run with no
+# Tradecraft resource sees no Tradecraft text at all. The run's catalog is bound once per run
+# start or resume, so this cached block stays the same from think to think.
+_TRADECRAFT_FAST_TOOLS = "__TRADECRAFT_FAST_TOOLS__"
+
+
+def _tradecraft_fast_tools() -> str:
+    from tradecraft.overlay import no_spawn_tools
+
+    return no_spawn_tools()
+
 
 _WORKSPACE_LAYOUT_FOOTER = (
     "If you need a custom subtree (e.g. `evidence/2026-05-15/`), use fs_mkdir "
@@ -267,7 +279,7 @@ def build_workspace_layout_block(project_id: str) -> str:
     )
     header = _WORKSPACE_LAYOUT_HEADER.replace(
         "__WORKSPACE_ROOT__", workspace_root_path
-    )
+    ).replace(_TRADECRAFT_FAST_TOOLS, _tradecraft_fast_tools())
     parts = [header]
     uploads = _list_uploads(project_id)
     if uploads:
@@ -303,7 +315,7 @@ def build_workspace_rules_block(project_id: str) -> str:
     )
     header = _WORKSPACE_LAYOUT_HEADER.replace(
         "__WORKSPACE_ROOT__", workspace_root_path
-    )
+    ).replace(_TRADECRAFT_FAST_TOOLS, _tradecraft_fast_tools())
     return header + "\n\n" + _WORKSPACE_LAYOUT_FOOTER
 
 
@@ -1244,8 +1256,7 @@ Do NOT include tools that depend on another tool's output — plan those in the 
     google_dork        -> {{"query": "..."}}
     shodan             -> {{"action": "host"|"search"|"dns_reverse"|"dns_domain"|"count", "query": "...", "ip": "...", "domain": "..."}}
     execute_code       -> {{"code": "...", "language": "python", "filename": "exploit"}}
-    execute_playwright -> {{"url": "...", "selector": "...", "format": "text"|"html"}}  OR  {{"script": "..."}}
-    tradecraft_lookup  -> {{"resource_id": "...", "query": "..."}}
+    execute_playwright -> {{"url": "...", "selector": "...", "format": "text"|"html"}}  OR  {{"script": "..."}}{tradecraft_args}
 
   Shape D — no args: msf_restart -> {{}}
 
@@ -1285,7 +1296,7 @@ An error you have not reproduced is a clue, not a conclusion. Most "the tool is 
 2. Mark completed tasks as "completed"
 3. Add new tasks when you discover them
 4. Detect user INTENT - exploitation requests should be fast, research can be thorough
-5. **Add exploitation steps as TODO items** and mark them in_progress/completed as you go
+5. **Add exploitation steps as TODO items** and mark them in_progress/completed as you go{library_rule}
 
 ### When to Ask User (action="ask_user"):
 Use ask_user ONLY when you need user input that cannot be determined from graph, tool output, target_info, or qa_history:
@@ -1316,6 +1327,31 @@ Use ask_user ONLY when you need user input that cannot be determined from graph,
 ### Previous Questions & Answers
 {qa_history}
 """
+
+# Library now (tradecraft/library/hints.py) searches with the words of the todo item in progress and
+# the next pending one, and keeps a page only when it covers enough of the step's terms: an item that
+# describes its action without naming its subject finds little, and every extra word lowers a page's
+# share. The target's own details are the costliest words, since no page holds them: steps of 13-18
+# term groups that mixed them in lost their best page (FIX-ITER6). A vulnerability's public id is the
+# opposite, matched exactly and fitting on its own. Skills that track attempts or rank candidates as
+# todo items keep their own instructions. General on purpose (the owner's NQ-8, option c): a library
+# can hold anything, so the line names no attack class.
+STEP_NAMING_RULE = (
+    "7. **Name each step.** Write each todo item's description as a short phrase that names only the "
+    "technique, the vulnerability's public identifier when you know one, and the target's technology it is "
+    "about (the product, framework, language or protocol), as far as you know them. Leave out the target's "
+    "own details, its paths, parameters, values, file names, tokens and proof strings, which belong in the "
+    "tool calls: Library now searches your library with the words of your step in progress and your next "
+    "step, and no page holds a target's own details. An active skill's own instructions for the todo list "
+    "come first."
+)
+
+
+def with_step_naming_rule(library_rule: str) -> str:
+    """Rule 6 as ``hints.library_rule`` gives it, then the step naming rule, or "" when the run has
+    no Library now in this phase: the line serves only Library now's search, so a run without it
+    reads as before."""
+    return f"{library_rule}\n{STEP_NAMING_RULE}" if library_rule else ""
 
 
 # =============================================================================

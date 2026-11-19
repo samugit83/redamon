@@ -73,6 +73,35 @@ class Wired(unittest.TestCase):
                             'await retry_llm_call(llm, messages, label="lats_expand")')
 
 
+class TradecraftLabels(unittest.TestCase):
+    """Tradecraft 2.0's ingestion and librarian calls refuse loop models, so their labels name
+    the calls in logs and the budget only: the driver guide and the contract stay as they
+    are (master plan TD-19, OQ-18)."""
+
+    def test_both_labels_exist_with_a_json_answer(self):
+        from agent_in_the_loop.purpose import ANSWER_FORMAT, PURPOSES
+        for label in ("tradecraft_ingest", "tradecraft_librarian"):
+            self.assertIn(label, PURPOSES)
+            self.assertEqual(ANSWER_FORMAT[label], "json")
+
+    def test_the_label_is_kept_not_mapped_to_other(self):
+        from agent_in_the_loop.purpose import llm_purpose
+        with llm_purpose("tradecraft_librarian", resource="patt"):
+            self.assertEqual(current_llm_purpose.get(), {"purpose": "tradecraft_librarian", "resource": "patt"})
+
+    def test_the_driver_guide_and_the_contract_version_are_unchanged(self):
+        from pathlib import Path
+        from agent_in_the_loop import CONTRACT_VERSION
+        self.assertEqual(CONTRACT_VERSION, 2)
+        guide = Path(__file__).resolve().parents[2] / "webapp" / "src" / "lib" / "mcp" / "loopSkill.ts"
+        if not guide.exists():
+            self.skipTest("webapp/ is not mounted next to agentic/")
+        text = guide.read_text(encoding="utf-8")
+        self.assertNotIn("tradecraft_ingest", text)
+        self.assertNotIn("tradecraft_librarian", text)
+        self.assertIn("LOOP_CONTRACT_VERSION = 2", text)
+
+
 PROMPT = (f"persona {CACHE_TIER0_END} skills {CACHE_TIER1_END} "
           f"phase tools {CACHE_TIER2_END} current state")
 

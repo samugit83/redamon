@@ -1642,8 +1642,37 @@ _upstream_ref() {
 
 # Tracked files modified in the working tree (never untracked ones - a user's
 # stray notes.txt must not read as "you have edits blocking the update").
+# The wiki submodule is left out: ensure_wiki_checkout moves it, and a checkout at
+# another commit than the one recorded is never the user's edit to protect.
 _dirty_tracked_files() {
-    git -C "$SCRIPT_DIR" status --porcelain --untracked-files=no 2>/dev/null
+    git -C "$SCRIPT_DIR" status --porcelain --untracked-files=no --ignore-submodules=all 2>/dev/null
+}
+
+# AI Navigator's docs route reads ./redamon.wiki, a submodule mounted read-only into
+# the agent. A clone without --recurse-submodules leaves it empty and `update` never
+# moved it, so install and update fetch it here (the wiki is public: no credentials).
+# A wiki someone works in is never moved: only an uninitialised submodule, or one on a
+# detached HEAD with a clean tree, is updated. A failed fetch warns and goes on; the
+# docs answers degrade and nothing else needs the wiki.
+ensure_wiki_checkout() {
+    local dir="$SCRIPT_DIR/redamon.wiki"
+    [[ -f "$SCRIPT_DIR/.gitmodules" ]] && grep -q 'redamon.wiki' "$SCRIPT_DIR/.gitmodules" || return 0
+    git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    if [[ -e "$dir/.git" ]]; then
+        if git -C "$dir" symbolic-ref -q HEAD >/dev/null 2>&1 \
+            || [[ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ]]; then
+            info "redamon.wiki has local work; left as it is"
+            return 0
+        fi
+    fi
+    git -C "$SCRIPT_DIR" submodule sync --quiet redamon.wiki >/dev/null 2>&1 || true
+    if git -C "$SCRIPT_DIR" submodule update --init --depth 1 redamon.wiki >/dev/null 2>&1; then
+        success "AI Navigator documentation in place (redamon.wiki)"
+    else
+        warn "Could not fetch the documentation (redamon.wiki); AI Navigator answers without it."
+        warn "  Fetch it later with: git submodule update --init redamon.wiki"
+    fi
+    return 0
 }
 
 # True when this checkout has commits the upstream does not, which is the ONE
@@ -3567,6 +3596,8 @@ cmd_install() {
     if ! preflight_ram_gate; then exit 1; fi
     if ! preflight_disk_gate "$DISK_FULL_BUILD_GB" "install"; then exit 1; fi
 
+    ensure_wiki_checkout
+
     local version
     version="$(get_version)"
     info "Installing RedAmon v${version}..."
@@ -3744,8 +3775,10 @@ cmd_install() {
 # run the one map.
 _map_core_changes() {
     local changed_files="$1"
-    # webapp: always needs rebuild (no volume mount in production)
-    if echo "$changed_files" | grep -q "^webapp/"; then
+    # webapp: always needs rebuild (no volume mount in production). VERSION too:
+    # it becomes the REDAMON_VERSION build argument the image bakes as the
+    # version it reports (MCP serverInfo, agent onboarding).
+    if echo "$changed_files" | grep -qE "^(webapp/|VERSION$)"; then
         rebuild_core+=(webapp)
     fi
 
@@ -3790,10 +3823,14 @@ _map_core_changes() {
             || restart_only+=(recon-orchestrator)
     fi
 
-    # The orchestrator imports graph_db (its Neo4jClient) and, for /defaults,
-    # recon/project_settings.py and recon/settings_registry.py from its read-only
-    # mounts. Python keeps them cached until the process restarts.
-    if echo "$changed_files" | grep -qE "^(graph_db/|recon/(project_settings|settings_registry)\.py$)"; then
+    # The orchestrator imports graph_db (its Neo4jClient), for /defaults
+    # recon/project_settings.py and recon/settings_registry.py, and the TruffleHog
+    # source registry (trufflehog_scan.{sources,findings}, through
+    # trufflehog_registry.py) from its read-only mounts. Python keeps them cached
+    # until the process restarts, so a registry change would otherwise be gated
+    # and redacted with the old rules while the rebuilt scanner runs the new ones.
+    # tests/redamon_update_map_test.sh derives this list from the imports.
+    if echo "$changed_files" | grep -qE "^(graph_db/|recon/(project_settings|settings_registry)\.py$|scanners/trufflehog_scan/[^/]+\.py$)"; then
         [[ " ${rebuild_core[*]-} ${restart_only[*]-} " == *" recon-orchestrator "* ]] \
             || restart_only+=(recon-orchestrator)
     fi
@@ -3892,6 +3929,10 @@ _map_tool_changes() {
     if echo "$changed_files" | grep -qE "^recon_orchestrator/(hard_guardrail|ip_denylist)\.py$"; then
         rebuild_capture=true
     fi
+    # No rule for scanners/supply_chain_common/, which traffic-ingest imports from
+    # a bind mount: cmd_update recreates a running capture pair on every update
+    # (its last _reconcile_capture_if_running), and the update-map test fails if
+    # that call ever becomes conditional.
     # The plugin runner image: rebuilt when its sources or a compose file it depends on
     # changed (cmd_update also builds it when missing). Never in rebuild_core or
     # restart_only: plugins_converge alone starts the runner and the gateway, and
@@ -4056,6 +4097,7 @@ cmd_update() {
         # logic from the freshly-pulled (newer) script.
         old_head="$REDAMON_UPDATE_FROM"
         new_head="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
+        ensure_wiki_checkout
     else
         old_head="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
 
@@ -4066,6 +4108,7 @@ cmd_update() {
         # Pull latest (upstream tracking branch, then origin/master), diagnosing
         # and self-healing the failure modes users actually hit.
         _update_pull
+        ensure_wiki_checkout
 
         # A heal moved HEAD by reset, not by fast-forward. Diff from the real
         # pre-divergence base so the rebuild map, the up-to-date check and the
@@ -4405,6 +4448,7 @@ cmd_update() {
     _confirm_root
 
     _urlscan_backfill_once
+    _old_page_cache_volume_remove_once
 
     # HTTP Traffic Capture. Order matters, and it is the reverse of what it looks
     # like: the capture pair is spawned BY THE ORCHESTRATOR, so it must be
@@ -4418,6 +4462,9 @@ cmd_update() {
     # (e.g. the supply-chain incident catalog mount) would be missing, silently,
     # until someone toggled capture off and on. Reconciling again here, after the
     # restarts, is what actually applies it. Idempotent and best-effort.
+    # Keep it unconditional: it is also what reloads the supply_chain_common
+    # modules the ingest worker imports from its bind mount, which no map rule
+    # restarts (tests/redamon_update_map_test.sh checks both).
     _reconcile_capture_if_running
     # ...and start it if it was down (a stack recreate leaves the pair stopped).
     ensure_capture_proxy_running
@@ -4600,6 +4647,28 @@ _urlscan_backfill_once() {
         -e NEO4J_USER="$(_env_get NEO4J_USER | grep . || echo neo4j)" -e NEO4J_PASSWORD \
         --entrypoint python redamon-recon tooling/scripts/urlscan_backfill.py --apply \
         || warn "urlscan backfill did not finish; run it again by hand (tooling/scripts/urlscan_backfill.py)"
+}
+
+# One-off: Tradecraft 1.x kept a page cache in the volume named below; 2.0 keeps its
+# pages in Postgres and the agent no longer mounts it (T9.4). Called after the agent was
+# recreated without the mount, so nothing holds the volume. A volume still in use (an agent
+# container left from the old release) is a warning, never a failure: the marker is then not
+# written and the next update tries again. Never touches .env (R-001). The volume held only pages
+# 1.x had downloaded and could download again (§7 item 12): an operator who wants it kept anyway
+# creates the marker first (touch .tradecraft-cache-removed), and this never runs.
+OLD_PAGE_CACHE_VOLUME="redamon_tradecraft_cache"
+OLD_PAGE_CACHE_MARKER="$SCRIPT_DIR/.tradecraft-cache-removed"
+_old_page_cache_volume_remove_once() {
+    [[ -f "$OLD_PAGE_CACHE_MARKER" ]] && return 0
+    if docker volume inspect "$OLD_PAGE_CACHE_VOLUME" >/dev/null 2>&1; then
+        if ! docker volume rm "$OLD_PAGE_CACHE_VOLUME" >/dev/null 2>&1; then
+            warn "The old Tradecraft page cache (volume $OLD_PAGE_CACHE_VOLUME) is still in use; it is removed at the next update."
+            warn "  Or remove it by hand once no container uses it: docker volume rm $OLD_PAGE_CACHE_VOLUME"
+            return 0
+        fi
+        info "Removed the old Tradecraft page cache (volume $OLD_PAGE_CACHE_VOLUME)."
+    fi
+    touch "$OLD_PAGE_CACHE_MARKER" 2>/dev/null || true
 }
 
 _service_running() {
@@ -5401,7 +5470,8 @@ for _f in ${_ROOT_RECON_TESTS//,/ }; do _ROOT_RECON_PATHS="$_ROOT_RECON_PATHS te
 # red one: it reports that a control holds when nothing checked it.
 #
 # `REDAMON_TEST_ALLOW_MISSING` is the deliberate, named opt-out for a working
-# copy that genuinely lacks an input (comma-separated section names, or `all`).
+# copy that genuinely lacks an input (comma-separated section names, shell suite
+# names, or `all`).
 # It prints a line containing the word SKIPPED so the hole is visible in any log
 # rather than being inferable only from a count.
 _test_section_may_skip() {
@@ -5528,21 +5598,34 @@ cmd_test() {
 # redamon.sh itself (sourcing it — the BASH_SOURCE guard at the bottom stops the
 # dispatch from firing), so they need no image and run on the host.
 #
-# Every suite here MUST be hermetic or self-skip: any that needs a live stack
-# (e.g. scan_timeline_db_test.sh without postgres) exits 0 with a SKIP line.
+# A suite that cannot run on this host, because a tool every gate host has
+# (python3 with PyYAML, git, docker compose) or a tracked file it reads is
+# missing, exits _TEST_SHELL_CANNOT_RUN after a line saying what is missing. That
+# is a missing input like an unbuilt image: it fails the gate unless
+# REDAMON_TEST_ALLOW_MISSING names `shell` or the suite (with or without .sh).
+# Exit 0 means the suite checked what it claims. Only a check that needs a
+# running stack (e.g. scan_timeline_db_test.sh without postgres) or a platform
+# feature (unshare, GNU grep -P) may print SKIP and exit 0: the shell form of the
+# live tier, which the gate does not promise.
 # Files named *_smoke.sh / *_live.sh are deliberately NOT matched by the glob.
+# 77 is the automake/meson "skipped" code, so no suite returns it by accident.
+_TEST_SHELL_CANNOT_RUN=77
 _test_run_shell() {
+    local tier="${1:-unit}"
     local files=("$SCRIPT_DIR"/tests/*_test.sh)
     if [[ ! -e "${files[0]}" ]]; then
         _test_missing_input "shell" "no tests/*_test.sh were found" \
-            "check out the tests/ directory" "${1:-unit}"
+            "check out the tests/ directory" "$tier"
         return $?
     fi
     info "=== section: shell (bash) ==="
-    local f name rc shell_failed=0 passed=0
+    local f name rc reason allow_as log shell_failed=0 passed=0 skipped=0
+    # A file, not a pipe: a suite that leaves a background child holding its
+    # stdout would hang a command substitution until that child exits.
+    log="$(mktemp)"
     for f in "${files[@]}"; do
         name="$(basename "$f")"
-        if bash "$f" >/dev/null 2>&1; then
+        if bash "$f" >"$log" 2>&1; then
             rc=0
         else
             rc=$?
@@ -5550,12 +5633,30 @@ _test_run_shell() {
         if [[ $rc -eq 0 ]]; then
             passed=$(( passed + 1 ))
             echo -e "  ${GREEN}ok${NC}    $name"
+        elif [[ $rc -eq $_TEST_SHELL_CANNOT_RUN ]]; then
+            reason="$(grep -v '^[[:space:]]*$' "$log" | tail -n 1 \
+                | sed -E 's/^[[:space:]]*(CANNOT RUN|SKIP:?)[[:space:]]*//')" || reason=""
+            allow_as="$name"
+            if _test_section_may_skip shell; then
+                allow_as=shell
+            elif _test_section_may_skip "${name%.sh}"; then
+                allow_as="${name%.sh}"
+            fi
+            if _test_missing_input "$allow_as" "shell suite $name exited 77: ${reason:-it printed no reason}" \
+                "provide what it names, then: bash tests/$name" "$tier"; then
+                skipped=$(( skipped + 1 ))
+            else
+                shell_failed=1
+            fi
         else
             shell_failed=1
             echo -e "  ${RED}FAIL${NC}  $name (exit $rc) — re-run: bash tests/$name"
         fi
     done
-    if [[ $shell_failed -eq 0 ]]; then
+    rm -f "$log"
+    if [[ $shell_failed -eq 0 && $skipped -gt 0 ]]; then
+        success "shell suites: ${passed} file(s) green, ${skipped} SKIPPED"
+    elif [[ $shell_failed -eq 0 ]]; then
         success "shell suites: ${passed} file(s) green"
     else
         error "shell suites: failures above"

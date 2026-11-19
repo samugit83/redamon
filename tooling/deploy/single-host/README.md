@@ -517,6 +517,11 @@ Basic-auth login) before you send an invite, or the link never reaches the app. 
 (404); the same `update` re-renders it.
 
 Rollback is manual: `git reset --hard <prev>` on the host checkout, then `./deploy.sh update`.
+Rolling back past the release that added AI Navigator applies the older schema with
+`db push --accept-data-loss`, which **drops** `navigator_threads`, `navigator_messages`,
+`navigator_project_policies` and `InstanceSettings.navigator_enabled`: every AI Navigator
+conversation and every owner's "AI Navigator for collaborators" choice is lost (re-upgrading
+recreates them empty and off). Take a database backup before upgrading to keep them.
 
 ## Troubleshooting and FAQ
 

@@ -178,6 +178,8 @@ export async function overSelfService(): Promise<typeof import('@/lib/authz/self
       assertKnownPermission(permission)
       return null
     },
+    // The account rule (doubled or real) already decided whose data passes.
+    accountContentRefusal: async () => null,
   } as unknown as typeof import('@/lib/authz/selfService')
 }
 

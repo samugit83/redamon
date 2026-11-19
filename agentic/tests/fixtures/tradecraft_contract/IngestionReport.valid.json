@@ -1,0 +1,37 @@
+{
+  "visited": 230,
+  "kept": 200,
+  "skipped": {
+    "excluded": 12,
+    "outOfScope": 9,
+    "tooLittleText": 6,
+    "robots": 3,
+    "outsideFocus": 0
+  },
+  "stopReason": "max_pages",
+  "llmCalls": 20,
+  "durationSec": 171.5,
+  "stored": {
+    "pages": 198,
+    "bytes": 5242880,
+    "notStoredQuota": 0,
+    "notStoredSize": 2
+  },
+  "focus": {
+    "mode": "focused",
+    "kept": 120,
+    "dropped": 80
+  },
+  "readiness": {
+    "realTitlesPct": 92,
+    "headingsPct": 85,
+    "descriptionPct": 60,
+    "taggedPct": 97
+  },
+  "errors": [
+    {
+      "code": "fetch_failed",
+      "count": 4
+    }
+  ]
+}

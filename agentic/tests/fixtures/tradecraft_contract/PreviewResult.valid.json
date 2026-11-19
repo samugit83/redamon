@@ -1,0 +1,29 @@
+{
+  "kept": 1,
+  "maybe": 0,
+  "dropped": 1,
+  "examples": [
+    {
+      "url": "https://wiki.example.invalid/sqli/postgres",
+      "title": "PostgreSQL injection",
+      "decision": "keep",
+      "reason": "SQL injection payloads",
+      "topics": [
+        "sql_injection"
+      ],
+      "kinds": [
+        "payloads"
+      ]
+    },
+    {
+      "url": "https://wiki.example.invalid/news/2026",
+      "title": "Site news",
+      "decision": "drop",
+      "reason": "news",
+      "topics": [],
+      "kinds": []
+    }
+  ],
+  "llm_calls": 1,
+  "error_code": ""
+}

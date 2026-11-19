@@ -26,7 +26,7 @@
 
 <p align="center">
   <a href="https://github.com/samugit83/redamon/stargazers"><img height="24" src="https://img.shields.io/github/stars/samugit83/redamon?style=flat&color=2E8B57&label=Stars" alt="GitHub Stars"/></a>
-  <img height="24" src="https://img.shields.io/badge/v7.8.0-release-2E8B57?style=flat" alt="Version 7.8.0"/>
+  <img height="24" src="https://img.shields.io/badge/v7.9.0-release-2E8B57?style=flat" alt="Version 7.9.0"/>
   <img height="24" src="https://img.shields.io/badge/WARNING-SECURITY%20TOOL-B22222?style=flat" alt="Security Tool Warning"/>
   <img height="24" src="https://img.shields.io/badge/LICENSE-MIT-4169A1?style=flat" alt="MIT License"/>
   <img height="24" src="https://img.shields.io/badge/AI-AUTONOMOUS%20AGENT-6A5ACD?style=flat&logo=openai&logoColor=white" alt="AI Powered"/>
@@ -158,8 +158,10 @@ That's it. No Node.js, Python, or security tools needed on your host.
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/samugit83/redamon.git
+git clone --recurse-submodules https://github.com/samugit83/redamon.git
 cd redamon
+# Cloned without --recurse-submodules? `./redamon.sh install` fetches the docs AI Navigator
+# answers from (redamon.wiki); or by hand: git submodule update --init redamon.wiki
 
 # Without GVM (lighter, faster startup):
 ./redamon.sh install
@@ -629,7 +631,9 @@ A **LangGraph-based autonomous agent** implementing the ReAct pattern. It progre
 | **Intelligence** | **query_graph** | Neo4j graph queries -- primary source of truth for recon data | All | -- |
 | | **web_search** | Internet search via Tavily for CVE details, exploit PoCs, advisories | All | -- |
 | | **cve_intel** | ProjectDiscovery `vulnx` -- structured CVE intelligence aggregating NVD + CISA KEV + EPSS + HackerOne + GitHub PoCs + Nuclei template availability. 69 lucene-filterable fields. Optional PDCP key (per-user, anonymous mode = 10 req/min) | All | network_recon :8000 |
-| | **tradecraft_lookup** | User-curated catalog of trusted security knowledge URLs (HackTricks, PayloadsAllTheThings, CVE PoC repos, vendor blogs) -- 6 auto-detected resource types, sitemap-driven section pick, sqlite+disk cache | Exploit, Post | -- |
+| | **tradecraft_search** | Searches your Tradecraft library (the knowledge sites you added: HackTricks, PayloadsAllTheThings, CVE PoC archives, vendor docs, PDFs) by technique, CVE, product or tool, or browses a resource's tree -- no model call | All | -- |
+| | **tradecraft_lookup** | Reads one section of a library page by its page ID: the stored copy of a Stored resource, or the page live from its site | All | -- |
+| | **tradecraft_ask** | The Tradecraft librarian: for a vague need ("the WAF blocks SLEEP"), searches, reads the promising sections and answers up to three checked pages with exact excerpts, on your *Tradecraft librarian* model | All | -- |
 | | **shodan** | Shodan OSINT -- host details, reverse DNS, device search | Info, Exploit | -- |
 | | **google_dork** | Google dorking via SerpAPI -- exposed files, admin panels, directory listings | Info | -- |
 | **Recon & OSINT** | **execute_subfinder** | Passive subdomain enumeration via OSINT (CT logs, DNS datasets). No traffic to target | Info, Exploit | network_recon :8000 |
@@ -698,7 +702,7 @@ Two paths: pick one of the **prefilled Quick-Add presets** (OSINT, threat-intel,
 
 The mirror image of the plugins above. Instead of RedAmon's agent reaching *out* to tools, **your** agent connects *in* and drives RedAmon: your Claude Code session, an internal triage assistant, a nightly CI job, anything that speaks the Model Context Protocol. Mint an access token in **Global Settings → MCP Server** and it gets **51 tools** behind **18 permissions**: list projects, read scan status and settings, query the attack-surface graph in plain English or raw Cypher, read findings / suppressed findings / remediations, see why a finding ranks where it does and read its evidence, submit a quoted evidence review (RedAmon recomputes the score; the agent never sets one), record a triage verdict, start or stop a Priority Board run (spaced and capped per project), mute and unmute findings behind their own opt-in permission, run saved graph views, compare saved scan versions, get an attack-surface overview, exploit paths and blast radius, start / stop / queue a recon run, open an engagement, manage recon presets, (off by default, behind three independent switches) run a command in the Kali sandbox, and (off by default) be the brain of a RedAmon chat with Agent in the Loop.
 
-The token acts as **you**, inside **your own projects**. It is re-checked on every call, so a revoke takes effect on the agent's next call rather than its next reconnect; every graph read is rewritten to match only your tenant's nodes and runs in a read-only Neo4j session; and every write is a positive allowlist. Deliberately not exposed: the agent chat, deleting projects, your API keys, re-pointing a project's target, the engagement record, Mute Rules, setting a finding's score directly, changing a verdict a person made in the app, and any graph write beyond verdicts, reviews, triage runs and (opt-in) mutes. `MCP_SERVER_ENABLED` is off after a normal install and refused over plain HTTP on a server deploy, and `MCP_DISABLED_TOOLS` withdraws a single misbehaving tool without taking the whole surface down.
+The token acts as **you**, inside **your own projects**. It is re-checked on every call, so a revoke takes effect on the agent's next call rather than its next reconnect; every graph read is rewritten to match only your tenant's nodes and runs in a read-only Neo4j session; and every write is a positive allowlist. Deliberately not exposed: the agent chat, deleting projects, your API keys, re-pointing a project's target, the engagement record, Mute Rules, setting a finding's score directly, changing a verdict a person made in the app, and any graph write beyond verdicts, reviews, triage runs and (opt-in) mutes. `./redamon.sh` turns `MCP_SERVER_ENABLED` on for a local install (nothing connects until you mint a token) and leaves it off on a single-host server deploy, where it is refused over plain HTTP. `MCP_DISABLED_TOOLS` withdraws a single misbehaving tool without taking the whole surface down.
 
 #### Agent Onboarding (teaching *your* agent how to use RedAmon)
 
@@ -738,7 +742,7 @@ Every safety guarantee that applies to the root agent also applies to every memb
 
 ### AI Model Providers
 
-Supports **5 providers** and **400+ models**: OpenAI (GPT-5.2, GPT-5, GPT-4.1), Anthropic (Claude Opus 4.6, Sonnet 4.5), OpenRouter (300+ models), AWS Bedrock, and any **OpenAI-compatible endpoint** (Ollama, vLLM, LM Studio, Groq, etc.). Models are dynamically fetched, no hardcoded lists.
+Supports **12 providers** and **400+ models**: OpenAI, Anthropic, Google Gemini, DeepSeek, GLM (Zhipu AI), Kimi (Moonshot), Qwen (Alibaba), xAI (Grok), Mistral AI, OpenRouter, AWS Bedrock, and any **OpenAI-compatible endpoint** (Ollama, vLLM, LM Studio, Groq, etc.). Models are dynamically fetched, no hardcoded lists.
 
 **Agent in the Loop** is not a provider and needs no key: it hands a chat's reasoning to your own Claude Code or Codex over the MCP server (see above).
 
@@ -803,6 +807,12 @@ An **LLM-powered Intent Router** classifies user requests into agent skills: CVE
 **On-demand reference injection** via `/skill` command in the agent chat. Chat Skills are tactical reference docs -- tool playbooks, vulnerability guides, framework-specific notes -- that you inject into the agent's context exactly when you need them. Type `/skill ssrf` to load SSRF expertise, or click the skill picker button for a browsable list. **46 reference skills** ship with RedAmon covering vulnerabilities (JWT, OAuth/OIDC, CSRF, race conditions, business logic, prototype pollution, ReDoS, 2FA bypass, LDAP/XPath injection, web cache poisoning, CORS, host header injection, clickjacking, CRLF, and more), tooling (sqlmap, nuclei, ffuf, nmap, httpx, naabu, katana, subfinder, semgrep), protocols (GraphQL, WebSocket, SOAP/WS-Security, SAML), technologies (Firebase, Supabase), frameworks (Next.js, FastAPI, NestJS), Active Directory (kill chain, Kerberoasting/ASREPRoast, AD-CS ESC1-15, BloodHound path-to-DA), cloud (AWS, Azure, GCP), and post-exploitation (Docker escape, Linux / Windows privesc). Unlike Agent Skills (which drive classification and phase-aware workflows), Chat Skills are supplementary context that persists until you change or remove them.
 
 > **[Wiki: Chat Skills](https://github.com/samugit83/redamon/wiki/Chat-Skills)** | **[Community Chat Skills](agentic/skills/)**
+
+### Tradecraft: Your Own Knowledge Library
+
+Add the sites you trust for attack techniques, payloads and PoCs -- wikis, docs sites, GitBooks, GitHub repositories, CVE PoC archives, PDFs, blogs -- in **Global Settings > Tradecraft**, from curated presets or any URL. RedAmon ingests each one in the background: it maps the pages, cards and tags them by topic, content kind and technology, and, for a **Stored** resource, keeps a copy of every page in your database (**Live** resources are read from their site at each read). During an engagement the agent searches the library and reads pages one section at a time with no model call, asks its **librarian** when the need is vague, and sees **Library now**, the library's best pages for the step in progress and the next one, whenever a page fits. You choose what each resource keeps (an ingestion focus by topic and content kind), curate its map (pin, block, rename), give a private site its login (used only in your own chats, never shown back), and turn resources off per project.
+
+> **[Wiki: Tradecraft Lookup](https://github.com/samugit83/redamon/wiki/Tradecraft-Lookup)** | **[Technical reference](docs/readmes/README.TRADECRAFT.md)**
 
 ### Plugins: Extend RedAmon Without Forking It
 

@@ -8,28 +8,29 @@ Add **[SKILL_ID]** (e.g. `ssrf`, `xxe`, `deserialization`) as a new **built-in A
 
 ## Architecture recap (read this first)
 
-A built-in Agent Skill is wired through **9 layers**. Every new skill must touch ALL of them to work end to end. Layers 8 and 9 are the ones implementers most often forget -- they are not in the project-settings page, they live in the chat drawer, and missing them produces silent UX gaps (no tooltip entry, no example prompts) without any error.
+A built-in Agent Skill is wired through **10 layers** (the same ten as the [`builtin-agent-skill`](../../../skills/builtin-agent-skill/SKILL.md) skill). Every new skill must touch ALL of them to work end to end. Layers 8 and 9 are the ones implementers most often forget -- they are not in the project-settings page, they live in the chat drawer, and missing them produces silent UX gaps (no tooltip entry, no example prompts) without any error. Layer 10 is silent at runtime too: an unregistered skill renders normally and simply never receives an approved plugin override of its text; the unit gate is what catches it.
 
 | # | Layer | File | What it does |
 |---|---|---|---|
 | 1 | Workflow prompts | [agentic/prompts/<skill_id>_prompts.py](../../../agentic/prompts/) | Multi-line Python string constants: the per-phase workflow the LLM follows |
 | 2 | Package re-exports | [agentic/prompts/__init__.py](../../../agentic/prompts/__init__.py) | `from .<skill>_prompts import ...` and add to `__all__` |
-| 3 | Phase injection | [agentic/prompts/__init__.py `get_phase_tools()`](../../../agentic/prompts/__init__.py) | `_inject_builtin_skill_workflow()` branch that appends the prompts when the skill is classified |
+| 3 | Phase injection | [agentic/prompts/__init__.py `_build_builtin_skill_workflow_parts()`](../../../agentic/prompts/__init__.py) | A branch that, when the skill is classified, enabled and its tool allowed, appends each prompt part through `_seam.resolve_skill_part(...)` and returns `parts`. The think node (`_inject_builtin_skill_workflow()` inside `get_phase_tools()`, a thin wrapper), Fireteam members and LATS all reach it through `build_builtin_skill_workflow()` |
 | 4 | Classification | [agentic/prompts/classification.py](../../../agentic/prompts/classification.py) + [agentic/state.py](../../../agentic/state.py) `KNOWN_ATTACK_PATHS` | Section text in `_BUILTIN_SKILL_MAP`, criteria in `_CLASSIFICATION_INSTRUCTIONS`, entry in the ordered skill-id lists, entry in `valid_types`, AND add the skill ID to `KNOWN_ATTACK_PATHS` so the Pydantic validator accepts the classifier output |
 | 5 | Project settings defaults | [agentic/project_settings.py](../../../agentic/project_settings.py) | Entry under `ATTACK_SKILL_CONFIG.builtIn` + any per-skill tunables (e.g. `SQLI_LEVEL`) + `fetch_agent_settings` mappings if the tunables are per-project |
-| 6 | Prisma schema default | [webapp/prisma/schema.prisma](../../../webapp/prisma/schema.prisma) line ~681 (`attackSkillConfig`) | JSON default for the Project field, plus any per-skill columns if you added Prisma-backed tunables |
+| 6 | Prisma schema default | [webapp/prisma/schema.prisma](../../../webapp/prisma/schema.prisma) (`attackSkillConfig` on `Project`) | JSON default for the Project field, plus any per-skill columns if you added Prisma-backed tunables |
 | 6b | **Settings registry** | [recon_settings/registry.yaml](../../../recon_settings/registry.yaml) | Only if Layer 6 added `Project` columns. Describe each one and run `python3 recon_settings/build.py`; the build FAILS on an undescribed column, so this layer announces itself. **`mcp: settable` is the normal answer** — see the checklist item below for why, and for the two things that actually control a per-skill tunable. |
 | 7 | Frontend UI + badge | [AttackSkillsSection.tsx](../../../webapp/src/components/projects/ProjectForm/sections/AttackSkillsSection.tsx) + [phaseConfig.ts](../../../webapp/src/app/graph/components/AIAssistantDrawer/phaseConfig.ts) | Per-project toggle card + classification badge color/label |
 | 8 | **Drawer skills tooltip API** | [webapp/src/app/api/users/[id]/attack-skills/available/route.ts](../../../webapp/src/app/api/users/[id]/attack-skills/available/route.ts) `BUILT_IN_SKILLS` array | Drives the **Agent Skills tooltip** in the chat-drawer header (the hover panel on the active-skill badge). Skills missing from this hardcoded list will not appear in the tooltip even if classification picks them. |
 | 9 | **Drawer suggestion prompts** | [webapp/src/app/graph/components/AIAssistantDrawer/suggestionData.ts](../../../webapp/src/app/graph/components/AIAssistantDrawer/suggestionData.ts) `EXPLOITATION_GROUPS` (and `INFORMATIONAL_GROUPS` / `POST_EXPLOITATION_GROUPS` if applicable) | Example-prompt cards in the chat-drawer suggestion dropdown. Add a new `SESubGroup` block with the skill's `id`, a human title, and 4-6 ready-to-send prompt examples that exercise the skill. Without this entry the user has no one-click way to invoke the new skill. |
+| 10 | **Part registry** (plugin `skill.text` overrides) | [agentic/prompts/skill_parts.py](../../../agentic/prompts/skill_parts.py) `_SPECS` + the golden recorder [agentic/tests/tools/record_skill_golden.py](../../../agentic/tests/tools/record_skill_golden.py) | One entry per static part the branch appends, in assembly order. `_seam.resolve_skill_part` is where an approved plugin override of a part applies, and it applies only to a registered part. `test_skill_parts_registry.py` fails for a skill in `KNOWN_ATTACK_PATHS` without parts; `test_skill_parts_seam.py::test_registry_matches_call_sites` fails for a block appended past the seam once the skill is in `SKILLS` (+ `REQUIRED_TOOL`) of the recorder. |
 
-Classification key = the snake_case string used EVERYWHERE: `cve_exploit`, `sql_injection`, `xss`, etc. Pick it once in Phase 1 and use that exact literal across all 9 layers.
+Classification key = the snake_case string used EVERYWHERE: `cve_exploit`, `sql_injection`, `xss`, etc. Pick it once in Phase 1 and use that exact literal across all 10 layers.
 
 > **Two more sites that behave like silent layers (add them for first-class parity).** Neither errors if forgotten, but the skill is degraded without them:
 > - **`build_skill_menu()` `order` list** in [classification.py](../../../agentic/prompts/classification.py) — the per-turn "re-evaluate skill EVERY turn" menu that drives mid-run `switch_skill`. It has its OWN ordered list separate from the two in `build_classification_prompt()`; if your id is missing here, the agent sees the class name as switchable but never its section/criteria each turn, so it will not switch to it from live evidence.
 > - **`build_attack_path_behavior()`** in [base.py](../../../agentic/prompts/base.py) — a per-skill behavior blurb (informational vs exploitation). Miss it and the skill falls through to a generic one-line fallback instead of the specific steering every other first-class skill gets.
 
-A handful of files reference skill IDs only in stale doc-comments (e.g. [webapp/src/lib/websocket-types.ts](../../../webapp/src/lib/websocket-types.ts) line ~337's `attack_path_type` comment). These do NOT affect runtime, but updating them along with the new skill prevents future readers from being misled. `grep -rn "cve_exploit" webapp/src/` will surface every remaining reference.
+A handful of files reference skill IDs only in doc-comments. These do NOT affect runtime, but updating them along with the new skill prevents future readers from being misled. `grep -rn "cve_exploit" webapp/src/` will surface every remaining reference.
 
 ---
 
@@ -50,7 +51,7 @@ Confirm this skill does not already exist:
 
 1. Search [agentic/prompts/](../../../agentic/prompts/) for any `<skill_id>_prompts.py`. If found, STOP.
 2. Check `_BUILTIN_SKILL_MAP` in [classification.py](../../../agentic/prompts/classification.py) for an existing entry with the same ID.
-3. Check [AttackSkillsSection.tsx `BUILT_IN_SKILLS`](../../../webapp/src/components/projects/ProjectForm/sections/AttackSkillsSection.tsx) around lines 36-73.
+3. Check [AttackSkillsSection.tsx `BUILT_IN_SKILLS`](../../../webapp/src/components/projects/ProjectForm/sections/AttackSkillsSection.tsx).
 4. Consider whether this should be a Community Agent Skill or a Chat Skill instead (see the comparison in [redamon.wiki/Chat-Skills.md "Complete Skill System Comparison"](../../../redamon.wiki/Chat-Skills.md)). Built-in is only justified when you need custom tool-routing hooks, per-skill Python logic (format strings, conditional fallbacks, execution-trace inspection), or first-class badge treatment in the UI.
 
 If all checks pass, proceed.
@@ -67,7 +68,7 @@ Display name:             <Human Name>         # e.g. Server-Side Request Forger
 Short badge label:        <5 CHARS MAX>        # e.g. SSRF
 Default enabled?:         true | false         # default OFF for destructive skills (DoS, brute, phishing)
 Required tools:           <tool names>         # must exist in TOOL_REGISTRY; see below
-Required phase guard:     <tool> in allowed_tools   # the gate inside _inject_builtin_skill_workflow
+Required phase guard:     <tool> in allowed_tools   # the gate on the skill's branch in _build_builtin_skill_workflow_parts
 RoE gate?:                <none | ROE_ALLOW_*>  # e.g. DoS requires ROE_ALLOW_DOS
 Classification keywords:  <comma list>         # disjoint from existing skills
 Tunable settings:         <list of keys>       # e.g. SSRF_TIMEOUT, SSRF_CLOUD_METADATA
@@ -76,7 +77,7 @@ Post-exploitation?:       yes | no             # DoS says no; most say yes
 
 **Required tools**: list the `TOOL_REGISTRY` names the skill depends on. Check which tools exist in [agentic/prompts/tool_registry.py](../../../agentic/prompts/tool_registry.py). Common ones: `query_graph`, `kali_shell`, `execute_curl`, `execute_code`, `execute_playwright`, `execute_nuclei`, `execute_hydra`, `metasploit_console`.
 
-**Phase guard**: when the classifier picks this skill but the required tool is blocked by `TOOL_PHASE_MAP`, the workflow MUST NOT inject (the agent would get instructions for a tool it cannot call). See the existing guards in `_inject_builtin_skill_workflow()`:
+**Phase guard**: when the classifier picks this skill but the required tool is blocked by `TOOL_PHASE_MAP`, the workflow MUST NOT inject (the agent would get instructions for a tool it cannot call). See the existing guards in `_build_builtin_skill_workflow_parts()`:
 - `cve_exploit` gates on `"metasploit_console" in allowed_tools`
 - `sql_injection` gates on `"kali_shell" in allowed_tools`
 - `xss` gates on `"execute_curl" in allowed_tools`
@@ -88,7 +89,7 @@ Pick the analogous one for your skill.
 
 ## Phase 1.5: Designing tunables (decide BEFORE you write the prompt)
 
-The "Tunable settings" line in the Phase 1 contract is the most consequential design choice in the whole skill. Every tunable becomes: a default in `DEFAULT_AGENT_SETTINGS`, a column in the Prisma `Project` model, a field mapping in `fetch_agent_settings`, a UI control in the per-skill section component, and a branch in `_inject_builtin_skill_workflow`. Wrong calls here ripple across all 7 layers; right calls let the prompt and sub-prompts vary per-engagement without touching code.
+The "Tunable settings" line in the Phase 1 contract is the most consequential design choice in the whole skill. Every tunable becomes: a default in `DEFAULT_AGENT_SETTINGS`, a column in the Prisma `Project` model, a field mapping in `fetch_agent_settings`, a UI control in the per-skill section component, and a value read in the skill's branch of `_build_builtin_skill_workflow_parts`. Wrong calls here ripple across every layer below; right calls let the prompt and sub-prompts vary per-engagement without touching code.
 
 ### When to add a tunable (the decision rule)
 
@@ -113,7 +114,7 @@ Pick the pattern based on what the setting actually changes:
 The setting value flows directly into the rendered prompt text. Use when the agent needs to SEE the value to act on it (a numeric threshold, a free-text scope hint, a pre-resolved CLI flag string).
 
 - Source: [agentic/prompts/sql_injection_prompts.py](../../../agentic/prompts/sql_injection_prompts.py) `SQLI_TOOLS` uses `{sqli_level}`, `{sqli_risk}`, `{sqli_tamper_scripts}`.
-- Wiring (Layer 3): pass via `.format(**settings_dict)` in `_inject_builtin_skill_workflow`.
+- Wiring (Layer 3): pass the settings dict as the last argument of `_seam.resolve_skill_part(skill_id, "tools", <SKILL>_TOOLS, settings_dict)`, which calls `.format(**settings_dict)`. Layer 10 registers that part as `TEMPLATE` with exactly those placeholder names.
 - Best for: thresholds (`SQLI_LEVEL=3`), pre-built flag strings (`HYDRA_FLAGS`), free-text site context (`SSRF_CUSTOM_INTERNAL_TARGETS`), hostname / CIDR lists, OOB provider domain.
 - Caveat: the prompt MUST escape literal braces (`{{` / `}}`) everywhere else in the template; Python's `str.format` will otherwise raise `KeyError`. Run a unit test that calls `.format(**defaults)` to catch this on every prompt change.
 
@@ -122,7 +123,7 @@ The setting value flows directly into the rendered prompt text. Use when the age
 An entire pre-rendered markdown block is appended to `parts` only when a boolean is True. Use when the alternative is "the agent doesn't need this content at all in this engagement."
 
 - Source: [agentic/prompts/xss_prompts.py](../../../agentic/prompts/xss_prompts.py) `XSS_BLIND_WORKFLOW` is appended only when `XSS_BLIND_CALLBACK_ENABLED` is True.
-- Wiring (Layer 3): a plain `if setting and "tool" in allowed_tools: parts.append(SUB_SECTION)` after `parts.append(MAIN_TOOLS.format(...))`.
+- Wiring (Layer 3): `if setting and "tool" in allowed_tools: parts.append(_seam.resolve_skill_part(skill_id, "<part_id>", SUB_SECTION))` after the main part, with no format arguments. Layer 10 registers it as `PLAIN`, with the condition as its gate.
 - Best for: heavy reference blocks (3-10 KB) that only some engagements need, OOB callback workflows, optional payload reference tables, language-specific deserialization workflows, cloud-provider-specific blocks.
 - Caveat: the sub-section constant is appended raw, NOT formatted. So it uses single braces `{...}` for legitimate JSON / Jinja2 / IFS / etc. If you accidentally write `{{...}}` thinking it will be substituted, it will reach the LLM with literal double braces. A regex check `re.findall(r'\{rce_[a-z_]+\}', SUB_SECTION) == []` prevents misuse-of-format-placeholder leaks.
 
@@ -132,7 +133,7 @@ A `{block_name}` placeholder in the main template is filled with one of two (or 
 
 - Source A: [agentic/prompts/denial_of_service_prompts.py](../../../agentic/prompts/denial_of_service_prompts.py) `DOS_TOOLS` has a `{dos_assessment_only_block}` slot filled with either an inline assessment-mode warning or empty string.
 - Source B: [agentic/prompts/rce_prompts.py](../../../agentic/prompts/rce_prompts.py) `RCE_TOOLS` has a `{rce_aggressive_block}` slot filled with `RCE_AGGRESSIVE_DISABLED` (forbids destructive techniques) or `RCE_AGGRESSIVE_ENABLED` (permits them with mandatory cleanup).
-- Wiring (Layer 3): resolve the swap value before format, pass it as the placeholder: `parts.append(MAIN_TOOLS.format(..., my_block=BLOCK_A if cond else BLOCK_B))`.
+- Wiring (Layer 3): resolve the swap value first and pass it as a placeholder value: `parts.append(_seam.resolve_skill_part(skill_id, "tools", MAIN_TOOLS, {..., "my_block": BLOCK_A if cond else BLOCK_B}))`. The swap-in blocks are values, not registered parts, so no plugin override replaces them (as with the RCE aggressive blocks).
 - Best for: assessment-vs-active modes, aggressive-vs-conservative payload sets, stealth-vs-loud guidance, RoE-gated step replacements.
 - Caveat: the swap-in strings are themselves NOT format-templated (Python's `str.format` does not recurse into substituted values). So they use single braces `{...}` for any legit content. Same brace discipline as Pattern B.
 
@@ -158,12 +159,12 @@ If a setting is RoE-gated (e.g. `denial_of_service` requires `ROE_ALLOW_DOS`), d
 - **Format placeholder:** lowercase snake_case of the setting key, without the skill prefix when readable: `{rce_oob_callback_enabled}`, `{sqli_level}`. The placeholder is what the LLM sees rendered; keep it readable.
 - **Comment in `DEFAULT_AGENT_SETTINGS`:** one trailing line documenting WHY this is operator-changeable, not WHAT the value does. The `WHY` is what informs whether the toggle should live in the UI at all.
 
-### Cross-checking against the 7 layers
+### Cross-checking against the layers
 
-Once you have your tunable list locked, walk it through every layer to confirm nothing dangles:
+Once you have your tunable list locked, walk it through every layer it touches to confirm nothing dangles:
 
 1. Layer 1 (`<skill>_prompts.py`): the placeholder appears in the template AND a sub-section / swap-block exists for it.
-2. Layer 3 (`_inject_builtin_skill_workflow`): the setting is read with `get_setting('<KEY>', <default>)` and passed to `.format()` (Pattern A) OR gates an `if`-append (Pattern B) OR resolves the swap-block argument (Pattern C).
+2. Layer 3 (`_build_builtin_skill_workflow_parts`): the setting is read with `get_setting('<KEY>', <default>)` and passed in the format arguments of `_seam.resolve_skill_part` (Pattern A) OR gates an `if`-append (Pattern B) OR resolves the swap-block argument (Pattern C). Layer 10 (`skill_parts.py`): a Pattern A placeholder is in its part's placeholder tuple; a Pattern B sub-section is its own `PLAIN` part with the condition as its gate.
 3. Layer 5 (`project_settings.py`): key in `DEFAULT_AGENT_SETTINGS` AND a camelCase mapping in `fetch_agent_settings`.
 4. Layer 6 (Prisma): if the tunable is per-project (most are), a column with `@default(...)` and `@map("snake_case_name")`. Pure prompt-bloat toggles can live in defaults only if you accept that all projects share them.
 5. Layer 7 (frontend `<Skill>Section.tsx`): a labelled input that writes to the camelCase Prisma field via `updateField`. One-line operator-facing description. If you have 3+ booleans plus a value field, group them under a sub-heading.
@@ -216,7 +217,7 @@ Required exports from the file (suffix conventions come from the existing skills
 
 Edit [agentic/prompts/__init__.py](../../../agentic/prompts/__init__.py).
 
-**3.1** Add a new re-export block alongside the existing ones around lines 39-82:
+**3.1** Add a new re-export block alongside the existing `from .<skill>_prompts import (...)` blocks near the top of the file:
 
 ```python
 # Re-export from <Skill Name> prompts
@@ -227,15 +228,15 @@ from .<skill_id>_prompts import (
 )
 ```
 
-**3.2** Add each constant name to the `__all__` list at the bottom of the file (around lines 364-422). Follow the existing grouping pattern (one `# Skill Name` comment then the constants).
+**3.2** Add each constant name to the `__all__` list at the bottom of the file. Follow the existing grouping pattern (one `# Skill Name` comment then the constants).
 
 ---
 
 ## Phase 4: Wire the workflow into phase injection (Layer 3)
 
-Edit `_inject_builtin_skill_workflow()` inside [agentic/prompts/__init__.py](../../../agentic/prompts/__init__.py) (lines ~213-304).
+Edit `_build_builtin_skill_workflow_parts()` inside [agentic/prompts/__init__.py](../../../agentic/prompts/__init__.py). Its public wrapper `build_builtin_skill_workflow()` records which skill rendered, and every consumer calls that wrapper: the think node through `_inject_builtin_skill_workflow()` (a thin wrapper inside `get_phase_tools()`), Fireteam members, and LATS expand. A branch added here reaches all of them; do not add one anywhere else.
 
-Add a new `elif` branch. Model it on the existing skill closest to yours:
+Add a new `elif` branch. Model it on the existing skill closest to yours. Every static part goes through `_seam.resolve_skill_part(skill_id, part_id, CONSTANT, kwargs)` (`kwargs` only where the part is a `.format` template), and the branch returns `parts`:
 
 ```python
 elif (attack_path_type == "<skill_id>"
@@ -249,17 +250,42 @@ elif (attack_path_type == "<skill_id>"
         'your_setting': get_setting('YOUR_SETTING_KEY', <default>),
         # ...
     }
-    parts.append(<SKILL_ID_UPPER>_TOOLS.format(**<skill>_settings))
-    # Optional conditional sub-sections:
+    parts.append(_seam.resolve_skill_part(
+        "<skill_id>", "tools", <SKILL_ID_UPPER>_TOOLS, <skill>_settings))
+    # Optional conditional sub-sections (plain parts: no format arguments):
     if <skill>_settings['your_setting'] and "<other_tool>" in allowed_tools:
-        parts.append(<SKILL_ID_UPPER>_OOB_WORKFLOW)
-    parts.append(<SKILL_ID_UPPER>_PAYLOAD_REFERENCE)
-    return True
+        parts.append(_seam.resolve_skill_part(
+            "<skill_id>", "oob_workflow", <SKILL_ID_UPPER>_OOB_WORKFLOW))
+    parts.append(_seam.resolve_skill_part(
+        "<skill_id>", "payload_reference", <SKILL_ID_UPPER>_PAYLOAD_REFERENCE))
+    return parts
 ```
+
+A bare `parts.append(<CONSTANT>)` or `parts.append(<CONSTANT>.format(...))` renders the same text, but it bypasses the seam: an approved plugin override never applies to that part, and `test_skill_parts_seam.py::test_registry_matches_call_sites` fails once the skill is in the golden recorder (Phase 4b). Only a block built from operator data (like the phishing branch's `PHISHING_SMTP_CONFIG` block) stays a plain append, and it is not registered.
 
 **Ordering matters.** Place your branch before the `cve_exploit` branch if it should take precedence when CVE keywords overlap (e.g. an auth-bypass skill); otherwise keep it alphabetical with the other skills.
 
-**If your skill needs post-exploitation guidance**, the `post_exploitation` branch (lines ~342-358) currently only special-cases user skills and the Metasploit post-expl prompts. If your skill needs a custom post-expl prompt, add a branch there too. Most skills reuse the generic Metasploit post-expl when `metasploit_console` is allowed.
+**If your skill needs post-exploitation guidance**, the `post_exploitation` branch of `get_phase_tools()` currently only special-cases user skills and the Metasploit post-expl prompts (the built-in workflow builder is not called in that phase). If your skill needs a custom post-expl prompt, add a branch there too. Most skills reuse the generic Metasploit post-expl when `metasploit_console` is allowed.
+
+---
+
+## Phase 4b: Register the workflow parts (Layer 10)
+
+**4b.1** Edit [agentic/prompts/skill_parts.py](../../../agentic/prompts/skill_parts.py). Add one `_SPECS` entry per part your branch appends through the seam, in the order the branch appends them:
+
+```python
+("<skill_id>", "tools", "<skill_id>_prompts.<SKILL_ID_UPPER>_TOOLS", TEMPLATE,
+ ("your_setting",), _ALWAYS),
+("<skill_id>", "oob_workflow", "<skill_id>_prompts.<SKILL_ID_UPPER>_OOB_WORKFLOW", PLAIN, (),
+ "<SKILL_ID_UPPER>_<SETTING> and <other_tool> allowed"),
+("<skill_id>", "payload_reference", "<skill_id>_prompts.<SKILL_ID_UPPER>_PAYLOAD_REFERENCE", PLAIN, (), _ALWAYS),
+```
+
+The `part_id` equals the second argument at the call site. A part is `TEMPLATE` where the call passes format arguments, listing exactly the placeholder names its template uses, and `PLAIN` with `()` otherwise. The last field says when the branch includes the part; the branch's own gate applies on top.
+
+**4b.2** In [agentic/tests/test_skill_parts_registry.py](../../../agentic/tests/test_skill_parts_registry.py), append the new parts to `EXPECTED` (and raise its length assertion) and each `TEMPLATE` part's placeholders to `EXPECTED_PLACEHOLDERS`. The file pins the registry because the webapp stores a plugin override against a part's key and the SHA-256 of its factory text.
+
+**4b.3** In [agentic/tests/tools/record_skill_golden.py](../../../agentic/tests/tools/record_skill_golden.py), add the skill to `SKILLS`, its required tool to `REQUIRED_TOOL`, and the settings it reads to `ALL_ON` / `ALL_OFF`. Once you have confirmed the rendered text is what you intend, re-record `agentic/tests/fixtures/skill_workflow_golden.json` with the command in that file's docstring; `test_skill_workflow_golden.py` compares against it.
 
 ---
 
@@ -267,7 +293,7 @@ elif (attack_path_type == "<skill_id>"
 
 Edit [agentic/prompts/classification.py](../../../agentic/prompts/classification.py).
 
-**5.1** Add a section constant near lines 16-71:
+**5.1** Add a section constant next to the other `_<SKILL>_SECTION` constants at the top of the file:
 
 ```python
 _<SKILL_ID_UPPER>_SECTION = """### <skill_id> - <Display Name>
@@ -280,21 +306,17 @@ _<SKILL_ID_UPPER>_SECTION = """### <skill_id> - <Display Name>
 
 Keyword list guidance: pick terms the user is likely to type. Keep them disjoint from existing sections. If there is overlap (e.g. both SQLi and XSS can say "WAF bypass"), disambiguate in the "Key distinction" line.
 
-**5.2** Add your skill to `_BUILTIN_SKILL_MAP` (lines 74-81). Pick a unique priority letter (the letter is informational, keep alphabetical order by letter):
+**5.2** Add your skill to `_BUILTIN_SKILL_MAP`. Pick a priority letter no entry uses yet (the letter is informational):
 
 ```python
 _BUILTIN_SKILL_MAP = {
     'phishing_social_engineering': (_PHISHING_SECTION, 'a', 'phishing_social_engineering'),
-    'brute_force_credential_guess': (_BRUTE_FORCE_SECTION, 'b', 'brute_force_credential_guess'),
-    'cve_exploit': (_CVE_EXPLOIT_SECTION, 'c', 'cve_exploit'),
-    'denial_of_service': (_DOS_SECTION, 'd', 'denial_of_service'),
-    'sql_injection': (_SQLI_SECTION, 'e', 'sql_injection'),
-    'xss': (_XSS_SECTION, 'f', 'xss'),
-    '<skill_id>': (_<SKILL_ID_UPPER>_SECTION, 'g', '<skill_id>'),   # <-- new
+    # ... every other built-in skill ...
+    '<skill_id>': (_<SKILL_ID_UPPER>_SECTION, '<unused letter>', '<skill_id>'),   # <-- new
 }
 ```
 
-**5.3** Add your entry to `_CLASSIFICATION_INSTRUCTIONS` (lines 84-108):
+**5.3** Add your entry to `_CLASSIFICATION_INSTRUCTIONS`:
 
 ```python
 '<skill_id>': """   - **<skill_id>**:
@@ -303,18 +325,18 @@ _BUILTIN_SKILL_MAP = {
 
 **5.4** Add your skill ID to BOTH ordered lists in `build_classification_prompt()`:
 
-- Line ~171: the list used to render sections in order
-- Line ~202 (`builtin_skill_ids`): the list used to render classification criteria
+- the inline list of the `for skill_id in [...]` loop under "Attack Skill Types", which renders the sections in order
+- `builtin_skill_ids`, which renders the classification criteria and builds `valid_types`
 
 ```python
 for skill_id in ['phishing_social_engineering', 'brute_force_credential_guess',
-                 'cve_exploit', 'denial_of_service', 'sql_injection', 'xss',
+                 # ... every other built-in skill ...
                  '<skill_id>']:  # <-- add here AND in builtin_skill_ids below
 ```
 
-**5.5** (Optional, usually skip) If the skill must be excluded when RoE forbids it (like `denial_of_service` is gated on `ROE_ALLOW_DOS`), add a corresponding `enabled_builtins.discard('<skill_id>')` block around lines 119-126.
+**5.5** (Optional, usually skip) If the skill must be excluded when RoE forbids it (like `denial_of_service` is gated on `ROE_ALLOW_DOS`), add a corresponding `enabled_builtins.discard('<skill_id>')` block next to the existing ones under `if get_setting('ROE_ENABLED', False):` at the top of `build_classification_prompt()`.
 
-**5.6** (Optional, only if renaming defaults) The line at ~218 picks the default classification when the request is vague. Leave it as `cve_exploit`.
+**5.6** (Optional, only if renaming defaults) `default_type` in `build_classification_prompt()` picks the classification for a vague request (`recon-unclassified`). Leave it.
 
 ---
 
@@ -322,17 +344,14 @@ for skill_id in ['phishing_social_engineering', 'brute_force_credential_guess',
 
 Edit [agentic/project_settings.py](../../../agentic/project_settings.py).
 
-**6.1** Add the skill ID to `ATTACK_SKILL_CONFIG.builtIn` (lines 189-200):
+**6.1** Add the skill ID to `ATTACK_SKILL_CONFIG.builtIn` in `DEFAULT_AGENT_SETTINGS`:
 
 ```python
 'ATTACK_SKILL_CONFIG': {
     'builtIn': {
-        'cve_exploit': True,
+        'cve_exploit': False,
         'brute_force_credential_guess': False,
-        'phishing_social_engineering': False,
-        'denial_of_service': False,
-        'sql_injection': True,
-        'xss': True,
+        # ... every other built-in skill ...
         '<skill_id>': <True_or_False>,    # <-- new
     },
     'user': {},
@@ -343,8 +362,8 @@ Default to `True` only for non-destructive, widely-useful skills. Default `False
 
 **6.2** Add any per-skill tunables to `DEFAULT_AGENT_SETTINGS`. Follow the naming pattern of existing skills:
 
-- SQLi uses `SQLI_LEVEL`, `SQLI_RISK`, `SQLI_TAMPER_SCRIPTS` (lines 180-182)
-- XSS uses `XSS_DALFOX_ENABLED`, `XSS_BLIND_CALLBACK_ENABLED`, `XSS_CSP_BYPASS_ENABLED` (lines 185-187)
+- SQLi uses `SQLI_LEVEL`, `SQLI_RISK`, `SQLI_TAMPER_SCRIPTS`
+- XSS uses `XSS_DALFOX_ENABLED`, `XSS_BLIND_CALLBACK_ENABLED`, `XSS_CSP_BYPASS_ENABLED`
 
 Example:
 
@@ -353,22 +372,22 @@ Example:
 '<SKILL_ID_UPPER>_<SETTING>': <default>,
 ```
 
-These keys are what you read in `_inject_builtin_skill_workflow()` via `get_setting(...)` in Phase 4.
+These keys are what you read in `_build_builtin_skill_workflow_parts()` via `get_setting(...)` in Phase 4.
 
 ---
 
 ## Phase 7: Prisma schema default (Layer 6)
 
-Edit [webapp/prisma/schema.prisma](../../../webapp/prisma/schema.prisma) at line ~681. The `attackSkillConfig` field has a hardcoded JSON default:
+Edit [webapp/prisma/schema.prisma](../../../webapp/prisma/schema.prisma). The `attackSkillConfig` field of the `Project` model has a hardcoded JSON default:
 
 ```prisma
-attackSkillConfig    Json     @default("{\"builtIn\":{\"cve_exploit\":true,\"brute_force_credential_guess\":true,\"phishing_social_engineering\":true,\"denial_of_service\":true,\"sql_injection\":true,\"xss\":true},\"user\":{}}") @map("attack_skill_config")
+attackSkillConfig                    Json     @default("{\"builtIn\":{\"cve_exploit\":false,\"brute_force_credential_guess\":false,\"phishing_social_engineering\":false,\"denial_of_service\":false,\"sql_injection\":true,\"xss\":true,\"ssrf\":true,\"rce\":true,\"deserialization\":false,\"path_traversal\":true,\"access_control\":true,\"http_request_smuggling\":false,\"xxe\":true,\"crypto_attack\":true},\"user\":{}}") @map("attack_skill_config")
 ```
 
 Add your skill ID to the JSON. Keep the escaping intact (note `\"`):
 
 ```prisma
-attackSkillConfig    Json     @default("{\"builtIn\":{\"cve_exploit\":true,...,\"xss\":true,\"<skill_id>\":<true_or_false>},\"user\":{}}") @map("attack_skill_config")
+attackSkillConfig    Json     @default("{\"builtIn\":{\"cve_exploit\":false,...,\"crypto_attack\":true,\"<skill_id>\":<true_or_false>},\"user\":{}}") @map("attack_skill_config")
 ```
 
 Then run:
@@ -399,7 +418,7 @@ Ask the user first before running this; it mutates every project in the DB.
 
 **8.1** Edit [webapp/src/components/projects/ProjectForm/sections/AttackSkillsSection.tsx](../../../webapp/src/components/projects/ProjectForm/sections/AttackSkillsSection.tsx).
 
-Add an entry to the `BUILT_IN_SKILLS` array at lines 36-73. Pick an icon from `lucide-react` (the file already imports `Bug`, `KeyRound`, `Mail`, `Swords`, `Settings`, `Zap`, `Database`, `Code2` at line 5, add more as needed):
+Add an entry to the `BUILT_IN_SKILLS` array. Pick an icon from `lucide-react` (add it to the file's `lucide-react` import if it is not there yet):
 
 ```tsx
 {
@@ -410,13 +429,13 @@ Add an entry to the `BUILT_IN_SKILLS` array at lines 36-73. Pick an icon from `l
 },
 ```
 
-Add the same key to `DEFAULT_CONFIG.builtIn` at lines 80-90 (must match Phase 6 exactly).
+Add the same key to `DEFAULT_CONFIG.builtIn` (must match Phase 6 exactly).
 
 If the skill has tunable settings that need their own sub-section UI (like `SqliSection.tsx`, `DosSection.tsx`, `BruteForceSection.tsx` (which exports `HydraSection`), `PhishingSection.tsx`), create a new sibling component and conditionally render it inside the main `AttackSkillsSection` where the other sub-sections are rendered (search the file for `<SqliSection`). If your skill only has simple boolean/number settings, skip this.
 
 **8.2** Edit [webapp/src/app/graph/components/AIAssistantDrawer/phaseConfig.ts](../../../webapp/src/app/graph/components/AIAssistantDrawer/phaseConfig.ts).
 
-Add a classification badge config inside `KNOWN_ATTACK_PATH_CONFIG` at lines 51-88. Pick a color that is visually distinct from the existing 6:
+Add a classification badge config inside `KNOWN_ATTACK_PATH_CONFIG`. Pick a color that is visually distinct from the existing ones:
 
 ```tsx
 <skill_id>: {
@@ -517,7 +536,10 @@ docker compose build webapp && docker compose up -d webapp
 | Badge always shows unclassified (gray) | Classification not wired. Check `_BUILTIN_SKILL_MAP` + both ordered lists + `_CLASSIFICATION_INSTRUCTIONS` all have the skill |
 | Toggle on UI does not persist | `DEFAULT_CONFIG` in [AttackSkillsSection.tsx](../../../webapp/src/components/projects/ProjectForm/sections/AttackSkillsSection.tsx) and the Prisma JSON default drifted; make them match |
 | Workflow prompt missing in agent logs | Phase guard failing: required tool not in `allowed_tools`; check `TOOL_PHASE_MAP` for the tool and phase |
-| `KeyError` on `get_setting` | You referenced a setting in `_inject_builtin_skill_workflow()` that you forgot to add to `DEFAULT_AGENT_SETTINGS` |
+| `KeyError` on `get_setting` | You referenced a setting in `_build_builtin_skill_workflow_parts()` that you forgot to add to `DEFAULT_AGENT_SETTINGS` |
+| `test_skill_parts_registry.py` red | A part is not in `_SPECS` of [skill_parts.py](../../../agentic/prompts/skill_parts.py), or `EXPECTED` / `EXPECTED_PLACEHOLDERS` in the test were not extended (Phase 4b) |
+| `test_skill_parts_seam.py::test_registry_matches_call_sites` red | A part is appended with a bare `parts.append(...)` instead of `_seam.resolve_skill_part(...)`, or its `part_id` / `TEMPLATE` kind differs from the registry |
+| `test_skill_workflow_golden.py` red | The golden fixture was not re-recorded after an intended prompt change (command in the docstring of `record_skill_golden.py`) |
 
 ---
 
@@ -525,7 +547,8 @@ docker compose build webapp && docker compose up -d webapp
 
 - [ ] `agentic/prompts/<skill_id>_prompts.py` created with `<SKILL_ID_UPPER>_TOOLS`
 - [ ] Constants re-exported in [agentic/prompts/__init__.py](../../../agentic/prompts/__init__.py) + added to `__all__`
-- [ ] New `elif` branch in `_inject_builtin_skill_workflow()` with phase guard
+- [ ] New `elif` branch in `_build_builtin_skill_workflow_parts()` with phase guard, every static part appended through `_seam.resolve_skill_part(...)`, returning `parts`
+- [ ] Every static part registered in `_SPECS` of [agentic/prompts/skill_parts.py](../../../agentic/prompts/skill_parts.py), `EXPECTED` / `EXPECTED_PLACEHOLDERS` extended in `test_skill_parts_registry.py`, the skill in `SKILLS` + `REQUIRED_TOOL` of `record_skill_golden.py`, golden fixture re-recorded (Layer 10)
 - [ ] `<skill_id>` added to `KNOWN_ATTACK_PATHS` in [agentic/state.py](../../../agentic/state.py) (otherwise the Pydantic validator rejects classifier output)
 - [ ] `_<SKILL_ID_UPPER>_SECTION` added and wired into `_BUILTIN_SKILL_MAP`
 - [ ] `_CLASSIFICATION_INSTRUCTIONS[<skill_id>]` added

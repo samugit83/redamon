@@ -39,7 +39,8 @@ const TOKEN_AUTH_PREFIXES = ['/api/plugin-gateway/v1/', '/api/plugin-runner/v1/'
 const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: /^\/api\/users\/[^/]+\/llm-providers$/ },
   { method: 'GET', pattern: /^\/api\/users\/[^/]+\/settings$/ },
-  { method: 'GET', pattern: /^\/api\/users\/[^/]+\/tradecraft-resources$/ },
+  // The run's tradecraft catalog (lib/tradecraft/catalog.ts); the route re-checks the key.
+  { method: 'GET', pattern: /^\/api\/internal\/agent\/tradecraft\/catalog$/ },
   { method: 'GET', pattern: /^\/api\/projects\/[^/]+$/ },
   { method: 'ANY', pattern: /^\/api\/internal\/codefix-sandbox\// },
   // Agent-driven one-shot GuardDog (execute_guarddog, L3): X-Internal-Key
@@ -66,6 +67,10 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/internal\/plugins\/reconcile$/ },
   // The RBAC expiry sweep (step 4.15), driven by the same loop; the route re-checks the key.
   { method: 'POST', pattern: /^\/api\/internal\/rbac\/sweep$/ },
+  // AI Navigator tool callbacks from the agent: the master key AND a live run's credential, both
+  // re-checked by the routes (lib/navigator/credential.ts).
+  { method: 'GET', pattern: /^\/api\/internal\/navigator\/tools$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/navigator\/tools\/[^/]+$/ },
   // Scan Timeline scheduler: the orchestrator worker polls for due schedules and
   // asks the webapp to run or defer them (the webapp owns the version freeze).
   { method: 'GET', pattern: /^\/api\/internal\/scan-schedules\/due$/ },

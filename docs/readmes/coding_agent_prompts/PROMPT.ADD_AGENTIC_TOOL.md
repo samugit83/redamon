@@ -92,7 +92,8 @@ Add a new `@mcp.tool()` function to an existing MCP server (usually `network_rec
 3. `agentic/project_settings.py` — Add to `TOOL_PHASE_MAP` + optionally to `DANGEROUS_TOOLS`
 4. Frontend `ToolMatrixSection.tsx` — Add tool row to the phase matrix grid
 5. Prisma schema — Default `agentToolPhaseMap` value must include the new tool
-6. If tool binary not in Kali: `mcp/kali-sandbox/Dockerfile`
+6. `agentic/tools.py` — Add the tool name to `SYSTEM_MCP_TOOL_NAMES` (see "MCP Auto-Discovery" below)
+7. If tool binary not in Kali: `mcp/kali-sandbox/Dockerfile`
 
 **Examples:** `execute_naabu`, `execute_curl`, `execute_hydra`, `execute_nmap`, `execute_nuclei`
 
@@ -111,11 +112,11 @@ Create a new MCP server file with its own port, process, and optionally a progre
 **What to change (full list in Phase 2 checklist):**
 1. `mcp/servers/[tool]_server.py` — New server file (follow `nmap_server.py` for simple, `metasploit_server.py` for stateful)
 2. `mcp/servers/run_servers.py` — Register in `SERVERS` dict with port
-3. `agentic/tools.py` — Add MCP server URL to `MCPToolsManager.get_tools()` server dict
+3. `agentic/tools.py` — Add an `MCPServer` entry for the server to `_build_system_mcp_servers()` (its URL from `MCP_[TOOL]_URL`, with the shared `auth=_mcp_auth` bearer)
 4. Both `docker-compose.yml` files — Add `MCP_[TOOL]_URL` env var + expose port on kali-sandbox
-5. Everything from Type B (registry, settings, frontend, etc.)
+5. Everything from Type B (registry, settings, frontend, `SYSTEM_MCP_TOOL_NAMES`, etc.)
 
-**Already-taken ports:** 8000 (network_recon), 8002 (nuclei), 8003 (metasploit), 8004 (nmap), 8013 (msf progress), 8014 (hydra progress), 8015 (tunnel manager), 8016 (terminal). Next available: **8005+**.
+**Already-taken ports:** 8000 (network_recon), 8002 (nuclei), 8003 (metasploit), 8004 (nmap), 8005 (playwright), 8013 (msf progress), 8014 (hydra progress), 8015 (tunnel manager), 8016 (terminal). Next available: **8006**.
 
 **Examples:** `metasploit_server.py`
 
@@ -123,27 +124,31 @@ Create a new MCP server file with its own port, process, and optionally a progre
 
 **Type D: API/HTTP-Based Tool (for external services)**
 
-A Python wrapper around an external API. It runs inside the `agent` container, not `kali-sandbox`. The tool is **conditionally available** — it only appears if the user has configured the API key in Global Settings. Without the key, the tool is not registered and the agent cannot see it.
+A Python wrapper around an external API. It runs inside the `agent` container, not `kali-sandbox`. The tool is **always registered**: it reads the key of the run it serves at call time (the project owner's key from Global Settings), and a run without a key gets a "not configured" answer instead of a call.
 
 **When to use:**
 - Tool is an external API service (like Shodan, Tavily, SerpAPI)
 - Tool needs API keys stored in user settings
 - No CLI binary needed — pure Python HTTP calls
-- Tool availability depends on whether the user has an API key
+- Tool cannot do its job without the user's API key
 
-**Architecture pattern — 3-layer design (read existing implementations to follow exactly):**
+**Architecture pattern — no shared object holds a key (RBAC T17).** The tool managers and the executor are built once and shared by every run of every owner, so a key written onto one was spent by the next run of any owner. Read the existing implementations and follow them exactly:
 
-1. **`[Tool]ToolManager` class** in `agentic/tools.py` — Holds the API key and creates the tool function. `get_tool()` returns `None` if no API key is set (tool conditionally unavailable). Read `ShodanToolManager` or `GoogleDorkToolManager` as reference.
+1. **`[Tool]ToolManager` class** in `agentic/tools.py` — Takes no key and holds none. `get_tool()` always returns the `@tool` function, whose first step is `api_key, rotator = _call_key('<tool>')`: with no key it returns "<Tool> is not configured: add a <Tool> API key in Global Settings -> API Keys.", and after a successful call it ticks the rotator (`if rotator: rotator.tick()`). Read `ShodanToolManager` or `GoogleDorkToolManager` as reference.
 
-2. **`PhaseAwareToolExecutor`** in `agentic/tools.py` — Accepts the tool in `__init__()`, provides an `update_[tool]_tool()` method for hot-swapping at runtime, and has a dispatch branch in `execute()` (~line 1097). Read how `shodan` and `google_dork` are handled.
+2. **The per-run key lookup** in `agentic/tools.py` (section "PER-RUN SEARCH KEYS") — `_call_key()` asks `run_key_rotator()`, which reads `run_user_settings()`: the `USER_SETTINGS` bound to the run's own task, never the module-global snapshot of whichever project loaded last. It builds the key pool from the main key plus the `rotationConfigs[<tool>]` extras. Add the tool to `_SEARCH_KEY_FIELDS` (`'<tool>': '<tool>ApiKey'`), using the same tool name as its `ROTATION_TOOLS` entry in `webapp/src/lib/rotationTools.ts`; a key without rotation is a pool of one.
 
-3. **Orchestrator** in `agentic/orchestrator.py` — Creates the manager in `_init_tools()` (no key initially), then in `_apply_project_settings()` reads the API key from user settings, updates the manager, and hot-reloads the tool on the executor. Supports key rotation via `KeyRotator`. Read the Shodan block (~line 186-198) as reference.
+3. **`PhaseAwareToolExecutor`** in `agentic/tools.py` — Accepts the tool in `__init__()` and has a dispatch branch in `execute()`. Read how `shodan` and `google_dork` are handled. There is no `update_[tool]_tool()` hot-swap: the tool never changes with the key. A per-project on/off switch is read in `execute()` with `get_setting(...)`, like the `SHODAN_ENABLED` gate, never by adding or removing the tool from the shared `_all_tools`.
 
-**CRITICAL**: The `PhaseAwareToolExecutor.execute()` method (~line 1097) has hardcoded if/elif dispatch for non-MCP tools (query_graph, web_search, shodan, google_dork) and for MCP tools that need arg injection (execute_wpscan). Each extracts arguments differently. For Type D, you MUST add a new `elif` branch. For Types B/C, the `else` branch (MCP tools) handles dispatch automatically -- no change needed UNLESS the tool needs API key injection (see Step 6).
+4. **Orchestrator** in `agentic/orchestrator.py` — `_setup_tools()` builds the manager once, with no key, and passes its tool to `PhaseAwareToolExecutor`. `_apply_project_settings()` is not touched: it writes no credential onto a shared manager. The run's keys arrive in its `USER_SETTINGS`, which `fetch_agent_settings()` in `agentic/project_settings.py` loads from the project owner's `GET /api/users/{id}/settings?internal=true`.
+
+`agentic/tests/test_run_credentials_isolation.py` holds this in place: `NoSharedKeyPath` fails a manager that accepts or holds a key, and `SearchKeysPerRun` proves each run spends its own key and that an empty key never inherits the previous run's.
+
+**CRITICAL**: The `PhaseAwareToolExecutor.execute()` method has hardcoded if/elif dispatch (in its `_invoke` closure) for non-MCP tools (query_graph, graph_schema, graph_summary, web_search, shodan, google_dork, execute_guarddog, the tradecraft tools) and for MCP tools that need key injection (execute_wpscan, execute_gau, cve_intel). Each extracts arguments differently. For Type D, you MUST add a new `elif` branch. For Types B/C, the `else` branch (MCP tools) handles dispatch automatically -- no change needed UNLESS the tool needs API key injection (see Step 6).
 
 **What to change (full list in Phase 2 checklist):**
-1. `agentic/tools.py` — New ToolManager class + update method on PhaseAwareToolExecutor + dispatch branch in `execute()`
-2. `agentic/orchestrator.py` — Init manager in `_init_tools()` + key refresh in `_apply_project_settings()`
+1. `agentic/tools.py` — New ToolManager class (no key, reads it per call) + `_SEARCH_KEY_FIELDS` entry + registration in `PhaseAwareToolExecutor.__init__()` + dispatch branch in `execute()`
+2. `agentic/orchestrator.py` — Build the manager in `_setup_tools()` and pass its tool to the executor (nothing in `_apply_project_settings()`)
 3. API key storage across Prisma, settings API, Global Settings page, ToolMatrix warnings
 4. Everything from Type B (registry, phase map, frontend matrix, Prisma default, etc.)
 
@@ -196,18 +201,18 @@ If the tool uses external API keys, there are **two patterns** depending on whet
 
 ---
 
-**Pattern 1: Conditional availability (Type D tools -- Shodan, Google Dork, Tavily)**
+**Pattern 1: Key required, read per call (Type D tools -- Shodan, Google Dork, Tavily)**
 
-The tool **only appears** when the user has configured the API key. No key = tool is invisible to the agent.
+The tool is always registered, and every call reads the key of the run it serves. No key = the call answers "not configured" (the UI warns about the missing key beforehand, see the frontend files below).
 
 **When to use:** The tool is a pure API service that cannot function without a key (e.g., Shodan API, SerpAPI).
 
 **How it works:**
-1. `[Tool]ToolManager.get_tool()` returns `None` if no API key -- tool not registered, agent can't see it
-2. `_apply_project_settings()` reads key from user settings, recreates tool via `update_[tool]_tool()`
-3. Supports hot-reload (key changes mid-session) and key rotation via `KeyRotator`
+1. `[Tool]ToolManager.get_tool()` always returns the tool; the tool calls `_call_key('<tool>')` at the start of every call and answers "not configured" when the run has no key
+2. The key is the run's own: `run_key_rotator()` reads `run_user_settings()`, the `USER_SETTINGS` of the run's task, so an empty key means none, never the previous run's (possibly another owner's)
+3. A key changed in Global Settings applies from the next run, which loads its settings afresh. Rotation comes from the same lookup: the `rotationConfigs[<tool>]` extra keys, cycled every `rotateEveryN` calls by a `KeyRotator` shared only by runs that hold the very same pool
 
-**Backend files:** `agentic/tools.py` (ToolManager class + update method + dispatch branch in `execute()`) + `agentic/orchestrator.py` (`_init_tools()` + `_apply_project_settings()`)
+**Backend files:** `agentic/tools.py` (ToolManager class + `_SEARCH_KEY_FIELDS` entry + registration in `PhaseAwareToolExecutor.__init__()` + dispatch branch in `execute()`) + `agentic/orchestrator.py` (`_setup_tools()` only)
 
 **Examples:** `shodan`, `web_search`, `google_dork`
 
@@ -221,30 +226,29 @@ The tool **always works** without the key, but the key enriches results (e.g., v
 
 **How it works:**
 1. Tool is always registered (MCP auto-discovery) -- availability does NOT depend on the key
-2. Key stored on `PhaseAwareToolExecutor` via a setter method (e.g., `set_wpscan_api_token()`)
-3. An `elif tool_name == "execute_[tool]"` branch in `PhaseAwareToolExecutor.execute()` checks for the key and adds it as its own MCP argument (e.g., `api_token`) beside `args`. The MCP tool takes that parameter and gives it to the child as the environment variable the binary reads (`env=safe_env({"WPSCAN_API_TOKEN": api_token})`), or, for a binary that reads keys only from a config file, a `tempfile.mkstemp` file it passes with the binary's config flag and removes in `finally` (`execute_gau`). Never a CLI flag, never a file in the shared home directory
+2. The key is read at call time from the run's own settings (`run_user_settings().get('[tool]ApiToken', '')`), never stored on `PhaseAwareToolExecutor`, which every run of every owner shares. The existing `execute_wpscan`, `execute_gau` and `cve_intel` branches read `get_setting('USER_SETTINGS', {})` and still fall back to a `set_*` setter field that nothing in production calls: copy neither the setter nor the fallback
+3. An `elif tool_name == "execute_[tool]"` branch in `PhaseAwareToolExecutor.execute()` reads the key and adds it as its own MCP argument (e.g., `api_token`) beside `args`. The MCP tool takes that parameter and gives it to the child as the environment variable the binary reads (`env=safe_env({"WPSCAN_API_TOKEN": api_token})`), or, for a binary that reads keys only from a config file, a `tempfile.mkstemp` file it passes with the binary's config flag and removes in `finally` (`execute_gau`). Never a CLI flag, never a file in the shared home directory
 4. The injection is silent -- the LLM's original args are shown in the UI, the key is never exposed in prompts or logs
 5. If the user manually passes the flag in their args, injection is skipped (no double-injection)
 
 **Backend files:**
-- `agentic/tools.py` -- Add `set_[tool]_api_token()` method on `PhaseAwareToolExecutor` + add `elif` dispatch branch in `execute()` with injection logic
+- `agentic/tools.py` -- Add the `elif` dispatch branch in `execute()` that reads the run's key per call and injects it
 - `mcp/servers/<server>.py` -- The tool's extra key parameter, handed to the child's environment or a per-call file
-- `agentic/orchestrator.py` -- In `_apply_project_settings()`, read key from `user_settings.get('[tool]ApiToken', '')` and call `self.tool_executor.set_[tool]_api_token(token)`
+- Nothing in `agentic/orchestrator.py`: `_apply_project_settings()` writes no key anywhere
 
-**Reference implementation:** Read the `execute_wpscan` block in `PhaseAwareToolExecutor.execute()`, `execute_wpscan` in `mcp/servers/network_recon_server.py`, and the WPScan block in `_apply_project_settings()` (~line 201-205).
+**Reference implementation:** Read the `execute_wpscan` block in `PhaseAwareToolExecutor.execute()` and `execute_wpscan` in `mcp/servers/network_recon_server.py`.
 
 **Example:**
 ```python
-# In PhaseAwareToolExecutor:
-def set_wpscan_api_token(self, token: str) -> None:
-    self._wpscan_api_token = token
-
-# In execute():
-elif tool_name == "execute_wpscan":
-    token = getattr(self, '_wpscan_api_token', '')
-    if token and '--api-token' not in tool_args.get("args", ""):
-        tool_args = {**tool_args, "api_token": token}
-    output = await tool.ainvoke(tool_args)
+# In PhaseAwareToolExecutor.execute(), inside _invoke(active_tool):
+elif tool_name == "execute_[tool]":
+    args = tool_args.get("args", "")
+    token = run_user_settings().get('[tool]ApiToken', '')   # this run's key, read per call
+    if token and '--api-token' not in args:
+        adjusted = {**tool_args, "api_token": token}
+    else:
+        adjusted = tool_args
+    output = await active_tool.ainvoke(adjusted)
 
 # In mcp/servers/network_recon_server.py: the child's environment, never its argv
 @mcp.tool()
@@ -265,26 +269,26 @@ The frontend integration is identical regardless of which backend pattern is use
 **Key files for API key integration:**
 - `webapp/prisma/schema.prisma` -- `UserSettings` model (add key field)
 - `webapp/src/app/api/users/[id]/settings/route.ts` -- GET masking + PUT whitelist
-- `webapp/src/app/settings/page.tsx` -- `UserSettings` interface, `EMPTY_SETTINGS`, `SecretField` rendering, both `fetchSettings()` response handlers
+- `webapp/src/app/settings/page.tsx` -- `UserSettings` interface, `EMPTY_SETTINGS`, `SecretField` rendering, both response handlers (`fetchSettings()` and the save path's `applySaved`)
 - `webapp/src/lib/rotationTools.ts` -- `ROTATION_TOOLS`, the one list of Key Rotation tools (tool name + settings field) that the page, the settings PUT and the key template all read
 - `webapp/src/components/projects/ProjectForm/sections/ToolMatrixSection.tsx` -- `TOOL_KEY_INFO` + `fetchKeyStatus()`
 - `webapp/src/app/graph/components/AIAssistantDrawer/hooks/useApiKeyModal.ts` -- `API_KEY_INFO` dict (top of file) + `fetchApiKeyStatus()` -- **duplicate** of ToolMatrix key check, used to show missing-key warnings in the chat UI
-- `webapp/src/app/graph/components/AIAssistantDrawer/ToolExecutionCard.tsx` -- `TOOL_KEY_LABEL` dict (line 15-19) -- maps tool name to human-readable API key label for chat tool cards
+- `webapp/src/app/graph/components/AIAssistantDrawer/ToolExecutionCard.tsx` -- `TOOL_KEY_LABEL` dict -- maps tool name to human-readable API key label for chat tool cards
 
 **The full frontend key lifecycle:**
-1. **Storage**: Keys stored per-user (NOT per-project) in `UserSettings` Prisma model
+1. **Storage**: Keys stored per-user (NOT per-project) in `UserSettings` Prisma model; a run spends its project owner's keys, never a collaborator's
 2. **Frontend input**: Global Settings page (`/settings`) with `SecretField` component -- masked display, toggle visibility, key rotation
 3. **Frontend warning**: Tool Matrix (`ToolMatrixSection.tsx`) shows yellow warning icon next to tools with missing keys, with inline modal to set the key
 4. **Chat drawer warning**: `useApiKeyModal.ts` shows missing-key warnings in the chat UI (duplicate of Tool Matrix check)
-5. **Runtime fetch**: Orchestrator fetches keys via `GET /api/users/{userId}/settings?internal=true` on every session init
-6. **Key rotation** (optional, Pattern 1 only): For tools with rate limits, multiple keys cycled every N calls via `KeyRotator`
+5. **Runtime fetch**: `fetch_agent_settings()` (`agentic/project_settings.py`) fetches the project owner's keys via `GET /api/users/{ownerId}/settings?internal=true` each time a run loads its settings, into that run's `USER_SETTINGS`; the tools read them per call (`run_user_settings()`), and no manager caches one
+6. **Key rotation** (optional): for tools with rate limits, the `rotationConfigs[<tool>]` extra keys are cycled every N calls by `run_key_rotator()` (Pattern 1 tools, through `_SEARCH_KEY_FIELDS`)
 
 #### Step 7 — Check if tool needs progress streaming
 
 Long-running tools (>60s typical) benefit from progress streaming. If needed, **TWO files** must be updated (they have duplicated logic):
 
-1. `agentic/orchestrator_helpers/nodes/execute_tool_node.py` (~line 97) — hardcoded `is_long_running_*` checks per tool
-2. `agentic/orchestrator_helpers/nodes/execute_plan_node.py` (~line 108) — **same duplicated logic** for parallel plan execution
+1. `agentic/orchestrator_helpers/nodes/execute_tool_node.py` (`execute_tool_node()`) — hardcoded `is_long_running_*` checks per tool (`is_long_running_msf`, `is_long_running_hydra`) that pick `execute_with_progress()`
+2. `agentic/orchestrator_helpers/nodes/execute_plan_node.py` (`_execute_single_step()`) — **same duplicated logic** for parallel plan execution
 
 Both files need a new long-running detection check with the progress URL. Also:
 3. Create an HTTP progress endpoint in the MCP server (follow Hydra pattern in `network_recon_server.py`)
@@ -292,7 +296,7 @@ Both files need a new long-running detection check with the progress URL. Also:
 
 #### Step 8 — Check if tool manages sessions or listeners
 
-Read `agentic/orchestrator_helpers/nodes/execute_tool_node.py` lines 155-180. There are hardcoded post-execution handlers for `metasploit_console` (session detection) and `kali_shell` (listener detection). The **same code is duplicated** in `execute_plan_node.py` (~line 176-201).
+Read the end of `execute_tool_node()` in `agentic/orchestrator_helpers/nodes/execute_tool_node.py`. There are hardcoded post-execution handlers for `metasploit_console` (session detection, posted to `/session-chat-map`) and `kali_shell` (listener detection, posted to `/non-msf-sessions`). The **same code is duplicated** in `_execute_single_step()` in `execute_plan_node.py`.
 
 If the new tool creates reverse shells, listeners, or sessions, add similar detection logic in **BOTH** files.
 
@@ -309,8 +313,8 @@ The exact set of files depends on the integration type chosen in Phase 1.
 - [ ] **`webapp/src/lib/mcp/schema.ts`** — Add the tool name to `BUILTIN_RESERVED_TOOL_NAMES`. That set stops a user's **outbound MCP Tool Plugin** registering a tool with the same name and shadowing yours at dispatch. The set lives in TypeScript and `TOOL_REGISTRY` in Python, so `agentic/tests/test_reserved_tool_names_parity.py` parses the TypeScript set and fails until it equals the names the agent reserves (`_builtin_tool_names()` in `agentic/mcp_registry.py`), in both directions.
 
 - [ ] **`agentic/project_settings.py`** — Up to 3 changes:
-  1. Add tool to `TOOL_PHASE_MAP` in `DEFAULT_AGENT_SETTINGS` (~line 81-95)
-  2. If dangerous: add to `DANGEROUS_TOOLS` frozenset (~line 19-23)
+  1. Add tool to the `'TOOL_PHASE_MAP'` entry of `DEFAULT_AGENT_SETTINGS`
+  2. If dangerous: add to the module-level `DANGEROUS_TOOLS` frozenset
   3. If tool has configurable settings: add defaults to `DEFAULT_AGENT_SETTINGS` + mapping in `fetch_agent_settings()`
 
 - [ ] **`agentic/orchestrator_helpers/roe_gate.py`** — If the tool fits an RoE category: add it to `CATEGORY_TOOL_MAP`; if it is a discovery or scanning tool: add it to `RECON_DISCOVERY_TOOLS`. Every executor path already asks `check_tool_call()`, so no node changes
@@ -321,39 +325,35 @@ The exact set of files depends on the integration type chosen in Phase 1.
 
 - [ ] **Type B**: Add `@mcp.tool()` function to `mcp/servers/network_recon_server.py` (or whichever server fits). Read `execute_nmap` in `nmap_server.py` as the simplest reference. Include: rich docstring with examples (LLM reads this), `shlex.split` for arg parsing, `subprocess.run` with appropriate timeout, ANSI escape stripping, error handling.
 
+- [ ] **Types B and C**: Add the tool name to `SYSTEM_MCP_TOOL_NAMES` in `agentic/tools.py`. `agentic/tests/test_system_mcp_tool_coverage.py` parses every `@mcp.tool()` in `mcp/servers/` and fails on a name missing there.
+
 - [ ] **Type C**: Create `mcp/servers/[tool]_server.py`. Read `nmap_server.py` for simple tools or `metasploit_server.py` for stateful tools. Then:
   - Register in `mcp/servers/run_servers.py` `SERVERS` dict with module name and port (next available: 8006; 8000 and 8002-8005 are taken)
-  - Add MCP server URL to `agentic/tools.py` `MCPToolsManager.get_tools()` server dict — read existing entries for the exact format
+  - Add an `MCPServer` entry to `_build_system_mcp_servers()` in `agentic/tools.py` — read the existing entries for the exact format (URL from `MCP_[TOOL]_URL`, timeouts, `auth=_mcp_auth`)
   - Add `MCP_[TOOL]_URL` env var to **BOTH** `docker-compose.yml` (root: `http://kali-sandbox:PORT/sse`) and `agentic/docker-compose.yml` (`http://host.docker.internal:PORT/sse`)
   - Expose port on kali-sandbox in root `docker-compose.yml`
 
 #### API-Based Tool (Type D only)
 
 - [ ] **`agentic/tools.py`** — Read `ShodanToolManager` or `GoogleDorkToolManager` as reference. Create:
-  1. `[Tool]ToolManager` class — with `get_tool()` returning `None` if no API key
-  2. `update_[tool]_tool()` method on `PhaseAwareToolExecutor` — for hot-swapping (read existing `update_shodan_tool` as reference)
-  3. Registration in `PhaseAwareToolExecutor.__init__()` — accept tool param, add to `self._all_tools` if not None
-  4. Dispatch branch in `PhaseAwareToolExecutor.execute()` (~line 1097) — add `elif` for the new tool with correct arg extraction
+  1. `[Tool]ToolManager` class — no key argument and no key attribute; `get_tool()` always returns the tool, which reads its key per call with `_call_key('<tool>')` and answers "not configured" without one
+  2. A `_SEARCH_KEY_FIELDS` entry (`'<tool>': '<tool>ApiKey'`), so `run_key_rotator()` finds the run's key and its rotation pool
+  3. Registration in `PhaseAwareToolExecutor.__init__()` — accept tool param, add to `self._all_tools`
+  4. Dispatch branch in `PhaseAwareToolExecutor.execute()` — add an `elif` for the new tool in its `_invoke` closure, with correct arg extraction
 
-- [ ] **`agentic/orchestrator.py`** — Read the Shodan block (~line 186-198) as reference. Add:
-  1. Manager creation in `_init_tools()` (no key initially)
-  2. Key refresh block in `_apply_project_settings()` -- read key from user settings, update manager, hot-reload tool on executor, setup key rotation
+- [ ] **`agentic/orchestrator.py`** — In `_setup_tools()`, build the manager (no key) and pass its tool to `PhaseAwareToolExecutor`, as the Shodan and Google dork managers are. Add nothing to `_apply_project_settings()`: no key is ever written onto a shared manager or the executor.
+
+- [ ] **`agentic/tests/test_run_credentials_isolation.py`** — Add the new manager to `NoSharedKeyPath`, and a `SearchKeysPerRun` case: two owners' concurrent runs each spend their own key, and an empty key does not inherit the previous run's.
 
 #### MCP Tool with Optional API Key (Type B/C + Pattern 2 from Step 6)
 
 For MCP tools that accept an optional API key (tool works without it, key enriches results):
 
-- [ ] **`agentic/tools.py`** -- Read `set_wpscan_api_token` and the `execute_wpscan` elif branch as reference. Add:
-  1. `set_[tool]_api_token(self, token: str)` method on `PhaseAwareToolExecutor` -- stores token as `self._[tool]_api_token`
-  2. `elif tool_name == "execute_[tool]":` branch in `PhaseAwareToolExecutor.execute()` -- checks for stored token via `getattr(self, '_[tool]_api_token', '')`, skips injection if the flag is already in args, adds the token as its own argument (`api_token`) beside `args`, never inside them, in a new `tool_args` dict (do NOT mutate original), then calls `tool.ainvoke(tool_args)`
+- [ ] **`agentic/tools.py`** -- Read the `execute_wpscan` elif branch as reference. Add an `elif tool_name == "execute_[tool]":` branch in `PhaseAwareToolExecutor.execute()` -- reads the run's key at call time (`run_user_settings().get('[tool]ApiToken', '')`), skips injection if the flag is already in args, adds the token as its own argument (`api_token`) beside `args`, never inside them, in a new dict (do NOT mutate the original), then calls `active_tool.ainvoke(...)` with it. No `set_[tool]_api_token()` setter: a key stored on the shared executor is spent by the next run of any owner
 
 - [ ] **`mcp/servers/<server>.py`** -- Read `execute_wpscan` (environment) and `execute_gau` (per-call config file) as reference. Add the key parameter to the MCP tool and pass it as `env=safe_env({"<ENV_VAR>": key} if key else None)`, or in a `tempfile.mkstemp` file removed in `finally`; never on the command line, never in a file under the shared home directory
 
-- [ ] **`agentic/orchestrator.py`** -- Read the WPScan block (~line 201-205) as reference. Add to `_apply_project_settings()`:
-  1. Read key: `token = user_settings.get('[tool]ApiToken', '')`
-  2. Set on executor: `if token and self.tool_executor: self.tool_executor.set_[tool]_api_token(token)`
-
-**Key difference from Type D:** No `ToolManager` class needed, no `_init_tools()` changes, no conditional tool registration. The tool is always available via MCP auto-discovery. The key is just silently injected into CLI args at execution time.
+**Key difference from Type D:** No `ToolManager` class, no `_setup_tools()` change, no orchestrator change at all. The tool is always available via MCP auto-discovery. The key is injected beside the args at execution time and reaches the binary through its environment or a per-call file.
 
 #### Kali Sandbox (if tool binary is not already installed)
 
@@ -361,13 +361,13 @@ For MCP tools that accept an optional API key (tool works without it, key enrich
 
 #### Frontend: Tool Matrix (ALL types except A)
 
-- [ ] **`webapp/src/components/projects/ProjectForm/sections/ToolMatrixSection.tsx`** — Add tool to the tools array in the `.map()` call (~line 129-143). Place it logically among existing tools.
+- [ ] **`webapp/src/components/projects/ProjectForm/sections/ToolMatrixSection.tsx`** — Add a `{ id, label }` entry to the inline tools array rendered with `.map(tool => ...)` in the phase grid. Place it logically among existing tools.
 
 - [ ] If tool needs API key: add entry to `TOOL_KEY_INFO` constant at top of file, and add missing-key check in `fetchKeyStatus()` callback. Read existing entries (web_search, shodan, google_dork) as reference.
 
 #### Frontend: Prisma Schema & Database
 
-- [ ] **`webapp/prisma/schema.prisma`** — Update the default JSON value of `agentToolPhaseMap` in the `Project` model (~line 414) to include the new tool's phase array.
+- [ ] **`webapp/prisma/schema.prisma`** — Update the default JSON value of `agentToolPhaseMap` in the `Project` model to include the new tool's phase array.
 
 - [ ] Run schema push: `docker compose exec webapp npx prisma db push` (NEVER use `prisma migrate`)
 
@@ -387,10 +387,10 @@ Replace `TOOL_NAME` with the tool name (e.g. `execute_httpx`) and `PHASE1`, `PHA
 
 - [ ] **`webapp/prisma/schema.prisma`** — Add `[tool]ApiKey` field to `UserSettings` model (read existing key fields as reference)
 - [ ] **`webapp/src/app/api/users/[id]/settings/route.ts`** — Add to GET masking logic + PUT whitelist (read how existing keys are handled)
-- [ ] **`webapp/src/app/settings/page.tsx`** — Add to `UserSettings` interface, `EMPTY_SETTINGS`, add `SecretField` component in JSX (read Shodan ~line 505-515 as reference), add to both `fetchSettings()` response handlers (~lines 243, 313)
+- [ ] **`webapp/src/app/settings/page.tsx`** — Add to `UserSettings` interface, `EMPTY_SETTINGS`, add `SecretField` component in JSX (read the Shodan `SecretField`, bound to `settings.shodanApiKey`, as reference), add to both response handlers (`fetchSettings()` and the save path's `applySaved`)
 - [ ] **`webapp/src/components/projects/ProjectForm/sections/ToolMatrixSection.tsx`** — Add to `TOOL_KEY_INFO` + `fetchKeyStatus()` (if not already done above)
 - [ ] **`webapp/src/app/graph/components/AIAssistantDrawer/hooks/useApiKeyModal.ts`** — Add to `API_KEY_INFO` dict (top of file) and missing key detection in `fetchApiKeyStatus()`. This is a **duplicate** of the ToolMatrix key check — the chat drawer also warns users about missing API keys.
-- [ ] **`webapp/src/app/graph/components/AIAssistantDrawer/ToolExecutionCard.tsx`** — Add to `TOOL_KEY_LABEL` dict (line 15-19) — maps tool name to human-readable label shown on tool cards in chat when key is missing.
+- [ ] **`webapp/src/app/graph/components/AIAssistantDrawer/ToolExecutionCard.tsx`** — Add to the `TOOL_KEY_LABEL` dict — maps tool name to human-readable label shown on tool cards in chat when key is missing.
 
 #### API Keys Import/Export Template (Type D or any tool needing API keys)
 
@@ -402,14 +402,14 @@ Replace `TOOL_NAME` with the tool name (e.g. `execute_httpx`) and `PHASE1`, `PHA
 #### Progress Streaming (if long-running tool, >60s typical)
 
 - [ ] **MCP server** — Add progress tracking (read Hydra pattern in `network_recon_server.py`: thread-safe state, background subprocess, HTTP progress endpoint)
-- [ ] **`agentic/orchestrator_helpers/nodes/execute_tool_node.py`** (~line 97-121) — Add long-running detection and progress execution branch (read existing MSF and Hydra checks as reference)
-- [ ] **`agentic/orchestrator_helpers/nodes/execute_plan_node.py`** (~line 108-131) — **DUPLICATE the same logic** (this file has copy-pasted tool execution for parallel plan mode)
+- [ ] **`agentic/orchestrator_helpers/nodes/execute_tool_node.py`** (`execute_tool_node()`) — Add long-running detection and progress execution branch (read the existing `is_long_running_msf` / `is_long_running_hydra` checks as reference)
+- [ ] **`agentic/orchestrator_helpers/nodes/execute_plan_node.py`** (`_execute_single_step()`) — **DUPLICATE the same logic** (this file has copy-pasted tool execution for parallel plan mode)
 - [ ] **docker-compose files** — Add `MCP_[TOOL]_PROGRESS_URL` env var to agent service in both files
 
 #### Session/Listener Registration (if tool creates reverse shells or listeners)
 
-- [ ] **`agentic/orchestrator_helpers/nodes/execute_tool_node.py`** (~line 155-180) — Add post-execution handler (read existing metasploit_console and kali_shell handlers as reference)
-- [ ] **`agentic/orchestrator_helpers/nodes/execute_plan_node.py`** (~line 176-201) — **DUPLICATE the same handler**
+- [ ] **`agentic/orchestrator_helpers/nodes/execute_tool_node.py`** (end of `execute_tool_node()`) — Add post-execution handler (read existing metasploit_console and kali_shell handlers as reference)
+- [ ] **`agentic/orchestrator_helpers/nodes/execute_plan_node.py`** (`_execute_single_step()`) — **DUPLICATE the same handler**
 
 #### Agent Defaults Endpoint
 
@@ -432,12 +432,14 @@ If the tool has configurable parameters (like Hydra's threads, SQLMap's level/ri
 
 #### Optional: Attack Skill Integration
 
-If the tool is the PRIMARY tool for a new built-in attack skill (like Hydra is for brute_force, or SQLMap is for sql_injection):
+If the tool is the PRIMARY tool for a new built-in attack skill (like Hydra is for brute_force, or SQLMap is for sql_injection), follow [PROMPT.ADD_BUILTIN_AGENT_SKILL.md](PROMPT.ADD_BUILTIN_AGENT_SKILL.md): a built-in skill spans ten layers, and the list below is only the part that touches the tool.
 
 - [ ] **`agentic/prompts/[skill]_prompts.py`** — Create new prompt file with tool workflow guidance and step-by-step methodology (read `sql_injection_prompts.py` or `brute_force_credential_guess_prompts.py` as reference)
-- [ ] **`agentic/prompts/__init__.py`** — Add new `elif` branch in `_inject_builtin_skill_workflow()` (~line 206-284) — read existing branches as reference
-- [ ] **`agentic/project_settings.py`** — Add skill to `ATTACK_SKILL_CONFIG` > `builtIn` defaults (~line 130-138)
-- [ ] **`webapp/src/components/projects/ProjectForm/sections/AttackSkillsSection.tsx`** — Add to `BUILT_IN_SKILLS` array (~line 36-67)
+- [ ] **`agentic/prompts/__init__.py`** — Add an `elif` branch in `_build_builtin_skill_workflow_parts()`, gated on `"<tool>" in allowed_tools`, that appends each static part through `_seam.resolve_skill_part(...)` and returns `parts` — read existing branches as reference (`_inject_builtin_skill_workflow()` inside `get_phase_tools()` is a thin wrapper over `build_builtin_skill_workflow()`; never add a branch there)
+- [ ] **`agentic/prompts/skill_parts.py`** — Register each static part in `_SPECS`, in assembly order, or plugin overrides never reach the skill
+- [ ] **`agentic/state.py`** — Add the skill id to `KNOWN_ATTACK_PATHS`
+- [ ] **`agentic/project_settings.py`** — Add skill to `ATTACK_SKILL_CONFIG` > `builtIn` defaults in `DEFAULT_AGENT_SETTINGS`
+- [ ] **`webapp/src/components/projects/ProjectForm/sections/AttackSkillsSection.tsx`** — Add to the `BUILT_IN_SKILLS` array
 - [ ] **`webapp/src/app/api/users/[id]/attack-skills/available/route.ts`** — Add to `BUILT_IN_SKILLS` array
 - [ ] **`webapp/src/app/graph/components/AIAssistantDrawer/phaseConfig.ts`** — Add to `KNOWN_ATTACK_PATH_CONFIG` for chat UI badge
 - [ ] **`agentic/prompts/classification.py`** — Add the new skill to the attack path classification prompt
@@ -465,8 +467,8 @@ If the tool is the PRIMARY tool for a new built-in attack skill (like Hydra is f
 |------|---------|---------------|
 | `agentic/prompts/tool_registry.py` | **TOOL_REGISTRY** — single source of truth for tool metadata and LLM descriptions | All types except A |
 | `agentic/project_settings.py` | **TOOL_PHASE_MAP**, **DANGEROUS_TOOLS**, default settings, `fetch_agent_settings()` | All types except A |
-| `agentic/tools.py` | **MCPToolsManager**, **PhaseAwareToolExecutor** (dispatch + phase enforcement), API tool managers, optional key injection | Type C (MCP URLs), Type D (manager + dispatch), Type B/C with optional API key (setter + elif branch) |
-| `agentic/orchestrator.py` | Orchestrator -- `_init_tools()`, `_apply_project_settings()` key hot-reload and injection | Type D (full manager lifecycle), Type B/C with optional API key (simple setter call) |
+| `agentic/tools.py` | **MCPToolsManager**, `_build_system_mcp_servers()` (system MCP server URLs), `SYSTEM_MCP_TOOL_NAMES`, **PhaseAwareToolExecutor** (dispatch + phase enforcement), API tool managers, the per-run key lookup (`run_user_settings`, `run_key_rotator`, `_SEARCH_KEY_FIELDS`), optional key injection | Types B/C (`SYSTEM_MCP_TOOL_NAMES`), Type C (server entry), Type D (manager + `_SEARCH_KEY_FIELDS` + dispatch), Type B/C with optional API key (elif branch) |
+| `agentic/orchestrator.py` | Orchestrator -- `_setup_tools()` builds the tool managers once, with no key; `_apply_project_settings()` binds the run's settings and writes no credential | Type D (manager construction in `_setup_tools()`) |
 | `agentic/prompts/base.py` | Dynamic prompt builders — **auto-reads TOOL_REGISTRY, no change needed** | Never |
 | `agentic/orchestrator_helpers/nodes/execute_tool_node.py` | Tool execution — progress streaming, session detection | If long-running or session-creating |
 | `agentic/orchestrator_helpers/nodes/execute_plan_node.py` | **Duplicate** of above for parallel plans | If long-running or session-creating |
@@ -474,7 +476,8 @@ If the tool is the PRIMARY tool for a new built-in attack skill (like Hydra is f
 | `agentic/orchestrator_helpers/nodes/tool_confirmation_nodes.py` | Dangerous tool confirmation — **auto-reads DANGEROUS_TOOLS** | Never |
 | `agentic/orchestrator_helpers/nodes/think_node.py` | ReAct reasoning — **auto-reads TOOL_PHASE_MAP + TOOL_REGISTRY** | Never |
 | `agentic/prompts/stealth_rules.py` | Per-tool stealth constraints (FORBIDDEN/RESTRICTED/allowed) | If tool sends traffic to target |
-| `agentic/prompts/__init__.py` | `_inject_builtin_skill_workflow()` | If tool is part of an attack skill |
+| `agentic/prompts/__init__.py` | `_build_builtin_skill_workflow_parts()` (one branch per built-in skill) | If tool is part of an attack skill |
+| `agentic/prompts/skill_parts.py` | `_SPECS`, the registry of built-in skill parts a plugin may override | If tool is part of a new attack skill |
 | `agentic/prompts/classification.py` | Attack path classification prompt | If tool is part of a new attack skill |
 | `mcp/servers/run_servers.py` | **SERVERS** dict — MCP server registry with ports | Type C only |
 | `mcp/servers/network_recon_server.py` | MCP tools: curl, naabu, kali_shell, execute_code, hydra | Type B (add tool here) |
@@ -515,8 +518,8 @@ Dangerous Check: in DANGEROUS_TOOLS? → pause for user confirmation
 Long-running check (hardcoded per tool) → execute_with_progress() or execute()
     ↓
 PhaseAwareToolExecutor.execute() dispatch:
-    - Non-MCP tools: hardcoded elif branches (query_graph, web_search, shodan, google_dork)
-    - MCP tools with optional API key: elif branch injects key into args (execute_wpscan)
+    - Non-MCP tools: hardcoded elif branches (query_graph, web_search, shodan, google_dork, ...)
+    - MCP tools with optional API key: elif branch reads the run's key, passes it beside the args (execute_wpscan, execute_gau, cve_intel)
     - MCP tools (Types B/C): automatic via else branch
     ↓
 Output: _extract_text_from_output() → truncate to TOOL_OUTPUT_MAX_CHARS
@@ -528,7 +531,9 @@ Execution trace updated → Think Node loops back
 
 #### MCP Auto-Discovery (key insight for Types B/C)
 
-For Type B, adding a new `@mcp.tool()` to an existing server means it gets **auto-discovered** by `MCPToolsManager.get_tools()` — no changes needed in `tools.py`. The tool name in `_tools_cache` matches the Python function name. This is why Type B requires fewer files than Type D.
+For Type B, adding a new `@mcp.tool()` to an existing server means it gets **auto-discovered** by `MCPToolsManager.get_tools()` — no dispatch change in `tools.py`. The tool name in `_tools_cache` matches the Python function name. This is why Type B requires fewer files than Type D.
+
+The one `tools.py` edit it still needs is its name in `SYSTEM_MCP_TOOL_NAMES`. Once a user MCP server is loaded, `register_mcp_tools()` keeps only the tools a user manifest declares plus that set, so a system tool missing from it is dropped ("Skipped registering ... not declared in any manifest") while the prompt still offers it, and every call answers "Tool not found". `agentic/tests/test_system_mcp_tool_coverage.py` fails on the gap.
 
 #### Naming Conventions
 
@@ -562,7 +567,7 @@ Is the tool already in Kali or trivially installable?
 │       └─ NO → Type C (new dedicated MCP server)
 └─ NO → Is it an external API/service?
     ├─ YES → Does the tool REQUIRE the key to function?
-    │   ├─ YES → Type D + Pattern 1 (conditional availability -- no key = tool hidden)
+    │   ├─ YES → Type D + Pattern 1 (key read per call -- no key = "not configured")
     │   └─ NO → Type D + Pattern 2 (always available, key enriches results)
     └─ NO → Can the binary be installed in Kali?
         ├─ YES → Add to Dockerfile → then Type B or C

@@ -113,6 +113,10 @@ async def execute_tool_node(
     # The project's owner: the graph, the traffic tag and the run credential are theirs.
     set_tenant_context(get_tenant_id(state, config), project_id, session_id)
     set_phase_context(phase)
+    from tradecraft import run_state as _tc_run_state
+    _tc_run_state.bind(state)
+    from tradecraft.agent_tools import bind_session as _tc_bind_session
+    _tc_bind_session(state)
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))
 
@@ -315,4 +319,5 @@ async def execute_tool_node(
         "_tool_result": result or {"success": False, "error": "No result"},
     }
     updates.update(extra_updates)
+    updates.update(_tc_run_state.drain())
     return updates

@@ -314,7 +314,8 @@ class Route(unittest.TestCase):
 
     def test_the_global_stop_still_stops_every_users_runs(self):
         res = self.client.post("/emergency-stop-all", headers={"x-internal-key": MASTER})
-        self.assertEqual(res.json(), {"stopped": 3})
+        # AI Navigator runs are cancelled by the same press and counted apart.
+        self.assertEqual(res.json(), {"stopped": 3, "navigator": 0})
         self.assertEqual(self._cancelled(), ["uA:p1:s1", "uA:p2:s2", "uB:p1:s3"])
 
 

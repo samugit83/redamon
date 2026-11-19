@@ -8,26 +8,26 @@ Add **[SKILL_NAME]** (e.g. `ad_kill_chain`, `ffuf`, `jwt_cheatsheet`) as a new *
 
 ## Architecture recap (read this first)
 
-Chat Skills live in [agentic/skills/<category>/](../../../agentic/skills/). The loader at [agentic/skill_loader.py](../../../agentic/orchestrator_helpers/skill_loader.py) recursively globs `**/*.md`, parses YAML frontmatter, and exposes them via `GET /skills` and `GET /skills/<skill_id:path>` in [agentic/api.py](../../../agentic/api.py).
+Chat Skills live in [agentic/skills/<category>/](../../../agentic/skills/). The loader at [agentic/orchestrator_helpers/skill_loader.py](../../../agentic/orchestrator_helpers/skill_loader.py) recursively globs `**/*.md`, parses YAML frontmatter, and exposes them via `GET /skills` and `GET /skills/<skill_id:path>` in [agentic/api.py](../../../agentic/api.py).
 
 ```
 agentic/skills/<category>/<skill_name>.md  (with YAML frontmatter)
          │
          ▼
-  skill_loader.list_skills()   (agentic/skill_loader.py:53-92)
+  skill_loader.list_skills()   (agentic/orchestrator_helpers/skill_loader.py)
     returns [{ id, name, description, category, file }]
          │
          ▼
-  GET /skills                    (agentic/api.py:535-545)  catalog
-  GET /skills/<skill_id:path>    (agentic/api.py:548-558)  full content
+  GET /skills                    (agentic/api.py list_skills)          catalog
+  GET /skills/<skill_id:path>    (agentic/api.py get_skill_content)    full content
          │
          ▼
   POST /api/users/:id/chat-skills/import-community
   (webapp/src/app/api/users/[id]/chat-skills/import-community/route.ts)
          │
          ▼
-  INSERT INTO user_chat_skills (Prisma model UserChatSkill at
-  webapp/prisma/schema.prisma:941-954)
+  INSERT INTO user_chat_skills (Prisma model UserChatSkill in
+  webapp/prisma/schema.prisma)
          │
          ▼
   User activates via /skill <name> or lightning-bolt picker
@@ -60,13 +60,13 @@ Key differences from Agent Skills:
 
 ## Critical rules (READ BEFORE EDITING)
 
-- **No container rebuild needed.** `./agentic/skills` is volume-mounted read-only into the agent container at [docker-compose.yml:418](../../../docker-compose.yml#L418). Dropping a `.md` file into `agentic/skills/<category>/` is instantly visible to the loader. (This is an exception to the general rule that `agentic/` changes require rebuilding `agent`: that rule applies to Python code like `skill_loader.py` itself, not to the mounted `skills/` tree it reads.)
-- **YAML frontmatter is required** for a good UX. [skill_loader.py:29-50](../../../agentic/orchestrator_helpers/skill_loader.py) parses `---`-delimited frontmatter. Without it, `name` falls back to `file_stem.replace("_", " ").title()` and `description` is empty.
+- **No container rebuild needed.** `./agentic/skills` is volume-mounted read-only into the agent container (`./agentic/skills:/app/skills:ro` in the `agent` service's `volumes` in [docker-compose.yml](../../../docker-compose.yml)). Dropping a `.md` file into `agentic/skills/<category>/` is instantly visible to the loader. (This is an exception to the general rule that `agentic/` changes require rebuilding `agent`: that rule applies to Python code like `skill_loader.py` itself, not to the mounted `skills/` tree it reads.)
+- **YAML frontmatter is required** for a good UX. `_parse_frontmatter()` in [skill_loader.py](../../../agentic/orchestrator_helpers/skill_loader.py) parses `---`-delimited frontmatter. Without it, `name` falls back to `file_stem.replace("_", " ").title()` and `description` is empty.
 - **The skill ID is the path under `agentic/skills/` WITHOUT the extension**, with `/` as separator. `agentic/skills/active_directory/ad_kill_chain.md` has ID `active_directory/ad_kill_chain`. This is what `/skill <name>` matches against (partial, case-insensitive match via the frontend autocomplete at [InputArea.tsx](../../../webapp/src/app/graph/components/AIAssistantDrawer/InputArea.tsx)).
-- **Path traversal is blocked.** `load_skill_content()` at [skill_loader.py:95-118](../../../agentic/orchestrator_helpers/skill_loader.py) resolves the path and refuses anything outside the skills directory.
+- **Path traversal is blocked.** `load_skill_content()` in [skill_loader.py](../../../agentic/orchestrator_helpers/skill_loader.py) resolves the path and refuses anything outside the skills directory.
 - **Content size cap is 500 KB** (`MAX_CHAT_SKILL_CONTENT_SIZE` in [webapp/src/lib/userSkills.ts](../../../webapp/src/lib/userSkills.ts)), enforced by the chat-skills POST, PUT and community-import routes.
 - **Max 50 skills per user.** If importing a large catalog, communicate the cap.
-- **No Prisma migration needed.** `UserChatSkill` already exists at [webapp/prisma/schema.prisma:941-954](../../../webapp/prisma/schema.prisma).
+- **No Prisma migration needed.** `UserChatSkill` already exists in [webapp/prisma/schema.prisma](../../../webapp/prisma/schema.prisma).
 - **No em dashes anywhere.** Use hyphens or rephrase. Enforced project-wide.
 
 ---
@@ -104,7 +104,7 @@ Create [agentic/skills/<category>/<skill_name>.md](../../../agentic/skills/).
 
 ### Required YAML frontmatter
 
-[skill_loader.py:29-50](../../../agentic/orchestrator_helpers/skill_loader.py) reads only `name` and `description` from the frontmatter. Other keys are ignored.
+`_parse_frontmatter()` in [skill_loader.py](../../../agentic/orchestrator_helpers/skill_loader.py) reads only `name` and `description` from the frontmatter. Other keys are ignored.
 
 ```markdown
 ---

@@ -10,6 +10,7 @@ import { ModelPicker } from '@/components/shared/ModelPicker'
 import { REGEX_IPV4 } from '@/lib/validation'
 import { RegistryFields } from '../RegistryFields'
 import { field } from '@/lib/reconSettings/registry'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -717,7 +718,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                   type="number"
                   className="textInput"
                   value={data.agentToolOutputMaxChars}
-                  onChange={(e) => updateField('agentToolOutputMaxChars', parseInt(e.target.value) || 20000)}
+                  onChange={(e) => updateField('agentToolOutputMaxChars', parseInt(e.target.value) || numericDefault('agentToolOutputMaxChars'))}
                   min={1000}
                 />
                 <span className={styles.fieldHint}>Truncation limit for tool output</span>

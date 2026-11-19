@@ -236,8 +236,10 @@ describe('namespaced function/procedure calls are refused', () => {
 describe('suppressed findings are excluded from saved views', () => {
   // A saved view renders into the same graph screen as the live loader, so it
   // is a second enforcement site for mute -- with its own scoping code that
-  // does not share a line with graph_db/tenant_filter.py. These mirror
-  // tests/test_tenant_filter_muted.py so the two cannot drift apart silently.
+  // does not share a line with graph_db/tenant_filter.py. These cover the mute
+  // cases of tests/test_tenant_filter_muted.py, written by hand: nothing runs one
+  // suite against the other, and the union is spelt differently (this filter
+  // distributes the term per branch, the Python one groups the union first).
 
   test('every node-pattern shape gets the mute exclusion', () => {
     const cases: [string, string][] = [

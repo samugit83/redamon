@@ -15,6 +15,7 @@ import { getLlmFeature, modelAllowedForFeature, type FeatureId } from '@/lib/llm
 import type { Project } from '@prisma/client'
 import { useOwnerCatalogSource } from '@/hooks/useOwnerCatalog'
 import styles from '../ProjectForm.module.css'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -237,10 +238,12 @@ export function CypherFixSettingsSection({ data, updateField }: CypherFixSetting
                 max={1000}
                 step={10}
                 className="textInput"
-                value={data.triageReviewBudget ?? 150}
-                onChange={(e) =>
-                  updateField('triageReviewBudget', parseInt(e.target.value, 10) || 0)
-                }
+                value={data.triageReviewBudget ?? numericDefault('triageReviewBudget')}
+                onChange={(e) => {
+                  // Not `||`: a typed 0 is a real value here (no AI review).
+                  const n = parseInt(e.target.value, 10)
+                  updateField('triageReviewBudget', Number.isNaN(n) ? numericDefault('triageReviewBudget') : n)
+                }}
               />
               <span className={styles.fieldHint}>
                 Every finding is scored and ranked in code, for free. This caps how

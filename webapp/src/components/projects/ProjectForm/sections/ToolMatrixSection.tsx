@@ -37,6 +37,15 @@ interface ManifestPayload {
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
+/**
+ * A row that also governs tools with no row of their own (Q3): the phase map names
+ * `tradecraft_lookup` only, and the two other tradecraft tools follow its phases, as
+ * `graph_schema` and `graph_summary` follow `query_graph`.
+ */
+export const TOOL_ROW_NOTES: Readonly<Record<string, string>> = {
+  tradecraft_lookup: 'Also tradecraft_search and tradecraft_ask: the three tradecraft tools share this row and its phases.',
+}
+
 /** Tool → settings field name + human label + signup URL */
 const TOOL_KEY_INFO: Record<string, { field: string; label: string; hint: string; url: string }> = {
   tradecraft_lookup: {
@@ -324,6 +333,11 @@ export function ToolMatrixSection({ data, updateField }: ToolMatrixSectionProps)
                 <div key={tool.id} className={styles.toolPhaseRow}>
                   <span className={styles.toolPhaseName}>
                     {tool.label}
+                    {TOOL_ROW_NOTES[tool.id] && (
+                      <span className={styles.sectionDescription} data-testid={`tool-row-note-${tool.id}`} style={{ display: 'block', margin: 0, fontSize: 'var(--text-xs)' }}>
+                        {TOOL_ROW_NOTES[tool.id]}
+                      </span>
+                    )}
                     {needsKey && keyInfo && ownerForm && (
                       <span className={styles.apiKeyMissing} data-testid={`owner-key-missing-${tool.id}`}>
                         <AlertTriangle size={12} />

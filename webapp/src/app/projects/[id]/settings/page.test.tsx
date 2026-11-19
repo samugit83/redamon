@@ -15,7 +15,10 @@ vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'p1' }),
   useRouter: () => ({ push: vi.fn(), back: vi.fn() }),
 }))
-vi.mock('@/components/projects', () => ({ ProjectForm: () => <div>form</div> }))
+// The form places the Activity button (ProjectForm.activity.test.tsx); the page decides whether it gets a target.
+vi.mock('@/components/projects', () => ({
+  ProjectForm: ({ activityHref }: { activityHref?: string }) => <div data-testid="form" data-activity={activityHref ?? ''}>form</div>,
+}))
 vi.mock('@/hooks/useProjects', () => ({
   useProjectById: () => h.query,
   useUpdateProject: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -40,36 +43,36 @@ test('a missing project reads differently from an outage', () => {
   expect(screen.getByText('Not found (HTTP 404)')).toBeInTheDocument()
 })
 
-// Step 4.13: the Activity link, offered while sharing is in force (/api/auth/me's `sharing`) to the
+// Step 4.13: the Activity button, offered while sharing is in force (/api/auth/me's `sharing`) to the
 // people the feed answers: not to a read collaborator, whose feed request is refused.
 const auth = vi.hoisted(() => ({ value: null as null | { user: { sharing?: { enabled: boolean } } } }))
 vi.mock('@/providers/AuthProvider', () => ({ useOptionalAuth: () => auth.value }))
 
-describe('the Activity link (step 4.13)', () => {
+describe('the Activity button (step 4.13)', () => {
   const project = (myAccess?: { via: string }) => ({ data: { id: 'p1', name: 'P', ...(myAccess ? { myAccess } : {}) }, isLoading: false, error: null })
   afterEach(() => { auth.value = null })
 
-  test('sharing in force: the owner and an overseer get a link to the project activity', () => {
+  test('sharing in force: the owner and an overseer get the project activity as the form\'s Activity target', () => {
     auth.value = { user: { sharing: { enabled: true } } }
     for (const via of ['owner', 'oversight', 'break_glass']) {
       h.query = project({ via })
       render(<ProjectSettingsPage />)
-      expect(screen.getByRole('link', { name: 'Activity' })).toHaveAttribute('href', '/projects/p1/activity')
+      expect(screen.getByTestId('form')).toHaveAttribute('data-activity', '/projects/p1/activity')
       cleanup()
     }
   })
 
-  test('a read collaborator gets no link; nor anyone with sharing off, unread, or outside a session', () => {
+  test('a read collaborator gets no target; nor anyone with sharing off, unread, or outside a session', () => {
     auth.value = { user: { sharing: { enabled: true } } }
     h.query = project({ via: 'share' })
     render(<ProjectSettingsPage />)
-    expect(screen.queryByRole('link', { name: 'Activity' })).toBeNull()
+    expect(screen.getByTestId('form')).toHaveAttribute('data-activity', '')
     cleanup()
     for (const value of [{ user: { sharing: { enabled: false } } }, { user: {} }, null]) {
       auth.value = value
       h.query = project({ via: 'owner' })
       render(<ProjectSettingsPage />)
-      expect(screen.queryByRole('link', { name: 'Activity' })).toBeNull()
+      expect(screen.getByTestId('form')).toHaveAttribute('data-activity', '')
       cleanup()
     }
   })

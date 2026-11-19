@@ -49,6 +49,10 @@ const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202
 const CODE_CHAR = /[A-Za-z0-9_ \t\r\n()[\]{}<>=!\-+*/%^.,:;|&$~]/
 // Neo4j reads `$` inside a name (`n$` is a variable), so a `$` is read only as the bound parameter.
 const PARAM_RE = /\$projectId(?![\w$])/y
+// Neo4j decodes `\uXXXX` before it lexes the query, so `'x\u0027 ...'` ends a literal for Neo4j and
+// not for this reader, and an escape spells a name in a backticked one. Refused anywhere, never
+// decoded (graph_db/tenant_filter.py `_UNICODE_ESCAPE_RE` is the agent's copy of this rule).
+const UNICODE_ESCAPE = /\\u[0-9A-Fa-f]{4}/
 
 interface ReadQuery {
   code: string
@@ -57,6 +61,7 @@ interface ReadQuery {
 
 function readQuery(cypher: string): ReadQuery | { problem: string } {
   if (CONTROL_CHARS.test(cypher)) return { problem: 'a control character' }
+  if (UNICODE_ESCAPE.test(cypher)) return { problem: 'a \\uXXXX escape (write the character itself)' }
   let code = ''
   const literals: string[] = []
   const setAside = (text: string, mark: (n: number) => string) => {
@@ -242,8 +247,9 @@ function unionTerms(labels: string): string[] {
 
 /**
  * The label expression that ALSO excludes `:Muted`. A union is distributed (`A&!Muted|B&!Muted`)
- * because `&` binds tighter than `|`: `A|B&!Muted` would return a muted A. Mirrors
- * `_labels_excluding_muted` in graph_db/tenant_filter.py.
+ * because `&` binds tighter than `|`: `A|B&!Muted` would return a muted A.
+ * `_labels_excluding_muted` in graph_db/tenant_filter.py excludes the same nodes but groups the
+ * union instead (`(A|B)&!Muted`).
  */
 function withMutedExcluded(labels: string): string {
   if (!labels) return `!${MUTED_LABEL}`
@@ -664,6 +670,11 @@ export function findWriteClause(cypher: string): string | null {
 // `apoc.cypher.runFirstColumn*` runs unscoped Cypher, `apoc.load.*` fetches URLs, and neither
 // needs CALL), `db.*`, `graph.*` (other databases), `genai.*` (an outside service) and
 // `shortestPath` (a variable-length pattern).
+//
+// Not a copy of the agent's call gate (`find_disallowed_call` in graph_db/tenant_filter.py, behind
+// `scope_query` for the agent, MCP `graph:cypher` and Navigator), and deliberately stricter: that
+// one passes any unqualified function, all of `vector.*` and a few `db.*` schema calls. A query the
+// agent runs may be refused as a saved view; keep this list a whole-function allowlist anyway.
 const FUNCTION_ALLOWLIST = new Set([
   'abs', 'acos', 'asin', 'atan', 'atan2', 'avg', 'btrim', 'ceil', 'char_length', 'character_length',
   'coalesce', 'collect', 'cos', 'cot', 'count', 'degrees', 'e', 'elementid', 'endnode', 'exp', 'floor',
@@ -678,6 +689,7 @@ const FUNCTION_ALLOWLIST = new Set([
   'vector.similarity.cosine', 'vector.similarity.euclidean',
 ])
 // Namespaces whose every built-in function is pure (`date.truncate`, `duration.between`, `point.distance`).
+// Not `vector`: only its two similarity functions are listed above.
 const PURE_NAMESPACES = new Set(['date', 'datetime', 'localdatetime', 'localtime', 'time', 'duration', 'point'])
 
 function allowedCall(name: string): boolean {

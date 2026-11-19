@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { ArrowLeft } from 'lucide-react'
 import { useParams } from 'next/navigation'
 import { ActivityFeed } from './ActivityFeed'
 import styles from './page.module.css'
@@ -10,7 +11,9 @@ export default function ProjectActivityPage() {
   const projectId = useParams().id as string
   return (
     <main className={styles.page}>
-      <Link className={styles.back} href={`/projects/${encodeURIComponent(projectId)}/settings`}>Back to the project settings</Link>
+      <Link className={styles.back} href={`/projects/${encodeURIComponent(projectId)}/settings`}>
+        <ArrowLeft size={14} aria-hidden="true" />Project settings
+      </Link>
       <ActivityFeed projectId={projectId} />
     </main>
   )

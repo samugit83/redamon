@@ -88,6 +88,21 @@ describe('a refused Cypher query says WHY', () => {
     await expect(execCypher('u1', 'p1', 'MATCH (d:Domain) RETURN d'))
       .rejects.toThrow(/failed/)
   })
+
+  // The refusal quotes the caller's pattern, and the caller may be a model (AI Navigator):
+  // the caller reads it, the log keeps the status and stage only.
+  test('the log keeps the status, never the refusal text that quotes the query', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.fetch.mockResolvedValue(failing(400, {
+      error: "Query rejected: node pattern (n {name: 'probe-host-5521.example.test'}) could not be scoped.",
+    }))
+    await expect(execCypher('u1', 'p1', "MATCH (n {name: 'probe-host-5521.example.test'}) RETURN n"))
+      .rejects.toThrow(/probe-host-5521/)
+    const text = logged.mock.calls.flat().map(String).join(' ')
+    expect(text).toContain('400')
+    expect(text).not.toContain('probe-host-5521')
+    logged.mockRestore()
+  })
 })
 
 describe('the natural-language path keeps the split it already had', () => {

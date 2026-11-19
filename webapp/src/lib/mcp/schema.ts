@@ -18,8 +18,9 @@ export type Transport = (typeof TRANSPORTS)[number]
  * Tool names reserved by built-in / system tools - user MCP tools must not use these.
  *
  * Must equal what the agent rejects at manifest load: `_builtin_tool_names()` in
- * agentic/mcp_registry.py (the TOOL_REGISTRY keys, `tradecraft_lookup`, and every
- * tool a system MCP server exposes, SYSTEM_MCP_TOOL_NAMES).
+ * agentic/mcp_registry.py (the TOOL_REGISTRY keys other than the MCP-injected ones,
+ * the three tradecraft tools `tradecraft_lookup`, `tradecraft_search` and
+ * `tradecraft_ask`, and every tool a system MCP server exposes, SYSTEM_MCP_TOOL_NAMES).
  * A name missing here is accepted by the form and then refused by the agent.
  * agentic/tests/test_reserved_tool_names_parity.py compares the two sets.
  */
@@ -29,7 +30,7 @@ export const BUILTIN_RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set([
   // shadow a built-in graph tool with its own.
   'query_graph', 'graph_summary', 'graph_schema',
   'web_search', 'cve_intel', 'shodan', 'google_dork',
-  'execute_code', 'tradecraft_lookup', 'proxy_brain',
+  'execute_code', 'tradecraft_lookup', 'tradecraft_search', 'tradecraft_ask', 'proxy_brain',
   'execute_osv_scanner', 'execute_guarddog',
   // System MCP-backed tools (the 5 baseline kali-sandbox servers)
   'execute_curl', 'execute_naabu', 'execute_httpx', 'execute_subfinder',

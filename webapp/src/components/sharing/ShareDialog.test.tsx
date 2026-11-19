@@ -37,7 +37,9 @@ const share = (over: Record<string, unknown> = {}) => ({
 let listAnswers: Array<() => Response | Promise<Response>>
 let grantAnswer: () => Response
 let socketsClosed: boolean
-const calls = (method: string) => h.fetch.mock.calls.filter(([, init]) => ((init as RequestInit | undefined)?.method ?? 'GET') === method)
+// The AI Navigator toggle reads its own route (NavigatorPolicyToggle.test.tsx pins it): the dialog's calls only here.
+const calls = (method: string) => h.fetch.mock.calls.filter(([url, init]) =>
+  !String(url).includes('/api/navigator/') && ((init as RequestInit | undefined)?.method ?? 'GET') === method)
 const lastBody = (method: string) => JSON.parse(String((calls(method).at(-1)![1] as RequestInit).body))
 
 function renderDialog(onClose = vi.fn()) {

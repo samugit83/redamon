@@ -8,7 +8,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Layers, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
+import { Layers, ChevronDown, ChevronRight, Loader2, CheckCircle2, XCircle, AlertTriangle, Check } from 'lucide-react'
 import styles from './PlanWaveCard.module.css'
 import { ToolExecutionCard } from './ToolExecutionCard'
 import type { PlanWaveItem } from './AgentTimeline'
@@ -64,7 +64,7 @@ export function PlanWaveCard({ item, isExpanded, onToggleExpand, missingApiKeys,
       case 'running':
         return `Running ${completedCount}/${item.tool_count}`
       case 'pending_approval':
-        return 'Awaiting approval'
+        return item.approving ? 'Starting...' : 'Awaiting approval'
       case 'success':
         return `${successCount}/${item.tool_count} completed`
       case 'partial':
@@ -117,8 +117,14 @@ export function PlanWaveCard({ item, isExpanded, onToggleExpand, missingApiKeys,
             </div>
             {item.status === 'pending_approval' && onApprove && (
               <div className={styles.confirmActions}>
-                <button className={styles.allowBtn} onClick={(e) => { e.stopPropagation(); onApprove() }}>Allow</button>
-                <button className={styles.denyBtn} onClick={(e) => { e.stopPropagation(); onReject?.() }}>Deny</button>
+                {item.approving ? (
+                  <span className={styles.allowedChip}><Check size={11} /> Allowed</span>
+                ) : (
+                  <>
+                    <button className={styles.allowBtn} onClick={(e) => { e.stopPropagation(); onApprove() }}>Allow</button>
+                    <button className={styles.denyBtn} onClick={(e) => { e.stopPropagation(); onReject?.() }}>Deny</button>
+                  </>
+                )}
               </div>
             )}
             <button className={styles.expandButton}>

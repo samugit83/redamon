@@ -7,6 +7,7 @@ import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { RegistryFields } from '../RegistryFields'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -105,8 +106,8 @@ export function JsluiceSection({ data, updateField, onRun }: JsluiceSectionProps
                   <input
                     type="number"
                     className="textInput"
-                    value={data.jsluiceParallelism ?? 3}
-                    onChange={(e) => updateField('jsluiceParallelism', parseInt(e.target.value) || 3)}
+                    value={data.jsluiceParallelism ?? numericDefault('jsluiceParallelism')}
+                    onChange={(e) => updateField('jsluiceParallelism', parseInt(e.target.value) || numericDefault('jsluiceParallelism'))}
                     min={1}
                     max={10}
                   />

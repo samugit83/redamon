@@ -32,9 +32,9 @@ sys.path.insert(0, ROOT)
 import resource_governor as rg
 from supply_chain_common import analyzer_dispatch as ad
 
-# Load recon/project_settings.py by PATH under a unique name. There are four
-# `project_settings.py` files in this repo (recon, agentic, supply_chain_scan,
-# ai_attack_surface_scan) and a bare `import project_settings` resolves to
+# Load recon/project_settings.py by PATH under a unique name. Several
+# `project_settings.py` files exist in this repo (recon, agentic, and several
+# scanners) and a bare `import project_settings` resolves to
 # whichever one reached sys.modules first: green alone, wrong module in a full
 # suite run. Same trick test_agent_mem_governor uses for the agentic copy.
 _spec = importlib.util.spec_from_file_location(

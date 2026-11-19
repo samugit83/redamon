@@ -20,7 +20,7 @@ import { MCP_SCOPE_COPY } from '@/lib/mcp/scopeCopy'
 import { PLUGIN_PERMISSIONS } from '@/lib/plugins/permissions'
 import { ROUTE_MANIFEST } from './routeManifest'
 
-/** Feature document §5.1-§5.12, in its order (98 ids). */
+/** Feature document §5.1-§5.12, in its order (99 ids). */
 const CATALOG: Record<string, string[]> = {
   '5.1': [
     'users:read', 'users:create', 'users:edit', 'users:disable', 'users:delete', 'users:reset_credentials',
@@ -49,7 +49,7 @@ const CATALOG: Record<string, string[]> = {
   ],
   '5.6': [
     'agent:chat', 'agent:approve_phase', 'agent:approve_dangerous', 'agent:fireteam', 'agent:loop', 'agent:sessions',
-    'agent:kali_exec', 'agent:assistants', 'agent:conversations_share',
+    'agent:kali_exec', 'agent:assistants', 'agent:conversations_share', 'navigator:use',
   ],
   '5.7': ['workspace:read', 'workspace:write', 'workspace:import'],
   '5.8': ['graph:read', 'graph:cypher', 'graph:views', 'graph:edit'],
@@ -73,7 +73,7 @@ const PROJECT_LEVEL: Record<string, string> = {
   'scan:custom_templates': 'W', 'scan:versions': 'W', 'scan:versions_delete': 'M', 'preset:apply': 'W',
   'agent:chat': 'W+A', 'agent:approve_phase': 'W+X', 'agent:approve_dangerous': 'W+X', 'agent:fireteam': 'W+A',
   'agent:loop': 'W+A', 'agent:sessions': 'W+X', 'agent:kali_exec': 'W+X', 'agent:assistants': 'W+A',
-  'agent:conversations_share': 'W+A',
+  'agent:conversations_share': 'W+A', 'navigator:use': 'R',
   'workspace:read': 'R*', 'workspace:write': 'W', 'workspace:import': 'W',
   'graph:read': 'R', 'graph:cypher': 'R', 'graph:views': 'W', 'graph:edit': 'M',
   'triage:read': 'R', 'triage:verdict': 'W', 'triage:mute': 'W', 'triage:review': 'W', 'triage:run': 'W+A',
@@ -109,7 +109,7 @@ const MCP_MAP: Record<string, string[]> = {
 /** Gate features later phases of this release build (phase file 3.9 correction). */
 const LATER_PHASE_FEATURES = [
   'project:share', 'project:transfer', 'projects:oversee', 'projects:administer', 'audit:read', 'audit:export',
-  'instance:quotas', 'agent:conversations_share', 'traffic:replay', 'platform:operations',
+  'instance:quotas', 'agent:conversations_share', 'traffic:replay', 'platform:operations', 'navigator:use',
 ]
 
 const FIELDS = [
@@ -120,9 +120,9 @@ const FIELDS = [
 const idsWhere = (pick: (id: PermissionId) => boolean) => PERMISSION_IDS.filter(pick).sort()
 
 describe('catalog complete', () => {
-  test('98 ids, exactly the feature document §5.1-§5.12, in its order', () => {
-    expect(ALL_IDS).toHaveLength(98)
-    expect(new Set(ALL_IDS).size).toBe(98)
+  test('99 ids, exactly the feature document §5.1-§5.12, in its order', () => {
+    expect(ALL_IDS).toHaveLength(99)
+    expect(new Set(ALL_IDS).size).toBe(99)
     expect([...PERMISSION_IDS]).toEqual(ALL_IDS)
     expect(Object.keys(PERMISSIONS)).toEqual(ALL_IDS)
   })

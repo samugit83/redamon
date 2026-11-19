@@ -42,6 +42,8 @@ vi.mock('@/lib/prisma', async () => {
     userSettings: {
       findUnique: async () => ({
         githubAccessToken: 'ghp_fake_e2e_token',
+        // A tradecraft add needs the librarian model while the librarian is in use (T7.1).
+        featureModels: { tradecraft_librarian: 'openai/gpt-fake' },
         mcpServers: [{ id: 'srv-1', name: 's', transport: 'http', url: 'https://mcp.e2e.test/mcp', enabled: false }],
       }),
       upsert: async () => { throw new Error('settings written') },
@@ -411,26 +413,32 @@ describe('using the GitHub token of the account acted as (re-sync, tradecraft): 
     expect(agentCalls.n).toBe(0)
   })
 
-  test('no token to send, a create that skips the crawl, or a token typed now: not refused (they reach the write or the agent)', async () => {
+  // Since the cut-over (T9.3) Verify and Refresh start the 2.0 job: they get past the refusal and
+  // stop at this double's job claim, so "not refused" is the answer and no refusal recorded, not
+  // an agent call (the job start itself: v2/refresh.test.ts 'act-as with no token to send').
+  const notRefused = async (res: Response) => {
+    expect(res.status).not.toBe(403)
+    expect(JSON.stringify(await res.json().catch(() => ({})))).not.toContain('use_github_token')
+  }
+
+  test('no token to send, a create that skips the crawl, or a token typed now: not refused (they reach the write or the job)', async () => {
     agentCalls.n = 0
     await as('admin-1', 'member-1')
     expect((await created({}, '?skipVerify=true')).status).toBe(500)
     expect((await created({ githubTokenOverride: 'ghp_typed_now' })).status).toBe(500)
-    vi.spyOn(rows().userSettings, 'findUnique').mockResolvedValue({ githubAccessToken: '' } as never)
-    await verifyTradecraft(req('POST', {}), resource)
-    expect(agentCalls.n).toBe(1)
+    vi.spyOn(rows().userSettings, 'findUnique').mockResolvedValue({ githubAccessToken: '', featureModels: { tradecraft_librarian: 'openai/gpt-fake' } } as never)
+    await notRefused(await verifyTradecraft(req('POST', {}), resource))
     expect(refusals()).toEqual([])
   })
 
   test('the account itself and the switch off send the token as before', async () => {
     agentCalls.n = 0
     await as('member-1')
-    await verifyTradecraft(req('POST', {}), resource)
+    await notRefused(await verifyTradecraft(req('POST', {}), resource))
     setFlagsForTests({ identity: true, permissions: false })
     await as('admin-1', 'member-1')
-    await verifyTradecraft(req('POST', {}), resource)
-    await refreshTradecraft(req('POST', {}), resource)
-    expect(agentCalls.n).toBe(3)
+    await notRefused(await verifyTradecraft(req('POST', {}), resource))
+    await notRefused(await refreshTradecraft(req('POST', {}), resource))
     expect(refusals()).toEqual([])
   })
 })

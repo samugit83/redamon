@@ -1,0 +1,95 @@
+{"id": "q001", "kind": "precise", "mode": "live", "query": "Cloud metadata via SSRF AWS", "url": "https://wiki.tc-eval.test/ssrf/cloud-metadata/aws/"}
+{"id": "q002", "kind": "precise", "mode": "stored", "query": "cloud metadata via ssrf payloads for AWS", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SSRF/cloud-metadata/aws.md"}
+{"id": "q003", "kind": "browse", "mode": "stored", "query": "Cloud metadata via SSRF payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SSRF/cloud-metadata/README.md"}
+{"id": "q004", "kind": "precise", "mode": "live", "query": "Union-based extraction MySQL", "url": "https://wiki.tc-eval.test/sql-injection/union-based/mysql/"}
+{"id": "q005", "kind": "precise", "mode": "stored", "query": "union-based extraction payloads for MySQL", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SQL_injection/union-based/mysql.md"}
+{"id": "q006", "kind": "browse", "mode": "stored", "query": "Union-based extraction payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SQL_injection/union-based/README.md"}
+{"id": "q007", "kind": "precise", "mode": "live", "query": "Delegation abuse LDAP", "url": "https://wiki.tc-eval.test/active-directory/delegation/ldap/"}
+{"id": "q008", "kind": "precise", "mode": "stored", "query": "delegation abuse payloads for LDAP", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Active_Directory/delegation/ldap.md"}
+{"id": "q009", "kind": "browse", "mode": "stored", "query": "Delegation abuse payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Active_Directory/delegation/README.md"}
+{"id": "q010", "kind": "precise", "mode": "live", "query": "IDOR Laravel", "url": "https://wiki.tc-eval.test/access-control/idor/laravel/"}
+{"id": "q011", "kind": "precise", "mode": "stored", "query": "idor payloads for Laravel", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Access_control/idor/laravel.md"}
+{"id": "q012", "kind": "browse", "mode": "stored", "query": "IDOR payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Access_control/idor/README.md"}
+{"id": "q013", "kind": "precise", "mode": "live", "query": "Boolean-based blind SQLite", "url": "https://wiki.tc-eval.test/sql-injection/boolean-blind/sqlite/"}
+{"id": "q014", "kind": "precise", "mode": "stored", "query": "boolean-based blind payloads for SQLite", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SQL_injection/boolean-blind/sqlite.md"}
+{"id": "q015", "kind": "browse", "mode": "stored", "query": "Boolean-based blind payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SQL_injection/boolean-blind/README.md"}
+{"id": "q016", "kind": "precise", "mode": "live", "query": "Filter evasion Express", "url": "https://wiki.tc-eval.test/cross-site-scripting/filter-evasion/express/"}
+{"id": "q017", "kind": "precise", "mode": "stored", "query": "filter evasion payloads for Express", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Cross-site_scripting/filter-evasion/express.md"}
+{"id": "q018", "kind": "browse", "mode": "stored", "query": "Filter evasion payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Cross-site_scripting/filter-evasion/README.md"}
+{"id": "q019", "kind": "precise", "mode": "live", "query": "DNS rebinding AWS", "url": "https://wiki.tc-eval.test/ssrf/dns-rebinding/aws/"}
+{"id": "q020", "kind": "precise", "mode": "stored", "query": "dns rebinding payloads for AWS", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SSRF/dns-rebinding/aws.md"}
+{"id": "q021", "kind": "browse", "mode": "stored", "query": "DNS rebinding payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SSRF/dns-rebinding/README.md"}
+{"id": "q022", "kind": "precise", "mode": "live", "query": "Error-based extraction MySQL", "url": "https://wiki.tc-eval.test/sql-injection/error-based/mysql/"}
+{"id": "q023", "kind": "precise", "mode": "stored", "query": "error-based extraction payloads for MySQL", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SQL_injection/error-based/mysql.md"}
+{"id": "q024", "kind": "browse", "mode": "stored", "query": "Error-based extraction payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SQL_injection/error-based/README.md"}
+{"id": "q025", "kind": "precise", "mode": "live", "query": "Time-based blind MSSQL", "url": "https://wiki.tc-eval.test/sql-injection/time-based-blind/mssql/"}
+{"id": "q026", "kind": "precise", "mode": "stored", "query": "time-based blind payloads for MSSQL", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SQL_injection/time-based-blind/mssql.md"}
+{"id": "q027", "kind": "browse", "mode": "stored", "query": "Time-based blind payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/SQL_injection/time-based-blind/README.md"}
+{"id": "q028", "kind": "precise", "mode": "live", "query": "CSP bypass WordPress", "url": "https://wiki.tc-eval.test/cross-site-scripting/csp-bypass/wordpress/"}
+{"id": "q029", "kind": "precise", "mode": "stored", "query": "csp bypass payloads for WordPress", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Cross-site_scripting/csp-bypass/wordpress.md"}
+{"id": "q030", "kind": "browse", "mode": "stored", "query": "CSP bypass payload files", "resource": "repo", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Cross-site_scripting/csp-bypass/README.md"}
+{"id": "q031", "kind": "precise", "mode": "live", "query": "Classic XXE Apache", "url": "https://wiki.tc-eval.test/xxe/classic/apache/"}
+{"id": "q032", "kind": "precise", "mode": "stored", "query": "classic xxe payloads for Apache", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/XXE/classic/apache.md"}
+{"id": "q033", "kind": "precise", "mode": "live", "query": "Server-side template injection Ruby on Rails", "url": "https://wiki.tc-eval.test/remote-code-execution/ssti/ruby-on-rails/"}
+{"id": "q034", "kind": "precise", "mode": "stored", "query": "server-side template injection payloads for Ruby on Rails", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Remote_code_execution/ssti/ruby-on-rails.md"}
+{"id": "q035", "kind": "precise", "mode": "live", "query": "Stored XSS React", "url": "https://wiki.tc-eval.test/cross-site-scripting/stored/react/"}
+{"id": "q036", "kind": "precise", "mode": "stored", "query": "stored xss payloads for React", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Cross-site_scripting/stored/react.md"}
+{"id": "q037", "kind": "precise", "mode": "live", "query": "Zip slip nginx", "url": "https://wiki.tc-eval.test/path-traversal/zip-slip/nginx/"}
+{"id": "q038", "kind": "precise", "mode": "stored", "query": "zip slip payloads for nginx", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Path_traversal/zip-slip/nginx.md"}
+{"id": "q039", "kind": "precise", "mode": "live", "query": "AS-REP roasting LDAP", "url": "https://wiki.tc-eval.test/active-directory/asrep-roasting/ldap/"}
+{"id": "q040", "kind": "precise", "mode": "stored", "query": "as-rep roasting payloads for LDAP", "url": "https://raw.githubusercontent.com/tc-eval/lib/main/Active_Directory/asrep-roasting/ldap.md"}
+{"id": "q041", "kind": "vague", "mode": "live", "query": "the dots and slashes are filtered on IIS", "url": "https://wiki.tc-eval.test/path-traversal/encoding-bypass/iis/"}
+{"id": "q042", "kind": "vague", "mode": "live", "query": "reach a plain text service through the fetcher on Kubernetes", "url": "https://wiki.tc-eval.test/ssrf/protocol-smuggling/kubernetes/"}
+{"id": "q043", "kind": "vague", "mode": "live", "query": "read a file through a parser error message on Tomcat", "url": "https://wiki.tc-eval.test/xxe/error-based/tomcat/"}
+{"id": "q044", "kind": "vague", "mode": "live", "query": "localhost and private ranges are blocked by a deny list on AWS", "url": "https://wiki.tc-eval.test/ssrf/filter-bypass/aws/"}
+{"id": "q045", "kind": "vague", "mode": "live", "query": "sudo lets you run one command as root on Kubernetes", "url": "https://wiki.tc-eval.test/privilege-escalation/sudo/kubernetes/"}
+{"id": "q046", "kind": "vague", "mode": "live", "query": "an administrator token is split by user account control on Jenkins", "url": "https://wiki.tc-eval.test/privilege-escalation/uac-bypass/jenkins/"}
+{"id": "q047", "kind": "vague", "mode": "live", "query": "the kernel is old and unpatched on Redis", "url": "https://wiki.tc-eval.test/privilege-escalation/kernel/redis/"}
+{"id": "q048", "kind": "vague", "mode": "live", "query": "an image upload accepts SVG on Apache", "url": "https://wiki.tc-eval.test/xxe/svg-upload/apache/"}
+{"id": "q049", "kind": "vague", "mode": "live", "query": "a parameter comes back in the page without encoding on Express", "url": "https://wiki.tc-eval.test/cross-site-scripting/reflected/express/"}
+{"id": "q050", "kind": "vague", "mode": "live", "query": "one payload that works in several contexts at once on React", "url": "https://wiki.tc-eval.test/cross-site-scripting/polyglots/react/"}
+{"id": "q051", "kind": "vague", "mode": "live", "query": "the token signature is not checked on Express", "url": "https://wiki.tc-eval.test/access-control/jwt-none/express/"}
+{"id": "q052", "kind": "vague", "mode": "live", "query": "the server keeps an uploaded script where it runs on Django", "url": "https://wiki.tc-eval.test/remote-code-execution/file-upload/django/"}
+{"id": "q053", "kind": "vague", "mode": "live", "query": "forward a captured authentication to another host on AD CS", "url": "https://wiki.tc-eval.test/active-directory/ntlm-relay/ad-cs/"}
+{"id": "q054", "kind": "vague", "mode": "live", "query": "the kubelet answers without authentication on Google Cloud", "url": "https://wiki.tc-eval.test/containers/kubelet/google-cloud/"}
+{"id": "q055", "kind": "vague", "mode": "live", "query": "replicate password hashes like a domain controller on BloodHound", "url": "https://wiki.tc-eval.test/active-directory/dcsync/bloodhound/"}
+{"id": "q056", "kind": "precise", "mode": "live", "query": "tcmap --threads option", "url": "https://docs.tc-eval.test/options/threads.html"}
+{"id": "q057", "kind": "precise", "mode": "live", "query": "tcmap --level option", "url": "https://docs.tc-eval.test/options/level.html"}
+{"id": "q058", "kind": "precise", "mode": "live", "query": "tcmap --risk option", "url": "https://docs.tc-eval.test/options/risk.html"}
+{"id": "q059", "kind": "precise", "mode": "live", "query": "tcmap --delay option", "url": "https://docs.tc-eval.test/options/delay.html"}
+{"id": "q060", "kind": "precise", "mode": "live", "query": "tcmap --timeout option", "url": "https://docs.tc-eval.test/options/timeout.html"}
+{"id": "q061", "kind": "precise", "mode": "live", "query": "tcmap --proxy option", "url": "https://docs.tc-eval.test/options/proxy.html"}
+{"id": "q062", "kind": "precise", "mode": "live", "query": "tcmap --cookie option", "url": "https://docs.tc-eval.test/options/cookie.html"}
+{"id": "q063", "kind": "precise", "mode": "live", "query": "tcmap --headers option", "url": "https://docs.tc-eval.test/options/headers.html"}
+{"id": "q064", "kind": "precise", "mode": "live", "query": "tcmap --dump option", "url": "https://docs.tc-eval.test/options/dump.html"}
+{"id": "q065", "kind": "precise", "mode": "live", "query": "tcmap --tables option", "url": "https://docs.tc-eval.test/options/tables.html"}
+{"id": "q066", "kind": "precise", "mode": "live", "query": "tcmap --columns option", "url": "https://docs.tc-eval.test/options/columns.html"}
+{"id": "q067", "kind": "precise", "mode": "live", "query": "tcmap --batch option", "url": "https://docs.tc-eval.test/options/batch.html"}
+{"id": "q068", "kind": "precise", "mode": "live", "query": "tcmap --tamper option", "url": "https://docs.tc-eval.test/options/tamper.html"}
+{"id": "q069", "kind": "precise", "mode": "live", "query": "tcmap --random-agent option", "url": "https://docs.tc-eval.test/options/random-agent.html"}
+{"id": "q070", "kind": "precise", "mode": "live", "query": "tcmap --os-shell option", "url": "https://docs.tc-eval.test/options/os-shell.html"}
+{"id": "q071", "kind": "vague", "mode": "live", "query": "how to make tcmap reads a file from the server", "url": "https://docs.tc-eval.test/options/file-read.html"}
+{"id": "q072", "kind": "vague", "mode": "live", "query": "how to make tcmap chooses the injection techniques to test", "url": "https://docs.tc-eval.test/options/technique.html"}
+{"id": "q073", "kind": "vague", "mode": "live", "query": "how to make tcmap sets the delay a time test waits", "url": "https://docs.tc-eval.test/options/time-sec.html"}
+{"id": "q074", "kind": "vague", "mode": "live", "query": "how to make tcmap names the database engine to skip detection", "url": "https://docs.tc-eval.test/options/dbms.html"}
+{"id": "q075", "kind": "vague", "mode": "live", "query": "how to make tcmap tests the forms of the target page", "url": "https://docs.tc-eval.test/options/forms.html"}
+{"id": "q076", "kind": "browse", "mode": "live", "query": "space2comment tamper", "resource": "docs", "url": "https://docs.tc-eval.test/tampers/space2comment.html"}
+{"id": "q077", "kind": "browse", "mode": "live", "query": "between tamper", "resource": "docs", "url": "https://docs.tc-eval.test/tampers/between.html"}
+{"id": "q078", "kind": "browse", "mode": "live", "query": "charencode tamper", "resource": "docs", "url": "https://docs.tc-eval.test/tampers/charencode.html"}
+{"id": "q079", "kind": "browse", "mode": "live", "query": "randomcase tamper", "resource": "docs", "url": "https://docs.tc-eval.test/tampers/randomcase.html"}
+{"id": "q080", "kind": "browse", "mode": "live", "query": "equaltolike tamper", "resource": "docs", "url": "https://docs.tc-eval.test/tampers/equaltolike.html"}
+{"id": "q081", "kind": "cve", "mode": "stored", "query": "CVE-2098-100006", "url": "https://blog.tc-eval.test/posts/006-reflected/"}
+{"id": "q082", "kind": "cve", "mode": "stored", "query": "CVE-2098-100012", "url": "https://blog.tc-eval.test/posts/012-basic/"}
+{"id": "q083", "kind": "cve", "mode": "stored", "query": "CVE-2098-100018", "url": "https://blog.tc-eval.test/posts/018-dot-dot-slash/"}
+{"id": "q084", "kind": "cve", "mode": "stored", "query": "CVE-2098-100024", "url": "https://blog.tc-eval.test/posts/024-out-of-band/"}
+{"id": "q085", "kind": "cve", "mode": "stored", "query": "CVE-2098-100030", "url": "https://blog.tc-eval.test/posts/030-ntlm-relay/"}
+{"id": "q086", "kind": "cve", "mode": "stored", "query": "CVE-2098-100036", "url": "https://blog.tc-eval.test/posts/036-kernel/"}
+{"id": "q087", "kind": "cve", "mode": "stored", "query": "CVE-2098-100042", "url": "https://blog.tc-eval.test/posts/042-service-account/"}
+{"id": "q088", "kind": "cve", "mode": "stored", "query": "CVE-2098-100048", "url": "https://blog.tc-eval.test/posts/048-jwt-none/"}
+{"id": "q089", "kind": "cve", "mode": "stored", "query": "CVE-2098-100054", "url": "https://blog.tc-eval.test/posts/054-time-based-blind/"}
+{"id": "q090", "kind": "cve", "mode": "stored", "query": "CVE-2098-100060", "url": "https://blog.tc-eval.test/posts/060-csp-bypass/"}
+{"id": "q091", "kind": "cve", "mode": "stored", "query": "CVE-2098-100066", "url": "https://blog.tc-eval.test/posts/066-dns-rebinding/"}
+{"id": "q092", "kind": "cve", "mode": "stored", "query": "CVE-2098-100072", "url": "https://blog.tc-eval.test/posts/072-zip-slip/"}
+{"id": "q093", "kind": "cve", "mode": "stored", "query": "CVE-2098-100078", "url": "https://blog.tc-eval.test/posts/078-svg-upload/"}
+{"id": "q094", "kind": "cve", "mode": "stored", "query": "CVE-2098-100084", "url": "https://blog.tc-eval.test/posts/084-delegation/"}
+{"id": "q095", "kind": "cve", "mode": "stored", "query": "CVE-2098-100090", "url": "https://blog.tc-eval.test/posts/090-docker-socket/"}

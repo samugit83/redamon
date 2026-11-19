@@ -15,11 +15,20 @@ from feature_models import FEATURE_IDS, feature_model  # noqa: E402
 WEBAPP_REGISTRY = REPO_ROOT / "webapp" / "src" / "lib" / "llmFeatures.ts"
 
 
-def test_the_nine_ids():
+def test_the_ten_ids():
+    # The section picker left with 1.x at the cut-over (T9.3, R-401), on both sides at once.
     assert FEATURE_IDS == (
         "roe_parse", "preset_generator", "triage", "codefix", "command_whisperer",
-        "tradecraft_section_picker", "report_narratives", "multi_mute", "skill_metadata",
+        "tradecraft_librarian", "report_narratives", "multi_mute", "skill_metadata", "navigator",
     )
+
+
+def test_the_librarian_model_is_read_like_any_feature():
+    """T7.1: the agent's librarian (T7.4) reads the owner's model under this id; none set is ""."""
+    assert feature_model({"featureModels": {"tradecraft_librarian": " gpt-4o-mini "}}, "tradecraft_librarian") == "gpt-4o-mini"
+    assert feature_model({"featureModels": {"tradecraft_section_picker": "m"}}, "tradecraft_librarian") == ""
+    # A model a person saved for the 1.x section picker is no feature's any more.
+    assert feature_model({"featureModels": {"tradecraft_section_picker": "m"}}, "tradecraft_section_picker") == ""
 
 
 def test_the_ids_match_the_webapp_registry():

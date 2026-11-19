@@ -22,7 +22,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Add recon paths first (primary test target)
+# Add recon paths first (primary test target). The gate runs this file in the
+# agent image, whose PYTHONPATH has none of them: without main_recon_modules the
+# Shodan, CVE and URLScan classes below skip in every run.
+sys.path.insert(0, str(REPO_ROOT / "recon" / "main_recon_modules"))
 sys.path.insert(0, str(REPO_ROOT / "recon"))
 sys.path.insert(0, str(REPO_ROOT / "recon" / "helpers"))
 
@@ -30,7 +33,7 @@ sys.path.insert(0, str(REPO_ROOT / "recon" / "helpers"))
 # (security_checks.py imports dns.resolver which is only in the container).
 # Only where dnspython is really missing: a stub over the real package breaks
 # recon.helpers' own `import dns.zone` in the recon image.
-for mod_name in ["dns", "dns.resolver", "dns.rdatatype", "dns.name"]:
+for mod_name in ["dns", "dns.resolver", "dns.rdatatype", "dns.name", "dns.zone", "dns.query", "dns.xfr"]:
     if mod_name not in sys.modules:
         try:
             importlib.import_module(mod_name)
@@ -58,7 +61,11 @@ def _importable(name):
 
 
 _RECON_AVAILABLE = _importable("shodan_enrich")
-_AGENTIC_KR_AVAILABLE = _importable("orchestrator_helpers.key_rotation")
+# Checked by path, not import: with recon first on sys.path, importing the
+# orchestrator_helpers package resolves its `project_settings` to recon's copy
+# and fails, which skipped the agentic class in every image.
+_AGENTIC_KR_PATH = REPO_ROOT / "agentic" / "orchestrator_helpers" / "key_rotation.py"
+_AGENTIC_KR_AVAILABLE = _AGENTIC_KR_PATH.is_file()
 
 
 class TestKeyRotatorBasic(unittest.TestCase):
@@ -401,7 +408,8 @@ class TestCveHelpersRotation(unittest.TestCase):
 
     @patch("cve_helpers.requests.get")
     def test_vulners_lookup_uses_rotator_key(self, mock_get):
-        """lookup_cves_vulners uses rotator.current_key in params."""
+        """lookup_cves_vulners sends rotator.current_key in the X-Api-Key header,
+        the only place Vulners accepts it, and never in the query string."""
         from cve_helpers import lookup_cves_vulners
 
         mock_resp = MagicMock()
@@ -415,8 +423,8 @@ class TestCveHelpersRotation(unittest.TestCase):
         lookup_cves_vulners("nginx", "1.19.0", api_key="vulners-fallback", key_rotator=rotator)
 
         call_kwargs = mock_get.call_args
-        params = call_kwargs.kwargs.get("params") or call_kwargs[1].get("params")
-        self.assertEqual(params["apiKey"], "vulners-rot")
+        self.assertEqual(call_kwargs.kwargs["headers"]["X-Api-Key"], "vulners-rot")
+        self.assertNotIn("vulners-rot", str(call_kwargs.kwargs["params"]))
 
     @patch("cve_helpers.requests.get")
     def test_vulners_lookup_ticks_after_call(self, mock_get):
@@ -502,14 +510,9 @@ class TestAgenticKeyRotator(unittest.TestCase):
 
     def test_agentic_rotator_import(self):
         """Can import KeyRotator from agentic/orchestrator_helpers/key_rotation.py."""
-        # Re-import from agentic path
-        agentic_path = str(REPO_ROOT / "agentic")
-        if agentic_path not in sys.path:
-            sys.path.insert(0, agentic_path)
-
-        import importlib
-        mod = importlib.import_module("orchestrator_helpers.key_rotation")
-        importlib.reload(mod)  # Force reload to get agentic version
+        spec = importlib.util.spec_from_file_location("agentic_key_rotation", _AGENTIC_KR_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
         AgenticKeyRotator = mod.KeyRotator
 
         r = AgenticKeyRotator(["A", "B", "C"], rotate_every_n=2)

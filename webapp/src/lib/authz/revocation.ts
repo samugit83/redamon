@@ -39,14 +39,17 @@ import { WS_SOCKETS, type WsSocket } from '@/lib/wsTicket'
 import { findLiveTriageRun, LIVE_TRIAGE_STATUSES } from '@/lib/triageRun'
 import { stopRun } from '@/lib/triage/actions'
 import { endOpenImpersonationsQuietly } from './actAs'
+import { navigatorRuns } from '@/lib/navigator/runRegistry'
 import { now } from './clock'
 import { rbacFlags } from './flags'
 import { queuedJobPermissions } from './queuedJobPermissions'
 import { actorScanRefusal, actorScanRefusalReason, noticeSchedulePaused, type ActorScanRefusal } from './scanActor'
+import { cancelUserTradecraftJobs } from '@/lib/tradecraft/deleteCleanup'
 
 /** What ended the person's access to one project. */
 export type ProjectReduction =
   | 'share_revoked' | 'share_left' | 'share_expired' | 'share_force_revoked' | 'share_reduced' | 'consent_withdrawn'
+  | 'navigator_disallowed'
 
 /** What ended or narrowed the account's access everywhere. */
 export type AccountReduction =
@@ -56,7 +59,9 @@ export type AccountReduction =
 
 export type AccessReducedReason = ProjectReduction | AccountReduction
 
-export type RevocationStep = 'stop_runs' | 'close_sockets' | 'cancel_queued_scans' | 'pause_schedules' | 'stop_triage_run'
+export type RevocationStep =
+  | 'stop_runs' | 'close_sockets' | 'cancel_queued_scans' | 'pause_schedules' | 'stop_triage_run' | 'stop_navigator_runs'
+  | 'cancel_tradecraft_jobs'
 
 export type Counted<K extends string> = { [P in K]: number } | { error: string }
 
@@ -68,6 +73,10 @@ export interface LiveWorkStopped {
   scans?: Counted<'cancelled'>
   schedules?: Counted<'paused'>
   triage?: Counted<'stopped'>
+  /** AI Navigator answers being written, ended in every plan (a stream outlives its login like a socket). */
+  navigator?: Counted<'stopped'>
+  /** The account's Tradecraft ingestion jobs flagged as cancelled; absent when the plan keeps them. */
+  tradecraft?: Counted<'cancelled'>
   /** The steps that failed, each logged. */
   failed: RevocationStep[]
 }
@@ -86,10 +95,15 @@ interface Plan {
   triage: boolean
   /** The account's own impersonations as an admin end: every caller that ends its sessions. */
   endImpersonations: boolean
+  /**
+   * The account's own Tradecraft ingestion jobs stop (D-10): its library is its own, so only an
+   * account that can no longer act (disabled, deleted) loses them; a share's loss touches none.
+   */
+  tradecraftJobs: boolean
 }
 
-const PROJECT: Plan = { stopRuns: true, closeScope: 'access', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false }
-const SESSIONS: Plan = { stopRuns: false, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: false, triage: false, endImpersonations: true }
+const PROJECT: Plan = { stopRuns: true, closeScope: 'access', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: false }
+const SESSIONS: Plan = { stopRuns: false, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: false, triage: false, endImpersonations: true, tradecraftJobs: false }
 
 export const PLANS: Readonly<Record<AccessReducedReason, Readonly<Plan>>> = Object.freeze({
   share_revoked: PROJECT,
@@ -98,10 +112,13 @@ export const PLANS: Readonly<Record<AccessReducedReason, Readonly<Plan>>> = Obje
   share_force_revoked: PROJECT,
   share_reduced: PROJECT,
   consent_withdrawn: PROJECT,
-  account_disabled: { ...SESSIONS, stopRuns: true },
+  // The owner turned "AI Navigator for collaborators" off: only the Navigator step, no agent run,
+  // socket or scan of the collaborator is touched.
+  navigator_disallowed: { stopRuns: false, closeScope: 'access', kinds: [], deferredScans: false, triage: false, endImpersonations: false, tradecraftJobs: false },
+  account_disabled: { ...SESSIONS, stopRuns: true, tradecraftJobs: true },
   // The user DELETE ends a deleted admin's impersonations itself, closing what they opened.
-  account_deleted: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false },
-  capability_removed: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: true },
+  account_deleted: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: true },
+  capability_removed: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: true, tradecraftJobs: false },
   sessions_revoked: SESSIONS,
   credentials_reset: SESSIONS,
   reset_link_used: SESSIONS,
@@ -276,9 +293,9 @@ async function stopTriageRuns(userId: string, projectId: string | null, ownerId:
  * the project's owner. Never throws.
  */
 export async function onAccessReduced(projectId: string, userId: string, reason: ProjectReduction, opts?: { ownerId?: string }): Promise<LiveWorkStopped>
-export async function onAccessReduced(projectId: null, userId: string, reason: AccountReduction, opts?: { ownerId?: string }): Promise<LiveWorkStopped>
+export async function onAccessReduced(projectId: null, userId: string, reason: AccountReduction, opts?: { ownerId?: string; sid?: string }): Promise<LiveWorkStopped>
 export async function onAccessReduced(
-  projectId: string | null, userId: string, reason: AccessReducedReason, { ownerId }: { ownerId?: string } = {},
+  projectId: string | null, userId: string, reason: AccessReducedReason, { ownerId, sid }: { ownerId?: string; sid?: string } = {},
 ): Promise<LiveWorkStopped> {
   const plan = PLANS[reason]
   const out: LiveWorkStopped = { sockets: { closed: 0 }, failed: [] }
@@ -303,24 +320,50 @@ export async function onAccessReduced(
     out.runs = await stopAgentRuns(userId, projectId ? [projectId] : undefined)
     if ('error' in out.runs) fail('stop_runs', out.runs.error)
   }
-  const close = await closeAgentSockets({
-    userId, ...(projectId ? { projectId } : {}), kinds: [...plan.kinds], scope: plan.closeScope,
-  })
-  out.sockets = close.ok ? { closed: close.closed } : fail('close_sockets', close.reason)
+  if (plan.kinds.length > 0) {
+    // The agent refuses an empty `kinds` list, so a plan that closes no socket asks nothing.
+    const close = await closeAgentSockets({
+      userId, ...(projectId ? { projectId } : {}), kinds: [...plan.kinds], scope: plan.closeScope,
+    })
+    out.sockets = close.ok ? { closed: close.closed } : fail('close_sockets', close.reason)
+  }
+  out.navigator = await attempt('stop_navigator_runs', 'stopped', async () => stopNavigatorRuns(userId, projectId, reason, plan, sid))
   if (plan.deferredScans) {
     const refused = refusalCheck(userId)
     out.scans = await attempt('cancel_queued_scans', 'cancelled', () => cancelQueuedScans(userId, projectId, reason, refused))
     out.schedules = await attempt('pause_schedules', 'paused', () => pauseSchedules(userId, projectId, reason, refused))
   }
   if (plan.triage) out.triage = await attempt('stop_triage_run', 'stopped', () => stopTriageRuns(userId, projectId, ownerId))
+  if (plan.tradecraftJobs) {
+    const { flagged } = await cancelUserTradecraftJobs(userId)
+    out.tradecraft = typeof flagged === 'number' ? { cancelled: flagged } : fail('cancel_tradecraft_jobs', flagged.error)
+  }
 
   const n = (c: Counted<string> | undefined) => (c && !('error' in c) ? Object.values(c)[0] : 0)
-  const total = n(out.runs) + n(out.sockets) + n(out.scans) + n(out.schedules) + n(out.triage)
+  const total = n(out.runs) + n(out.sockets) + n(out.scans) + n(out.schedules) + n(out.triage) + n(out.navigator) + n(out.tradecraft)
   if (total > 0) {
     console.info(
       `[rbac] revocation ${where} runs=${n(out.runs)} sockets=${n(out.sockets)} scans=${n(out.scans)} `
-      + `schedules=${n(out.schedules)} triage=${n(out.triage)}${out.failed.length ? ` failed=${out.failed.join(',')}` : ''}`,
+      + `schedules=${n(out.schedules)} triage=${n(out.triage)} navigator=${n(out.navigator)} tradecraft=${n(out.tradecraft)}`
+      + `${out.failed.length ? ` failed=${out.failed.join(',')}` : ''}`,
     )
   }
   return out
+}
+
+/**
+ * The AI Navigator runs a reduction ends, in the webapp's run registry (its abort ends the stream
+ * to the agent, which cancels the run): the person's runs on the project for a project reason; for
+ * an account reason every run of the person, the runs of one device session when the revoke names
+ * it, and the runs the person opened acting as someone when the plan ends their impersonations.
+ */
+function stopNavigatorRuns(
+  userId: string, projectId: string | null, reason: AccessReducedReason, plan: Plan, sid: string | undefined,
+): number {
+  const runs = navigatorRuns()
+  if (projectId) return runs.abortFor({ personId: userId, projectIds: [projectId] })
+  if (reason === 'device_session_revoked' && sid) return runs.abortDeviceSession(sid)
+  let n = runs.abortFor({ personId: userId })
+  if (plan.endImpersonations) n += runs.abortActor(userId)
+  return n
 }

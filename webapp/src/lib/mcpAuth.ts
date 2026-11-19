@@ -322,6 +322,8 @@ export interface ResolvedMcpToken {
    * projects only, as every token minted before sharing does.
    */
   sharedProjects?: McpSharedReach | null
+  /** AI Navigator's session context under act-as (McpProjectToken.actingAs); never set on a real token. */
+  actingAs?: boolean
 }
 
 export interface McpSharedReach {
@@ -466,6 +468,11 @@ export class McpLevelDenied extends McpAccessDenied {
 export interface McpProjectToken {
   userId: string
   sharedProjects?: McpSharedReach | null
+  /**
+   * The holder is the account an admin acts as (AI Navigator's session context under act-as): a
+   * share reaches Read and never more (D-22), as `can()` decides it. Real MCP tokens never set it.
+   */
+  actingAs?: boolean
 }
 
 export interface McpProjectAccess {
@@ -520,7 +527,9 @@ export async function mcpProjectAccess(
     throw new McpAccessDenied('projectId is required')
   }
   const holder: McpProjectToken = typeof token === 'string' ? { userId: token } : token
-  const access = await projectAccess({ userId: holder.userId }, projectId)
+  const access = holder.actingAs
+    ? await projectAccess({ userId: holder.userId }, projectId, { actingAs: true })
+    : await projectAccess({ userId: holder.userId }, projectId)
   if (!access) throw new McpAccessDenied()
   if (access.level !== 'owner') {
     const reach = holder.sharedProjects
@@ -554,7 +563,7 @@ export async function assertMcpProjectAccess(
 // SAFE DEFAULTS, so an unset value falls back to the documented limit and never
 // to "no limit".
 
-export type McpBucketName = 'read' | 'query' | 'write' | 'mute' | 'start' | 'exec' | 'compare' | 'loop'
+export type McpBucketName = 'read' | 'query' | 'write' | 'mute' | 'start' | 'exec' | 'compare' | 'loop' | 'navigator' | 'navigator_day'
 
 interface BucketSpec {
   /** Max calls in the window. */
@@ -616,6 +625,11 @@ export function bucketSpec(bucket: McpBucketName): BucketSpec {
         limit: envInt('MCP_RATE_COMPARE_PER_WINDOW', 2),
         windowMs: envInt('MCP_RATE_COMPARE_WINDOW_MS', 300_000),
       }
+    // AI Navigator messages per person (plan Appendix A): code constants, deliberately not env-tunable.
+    case 'navigator':
+      return { limit: 20, windowMs: 300_000 }
+    case 'navigator_day':
+      return { limit: 300, windowMs: 86_400_000 }
   }
 }
 

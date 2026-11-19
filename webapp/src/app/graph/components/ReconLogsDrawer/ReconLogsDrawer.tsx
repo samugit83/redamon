@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useNavigatorObstacle } from '@/components/navigator/obstacles'
 import { X, Terminal, CheckCircle, AlertCircle, Pause, Play, Trash2, Square, Loader2, Download } from 'lucide-react'
 import { RECON_TOTAL_PHASES, type ReconLogEvent, type ReconStatus } from '@/lib/recon-types'
 import styles from './ReconLogsDrawer.module.css'
@@ -72,6 +73,8 @@ export function ReconLogsDrawer({
   ].filter((n): n is string => !!n)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const logsContainerRef = useRef<HTMLDivElement>(null)
+  const navigatorObstacleRef = useRef<HTMLDivElement>(null)
+  useNavigatorObstacle(navigatorObstacleRef, isOpen)
   const [autoScroll, setAutoScroll] = useState(true)
 
   // Auto-scroll to bottom when new logs arrive
@@ -207,7 +210,7 @@ export function ReconLogsDrawer({
   }
 
   return (
-    <div className={`${styles.drawer} ${isOpen ? styles.drawerOpen : ''}`}>
+    <div ref={navigatorObstacleRef} className={`${styles.drawer} ${isOpen ? styles.drawerOpen : ''}`}>
       {/* Header */}
       <div className={styles.header}>
         <div className={styles.titleContainer}>

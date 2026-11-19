@@ -445,3 +445,16 @@ describe('RBAC_PERMISSIONS_ENABLED off: impersonation is Phase 2\'s (step 3.14)'
     expect(userFindUnique).not.toHaveBeenCalled()
   })
 })
+
+describe('RBAC_PERMISSIONS_ENABLED off: AI Navigator (navigator:use)', () => {
+  // Every account resolves to its account type's default, which holds navigator:use, so each owner
+  // reaches AI Navigator on their own projects and anyone else gets the same 404 as any project route.
+  test.each([true, false])('an owner holds it on their own project; another account gets 404 (identity %s)', async (identity) => {
+    setFlagsForTests({ identity, permissions: false })
+    expect(DEFAULT_MEMBER).toContain('navigator:use')
+    expect((await can(account('member-1', 'standard', NARROWED), 'navigator:use', { projectId: 'P-member' })).allowed).toBe(true)
+    expect(await can(account('member-1', 'standard'), 'navigator:use', { projectId: 'P-admin' }))
+      .toEqual({ allowed: false, status: 404, reason: 'project_not_visible', permission: 'navigator:use' })
+    expect(setFindMany).not.toHaveBeenCalled()
+  })
+})

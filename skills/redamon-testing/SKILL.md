@@ -125,10 +125,12 @@ unit-named file really is skipped:
 ```
 
 A section that **cannot run fails the gate** (`unit`, `all`, `coverage`): an unbuilt
-image, an absent `webapp/node_modules`, or no `tests/*_test.sh` at all. Build the image (for the
+image, an absent `webapp/node_modules`, no `tests/*_test.sh` at all, or a shell suite
+that exits **77** because an input of its own is missing (python3, PyYAML, git). Build the image (for the
 `plugin_runner` section: `docker compose --profile plugins build plugin-runner`), or opt
-out on purpose with `REDAMON_TEST_ALLOW_MISSING=<section>`, which prints `SKIPPED` so
-the hole shows in the log. A new section therefore breaks every session's gate until
+out on purpose with `REDAMON_TEST_ALLOW_MISSING=<section>` (for a shell suite: `shell`,
+or the suite's name), which prints `SKIPPED` so the hole shows in the log. A shell suite
+that skips must exit 77, never 0; only a suite that needs a live stack exits 0 on SKIP. A new section therefore breaks every session's gate until
 its image exists: build it before adding the section to `_TEST_SECTIONS`.
 
 ---

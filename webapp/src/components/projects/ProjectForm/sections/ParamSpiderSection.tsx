@@ -6,6 +6,7 @@ import { Toggle, WikiInfoButton } from '@/components/ui'
 import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -90,8 +91,8 @@ export function ParamSpiderSection({ data, updateField, onRun }: ParamSpiderSect
                   <input
                     type="number"
                     className="textInput"
-                    value={data.paramspiderWorkers ?? 5}
-                    onChange={(e) => updateField('paramspiderWorkers', parseInt(e.target.value) || 5)}
+                    value={data.paramspiderWorkers ?? numericDefault('paramspiderWorkers')}
+                    onChange={(e) => updateField('paramspiderWorkers', parseInt(e.target.value) || numericDefault('paramspiderWorkers'))}
                     min={1}
                     max={10}
                   />

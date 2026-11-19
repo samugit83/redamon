@@ -21,6 +21,7 @@ import { sanitizeBodyRules } from '@/lib/captureBodyRules'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { withRouteErrors } from '@/lib/routeErrors'
+import { stopAllNavigatorRuns } from '@/lib/navigator/stopAll'
 import {
   CAPTURE_FIELDS, changedCaptureFields, changedTunnelFields, instanceSettingsInForce, maskSecret,
   parseCapturePatch, writeInstanceSettings,
@@ -137,6 +138,7 @@ async function access(fresh: boolean): Promise<Access | NextResponse> {
 const ROOT_ONLY_POLICY = 'Only Root can change the instance security policy.'
 const ROOT_ONLY_SHARING = 'Only Root can change the instance sharing policy.'
 const ROOT_ONLY_RETENTION = 'Only Root can change the audit retention.'
+const ROOT_ONLY_NAVIGATOR = 'Only Root can turn AI Navigator on or off.'
 
 /** What a browser sees: the secrets masked, each group only for whoever holds it, the security policy for an admin. */
 function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings: SaveWarning[] = []) {
@@ -161,6 +163,7 @@ function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings
     ...(a.admin && rbacFlags().governance
       ? { auditRetention: retentionView(row, now()), canManageAuditRetention: standing === 'confirmed' }
       : {}),
+    ...(a.admin ? { navigatorEnabled: row.navigatorEnabled !== false, canManageNavigator: standing === 'confirmed' } : {}),
     ...(warnings.length ? { warnings } : {}),
   }
 }
@@ -210,6 +213,9 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   if ('error' in quotaPatch) {
     return NextResponse.json({ error: quotaPatch.error.message, code: 'invalid_field', field: quotaPatch.error.field }, { status: 400 })
   }
+  if ('navigatorEnabled' in body && typeof body.navigatorEnabled !== 'boolean') {
+    return NextResponse.json({ error: 'navigatorEnabled must be true or false', code: 'invalid_field', field: 'navigatorEnabled' }, { status: 400 })
+  }
   const retentionAsk = rbacFlags().governance && 'auditRetentionDays' in body ? parseRetentionDays(body.auditRetentionDays) : null
   if (retentionAsk && 'error' in retentionAsk) {
     return NextResponse.json({ error: retentionAsk.error, code: 'invalid_field', field: 'auditRetentionDays' }, { status: 400 })
@@ -233,9 +239,11 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   const policyChanges = changedSecurityPolicyFields(stored, policy.patch)
   const sharingChanges = changedSharingPolicyFields(parseSharingPolicy(row.sharingPolicy), sharing.patch)
   const retentionChange = retentionAsk ? retentionChangeOf(retentionState(row, now()), retentionAsk.days) : null
-  const standing = a.admin || policyChanges.length || sharingChanges.length || retentionChange
+  const navigatorChange = typeof body.navigatorEnabled === 'boolean' && body.navigatorEnabled !== (row.navigatorEnabled !== false)
+  const standing = a.admin || policyChanges.length || sharingChanges.length || retentionChange || navigatorChange
     ? await rootStanding(a.session.userId) : 'none'
   if (policyChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_POLICY)
+  if (navigatorChange && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_NAVIGATOR)
   if (sharingChanges.length && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_SHARING)
   if (retentionChange && standing !== 'confirmed') return rootOnlyRefusal(standing, ROOT_ONLY_RETENTION)
   const storedQuotas = parseQuotaStore(row.quotas)
@@ -258,12 +266,13 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   // configured tunnel takes the person's password (ID-25); before anything is written.
   const reentry = settingsSecretReentry(stored, body)
   if (reentry) return secretReentryResponse(reentry)
-  if (settingsEndpointChange(stored, body) || policyChanges.length || sharingChanges.length || retentionChange) {
+  if (settingsEndpointChange(stored, body) || policyChanges.length || sharingChanges.length || retentionChange || navigatorChange) {
     const refused = await requireStepUp(request, body.stepUpPassword)
     if (refused) return refused
   }
 
-  const otherChanges = tunnelChanges.length || captureChanges.length || policyChanges.length || sharingChanges.length || quotaChanges.length
+  const otherChanges = tunnelChanges.length || captureChanges.length || policyChanges.length || sharingChanges.length
+    || quotaChanges.length || navigatorChange
   if (!otherChanges && !retentionChange) return answer(row, a, standing)
   if (!otherChanges) {
     await changeRetention(retentionAsk!.days, auditActorOf(sessionActor(a.session)), now())
@@ -280,6 +289,7 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   for (const f of policyChanges) data[f] = policy.patch[f]
   if (sharingChanges.length) data.sharingPolicy = sharingPolicyToStore(row.sharingPolicy, sharing.patch)
   if (quotaChanges.length) data.quotas = quotaStoreToJson(nextQuotas)
+  if (navigatorChange) data.navigatorEnabled = body.navigatorEnabled
   const changedKeys = {
     ...(sharingChanges.length ? { sharingPolicy: sharingChanges } : {}),
     ...(quotaChanges.length ? { quotas: quotaChanges } : {}),
@@ -296,6 +306,8 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     ...(Object.keys(changedKeys).length ? { changedKeys } : {}),
   })
   if (sharingChanges.length) invalidateSharingPolicy()
+  // Off: every answer being written ends now; each tool call refuses from here anyway (fresh switch read).
+  if (navigatorChange && saved.navigatorEnabled === false) stopAllNavigatorRuns()
 
   const warnings: SaveWarning[] = []
   const captureWarning = await reconcileCaptureProxy(saved, {

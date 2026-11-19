@@ -7,10 +7,10 @@
 # create-admin`, `reset-password`, `set-root`, `update`, deploy.sh bootstrap_admin),
 # so no route test reaches them. This runs THIS checkout's copy of each script (sent
 # with the scripts it imports, so a stale webapp image cannot hide a change) inside the webapp
-# container, against a throwaway schema (`rbac_scripts_<pid>`, dropped on exit) that
-# the image's Prisma CLI creates from THIS checkout's schema.prisma, so the test does
-# not depend on what the live database was last pushed with. No real row is read or
-# written.
+# container, against a throwaway schema in a throwaway database (both `rbac_scripts_<pid>`,
+# dropped on exit) that the image's Prisma CLI creates from THIS checkout's schema.prisma,
+# so the test does not depend on what the live database was last pushed with. No real
+# row is read or written.
 #
 #   create-admin never promotes a member unless FORCE_PROMOTE=1 (exit 3, nothing
 #   written); resetting an existing admin's password revokes its MCP tokens, but a
@@ -38,13 +38,16 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
-PSQL=(docker compose exec -T postgres psql -U "${POSTGRES_USER:-redamon}" -d "${POSTGRES_DB:-redamon}" -qtAX -v ON_ERROR_STOP=1)
+PSQL=(docker compose exec -T postgres psql -U "${POSTGRES_USER:-redamon}" -qtAX -v ON_ERROR_STOP=1)
+LIVE_DB="${POSTGRES_DB:-redamon}"
+QDB="$LIVE_DB"
 
 pass=0
 fail=0
 ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL  $1"; echo "        $2"; fail=$((fail + 1)); }
-q()   { "${PSQL[@]}" -c "$1" 2>&1; }
+q()   { "${PSQL[@]}" -d "$QDB" -c "$1" 2>&1; }
+qlive() { "${PSQL[@]}" -d "$LIVE_DB" -c "$1" 2>&1; }
 expect_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2' got '$3'"; fi; }
 expect_has() { case "$3" in *"$2"*) ok "$1" ;; *) bad "$1" "output lacks '$2': $3" ;; esac; }
 
@@ -60,16 +63,29 @@ if ! docker compose exec -T webapp true >/dev/null 2>&1; then
 fi
 
 S="rbac_scripts_$$"
-cleanup() { q "DROP SCHEMA IF EXISTS $S CASCADE" >/dev/null 2>&1; }
+cleanup() { qlive "DROP DATABASE IF EXISTS $S WITH (FORCE)" >/dev/null 2>&1; }
 trap cleanup EXIT
 
 # Prisma's `schema` parameter sets the connection's search_path to the throwaway
 # schema alone, so the scripts' raw lookups and model writes both land there. The
-# real DATABASE_URL (it holds the password) is only ever expanded inside the container.
-SCHEMA_URL='u="$DATABASE_URL"
+# schema names pg_trgm's operator class unqualified (the tradecraft trigram index), so
+# the extension must live in that schema too; an extension exists once per database and
+# the live one keeps pg_trgm in public, so the throwaway schema gets a database of its
+# own. The real DATABASE_URL (it holds the password) is only ever expanded inside the
+# container, where its database name is swapped for the throwaway one.
+if ! qlive "CREATE DATABASE $S" >/dev/null; then
+  echo "  FAIL  could not create the throwaway database"
+  exit 1
+fi
+QDB="$S"
+if ! q "CREATE SCHEMA $S; CREATE EXTENSION pg_trgm SCHEMA $S" >/dev/null; then
+  echo "  FAIL  could not prepare the throwaway schema"
+  exit 1
+fi
+SCHEMA_URL='base="${DATABASE_URL%%\?*}"; u="${base%/*}/$RBAC_TEST_DB${DATABASE_URL#"$base"}"
 case "$u" in *\?*) u="$u&schema=$RBAC_TEST_SCHEMA" ;; *) u="$u?schema=$RBAC_TEST_SCHEMA" ;; esac'
 
-PUSH_OUT=$(docker compose exec -T -e "RBAC_TEST_SCHEMA=$S" webapp sh -c "$SCHEMA_URL"'
+PUSH_OUT=$(docker compose exec -T -e "RBAC_TEST_SCHEMA=$S" -e "RBAC_TEST_DB=$S" webapp sh -c "$SCHEMA_URL"'
 f=$(mktemp); cat >"$f"
 DATABASE_URL="$u" CHECKPOINT_DISABLE=1 ./node_modules/.bin/prisma db push --schema "$f" --skip-generate
 rc=$?; rm -f "$f"; exit $rc' <webapp/prisma/schema.prisma 2>&1)
@@ -89,7 +105,7 @@ fi
 run_script() {
   local script=$1 kv
   shift
-  local -a envs=(-e "RBAC_TEST_SCHEMA=$S")
+  local -a envs=(-e "RBAC_TEST_SCHEMA=$S" -e "RBAC_TEST_DB=$S")
   while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=(-e "$1"); shift; done
   [ "${1:-}" = "--" ] && shift
   OUT=$( (cd webapp/scripts && tar -cf - ./*.mjs ./lib) | docker compose exec -T "${envs[@]}" webapp sh -c "$SCHEMA_URL"'
@@ -544,13 +560,15 @@ expect_eq "no audit row holds a hash, a password or the tunnel token" "0" \
         ~ '\\\$2[aby]\\\$|$PW_NEW|$PW_B|$PW_A|$PW_M|$PW_ROOT|$PW_HELD|admin-passphrase|$TUNNEL_TOKEN'")"
 expect_eq "every audit row is the system's" "0" \
   "$(q "select count(*) from $S.audit_log where source <> 'system' or actor_id is not null")"
+# The real tables are in the live database: the throwaway accounts' ids travel as a list.
+TEST_IDS=$(q "select coalesce(array_agg(id)::text, '{}') from $S.users")
 expect_eq "nothing reached the real tables" "0|0" \
-  "$(q "select (select count(*) from public.users where email ilike 'rbac-scripts-$$-%') || '|' ||
+  "$(qlive "select (select count(*) from public.users where email ilike 'rbac-scripts-$$-%') || '|' ||
                (select count(*) from public.audit_log where target_id like '${P}%'
-                  or target_id in (select id from $S.users))")"
-if [ "$(q "select count(*) from pg_tables where schemaname = 'public' and tablename = 'instance_settings'")" = "1" ]; then
+                  or target_id = any('$TEST_IDS'::text[]))")"
+if [ "$(qlive "select count(*) from pg_tables where schemaname = 'public' and tablename = 'instance_settings'")" = "1" ]; then
   expect_eq "...nor the real Root" "0" \
-    "$(q "select count(*) from public.instance_settings where root_user_id in (select id from $S.users)")"
+    "$(qlive "select count(*) from public.instance_settings where root_user_id = any('$TEST_IDS'::text[])")"
 fi
 
 echo

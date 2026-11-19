@@ -121,11 +121,12 @@ def _split_url(url: str) -> tuple[str, str]:
     '/'. Query and fragment are dropped.
 
     Endpoint identity is (path, method, baseurl) everywhere in the graph. This
-    MUST stay byte-identical to `_split_url` in
-    graph_db/mixins/recon/http_mixin.py: the two producing different splits for
-    one URL would create a duplicate Endpoint (K23). It is copied rather than
-    imported because that module pulls a heavy dependency chain the hand-stubbed
-    osint tests do not load.
+    MUST return the same (base_url, path) for every URL as `_split_url` in
+    graph_db/mixins/recon/http_mixin.py (both are urlparse plus
+    normalize_endpoint_path; the text differs): the two producing different
+    splits for one URL would create a duplicate Endpoint (K23). It is copied
+    rather than imported because that module pulls a heavy dependency chain the
+    hand-stubbed osint tests do not load.
     """
     parsed = _urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}", normalize_endpoint_path(parsed.path or "/")

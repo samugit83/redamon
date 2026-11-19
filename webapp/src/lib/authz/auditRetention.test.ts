@@ -25,6 +25,8 @@ vi.mock('@/lib/prisma', () => {
   return { default: client, prisma: client }
 })
 vi.mock('./deviceSessions', () => ({ sweepDeviceSessions: h.devices }))
+// The AI Navigator part of the sweep runs whatever the switches say; its own tests are retention.test.ts.
+vi.mock('@/lib/navigator/retention', () => ({ sweepNavigatorRetention: async () => 0 }))
 
 import {
   AUDIT_RETENTION_DELAY_DAYS, AUDIT_RETENTION_MIN_DAYS, KEPT_AUDIT_RULES, RETENTION_BATCH, RETENTION_MAX_BATCHES,

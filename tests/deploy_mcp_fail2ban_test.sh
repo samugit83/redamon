@@ -31,7 +31,9 @@ ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s (got: %s want: %s)\n' "$1" "$2" "$3"; }
 eq()  { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 
-[[ -f "$MODULE" ]] || { echo "SKIP: $MODULE not found"; exit 0; }
+# A tracked file: absent means a broken checkout or a move this suite must follow.
+# 77 is the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN).
+[[ -f "$MODULE" ]] || { echo "CANNOT RUN  $MODULE not found"; exit 77; }
 
 # ------------------------------------------------------------ the regex -----
 # Pull the live failregex out of the module's quoted heredoc.

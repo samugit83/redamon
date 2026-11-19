@@ -1075,7 +1075,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  /* The shared Modal's layer (ui/Modal/Modal.module.css). The gates portal to document.body
+     (GateLayer), so a gate opened from inside a Modal stacks above it by DOM order. */
+  z-index: 1200;
   animation: guardrailFadeIn 0.2s ease-out;
 }
 

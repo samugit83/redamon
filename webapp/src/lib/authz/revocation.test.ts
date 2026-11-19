@@ -42,6 +42,8 @@ const matches = (row: Record<string, unknown>, where: Where) => Object.entries(w
 
 vi.mock('@/lib/prisma', () => {
   const client: Record<string, unknown> = {
+    // The account's Tradecraft jobs (T1.11): none here, so the agent is asked nothing about them.
+    tradecraftIngestionJob: { updateMany: async () => ({ count: 0 }) },
     jobQueue: {
       findMany: async ({ where }: { where: Where }) => {
         if (h.failJobs) throw Object.assign(new Error('db down'), { code: 'P1001' })
@@ -147,7 +149,8 @@ describe('a share ending on one project', () => {
       ['/ws/close', { user_id: 'bob', project_id: 'P1', kinds: KINDS, scope: 'access' }],
     ])
     expect(out).toEqual({
-      runs: { stopped: 1 }, sockets: { closed: 2 }, scans: { cancelled: 2 }, schedules: { paused: 1 }, triage: { stopped: 1 }, failed: [],
+      runs: { stopped: 1 }, sockets: { closed: 2 }, scans: { cancelled: 2 }, schedules: { paused: 1 }, triage: { stopped: 1 },
+      navigator: { stopped: 0 }, failed: [],
     })
     expect(h.jobs.filter((j) => j.status === 'canceled').map((j) => j.id)).toEqual(['j-queued', 'j-review'])
     expect(h.jobs.find((j) => j.id === 'j-queued')).toMatchObject({ blockedCode: 'actor_no_access', blockedReason: 'the account that queued it no longer has access to this project' })
@@ -337,7 +340,7 @@ describe('the account', () => {
   test('a lost legacy terminal grant closes the terminals only', async () => {
     const out = await onAccessReduced(null, 'bob', 'terminal_grant_removed')
     expect(agentCalls()).toEqual([['/ws/close', { user_id: 'bob', kinds: ['kali-terminal'], scope: 'access' }]])
-    expect(out).toEqual({ sockets: { closed: 2 }, failed: [] })
+    expect(out).toEqual({ sockets: { closed: 2 }, navigator: { stopped: 0 }, failed: [] })
   })
 
   test('a deleted account: every project, every socket, its deferred work cancelled and paused', async () => {

@@ -1,0 +1,14 @@
+{
+  "/chain1": "/ok.html",
+  "/chain2": "/chain1",
+  "/chain3": "/chain2",
+  "/cross": "http://other.tc-fixture.test{port}/landing.html",
+  "/r1": "/r2",
+  "/r2": {
+    "location": "/ok.html",
+    "status": 301
+  },
+  "/same": "/ok.html",
+  "/to-private": "http://169.254.169.254/latest/meta-data/",
+  "/to-userinfo": "http://user:secret@contract.tc-fixture.test{port}/ok.html"
+}

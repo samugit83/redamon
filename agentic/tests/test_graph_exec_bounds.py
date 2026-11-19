@@ -228,6 +228,26 @@ class GraphExecResponseTests(unittest.TestCase):
         self.assertNotIn("neo4j", body["error"].lower())
         self.assertNotIn("bolt", body["error"].lower())
 
+    def test_a_driver_failure_logs_neither_the_query_nor_a_value(self):
+        # A Neo4j syntax error quotes the query, and a parse error the value it failed on
+        # (`date(s.name)` logs the host name): the query here is a model's (AI Navigator).
+        class CypherSyntaxError(Exception):
+            code = "Neo.ClientError.Statement.SyntaxError"
+
+        def boom():
+            raise CypherSyntaxError('Text cannot be parsed to a Date\n"probe-value-7731"\n'
+                                    '"MATCH (s:Subdomain) RETURN probe_query_4412"')
+
+        with mock.patch.object(api, "_graph_exec_get_driver", side_effect=boom):
+            with self.assertLogs(api.logger, level="ERROR") as logs:
+                resp = api._graph_exec_respond("MATCH (s:Subdomain) RETURN probe_query_4412", {})
+        self.assertEqual(resp.status_code, 500)
+        logged = "\n".join(logs.output)
+        self.assertNotIn("probe-value-7731", logged)
+        self.assertNotIn("probe_query_4412", logged)
+        self.assertIn("Neo.ClientError.Statement.SyntaxError", logged)
+        self.assertIn("CypherSyntaxError", logged)
+
 
 # --- MCP concurrency ceiling --------------------------------------------------
 

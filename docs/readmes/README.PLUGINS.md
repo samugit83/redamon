@@ -84,7 +84,7 @@ release archive at install time into a persistent folder, and runs it from there
 
 That folder is a Docker volume (§9.2), never the `redamon` git checkout: installing,
 updating or uninstalling a plugin changes no file in the base repository. The
-`redamon-plugins/` path that [`.gitignore`](../../.gitignore#L249) ignores at the root of the
+`redamon-plugins/` path that [`.gitignore`](../../.gitignore) ignores at the root of the
 checkout is only where a developer may keep a clone of the plugin repository to write
 plugins; RedAmon never reads it at runtime.
 
@@ -205,14 +205,14 @@ So plugin code runs in its **own container, the Plugin Runner**:
 - **Isolated secrets.** The Runner holds no database credentials and no LLM keys. When a
   plugin needs an LLM it asks the Gateway, and the **agent** makes the call with the user's
   key. The agent's master-key endpoint `POST /plugins/llm/invoke`
-  ([plugin_api.py](../../agentic/plugin_api.py#L196)) builds the model the user chose for the
+  ([plugin_api.py](../../agentic/plugin_api.py), `plugin_llm_invoke`) builds the model the user chose for the
   plugin with the helper every per-feature model choice uses
-  ([`_build_feature_llm`](../../agentic/api.py#L488)). The key never enters the Runner, which
+  ([`_build_feature_llm`](../../agentic/api.py)). The key never enters the Runner, which
   keeps the credential boundary RedAmon already enforces.
 - **Code loaded at runtime, no rebuild.** Plugin code lives on a persistent volume that the
   Runner reads. The idea extends an existing precedent: community skills are Markdown files
   bind-mounted read-only into the agent and picked up without a rebuild
-  ([docker-compose.yml:906](../../docker-compose.yml#L906)). Plugins apply the same idea to
+  ([docker-compose.yml](../../docker-compose.yml), the agent's `./agentic/community-skills:/app/community-skills:ro` mount). Plugins apply the same idea to
   code, in a container built for it. A new plugin needs **no image rebuild**, as long as it
   only uses libraries the Runner image provides (§11.3).
 
@@ -246,9 +246,9 @@ loads plugin code into its own process:
 - **Webapp to Runner.** A dedicated `PLUGIN_RUNNER_KEY`, held only by the webapp and the
   supervisor. The check is auth-only and **fails closed**: no key configured means no
   requests accepted. It deliberately does not reuse the agent's
-  [`require_internal_auth`](../../agentic/llm_guard.py#L186), which accepts every request when
+  [`require_internal_auth`](../../agentic/llm_guard.py), which accepts every request when
   no key is set and applies the per-user LLM spending cap. The auth-only shape of
-  [`require_internal_auth_only`](../../agentic/llm_guard.py#L249) is the model to follow.
+  [`require_internal_auth_only`](../../agentic/llm_guard.py) is the model to follow.
 - **Workers to Gateway.** Only the per-call token described in §7.3. Workers never see the
   runner key.
 
@@ -758,7 +758,7 @@ and a page under `webapp/src/app/plugins/`.
   the platform.
 - **Audit.** Every lifecycle operation, every override proposal, approval and reset, and
   every permission grant is recorded with the existing
-  [`writeAudit`](../../webapp/src/lib/audit.ts#L17) into the `AuditLog` table.
+  [`writeAudit`](../../webapp/src/lib/audit.ts) into the `AuditLog` table.
 
 **One installation, many users.** There is one `PluginInstall` row per plugin for the whole
 instance: `pluginId` is its primary key, and it has no user column. Therefore:
@@ -902,7 +902,7 @@ Three rules shape these calls:
 
 - **Transcripts are masked, not anonymised.** The Gateway masks credential-shaped values
   (keys, tokens, cookies, private keys) the same way the CypherFix evidence bundle does
-  ([`redact_secret_shapes`](../../agentic/cypherfix_triage/evidence.py#L147)). Target
+  ([`redact_secret_shapes`](../../agentic/cypherfix_triage/evidence.py)). Target
   hostnames, IPs and findings stay readable, because a transcript without them is useless and
   regex anonymisation of free text is not reliable. A value is masked together with its key,
   and a key that is itself secret-shaped is masked too. Who answered the agent's requests (a row's
@@ -1123,7 +1123,7 @@ agent follows. It is defined precisely:
 - **What it targets.** A built-in skill's text is not one string. The agent assembles it from
   several **parts**, and which parts are included depends on project toggles, the tools
   allowed in the current phase, and the Rules of Engagement
-  ([`build_builtin_skill_workflow`](../../agentic/prompts/__init__.py#L174)). An override
+  ([`build_builtin_skill_workflow`](../../agentic/prompts/__init__.py)). An override
   therefore targets **one part**: `targetKey = <skillId>/<partId>`. The agent publishes the
   list of parts that can be overridden (`GET /plugins/skill-parts`, master key; 53 parts across
   the 14 built-in skills, registered in [skill_parts.py](../../agentic/prompts/skill_parts.py)).
@@ -1134,7 +1134,7 @@ agent follows. It is defined precisely:
   still leaves it out. An override can change wording; it can never switch a part on.
 - **How it is validated.** Python's formatting rules live in the agent, so validation runs
   there, behind the master internal key
-  ([`require_master_internal_auth`](../../agentic/llm_guard.py#L215)). The Gateway calls it
+  ([`require_master_internal_auth`](../../agentic/llm_guard.py)). The Gateway calls it
   (`POST /plugins/skill-parts/validate`) on every `propose`, and the approve route calls it
   again.
   - *Template parts* are filled from project settings with Python's `str.format`. A value
@@ -1607,10 +1607,10 @@ In practice:
 
 - **Overrides arrive with the settings.** The agent reloads project settings from the webapp
   at the start of **every turn**, meaning every message and every resume
-  ([`_apply_project_settings`](../../agentic/orchestrator.py#L206), called from each entry
+  ([`_apply_project_settings`](../../agentic/orchestrator.py), called from each entry
   point). Applicable overrides come in that same payload, so the lookup is in memory. This
   mirrors how enabled user skills are resolved to their stored text today
-  ([`get_enabled_user_skills`](../../agentic/project_settings.py#L1018)).
+  ([`get_enabled_user_skills`](../../agentic/project_settings.py)).
 - **Changes take effect at the next turn** of every session, including sessions already open.
   A turn already running keeps the snapshot it started with.
 - **A failure never breaks the settings.** If settings cannot be fetched at all, the agent falls
@@ -2145,7 +2145,7 @@ generically in a RedAmon release (§11.4).
 
 **Why approval matters so much.** RedAmon's scope guardrail is itself part of the agent's
 instructions
-([think_node.py:590](../../agentic/orchestrator_helpers/nodes/think_node.py#L590)), and
+([`scope_guardrail_section`](../../agentic/orchestrator_helpers/nodes/think_node.py) in `think_node.py`), and
 the instructions are what `skill.text` changes. So an override is the most powerful thing a
 plugin can produce, and its consent text says so plainly: it can rewrite the instructions the
 agent follows. The platform treats every proposal as untrusted input until a person approves
@@ -2238,7 +2238,7 @@ plugin's feature code.
 
 The schema changes only with a RedAmon release. At every start, the webapp's entrypoint applies
 the `prisma/schema.prisma` baked into its image with `prisma db push`, then the platform's
-constraint script ([Dockerfile:123](../../webapp/Dockerfile#L123)). The four plugin tables were
+constraint script (`webapp/scripts/apply-plugin-constraints.mjs`, run by the entrypoint the [webapp Dockerfile](../../webapp/Dockerfile) writes). The four plugin tables were
 added this way, once, and the allowlist's `plugin_access_rules` later the same way (empty until an
 admin limits a plugin). A plugin archive has no route to the schema: its files land on the
 plugins volume, the webapp only reads JSON from them, and its migrations transform the rows

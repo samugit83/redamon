@@ -126,7 +126,7 @@ const db = vi.hoisted(() => {
 
   const TABLES = ['projectTransfer', 'project', 'projectCollaborator', 'user', 'capturedHttpTransaction', 'scanSchedule',
     'projectAccessPolicy', 'projectAuthProfile', 'conversation', 'userLlmProvider', 'userAttackSkill', 'nucleiTemplate',
-    'jobQueue', 'auditLog'] as const
+    'jobQueue', 'auditLog', 'navigatorProjectPolicy', 'tradecraftProjectChoice'] as const
 
   const db: Record<string, unknown> = {}
   for (const t of TABLES) db[t] = table(t)
@@ -438,6 +438,28 @@ describe('accept moves Postgres and graph', () => {
     expect(h.invalidate).toHaveBeenCalledWith(P)
   })
 
+  test('AI Navigator: the old owner\'s "for collaborators" goes off with the transfer, and is not in the re-pick list', async () => {
+    h.state.tables.navigatorProjectPolicy = [
+      { projectId: P, collaboratorsAllowed: true, updatedById: OLD },
+      { projectId: 'proj-2', collaboratorsAllowed: true, updatedById: OLD },
+    ]
+    await offer()
+    const res = await accept()
+    expect(res.status).toBe(200)
+    expect(rows('navigatorProjectPolicy')).toEqual([
+      expect.objectContaining({ projectId: P, collaboratorsAllowed: false, updatedById: NEW }),
+      expect.objectContaining({ projectId: 'proj-2', collaboratorsAllowed: true }),
+    ])
+    expect(JSON.stringify(transfer())).not.toContain('navigator')
+  })
+
+  test('AI Navigator: a toggle already off stays off', async () => {
+    h.state.tables.navigatorProjectPolicy = [{ projectId: P, collaboratorsAllowed: false, updatedById: OLD }]
+    await offer()
+    expect((await accept()).status).toBe(200)
+    expect(rows('navigatorProjectPolicy')[0]).toMatchObject({ collaboratorsAllowed: false, updatedById: OLD })
+  })
+
   test('schedules paused: the old owner\'s wait for a confirmation; another collaborator\'s and another project\'s keep running', async () => {
     await offer()
     await accept()
@@ -486,6 +508,32 @@ describe('accept moves Postgres and graph', () => {
     expect(readClearedSettings(transfer().clearedSettings)).toEqual(cleared)
     // The token's value is never in the record, the answer or the audit.
     expect(JSON.stringify([cleared, rows('auditLog')])).not.toContain('ghp_')
+  })
+
+  test('tradecraft choices (§3.4, R-068, AC-26): the transfer clears them with the move; another project keeps its own', async () => {
+    h.state.tables.tradecraftProjectChoice = [
+      { projectId: P, resourceId: 'tc-old-1', createdById: OLD },
+      { projectId: P, resourceId: 'tc-old-2', createdById: OTHER },
+      { projectId: 'proj-2', resourceId: 'tc-old-1', createdById: OLD },
+    ]
+    await offer()
+    const { cleared } = await (await accept()).json()
+    expect(rows('tradecraftProjectChoice')).toEqual([{ projectId: 'proj-2', resourceId: 'tc-old-1', createdById: OLD }])
+    expect(cleared).toContainEqual({ field: 'tradecraftOff', label: 'Tradecraft resources of the previous owner turned off in this project' })
+  })
+
+  test('tradecraft choices: a failed move leaves them as they were', async () => {
+    h.state.tables.tradecraftProjectChoice = [{ projectId: P, resourceId: 'tc-old-1', createdById: OLD }]
+    await offer()
+    h.state.failNextWrite = 'projectCollaborator'
+    expect((await accept()).status).not.toBe(200)
+    expect(rows('tradecraftProjectChoice')).toEqual([{ projectId: P, resourceId: 'tc-old-1', createdById: OLD }])
+  })
+
+  test('tradecraft choices: none to clear lists nothing', async () => {
+    await offer()
+    const { cleared } = await (await accept()).json()
+    expect(cleared.map((c: { field: string }) => c.field)).not.toContain('tradecraftOff')
   })
 
   test('the new owner sees the list until they dismiss it; nothing to re-pick shows nothing', async () => {

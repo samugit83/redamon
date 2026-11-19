@@ -330,8 +330,8 @@ These are libraries and frameworks used to build RedAmon's own web application, 
 | **mmh3** | MurmurHash3 bindings (favicon hashing for AI-frontend product detection) | MIT | https://github.com/hajimes/mmh3 | `recon/requirements.txt` (used by `recon/helpers/ai_signal_catalog.py`) |
 | **yara-python** | YARA bindings — static MCP tool-poisoning rules (deterministic, no LLM) in AI Surface Recon | Apache-2.0 | https://github.com/VirusTotal/yara-python | `recon/requirements.txt` (lazy-imported by `recon/main_recon_modules/ai_surface_recon.py`) |
 | **jq.py** | Python bindings for jq (Julius probe-pack `models.extract` expressions); bundles libjq | BSD-2-Clause | https://github.com/mwilliamson/jq.py | `recon/requirements.txt` (lazy-imported) |
-| **markdownify** | HTML to Markdown converter (Tradecraft Lookup curated-resource crawl) | MIT | https://github.com/matthewwithanm/python-markdownify | `agentic/requirements.txt` |
-| **pypdf** | Pure-Python PDF text extraction (Tradecraft Lookup) | BSD-3-Clause | https://github.com/py-pdf/pypdf | `agentic/requirements.txt` |
+| **markdownify** | HTML to Markdown converter (Tradecraft ingestion and reads, workspace URL imports) | MIT | https://github.com/matthewwithanm/python-markdownify | `agentic/requirements.txt` |
+| **pypdf** | Pure-Python PDF text extraction (Tradecraft PDF resources) | BSD-3-Clause | https://github.com/py-pdf/pypdf | `agentic/requirements.txt` |
 | **lxml** | C-backed XML/HTML parser | BSD-3-Clause | https://github.com/lxml/lxml | `agentic/requirements.txt` |
 | **psycopg** | PostgreSQL adapter for Python (persistent LangGraph checkpointer) | LGPL-3.0 | https://github.com/psycopg/psycopg | `agentic/requirements.txt` |
 | **OpenAI Python SDK** | OpenAI API client (vector knowledge base, provider-agnostic LLM calls) | Apache-2.0 | https://github.com/openai/openai-python | `agentic/requirements.txt` |

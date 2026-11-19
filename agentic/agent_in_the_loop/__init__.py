@@ -50,6 +50,12 @@ class LoopSettings:
     state_ttl_s: int
 
 
+# The webapp's fixed cap (LOOP_ANSWER_MAX_CHARS in webapp/src/lib/mcp/loopTools.ts),
+# which refuses a longer answer before it reaches the agent: a higher agent bound would
+# change nothing, so an operator may only lower it. test_agent_in_the_loop_settings.py
+# reads the TypeScript constant and fails when the two differ.
+WEBAPP_ANSWER_MAX_CHARS = 262144
+
 # (env key, default, min, max). wait_max_s stays under Codex's 60 s default
 # tool timeout; page_chars under Claude Code's 50 000-char spill-to-file limit.
 # The driver is usually an interactive client that makes no call while its
@@ -61,7 +67,8 @@ _TUNABLES = {
     "lease_s": ("LOOP_LEASE_S", 90, 15, 600),
     "wait_max_s": ("LOOP_WAIT_MAX_S", 55, 1, 55),
     "page_chars": ("LOOP_PAGE_CHARS", 40000, 4000, 200000),
-    "answer_max_chars": ("LOOP_ANSWER_MAX_CHARS", 262144, 1024, 1048576),
+    "answer_max_chars": ("LOOP_ANSWER_MAX_CHARS", WEBAPP_ANSWER_MAX_CHARS, 1024,
+                         WEBAPP_ANSWER_MAX_CHARS),
     "max_open_steps_per_user": ("LOOP_MAX_OPEN_STEPS_PER_USER", 16, 1, 256),
     "no_driver_grace_s": ("LOOP_NO_DRIVER_GRACE_S", 1800, 60, 3600),
     "driver_seen_s": ("LOOP_DRIVER_SEEN_S", 60, 10, 600),

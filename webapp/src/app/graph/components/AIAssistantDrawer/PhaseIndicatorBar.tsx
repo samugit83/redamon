@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
-import { Wrench, Swords, Check, Settings, Server } from 'lucide-react'
+import { Wrench, Swords, Check, Settings, Server, Bug, BookOpen } from 'lucide-react'
 import { StealthIcon } from '@/components/icons/StealthIcon'
 import { Tooltip } from '@/components/ui/Tooltip/Tooltip'
 import { useProject } from '@/providers/ProjectProvider'
@@ -13,6 +13,8 @@ import { errorMessage } from '@/lib/apiError'
 import type { ChatSessionActionContribution } from '@/lib/plugins/contributions'
 import type { ActionContext } from '@/components/plugins/host/actionClient'
 import { PHASE_CONFIG, getAttackPathConfig, formatModelDisplay } from './phaseConfig'
+import { useTradecraftCounts } from './hooks/useTradecraftCounts'
+import type { ActiveCounts } from '@/lib/tradecraft/activeCounts'
 import type { Phase } from './types'
 import styles from './AIAssistantDrawer.module.css'
 
@@ -93,6 +95,9 @@ export function PhaseIndicatorBar({
   const { data: contributions, error: contributionsError, refetch: refetchContributions } = usePluginContributions()
   // Only plugins with a gear-menu action; a nav-only plugin adds nothing here.
   const pluginGroups = (contributions ?? []).filter((c) => c.chatSessionActions.length > 0)
+  // The counter badge (§3.4): read again when a window saves the switches and when the drawer
+  // reads the project's skills again (skillData).
+  const tradecraft = useTradecraftCounts(projectId, skillData)
 
   // Pull the user's saved MCP servers from the DB so MCP tools always
   // appear in the wrench tooltip - even when the user hasn't explicitly
@@ -184,6 +189,10 @@ export function PhaseIndicatorBar({
           </Tooltip>
         )
       })()}
+
+      {tradecraft.v2 && tradecraft.counts && (
+        <ActiveCountsBadge counts={tradecraft.counts} librarianWarning={tradecraft.librarianWarning} onOpen={() => setSettingsModal('attack')} />
+      )}
 
       {attackPathType && (currentPhase === 'informational' || currentPhase === 'exploitation' || currentPhase === 'post_exploitation') && (
         <Tooltip
@@ -294,7 +303,7 @@ export function PhaseIndicatorBar({
               className={styles.settingsDropdownItem}
               onClick={() => { setSettingsModal('attack'); setShowSettingsDropdown(false) }}
             >
-              Agent Skills
+              {tradecraft.v2 ? 'Agent Skills & Tradecraft' : 'Agent Skills'}
             </button>
 
             {!contributions && contributionsError && (
@@ -354,5 +363,72 @@ export function PhaseIndicatorBar({
         </button>
       )}
     </div>
+  )
+}
+
+/** Names in the tooltip: the first few, then an ellipsis. */
+function nameList(names: string[]): string {
+  return names.length > 4 ? `${names.slice(0, 4).join(', ')}, ...` : names.join(', ')
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+/**
+ * The counter after the wrench (§3.4, R-052, R-053): built-in skills, user skills and tradecraft
+ * resources active in this project for the person chatting, a dimmed 0 for an empty group; the
+ * tooltip names them; a click opens the Agent Skills & Tradecraft window.
+ */
+export function ActiveCountsBadge({ counts, onOpen, librarianWarning = '' }: { counts: ActiveCounts; onOpen: () => void; librarianWarning?: string }) {
+  const { builtIn, user, tradecraft } = counts
+  const dim = (n: number): React.CSSProperties => (n === 0 ? { opacity: 0.4 } : {})
+  const notActive = [
+    ...(tradecraft.offInProject ? [`${tradecraft.offInProject} turned off in this project`] : []),
+    ...(tradecraft.disabledGlobally ? [`${tradecraft.disabledGlobally} disabled in Global Settings`] : []),
+  ]
+  return (
+    <Tooltip
+      position="bottom"
+      content={
+        <div className={styles.skillTooltip} data-testid="active-counts-tooltip">
+          <div className={styles.skillTooltipHeader}>Active in this project</div>
+          <div className={styles.skillTooltipGroup}>
+            <div className={styles.skillTooltipGroupLabel}>{builtIn.active} of {builtIn.total} built-in agent skills</div>
+            {builtIn.names.length > 0 && <div className={styles.skillTooltipItem}>{nameList(builtIn.names)}</div>}
+          </div>
+          <div className={styles.skillTooltipGroup}>
+            <div className={styles.skillTooltipGroupLabel}>{plural(user.active, 'user agent skill', 'user agent skills')}</div>
+            {user.names.length > 0 && <div className={styles.skillTooltipItem}>{nameList(user.names)}</div>}
+          </div>
+          <div className={styles.skillTooltipGroup}>
+            <div className={styles.skillTooltipGroupLabel}>{tradecraft.active} of {tradecraft.total} tradecraft resources</div>
+            {tradecraft.names.length > 0 && <div className={styles.skillTooltipItem}>{nameList(tradecraft.names)}</div>}
+            {notActive.length > 0 && <div className={styles.skillTooltipItem}>{notActive.join(' · ')}</div>}
+          </div>
+          {tradecraft.ownerOnlyHidden > 0 && (
+            <div className={styles.skillTooltipItem}>
+              {tradecraft.ownerOnlyHidden === 1
+                ? '1 owner-only resource is not used in your chats'
+                : `${tradecraft.ownerOnlyHidden} owner-only resources are not used in your chats`}
+            </div>
+          )}
+          {librarianWarning && <div className={styles.skillTooltipItem} data-testid="active-counts-librarian">{librarianWarning}</div>}
+          <div className={styles.skillTooltipItem}>Click to change them</div>
+        </div>
+      }
+    >
+      <button
+        type="button"
+        className={styles.phaseBadge}
+        style={{ cursor: 'pointer', background: 'none', border: '1px solid var(--border-default)', color: 'var(--text-secondary)' }}
+        aria-label={`Active in this project: ${builtIn.active} built-in skills, ${user.active} user skills, ${tradecraft.active} tradecraft resources`}
+        onClick={onOpen}
+      >
+        <Bug size={11} /> <span data-count="builtIn" style={dim(builtIn.active)}>{builtIn.active}</span>
+        <span aria-hidden="true">·</span>
+        <Swords size={11} /> <span data-count="user" style={dim(user.active)}>{user.active}</span>
+        <span aria-hidden="true">·</span>
+        <BookOpen size={11} /> <span data-count="tradecraft" style={dim(tradecraft.active)}>{tradecraft.active}</span>
+      </button>
+    </Tooltip>
   )
 }

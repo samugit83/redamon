@@ -15,8 +15,8 @@
 # Hermetic: `docker compose config` resolves the files without a daemon; the
 # compose files are fed on stdin and the env file is /dev/null, so neither the
 # operator's .env nor a temp directory the Docker CLI may not see is involved.
-# Self-skips without docker compose or python3. The image checks run only when
-# redamon-plugin-runner:latest exists.
+# Exits 77 (cannot run, a gate failure) without docker compose or python3. The
+# image checks run only when redamon-plugin-runner:latest exists.
 # =============================================================================
 set -uo pipefail
 
@@ -26,9 +26,10 @@ ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s (got: %s want: %s)\n' "$1" "$2" "$3"; }
 eq()  { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 
+# 77: the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN).
 if ! command -v python3 >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
-    echo "  SKIP  docker compose or python3 unavailable (plugins compose wiring)"
-    exit 0
+    echo "  CANNOT RUN  docker compose or python3 unavailable (plugins compose wiring)"
+    exit 77
 fi
 
 export POSTGRES_PASSWORD=test-only NEO4J_PASSWORD=test-only

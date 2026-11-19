@@ -19,10 +19,11 @@ FEATURE_IDS = (
     "triage",
     "codefix",
     "command_whisperer",
-    "tradecraft_section_picker",
+    "tradecraft_librarian",
     "report_narratives",
     "multi_mute",
     "skill_metadata",
+    "navigator",
 )
 
 

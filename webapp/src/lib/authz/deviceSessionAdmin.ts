@@ -126,7 +126,8 @@ export async function revokeDeviceSession(
   // Also when nothing changed here: another copy's revoke may still sit in this process's cache.
   invalidateDeviceSession(sid)
   if (written.kind !== 'revoked') return written
-  const { sockets } = await onAccessReduced(null, targetId, 'device_session_revoked')
+  // The sid scopes the AI Navigator step to the runs started from this device session.
+  const { sockets } = await onAccessReduced(null, targetId, 'device_session_revoked', { sid })
   return { kind: 'revoked', agent: { sockets } }
 }
 

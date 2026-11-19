@@ -1,0 +1,125 @@
+# The Tradecraft 2.0 end-to-end library (phase 10 of the plan, T10.2): the nine resources of
+# the e2e owner's library, added from the default presets through the product's own routes
+# (Check URL, then Add), with the settings the matrix needs. Read by library.py with
+# runner.py's small YAML reader, the same subset scenarios.yaml is written in.
+#
+# The slugs are scenarios.yaml's library.resources; storage "stored" is its library.stored,
+# and the resource with a login is its library.login_resource (tests hold them together).
+# name and url are the preset's (presets.ts); forcedType and overrides are what Quick Add fills.
+# A type left out is Auto: Check URL's detection decides, which is what the resource proves.
+# expect: the build's checks on each report (type, map size, stored pages).
+
+version: 1
+
+# Add jobs in flight at once: the agent runs two jobs at a time (jobsPerAgent), so a third
+# would only wait in its queue.
+parallel: 2
+# The whole build, and one resource's job (cancelled past it).
+timeout_min: 240
+resource_timeout_min: 120
+poll_sec: 20
+
+# The one public resource the build gives a fake login (S2, S3): never a real value.
+fake_login: {cookie: cookie=fake-session}
+
+# Longest expected first, so the two lanes of the agent stay busy to the end.
+resources:
+  - slug: hacktricks
+    preset: hacktricks
+    name: HackTricks
+    url: https://book.hacktricks.wiki
+    storage: live
+    expect: {type: mkdocs-wiki, min_entries: 300}
+  - slug: payloadsallthethings
+    preset: payloadsallthethings
+    name: PayloadsAllTheThings
+    url: https://github.com/swisskyrepo/PayloadsAllTheThings
+    forcedType: github-repo
+    storage: stored
+    focus: {mode: tagOnly}
+    expect: {type: github-repo, min_entries: 100, min_stored_pages: 50}
+  - slug: claude-bughunter
+    preset: claude-bughunter
+    name: Claude-BugHunter
+    url: https://github.com/elementalsouls/Claude-BugHunter
+    forcedType: github-repo
+    storage: stored
+    focus:
+      mode: focused
+      topics: [sql_injection, ssrf]
+      kinds: [payloads, bypasses]
+      keep: 'Pages about SQL injection or SSRF: payloads & cheat sheets, bypasses & evasion.'
+      strictness: balanced
+    # The focus preview on Check URL's entries, as the form runs it before saving.
+    preview: true
+    # The bundle covers 24 vulnerability classes: the focus keeps its few SQL injection and SSRF
+    # pages and drops the rest, which is what this resource proves. It kept 5 of 188 on 2026-11-17
+    # and the two hunt skills only on 2026-11-18 (twice), so the floor is two (Q-D, the owner):
+    # kept_names asks one kept entry's title for each half, so neither half can vanish under it.
+    expect:
+      type: github-repo
+      min_entries: 2
+      min_stored_pages: 2
+      min_dropped: 50
+      kept_names: [[sqli, sql injection], [ssrf, server side request forgery]]
+  - slug: web-hacking-techniques-index
+    preset: web-hacking-techniques-index
+    name: Web Hacking Techniques Index
+    url: https://webhacklist.com/?year=2026-ai
+    forcedType: agentic-crawl
+    storage: stored
+    overrides:
+      crawl.strategy: auto
+    expect: {type: agentic-crawl, min_entries: 20, min_stored_pages: 10}
+  - slug: hexbrain-payloads
+    preset: hexbrain-payloads
+    name: HexBrain payloads
+    url: https://hexbrainai.com/payloads
+    forcedType: agentic-crawl
+    storage: stored
+    overrides:
+      crawl.strategy: auto
+      crawl.includePaths: {mode: add, items: ['/payloads/*']}
+      crawl.stayInFolder: true
+    expect: {type: agentic-crawl, min_entries: 20, min_stored_pages: 10}
+  - slug: web-hacking-techniques-archive-github
+    preset: web-hacking-techniques-archive-github
+    name: Web Hacking Techniques archive (GitHub)
+    url: https://github.com/irsdl/webhacklist
+    forcedType: github-repo
+    storage: live
+    expect: {type: github-repo, min_entries: 20}
+  - slug: trickest-cve
+    preset: trickest-cve
+    name: trickest/cve
+    url: https://github.com/trickest/cve
+    forcedType: cve-poc-db
+    storage: live
+    # No path pattern here: Check URL's cve_pattern fills it, as the form does (prefillFromCheck).
+    # The build runs without a GitHub token, so the archive has no index (FIX-CVEIDX builds it only
+    # with one): the build checks the type, and `library.py refresh --slug trickest-cve`, run with
+    # the owner's token, checks the index separately (library.refresh_checks).
+    expect: {type: cve-poc-db, min_entries: 0}
+    refresh_expect:
+      min_entries: 10000
+      cves: [CVE-2021-41773, CVE-2021-42013]
+      stop_reason: 'cve index: largest 20000 of '
+      not_in_report: [cve_index_needs_token]
+  # The Sphinx preset (the card's "chosen by T10.2"): a Sphinx site whose search index lists its
+  # pages. Mitmproxy docs, the first choice, is a Hugo site whose searchindex.js is elasticlunr,
+  # not Sphinx's index (its 1-entry map was routed as a product finding on 2026-11-17).
+  - slug: scapy-docs
+    preset: scapy-docs
+    name: Scapy docs
+    url: https://scapy.readthedocs.io/en/latest/
+    storage: live
+    overrides:
+      type.docs.searchIndexUrl: https://scapy.readthedocs.io/en/latest/searchindex.js
+    expect: {type: sphinx-docs, min_entries: 200}
+  - slug: ired-team
+    preset: ired-team
+    name: ired.team
+    url: https://www.ired.team
+    storage: live
+    login: true
+    expect: {type: gitbook, min_entries: 50}

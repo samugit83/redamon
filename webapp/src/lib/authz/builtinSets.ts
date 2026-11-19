@@ -44,7 +44,12 @@ const AGENT = MEMBER_SIDE.filter((p) => p.startsWith('agent:') && !EXPLOITATION.
 /** §5.14 lists no plugin row: plugin screens go with the sets that use the screens to change things. */
 const PLUGINS = MEMBER_SIDE.filter((p) => p.startsWith('plugins:'))
 const PROJECT_LIFECYCLE: PermissionId[] = ['project:create', 'project:import', 'project:share']
-const NAMED = new Set<PermissionId>([...SELF_SERVICE, ...READS, ...SCANS, ...EXPLOITATION, ...AGENT, ...PLUGINS, ...PROJECT_LIFECYCLE])
+/**
+ * AI Navigator reads, on the person's own model: named so it does not fall into WRITES, which
+ * would hand it to Automation (accounts that drive RedAmon over MCP do not use the UI).
+ */
+const NAVIGATOR: PermissionId[] = ['navigator:use']
+const NAMED = new Set<PermissionId>([...SELF_SERVICE, ...READS, ...SCANS, ...EXPLOITATION, ...AGENT, ...PLUGINS, ...PROJECT_LIFECYCLE, ...NAVIGATOR])
 const WRITES = MEMBER_SIDE.filter((p) => !NAMED.has(p))
 
 function only(...groups: ReadonlyArray<readonly PermissionId[]>): readonly PermissionId[] {
@@ -67,8 +72,8 @@ export const BUILTIN_MEMBER_SETS: readonly BuiltinSet[] = Object.freeze([
     'What every member can do today: their own projects, scans, the agent with exploitation, and their own keys and tokens. Members with no set hold it.',
     MEMBER_SIDE),
   builtin('read-only-analyst', 'member', 'Read-only analyst',
-    'Consumes results: the graph, Insights, the Priority Board and reports, and the Cypher and command assistants. No scans, no agent chat, no keys.',
-    only(['self:presets'], READS, ['agent:assistants'])),
+    'Consumes results: the graph, Insights, the Priority Board and reports, the Cypher and command assistants, and AI Navigator. No scans, no agent chat, no keys.',
+    only(['self:presets'], READS, ['agent:assistants'], NAVIGATOR)),
   builtin('recon-operator', 'member', 'Recon operator',
     'Everything up to scanning, and the agent without exploitation: no approvals into exploitation, no shell sessions, no Kali commands.',
     MEMBER_SIDE.filter((p) => !EXPLOITATION.includes(p))),

@@ -228,6 +228,10 @@ const SAME_ORIGIN_ROUTES = [
   '/api/account/sessions/[sid]',
   '/api/auth/sessions/revoke-all',
   '/api/invite/accept',
+  '/api/navigator/projects/[projectId]/messages',
+  '/api/navigator/projects/[projectId]/policy',
+  '/api/navigator/projects/[projectId]/threads/[threadId]',
+  '/api/navigator/projects/[projectId]/threads/[threadId]/stop',
   // The owner's consent to collaborators spending the project's credentials (step 5.6): an access change.
   '/api/projects/[id]/access-policy',
   '/api/projects/[id]/breakglass',

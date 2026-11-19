@@ -80,12 +80,12 @@ whether a bound is right.
 
 ## Three keys that exist because uniformity is a lie
 
-All but three of the 541 settings mappings in `recon/project_settings.py` are
+All but four of the 575 settings mappings in `recon/project_settings.py` are
 byte-identical in form (`python3 tooling/scripts/parse_settings_mappings.py`
 counts them and prints the others), which is what makes this tractable. The
-other three, `JS_RECON_ENDPOINT_ACCEPT_STATUS`, `FOFA_MAX_RESULTS` and
-`UNCOVER_MAX_RESULTS`, replace a falsy stored value with the default: semantics
-a naive generator would erase.
+other four, `JS_RECON_TRUFFLEHOG_RESULTS`, `JS_RECON_ENDPOINT_ACCEPT_STATUS`,
+`FOFA_MAX_RESULTS` and `UNCOVER_MAX_RESULTS`, replace a falsy stored value with
+the default: semantics a naive generator would erase.
 
 **`zero_means: unlimited`.** Six rate fields treat `0` as unlimited, which is
 the FASTEST value available rather than the slowest: `ffufRate`,
@@ -98,12 +98,16 @@ engagement and run unlimited — a scope violation produced by the documentation
 So the `meaning` repeats it in words, and a build test checks that it does.
 
 **`fallback: falsy`.** `project.get(k, D)` returns a stored `0` or `""`;
-`project.get(k) or D` replaces any falsy value with the default. Three mappings
-use the second form, so an operator who sets an empty list gets the default back
-rather than an empty list.
+`project.get(k) or D` replaces any falsy value with the default. Six registry
+entries carry it: the four above, plus `jsluiceVerifyAcceptStatus` and
+`jsluiceExcludePatterns`, whose mappings read into a local variable first, so
+the parser does not count them. An operator who sets an empty list gets the
+default back rather than an empty list.
 
-**`coerce: int | strip`.** `FOFA_MAX_RESULTS` and `UNCOVER_MAX_RESULTS` wrap in
-`int()`; `TARGET_DOMAIN` calls `.strip()`. Small, and the code has to do it.
+**`coerce: int | strip | strip_list`.** `FOFA_MAX_RESULTS` and
+`UNCOVER_MAX_RESULTS` wrap in `int()`; `TARGET_DOMAIN` is stripped at load;
+`SUBDOMAIN_LIST` and `TARGET_IPS` strip every entry and drop the empty ones.
+Small, and the code has to do it.
 
 ## Ordering is load-bearing
 

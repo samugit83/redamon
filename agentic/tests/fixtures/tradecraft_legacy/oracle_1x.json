@@ -1,0 +1,163 @@
+{
+ "builders": {
+  "cve": {
+   "branch": "main",
+   "owner": "tc-fixture",
+   "repo": "cve"
+  },
+  "cve_on_a_repo_without_year_folders": {
+   "no_year_dirs": true
+  },
+  "docs": {
+   "indexUrl": "https://docs.tc-fixture.test/searchindex.js",
+   "titles": [
+    "Changelog",
+    "Command-line options",
+    "Configuration",
+    "Installation",
+    "Output formats",
+    "Payload files",
+    "TC Fixture Tool documentation",
+    "Usage"
+   ],
+   "urls": [
+    "https://docs.tc-fixture.test/changelog.html",
+    "https://docs.tc-fixture.test/guide/configuration.html",
+    "https://docs.tc-fixture.test/guide/install.html",
+    "https://docs.tc-fixture.test/guide/usage.html",
+    "https://docs.tc-fixture.test/index.html",
+    "https://docs.tc-fixture.test/reference/options.html",
+    "https://docs.tc-fixture.test/reference/output.html",
+    "https://docs.tc-fixture.test/reference/payload-files.html"
+   ]
+  },
+  "gitbook": {
+   "urls": [
+    "https://book.tc-fixture.test/",
+    "https://book.tc-fixture.test/active-directory/kerberos",
+    "https://book.tc-fixture.test/methodology",
+    "https://book.tc-fixture.test/methodology/exploitation",
+    "https://book.tc-fixture.test/methodology/recon",
+    "https://book.tc-fixture.test/tools/cheat-sheet",
+    "https://book.tc-fixture.test/web/sqli",
+    "https://book.tc-fixture.test/web/xss"
+   ]
+  },
+  "github": {
+   "branch": "main",
+   "paths": [
+    "README.md",
+    "rules/README.md",
+    "sqli/README.md",
+    "sqli/blind.md",
+    "sqli/union.md",
+    "ssrf/README.md",
+    "ssrf/cloud-metadata.md",
+    "xss/README.md",
+    "xss/polyglots.md"
+   ],
+   "titles": [
+    "README",
+    "rules > README",
+    "sqli > README",
+    "sqli > blind",
+    "sqli > union",
+    "ssrf > README",
+    "ssrf > cloud metadata",
+    "xss > README",
+    "xss > polyglots"
+   ]
+  },
+  "pdf": {
+   "error": "",
+   "pages": 3,
+   "texts": [
+    "1 Introduction\nA synthetic guide for the tradecraft tests.\nIt has three pages and bookmarks.",
+    "2 SQL injection\n2.1 Union-based: \u2019 UNION SELECT NULL--\n2.2 Blind: \u2019 AND SLEEP(5)--",
+    "3 Kerberos\nKerberoasting requests service tickets for offline cracking."
+   ]
+  },
+  "wiki": {
+   "urls": [
+    "https://wiki.tc-fixture.test/",
+    "https://wiki.tc-fixture.test/fr/",
+    "https://wiki.tc-fixture.test/fr/kerberos/asrep-roasting/",
+    "https://wiki.tc-fixture.test/fr/sqli/union-based/",
+    "https://wiki.tc-fixture.test/fr/ssrf/basics/",
+    "https://wiki.tc-fixture.test/fr/xss/reflected/",
+    "https://wiki.tc-fixture.test/kerberos/asrep-roasting/",
+    "https://wiki.tc-fixture.test/kerberos/cheat-sheet/",
+    "https://wiki.tc-fixture.test/kerberos/delegation-abuse/",
+    "https://wiki.tc-fixture.test/kerberos/golden-ticket/",
+    "https://wiki.tc-fixture.test/kerberos/kerberoasting/",
+    "https://wiki.tc-fixture.test/kerberos/pass-the-ticket/",
+    "https://wiki.tc-fixture.test/kerberos/silver-ticket/",
+    "https://wiki.tc-fixture.test/sqli/boolean-blind/",
+    "https://wiki.tc-fixture.test/sqli/cheat-sheet/",
+    "https://wiki.tc-fixture.test/sqli/error-based/",
+    "https://wiki.tc-fixture.test/sqli/out-of-band/",
+    "https://wiki.tc-fixture.test/sqli/second-order/",
+    "https://wiki.tc-fixture.test/sqli/time-blind/",
+    "https://wiki.tc-fixture.test/sqli/union-based/",
+    "https://wiki.tc-fixture.test/sqli/waf-bypass/",
+    "https://wiki.tc-fixture.test/ssrf/basics/",
+    "https://wiki.tc-fixture.test/ssrf/blind-ssrf/",
+    "https://wiki.tc-fixture.test/ssrf/cheat-sheet/",
+    "https://wiki.tc-fixture.test/ssrf/cloud-metadata/",
+    "https://wiki.tc-fixture.test/ssrf/dns-rebinding/",
+    "https://wiki.tc-fixture.test/ssrf/filter-bypass/",
+    "https://wiki.tc-fixture.test/ssrf/protocol-smuggling/",
+    "https://wiki.tc-fixture.test/xss/cheat-sheet/",
+    "https://wiki.tc-fixture.test/xss/csp-bypass/",
+    "https://wiki.tc-fixture.test/xss/dom-based/",
+    "https://wiki.tc-fixture.test/xss/filter-evasion/",
+    "https://wiki.tc-fixture.test/xss/mutation-xss/",
+    "https://wiki.tc-fixture.test/xss/polyglots/",
+    "https://wiki.tc-fixture.test/xss/reflected/",
+    "https://wiki.tc-fixture.test/xss/stored/"
+   ]
+  }
+ },
+ "verify_resource": {
+  "https://blog.tc-fixture.test/": {
+   "entries": 1,
+   "has_summary": true,
+   "resource_type": "agentic-crawl"
+  },
+  "https://book.tc-fixture.test/": {
+   "entries": 8,
+   "has_summary": true,
+   "resource_type": "gitbook"
+  },
+  "https://docs.tc-fixture.test/": {
+   "entries": 8,
+   "has_summary": true,
+   "resource_type": "sphinx-docs"
+  },
+  "https://files.tc-fixture.test/guide.pdf": {
+   "entries": 3,
+   "has_summary": true,
+   "resource_type": "agentic-crawl"
+  },
+  "https://github.com/tc-fixture/cve": {
+   "cve_meta": {
+    "branch": "main",
+    "owner": "tc-fixture",
+    "repo": "cve"
+   },
+   "entries": 0,
+   "has_summary": true,
+   "resource_type": "cve-poc-db"
+  },
+  "https://github.com/tc-fixture/payloads": {
+   "entries": 9,
+   "has_summary": true,
+   "resource_type": "github-repo"
+  },
+  "https://wiki.tc-fixture.test/": {
+   "entries": 36,
+   "has_summary": true,
+   "resource_type": "mkdocs-wiki"
+  }
+ }
+}

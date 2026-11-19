@@ -1,0 +1,25 @@
+{
+  "user_id": "user_owner_fake",
+  "model": "openai/fake-small-model",
+  "focus": {
+    "mode": "focused",
+    "topics": [
+      "sql_injection"
+    ],
+    "kinds": [
+      "payloads",
+      "bypasses"
+    ],
+    "strictness": "balanced"
+  },
+  "entries": [
+    {
+      "url": "https://wiki.example.invalid/sqli/postgres",
+      "title": "PostgreSQL injection"
+    },
+    {
+      "url": "https://wiki.example.invalid/news/2026",
+      "title": "Site news"
+    }
+  ]
+}

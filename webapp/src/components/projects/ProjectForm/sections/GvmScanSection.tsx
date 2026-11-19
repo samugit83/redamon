@@ -7,6 +7,7 @@ import type { Project } from '@prisma/client'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -108,7 +109,11 @@ export function GvmScanSection({ data, updateField, actions }: GvmScanSectionPro
                   type="number"
                   className="textInput"
                   value={data.gvmTaskTimeout}
-                  onChange={(e) => updateField('gvmTaskTimeout', parseInt(e.target.value) || 0)}
+                  onChange={(e) => {
+                    // Not `||`: a typed 0 is a real value here (unlimited).
+                    const n = parseInt(e.target.value, 10)
+                    updateField('gvmTaskTimeout', Number.isNaN(n) ? numericDefault('gvmTaskTimeout') : n)
+                  }}
                   min={0}
                 />
                 <span className={styles.fieldHint}>Maximum time to wait for a single scan task. 0 = unlimited. Default: 14400 (4 hours).</span>
@@ -120,7 +125,7 @@ export function GvmScanSection({ data, updateField, actions }: GvmScanSectionPro
                   type="number"
                   className="textInput"
                   value={data.gvmPollInterval}
-                  onChange={(e) => updateField('gvmPollInterval', parseInt(e.target.value) || 5)}
+                  onChange={(e) => updateField('gvmPollInterval', parseInt(e.target.value) || numericDefault('gvmPollInterval'))}
                   min={5}
                   max={300}
                 />

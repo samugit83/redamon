@@ -1,0 +1,124 @@
+{
+  "jobs": [
+    {
+      "job_id": "job_fake_0001",
+      "user_id": "user_owner_fake",
+      "resource_id": "res_fake_0001",
+      "kind": "refresh",
+      "actor_user_id": "user_owner_fake",
+      "real_actor_user_id": null,
+      "bulk_id": null,
+      "settings": {
+        "crawl.maxPages": 200,
+        "crawl.strategy": "llm",
+        "knownTypes.githubFileTypes": [
+          ".md",
+          ".txt",
+          ".rst"
+        ]
+      },
+      "settings_snapshot": {
+        "values": {
+          "crawl.maxPages": 200,
+          "crawl.strategy": "llm",
+          "knownTypes.githubFileTypes": [
+            ".md",
+            ".txt",
+            ".rst"
+          ]
+        },
+        "provenance": {
+          "crawl.maxPages": "system",
+          "crawl.strategy": "user",
+          "knownTypes.githubFileTypes": "resource"
+        }
+      },
+      "settings_hash": "0123456789abcdef",
+      "resource": {
+        "url": "https://wiki.example.invalid/",
+        "slug": "fake-wiki",
+        "name": "Fake wiki",
+        "storage_mode": "stored",
+        "forced_type": "",
+        "type_options": {},
+        "focus": {
+          "mode": "everything"
+        },
+        "summary": "A synthetic wiki used by the contract tests.",
+        "summary_source": "generated",
+        "summary_locked": false,
+        "model": "openai/fake-small-model"
+      },
+      "secrets": {
+        "github_token": null,
+        "credentials": null
+      }
+    },
+    {
+      "job_id": "job_fake_0002",
+      "user_id": "user_owner_fake",
+      "resource_id": "res_fake_0002",
+      "kind": "bulk",
+      "actor_user_id": "user_owner_fake",
+      "real_actor_user_id": null,
+      "bulk_id": "bulk_fake_01",
+      "settings": {
+        "crawl.maxPages": 200,
+        "crawl.strategy": "llm",
+        "knownTypes.githubFileTypes": [
+          ".md",
+          ".txt",
+          ".rst"
+        ]
+      },
+      "settings_snapshot": {
+        "values": {
+          "crawl.maxPages": 200,
+          "crawl.strategy": "llm",
+          "knownTypes.githubFileTypes": [
+            ".md",
+            ".txt",
+            ".rst"
+          ]
+        },
+        "provenance": {
+          "crawl.maxPages": "system",
+          "crawl.strategy": "user",
+          "knownTypes.githubFileTypes": "resource"
+        }
+      },
+      "settings_hash": "0123456789abcdef",
+      "resource": {
+        "url": "https://github.com/example-org/fake-repo",
+        "slug": "fake-repo",
+        "name": "Fake repo",
+        "storage_mode": "live",
+        "forced_type": "github-repo",
+        "type_options": {},
+        "focus": {
+          "mode": "everything"
+        },
+        "summary": "A synthetic wiki used by the contract tests.",
+        "summary_source": "generated",
+        "summary_locked": false,
+        "model": "openai/fake-small-model"
+      },
+      "secrets": {
+        "github_token": "fake-github-token",
+        "credentials": {
+          "cookie": "session=fake-session",
+          "headers": [
+            {
+              "name": "X-Api-Key",
+              "value": "fake-key"
+            }
+          ],
+          "basic_auth": {
+            "username": "fake-user",
+            "password": "fake-password"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -60,8 +60,14 @@ services:
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set - run redamon.sh (STRIDE S13)}
       NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
-      NEO4J_dbms_security_procedures_allowlist: apoc.*
+      # Only the APOC that RedAmon calls is loaded: the graph restore and reference links
+      # (create/merge), LangChain's schema read in the agent (apoc.meta.data), and two pure
+      # functions the guinea-pig lab snapshots use. apoc.load.* (fetches a URL from this
+      # container), apoc.cypher.* (runs a query string past the tenant filters) and the file
+      # import/export procedures are never loaded, so a query that slips past the filters
+      # cannot reach them. A new APOC call joins this list.
+      NEO4J_dbms_security_procedures_unrestricted: apoc.create.node,apoc.create.relationship,apoc.merge.node,apoc.meta.*,apoc.convert.toJson,apoc.text.base64Encode
+      NEO4J_dbms_security_procedures_allowlist: apoc.create.node,apoc.create.relationship,apoc.merge.node,apoc.meta.*,apoc.convert.toJson,apoc.text.base64Encode
       NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-2g}
       NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP:-2g}
       NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-1g}
@@ -984,13 +990,14 @@ services:
       - ./agentic/logs:/app/logs
       - ./agentic/skills:/app/skills:ro
       - ./agentic/community-skills:/app/community-skills:ro
+      # AI Navigator's docs route reads the wiki at answer time (index rebuilt within 60 s of a change).
+      - ./redamon.wiki:/app/wiki:ro
       - cypherfix-repos:/tmp/cypherfix-repos
       # CodeFix working trees: the agent clones here; the orchestrator bind-mounts
       # each per-job worktree into an isolated build sandbox (T6/E10).
       - cypherfix-work:/app/codefix-work
       - ./services/knowledge_base/kb_config.yaml:/app/knowledge_base/kb_config.yaml:ro
       - ./services/knowledge_base/data:/app/knowledge_base/data
-      - tradecraft_cache:/app/tradecraft_cache
       # Per-project workspace — fs_* tools, output offloading, background jobs
       - ./agentic/agent-workspace:/workspace
     depends_on:
@@ -1627,8 +1634,6 @@ volumes:
   neo4j_plugins:
   kb_data:
     name: redamon_kb_data
-  tradecraft_cache:
-    name: redamon_tradecraft_cache
   # On-demand local LLM (Ollama) model weights for the AI Attack Surface layer.
   # The container is spawned/torn down per scan; this volume persists the pulled
   # judge/attacker models so restarts reload from RAM, not a re-download.

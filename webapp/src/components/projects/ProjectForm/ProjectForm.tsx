@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useContext, useMemo, useRef, type ReactNode } from 'react'
-import { Save, X, Loader2, Download, ShieldAlert, Zap, Bookmark, FolderOpen, List, GitBranch, Play, Check } from 'lucide-react'
+import { Save, X, Loader2, Download, ShieldAlert, Zap, Bookmark, FolderOpen, List, GitBranch, Play, Check, History } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import type { Project } from '@prisma/client'
@@ -82,6 +82,8 @@ import { SupplyChainReconSection } from './sections/SupplyChainReconSection'
 import { SupplyChainScanSection } from './sections/SupplyChainScanSection'
 import { AgentBehaviourSection } from './sections/AgentBehaviourSection'
 import { AttackSkillsSection } from './sections/AttackSkillsSection'
+import { TAB_LABEL_V2, useTradecraftV2 } from './sections/TradecraftResourcesAccordion'
+import { postTradecraftCountsChanged } from '@/lib/tradecraft/channels'
 import { ShodanSection } from './sections/ShodanSection'
 import { UrlscanSection } from './sections/UrlscanSection'
 import { SubdomainDiscoverySection } from './sections/SubdomainDiscoverySection'
@@ -102,7 +104,7 @@ import { RouteExposureSection } from './sections/RouteExposureSection'
 import { PartialReconModal } from './WorkflowView/PartialReconModal'
 import { usePartialLogsRun } from './usePartialLogsRun'
 import { ReconPresetModal } from './ReconPresetModal'
-import { ProviderRequiredModal, ModelSelectionModal } from './ProjectLlmGate'
+import { GateLayer, ProviderRequiredModal, ModelSelectionModal } from './ProjectLlmGate'
 import {
   seedInitialModels, needsModelGate, hasNoConfiguredProvider, providerGateApplies,
   pipelineModelOptional, loopModelOffered, instanceModelOffered,
@@ -135,6 +137,11 @@ const OWNER_SECRET_KEYS: readonly string[] = shareSecretFields().map(f => f.key)
 
 type ProjectFormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
+/** The owner's tradecraft resources turned off here: no column, it travels in the project's save (§3.4). */
+function tradecraftOffOf(data: ProjectFormData): unknown {
+  return (data as ProjectFormData & { tradecraftOff?: unknown }).tradecraftOff ?? []
+}
+
 interface ProjectFormProps {
   initialData?: Partial<ProjectFormData> & { id?: string; userId?: string }
   /** Resolves to the saved row when there is one, so the form can adopt its `updatedAt`. */
@@ -146,6 +153,8 @@ interface ProjectFormProps {
   mode: 'create' | 'edit'
   /** When set (e.g. from /projects/[id]/settings URL), ensures child sections always get a stable project id */
   projectIdFromRoute?: string
+  /** The project activity feed, for whom it answers; the page decides that, the form only places the button. */
+  activityHref?: string
 }
 
 const TAB_GROUPS = [
@@ -364,6 +373,7 @@ export function ProjectForm({
   isSubmitting = false,
   mode,
   projectIdFromRoute,
+  activityHref,
 }: ProjectFormProps) {
   const { alertError, alertWarning, confirm: confirmModal, dangerConfirm } = useAlertModal()
   const toast = useToast()
@@ -517,6 +527,9 @@ export function ProjectForm({
   // and MCP servers this project runs on are the owner's, not the collaborator's own. Picking from
   // them needs Manage, and only then are the owner's models listed.
   const ownerCatalog = useProjectOwnerCatalog(projectId, formAccess)
+  // "Agent Skills & Tradecraft" once the project is saved (its Tradecraft view answers v2 for every
+  // account, §3.4); a project not saved yet keeps the old name.
+  const tradecraftV2 = useTradecraftV2(mode === 'edit' && projectId ? projectId : null)
   const writeSummary = writeAccessSummary(formAccess)
 
   // GitHub Access Token check (stored in Global Settings, not project): the owner's, on a shared project.
@@ -782,9 +795,12 @@ export function ProjectForm({
   // A collaborator's change their access does not reach (a gate loosened, the scope changed, the
   // owner's secret) is refused where it is made, with the reason (step 5.7); the project PUT would
   // refuse the whole save for it (step 5.1). Judged against the row as stored, as the PUT judges.
-  const changeRefusal = useCallback((changes: Record<string, unknown>): FieldChangeRefusal | null => fieldChangeRefusal(
-    serverRowRef.current ?? {}, formDataRef.current as unknown as Record<string, unknown>, changes, formAccess,
-  ), [formAccess])
+  // The tradecraft switches are no Project column: the PUT takes them out before it judges the
+  // settings classes, and the route's project:settings (Write) is all they need (§3.4, R-065).
+  const changeRefusal = useCallback((changes: Record<string, unknown>): FieldChangeRefusal | null => {
+    const { tradecraftOff: _switches, ...judged } = changes
+    return fieldChangeRefusal(serverRowRef.current ?? {}, formDataRef.current as unknown as Record<string, unknown>, judged, formAccess)
+  }, [formAccess])
   // One notice per field while the person keeps trying (a locked text box gets a key press each time).
   const refusalShownAt = useRef<Record<string, number>>({})
   const announceRefusal = (refusal: FieldChangeRefusal) => {
@@ -1067,9 +1083,12 @@ export function ProjectForm({
         ...(mode === 'edit' && savedVersionRef.current ? { updatedAt: savedVersionRef.current } : {}),
       })
       const togglesChanged = !deepEqual(formData.attackSkillConfig, baseline.attackSkillConfig)
+      const tradecraftChanged = !deepEqual(tradecraftOffOf(formData), tradecraftOffOf(baseline))
       adoptSavedVersion(await onSubmit(submitData))
       // Other open windows of this project (the chat drawer) take the new toggles.
       if (togglesChanged) postUserSkillsChanged({ projectId })
+      // The chat's counter badge reads its numbers again (§3.4).
+      if (projectId && (togglesChanged || tradecraftChanged)) postTradecraftCountsChanged({ projectId })
       // Adopt the just-saved state as the new baseline so the form reads clean
       // (create mode usually navigates away, but this keeps state correct if not).
       setBaseline(formData)
@@ -1146,8 +1165,10 @@ export function ProjectForm({
         ...(mode === 'edit' && savedVersionRef.current ? { updatedAt: savedVersionRef.current } : {}),
       })
       const togglesChanged = !deepEqual(formData.attackSkillConfig, baseline.attackSkillConfig)
+      const tradecraftChanged = !deepEqual(tradecraftOffOf(formData), tradecraftOffOf(baseline))
       adoptSavedVersion(await onSaveAndStay(submitData))
       if (togglesChanged) postUserSkillsChanged({ projectId })
+      if (projectId && (togglesChanged || tradecraftChanged)) postTradecraftCountsChanged({ projectId })
       setBaseline(formData)
       toast.success('Project saved')
       after?.()
@@ -1426,6 +1447,17 @@ export function ProjectForm({
               {isExporting ? 'Exporting...' : 'Export'}
             </button>
           )}
+          {mode === 'edit' && activityHref && (
+            <button
+              type="button"
+              className="secondaryButton"
+              onClick={() => guardedNavigate(() => router.push(activityHref))}
+              title="Who did what on this project: shares, admin oversight, scans, settings changes"
+            >
+              <History size={14} />
+              Activity
+            </button>
+          )}
           <button
             type="submit"
             className="primaryButton"
@@ -1550,7 +1582,7 @@ export function ProjectForm({
                           }}
                         >
                           {(tab.id as string) === 'preset' && <Zap size={15} className={styles.presetIcon} />}
-                          {tab.label}
+                          {tab.id === 'attack' && tradecraftV2 ? TAB_LABEL_V2 : tab.label}
                         </button>
                       ))}
                     </div>
@@ -1808,26 +1840,28 @@ export function ProjectForm({
 
       {/* Guardrail block modal */}
       {guardrailError && (
-        <div className={styles.guardrailOverlay} onClick={() => setGuardrailError(null)}>
-          <div className={styles.guardrailModal} onClick={(e) => e.stopPropagation()}>
-            <div className={styles.guardrailIconWrapper}>
-              <ShieldAlert size={32} />
+        <GateLayer>
+          <div className={styles.guardrailOverlay} onClick={() => setGuardrailError(null)}>
+            <div className={styles.guardrailModal} onClick={(e) => e.stopPropagation()}>
+              <div className={styles.guardrailIconWrapper}>
+                <ShieldAlert size={32} />
+              </div>
+              <h2 className={styles.guardrailTitle}>Target Blocked</h2>
+              <p className={styles.guardrailMessage}>{guardrailError}</p>
+              <p className={styles.guardrailHint}>
+                This target appears to be a well-known public service that you are unlikely authorized to test.
+                Please use a domain or IP range you own or have explicit permission to scan.
+              </p>
+              <button
+                type="button"
+                className={styles.guardrailButton}
+                onClick={() => setGuardrailError(null)}
+              >
+                Understood
+              </button>
             </div>
-            <h2 className={styles.guardrailTitle}>Target Blocked</h2>
-            <p className={styles.guardrailMessage}>{guardrailError}</p>
-            <p className={styles.guardrailHint}>
-              This target appears to be a well-known public service that you are unlikely authorized to test.
-              Please use a domain or IP range you own or have explicit permission to scan.
-            </p>
-            <button
-              type="button"
-              className={styles.guardrailButton}
-              onClick={() => setGuardrailError(null)}
-            >
-              Understood
-            </button>
           </div>
-        </div>
+        </GateLayer>
       )}
 
       {/* LLM provider gate: no provider configured -> can't create a project */}

@@ -12,7 +12,7 @@ import time
 import weakref
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Optional, Any, Callable
+from typing import Dict, Iterable, List, Optional, Any, Callable, Set
 from enum import Enum
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -341,6 +341,8 @@ class WebSocketManager:
         # tool executor; cleared in a finally block after the tool returns or
         # is cancelled.
         self._tool_tasks: Dict[str, asyncio.Task] = {}
+        # Held until they run: the event loop keeps only a weak reference to a task.
+        self._deferred_disconnects: Set[asyncio.Task] = set()
         self.lock = asyncio.Lock()
 
     @staticmethod
@@ -489,6 +491,33 @@ class WebSocketManager:
                     logger.info(f"Disconnected session: {session_key}")
                 else:
                     logger.debug(f"Skipped disconnect for {session_key} — connection already replaced")
+
+    def disconnect_when_done(self, connection: WebSocketConnection, run: asyncio.Future):
+        """disconnect(connection) once `run`, the task its socket closed under, is done.
+
+        The endpoint keeps a socket that closes during its run registered, so a reconnect
+        finds the run and takes it over. Once the run is done the closed socket must go,
+        or its key holds a session-cap slot until the agent restarts. disconnect() removes
+        only this exact object, so a reconnect that replaced it, before or after the run
+        ended, keeps its entry. Hooked to the task itself, not to _finish_run: it also
+        covers a reconnected socket that closed in turn, and a run cancelled before its
+        first step, whose `finally` never runs.
+
+        Held weakly: while the connection is registered, active_connections keeps it
+        alive; once a reconnect replaced it there is nothing to clean up, and a strong
+        reference would keep every replaced socket of a long run until that run ends.
+        """
+        ref = weakref.ref(connection)
+
+        def _schedule(_run):
+            closed = ref()
+            if closed is None:
+                return
+            cleanup = run.get_loop().create_task(self.disconnect(closed))
+            self._deferred_disconnects.add(cleanup)
+            cleanup.add_done_callback(self._deferred_disconnects.discard)
+
+        run.add_done_callback(_schedule)
 
     def register_task(self, session_key: str, task: asyncio.Task,
                       actor_id: Optional[str] = None):
@@ -2632,8 +2661,11 @@ async def websocket_endpoint(
         # Don't cancel active tasks — let background agents keep running
         # and persisting messages to DB even when the user disconnects.
         # Tasks will clean up via their own finally blocks.
-        if not (connection._active_task and not connection._active_task.done()):
-            # Only disconnect if no task is running
+        # Disconnect now, or, while the socket's run goes on, once that run ends: until
+        # then the socket stays registered so that a reconnect can take the run over.
+        run = connection._active_task
+        if not (run and not run.done()):
             await ws_manager.disconnect(connection)
         else:
             logger.info(f"WebSocket closed but agent task still running for {connection.get_key()}")
+            ws_manager.disconnect_when_done(connection, run)
