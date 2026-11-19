@@ -2,7 +2,8 @@
 
     the tool picked page P of resource R, for the run's owner
     1. R no longer exists?                      -> say it was deleted, no request
-    2. P blocked, or R has a login and P is not in its map?  -> refused, no request
+    2. P blocked, R has a login and P is not in its map, or a forced section_path names no
+       page of R?                               -> refused, no request
     3. R is Stored and P has a stored copy?     -> return it ("stored copy from <date>")
     4. otherwise                                -> download P, return it ("live", or
                                                    "live (not stored)" on a Stored resource);
@@ -14,6 +15,8 @@ live generation at this call, so a refresh that swaps during a run is seen at th
 The catalog, its token and its logins come only from ``runtime.bound_catalog()``, and the account's
 GitHub token (used when the resource has none, R-156) only from the run's own settings
 (``runtime.run_github_token``); outside a run's task nothing is bound and nothing is requested. Reading never writes (R-306).
+A GitHub token is used only in the owner's own run (``V2Catalog.owner_run``) and only for a request
+inside the resource's own repository (``fetch.repo_token``).
 
 Reading by page and section (Q8, T2.5): ``page`` (an ID from search, a hint or the librarian)
 names the page, ``section`` one of its headings and ``part`` a part of a long section. A read
@@ -60,6 +63,8 @@ BLOCKED = "Error: refusing to read {url}: this page is blocked in resource '{slu
 OUTSIDE_MAP = ("Error: refusing to read {url}: resource '{slug}' has a site login, and only the pages of its "
                "map are read with it.")
 BAD_URL = "Error: refusing to read {url}: {code}."
+NOT_IN_RESOURCE = ("Error: refusing to read {url}: it is not a page of resource '{slug}'. Read its pages by page ID "
+                   "from tradecraft_search, or give section_path a path of its map.")
 UNREACHABLE_LIVE = ("Error: could not read {url} ({code}). Resource '{slug}' is Live: no copy of its pages is "
                     "kept, so nothing can be returned until the site answers.")
 UNREACHABLE_NOT_STORED = ("Error: could not read {url} ({code}). Resource '{slug}' is Stored, but this page has no "
@@ -172,12 +177,21 @@ class _Read:
         self.catalog, self.resource, self.row, self.store = catalog, resource, row, store
         self.owner = catalog.owner_id
         self.settings = EffectiveSettings(resource.read_settings or {})
-        # R-156, as 1.x: the resource's own token, else the run's account token (the catalog
-        # carries only the resource's; the account's is read from the run's own settings).
-        self.token = resource.github_token or runtime.run_github_token() or None
+        # The resource's own token, else the run's account token, which is the project owner's
+        # in every run: so only the owner's own run reads with one. A collaborator's run, or one an
+        # administrator acts in, reads without, and ``token_for`` keeps it to the resource's repository.
+        self._token = (resource.github_token or runtime.run_github_token() or None) if catalog.owner_run else None
         self.sitemap = row.get("sitemap") or {}
         self.mode = row.get("storage_mode") or resource.storage_mode
         self.slug = resource.slug
+
+    @property
+    def base(self) -> str:
+        return self.row.get("url") or self.resource.url
+
+    def token_for(self, url: str) -> Optional[str]:
+        """The GitHub token for a request to ``url``: only inside the resource's own repository."""
+        return fetch.repo_token(url, self._token, self.base)
 
     @property
     def has_login(self) -> bool:
@@ -304,7 +318,7 @@ async def _text_of(read: _Read, target: str, copy: Optional[dict], force_refresh
         return copy["stored_text"], format_source("stored", _date(copy.get("fetched_at"))), "", ""
     # Bound here too, not only by lookup: the librarian's reads come straight to this function.
     with read.login():
-        page = await live_page(target, read.settings, github_token=read.token, has_login=read.has_login)
+        page = await live_page(target, read.settings, github_token=read.token_for(target), has_login=read.has_login)
     if page.error in _REFUSED:
         return None, "", "", BAD_URL.format(url=target, code=page.error)
     ok = not page.error and 200 <= page.status < 300 and bool(page.text)
@@ -325,12 +339,30 @@ def _again(read: _Read, force_refresh: bool, **args: Any) -> dict:
     return {"resource_id": read.slug, **args, **({"force_refresh": True} if force_refresh else {})}
 
 
+async def _in_resource(read: _Read, url: str) -> bool:
+    """Whether ``url`` is a page of the resource: its start page, a kept entry of its live map,
+    or an entry of the 1.x map every ingestion keeps current (an unconverted resource has only
+    that one). A forced ``section_path`` reads nothing else: a URL there, or a path that climbs
+    out of the resource, would reach any site, the target included."""
+    target = fetch.page_url(url)
+    if target == fetch.page_url(read.base):
+        return True
+    if await read.store.in_map(read.owner, read.resource.id, target):
+        return True
+    rtype = read.row.get("resource_type") or read.resource.type
+    return any(fetch.page_url(legacy_match.entry_url(rtype, read.base, read.sitemap, e["path"])) == target
+               for e in legacy_match.sitemap_entries(read.sitemap) if e["path"])
+
+
 async def _page(read: _Read, query: str, section_path: Optional[str], force_refresh: bool,
                 part: Optional[int] = None) -> str:
     target, title = await _pick_url(read, query, section_path)
     refused = await _refusal(read, target)
     if refused:
         return refused
+    if section_path and not await _in_resource(read, target):
+        logger.info(f"[tradecraft] lookup resource={read.slug} code=not_in_resource")
+        return NOT_IN_RESOURCE.format(url=target, slug=read.slug)
     copy = await _stored_copy(read, fetch.canonical_url(target))
     text, source, note, error = await _text_of(read, target, copy, force_refresh)
     if error:
@@ -414,7 +446,7 @@ async def _pdf_page_live(read: _Read, url: str, entry: dict, force_refresh: bool
     if entry.get("stored_text") and not force_refresh:
         return entry["stored_text"], format_source("stored", _date(entry.get("fetched_at"))), "", ""
     with read.login():
-        resp = await fetch.fetch_raw(base, read.settings, github_token=read.token)
+        resp = await fetch.fetch_raw(base, read.settings, github_token=read.token_for(base))
     text = ""
     if resp.ok and resp.body[:5] == b"%PDF-":
         try:
@@ -519,7 +551,8 @@ async def _cve(read: _Read, cve_id: Optional[str], part: Optional[int] = None, *
     async def blocked(url: str) -> bool:
         return await _blocked(read, url)
 
-    content, src, api_error = await cve.lookup(cve_norm, read.sitemap, read.settings, github_token=read.token,
+    token = read.token_for(cve.repo_url(read.sitemap))
+    content, src, api_error = await cve.lookup(cve_norm, read.sitemap, read.settings, github_token=token,
                                                blocked=blocked)
     if api_error == cve.BLOCKED:
         return CVE_BLOCKED.format(cve=cve_norm, slug=read.slug)
@@ -530,7 +563,7 @@ async def _cve(read: _Read, cve_id: Optional[str], part: Optional[int] = None, *
         return (f"Error: could not look up {cve_norm} in resource '{read.slug}' ({api_error}). This is NOT a "
                 f"'PoC not found' answer; retry later or add a GitHub token in Global Settings -> API Keys.")
     if not content:
-        text, url = await cve.readme(read.sitemap, read.settings, github_token=read.token)
+        text, url = await cve.readme(read.sitemap, read.settings, github_token=token)
         if text and cve_norm in text.upper():
             content, src = text, url
             title = f"{cve_norm} (repository README; no {cve_norm.split('-')[1]}/{cve_norm} entry)"
@@ -582,7 +615,7 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
     if entry and entry.get("stored_text") and not force_refresh:
         return render_parts(read, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
                             entry["stored_text"], part, again, seen=seen)
-    resp = await fetch.fetch_raw(base, read.settings, github_token=read.token)
+    resp = await fetch.fetch_raw(base, read.settings, github_token=read.token_for(base))
     text = ""
     if resp.ok and resp.body[:5] == b"%PDF-":
         try:

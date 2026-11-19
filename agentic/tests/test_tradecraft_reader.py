@@ -368,18 +368,26 @@ def test_unknown_resource_lists_the_catalog():
 
 
 def test_a_path_outside_the_web_is_refused():
-    lib = Library().add("r1", "wiki", WIKI, read_settings=no_browser())
+    """An internal address that is no page of the resource is refused with no lookup at all; one
+    that is (a resource added at it) still meets the egress guard before any request."""
     path = "http://169.254.169.254/latest/meta-data/"
+    lib = Library().add("r1", "wiki", WIKI, read_settings=no_browser())
     answer = lib.read(resource_id="wiki", section_path=path)
+    assert answer.startswith(f"Error: refusing to read {path}: it is not a page of resource 'wiki'")
+    assert lib.requested() == []
+
+    lib = Library().add("r1", "meta", path, sitemap={"nav": []}, read_settings=no_browser())
+    answer = lib.read(resource_id="meta", section_path=path)
     assert answer.startswith(f"Error: refusing to read {path}: unsafe_address")
     assert lib.requested() == []
 
 
-def test_a_non_web_path_stays_on_the_resources_site():
-    """As 1.x resolves it: anything that is not an http(s) URL is a path of the resource."""
+def test_a_non_web_path_is_read_only_when_it_is_a_page_of_the_resource():
+    """Anything that is not an http(s) URL is a path of the resource, as 1.x resolves it; a path
+    that names none of its pages is refused before any request."""
     lib = Library().add("r1", "wiki", WIKI, read_settings=no_browser())
-    lib.read(resource_id="wiki", section_path="file:///etc/passwd")
-    assert [u.split("/")[2] for u in lib.requested()] == ["wiki.tc-fixture.test"]
+    answer = lib.read(resource_id="wiki", section_path="file:///etc/passwd")
+    assert "is not a page of resource 'wiki'" in answer and lib.requested() == []
 
 
 def test_pdf_pages_are_the_maps_own_numbers():

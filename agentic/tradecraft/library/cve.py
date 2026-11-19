@@ -12,8 +12,9 @@ archive's own settings (§6.5, T4.2), which reach a read in the catalog's ``read
   ``main``);
 - ``type.cve.readmeFallback``: off, a repository README that names the CVE is not an answer.
 
-The GitHub token goes to GitHub hosts only (``fetch.github_headers``). A file the person blocked in
-the archive's Map is never requested (``blocked``), whichever step names it.
+The GitHub token goes to the archive's own repository only (``fetch.repo_token``), a file a listing
+names included. A file the person blocked in the archive's Map is never requested (``blocked``),
+whichever step names it.
 """
 
 from __future__ import annotations
@@ -36,6 +37,12 @@ PLACEHOLDERS = ("year", "cve", "cve_lower")
 
 def _api_error(status: int, error: str) -> str:
     return error or f"github_http_{status}"
+
+
+def repo_url(meta: dict) -> str:
+    """The archive's repository page, from its map's owner and repo; "" when the map names none."""
+    owner, repo = (meta or {}).get("owner"), (meta or {}).get("repo")
+    return f"https://github.com/{owner}/{repo}" if owner and repo else ""
 
 
 def pattern_path(pattern: str, cve_id: str) -> Optional[str]:
@@ -119,7 +126,8 @@ async def lookup(cve_id: str, meta: dict, settings: EffectiveSettings, *, github
                 if blocked is not None and await blocked(own):
                     refused = True
                     continue
-                got = await fetch.fetch_raw(dl, settings, github_token=github_token)
+                got = await fetch.fetch_raw(dl, settings,
+                                            github_token=fetch.repo_token(dl, github_token, repo_url(meta)))
                 if got.status == 200:
                     return got.text, dl, ""
     elif listing.status != 404 and not api_error:

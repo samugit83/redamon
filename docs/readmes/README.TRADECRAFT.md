@@ -509,8 +509,15 @@ authentication** (form → Access). The rules (`webapp/src/lib/tradecraft/v2/fie
   changed, never a value.
 - Check URL and the focus preview accept the login being typed, before it is saved.
 
-The **GitHub token** follows the same masking. A resource's own override is used in every run; with none, the agent
-sends the run owner's account token (`runtime.run_github_token`), and only to the GitHub hosts over https.
+The **GitHub token** follows the same masking. A chat run uses one only in its owner's own run (the person is the
+owner and no administrator acts as them, `V2Catalog.owner_run`): the resource's own override, else the owner's account
+token (`runtime.run_github_token`). The catalog of any other run (a collaborator's, or one an administrator acts in)
+carries no override, and the agent adds no account token there: such a run reads public GitHub pages with no token,
+a private repository not at all, and a CVE archive's API calls count against GitHub's 60 unauthenticated calls an hour.
+In every run the token goes only to a request inside the resource's own repository (`fetch.repo_token`: the same
+owner and repository on `github.com`, `raw.githubusercontent.com` or `api.github.com/repos/`, no dot segment in the
+path), so a read cannot reach the rest of the token's GitHub account. Read now keeps its token to the repository the
+same way.
 
 Logins are stored in Postgres like the GitHub token, not encrypted (see [Known limits](#known-limits)).
 
@@ -653,7 +660,9 @@ archive's refusals of a page ID name the ID); the headings a missing section lis
 The read path:
 
 1. the resource no longer exists → it says so, no request;
-2. the page is blocked, or the resource has a login and the page is not in its map → refused, no request;
+2. the page is blocked, or the resource has a login and the page is not in its map, or a forced `section_path` names
+   no page of the resource (its start page, an entry of its live map or of its 1.x map) → refused, no request. A URL
+   in `section_path`, or a path that climbs out of the resource, reads nothing;
 3. a Stored resource with a stored copy → the copy (`stored copy from <date>`);
 4. otherwise → the page is downloaded and nothing is kept (`live`, or `live (not stored)`);
 5. the site cannot be reached → an error that says whether a copy exists.

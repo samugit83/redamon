@@ -371,10 +371,11 @@ class NoSharedKeyPath(unittest.TestCase):
 
 
 class GitHubTokenPerRun(unittest.TestCase):
-    """R-156, as 1.x: a tradecraft read sends the resource's own token, else the GitHub token of the
-    account whose run it is, read at call time from the settings bound to that run's task (the
-    catalog carries only the resource's own token). Three runs at once each send their own account's
-    token, a run whose account has none sends none, and a resource's own token wins."""
+    """R-156: in its owner's own run, a tradecraft read sends the resource's own token, else the
+    GitHub token of the account whose run it is, read at call time from the settings bound to that
+    run's task (the catalog carries only the resource's own token). Three runs at once each send
+    their own account's token, a run whose account has none sends none, and a resource's own token
+    wins. A run of anyone else reads with none (test_tradecraft_read_scope.py)."""
 
     def _reads(self, runs):
         from tradecraft import runtime
@@ -389,8 +390,10 @@ class GitHubTokenPerRun(unittest.TestCase):
             return "poc body", "https://github.com/x/pocs/blob/main/poc.py", None
 
         def catalog(owner, own_token):
+            # An archive's map names its repository, the only place its token goes (fetch.repo_token).
             store.add_resource(owner, f"r-{owner}", url="https://github.com/x/pocs", slug="pocs",
-                               resource_type="cve-poc-db", map_version=2)
+                               resource_type="cve-poc-db", map_version=2,
+                               sitemap={"owner": "x", "repo": "pocs", "branch": "main"})
             return {"v2": True, "owner_id": owner, "person_id": owner, "actor_id": None, "search": {},
                     "resources": [{"id": f"r-{owner}", "slug": "pocs", "name": "PoCs", "url": "https://github.com/x/pocs",
                                    "type": "cve-poc-db", "storage_mode": "live", "map_version": 2,

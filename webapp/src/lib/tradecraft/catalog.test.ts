@@ -72,10 +72,14 @@ describe('the 2.0 catalog', () => {
     expect(JSON.stringify(c)).not.toMatch(/fake-session|fake-key/)
   })
 
-  test("github_token_owner_shared: the resource's override travels in every run, as in 1.x (R-156)", async () => {
-    for (const personId of ['owner', 'collab']) {
-      const c = await v2Catalog({ ...OWNER_RUN, personId }) as V2
-      expect(c.resources.find(r => r.id === 'public')!.github_token).toBe('ghp_override_fake')
+  test("github_token: the resource's override travels only in its owner's own run", async () => {
+    const own = await v2Catalog(OWNER_RUN) as V2
+    expect(own.resources.find(r => r.id === 'public')!.github_token).toBe('ghp_override_fake')
+    for (const who of [{ personId: 'collab', actorId: null }, { personId: 'owner', actorId: 'admin-1' },
+      { personId: null, actorId: null }]) {
+      const c = await v2Catalog({ ...OWNER_RUN, ...who }) as V2
+      expect(c.resources.find(r => r.id === 'public')!.github_token).toBeNull()
+      expect(JSON.stringify(c)).not.toContain('ghp_override_fake')
     }
   })
 

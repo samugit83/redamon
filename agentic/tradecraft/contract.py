@@ -421,11 +421,17 @@ class V2Catalog(_Model):
     # account above it from before 2.0 keeps every resource in its runs.
     resources: list[CatalogResource] = Field(default_factory=list)
 
+    @property
+    def owner_run(self) -> bool:
+        """The owner's own run: its person is the owner and no administrator acts as them
+        (``isOwnerRun`` in catalog.ts). Only such a run uses a site login or a GitHub token."""
+        return self.person_id is not None and self.person_id == self.owner_id and self.actor_id is None
+
     @model_validator(mode="after")
     def _logins_only_for_the_owner(self) -> "V2Catalog":
         # §6.6: a resource with a login is removed completely from a run its owner does not
         # start alone (a collaborator, or an administrator acting as the owner).
-        if self.person_id != self.owner_id or self.actor_id is not None:
+        if not self.owner_run:
             if any(r.has_login or r.credentials is not None for r in self.resources):
                 raise ValueError("a resource with a login is listed only in its owner's own runs")
         return self

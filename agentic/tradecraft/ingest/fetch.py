@@ -123,6 +123,44 @@ def entry_url_ok(url: str) -> bool:
     return bool(url) and len(url.encode("utf-8", "replace")) <= MAX_URL_CHARS and not net.url_problem(url)
 
 
+_GITHUB_REPO_HOSTS = ("github.com", "raw.githubusercontent.com", "api.github.com")
+
+
+def github_repo(url: str) -> Optional[tuple[str, str]]:
+    """The repository a GitHub URL names, as (owner, repo) lowercased: ``github.com/<o>/<r>``,
+    ``raw.githubusercontent.com/<o>/<r>`` and ``api.github.com/repos/<o>/<r>``. None for any other
+    URL, and for a path holding a dot segment, which the client resolves before sending
+    (``<o>/<r>/main/../../<other>/<repo>`` reaches another repository)."""
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or host not in _GITHUB_REPO_HOSTS:
+        return None
+    segments = [urllib.parse.unquote(s) for s in parts.path.split("/")[1:]]
+    if any(s in (".", "..") or "/" in s or "\\" in s for s in segments):
+        return None
+    if host == "api.github.com":
+        if not segments or segments[0] != "repos":
+            return None
+        segments = segments[1:]
+    if len(segments) < 2 or not segments[0] or not segments[1]:
+        return None
+    return segments[0].lower(), segments[1].lower().removesuffix(".git")
+
+
+def repo_token(url: str, github_token: Optional[str], resource_url: str) -> Optional[str]:
+    """``github_token`` for a request to ``url`` only when ``url`` is inside the repository the
+    resource's own URL names; None for every other URL, a resource that is no GitHub repository
+    included. A run's read is steered by the agent's arguments and by page text, so the token
+    must not reach the rest of the token's GitHub account through it."""
+    if not github_token or not is_github_token_url(url):
+        return None
+    repo = github_repo(resource_url)
+    return github_token if repo is not None and github_repo(url) == repo else None
+
+
 def github_headers(url: str, github_token: Optional[str]) -> dict[str, str]:
     """The token for an https URL on a GitHub host; nothing for any other URL."""
     if github_token and is_github_token_url(url):

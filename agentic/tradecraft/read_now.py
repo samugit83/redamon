@@ -87,7 +87,7 @@ async def read_now(request: ReadNowRequest, *, store: Any = None) -> ReadNowResu
         return _answer("outside_map")
     # The login travels only for a resource the store says has one, and only to its own host.
     credentials = request.secrets.credentials if has_login else None
-    token = request.secrets.github_token
+    token = fetch.repo_token(url.split("#", 1)[0], request.secrets.github_token, row.get("url") or "")
     settings = EffectiveSettings(request.read_settings or {})
     truncated = False
     with fetch.use_login(row.get("url") or url, credentials):

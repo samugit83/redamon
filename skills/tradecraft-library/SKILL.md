@@ -77,6 +77,15 @@ this skill holds only the rules a change must keep. Authorization of the routes 
   [actAs.ts](../../webapp/src/lib/tradecraft/actAs.ts), and no answer carries a secret value
   ([masking.ts](../../webapp/src/lib/tradecraft/masking.ts)). Failed before: `ce84a975` (a login read
   accepted dropped entries as the map), `497c00da` (a catalog asked with no person, and a login in the 1.x run payload).
+- **NEVER let a run's read leave its resource, or send a GitHub token outside its repository or its
+  owner's run.** A forced `section_path` reads only a page of the resource (`_in_resource` in
+  [library/reader.py](../../agentic/tradecraft/library/reader.py): its start page, its live map, its
+  1.x map); a run's token is `_Read.token_for(url)`, which is `fetch.repo_token` (the same owner and
+  repository, no dot segment) and is None outside `V2Catalog.owner_run`; the catalog carries a
+  resource's override only in its owner's run ([catalog.ts](../../webapp/src/lib/tradecraft/catalog.ts)).
+  A new read path takes its token from `token_for`, never the raw value. Failed before: 1.x through
+  7.8.0 read any URL a `section_path` named, with the project owner's token, in every run on the
+  project. Held by [test_tradecraft_read_scope.py](../../agentic/tests/test_tradecraft_read_scope.py).
 - **NEVER list a CVE archive's index without a GitHub token, or send the token anywhere but GitHub.**
   `index_cve` in [ingest/builders.py](../../agentic/tradecraft/ingest/builders.py) makes no call
   without the job's token (`cve_index_needs_token`; `build_cve`'s repository and root calls, which

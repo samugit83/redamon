@@ -90,18 +90,23 @@ def _encode(path: str) -> str:
 
 
 def resolve_path(resource_type: str, base_url: str, sitemap: Any, path: str) -> str:
-    """A map path (or a title, or a path the agent typed) as the URL to read, as 1.x resolves it."""
+    """A map path (or a title, or a path the agent typed) as the URL to read, as 1.x resolves it.
+    The result is not checked against the map: a forced read checks it (``reader._in_resource``)."""
     if not path:
         return base_url
     if path.startswith(("http://", "https://")):
         return path
     path = path.lstrip("/")
     matched = find_in_sitemap(sitemap_entries(sitemap), path)
-    if matched:
-        mp = matched.get("path") or ""
-        if mp.startswith(("http://", "https://")):
-            return mp
-        path = mp.lstrip("/")
+    return entry_url(resource_type, base_url, sitemap, (matched.get("path") or "") if matched else path)
+
+
+def entry_url(resource_type: str, base_url: str, sitemap: Any, path: str) -> str:
+    """The URL a path of the 1.x map is read at, with no lookup in the map: linear over a map,
+    where ``resolve_path`` looks each path up again."""
+    if path.startswith(("http://", "https://")):
+        return path
+    path = path.lstrip("/")
     if resource_type == "github-repo":
         if not path.lower().endswith(_KNOWN_EXTENSIONS):
             path = path.rstrip("/") + "/README.md"

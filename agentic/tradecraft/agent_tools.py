@@ -383,7 +383,7 @@ async def tradecraft_lookup(
         resource_id: slug of a resource, with query, when you have no page ID
         query: what you need; picks the page (with resource_id) or the section (with page)
         cve_id: with resource_id, the CVE to read from a cve-poc-db resource (a page ID of that CVE reads it too)
-        section_path: skip the pick; force a specific path or "page=N" for PDFs
+        section_path: skip the pick; force a path of the resource's map, or "page=N" for PDFs (any other address is refused)
         force_refresh: read a Stored resource's page from the site instead of its stored copy
     """
     return await reader.lookup(resource_id=resource_id or "", query=query or "", cve_id=cve_id,

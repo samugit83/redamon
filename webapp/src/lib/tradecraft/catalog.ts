@@ -6,8 +6,9 @@
  * AC-22, AC-23). A resource with a site login is listed only in its owner's own runs: the
  * person is the owner and no administrator acts as them (R-119, R-153); in any other run it is
  * left out entirely, and a run whose person is unknown counts as another person's (R-155).
- * The GitHub token travels as it did in 1.x (R-156): the resource's own override in every run,
- * the agent adding the run's account token when there is none.
+ * A GitHub token serves the owner's own run only: the resource's override travels only there, and
+ * the agent adds the run's account token (the project owner's) only there, and only for requests
+ * inside the resource's own repository. Any other run reads public pages with no token.
  *
  * The catalog names no generation and no map: readers take the live generation from the row at
  * each call (TD-9, R-219).
@@ -91,7 +92,7 @@ function catalogEntry(row: ActiveRow, user: { ingestion?: unknown } | null, owne
     priority: (PRIORITIES as readonly string[]).includes(row.priority) ? row.priority : 'normal',
     map_version: row.mapVersion,
     read_settings: readSettings(row, user, type),
-    github_token: row.githubTokenOverride || null,
+    github_token: ownerRun ? (row.githubTokenOverride || null) : null,
     credentials: ownerRun && login ? (row.credentials ?? {}) : null,
   }
 }
