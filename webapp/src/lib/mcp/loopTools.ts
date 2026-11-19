@@ -27,7 +27,11 @@ import {
 } from './loopClient'
 import { loopTokenProblem } from './loopScopes'
 
-/** Mirrors the agent's LOOP_ANSWER_MAX_CHARS default; the agent re-checks its own. */
+/**
+ * The first gate on an answer's size. The agent's LOOP_ANSWER_MAX_CHARS defaults to this
+ * and accepts nothing above it, so an operator may only lower the agent's own re-check
+ * (agentic/tests/test_agent_in_the_loop_settings.py reads this line).
+ */
 export const LOOP_ANSWER_MAX_CHARS = 262_144
 export const LOOP_WAIT_DEFAULT_S = 50
 /** The agent refuses a longer project list (MAX_PROJECT_IDS in agent_in_the_loop/routes.py). */

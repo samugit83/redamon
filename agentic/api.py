@@ -3960,11 +3960,14 @@ def _graph_exec_node_id(node) -> int | None:
 
 
 def _graph_exec_coerce(v):
-    """Neo4j driver value -> JSON-serialisable primitive (mirrors redagraph).
+    """Neo4j driver value -> JSON-serialisable primitive.
 
-    Every map loses its display-only keys (graph_db/display_only.py): a secret
-    or a full link with its secret is for the operator's UI, never a caller of
-    this endpoint (MCP clients, the Kali sandbox's redagraph)."""
+    The `_kind` node/relationship shape of redagraph's `_coerce`
+    (mcp/servers/redagraph.py), with two differences that one does not make: a
+    node also carries `nodeId`, and every map loses its display-only keys
+    (graph_db/display_only.py): a secret or a full link with its secret is for
+    the operator's UI, never a caller of this endpoint (MCP clients, the Kali
+    sandbox's redagraph)."""
     from graph_db.display_only import DISPLAY_ONLY_PROPS as hidden
     if v is None or isinstance(v, (bool, int, float, str)):
         return v

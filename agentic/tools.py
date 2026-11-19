@@ -2451,6 +2451,7 @@ class PhaseAwareToolExecutor:
         from ContextVars, never from LLM args. Returns "" if we can't/shouldn't tag.
         """
         try:
+            from agent_context import current_log_session_id
             from redamon_ctx import sign_tag
             key = os.environ.get("INTERNAL_API_KEY", "")
             if not key:
@@ -2459,7 +2460,9 @@ class PhaseAwareToolExecutor:
                 "source": "agent",
                 "project_id": current_project_id.get(),
                 "user_id": current_user_id.get(),
-                "session_id": current_session_id.get() or None,
+                # A node-level set_tenant_context can blank the session id mid-run; the
+                # per-turn log session id is the same chat.
+                "session_id": current_session_id.get() or current_log_session_id.get() or None,
                 "tool": tool_name,
                 "phase": current_phase.get(),
             }

@@ -23,6 +23,8 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 _AGENTIC_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_AGENTIC_DIR))
 
@@ -304,6 +306,85 @@ class TheGateNamesRealTools(unittest.TestCase):
 
     def test_the_orientation_tools_are_never_budgeted(self):
         self.assertFalse({"graph_schema", "graph_summary"} & roe_gate.RECON_DISCOVERY_TOOLS)
+
+
+# Drift-map #90: the vocabulary offers only a companion's parent, and the gate matched
+# exact names, so forbidding query_graph or tradecraft_lookup let their companions run.
+_COMPANION_PAIRS = sorted(
+    (parent, companion)
+    for parent, companions in roe_gate.companion_tools_by_parent().items()
+    for companion in companions
+)
+
+
+@pytest.mark.parametrize("parent,companion", _COMPANION_PAIRS,
+                         ids=[c for _p, c in _COMPANION_PAIRS])
+def test_forbidding_the_parent_refuses_its_companion(parent, companion):
+    with _roe(ROE_FORBIDDEN_TOOLS=[parent]):
+        refusal = roe_gate.check_tool_call(companion, {}, "exploitation", 1)
+        background = roe_gate.check_tool_call("job_spawn", {"tool_name": companion},
+                                              "exploitation", 1)
+    assert refusal is not None, f"{companion} ran although its parent {parent} is forbidden"
+    assert "forbidden by the Rules of Engagement" in refusal.message
+    assert background is not None, f"{companion} started as a job although {parent} is forbidden"
+
+
+@pytest.mark.parametrize("parent,companion", _COMPANION_PAIRS,
+                         ids=[c for _p, c in _COMPANION_PAIRS])
+def test_a_companion_runs_while_its_parent_is_allowed(parent, companion):
+    others = sorted(set(roe_gate.companion_tools_by_parent()) - {parent})
+    with _roe(ROE_FORBIDDEN_TOOLS=others):
+        assert roe_gate.check_tool_call(companion, {}, "exploitation", 1) is None
+
+
+def test_every_companion_constant_has_a_forbiddable_parent():
+    """A new *_COMPANION_TOOLS set needs a parent here, and that parent must be a
+    value an engagement can actually name in roeForbiddenTools."""
+    import json
+
+    by_parent = roe_gate.companion_tools_by_parent()
+    constants = {
+        name: value for name, value in vars(project_settings).items()
+        if name.endswith("_COMPANION_TOOLS") and isinstance(value, frozenset)
+    }
+    assert constants, "project_settings exposes no *_COMPANION_TOOLS constant to check"
+    unmapped = sorted(name for name, value in constants.items()
+                      if value not in by_parent.values())
+    assert not unmapped, f"no RoE parent forbids these companion sets: {unmapped}"
+
+    registry = json.loads((_AGENTIC_DIR.parent / "recon_settings" / "registry.json")
+                          .read_text(encoding="utf-8"))
+    vocabulary = set(registry["fields"]["roeForbiddenTools"]["values"])
+    assert set(by_parent) <= vocabulary, (
+        f"parents an engagement cannot forbid: {sorted(set(by_parent) - vocabulary)}")
+
+
+class AForbiddenParentRefusesItsCompanionsOnEveryPath(unittest.IsolatedAsyncioTestCase):
+    async def _assert_refused(self, run):
+        ex = _executor()
+        with _roe(ROE_FORBIDDEN_TOOLS=sorted(roe_gate.companion_tools_by_parent())):
+            steps = await run(ex)
+        self.assertFalse(_dispatched(ex), "a companion of a forbidden tool reached the executor")
+        for step in steps:
+            self.assertFalse(step["success"])
+            self.assertIn("forbidden by the Rules of Engagement", step["tool_output"])
+
+    async def test_single_tool_path(self):
+        for _parent, companion in _COMPANION_PAIRS:
+            with self.subTest(companion=companion):
+                async def run(ex, companion=companion):
+                    return [await _run_single(ex, companion)]
+                await self._assert_refused(run)
+
+    async def test_plan_wave_path(self):
+        await self._assert_refused(lambda ex: _run_plan(ex, [c for _p, c in _COMPANION_PAIRS]))
+
+    async def test_fireteam_member_paths(self):
+        for action in ("use_tool", "plan_tools"):
+            for _parent, companion in _COMPANION_PAIRS:
+                with self.subTest(action=action, companion=companion):
+                    await self._assert_refused(
+                        lambda ex, a=action, c=companion: _run_member(ex, a, c))
 
 
 # Modules that call the tool executor directly and are, on purpose, not agent

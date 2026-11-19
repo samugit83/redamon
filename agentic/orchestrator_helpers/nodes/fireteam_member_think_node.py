@@ -917,8 +917,9 @@ async def fireteam_member_think_node(
         except Exception as e:
             logger.warning("member chain_step write failed: %s", e)
 
-    # Propagate tenant context so tools called downstream know whose graph it is.
-    set_tenant_context(tenant_id, project_id)
+    # Propagate tenant context so tools called downstream know whose graph it is, and
+    # which chat: the member state carries the parent's session id (_build_member_state).
+    set_tenant_context(tenant_id, project_id, session_id)
     set_phase_context(state.get("current_phase", "informational"))
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))

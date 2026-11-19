@@ -550,7 +550,7 @@ async def fireteam_deploy_node(
     logger.info(f"{'=' * 80}")
 
     # Propagate ContextVars BEFORE create_task so children inherit them.
-    set_tenant_context(tenant_id, project_id)
+    set_tenant_context(tenant_id, project_id, session_id)
     set_phase_context(state.get("current_phase", "informational"))
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))

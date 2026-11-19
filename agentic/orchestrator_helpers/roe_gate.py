@@ -60,6 +60,23 @@ class Refusal:
     error: str
 
 
+def companion_tools_by_parent() -> dict[str, frozenset[str]]:
+    """The tools that ride on one forbiddable parent: forbidding the parent forbids them.
+
+    The roeForbiddenTools vocabulary offers only the parent (the operator sees one
+    tool), and the companions already follow its phase gate
+    (project_settings.is_tool_allowed_in_phase); without this an engagement that
+    forbade tradecraft_lookup still ran tradecraft_search and tradecraft_ask. The
+    sets are read from project_settings, so a companion added there is covered here.
+    """
+    from project_settings import GRAPH_COMPANION_TOOLS, TRADECRAFT_COMPANION_TOOLS
+
+    return {
+        'query_graph': GRAPH_COMPANION_TOOLS,
+        'tradecraft_lookup': TRADECRAFT_COMPANION_TOOLS,
+    }
+
+
 def _dispatched_tools(tool_name: str, tool_args) -> list[str]:
     names = [tool_name]
     if tool_name == 'job_spawn' and isinstance(tool_args, dict):
@@ -84,6 +101,10 @@ def roe_block_reason(tool_name: str, phase: str) -> str | None:
         forbidden.add('execute_hydra')
     if not get_setting('ROE_ALLOW_DOS', False):
         forbidden.update(CATEGORY_TOOL_MAP.get('dos', []))
+
+    for parent, companions in companion_tools_by_parent().items():
+        if parent in forbidden:
+            forbidden.update(companions)
 
     if tool_name in forbidden:
         return f"RoE BLOCKED: Tool '{tool_name}' is forbidden by the Rules of Engagement."

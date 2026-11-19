@@ -337,7 +337,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     logger.info(f"[{user_id}/{project_id}/{session_id}] Think node - iteration {iteration}, phase: {phase}")
 
     # Set context for tools
-    set_tenant_context(tenant_id, project_id)
+    set_tenant_context(tenant_id, project_id, session_id)
     set_phase_context(phase)
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))

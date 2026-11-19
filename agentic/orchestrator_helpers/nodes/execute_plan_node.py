@@ -319,8 +319,9 @@ async def execute_plan_node(
     logger.info(f"{'='*60}")
 
     # Set context (ContextVar — inherited by child tasks in asyncio); the tenant is the
-    # project's owner, whose graph and traffic the tools use.
-    set_tenant_context(get_tenant_id(state, config), project_id)
+    # project's owner, whose graph and traffic the tools use. The chat session id ties
+    # each wave call's capture tag and send budget to this chat, as in execute_tool_node.
+    set_tenant_context(get_tenant_id(state, config), project_id, session_id)
     set_phase_context(phase)
     if graph_view_cyphers:
         set_graph_view_context(graph_view_cyphers.get(session_id))
