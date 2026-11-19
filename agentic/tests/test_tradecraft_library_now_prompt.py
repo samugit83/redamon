@@ -6,8 +6,9 @@ is the only thing replaced, to capture them):
 - with a built-in skill, a user skill and no skill, the skill's block is unchanged, the main
   instructions hold the one general rule, and the Library now block ends the system message;
 - where Library now runs, and only there, the rule is followed by one general line asking each
-  todo item to name its technique and the target's technology (NQ-8, option c), naming no
-  attack class;
+  todo item to name only its technique, the vulnerability's public identifier when known and the
+  target's technology (NQ-8, option c), leaving the target's own details to the tool calls and the
+  todo list to an active skill's own instructions, naming no attack class;
 - the library's line for the chosen skill sits just before the skill's block;
 - every provider adapter still sends one system message (OpenAI and OpenAI-compatible strict chat
   templates, Anthropic, Gemini, Bedrock Converse, the Agent in the Loop renderer), and the
@@ -315,11 +316,17 @@ CATEGORY_WORDS = frozenset({"the", "a", "an", "or", "and", "its", "product", "fr
                             "version"})
 
 
+# Two sentences name the step's subject and keep the target's details out; a third, the driver's
+# allowance (FIX-STEPNAME2's review), leaves the todo list to an active skill that keeps those details
+# in it.
+MAX_SENTENCES = 3
+
+
 def neutrality_problems(rule):
     """What makes ``rule`` less than general, empty when it is: a vocabulary name, a name of
     ``OUTSIDE_VOCABULARY``, an example marker, a parenthesis that lists names, a capitalised word
-    that does not open a sentence (a name such as an acronym or a product), more than two sentences
-    after the title."""
+    that does not open a sentence (a name such as an acronym or a product), more than
+    ``MAX_SENTENCES`` sentences after the title."""
     problems = []
     lowered = rule.lower()
 
@@ -339,21 +346,25 @@ def neutrality_problems(rule):
         opens_sentence = not before or before[-1] in ".!?"
         if any(c.isupper() for c in word) and not (opens_sentence and word[1:] == word[1:].lower()):
             problems.append(f"capitalised name: {word}")
-    if len(re.findall(r"[.!?](?=\s|$)", body)) > 2:
-        problems.append("more than two sentences")
+    if len(re.findall(r"[.!?](?=\s|$)", body)) > MAX_SENTENCES:
+        problems.append(f"more than {MAX_SENTENCES} sentences")
     return problems
 
 
 def test_the_step_naming_rule_names_no_attack_class():
     """The owner's condition: the library can hold anything, so the line is general. It names no
     particular attack class, technique, technology or tool, gives no example in any wording, and is
-    at most two sentences after its title. Its parenthesis lists kinds of technology (lower-case
+    at most ``MAX_SENTENCES`` sentences after its title. Its parenthesis lists kinds of technology (lower-case
     words of ``CATEGORY_WORDS``), not names. Each way the line could stop being general is caught."""
     rule = step_rule()
     assert len(_vocabulary_names()) > 100
     assert neutrality_problems(rule) == []
     kinds = "(the product, framework, language or protocol)"
     assert kinds in rule
+
+    def tail(extra):
+        return rule[:-1] + extra + "."
+
     mutated = {
         "such as": rule.replace("technology it is about", "technology it is about, such as HTTP or Java"),
         "like": rule.replace("technology it is about", "technology it is about, like OAuth"),
@@ -361,16 +372,88 @@ def test_the_step_naming_rule_names_no_attack_class():
         "e.g. in a parenthesis": rule.replace(kinds, "(e.g. the product or protocol)"),
         "names in the parenthesis": rule.replace(kinds, "(HTTP, Java or Python)"),
         "lower-case names in the parenthesis": rule.replace(kinds, "(the product, nginx or golang)"),
-        "an unlisted lower-case name": rule.replace("finds little.", "finds little, as with python."),
-        "an attack class outside the vocabulary": rule.replace("finds little.", "finds little on a race condition."),
-        "a vocabulary class": rule.replace("finds little.", "finds little on SQL injection."),
-        "a capitalised name": rule.replace("finds little.", "finds little on Acme Portal."),
-        "a quoted example": rule.replace("finds little.", 'finds little ("probe the form").'),
-        "a third sentence": rule + " Keep it brief.",
+        "an unlisted lower-case name": tail(", as with python"),
+        "an attack class outside the vocabulary": tail(" on a race condition"),
+        "a vocabulary class": tail(" on SQL injection"),
+        "a capitalised name": tail(" on Acme Portal"),
+        "a quoted example": tail(' ("probe the form")'),
+        "too many sentences": rule + " Keep it brief." * MAX_SENTENCES,
     }
     for case, line in mutated.items():
         assert line != rule, case
         assert neutrality_problems(line), case
+
+
+# The target's own details: no library page holds them, so each one a step names lowers every page's
+# share of the step's terms (FIX-ITER6: rule-7 steps of 13-18 term groups lost their best page).
+TARGET_DETAILS = ("paths", "parameters", "values", "file names", "tokens", "proof strings")
+
+
+def leave_out_problems(rule):
+    """What the line lacks to keep a step's description to its technique and technology: "only",
+    the instruction to leave out the target's own details, each kind of them, and where they go."""
+    problems = []
+    if "names only the technique" not in rule or "and the target's technology it is about" not in rule:
+        problems.append("only the technique and the technology")
+    if "Leave out the target's own details" not in rule:
+        problems.append("leave out the target's details")
+    problems += [f"detail: {d}" for d in TARGET_DETAILS if not re.search(rf"\b{d}\b", rule)]
+    if "which belong in the tool calls" not in rule:
+        problems.append("where the details go")
+    return problems
+
+
+def test_the_step_naming_rule_keeps_the_targets_details_out():
+    """A step's description names only its technique and the target's technology: the target's own
+    details (paths, parameters, values, file names, tokens, proof strings) go in the step's tool
+    calls, since Library now searches with every word of the description. Dropping the clause, the
+    "only", or a kind of detail is caught."""
+    rule = step_rule()
+    assert leave_out_problems(rule) == []
+    assert neutrality_problems(rule) == []
+    assert "Library now searches your library with the words of your step in progress and your next step" in rule
+    mutated = {
+        "no leave-out clause": re.sub(r"Leave out [^:]*: ", "", rule),
+        "no only": rule.replace("names only the technique", "names the technique"),
+        "a kind of detail dropped": rule.replace("tokens and proof strings", "and tokens"),
+        "no place for the details": rule.replace("belong in the tool calls", "belong in notes"),
+    }
+    for case, line in mutated.items():
+        assert line != rule, case
+        assert leave_out_problems(line), case
+
+
+IDENTIFIER = "the vulnerability's public identifier when you know one"
+
+
+def test_the_step_naming_rule_keeps_the_vulnerabilitys_public_identifier():
+    """"Only the technique and the technology" would drop a vulnerability's public id, the one word
+    of a step that Library now matches exactly: the search keeps it whole and an exact id fits on its
+    own, reaching a CVE archive's entry before any finding confirms it. The line allows it among
+    what a step names, in words the neutrality checker accepts."""
+    from tradecraft.library import profile
+
+    rule = step_rule()
+    assert f"names only the technique, {IDENTIFIER}, and the target's technology it is about" in rule
+    assert neutrality_problems(rule) == [] and leave_out_problems(rule) == []
+    assert "CVE-2099-0001" in profile.query_of("Probe CVE-2099-0001 on the sign-in form at 10.0.0.9").split()
+    dropped = rule.replace(f", {IDENTIFIER},", "")
+    assert dropped != rule and IDENTIFIER not in dropped
+
+
+CARVE_OUT = "An active skill's own instructions for the todo list come first."
+
+
+def test_an_active_skills_todo_instructions_come_first():
+    """Some skills keep the target's details in the todo list on purpose: candidate sinks ranked as
+    items, attempts tracked as items with their lists (an attempt cap enforced only through that
+    tracking), and a pending item has no tool call yet. The line ends by giving way to the active
+    skill's own instructions for the todo list, in general words."""
+    rule = step_rule()
+    assert rule.endswith(" " + CARVE_OUT) and rule.count(CARVE_OUT) == 1
+    assert neutrality_problems(rule) == [] and leave_out_problems(rule) == []
+    dropped = rule.replace(" " + CARVE_OUT, "")
+    assert dropped != rule and CARVE_OUT not in dropped
 
 
 # --------------------------------------------------------------------------------------

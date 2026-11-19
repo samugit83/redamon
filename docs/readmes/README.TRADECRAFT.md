@@ -766,9 +766,13 @@ never a word of the page's own. No page text (a description, a section) is shown
   `query_graph` and `web_search` whenever an instruction asks for specifics. The `thought` says, in one short sentence
   with no line break, `Library: read <page id>.` only together with that call, otherwise `Library: nothing fit.`.
 - **Rule 7, *Name each step*** (`prompts.base.STEP_NAMING_RULE`), right after rule 6 and only with it: each todo
-  item's description is a short phrase naming the technique and the target's technology it is about (the product,
-  framework, language or protocol), as far as the agent knows them, because Library now searches with the words of
-  the steps. It names no attack class. Neither rule is in a run without Library now, whose prompt reads as it does with
+  item's description is a short phrase naming only the technique, the vulnerability's public identifier when known,
+  and the target's technology it is about (the product, framework, language or protocol), as far as the agent knows
+  them. The target's own details (paths, parameters, values, file names, tokens, proof strings) belong in the tool
+  calls: Library now searches with the words of the steps, and no page holds them, so each one lowers every page's
+  share of the step's terms, while a public identifier is matched exactly and fits on its own. An active skill's own
+  instructions for the todo list come first (a skill may rank candidates or track attempts as todo items). It names
+  no attack class. Neither rule is in a run without Library now, whose prompt reads as it does with
   no library; both reach an Agent in the Loop driver, whose step is the same prompt, and neither is in a Fireteam
   member's prompt.
 - **An announced read that did not happen.** When the last thought said `Library: read <page id>.` for a page a block

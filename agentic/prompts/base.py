@@ -1331,13 +1331,19 @@ Use ask_user ONLY when you need user input that cannot be determined from graph,
 # Library now (tradecraft/library/hints.py) searches with the words of the todo item in progress and
 # the next pending one, and keeps a page only when it covers enough of the step's terms: an item that
 # describes its action without naming its subject finds little, and every extra word lowers a page's
-# share. General on purpose (the owner's NQ-8, option c): a library can hold anything, so the line
-# names no attack class.
+# share. The target's own details are the costliest words, since no page holds them: steps of 13-18
+# term groups that mixed them in lost their best page (FIX-ITER6). A vulnerability's public id is the
+# opposite, matched exactly and fitting on its own. Skills that track attempts or rank candidates as
+# todo items keep their own instructions. General on purpose (the owner's NQ-8, option c): a library
+# can hold anything, so the line names no attack class.
 STEP_NAMING_RULE = (
-    "7. **Name each step.** Write each todo item's description as a short phrase that names the technique "
-    "and the target's technology it is about (the product, framework, language or protocol), as far as you "
-    "know them. Library now searches your library with the words of your step in progress and your next "
-    "step: an item that only says what to do, without naming them, finds little."
+    "7. **Name each step.** Write each todo item's description as a short phrase that names only the "
+    "technique, the vulnerability's public identifier when you know one, and the target's technology it is "
+    "about (the product, framework, language or protocol), as far as you know them. Leave out the target's "
+    "own details, its paths, parameters, values, file names, tokens and proof strings, which belong in the "
+    "tool calls: Library now searches your library with the words of your step in progress and your next "
+    "step, and no page holds a target's own details. An active skill's own instructions for the todo list "
+    "come first."
 )
 
 
