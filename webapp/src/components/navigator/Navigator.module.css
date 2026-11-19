@@ -205,6 +205,12 @@
   color: var(--accent-secondary) !important;
   text-decoration: none;
 }
+/* --accent-secondary-subtle is blue-900 in both themes: a navy chip on a white answer. */
+:global([data-theme='light']) .citeChip {
+  background: var(--color-blue-100);
+  color: var(--color-blue-700) !important;
+}
+:global([data-theme='light']) .citeChip:hover { background: var(--color-blue-200); }
 .badges { display: flex; gap: var(--space-1); flex-wrap: wrap; }
 .badge {
   font-size: var(--text-xs);
