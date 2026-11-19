@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.9.0] - 2026-11-19
+
+AI Navigator, a read-only chat about RedAmon and your project's data; Tradecraft 2.0, each account's library of knowledge sites that the agent reads during an engagement; and security fixes for the graph's tenant filters and for Tradecraft. Tradecraft 2.0 replaces 1.x at the agent's first start: read *What changes for you* and *Upgrade* first.
+
 ### Added
 
 - **AI Navigator**: a draggable chat button on every page, with a panel you resize by its edges, that answers questions about **how RedAmon works** (from the documentation, with links to the exact section on redamon.org and the GitHub wiki) and about **the selected project's data** (graph, findings, scans and versions, settings, triage, remediations, reports, workspace files). It only reads: requests to act are handed to the AI Agent ("Open the AI Agent"). It runs on each person's own model (Global Settings → Models by feature → AI Navigator, asked on the first message), reads only what that person may read (checked on every call), and keeps each person's conversations private, per project. See the wiki page *AI Navigator*.
@@ -45,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tradecraft no longer shares a page cache between accounts.** 1.x cached downloaded pages by URL in one volume for every account; that cache is gone, and every read of the new page store is keyed by the resource's owner. The internal route that listed an account's resources with their tokens unmasked is removed: the agent receives a run's catalog only (`GET /api/internal/agent/tradecraft/catalog`, the internal key checked in the route, the owner read from the project row).
 - **Site logins stay with their owner.** A resource's login is sent only to its own host, hop by hop (a redirect elsewhere never carries it), never through the browser, and only in its owner's own runs: a collaborator's run, or one while an administrator acts as the owner, does not get the resource at all, and others see it as *Owner only*. While an administrator acts as an account that can sign in, every Tradecraft write is refused (403 `own_account_only`, as for the account's other settings). With `RBAC_PERMISSIONS_ENABLED` on, a login resource's stored page text and Read now are also refused while an administrator acts as the account (`use_site_logins`, recorded as `act_as.refused`), its Map view shows titles and URLs only, and on a passwordless managed account the writes that would use or change the login are refused too (`use_site_logins`, `change_site_logins`); with that switch off these act-as refusals do not apply. Every change of a login is audited (`tradecraft.credentials_changed`), never with a value.
 - **Library text is untrusted everywhere.** Every Tradecraft tool result, and every page title or text an ingestion model call reads, sits inside the untrusted envelope; the librarian's answer is checked in code (a page it names must be one it read, an excerpt must appear word for word). Library now's trusted lines are fixed text: the steps it searches for (written by the model or the person) and the pages it shows sit inside the envelope, with no page text, and a read's refusal names a page by its ID or its URL, never by its title (a CVE archive's, by its ID).
+- **A Rules of Engagement ban on `query_graph` or `tradecraft_lookup` covers their companions on every path.** `graph_schema` and `graph_summary` follow `query_graph`, and `tradecraft_search` and `tradecraft_ask` follow `tradecraft_lookup`, in single tools, parallel plans and fireteams alike.
 
 ### What changes for you
 
@@ -56,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Adding or turning on a Tradecraft resource asks for a librarian model** while Configure search → *Librarian use* is **Agent decides** (the default): choose one in Global Settings → Models by feature → *Tradecraft librarian* (the dialog suggests one), or set *Librarian use* to **Search only**, which needs no model and gives the agent plain search.
 - **New projects start with the CVE (MSF) skill off.** Existing projects keep their choice.
 
+### Fixed
+
+- **A chat that closed during its run no longer keeps its session slot.** A client that closed while its run was still saving, or a tab closed mid-run, held its slot after the run ended until the agent restarted; enough of them reached `MAX_AGENT_SESSIONS`, and new chats were refused. The slot is now given back when the run ends.
+- **Allow on a tool or wave card answers at the click:** the buttons give way to *Allowed* and the badge reads *Starting...* until the run starts, so a second click no longer sends a second answer.
+- **Update Settings in a node's settings modal** (workflow view) no longer waits on a model, provider or blocked-target prompt hidden under the modal.
+- **The project Activity link** is a button in the Project Settings header, and asks before leaving unsaved changes.
+- **Clearing a number in the project form** falls back to its default instead of saving a value nobody chose; a typed 0 stays 0 where 0 means no limit.
+
 ### Changed
 
 - `tradecraft_lookup` reads one section of one page at a time, by its page ID (`page`, `section`, `part`); its 1.x arguments (`resource_id`, `query`, `cve_id`, `section_path`, `force_refresh`) still work. Every read, a CVE's file and a PDF page included, stays within the per-read limit: a longer text comes in parts, each naming the call that reads the next. Its siblings `tradecraft_search` and `tradecraft_ask` follow its row of the Tool Matrix.
@@ -65,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Models by feature: the *Tradecraft section picker* tile is gone and *Tradecraft librarian* is new. A resource's own model (crawl decisions, tagging, the summary) is still chosen in its form, and is never an Agent in the Loop model.
 - The project form's tab is **Agent Skills & Tradecraft**.
 - Deleting or disabling an account cancels its Tradecraft ingestion jobs; an ownership transfer clears the project's Tradecraft switches (the resources were the previous owner's).
+- `./redamon.sh update` restarts the recon orchestrator when a module it imports from its mount changes, and rebuilds the webapp when `VERSION` changes.
 
 ### Removed
 
