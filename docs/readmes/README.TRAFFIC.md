@@ -70,7 +70,7 @@ become authoritative. Nothing a target ever touched is trusted to name a tenant.
 | Tag primitive | (library, 3 copies) | n/a | key held by minters only | [`scanners/capture_proxy/redamon_ctx.py`](../../scanners/capture_proxy/redamon_ctx.py) |
 | Egress guard | (library, in proxy) | n/a | No | [`scanners/capture_proxy/egress.py`](../../scanners/capture_proxy/egress.py) |
 | Record shaping | (library, in proxy) | n/a | No | [`scanners/capture_proxy/capture_lib.py`](../../scanners/capture_proxy/capture_lib.py) |
-| Orchestrator control | `recon-orchestrator` | `redamon` + `pentest-net` | Yes | [`recon_orchestrator/container_manager.py:968`](../../recon_orchestrator/container_manager.py#L968) |
+| Orchestrator control | `recon-orchestrator` | `redamon` + `pentest-net` | Yes | [`recon_orchestrator/container_manager.py`](../../recon_orchestrator/container_manager.py) (`start_capture_proxy`) |
 | UI + API | `webapp` | `redamon` | Yes (full DSN) | [`webapp/src/app/traffic/`](../../webapp/src/app/traffic/) |
 | Agent tools | `agent` | `redamon` | Yes (full DSN) | [`agentic/traffic_tools.py`](../../agentic/traffic_tools.py) |
 
@@ -139,7 +139,7 @@ carrying the tenant claim in a signed but as-yet-unverified form.
 ## 4. Stage 1: Producers and the signed context tag
 
 Capture is **off by default** and controlled by a **two-level gate**
-([`schema.prisma:129-142`](../../webapp/prisma/schema.prisma#L129-L142)):
+([`schema.prisma`](../../webapp/prisma/schema.prisma), the `captureProxyEnabled` columns):
 
 1. **Global capability switch** `UserSettings.captureProxyEnabled` (operator-level).
    Flipping this is what actually spawns or stops the proxy + ingest containers
@@ -162,7 +162,7 @@ When capture is active, two independent minters attach the tag, each holding a
 ### The tag
 
 `X-Redamon-Ctx` is a compact, URL-safe, HMAC-SHA256 signed token
-([`redamon_ctx.py:60`](../../scanners/capture_proxy/redamon_ctx.py#L60)). Format:
+([`redamon_ctx.py`](../../scanners/capture_proxy/redamon_ctx.py), `sign_tag`). Format:
 `<b64url(canonical-json)>.<b64url(hmac)>`. The JSON is canonical (sorted keys,
 compact separators) so signer and verifier agree byte-for-byte, and only a
 whitelist of fields is carried so a caller cannot smuggle extra fields past the
@@ -205,12 +205,12 @@ by that claimed source, an attacker who holds neither key cannot forge a tag for
 either source. The proxy holds no key at all, so it can neither read nor forge the
 tag; it only carries it.
 
-**Recon minter** ([`recon/helpers/proxy_routing.py:104`](../../recon/helpers/proxy_routing.py#L104)):
+**Recon minter** ([`recon/helpers/proxy_routing.py`](../../recon/helpers/proxy_routing.py)):
 `get_capture_routing(tool, phase)` signs with `SCANNER_API_KEY`, `source="recon"`,
 carrying project/user/run IDs, tool, phase. Initialized once per run via
 `proxy_routing.configure(settings)`.
 
-**Agent minter** ([`agentic/tools.py:1780`](../../agentic/tools.py#L1780)):
+**Agent minter** ([`agentic/tools.py`](../../agentic/tools.py)):
 `_build_redamon_ctx(tool_name)` signs with `INTERNAL_API_KEY`, `source="agent"`,
 pulling project / user / session from ContextVars (never from LLM arguments). The
 tag is injected as a stripped `_redamon_ctx` kwarg the model never sees.
@@ -242,7 +242,7 @@ on the direct (non-proxy) path, so internal identifiers cannot leak to a target.
 Eight agent tools are routed: `execute_curl`, `execute_httpx`,
 `execute_playwright`, plus the HTTP recon/exploit tools `execute_nuclei`,
 `execute_katana`, `execute_ffuf`, `execute_arjun`, `execute_wpscan`
-(`_CAPTURE_ROUTED_TOOLS`, [`agentic/tools.py:63`](../../agentic/tools.py#L63)). These
+(`_CAPTURE_ROUTED_TOOLS`, [`agentic/tools.py`](../../agentic/tools.py)). These
 mirror the recon pipeline so the agent's own crawl/fuzz/scan traffic is captured,
 searchable, and replayable. For the `-H`-repeatable tools (nuclei/katana/ffuf) the
 flag + header are appended like curl/httpx; `wpscan`/`arjun` merge the tag into a
@@ -318,7 +318,7 @@ flowchart TD
 
 1. **Strip the tag.** `headers.pop("X-Redamon-Ctx")` lifts the tag onto flow
    metadata and deletes the header so it never reaches the target
-   ([`capture_addon.py:92`](../../scanners/capture_proxy/capture_addon.py#L92)).
+   ([`capture_addon.py`](../../scanners/capture_proxy/capture_addon.py), `RedamonCapture.request`).
 2. **Egress guard** ([`egress.py`](../../scanners/capture_proxy/egress.py)). A new proxy is a
    new egress path, so it must not become an SSRF pivot into RedAmon's internal
    network. The guard resolves the hostname and refuses if *any* resolved A/AAAA
@@ -360,7 +360,7 @@ Assemble the record, decide inline vs offload per body, compute passive signals,
 enqueue. Wrapped in a blanket exception handler that logs but never breaks the
 proxy path.
 
-**Body policy** ([`capture_lib.py:101`](../../scanners/capture_proxy/capture_lib.py#L101)). Each
+**Body policy** ([`capture_lib.py`](../../scanners/capture_proxy/capture_lib.py), `decide_body`). Each
 body is routed to exactly one destination: **inline** (Postgres column, agent +
 human readable), **disk** (offload to `/bodies/<sha256>`, human/UI readable only),
 or **meta** (drop bytes, keep only size + sha256). The routing is a per
@@ -389,7 +389,7 @@ kept). Offload is content-addressed, so identical bodies dedup by sha256. The
 size limit — the only knob that *drops* by size is `CAPTURE_MAX_STORE_MB`.
 
 **Passive signals**, computed for free on every response
-([`capture_lib.py:85`](../../scanners/capture_proxy/capture_lib.py#L85)): `hadAuth`,
+([`capture_lib.py`](../../scanners/capture_proxy/capture_lib.py), `passive_signals`): `hadAuth`,
 `hasSetCookie`, missing security headers, cookie-flag issues (missing
 HttpOnly / Secure / SameSite), and `reflectedParams` (any query or body param value
 of at least 4 characters appearing verbatim in the response body, a lead for XSS /
@@ -406,7 +406,7 @@ than blocking the data path. Capture is best-effort: it must never slow a scan.
 Non-root user (uid 10001), `read_only` root filesystem, `cap_drop: [ALL]`,
 `mem_limit` 384m, `pids_limit` 256. Privilege escalation is blocked by stripping
 setuid / setgid bits from every binary in the image
-([`Dockerfile:19`](../../scanners/capture_proxy/Dockerfile#L19)) rather than the
+([`Dockerfile`](../../scanners/capture_proxy/Dockerfile)) rather than the
 `no-new-privileges` flag, which breaks `execve` for non-root users on this
 project's snap-Docker / AppArmor hosts. The mitmproxy CA lives on its own volume
 via `--set confdir=/ca` and its private key never leaves that volume.
@@ -428,7 +428,7 @@ flowchart LR
     I -->|"4b. bad tag / bad row"| REJ[("/spool/.rejected/")]
 ```
 
-The write ([`capture_addon.py:226`](../../scanners/capture_proxy/capture_addon.py#L226))
+The write ([`capture_addon.py`](../../scanners/capture_proxy/capture_addon.py), `_write_spool`)
 writes to `/spool/.tmp/` then `os.replace()` into `/spool/`. The rename is atomic
 within the filesystem, so the ingest worker never sees a half-written record. The
 filename is `time_ns()`-prefixed so a plain `sorted(os.listdir())` yields roughly
@@ -460,16 +460,16 @@ flowchart TD
 
 Key properties:
 
-- **Verification** ([`redamon_ctx.py:74`](../../scanners/capture_proxy/redamon_ctx.py#L74)):
+- **Verification** ([`redamon_ctx.py`](../../scanners/capture_proxy/redamon_ctx.py), `verify_tag`):
   read `source` from the unverified body only to *select* the key, then
   `hmac.compare_digest` over the whole body (constant-time), then re-canonicalize
   and compare to reject any smuggled extra fields.
-- **Tenant stamping** ([`ingest_worker.py:83`](../../scanners/capture_proxy/ingest_worker.py#L83)):
+- **Tenant stamping** ([`ingest_worker.py`](../../scanners/capture_proxy/ingest_worker.py), `build_row`):
   `project_id`, `user_id`, `source` and attribution come from the *verified*
   payload. Everything else (method, host, bodies, signals) comes from the
   untrusted proxy record. The primary key `id` is generated here because Prisma's
   cuid default is client-side.
-- **Redaction** ([`ingest_worker.py:53`](../../scanners/capture_proxy/ingest_worker.py#L53)):
+- **Redaction** ([`ingest_worker.py`](../../scanners/capture_proxy/ingest_worker.py), `redact_headers`):
   when `CAPTURE_PROXY_REDACT_SECRETS` is on, sensitive headers (authorization,
   cookie, set-cookie, x-api-key, x-auth-token, proxy-authorization) are replaced
   with `[redacted:<salted-hash-prefix>]`, so identical secrets still correlate
@@ -509,7 +509,7 @@ need a content digest plus a short expiry in the tag (a future hardening).
 ## 8. Stage 5: Storage
 
 Table `captured_http_transactions`, Prisma-owned
-([`schema.prisma:1052`](../../webapp/prisma/schema.prisma#L1052)) so both the ingest
+([`schema.prisma`](../../webapp/prisma/schema.prisma), `model CapturedHttpTransaction`) so both the ingest
 worker and the webapp agree on the shape. The ingest worker references the
 snake_case column names directly.
 
@@ -679,7 +679,7 @@ Boundary-by-boundary:
 
 The **global** switch `UserSettings.captureProxyEnabled` drives container
 lifecycle. The trigger lives in the user-settings write
-([`webapp/src/app/api/users/[id]/settings/route.ts:221`](../../webapp/src/app/api/users/[id]/settings/route.ts#L221)),
+([`webapp/src/app/api/users/[id]/settings/route.ts`](../../webapp/src/app/api/users/[id]/settings/route.ts), through `reconcileCaptureProxy`),
 not in project save. It calls the orchestrator when the switch flips, or when a
 runtime knob changes while it is already enabled.
 
@@ -697,8 +697,8 @@ sequenceDiagram
 ```
 
 The orchestrator endpoints are `/capture-proxy/{start,stop,status}`
-([`api.py:400`](../../recon_orchestrator/api.py#L400)); the spawn logic is
-[`container_manager.py:968`](../../recon_orchestrator/container_manager.py#L968). It
+([`api.py`](../../recon_orchestrator/api.py)); the spawn logic is `start_capture_proxy` in
+[`container_manager.py`](../../recon_orchestrator/container_manager.py). It
 spawns the pair idempotently. The image is taken from trusted orchestrator env
 only and is never overridable from the UI, so the operator toggle can never spawn
 an arbitrary image. The proxy is published on `127.0.0.1:<port>` so host-net recon
@@ -709,10 +709,10 @@ try/catch) so a save never fails just because the orchestrator is down.
 Exact networks: the proxy joins `redamon_pentest-net` only
 (`_CAPTURE_PROXY_NETWORK`), the ingest worker joins `redamon-network` only
 (`_CAPTURE_INGEST_NETWORK`,
-[`container_manager.py:942-943`](../../recon_orchestrator/container_manager.py#L942-L943)).
+[`container_manager.py`](../../recon_orchestrator/container_manager.py)).
 
 There is also a static `capture` compose profile
-([`docker-compose.yml:1204`](../../docker-compose.yml#L1204)) that defines the same two
+([`docker-compose.yml`](../../docker-compose.yml)) that defines the same two
 services for a manual `docker compose --profile capture up`.
 
 ### Settings (database fields)
@@ -1037,17 +1037,17 @@ flowchart LR
 
 - **Read ops** (`search`, `get`, `sitemap`, `params`, `grep`, `diff`, `to_curl`,
   `query`) POST to `/traffic/exec`
-  ([`api.py:2980`](../../agentic/api.py#L2980)), which dispatches to the same
+  ([`api.py`](../../agentic/api.py), `traffic_exec`), which dispatches to the same
   tenant-scoped `traffic_tools` logic the old read tools used and returns the
   formatted text.
 - **Active ops** (`replay`, `batch`, `fuzz`) POST to `/traffic/replay`
-  ([`api.py:3022`](../../agentic/api.py#L3022)), which is a **PREPARE**: it reads the
+  ([`api.py`](../../agentic/api.py), `traffic_replay`), which is a **PREPARE**: it reads the
   origin (tenant-scoped), builds the host-pinned curl, signs a replay lineage tag,
   and returns `curl_args` + `ctx`. The SDK's `_run` then executes the curl **from
-  inside kali, through the capture proxy** ([`redamon.py:329`](../../mcp/servers/redamon.py#L329)),
+  inside kali, through the capture proxy** ([`redamon.py`](../../mcp/servers/redamon.py)),
   so the send is egress-guarded and re-captured exactly like `execute_curl`.
 - **Browser ops** (`redamon.browser(id)` and its `.goto` / `.click` / `.eval` / … )
-  POST to `/traffic/browser` ([`api.py:3122`](../../agentic/api.py#L3122)), a **PREPARE**
+  POST to `/traffic/browser` ([`api.py`](../../agentic/api.py), `traffic_browser`), a **PREPARE**
   that verifies the tag, gates the exploitation phase, re-reads the origin
   (tenant-scoped) to pin the navigation host/port/scheme, and enforces a per-session
   **action budget** (every action, including `open`, costs one unit). A real Chromium
@@ -1076,7 +1076,7 @@ Four properties stop a compromised sandbox or an attacker-controlled body from
 reaching another tenant's traffic:
 
 1. **Tenant comes from a signed tag, never from the code.** `_verify_traffic_ctx`
-   ([`api.py:2944`](../../agentic/api.py#L2944)) HMAC-verifies the tag against
+   ([`api.py`](../../agentic/api.py)) HMAC-verifies the tag against
    `INTERNAL_API_KEY` and **fails closed** if the key is absent or `changeme`, or if
    the tag lacks a `user_id` / `project_id`. The agent code the LLM writes cannot
    supply or override the tenant.
@@ -1089,7 +1089,7 @@ reaching another tenant's traffic:
    code-supplied condition. There is no SQL-string escape surface, so no `pg_sleep` /
    `dblink` / DDL / UNION is expressible.
 4. **Request-local ContextVars.** `_apply_traffic_tenant`
-   ([`api.py:2965`](../../agentic/api.py#L2965)) binds the verified tenant into
+   ([`api.py`](../../agentic/api.py)) binds the verified tenant into
    ContextVars per FastAPI request task, so concurrent requests never leak scope.
 
 ### The `redamon` SDK surface
@@ -1157,19 +1157,19 @@ them by editing its own script):
 1. **Host is pinned to the origin (scope safety).** `mutate` can change the method,
    path, query, params, headers, cookie and body, but the host / scheme / port always
    come from the origin transaction, and `_origin_url`
-   ([`traffic_tools.py:537`](../../agentic/traffic_tools.py#L537)) forces a rooted path
+   ([`traffic_tools.py`](../../agentic/traffic_tools.py)) forces a rooted path
    and asserts the rebuilt URL's netloc equals the origin's, raising `ValueError`
    otherwise (the F1 host-pin hardening). A replay can never be aimed at a different
    host, so it is neither a scope-bypass nor an SSRF primitive; the endpoint turns
    that `ValueError` into a `400 replay refused`.
 2. **Per-send phase gate.** `/traffic/replay` reads the phase from the verified tag
    and returns `403` unless it is `exploitation` or `post_exploitation`
-   ([`api.py:3036`](../../agentic/api.py#L3036)). Reads and decode work in any phase;
+   ([`api.py`](../../agentic/api.py), `traffic_replay`). Reads and decode work in any phase;
    only sends are gated.
 3. **Per-session send budget.** One confirmed `proxy_brain` run can fan out to many
    sends, so `_TRAFFIC_REPLAY_SENDS` counts prepared sends per session and refuses
    over `TRAFFIC_REPLAY_BUDGET` (default 1000) with a `429`
-   ([`api.py:3082`](../../agentic/api.py#L3082)). A runaway loop cannot flood a target.
+   ([`api.py`](../../agentic/api.py), `traffic_replay`). A runaway loop cannot flood a target.
 4. **Replays go back through the capture proxy.** The worker sends via the same curl
    path, so each is egress-guarded again *and* re-captured with a verified
    `is_replay` / `origin_id` lineage tag minted from `INTERNAL_API_KEY`. Replayed

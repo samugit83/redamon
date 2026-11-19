@@ -96,7 +96,7 @@ It is **Phase 4.5** ("GROUP 4.5"), running **after `resource_enum`** (the
 crawl + endpoint classifier) at every call site. It is gated purely on the
 `AI_SURFACE_RECON_ENABLED` setting (the `js_recon` pattern), **not** on
 `SCAN_MODULES`. The wiring lives in
-[`_maybe_run_ai_surface`](../../recon/main.py#L372) (called from main.py:912, 1417, 1882).
+[`_maybe_run_ai_surface`](../../recon/main.py) (called from `run_ip_recon`, `run_domain_recon` and `run_domain_group`).
 
 ```
 domain_recon → port_scan / nmap → http_probe → resource_enum → [ AI SURFACE RECON 4.5 ] → vuln_scan …
@@ -145,7 +145,7 @@ AI *value* on a generically-named field (`Technology.category`) is prefixed
 
 ## 5. Candidate gathering
 
-Before any probe fires, [`_gather_candidates`](../../recon/main_recon_modules/ai_surface_recon.py#L97)
+Before any probe fires, [`_gather_candidates`](../../recon/main_recon_modules/ai_surface_recon.py)
 builds the list of hosts worth probing. A host (`base_url`) becomes a candidate
 if **any** of these is true:
 
@@ -186,13 +186,13 @@ slot back by its `Retry-After` (1 s floor, 30 s cap).
 ## 6. The workloads
 
 Each workload is independently toggled by a setting and is failure-soft. The
-per-host driver is [`_analyze`](../../recon/main_recon_modules/ai_surface_recon.py#L603).
+per-host driver is [`_analyze`](../../recon/main_recon_modules/ai_surface_recon.py).
 
 ---
 
 ### Workload 1 — Chat-shape probe
 
-**Function:** [`_probe_chat`](../../recon/main_recon_modules/ai_surface_recon.py#L132) · **Setting:** `AI_SURFACE_RECON_CHAT_SHAPE_PROBE_ENABLED`
+**Function:** [`_probe_chat`](../../recon/main_recon_modules/ai_surface_recon.py) · **Setting:** `AI_SURFACE_RECON_CHAT_SHAPE_PROBE_ENABLED`
 
 #### What it does and why
 This workload confirms an LLM chat endpoint and tells you what *dialect* and
@@ -210,7 +210,7 @@ proves the protocol without a successful completion.
 - **From `combined_result`:** the candidate's chat-classified endpoint paths
   (`iface ∈ {llm-chat, llm-completion, sse-stream}`); if none and the host is
   AI-flagged, the 17 static fallback paths in
-  [`AI_CHAT_PROBE_PATHS`](../../recon/helpers/ai_signal_catalog.py#L1470) (OpenAI,
+  [`AI_CHAT_PROBE_PATHS`](../../recon/helpers/ai_signal_catalog.py) (OpenAI,
   Groq's `/openai/...` prefix, Anthropic `/v1/messages`, Cohere `/v2/chat`,
   Perplexity `/v1/sonar`, Mistral FIM, Ollama, TGI `/generate_stream` &
   `/invocations`, …).
@@ -221,7 +221,7 @@ proves the protocol without a successful completion.
 #### How it works
 1. Build the path list (known chat paths, else the static fallback). Cap at 24.
 2. POST a benign body — `{"model":"probe","messages":[{"role":"user","content":"ping"}],"max_tokens":1}` — no redirects, `verify=False`, no auth.
-3. Classify via [`classify_ai_chat_response`](../../recon/helpers/ai_signal_catalog.py#L1537): match the JSON's top-level keys (OpenAI→`choices`, Anthropic→`content`+`stop_reason`, Ollama→`response`, Gemini→`candidates`, LangServe→`output`).
+3. Classify via [`classify_ai_chat_response`](../../recon/helpers/ai_signal_catalog.py): match the JSON's top-level keys (OpenAI→`choices`, Anthropic→`content`+`stop_reason`, Ollama→`response`, Gemini→`candidates`, LangServe→`output`).
 4. Edge case: `401`/`422` + `{"error":…}` body ⇒ still `llm-chat`.
 5. `Content-Type: text/event-stream` ⇒ `supports_streaming = True`.
 6. Record each response's latency, timed after the request's RoE slot so a ceiling wait never counts; emit the **median (p50)**. First classified path wins (`break`).
@@ -246,7 +246,7 @@ Annotates the **primary `GET` Endpoint** (`path = chat.path or mcp.path or "/"`)
 
 ### Workload 2 — MCP handshake + tools + YARA
 
-**Function:** [`_probe_mcp`](../../recon/main_recon_modules/ai_surface_recon.py#L311) · **Settings:** `..._MCP_HANDSHAKE_ENABLED`, `..._MCP_LIST_TOOLS_ENABLED`, `..._MCP_YARA_ENABLED`
+**Function:** [`_probe_mcp`](../../recon/main_recon_modules/ai_surface_recon.py) · **Settings:** `..._MCP_HANDSHAKE_ENABLED`, `..._MCP_LIST_TOOLS_ENABLED`, `..._MCP_YARA_ENABLED`
 
 #### What it does and why
 This is the richest and most security-relevant workload. **MCP (Model Context
@@ -266,13 +266,13 @@ tools can't be called.
 
 #### Input
 - **From `combined_result`:** the candidate's MCP-classified path(s), else the
-  conventional mounts in [`AI_MCP_PROBE_PATHS`](../../recon/helpers/ai_signal_catalog.py#L1498) (`/mcp`, `/sse`, `/messages`, `/api/mcp`, `/mcp/sse`, `/`).
+  conventional mounts in [`AI_MCP_PROBE_PATHS`](../../recon/helpers/ai_signal_catalog.py) (`/mcp`, `/sse`, `/messages`, `/api/mcp`, `/mcp/sse`, `/`).
 - **Originating graph nodes (input nodes):** `BaseURL` → `Endpoint`
   (`ai_interface_type='mcp'`), or any AI-flagged host.
 
 #### How it works
-1. **Detect** ([`_mcp_detect`](../../recon/main_recon_modules/ai_surface_recon.py#L178)) — a **raw** `POST initialize` (JSON-RPC 2.0). Raw, not the SDK, so it can read headers/status the SDK hides. Four outcomes: `401 + WWW-Authenticate` (MCP, `auth_required=True`); a valid `result` (confirmed, captures `serverInfo`/caps/instructions); an SSE-wrapped result (parsed via `_first_sse_json`); or a version-mismatch error that *leaks supported protocol versions*.
-2. **Enumerate** ([`_mcp_enumerate`](../../recon/main_recon_modules/ai_surface_recon.py#L223)) — only if listing is on **and** not auth-gated. Uses the real **MCP SDK** to call `tools/list` + `resources/list` + `prompts/list`, returning structured tool schemas. The listing's deadline (`timeout * 4`) moves by each RoE slot wait, since that queue is the ceiling's, not a slow server's.
+1. **Detect** ([`_mcp_detect`](../../recon/main_recon_modules/ai_surface_recon.py)) — a **raw** `POST initialize` (JSON-RPC 2.0). Raw, not the SDK, so it can read headers/status the SDK hides. Four outcomes: `401 + WWW-Authenticate` (MCP, `auth_required=True`); a valid `result` (confirmed, captures `serverInfo`/caps/instructions); an SSE-wrapped result (parsed via `_first_sse_json`); or a version-mismatch error that *leaks supported protocol versions*.
+2. **Enumerate** ([`_mcp_enumerate`](../../recon/main_recon_modules/ai_surface_recon.py)) — only if listing is on **and** not auth-gated. Uses the real **MCP SDK** to call `tools/list` + `resources/list` + `prompts/list`, returning structured tool schemas. The listing's deadline (`timeout * 4`) moves by each RoE slot wait, since that queue is the ceiling's, not a slow server's.
 3. **Statically analyze each tool:**
    - **hash** each tool (`{name, description, inputSchema}`) + an aggregate `tools_hash` + `instructions_hash` — **rug-pull pins**: a silent later swap changes the hash.
    - **annotation mismatch** — a tool declaring `readOnlyHint:true` but whose name implies mutation (`delete`/`write`/`exec`…) → finding.
@@ -301,7 +301,7 @@ Three distinct graph effects:
 
 ### Workload 3 — OpenAPI / manifest / model listing
 
-**Function:** [`_probe_openapi`](../../recon/main_recon_modules/ai_surface_recon.py#L393) · **Settings:** `..._OPENAPI_DISCOVERY_ENABLED`, `..._MODEL_LIST_ENABLED`
+**Function:** [`_probe_openapi`](../../recon/main_recon_modules/ai_surface_recon.py) · **Settings:** `..._OPENAPI_DISCOVERY_ENABLED`, `..._MODEL_LIST_ENABLED`
 
 #### What it does and why
 Pure passive **GET discovery** (keyless). Many AI services *volunteer* documents
@@ -317,14 +317,14 @@ inject tool arguments.
 
 #### Input
 - **From `combined_result`:** the candidate `base_url`. It GETs each path in
-  [`AI_OPENAPI_DISCOVERY_PATHS`](../../recon/helpers/ai_signal_catalog.py#L1509)
+  [`AI_OPENAPI_DISCOVERY_PATHS`](../../recon/helpers/ai_signal_catalog.py)
   (`/.well-known/ai-plugin.json`, `/openapi.json`, `/swagger.json`,
   `/v3/api-docs`, `/v1/models`, `/models`, `/api/tags`, `/api/version`).
 - **Originating graph nodes (input nodes):** `BaseURL` / its AI `Technology` signal.
 
 #### How it works
-1. **Model-listing paths** → [`_extract_model_ids`](../../recon/main_recon_modules/ai_surface_recon.py#L468): jq `.data[].id` / `.models[].name` / `.models[].details.family`, with a plain-Python fallback when `jq` is unavailable.
-2. **Spec paths** → [`_parse_spec`](../../recon/main_recon_modules/ai_surface_recon.py#L579) (JSON only): `ai-plugin.json` ⇒ `supports_tools`; OpenAPI ⇒ `_resolve_local_refs` inlines only in-document `"#/..."` JSON pointers, with no I/O and node, character and depth budgets (over a budget the document is cached unresolved). Every other `$ref` (absolute, scheme-relative, relative, `file:`) and every cyclic or dangling one stays as data: the target's document never makes the recon container fetch a URL or read a file. A lowercased blob scan of the served document sets `supports_tools` (`"tools"`/`"function"`/`"input_schema"`), `supports_vision` (`"image_url"`/`"image"`), `supports_streaming` (`"stream"`/`text/event-stream`).
+1. **Model-listing paths** → [`_extract_model_ids`](../../recon/main_recon_modules/ai_surface_recon.py): jq `.data[].id` / `.models[].name` / `.models[].details.family`, with a plain-Python fallback when `jq` is unavailable.
+2. **Spec paths** → [`_parse_spec`](../../recon/main_recon_modules/ai_surface_recon.py) (JSON only): `ai-plugin.json` ⇒ `supports_tools`; OpenAPI ⇒ `_resolve_local_refs` inlines only in-document `"#/..."` JSON pointers, with no I/O and node, character and depth budgets (over a budget the document is cached unresolved). Every other `$ref` (absolute, scheme-relative, relative, `file:`) and every cyclic or dangling one stays as data: the target's document never makes the recon container fetch a URL or read a file. A lowercased blob scan of the served document sets `supports_tools` (`"tools"`/`"function"`/`"input_schema"`), `supports_vision` (`"image_url"`/`"image"`), `supports_streaming` (`"stream"`/`text/event-stream`).
 3. The spec (local refs inlined) is cached to `/tmp/redamon/ai_surface_recon/<project>/specs/<hash>.json`; the path becomes `tool_schema_ref`.
 4. `guess_model_family(model_ids)` → a family token (`gpt`/`claude`/`llama`/…; longest token wins so `codellama` beats `llama`).
 
@@ -352,7 +352,7 @@ Annotates the **same primary `GET` Endpoint** as W1:
 
 ### Workload 4 — Julius probe pack
 
-**Functions:** [`_probe_julius`](../../recon/main_recon_modules/ai_surface_recon.py#L491) + [`probe_pack_engine.py`](../../recon/helpers/probe_pack_engine.py) · **Setting:** `..._JULIUS_PROBE_PACK_ENABLED`
+**Functions:** [`_probe_julius`](../../recon/main_recon_modules/ai_surface_recon.py) + [`probe_pack_engine.py`](../../recon/helpers/probe_pack_engine.py) · **Setting:** `..._JULIUS_PROBE_PACK_ENABLED`
 
 #### What it does and why
 This is the **declarative, data-driven** fingerprinter — a Python
@@ -404,7 +404,7 @@ It also feeds the merged `ai_model_family_guess` and `ai_model_ids` on the prima
 
 ### Workload 5 — Vector-DB confirmation reads
 
-**Function:** [`_confirm_vector_dbs`](../../recon/main_recon_modules/ai_surface_recon.py#L556) · **Setting:** `..._VECTOR_DB_READ_ENABLED`
+**Function:** [`_confirm_vector_dbs`](../../recon/main_recon_modules/ai_surface_recon.py) · **Setting:** `..._VECTOR_DB_READ_ENABLED`
 
 #### What it does and why
 Vector databases are the **memory of RAG systems** — and an exposed one means an
@@ -419,12 +419,12 @@ authentication** — a real exposure.
 > finally reachable.
 
 #### Input (two unioned sources, deduped on `(tech, host, port)`)
-1. **`port_scan.by_host`** — open ports whose [`AI_PORTS`](../../recon/helpers/ai_signal_catalog.py#L74) entry is category `ai-vector-db` **and** has a read recipe (e.g. qdrant `6333`, milvus `19530`).
+1. **`port_scan.by_host`** — open ports whose [`AI_PORTS`](../../recon/helpers/ai_signal_catalog.py) entry is category `ai-vector-db` **and** has a read recipe (e.g. qdrant `6333`, milvus `19530`).
 2. **`http_probe.by_url`** — hosts whose body/title fingerprint set `ai_framework_name` to a known vector DB. **This is the only way DBs on shared ports get confirmed** — chroma (`8000`, catalogued `ai-runtime`) and weaviate (`8080`, catalogued `ai-frontend`) come exclusively from here.
 - **Originating graph nodes (input nodes):** `IP -[:HAS_PORT]-> Port` (for source 1) and `BaseURL` / its body-detected `Technology` (for source 2).
 
 #### How it works
-For each candidate, try each recipe in [`AI_VECTOR_DB_READS`](../../recon/helpers/ai_signal_catalog.py#L1528) over `http://` then `https://`; first `200` (+ optional expected substring) wins:
+For each candidate, try each recipe in [`AI_VECTOR_DB_READS`](../../recon/helpers/ai_signal_catalog.py) over `http://` then `https://`; first `200` (+ optional expected substring) wins:
 
 | tech | endpoints tried (first match wins) | confirm |
 |---|---|---|
@@ -473,7 +473,7 @@ combined_result["ai_surface_recon"] = {
 ```
 
 This blob is consumed by
-[`update_graph_from_ai_surface_recon`](../../graph_db/mixins/recon/ai_surface_recon_mixin.py#L20),
+[`update_graph_from_ai_surface_recon`](../../graph_db/mixins/recon/ai_surface_recon_mixin.py),
 which applies all the node enrichments described per-workload above and returns
 stats: `endpoints_annotated`, `parameters_created`, `vulnerabilities_created`,
 `technologies_promoted`, `errors[]`.

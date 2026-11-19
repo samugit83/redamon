@@ -972,7 +972,8 @@ mcp/servers/network_recon_server.py              # L3 execute_osv_scanner (passi
 agentic/supply_chain_tools.py                    # L3 execute_guarddog (dispatched to orchestrator)
 recon_orchestrator/{container_manager,api,models}.py  # L1 lifecycle + REST + L3 guarddog admission
 webapp/src/app/api/supply-chain/                 # proxy routes + SBOM upload
-webapp/src/components/projects/ProjectForm/sections/SupplyChainSection.tsx
+webapp/src/components/projects/ProjectForm/sections/SupplyChainReconSection.tsx  # L2 recon settings
+webapp/src/components/projects/ProjectForm/sections/SupplyChainScanSection.tsx   # L1 scan settings
 webapp/src/app/api/analytics/redzone/supplyChainSca/route.ts    # SCA table API (3 sheets)
 webapp/src/app/graph/components/RedZoneTables/SupplyChainScaTable.tsx  # the table
 graph_db/schema_sections.md                            # node documentation (THE declaration)

@@ -214,7 +214,7 @@ sequenceDiagram
     participant Httpx as httpx container
     participant Katana as katana container
     participant GAU as gau container
-    participant KR as kiterunner container
+    participant KR as kiterunner binary
     participant Nuclei as nuclei container
     participant GraphBG as Graph DB (background)
 
@@ -254,7 +254,7 @@ sequenceDiagram
     Recon->>GraphBG: Background: http probe graph update
 
     Note over Recon,KR: GROUP 5 — Resource Enum (parallel + sequential)
-    par Katana ∥ Hakrawler ∥ GAU ∥ Kiterunner
+    par Katana ∥ Hakrawler ∥ GAU ∥ ParamSpider (one at a time under an RoE ceiling)
         Recon->>Docker: docker run katana
         Docker->>Katana: Crawl live URLs
         Katana-->>Recon: endpoints
@@ -267,12 +267,14 @@ sequenceDiagram
         Docker->>GAU: Fetch archived URLs
         GAU-->>Recon: historical URLs
     and
-        Recon->>Docker: docker run kiterunner
-        Docker->>KR: API bruteforce
-        KR-->>Recon: hidden APIs
+        Recon->>Recon: ParamSpider — archived URLs that carry parameters
     end
+    Recon->>KR: Kiterunner — API bruteforce, one run per wordlist
+    KR-->>Recon: hidden APIs
     Recon->>Recon: jsluice — extract URLs & secrets from JS files
     Recon->>Recon: FFuf — directory/endpoint fuzzing with wordlists
+    Recon->>Docker: docker run ZAP Ajax Spider — browser-driven crawl
+    Recon->>Recon: Arjun — hidden parameter discovery
     Recon->>Recon: Merge & classify endpoints
     Recon->>Recon: OpenAPI — fetch specifications, merge declared endpoints (never called)
     Recon->>GraphBG: Background: resource enum graph update
@@ -338,7 +340,7 @@ flowchart LR
     end
 
     subgraph G5["GROUP 5 — parallel + sequential"]
-        RE[Resource Enum<br/>Katana ∥ Hakrawler ∥ GAU ∥ ParamSpider ∥ Kiterunner<br/>crawlers one at a time under an RoE ceiling<br/>then jsluice → FFuf → Arjun → OpenAPI]
+        RE[Resource Enum<br/>Katana ∥ Hakrawler ∥ GAU ∥ ParamSpider<br/>crawlers one at a time under an RoE ceiling<br/>then Kiterunner → jsluice → FFuf → ZAP Ajax Spider → Arjun → OpenAPI]
     end
 
     subgraph G6["GROUP 6 Phase A — parallel (up to 7-way fan-out, enabled tools only; one at a time under an RoE ceiling)"]
@@ -451,19 +453,24 @@ flowchart TB
         direction TB
         Out3 --> ResEnum[Resource Enumeration]
 
-        subgraph EnumTools["3 Tools in Parallel"]
+        subgraph EnumTools["Crawler pool (one at a time under an RoE ceiling)"]
             Katana[Katana<br/>Active Crawling<br/>Current endpoints]
+            Hakrawler[Hakrawler<br/>DOM-aware crawl<br/>Links & forms]
             GAU[GAU<br/>Passive Archives<br/>Historical URLs]
-            KR[Kiterunner<br/>API Bruteforce<br/>Hidden endpoints]
+            ParamSpider[ParamSpider<br/>Archived URLs<br/>with parameters]
         end
 
         ResEnum --> Katana
+        ResEnum --> Hakrawler
         ResEnum --> GAU
-        ResEnum --> KR
+        ResEnum --> ParamSpider
 
-        Katana --> MergeURL[Merge & Classify]
-        GAU --> MergeURL
-        KR --> MergeURL
+        Katana --> InTurn[Then one after another<br/>Kiterunner → jsluice → FFuf<br/>→ ZAP Ajax Spider → Arjun]
+        Hakrawler --> InTurn
+        GAU --> InTurn
+        ParamSpider --> InTurn
+
+        InTurn --> MergeURL[Merge & Classify<br/>then OpenAPI]
 
         MergeURL --> Out4[(Endpoints + Parameters)]
     end
@@ -654,7 +661,7 @@ The recon pipeline uses a **fan-out / fan-in** pattern with Python's `concurrent
 | *Late names* | uncover, tlsx, certificate-SAN and JS Recon names get their DNS; after the port scan, the ports their addresses showed (or a port scan of an unscanned address); after httpx, a probe of their own (`recon/helpers/late_names.py`). Under RoE IP or CIDR entries a name is admitted on its resolved addresses and judged again on the DNS answer the step stores | Sequential | At each merge point (2b, 3.6, after GROUP 4, 5b) |
 | *Takeover verdict* | Which deleted-service pages urlscan recorded still describe their host, from this scan's DNS and live pages (`main_recon_modules/urlscan_takeover.py`) | Sequential; DNS only, through the `dns:takeover-verdict` breaker | After GROUP 4, outside the httpx step; before Phase A, whose Subdomain Takeover reads `urlscan.takeover_hosts` |
 | *IP attribution* | Tags every IP `shared_edge` / `dedicated` / `unknown` (`main_recon_modules/ip_attribution.py`), then writes the Shodan CVEs and the Netlas data GROUP 3/3b held back | Sequential; the TLS handshakes without SNI in a small pool, paced at the RoE ceiling | After GROUP 4 and the certificate SAN feedback; before GROUP 5 and 6. Runs if `IP_ATTRIBUTION_ENABLED` |
-| **GROUP 5** | Resource Enum (Katana + GAU + Kiterunner, then OpenAPI) | 3 tools internally parallel | Needs live URLs from GROUP 4 |
+| **GROUP 5** | Resource Enum (Katana + Hakrawler + GAU + ParamSpider, then Kiterunner, jsluice, FFuf, ZAP Ajax Spider, Arjun and OpenAPI) | The four crawlers in one pool (one at a time under an RoE ceiling), then the other tools one after another (`run_resource_enum`) | Needs live URLs from GROUP 4 |
 | **GROUP 5b** | JS Recon Scanner (250+ regex patterns, key validation, source maps, dependency confusion, endpoint extraction, DOM sinks; optionally TruffleHog in a hardened sidecar, its keys merged one per key) | 5 analyzers parallel per file (TruffleHog in its own worker, on its own running-time budget) | Needs JS files from GROUP 5; runs if `JS_RECON_ENABLED` |
 | **GROUP 5.5** | Supply-Chain Recon (black-box package harvest + offline OSV verdict, retire.js over served JS, optional GuardDog; then incident enrichment, malicious-host correlation and typosquat detection) | Sequential; dispatches the DIRTY analyzer | Needs JS files from GROUP 5b; runs if `SUPPLY_CHAIN_RECON_ENABLED` |
 | **GROUP 6 Phase A** | Vuln Scan (Nuclei) ∥ GraphQL Security Testing ∥ Subdomain Takeover ∥ VHost & SNI Enumeration ∥ Web Cache Poisoning ∥ Origin Discovery ∥ Route Exposure | Up to 7 parallel tasks (ThreadPoolExecutor, `_isolated` wrappers), each only when enabled; under an RoE rate ceiling one at a time, in the same order (`_run_phase_a_fan_out`) | Needs endpoints from GROUP 5/5b |
