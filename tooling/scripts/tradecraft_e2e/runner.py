@@ -2249,8 +2249,12 @@ def record_build(phase: str, run: Optional[Exec] = None, path: Path = BUILD_RECO
                check=False, timeout=60).stdout or "").strip()
     differences = tree_differences(tip, prefixes, run, root=root)
     if phase == "before":
-        base = (run(["git", "-C", str(root), "merge-base", tip, "HEAD"], capture_output=True, text=True, check=False,
-                    timeout=60).stdout or "").strip()
+        # The plan's own base whenever the tip descends from it: the shared checkout's branch merges
+        # the plan branch, and the merge base of the tip and HEAD is then the tip (an empty plan diff).
+        descends = run(["git", "-C", str(root), "merge-base", "--is-ancestor", PLAN_BASE, tip], capture_output=True,
+                       text=True, check=False, timeout=60).returncode == 0
+        base = PLAN_BASE if descends else (run(["git", "-C", str(root), "merge-base", tip, "HEAD"], capture_output=True,
+                                               text=True, check=False, timeout=60).stdout or "").strip()
         # Every path the plan changed, by itself: --no-renames, so a rename's old path is one too (the
         # tree may still hold it); NUL-separated, so a name with a space or one git quotes is whole.
         changed = {p for p in (run(["git", "-C", str(root), "diff", "--name-only", "--no-renames", "-z", base, tip,
