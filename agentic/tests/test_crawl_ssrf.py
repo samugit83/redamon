@@ -18,6 +18,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 _AGENTIC_DIR = Path(__file__).resolve().parent.parent
@@ -33,7 +34,11 @@ class GuardPolicy(unittest.TestCase):
         assert_safe_fetch_url(PUBLIC)  # no raise
 
     def test_allows_unresolvable(self):
-        assert_safe_fetch_url("http://nonexistent.invalid.example/")  # DNS fails → allowed
+        # Stub the resolver: some home and ISP resolvers answer every unknown name
+        # (through their search domain) with 127.0.0.1, which a live lookup would
+        # turn into a refusal on those networks.
+        with patch("orchestrator_helpers.fetch_guard._resolve_ips", return_value=[]):
+            assert_safe_fetch_url("http://nonexistent.invalid.example/")  # DNS fails → allowed
 
     def test_blocks_metadata_and_private(self):
         for bad in [
