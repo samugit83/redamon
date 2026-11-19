@@ -36,7 +36,9 @@ export type NavigatorEvent =
   | { type: 'error'; code: string; message: string }
 
 const CODE_RE = /^[a-z_]{1,40}$/
-const TOOL_NAME_RE = /^[a-z_]{1,60}$/
+// The agent's `_NAME_RE` (agentic/navigator/remote_tools.py) decides which tool names exist; a name
+// it accepts and this refuses loses every trace event of that tool (events.parity.test.ts).
+const TOOL_NAME_RE = /^[a-z][a-z0-9_]{1,59}$/
 const CITE_ID_RE = /^S\d{1,3}$/
 
 const str = (v: unknown, max: number): v is string => typeof v === 'string' && v.length <= max

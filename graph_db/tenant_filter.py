@@ -171,6 +171,15 @@ def find_disallowed_call(cypher: str) -> Optional[str]:
     `find_disallowed_procedure` only gates `CALL <proc>`. APOC exposes the same
     danger as FUNCTIONS, which need no CALL, so this gates every namespaced call
     by the same positive allowlist, on a normalised view of the query.
+
+    This is the call gate of `scope_query`: the agent, MCP `graph:cypher`
+    (`/graph/exec`) and Navigator's `run_cypher`. It passes any unqualified
+    function, every function in `_SAFE_CALL_NAMESPACES` (all of `vector.*`) and
+    the `db.*` schema calls in `_ALLOWED_PROCEDURES`. The webapp's saved-view
+    gate (`findDisallowedCall` in injectProjectFilter.ts) is a separate policy
+    and deliberately stricter: a whole-function allowlist, only the two
+    `vector.similarity.*` functions, no `db.*`. A query that passes here can
+    therefore be refused as a saved view; that difference is intended.
     """
     for m in _NAMESPACED_CALL_RE.finditer(_normalise_calls(cypher)):
         name = m.group(1)
@@ -353,7 +362,8 @@ _SUBQUERY_WORDS = _PATTERN_SUBQUERY_WORDS | {'CALL'}
 
 #: Words after which `(` opens a pattern or an expression, never a call's
 #: arguments: `MATCH(n)` is a node pattern although no space separates them.
-#: Mirrors NOT_A_CALL in the webapp's injectProjectFilter.ts.
+#: The webapp's NOT_A_CALL (injectProjectFilter.ts) holds these words plus
+#: OFFSET, CONTAINS, STARTS and ENDS; the two lists are kept by hand.
 _NOT_A_CALL = frozenset({
     'MATCH', 'OPTIONAL', 'MERGE', 'CREATE', 'WHERE', 'AND', 'OR', 'XOR', 'NOT',
     'RETURN', 'WITH', 'UNWIND', 'IN', 'AS', 'DISTINCT', 'BY', 'SKIP', 'LIMIT',

@@ -26,7 +26,7 @@ describe('validateAgentEvent', () => {
     [{ type: 'delta', text: 'x'.repeat(4001) }],
     [{ type: 'route', routes: ['graph', 'shell'] }],
     [{ type: 'tool', route: 'graph', name: 'Bad Name', status: 'end', summary: 's' }],
-    [{ type: 'tool', route: 'graph', name: 'x', status: 'end', summary: 's'.repeat(201) }],
+    [{ type: 'tool', route: 'graph', name: 'get_findings', status: 'end', summary: 's'.repeat(201) }],
     [{ type: 'error', code: 'Bad-Code', message: 'm' }],
     [{ type: 'handoff', target: 'evil' }],
     [{ type: 'done', status: 'maybe' }],

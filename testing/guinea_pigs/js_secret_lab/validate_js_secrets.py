@@ -12,8 +12,10 @@
 
 Read through cypher-shell inside redamon-neo4j (muted nodes included, the
 password stays in the container). Values are compared as sha256[:12], computed
-IN the database (apoc.util.sha256): no matched text leaves Neo4j, and nothing
-here prints one. Exit 1 on any FAIL.
+here: Neo4j loads only the APOC functions on the docker-compose.yml allowlist,
+and apoc.util.sha256 is not one. Each Secret's matched text therefore reaches
+this process, and `secret_nodes` replaces it with its hash as each row is
+read; nothing here prints, stores or keeps one. Exit 1 on any FAIL.
 
 A row matches the regex node on its file whose matched_text hashes to the row's
 match_sha12 (the text the rule matches) or value_sha12. .12's hashes depend on
@@ -31,7 +33,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from snapshot import check_pid, cypher_rows  # noqa: E402
+from snapshot import check_pid, cypher_rows, sha12  # noqa: E402
 
 EXPECTED = os.path.join(HERE, "expected.json")
 RUNTIME = os.path.join(HERE, "generated", "expected_runtime.json")
@@ -47,7 +49,7 @@ RETURN apoc.text.base64Encode(apoc.convert.toJson({
   source_url: s.source_url, base_url: s.base_url, key_type: s.key_type, confidence: s.confidence,
   detection_method: coalesce(s.detection_method, 'regex'), validation_status: s.validation_status,
   validation_info: s.validation_info, line_number: s.line_number, alternate_names: s.alternate_names,
-  muted: s.muted, mt12: substring(apoc.util.sha256([coalesce(s.matched_text, '')]), 0, 12),
+  muted: s.muted, matched_text: coalesce(s.matched_text, ''),
   context_empty: coalesce(s.context, '') = '', parents: parents})) AS b
 """
 
@@ -67,6 +69,15 @@ results = []
 
 def check(case, ok, detail, level=None):
     results.append((level or ("PASS" if ok else "FAIL"), case, detail))
+
+
+def secret_nodes(pid):
+    """The js_recon Secret rows, each matched text swapped for its sha12 as soon
+    as it is read, so no later check or message can reach the text itself."""
+    nodes = cypher_rows(SECRETS, pid)
+    for node in nodes:
+        node["mt12"] = sha12(node.pop("matched_text"))
+    return nodes
 
 
 def load_rows():
@@ -280,7 +291,7 @@ def main():
     args = ap.parse_args()
 
     pid = check_pid(args.project_id)
-    nodes = cypher_rows(SECRETS, pid)
+    nodes = secret_nodes(pid)
     rows = load_rows()
     print(f"[*] project {pid}: {len(nodes)} js_recon Secret nodes "
           f"({dict(collections.Counter(n['detection_method'] for n in nodes))}); "
