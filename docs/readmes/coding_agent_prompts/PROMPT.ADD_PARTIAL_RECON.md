@@ -392,7 +392,7 @@ Each tool's settings section has a header with a Toggle switch. Add a "Run parti
 | `recon_orchestrator/models.py` | Already has `user_targets: dict \| None`. |
 | `recon_orchestrator/container_manager.py` | Generic. Writes whatever config it receives. |
 | `webapp/src/app/api/recon/[projectId]/partial/route.ts` | Already passes `user_targets`. |
-| `webapp/src/hooks/usePartialRecon*.ts` | Generic hooks. |
+| `webapp/src/hooks/useMultiPartialReconSSE.ts`, `useMultiPartialReconStatus.ts` | Generic hooks. |
 | `webapp/src/components/.../ToolNode.tsx` | Checks `PARTIAL_RECON_SUPPORTED_TOOLS`. |
 | `webapp/src/components/.../WorkflowView.tsx`, `ProjectForm.tsx` | Already generic. |
 | `webapp/src/app/graph/page.tsx` | Uses `PARTIAL_RECON_TOTAL_PHASES`, the same for every tool. |

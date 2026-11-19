@@ -51,6 +51,13 @@ new attack *skill* (not a tool), use `builtin-agent-skill`.
   has hardcoded `if`/`elif` dispatch. A Type D (API) tool or an MCP tool needing
   key injection MUST add an `elif`; without it the tool is registered but never
   dispatched. MCP tools with no key injection go through the `else` branch automatically.
+- **NEVER store a tool's API key on a manager or on `PhaseAwareToolExecutor`.** Both
+  are built once and shared by every run of every owner, so a stored key is spent by
+  the next run of anyone (RBAC T17). Read it per call from the run's own settings:
+  `_call_key('<tool>')` / `run_key_rotator()` over `run_user_settings()` in
+  [agentic/tools.py](../../agentic/tools.py); `_apply_project_settings()` writes no
+  credential. [test_run_credentials_isolation.py](../../agentic/tests/test_run_credentials_isolation.py)
+  fails a manager that takes or holds a key.
 - **NEVER edit `execute_tool_node.py` without mirroring it in `execute_plan_node.py`.**
   [execute_tool_node.py](../../agentic/orchestrator_helpers/nodes/execute_tool_node.py)
   (single tool) and [execute_plan_node.py](../../agentic/orchestrator_helpers/nodes/execute_plan_node.py)
@@ -84,9 +91,9 @@ new attack *skill* (not a tool), use `builtin-agent-skill`.
 | Type | Use when | Core files beyond the registry |
 | --- | --- | --- |
 | **A** kali_shell | tool is in Kali, 300s timeout OK, no parsing | Dockerfile + `kali_shell` description only (no registry entry) |
-| **B** MCP tool on existing server | CLI tool, custom timeout/parsing, fire-and-forget | `@mcp.tool()` in an existing `mcp/servers/*.py` (auto-discovered) |
-| **C** new MCP server | stateful/interactive, own port | new `mcp/servers/*_server.py` + `SERVERS` in [run_servers.py](../../mcp/servers/run_servers.py) + URL in `MCPToolsManager` |
-| **D** API/HTTP tool | external API, key-gated | `ToolManager` class + `elif` dispatch in `tools.py` + orchestrator key hot-reload |
+| **B** MCP tool on existing server | CLI tool, custom timeout/parsing, fire-and-forget | `@mcp.tool()` in an existing `mcp/servers/*.py` (auto-discovered) + its name in `SYSTEM_MCP_TOOL_NAMES` in `tools.py` |
+| **C** new MCP server | stateful/interactive, own port | new `mcp/servers/*_server.py` + `SERVERS` in [run_servers.py](../../mcp/servers/run_servers.py) + an `MCPServer` entry in `_build_system_mcp_servers()` in [tools.py](../../agentic/tools.py) |
+| **D** API/HTTP tool | external API, key-gated | keyless `ToolManager` class built in `_setup_tools()` ([orchestrator.py](../../agentic/orchestrator.py)) + `_SEARCH_KEY_FIELDS` entry + `elif` dispatch in `tools.py`; the key is read per call |
 
 Naming is uniform across every layer: MCP fn / registry key / phase-map key =
 `execute_<tool>`; Prisma field `camelCase`; Python setting `SCREAMING_SNAKE`; DB

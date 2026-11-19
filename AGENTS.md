@@ -89,8 +89,10 @@ for build/run/test.
 
 ## PROJECT STRUCTURE
 
-Only the roots an agent needs to place a file. Each component root carries its
-own `AGENTS.md`.
+Only the roots an agent needs to place a file. `agentic/`, `recon/`,
+`recon_orchestrator/` and `webapp/` carry their own `AGENTS.md` (so do
+`scanners/capture_proxy/` and `scanners/supply_chain_scan/`); the other roots
+follow this file alone.
 
 ```
 agentic/              Python - the LangGraph agent (baked into redamon-agent image)
