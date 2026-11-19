@@ -25,9 +25,13 @@ import urllib.parse
 from typing import Awaitable, Callable, Optional
 
 from tradecraft.ingest import fetch
-from tradecraft.settings import EffectiveSettings
+from tradecraft.settings import EffectiveSettings, constant
 
 CVE_ID_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$", re.IGNORECASE | re.ASCII)
+# A CVE's file and the README are pages, read live into the agent process every run shares: they
+# stop at a page's ceiling, as ingestion's pages do. A year folder's listing is an index answer.
+FILE_MAX_BYTES = fetch.PAGE_MAX_BYTES
+LISTING_MAX_BYTES = int(constant("sitemapMaxBytes"))
 # ``lookup``'s error when the only files that would answer are blocked: not "no PoC", a refusal.
 BLOCKED = "page_blocked"
 _RAW = {"Accept": "application/vnd.github.raw"}
@@ -102,15 +106,15 @@ async def lookup(cve_id: str, meta: dict, settings: EffectiveSettings, *, github
         if blocked is not None and await blocked(url):
             refused = True
             continue
-        resp = await fetch.fetch_raw(url, settings, github_token=github_token)
+        resp = await fetch.fetch_raw(url, settings, github_token=github_token, max_bytes=FILE_MAX_BYTES)
         if resp.status == 200 and resp.body:
             return resp.text, url, ""
         if resp.status not in (200, 404) and not api_error:
             api_error = _api_error(resp.status, resp.error)
     ref = f"?ref={urllib.parse.quote(branch, safe='')}" if settings.str("type.cve.branch").strip() else ""
     listing = await fetch.fetch_raw(f"https://api.github.com/repos/{owner}/{repo}/contents/{year}{ref}", settings,
-                                    github_token=github_token)
-    if listing.status == 200:
+                                    github_token=github_token, max_bytes=LISTING_MAX_BYTES)
+    if listing.status == 200 and not listing.truncated:
         try:
             items = json.loads(listing.text)
         except ValueError:
@@ -126,7 +130,7 @@ async def lookup(cve_id: str, meta: dict, settings: EffectiveSettings, *, github
                 if blocked is not None and await blocked(own):
                     refused = True
                     continue
-                got = await fetch.fetch_raw(dl, settings,
+                got = await fetch.fetch_raw(dl, settings, max_bytes=FILE_MAX_BYTES,
                                             github_token=fetch.repo_token(dl, github_token, repo_url(meta)))
                 if got.status == 200:
                     return got.text, dl, ""
@@ -143,7 +147,7 @@ async def readme(meta: dict, settings: EffectiveSettings, *, github_token: Optio
         return "", ""
     ref = f"?ref={urllib.parse.quote(branch_of(meta, settings), safe='')}" if settings.str("type.cve.branch").strip() else ""
     resp = await fetch.fetch_raw(f"https://api.github.com/repos/{owner}/{repo}/readme{ref}", settings,
-                                 github_token=github_token, headers=_RAW)
+                                 github_token=github_token, headers=_RAW, max_bytes=FILE_MAX_BYTES)
     if resp.status == 200 and resp.body:
         return resp.text, f"https://github.com/{owner}/{repo}#readme"
     return "", ""

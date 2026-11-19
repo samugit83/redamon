@@ -59,16 +59,20 @@ logger = get_logger(__name__)
 NOT_AVAILABLE = "Error: tradecraft_lookup is not available in this run (no Tradecraft library is bound to it)."
 DELETED = "Error: resource '{slug}' was deleted from the library; it can no longer be read."
 NOT_CONFIGURED = "Error: resource '{slug}' not configured. Available: {available}."
-BLOCKED = "Error: refusing to read {url}: this page is blocked in resource '{slug}'."
-OUTSIDE_MAP = ("Error: refusing to read {url}: resource '{slug}' has a site login, and only the pages of its "
+# A refusal that is about a URL names it after its fixed text, in an envelope of its own
+# (``with_url``): a site writes its own links, sitemaps and file names, and a URL with spaces
+# carries a sentence as well as a title would.
+BLOCKED = "Error: refusing to read that page: it is blocked in resource '{slug}'."
+OUTSIDE_MAP = ("Error: refusing to read that page: resource '{slug}' has a site login, and only the pages of its "
                "map are read with it.")
-BAD_URL = "Error: refusing to read {url}: {code}."
-NOT_IN_RESOURCE = ("Error: refusing to read {url}: it is not a page of resource '{slug}'. Read its pages by page ID "
-                   "from tradecraft_search, or give section_path a path of its map.")
-UNREACHABLE_LIVE = ("Error: could not read {url} ({code}). Resource '{slug}' is Live: no copy of its pages is "
+BAD_URL = "Error: refusing to read that URL: {code}."
+NOT_IN_RESOURCE = ("Error: refusing to read that URL: it is not a page of resource '{slug}'. Read its pages by page "
+                   "ID from tradecraft_search, or give section_path a path of its map.")
+UNREACHABLE_LIVE = ("Error: could not read that page ({code}). Resource '{slug}' is Live: no copy of its pages is "
                     "kept, so nothing can be returned until the site answers.")
-UNREACHABLE_NOT_STORED = ("Error: could not read {url} ({code}). Resource '{slug}' is Stored, but this page has no "
-                          "stored copy.")
+UNREACHABLE_NOT_STORED = ("Error: could not read that page ({code}). Resource '{slug}' is Stored, but this page has "
+                          "no stored copy.")
+URL_FOLLOWS = "The URL:"
 NOT_REFRESHED = "the site could not be reached ({code}); this is the stored copy, not a fresh read"
 SKIPPED_COPY = "read from the site at your request; the stored copy from {date} was not used"
 # The address guard's refusals: not an unreachable site, and no copy is offered instead.
@@ -116,6 +120,11 @@ def code_blocks(text: str, max_blocks: Optional[int] = None) -> str:
 def _one_line(value: Any) -> str:
     # A title or URL from the map is one header line: it cannot forge a second one.
     return " ".join(str(value).split())
+
+
+def with_url(refusal: str, url: str) -> str:
+    """A refusal's fixed line, then the URL it is about inside the untrusted envelope."""
+    return f"{refusal} {URL_FOLLOWS}\n" + wrap_untrusted([f"url: {_one_line(url)}"])
 
 
 def render(slug: str, url: str, section_title: str, source: str, text: str, note: str = "", *,
@@ -290,10 +299,10 @@ async def _refusal(read: _Read, url: str) -> str:
     """Why ``url`` must not be requested at all, or ""."""
     why = await _refused_because(read, url)
     if why == "blocked":
-        return BLOCKED.format(url=url, slug=read.slug)
+        return with_url(BLOCKED.format(slug=read.slug), url)
     if why == "outside_map":
-        return OUTSIDE_MAP.format(url=url, slug=read.slug)
-    return BAD_URL.format(url=url, code=why) if why else ""
+        return with_url(OUTSIDE_MAP.format(slug=read.slug), url)
+    return with_url(BAD_URL.format(code=why), url) if why else ""
 
 
 async def _stored_copy(read: _Read, url: str) -> Optional[dict]:
@@ -320,7 +329,7 @@ async def _text_of(read: _Read, target: str, copy: Optional[dict], force_refresh
     with read.login():
         page = await live_page(target, read.settings, github_token=read.token_for(target), has_login=read.has_login)
     if page.error in _REFUSED:
-        return None, "", "", BAD_URL.format(url=target, code=page.error)
+        return None, "", "", with_url(BAD_URL.format(code=page.error), target)
     ok = not page.error and 200 <= page.status < 300 and bool(page.text)
     if not ok:
         code = page.error or (f"http_{page.status}" if page.status else "unreachable")
@@ -328,7 +337,7 @@ async def _text_of(read: _Read, target: str, copy: Optional[dict], force_refresh
             return (copy["stored_text"], format_source("stored", _date(copy.get("fetched_at"))),
                     NOT_REFRESHED.format(code=code), "")
         template = UNREACHABLE_NOT_STORED if read.mode == "stored" else UNREACHABLE_LIVE
-        return None, "", "", template.format(url=target, code=code, slug=read.slug)
+        return None, "", "", with_url(template.format(code=code, slug=read.slug), target)
     if copy is not None:
         return page.text, format_source("live"), SKIPPED_COPY.format(date=_date(copy.get("fetched_at"))), ""
     return page.text, format_source("live_not_stored" if read.mode == "stored" else "live"), "", ""
@@ -362,7 +371,7 @@ async def _page(read: _Read, query: str, section_path: Optional[str], force_refr
         return refused
     if section_path and not await _in_resource(read, target):
         logger.info(f"[tradecraft] lookup resource={read.slug} code=not_in_resource")
-        return NOT_IN_RESOURCE.format(url=target, slug=read.slug)
+        return with_url(NOT_IN_RESOURCE.format(slug=read.slug), target)
     copy = await _stored_copy(read, fetch.canonical_url(target))
     text, source, note, error = await _text_of(read, target, copy, force_refresh)
     if error:
@@ -460,7 +469,7 @@ async def _pdf_page_live(read: _Read, url: str, entry: dict, force_refresh: bool
     if entry.get("stored_text"):
         return (entry["stored_text"], format_source("stored", _date(entry.get("fetched_at"))),
                 NOT_REFRESHED.format(code=code), "")
-    return None, "", "", UNREACHABLE_NOT_STORED.format(url=url, code=code, slug=read.slug)
+    return None, "", "", with_url(UNREACHABLE_NOT_STORED.format(code=code, slug=read.slug), url)
 
 
 def render_section(page_id: str, crumbs: list[str], chosen: split.Section, sections: list[split.Section], part: int,
@@ -627,7 +636,7 @@ async def _pdf(read: _Read, query: str, section_path: Optional[str], force_refre
         if entry and entry.get("stored_text"):
             return render_parts(read, url, f"page {number}", format_source("stored", _date(entry.get("fetched_at"))),
                                 entry["stored_text"], part, again, note=NOT_REFRESHED.format(code=code), seen=seen)
-        return UNREACHABLE_NOT_STORED.format(url=url, code=code, slug=read.slug)
+        return with_url(UNREACHABLE_NOT_STORED.format(code=code, slug=read.slug), url)
     if entry and entry.get("stored_text"):
         return render_parts(read, url, f"page {number}", format_source("live"), text, part, again,
                             note=SKIPPED_COPY.format(date=_date(entry.get("fetched_at"))), seen=seen)

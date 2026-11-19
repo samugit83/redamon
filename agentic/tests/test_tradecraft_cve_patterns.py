@@ -199,3 +199,43 @@ def test_a_long_readme_fallback_is_read_in_parts_too(tmp_path):
     parts = every_part(root, "CVE-2020-0043")
     assert len(parts) >= 3 and all(len(body(p)) <= 12_000 for p in parts)
     assert all("repository README; no 2020/CVE-2020-0043 entry" in header(p, "section_title") for p in parts)
+
+
+class _Bounded(FixtureFetcher):
+    """The fixture sites, recording the bound each request was read with."""
+
+    def __init__(self, root):
+        super().__init__(root)
+        self.bounds = {}
+
+    async def get(self, url, **kw):
+        self.bounds[url] = kw.get("max_bytes")
+        return await super().get(url, **kw)
+
+
+def test_every_live_read_of_an_archive_stops_at_its_bound(tmp_path):
+    """A CVE's file and the README are pages, read into the agent process every run shares: a
+    hostile archive's file past a page's ceiling is cut there, and its listing is an index answer."""
+    from tradecraft.ingest import fetch
+
+    big = "A" * (fetch.PAGE_MAX_BYTES + 500_000)
+    root = archive(tmp_path, {"raw.githubusercontent.com/tc-fixture/cve/main/2021/CVE-2021-0003.json": big,
+                              "api.github.com/repos/tc-fixture/cve/readme/index.json": "README naming CVE-2021-0004"})
+    fetcher = _Bounded(root)
+    settings = EffectiveSettings({"type.cve.pathPatterns": ["{year}/{cve}.json"]})
+
+    async def go():
+        with net.use_fetcher(fetcher):
+            text, _src, _err = await cve.lookup("CVE-2021-0003", META, settings)
+            # A pattern that names no path: the year folder's listing is read instead.
+            await cve.lookup("CVE-2021-0004", META, EffectiveSettings({"type.cve.pathPatterns": ["{year}/none.md"]}))
+            await cve.readme(META, settings)
+            return text
+
+    text = run(go())
+    assert 0 < len(text.encode()) <= fetch.PAGE_MAX_BYTES
+    listing = [u for u in fetcher.bounds if "/contents/" in u]
+    assert listing and all(fetcher.bounds[u] == cve.LISTING_MAX_BYTES for u in listing)
+    pages = {u: b for u, b in fetcher.bounds.items() if u not in listing}
+    assert any(u.endswith("/readme") for u in pages)
+    assert pages and all(b is not None and b <= fetch.PAGE_MAX_BYTES for b in pages.values())

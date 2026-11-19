@@ -75,30 +75,31 @@ describe('updateResourceV2', () => {
   test("duplicate_409: another of the account's resources has the URL (D-05); another account's does not count", async () => {
     stubAgent()
     h.db.seed('userTradecraftResource', { id: 'r-x', userId: 'other', name: 'X', slug: 'x', url: 'https://x.example.test/' })
-    const res = await update({ url: 'https://blog.example.test/' })
+    const retyped = { cookie: 'session=fake-retyped' }
+    const res = await update({ url: 'https://blog.example.test/', credentials: retyped })
     expect(res.status).toBe(409)
     expect(await res.json()).toMatchObject({ code: 'duplicate' })
     expect(row().url).toBe('https://wiki.example.test/')
-    expect((await update({ url: 'https://x.example.test/' })).status).toBe(200)
+    expect((await update({ url: 'https://x.example.test/', credentials: retyped })).status).toBe(200)
   })
 
   test('url_change_reingests: the new URL is saved and ingested again (R-195)', async () => {
     const agent = stubAgent()
-    const res = await update({ url: 'https://wiki2.example.test/' })
+    const res = await update({ url: 'https://wiki.example.test/v2/' })
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.job).toMatchObject({ kind: 'reingest', status: 'queued' })
     const [req] = JobStartBatch.parse(agent.calls.find(c => c.path === '/tradecraft/v2/jobs')!.body).jobs
-    expect([req.kind, req.resource.url]).toEqual(['reingest', 'https://wiki2.example.test/'])
+    expect([req.kind, req.resource.url]).toEqual(['reingest', 'https://wiki.example.test/v2/'])
     expect(row().activeJobId).toBe(body.job.id)
   })
 
   test('a new URL saved while the agent is down: 200, the URL changed, the job failed and says why', async () => {
     stubAgent(() => refused())
-    const res = await update({ url: 'https://wiki2.example.test/' })
+    const res = await update({ url: 'https://wiki.example.test/v2/' })
     expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ jobError: 'agent_unreachable', job: { status: 'failed' }, resource: { url: 'https://wiki2.example.test/' } })
-    expect(row()).toMatchObject({ url: 'https://wiki2.example.test/', activeJobId: null })
+    expect(await res.json()).toMatchObject({ jobError: 'agent_unreachable', job: { status: 'failed' }, resource: { url: 'https://wiki.example.test/v2/' } })
+    expect(row()).toMatchObject({ url: 'https://wiki.example.test/v2/', activeJobId: null })
   })
 
   test('the same URL sent back starts nothing', async () => {
@@ -129,7 +130,7 @@ describe('updateResourceV2', () => {
   })
 
   test.each([
-    ['a URL change', { url: 'https://wiki2.example.test/' }],
+    ['a URL change', { url: 'https://wiki.example.test/v2/' }],
     ['Stored → Live', { storageMode: 'live' }],
     ['the login removed', { credentials: null }],
   ])('immediate_edits_refused_while_running (%s): 409 job_running, nothing written (D-45)', async (_name, body) => {
@@ -144,7 +145,7 @@ describe('updateResourceV2', () => {
   })
 
   test.each([
-    ['a URL change', { url: 'https://wiki2.example.test/' }, (r: Record<string, unknown>) => r.url === 'https://wiki2.example.test/'],
+    ['a URL change', { url: 'https://wiki.example.test/v2/' }, (r: Record<string, unknown>) => r.url === 'https://wiki.example.test/v2/'],
     ['Stored → Live', { storageMode: 'live' }, (r: Record<string, unknown>) => r.storageMode === 'live'],
     ['the login removed', { credentials: null }, (r: Record<string, unknown>) => r.hasLogin === false && JSON.stringify(r.credentials) === '{}'],
   ])('immediate_edits_allowed_after_lease_expired (%s)', async (_name, body, applied) => {
@@ -229,7 +230,7 @@ describe('updateResourceV2', () => {
     test('URL: saved and ingested again', async () => {
       ingestedCurrent()
       stubAgent()
-      expect((await view({ url: 'https://wiki2.example.test/' })).job).toMatchObject({ kind: 'reingest' })
+      expect((await view({ url: 'https://wiki.example.test/v2/' })).job).toMatchObject({ kind: 'reingest' })
     })
 
     test('type: saved, stale, no ingestion', async () => {
@@ -441,5 +442,66 @@ describe('site logins (§6.6, T6.5)', () => {
     const body = await res.json()
     expect(body.resource.credentials).toEqual({ cookie: 'set', headers: [{ name: 'X-Api-Key', value: 'set' }], basic_auth: null })
     expect(JSON.stringify(body)).not.toMatch(/fake-/)
+  })
+})
+
+describe('a login is never sent to a host it was not typed for (secretEndpointRebind.ts)', () => {
+  const OTHER = 'https://collector.example.test/'
+
+  test('a move to another host with the stored login kept: 400 secret_reentry_required, nothing written, no job', async () => {
+    const agent = stubAgent()
+    for (const body of [{ url: OTHER }, { url: OTHER, credentials: { cookie: 'set' } }]) {
+      const res = await update(body)
+      expect(res.status, JSON.stringify(body)).toBe(400)
+      expect(await res.json()).toMatchObject({ code: 'secret_reentry_required', field: 'credentials.cookie', fields: ['credentials.cookie'], endpoint: 'url' })
+    }
+    expect(row()).toMatchObject({ url: 'https://wiki.example.test/', credentials: { cookie: 'session=fake-session' } })
+    expect(agent.calls).toEqual([])
+    expect(h.db.rows('auditLog')).toEqual([])
+  })
+
+  test('every kept part is named: the cookie, a header sent back "set", the basic authentication password', async () => {
+    Object.assign(row(), { credentials: { cookie: 'c=fake', headers: [{ name: 'X-Api-Key', value: 'fake-key' }], basic_auth: { username: 'u', password: 'fake-pw' } } })
+    stubAgent()
+    const res = await update({ url: OTHER, credentials: { cookie: 'c=fake-typed', headers: [{ name: 'X-Api-Key', value: 'set' }] } })
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.fields).toEqual(['credentials.headers.X-Api-Key', 'credentials.basic_auth.password'])
+    expect(body.error).toMatch(/resource URL host changed: type the value of the header "X-Api-Key", basic authentication password again/)
+    expect(JSON.stringify(body)).not.toMatch(/fake-key|fake-pw/)
+  })
+
+  test('the login typed again, or removed, moves with the URL', async () => {
+    const agent = stubAgent()
+    const typed = await update({ url: OTHER, credentials: { cookie: 'session=fake-for-the-new-host' } })
+    expect(typed.status).toBe(200)
+    expect(row()).toMatchObject({ url: OTHER, credentials: { cookie: 'session=fake-for-the-new-host' } })
+    const [req] = JobStartBatch.parse(agent.calls.find(c => c.path === '/tradecraft/v2/jobs')!.body).jobs
+    expect([req.kind, req.resource.url]).toEqual(['reingest', OTHER])
+
+    row().activeJobId = null
+    const removed = await update({ url: 'https://elsewhere.example.test/', credentials: null })
+    expect(removed.status).toBe(200)
+    expect(row()).toMatchObject({ url: 'https://elsewhere.example.test/', hasLogin: false })
+  })
+
+  test('the same host is no move: a path change, and the http -> https upgrade', async () => {
+    stubAgent()
+    expect((await update({ url: 'https://wiki.example.test/docs/' })).status).toBe(200)
+    row().activeJobId = null
+    Object.assign(row(), { url: 'http://wiki.example.test/' })
+    expect((await update({ url: 'https://wiki.example.test/' })).status).toBe(200)
+    expect(row().credentials).toEqual({ cookie: 'session=fake-session' })
+  })
+
+  test('another port, or https -> http, is another endpoint', async () => {
+    stubAgent()
+    expect((await update({ url: 'https://wiki.example.test:8443/' })).status).toBe(400)
+    expect((await update({ url: 'http://wiki.example.test/' })).status).toBe(400)
+  })
+
+  test('a resource with no login moves freely', async () => {
+    stubAgent()
+    expect((await update({ url: 'https://another-blog.example.test/' }, 'r2')).status).toBe(200)
   })
 })

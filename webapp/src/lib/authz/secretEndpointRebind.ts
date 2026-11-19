@@ -14,7 +14,9 @@
  * it, scanners/supply_chain_scan/project_settings.py); the chisel server URL ->
  * chiselAuth; an outbound MCP server's URL -> its bearer token and header values; a stdio
  * MCP server's command, arguments and working directory (the process its env values are
- * handed to) -> its env values; a change of transport re-points the server too.
+ * handed to) -> its env values; a change of transport re-points the server too; a Tradecraft
+ * resource's URL, when its host changes -> its site login (cookie, header values, basic
+ * authentication password), which goes to that host on every request.
  */
 import { NextResponse } from 'next/server'
 
@@ -45,6 +47,8 @@ const SECRET_LABELS: Record<string, string> = {
   githubEnterpriseToken: 'GitHub Enterprise token',
   chiselAuth: 'chisel auth',
   'auth.token': 'bearer token',
+  'credentials.cookie': 'cookie',
+  'credentials.basic_auth.password': 'basic authentication password',
 }
 
 const ENDPOINT_LABELS: Record<string, string> = {
@@ -63,17 +67,18 @@ function secretLabel(field: string): string {
   if (field.startsWith('headers.')) return `value of the header "${field.slice('headers.'.length)}"`
   if (field.startsWith('defaultHeaders.')) return `value of the header "${field.slice('defaultHeaders.'.length)}"`
   if (field.startsWith('env.')) return `value of the environment variable "${field.slice('env.'.length)}"`
+  if (field.startsWith('credentials.headers.')) return `value of the header "${field.slice('credentials.headers.'.length)}"`
   return SECRET_LABELS[field] ?? field
 }
 
-function refusal(endpoint: string, fields: string[]): SecretReentry | null {
+function refusal(endpoint: string, fields: string[], label = ENDPOINT_LABELS[endpoint] ?? endpoint): SecretReentry | null {
   if (fields.length === 0) return null
   const names = fields.map(secretLabel).join(', ')
   return {
     field: fields[0],
     fields,
     endpoint,
-    message: `The ${ENDPOINT_LABELS[endpoint] ?? endpoint} changed: type the ${names} again, or clear it. `
+    message: `The ${label} changed: type the ${names} again, or clear it. `
       + 'A stored secret is never sent to a new address unless it is entered again.',
   }
 }
@@ -224,6 +229,37 @@ export function mcpServerSecretReentry(
   if (hasStored(stored.auth?.token) && isMaskedSecret(auth?.token)) fields.push('auth.token')
   if (headers) fields.push(...maskedStoredValues('headers.', incoming.headers, stored.headers))
   return refusal(endpoint, fields)
+}
+
+/**
+ * Whether a site login bound to `from` is sent to `to`: the same host and port, or the http:80 ->
+ * https:443 upgrade of the same host, the rule the agent applies on every hop
+ * (`carries_same_host_headers` in agentic/tradecraft/net.py). An address that does not parse is
+ * another endpoint.
+ */
+function sameLoginOrigin(from: string, to: string): boolean {
+  let a: URL, b: URL
+  try {
+    a = new URL(from)
+    b = new URL(to)
+  } catch {
+    return false
+  }
+  const host = (u: URL) => u.hostname.toLowerCase().replace(/\.$/, '')
+  const port = (u: URL) => u.port || (u.protocol === 'https:' ? '443' : '80')
+  if (host(a) !== host(b)) return false
+  if (a.protocol === b.protocol && port(a) === port(b)) return true
+  return a.protocol === 'http:' && port(a) === '80' && b.protocol === 'https:' && port(b) === '443'
+}
+
+/**
+ * A Tradecraft resource's URL moved to another host: each part of its site login the write would
+ * keep (`keptParts`, `credentials.*` names, from the patch, not from the values) must be typed
+ * again, or the login removed. A path change on the same host keeps the login.
+ */
+export function tradecraftLoginSecretReentry(storedUrl: string, nextUrl: string | undefined, keptParts: string[]): SecretReentry | null {
+  if (nextUrl === undefined || sameLoginOrigin(storedUrl, nextUrl)) return null
+  return refusal('url', keptParts, 'resource URL host')
 }
 
 /** The 400 every route answers; `extra` keeps a route's own answer shape (`success`, `ok`). */

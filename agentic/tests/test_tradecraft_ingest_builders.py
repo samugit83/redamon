@@ -614,3 +614,72 @@ def test_at_the_site_root_the_sitemaps_robots_names_come_first(tmp_path):
         new = run(builders.build_docs(f"https://{host}/", s()))
     assert [e.url for e in new.entries] == named and new.report_stop == "docs: no search index, robots (2 pages)"
     assert [u for u, _ in fetcher.requests if u.endswith(".xml")] == [f"https://{host}/maps/docs.xml"]
+
+
+# --------------------------------------------------------------------------------------
+# mkdocs.yml: a site's YAML is bounded before and while it is read
+# --------------------------------------------------------------------------------------
+
+def _alias_bomb(levels, leaf='"x"', fan=10):
+    """mkdocs.yml whose nav names fan**levels leaves through aliases, in a few hundred bytes."""
+    names = [f"l{i}" for i in range(levels - 1)]
+    lines = [f"{names[0]}: &{names[0]} [" + ",".join([leaf] * fan) + "]"] if leaf else [f"{names[0]}: &{names[0]} []"]
+    for prev, cur in zip(names, names[1:]):
+        lines.append(f"{cur}: &{cur} [" + ",".join([f"*{prev}"] * fan) + "]")
+    lines.append("nav: [" + ",".join([f"*{names[-1]}"] * fan) + "]")
+    return "\n".join(lines) + "\n"
+
+
+BOMB_SITE = "bomb-wiki.tc-fixture.test"
+NO_SITEMAP = {"type.wiki.sitemapUrls": ["/no-such-sitemap.xml"]}
+
+
+def test_a_mkdocs_yml_of_aliases_is_read_within_the_map_limit(tmp_path):
+    """A million leaves named by aliases in under 300 bytes: the nav the walk returns stays within the
+    map limit, so the agent process every account shares never holds the expansion."""
+    bomb = _alias_bomb(6)
+    assert len(bomb) < 300
+    navs = []
+
+    async def recording(fn, *args):
+        out = fn(*args)
+        if fn.__name__ == "_mkdocs_yml_nav":
+            navs.append(len(out))
+        return out
+
+    files = {"mkdocs.yml": bomb, "index.html": "<html><body>wiki</body></html>"}
+    settings = s(**NO_SITEMAP, **{"knownTypes.maxMapEntries.wiki": 100})
+    cap = settings.int("knownTypes.maxMapEntries.wiki")
+    with net.use_fetcher(_site(tmp_path, BOMB_SITE, files)):
+        new = run(builders.build_wiki(f"https://{BOMB_SITE}/", settings, blocking=recording))
+    assert cap < 10 ** 6 and navs == [cap]
+    assert len(new.entries) <= cap
+
+
+def test_a_mkdocs_yml_of_empty_aliases_stops_on_its_budget():
+    """No leaf at all, ten million nodes: the walk stops on its budget of nodes, not on its leaves."""
+    import time
+
+    started = time.monotonic()
+    assert builders._mkdocs_yml_nav(_alias_bomb(7, leaf=""), 100) == []
+    assert time.monotonic() - started < 2.0
+
+
+def test_a_mkdocs_yml_nav_is_still_read_whole_within_the_limit():
+    nav = ("nav:\n  - Home: index.md\n  - Kerberos:\n      - Kerberoasting: kerberos/kerberoasting.md\n"
+           "      - Golden ticket: kerberos/golden-ticket.md\n  - about.md\n")
+    assert builders._mkdocs_yml_nav(nav, 100) == [
+        ("Home", "index.md"), ("Kerberos > Kerberoasting", "kerberos/kerberoasting.md"),
+        ("Kerberos > Golden ticket", "kerberos/golden-ticket.md"), ("about.md", "about.md")]
+    assert len(builders._mkdocs_yml_nav(nav, 2)) == 2
+
+
+def test_a_mkdocs_yml_past_the_sitemap_bound_is_not_parsed(tmp_path, monkeypatch):
+    nav = "nav:\n" + "".join(f"  - Page {i}: p{i}.md\n" for i in range(50))
+    files = {"mkdocs.yml": nav, "index.html": "<html><body>wiki</body></html>"}
+    real = builders.constant
+    monkeypatch.setattr(builders, "constant", lambda name: 100 if name == "sitemapMaxBytes" else real(name))
+    with net.use_fetcher(_site(tmp_path, BOMB_SITE, files)) as fetcher:
+        new = run(builders.build_wiki(f"https://{BOMB_SITE}/", s(**NO_SITEMAP)))
+    assert new.index_kind != "nav" or not any(e.url.endswith(".md") for e in new.entries)
+    assert f"https://{BOMB_SITE}/mkdocs.yml" in [u for u, _ in fetcher.requests]

@@ -18,6 +18,7 @@ import {
   secretReentryResponse,
   settingsEndpointChange,
   settingsSecretReentry,
+  tradecraftLoginSecretReentry,
 } from './secretEndpointRebind'
 
 const MASK = '••••••••1234'
@@ -322,5 +323,37 @@ describe('secretReentryResponse', () => {
     expect(body.error).toBe(r.message)
     // the stored secret never appears in the answer
     expect(JSON.stringify(body)).not.toContain('STORED-SECRET')
+  })
+})
+
+describe('a Tradecraft resource URL -> its site login', () => {
+  const STORED = 'https://wiki.example.test/docs/'
+  const KEPT = ['credentials.cookie', 'credentials.headers.X-Api-Key', 'credentials.basic_auth.password']
+
+  test('another host asks for every kept part, named by its label', () => {
+    const r = tradecraftLoginSecretReentry(STORED, 'https://collector.example.test/', KEPT)
+    expect(r).toMatchObject({ endpoint: 'url', field: 'credentials.cookie', fields: KEPT })
+    expect(r!.message).toBe('The resource URL host changed: type the cookie, value of the header "X-Api-Key", basic '
+      + 'authentication password again, or clear it. A stored secret is never sent to a new address unless it is entered again.')
+  })
+
+  test.each([
+    ['a path on the same host', 'https://wiki.example.test/other/'],
+    ['the host in another case, with a trailing dot', 'https://WIKI.example.test./x'],
+    ['the default port written out', 'https://wiki.example.test:443/'],
+  ])('%s is no move', (_n, next) => {
+    expect(tradecraftLoginSecretReentry(STORED, next, KEPT)).toBeNull()
+  })
+
+  test('the http -> https upgrade of the same host is no move; the downgrade and another port are', () => {
+    expect(tradecraftLoginSecretReentry('http://wiki.example.test/', 'https://wiki.example.test/', KEPT)).toBeNull()
+    expect(tradecraftLoginSecretReentry(STORED, 'http://wiki.example.test/docs/', KEPT)).not.toBeNull()
+    expect(tradecraftLoginSecretReentry(STORED, 'https://wiki.example.test:8443/docs/', KEPT)).not.toBeNull()
+  })
+
+  test('nothing kept, no URL sent, or an address that does not parse', () => {
+    expect(tradecraftLoginSecretReentry(STORED, 'https://collector.example.test/', [])).toBeNull()
+    expect(tradecraftLoginSecretReentry(STORED, undefined, KEPT)).toBeNull()
+    expect(tradecraftLoginSecretReentry(STORED, 'not a url', KEPT)).not.toBeNull()
   })
 })

@@ -397,9 +397,9 @@ async def build_wiki(url: str, settings: EffectiveSettings, *, home_html: str = 
         entries, cut = _dedupe(entries, cap)
         return MapResult("mkdocs-wiki", entries, index_kind="sitemap", index_url=index_url, truncated=cut)
 
-    resp = await fetch.fetch_raw(f"{base}/mkdocs.yml", settings)
-    if resp.ok and resp.body:
-        nav = await blocking(_mkdocs_yml_nav, resp.text)
+    resp = await fetch.fetch_raw(f"{base}/mkdocs.yml", settings, max_bytes=int(constant("sitemapMaxBytes")))
+    if resp.ok and resp.body and not resp.truncated:
+        nav = await blocking(_mkdocs_yml_nav, resp.text, cap)
         if nav:
             entries = [Candidate(_join(base, path), title, "nav", path) for title, path in nav]
             entries, cut = _dedupe(entries, cap)
@@ -415,21 +415,32 @@ async def build_wiki(url: str, settings: EffectiveSettings, *, home_html: str = 
     return MapResult("mkdocs-wiki", entries, index_kind="nav" if entries else "none", truncated=cut)
 
 
-def _mkdocs_yml_nav(text: str) -> list[tuple[str, str]]:
+# A YAML alias is a reference: a few hundred bytes of a site's mkdocs.yml can name a billion
+# leaves, which a plain walk would visit and keep in the agent process every tenant shares. The
+# walk spends a budget of nodes instead (empty lists count, so a bomb with no leaves stops too).
+_NAV_VISITS_PER_ENTRY = 4
+_NAV_MAX_DEPTH = 32
+
+
+def _mkdocs_yml_nav(text: str, cap: int) -> list[tuple[str, str]]:
     try:
         import yaml
         data = yaml.safe_load(text)
     except Exception:
         return []
     out: list[tuple[str, str]] = []
+    budget = [max(1, cap) * _NAV_VISITS_PER_ENTRY]
 
-    def walk(node: Any, prefix: str = "") -> None:
+    def walk(node: Any, prefix: str = "", depth: int = 0) -> None:
+        budget[0] -= 1
+        if budget[0] < 0 or len(out) >= cap or depth > _NAV_MAX_DEPTH:
+            return
         if isinstance(node, dict):
             for k, v in node.items():
-                walk(v, f"{prefix} > {k}".strip(" >"))
+                walk(v, f"{prefix} > {k}".strip(" >"), depth + 1)
         elif isinstance(node, list):
             for item in node:
-                walk(item, prefix)
+                walk(item, prefix, depth + 1)
         elif isinstance(node, str):
             out.append((prefix or node, node))
 

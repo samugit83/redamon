@@ -61,8 +61,9 @@ this skill holds only the rules a change must keep. Authorization of the routes 
   are checked in [librarian/validate.py](../../agentic/tradecraft/librarian/validate.py). Library
   now's trusted lines and notices are fixed text: the steps it searches for (model- or person-written)
   and its rows sit inside the envelope, with no page text ([library/hints.py](../../agentic/tradecraft/library/hints.py));
-  a reading tool's refusal, outside the envelope, names a page by its ID or its URL or a resource by
-  its slug, never a title or a heading, and a CVE archive's refusal of a page ID names the ID
+  a reading tool's refusal, outside the envelope, names a page by its ID or a resource by its slug,
+  never a title, a heading or a URL (the URL follows in an envelope of its own, `reader.with_url`: a
+  site's link with spaces carries a sentence), and a CVE archive's refusal of a page ID names the ID
   ([library/reader.py](../../agentic/tradecraft/library/reader.py)). Failed
   before: `aab51561` (the librarian's plan prompt and why lines carried unchecked text), `1b0657be` (a
   target-planted CVE id in a hint's trusted lines), `18b7fdcb` (Library now's step, with its hidden
@@ -75,8 +76,21 @@ this skill holds only the rules a change must keep. Authorization of the routes 
   ([catalog.ts](../../webapp/src/lib/tradecraft/catalog.ts)), and its pages are read only within its
   live map. A login is used and changed only through the act-as refusals of
   [actAs.ts](../../webapp/src/lib/tradecraft/actAs.ts), and no answer carries a secret value
-  ([masking.ts](../../webapp/src/lib/tradecraft/masking.ts)). Failed before: `ce84a975` (a login read
-  accepted dropped entries as the map), `497c00da` (a catalog asked with no person, and a login in the 1.x run payload).
+  ([masking.ts](../../webapp/src/lib/tradecraft/masking.ts)). A URL moved to another host keeps its
+  login only when the person types it again (`tradecraftLoginSecretReentry` in
+  [secretEndpointRebind.ts](../../webapp/src/lib/authz/secretEndpointRebind.ts), from the patch's
+  "set" parts). Failed before: `ce84a975` (a login read
+  accepted dropped entries as the map), `497c00da` (a catalog asked with no person, and a login in the 1.x run payload),
+  a login that followed an edited URL to any host.
+- **NEVER read or parse a site's answer without a byte ceiling and a bound on what it expands to.**
+  Ingestion and reads run in the agent process every account shares: every `fetch_raw` of a page,
+  index or listing passes its `max_bytes` (a page's `fetch.PAGE_MAX_BYTES`, an index's
+  `constants.sitemapMaxBytes`), a truncated index is not parsed, and a parsed structure is walked
+  within the map limit, not its declared size. Failed before: a ~300-byte `mkdocs.yml` of YAML
+  aliases named a million nav entries (a billion in ~400 bytes) before `_dedupe` capped them, and a
+  CVE archive's file was read up to the 100 MB transport ceiling. Held by
+  [test_tradecraft_ingest_builders.py](../../agentic/tests/test_tradecraft_ingest_builders.py) and
+  [test_tradecraft_cve_patterns.py](../../agentic/tests/test_tradecraft_cve_patterns.py).
 - **NEVER let a run's read leave its resource, or send a GitHub token outside its repository or its
   owner's run.** A forced `section_path` reads only a page of the resource (`_in_resource` in
   [library/reader.py](../../agentic/tradecraft/library/reader.py): its start page, its live map, its

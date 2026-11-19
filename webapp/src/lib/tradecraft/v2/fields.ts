@@ -307,6 +307,29 @@ export function applyCredentials(stored: unknown, patch: CredentialsPatch): Pars
   return { ok: true, value: hasCredentials(after) ? after : {} }
 }
 
+/**
+ * The secret parts of the stored login a write keeps without the person typing them (a part the
+ * patch leaves out, or sends back as "set"), as `credentials.*` names: what a new host would get.
+ * Read from the patch, not from the values, so a value typed again counts as typed. A removed
+ * login (`null`) keeps nothing.
+ */
+export function keptLoginParts(storedRaw: unknown, patch: CredentialsPatch | null | undefined): string[] {
+  if (patch === null) return []
+  const before = storedOf(storedRaw)
+  const p = patch ?? {}
+  const out: string[] = []
+  if (before.cookie !== '' && (p.cookie === undefined || 'keep' in p.cookie)) out.push('credentials.cookie')
+  if (p.headers === undefined) {
+    out.push(...before.headers.map(h => `credentials.headers.${h.name}`))
+  } else {
+    for (const h of p.headers) if ('keep' in h.value) out.push(`credentials.headers.${h.name}`)
+  }
+  if (before.basic_auth !== null && (p.basicAuth === undefined || (p.basicAuth !== null && 'keep' in p.basicAuth.password))) {
+    out.push('credentials.basic_auth.password')
+  }
+  return out
+}
+
 /** The names of what a write changed in the login, for its audit row: field and header names only. */
 export function changedLoginFields(beforeRaw: unknown, afterRaw: unknown): string[] {
   const before = storedOf(beforeRaw)

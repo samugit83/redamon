@@ -273,8 +273,9 @@ resource. Each skipped page is counted by reason (`excluded`, `outOfScope`, `too
 **Fetching.** A page is first downloaded with a plain GET. When it gives too little text, or the resource asks for it
 every time, it is rendered in the sandbox browser, which cleans it in the page before the transfer (body selector,
 removed elements). The browser is never used for a resource with a login. Every plain request passes the address guard
-on every redirect hop, judged on the address it connects to; the browser runs a guard script that aborts navigations and
-resources aimed at internal addresses (its residual, a blind request on a redirect hop, is in
+on every redirect hop, judged on the address it connects to; the browser runs a guard script that aborts navigations,
+resources, WebSockets and popups aimed at internal addresses and removes peer connections and service workers from every
+frame (its residual, a blind request on a redirect hop, is in
 [README.SECURITY_POSTURE.md](README.SECURITY_POSTURE.md) §11), and a refused page is never retried in it.
 
 ### The resource card
@@ -654,9 +655,10 @@ The reads that return a whole text rather than a section (one CVE of an archive 
 `section_path`, a page the 1.x title match picks, a PDF page) keep the same limit: their text is cut into parts the same
 way, their `next:` line repeats the read's own arguments with the next `part` (each text value quoted as JSON, so a
 path or a query comes back exactly), and the list of code blocks follows the text only while it fits. A part that does
-not exist is refused before the page counts as read. A refusal names the page by its ID or its URL, or the resource by
-its slug, never by a title or a heading, which are the site's text and would sit outside the untrusted envelope (a CVE
-archive's refusals of a page ID name the ID); the headings a missing section lists follow in an envelope of their own.
+not exist is refused before the page counts as read. A refusal names the page by its ID or the resource by its slug,
+never by a title, a heading or a URL, which are the site's text (a link with spaces carries a sentence) and would sit
+outside the untrusted envelope (a CVE archive's refusals of a page ID name the ID); the URL a refusal is about, and the
+headings a missing section lists, follow in an envelope of their own.
 The read path:
 
 1. the resource no longer exists → it says so, no request;

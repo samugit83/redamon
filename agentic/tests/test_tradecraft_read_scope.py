@@ -80,7 +80,9 @@ def test_a_forced_path_outside_the_resource_is_refused_before_any_request(path, 
 def test_a_forced_url_on_a_website_resource_is_refused_too():
     lib = Run().add("r1", "wiki", WIKI, read_settings=no_browser())
     answer = lib.read(resource_id="wiki", section_path="https://target.tc-fixture.test/")
-    assert answer == reader.NOT_IN_RESOURCE.format(url="https://target.tc-fixture.test/", slug="wiki")
+    line, _, rest = answer.partition("\n")
+    assert line == f"{reader.NOT_IN_RESOURCE.format(slug='wiki')} {reader.URL_FOLLOWS}"
+    assert rest.startswith("<<<UNTRUSTED_TRADECRAFT_RESULT id=") and "\nurl: https://target.tc-fixture.test/\n" in rest
     assert lib.requested() == []
 
 

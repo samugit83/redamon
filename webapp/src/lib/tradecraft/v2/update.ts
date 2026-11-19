@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { auditedTransaction } from '@/lib/auditForward'
 import { refuseWhileActingAsOn } from '@/lib/authz/actAsRefusals'
+import { secretReentryResponse, tradecraftLoginSecretReentry } from '@/lib/authz/secretEndpointRebind'
 import { auditLoginChange, loginChangeRefusal, loginUseRefusal } from '../actAs'
 import { librarianModelRefusal } from './create'
 import { claimHolder, jobView, startJob, startedJobFields, type JobActor } from '../jobs'
@@ -22,8 +23,8 @@ import { hasStoredLogin } from '../masking'
 import { clearChoicesForResource } from '../projectChoices'
 import { loadOwnResource, lockOwnResource } from '../resourceAccess'
 import {
-  applyCredentials, changedLoginFields, fieldErrorResponse, forcedStorageMode, hasCredentials, parseResourceFields,
-  typeOptionsOf, type CredentialsPatch, type FieldError, type StoredCredentials,
+  applyCredentials, changedLoginFields, fieldErrorResponse, forcedStorageMode, hasCredentials, keptLoginParts,
+  parseResourceFields, typeOptionsOf, type CredentialsPatch, type FieldError, type StoredCredentials,
 } from './fields'
 import { withOwnSkillTopics } from './focusFields'
 import { resourceViewOf } from './list'
@@ -93,6 +94,12 @@ export async function updateResourceV2(input: {
       const actingAs = await refuseWhileActingAsOn(ownerId, 'use_github_token')
       if (actingAs) return actingAs
     }
+    // The re-ingest sends the stored login to the new URL's host: a login the person did not type
+    // for that host is never sent there (secretEndpointRebind.ts), whoever writes the row.
+    if (hasStoredLogin(before)) {
+      const reentry = tradecraftLoginSecretReentry(before.url, fields.url, keptLoginParts(before.credentials, loginPatch))
+      if (reentry) return secretReentryResponse(reentry)
+    }
   }
 
   try {
@@ -115,6 +122,11 @@ export async function updateResourceV2(input: {
       if (urlChanged || storedToLive || login !== null) {
         const holder = await claimHolder(tx, existing)
         if (holder) throw new ClaimHeld(holder)
+      }
+      // The row may have changed since the check above (another tab added a login, moved the URL).
+      if (urlChanged && hasStoredLogin(existing)
+          && tradecraftLoginSecretReentry(existing.url, fields.url, keptLoginParts(existing.credentials, loginPatch))) {
+        throw new LoginMoved()
       }
 
       const data: Record<string, unknown> = {}

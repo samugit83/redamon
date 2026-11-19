@@ -1,5 +1,6 @@
 """The guarded browser script's options (T3.2): with no option it is byte for byte the script
-1.x tradecraft has always sent; ``clean`` runs the EX-2 cleaning (inline scripts and styles
+1.x tradecraft sent plus the context's guards (WebSockets, popups, peer connections, service
+workers); ``clean`` runs the EX-2 cleaning (inline scripts and styles
 emptied, svg/noscript/template removed, every detection marker and link kept, R-197) before the
 page is cut at ``max_chars``; ``wait_for`` waits for an element; and every variant keeps the
 address checks, with the cleaning and the print only on a page that passed them.
@@ -84,9 +85,27 @@ else:
 '''
 
 
+# What the script added to 1.x's: page.route() sees no WebSocket, popup or peer connection, so the
+# page's context refuses the first two on the same check and an init script removes the third.
+CONTEXT_GUARDS = '''\
+def _rd_ws(ws):
+    if _rd_public("http" + ws.url[2:] if ws.url.startswith("ws") else ws.url):
+        ws.connect_to_server()
+    else:
+        ws.close(code=1008, reason="blocked")
+_rd_ctx = page.context
+_rd_ctx.route("**/*", _rd_route)
+_rd_ctx.route_web_socket(_rd_re.compile(r".*"), _rd_ws)
+_rd_ctx.add_init_script({no_peer_js})
+'''
+
+
 def today(url: str = URL) -> str:
-    return TODAY.replace("{url}", ascii(url)).replace(
-        "{blocked_names}", ascii(frozenset(fetch_guard._BLOCKED_HOSTNAMES)))
+    script = TODAY.replace("import socket as _rd_socket\n", "import re as _rd_re\nimport socket as _rd_socket\n", 1)
+    script = script.replace('page.route("**/*", _rd_route)\n', 'page.route("**/*", _rd_route)\n' + CONTEXT_GUARDS, 1)
+    return script.replace("{url}", ascii(url)).replace(
+        "{blocked_names}", ascii(frozenset(fetch_guard._BLOCKED_HOSTNAMES))).replace(
+        "{no_peer_js}", ascii(fetch_guard._NO_PEER_JS))
 
 
 VARIANTS = [
@@ -242,6 +261,18 @@ class _BrokenPage:
         def __init__(self):
             self.request = _BrokenPage._Request()
 
+    class _Context:
+        def route(self, _pattern, _handler):
+            pass
+
+        def route_web_socket(self, _pattern, _handler):
+            pass
+
+        def add_init_script(self, _script):
+            pass
+
+    context = _Context()
+
     def route(self, _pattern, _handler):
         pass
 
@@ -287,3 +318,105 @@ def test_a_cleaning_the_page_breaks_prints_a_fixed_error():
     # The no-option script has no cleaning step, so nothing changed there.
     assert _run_script(fetch_guard.guarded_browser_script(URL), _BrokenPage()).strip() == \
         "<html><body>the page</body></html>"
+
+
+# --------------------------------------------------------------------------------------
+# What page.route() cannot see: WebSockets, popups, peer connections, service workers
+# --------------------------------------------------------------------------------------
+
+PUBLIC_IP = "93.184.216.34"
+ADDRESSES = {"public.example.test": PUBLIC_IP, "internal.example.test": "10.20.30.40", "localhost": "127.0.0.1"}
+
+
+def _resolve(host, *_a, **_k):
+    import ipaddress
+    import socket
+
+    try:
+        ip = str(ipaddress.ip_address(host))
+    except ValueError:
+        ip = ADDRESSES.get(host, PUBLIC_IP)
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+
+class _Recording(_BrokenPage):
+    """A page whose context records what the script registers, and when the page is opened."""
+
+    def __init__(self, with_ws_routing=True):
+        events = self.events = []
+        self.context = type("Ctx", (), {})()
+        self.context.route = lambda pattern, handler: events.append(("route", pattern, handler))
+        self.context.add_init_script = lambda script: events.append(("init", script, None))
+        if with_ws_routing:
+            self.context.route_web_socket = lambda pattern, handler: events.append(("ws", pattern, handler))
+
+    def goto(self, url, **kw):
+        self.events.append(("goto", url, None))
+        return super().goto(url, **kw)
+
+    def handler(self, kind):
+        return next(h for k, _p, h in self.events if k == kind)
+
+
+class _Ws:
+    def __init__(self, url):
+        self.url, self.connected, self.closed = url, False, None
+
+    def connect_to_server(self):
+        self.connected = True
+
+    def close(self, code=None, reason=None):
+        self.closed = (code, reason)
+
+
+class _Route:
+    def __init__(self, url):
+        self.request = type("Req", (), {"url": url})()
+        self.verdict = None
+
+    def continue_(self):
+        self.verdict = "continue"
+
+    def abort(self, reason):
+        self.verdict = reason
+
+
+def test_the_context_refuses_internal_websockets_and_popups_before_the_page_opens():
+    from unittest.mock import patch
+
+    page = _Recording()
+    with patch("socket.getaddrinfo", _resolve):
+        exec(compile(fetch_guard.guarded_browser_script(URL), "<guarded>", "exec"), {"page": page})
+        kinds = [k for k, _p, _h in page.events]
+        assert kinds.index("ws") < kinds.index("goto") and kinds.index("route") < kinds.index("goto")
+        assert kinds.index("init") < kinds.index("goto")
+        pattern = next(p for k, p, _h in page.events if k == "ws")
+        assert pattern.match("ws://anything/") and pattern.match("wss://anything/")
+        on_ws = page.handler("ws")
+        for url in ("ws://127.0.0.1:8016/", "ws://internal.example.test/live", "ws://169.254.169.254/",
+                    "wss://[::ffff:10.0.0.1]/", "ws://localhost:7687/"):
+            ws = _Ws(url)
+            on_ws(ws)
+            assert ws.closed == (1008, "blocked") and not ws.connected, url
+        public = _Ws("wss://public.example.test/feed")
+        on_ws(public)
+        assert public.connected and public.closed is None
+        on_request = page.handler("route")
+        inward, outward = _Route("http://internal.example.test/admin"), _Route("https://public.example.test/x")
+        on_request(inward)
+        on_request(outward)
+        assert inward.verdict == "blockedbyclient" and outward.verdict == "continue"
+    init = next(s for k, s, _h in page.events if k == "init")
+    assert init == fetch_guard._NO_PEER_JS and "RTCPeerConnection" in init and "serviceWorker" in init
+
+
+def test_a_playwright_without_websocket_routing_never_opens_the_page():
+    """No route_web_socket (Playwright before 1.48): the script raises before the page is opened,
+    so the sandbox answers [STDERR] and net.render reads browser_error."""
+    import pytest as _pytest
+    from unittest.mock import patch
+
+    page = _Recording(with_ws_routing=False)
+    with patch("socket.getaddrinfo", _resolve), _pytest.raises(AttributeError):
+        exec(compile(fetch_guard.guarded_browser_script(URL), "<guarded>", "exec"), {"page": page})
+    assert "goto" not in [k for k, _p, _h in page.events]
