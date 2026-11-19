@@ -26,7 +26,9 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s (got: %s want: %s)\n' "$1" "$2" "$3"; }
 
-[[ -f "$FW" ]] || { echo "SKIP: $FW not found"; exit 0; }
+# A tracked file: absent means a broken checkout or a move this suite must follow.
+# 77 is the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN).
+[[ -f "$FW" ]] || { echo "CANNOT RUN  $FW not found"; exit 77; }
 
 # rules <MCP_SERVER_ENABLED> <MCP_CLIENT_CIDRS> [PORT] -> the ufw command lines
 rules() {

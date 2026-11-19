@@ -3775,8 +3775,10 @@ cmd_install() {
 # run the one map.
 _map_core_changes() {
     local changed_files="$1"
-    # webapp: always needs rebuild (no volume mount in production)
-    if echo "$changed_files" | grep -q "^webapp/"; then
+    # webapp: always needs rebuild (no volume mount in production). VERSION too:
+    # it becomes the REDAMON_VERSION build argument the image bakes as the
+    # version it reports (MCP serverInfo, agent onboarding).
+    if echo "$changed_files" | grep -qE "^(webapp/|VERSION$)"; then
         rebuild_core+=(webapp)
     fi
 
@@ -3821,10 +3823,14 @@ _map_core_changes() {
             || restart_only+=(recon-orchestrator)
     fi
 
-    # The orchestrator imports graph_db (its Neo4jClient) and, for /defaults,
-    # recon/project_settings.py and recon/settings_registry.py from its read-only
-    # mounts. Python keeps them cached until the process restarts.
-    if echo "$changed_files" | grep -qE "^(graph_db/|recon/(project_settings|settings_registry)\.py$)"; then
+    # The orchestrator imports graph_db (its Neo4jClient), for /defaults
+    # recon/project_settings.py and recon/settings_registry.py, and the TruffleHog
+    # source registry (trufflehog_scan.{sources,findings}, through
+    # trufflehog_registry.py) from its read-only mounts. Python keeps them cached
+    # until the process restarts, so a registry change would otherwise be gated
+    # and redacted with the old rules while the rebuilt scanner runs the new ones.
+    # tests/redamon_update_map_test.sh derives this list from the imports.
+    if echo "$changed_files" | grep -qE "^(graph_db/|recon/(project_settings|settings_registry)\.py$|scanners/trufflehog_scan/[^/]+\.py$)"; then
         [[ " ${rebuild_core[*]-} ${restart_only[*]-} " == *" recon-orchestrator "* ]] \
             || restart_only+=(recon-orchestrator)
     fi
@@ -3923,6 +3929,10 @@ _map_tool_changes() {
     if echo "$changed_files" | grep -qE "^recon_orchestrator/(hard_guardrail|ip_denylist)\.py$"; then
         rebuild_capture=true
     fi
+    # No rule for scanners/supply_chain_common/, which traffic-ingest imports from
+    # a bind mount: cmd_update recreates a running capture pair on every update
+    # (its last _reconcile_capture_if_running), and the update-map test fails if
+    # that call ever becomes conditional.
     # The plugin runner image: rebuilt when its sources or a compose file it depends on
     # changed (cmd_update also builds it when missing). Never in rebuild_core or
     # restart_only: plugins_converge alone starts the runner and the gateway, and
@@ -4452,6 +4462,9 @@ cmd_update() {
     # (e.g. the supply-chain incident catalog mount) would be missing, silently,
     # until someone toggled capture off and on. Reconciling again here, after the
     # restarts, is what actually applies it. Idempotent and best-effort.
+    # Keep it unconditional: it is also what reloads the supply_chain_common
+    # modules the ingest worker imports from its bind mount, which no map rule
+    # restarts (tests/redamon_update_map_test.sh checks both).
     _reconcile_capture_if_running
     # ...and start it if it was down (a stack recreate leaves the pair stopped).
     ensure_capture_proxy_running
@@ -5457,7 +5470,8 @@ for _f in ${_ROOT_RECON_TESTS//,/ }; do _ROOT_RECON_PATHS="$_ROOT_RECON_PATHS te
 # red one: it reports that a control holds when nothing checked it.
 #
 # `REDAMON_TEST_ALLOW_MISSING` is the deliberate, named opt-out for a working
-# copy that genuinely lacks an input (comma-separated section names, or `all`).
+# copy that genuinely lacks an input (comma-separated section names, shell suite
+# names, or `all`).
 # It prints a line containing the word SKIPPED so the hole is visible in any log
 # rather than being inferable only from a count.
 _test_section_may_skip() {
@@ -5584,21 +5598,34 @@ cmd_test() {
 # redamon.sh itself (sourcing it — the BASH_SOURCE guard at the bottom stops the
 # dispatch from firing), so they need no image and run on the host.
 #
-# Every suite here MUST be hermetic or self-skip: any that needs a live stack
-# (e.g. scan_timeline_db_test.sh without postgres) exits 0 with a SKIP line.
+# A suite that cannot run on this host, because a tool every gate host has
+# (python3 with PyYAML, git, docker compose) or a tracked file it reads is
+# missing, exits _TEST_SHELL_CANNOT_RUN after a line saying what is missing. That
+# is a missing input like an unbuilt image: it fails the gate unless
+# REDAMON_TEST_ALLOW_MISSING names `shell` or the suite (with or without .sh).
+# Exit 0 means the suite checked what it claims. Only a check that needs a
+# running stack (e.g. scan_timeline_db_test.sh without postgres) or a platform
+# feature (unshare, GNU grep -P) may print SKIP and exit 0: the shell form of the
+# live tier, which the gate does not promise.
 # Files named *_smoke.sh / *_live.sh are deliberately NOT matched by the glob.
+# 77 is the automake/meson "skipped" code, so no suite returns it by accident.
+_TEST_SHELL_CANNOT_RUN=77
 _test_run_shell() {
+    local tier="${1:-unit}"
     local files=("$SCRIPT_DIR"/tests/*_test.sh)
     if [[ ! -e "${files[0]}" ]]; then
         _test_missing_input "shell" "no tests/*_test.sh were found" \
-            "check out the tests/ directory" "${1:-unit}"
+            "check out the tests/ directory" "$tier"
         return $?
     fi
     info "=== section: shell (bash) ==="
-    local f name rc shell_failed=0 passed=0
+    local f name rc reason allow_as log shell_failed=0 passed=0 skipped=0
+    # A file, not a pipe: a suite that leaves a background child holding its
+    # stdout would hang a command substitution until that child exits.
+    log="$(mktemp)"
     for f in "${files[@]}"; do
         name="$(basename "$f")"
-        if bash "$f" >/dev/null 2>&1; then
+        if bash "$f" >"$log" 2>&1; then
             rc=0
         else
             rc=$?
@@ -5606,12 +5633,30 @@ _test_run_shell() {
         if [[ $rc -eq 0 ]]; then
             passed=$(( passed + 1 ))
             echo -e "  ${GREEN}ok${NC}    $name"
+        elif [[ $rc -eq $_TEST_SHELL_CANNOT_RUN ]]; then
+            reason="$(grep -v '^[[:space:]]*$' "$log" | tail -n 1 \
+                | sed -E 's/^[[:space:]]*(CANNOT RUN|SKIP:?)[[:space:]]*//')" || reason=""
+            allow_as="$name"
+            if _test_section_may_skip shell; then
+                allow_as=shell
+            elif _test_section_may_skip "${name%.sh}"; then
+                allow_as="${name%.sh}"
+            fi
+            if _test_missing_input "$allow_as" "shell suite $name exited 77: ${reason:-it printed no reason}" \
+                "provide what it names, then: bash tests/$name" "$tier"; then
+                skipped=$(( skipped + 1 ))
+            else
+                shell_failed=1
+            fi
         else
             shell_failed=1
             echo -e "  ${RED}FAIL${NC}  $name (exit $rc) — re-run: bash tests/$name"
         fi
     done
-    if [[ $shell_failed -eq 0 ]]; then
+    rm -f "$log"
+    if [[ $shell_failed -eq 0 && $skipped -gt 0 ]]; then
+        success "shell suites: ${passed} file(s) green, ${skipped} SKIPPED"
+    elif [[ $shell_failed -eq 0 ]]; then
         success "shell suites: ${passed} file(s) green"
     else
         error "shell suites: failures above"

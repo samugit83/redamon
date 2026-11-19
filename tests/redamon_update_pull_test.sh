@@ -34,7 +34,8 @@ assert_true()  { local l="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$l -> 
 assert_false() { local l="$1"; shift; if "$@" >/dev/null 2>&1; then fail "$l (expected false)"; else pass "$l -> false"; fi; }
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
-command -v git >/dev/null 2>&1 || { echo "SKIP: git not installed"; exit 0; }
+# 77: the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN).
+command -v git >/dev/null 2>&1 || { echo "CANNOT RUN  git not installed"; exit 77; }
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT

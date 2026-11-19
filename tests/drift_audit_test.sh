@@ -31,7 +31,8 @@ cp "$AUDIT" "$FX/skills/skill-sync/assets/drift-audit.sh"
 : > "$FX/agentic/AGENTS.md"
 # A repository of its own, so the script's `git rev-parse` and `git ls-files`
 # see the fixture and not the checkout this test lives in.
-git -C "$FX" init -q 2>/dev/null || { echo "  SKIP  git is not available"; exit 0; }
+# 77: the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN).
+git -C "$FX" init -q 2>/dev/null || { echo "  CANNOT RUN  git is not available"; exit 77; }
 
 # skill <name> <body>: write skills/<name>/SKILL.md.
 skill() { mkdir -p "$FX/skills/$1"; printf '%s\n' "$2" > "$FX/skills/$1/SKILL.md"; }

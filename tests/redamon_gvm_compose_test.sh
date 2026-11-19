@@ -17,9 +17,9 @@
 #      created at all. The stack then had no scanner, and every scan task sat at
 #      0% until its 4h timeout.
 #
-# Hermetic: `docker compose config` only, no daemon needed for the parse (the
-# suite self-skips if compose or python3 is unavailable). The live behavioural
-# proof is tests/gvm_socket_race_live.sh.
+# Hermetic: parses docker-compose.yml with python3 and PyYAML, no daemon (without
+# them it exits 77, which fails the gate). The live behavioural proof is
+# tests/gvm_socket_race_live.sh.
 # =============================================================================
 set -uo pipefail
 
@@ -31,9 +31,10 @@ ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s (got: %s want: %s)\n' "$1" "$2" "$3"; }
 eq()  { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "  SKIP  python3 unavailable (GVM compose structure)"
-    exit 0
+# 77: the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN).
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -c "import yaml" >/dev/null 2>&1; then
+    echo "  CANNOT RUN  needs python3 with PyYAML (GVM compose structure)"
+    exit 77
 fi
 
 echo "== the stale-lock cleanup cannot race a live Postgres =="
@@ -90,11 +91,6 @@ elif mode == "ospd-gate":
 PYEOF
 
 run_py() { python3 -c "$PY" "$COMPOSE_FILE" "$1" 2>/dev/null; }
-
-if ! python3 -c "import yaml" >/dev/null 2>&1; then
-    echo "  SKIP  pyyaml unavailable (GVM compose structure)"
-    exit 0
-fi
 
 eq "no sibling container deletes the shared Postgres socket" \
    "$(run_py socket-deleters)" "gvm-postgres"

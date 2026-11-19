@@ -36,8 +36,9 @@ finish() {
 }
 
 if ! command -v git >/dev/null 2>&1 || ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-  echo "  SKIP  needs git and this repository's .git (the audit lists files with git ls-files)"
-  exit 0
+  # 77: the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN).
+  echo "  CANNOT RUN  needs git and this repository's .git (the audit lists files with git ls-files)"
+  exit 77
 fi
 if ! command -v python3 >/dev/null 2>&1; then
   fail "python3 is unavailable, so the allowlist cannot be read"

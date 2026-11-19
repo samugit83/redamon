@@ -112,7 +112,12 @@ the command dispatch from firing) and need no image.
 They run in the same tiers as webapp (`unit`, `all`, `coverage`), so the
 canonical `./redamon.sh test` gate covers them. Every suite matched by the glob
 must be **hermetic or self-skipping**: one that needs a live stack (e.g.
-`scan_timeline_db_test.sh` without postgres) prints a `SKIP` line and exits 0.
+`scan_timeline_db_test.sh` without postgres) prints a `SKIP` line and exits 0,
+the shell equivalent of the live tier. A suite that cannot run because an input
+of its own is missing (python3, PyYAML, git, a tracked file) exits **77**
+instead, and the runner fails the gate on it unless `REDAMON_TEST_ALLOW_MISSING`
+names `shell` or that suite, in which case it prints `SKIPPED` with the suite's
+reason. Exiting 0 there would report a guard as green while it checked nothing.
 Smoke/live shell suites are named `*_smoke.sh` / `*_live.sh` and are deliberately
 not matched.
 

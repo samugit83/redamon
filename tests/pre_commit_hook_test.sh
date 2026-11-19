@@ -22,11 +22,13 @@ PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); printf '  \033[0;32mPASS\033[0m %s\n' "$1"; }
 fail() { FAIL=$((FAIL+1)); printf '  \033[0;31mFAIL\033[0m %s\n' "$1"; }
 
+# 77: the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN), which
+# fails it unless REDAMON_TEST_ALLOW_MISSING names this suite.
 if ! command -v git >/dev/null 2>&1 || ! git -C "$REPO_ROOT" rev-parse --verify -q HEAD >/dev/null; then
-  echo "  SKIP  needs git and a HEAD commit to copy the generators from"; exit 0
+  echo "  CANNOT RUN  needs git and a HEAD commit to copy the generators from"; exit 77
 fi
 if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import yaml' >/dev/null 2>&1; then
-  echo "  SKIP  needs python3 with PyYAML to run the generator checks"; exit 0
+  echo "  CANNOT RUN  needs python3 with PyYAML to run the generator checks"; exit 77
 fi
 
 FX="$(mktemp -d)"
