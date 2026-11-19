@@ -77,7 +77,7 @@ const TOOL_API_KEYS: Record<string, ApiKeyReq[]> = {
   ],
 }
 
-const TOOL_DESCRIPTIONS: Record<string, string> = {
+export const TOOL_DESCRIPTIONS: Record<string, string> = {
   WebCachePoison:
     'Detects web cache poisoning and web cache deception on live URLs. Runs the WCVS breadth engine, ' +
     'then a native confirmation (cache oracle, isolated cache-buster, framework hypotheses, ' +
@@ -269,6 +269,13 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
     'Enriches discovered IPs with open ports, services, certificates, threat intelligence, malware associations, DNS records, and vulnerabilities. ' +
     'Targets are loaded from the graph (IPs from prior Subdomain Discovery). Only sub-tools with valid API keys will run. ' +
     'Subdomain, Port, Service, ExternalDomain, DNSRecord, ThreatPulse, Malware, Certificate, Vulnerability, and CVE nodes are merged into the existing graph.',
+  OriginDiscovery:
+    'Looks for the real origin server behind a CDN or WAF. Targets are the CDN-fronted hosts already in the graph (from a prior HTTP probe); ' +
+    'a subdomain you enter below is treated as fronted on your word. IPs are never entered by hand: an origin IP is what this run finds. ' +
+    'Candidate origins come from non-CDN subdomains, SPF/MX records, certificate transparency, the favicon hash on internet-wide scanners and DNS history; ' +
+    'private, internal and RoE-excluded addresses are dropped before any probe. Each candidate is fetched directly and its page, TLS certificate and headers ' +
+    'are compared with the fronted site. A confirmed origin is merged as an IP with a HAS_ORIGIN edge from its Subdomain and a Vulnerability ' +
+    '(type=waf_bypass, source=origin_discovery) -- duplicates are updated, not recreated.',
 }
 
 // --- Validation helpers ---
@@ -879,6 +886,9 @@ export function PartialReconModal({
   // Graph targets only: the step tags existing IP nodes and creates none.
   const ipAttributionNoIps = toolId === 'IpAttribution' && !loadingInputs && (graphInputs?.existing_ips_count ?? 0) === 0
   const originDiscoveryNoFronted = isOriginDiscovery && !loadingInputs && !customSubdomains.trim() && (!includeGraphTargets || (graphInputs?.fronted_count ?? 0) === 0)
+  // One condition for `disabled` and the look of the button, so a refused run
+  // never renders as clickable.
+  const runDisabled = !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || routeExposureNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || ipAttributionNoIps || originDiscoveryNoFronted || oldModelGraph || !!ipModeRefused
 
   const inputCounts: string | null = (isNmap || isTlsx)
     ? `(${graphInputs?.existing_ips_count ?? 0} IPs, ${graphInputs?.existing_ports_count ?? 0} ports, ${graphInputs?.existing_subdomains_count ?? 0} subdomains)`
@@ -1608,14 +1618,14 @@ export function PartialReconModal({
           <button
             type="button"
             onClick={handleRun}
-            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || routeExposureNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || ipAttributionNoIps || originDiscoveryNoFronted || oldModelGraph || !!ipModeRefused}
+            disabled={runDisabled}
             style={{
               padding: '8px 16px', borderRadius: '6px', border: 'none',
               backgroundColor: '#3b82f6', color: '#fff',
-              cursor: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || routeExposureNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph ? 'not-allowed' : 'pointer',
+              cursor: runDisabled ? 'not-allowed' : 'pointer',
               fontSize: '13px',
               display: 'flex', alignItems: 'center', gap: '6px',
-              opacity: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || routeExposureNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph ? 0.5 : 1,
+              opacity: runDisabled ? 0.5 : 1,
             }}
           >
             {isStarting ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={14} />}

@@ -7,14 +7,14 @@ Use it **before** you change something: find the thing you are touching in the
 tables below, and you get every other place that has to move with it, the guard
 that will (or will not) catch you, and the command that refreshes it.
 
-> **Last audit: 2026-11-19. Last re-map: 2026-10-25. Last fix pass: 2026-10-25.**
+> **Last audit: 2026-11-19. Last re-map: 2026-10-25. Last fix pass: 2026-11-19.**
 > Branch `feat-15-november`, 1,747 commits after the last audit (Tradecraft 2.0,
 > AI Navigator, URLScan, RBAC). The audit ran six parallel read-only audits, one
 > per area, and every new claim was re-verified against the source by the one
-> writer. No item fixed on 2026-10-25 has come back; section 2 holds the 36 new
-> ones (#89-#124), and sections 3 and 4 carry the new generators, guards and
-> copies. The wiki checkout had uncommitted edits from another session during the
-> audit, so the wiki line numbers cited here can move.
+> writer. No item fixed on 2026-10-25 had come back; the audit found 36 new ones
+> (#89-#124), and sections 3 and 4 carry the new generators, guards and copies.
+> The fix pass the same day fixed all 36, and the four guards it added (28-31)
+> moved from section 6 to section 3.2. Section 2 is empty.
 > Numbers are never reused: the next audit starts at #125.
 > `git log --grep 'drift-map #N'` finds the commit that fixed item N.
 
@@ -101,31 +101,23 @@ reasoned from the code and not reproduced.
 
 ### 2.1 Behaviour: wrong results at runtime
 
-| # | What | Both sides | Effect |
-|---|---|---|---|
-| 93 | Clearing a form field writes a value that is not the default | `agentToolOutputMaxChars` writes 20,000, default 40,000 (`AgentBehaviourSection.tsx:720`); `zapAjaxSpiderMaxUrls` 5,000 vs 1,000 (`ZapAjaxSpiderSection.tsx:179`); `gvmTaskTimeout` 0 vs 14,400 and `gvmPollInterval` 5 vs 30 (`GvmScanSection.tsx`); `triageReviewBudget` 0 vs 150 (`CypherFixSettingsSection.tsx`); plus the 7 display fallbacks of 4.4 item 5 | The saved project runs with a value nobody chose; `gvmTaskTimeout` 0 is unlimited |
+None open.
 
 ### 2.2 Guards that do not guard
 
-| # | What | Both sides | Effect |
-|---|---|---|---|
+None open.
 
 ### 2.3 Agent-facing and developer text (produces wrong code)
 
-| # | What | Both sides | Effect |
-|---|---|---|---|
-| 106 | Small agent-facing staleness | `PROMPT.ADD_PARTIAL_RECON.md:395` `webapp/src/hooks/usePartialRecon*.ts` (the hooks are `useMultiPartialRecon{SSE,Status}.ts`); `PROMPT.ADD_COMMUNITY_CHAT_SKILL.md:11,17` `agentic/skill_loader.py` (now `agentic/orchestrator_helpers/skill_loader.py`); `docker-compose.yml#L903` / `#L418` anchors in `PROMPT.ADD_COMMUNITY_{AGENT,CHAT}_SKILL.md` land on unrelated lines; `AGENTS.md:92` "Each component root carries its own AGENTS.md" (`mcp/` and `graph_db/` have none); the `BUILTIN_RESERVED_TOOL_NAMES` comment names only `tradecraft_lookup` (`webapp/src/lib/mcp/schema.ts:21`); `_graph_exec_coerce` "mirrors redagraph" (`agentic/api.py:3961`) though it now adds `nodeId` and strips display-only props, which `redagraph.py:123` `_coerce` does not; `_split_url` "MUST stay byte-identical" (`osint_mixin.py:120-128`): the bodies differ as text and compute the same result | Wrong file or function named; low |
+None open.
 
 ### 2.4 Counts and links in docs
 
-| # | What | Doc | Truth |
-|---|---|---|---|
+None open.
 
 ### 2.5 Dead or diverging data
 
-| # | What | Both sides | Effect |
-|---|---|---|---|
-| 124 | Hand UI copies that missed a change | `PartialReconModal.tsx` `TOOL_DESCRIPTIONS` has no `OriginDiscovery` (generic text shown); the Run button's `cursor` and `opacity` conditions (`:1615`, `:1618`) omit `ipAttributionNoIps` and `ipModeRefused`, which `disabled` (`:1611`) has; `GeneratePresetModal.tsx:27-69` `toolNames` lacks tlsx, routeExposure, ipAttribution and others; the Global Settings URLScan hint (`app/settings/page.tsx:1354-1357`) says recon only, while `ToolMatrixSection.tsx` and `useApiKeyModal.ts:11` say the agent's `execute_gau` uses the key | Cosmetic: a disabled button that looks clickable, a raw key or a generic text, a user not told the agent reads the key |
+None open.
 
 ---
 
@@ -186,6 +178,8 @@ so did the four generator suites added since (63 tests).
 | a forbidden parent forbids its companions (`GRAPH_COMPANION_TOOLS`, `TRADECRAFT_COMPANION_TOOLS`) on every executor path, and every companion constant's parent is a `roeForbiddenTools` value (guard 30, first half) | `agentic/tests/test_roe_gate.py` |
 | every `set_tenant_context` call in an executor node passes the chat session id; `_build_redamon_ctx` falls back to the log session (guard 30, second half) | `agentic/tests/test_tool_call_session_id.py` |
 | the agent's `LOOP_ANSWER_MAX_CHARS` default and maximum == the webapp's `LOOP_ANSWER_MAX_CHARS` | `agentic/tests/test_agent_in_the_loop_settings.py` |
+| every numeric display or cleared-field fallback in the project form == the field's registry default (a named, empty allowlist) | `webapp/src/components/projects/ProjectForm/sections/clearedFallbacks.test.ts` |
+| the preset modal names every `*Enabled` key the preset schema accepts from the registry; the partial-recon modal describes every partial-recon tool | `GeneratePresetModal.labels.test.ts`, `WorkflowView/PartialReconModal.runButton.test.tsx` |
 | the unclassified routing table names every `KNOWN_ATTACK_PATHS` id once | `agentic/tests/test_unclassified_routing_table.py` |
 | `BUILTIN_RESERVED_TOOL_NAMES` (TS) == `mcp_registry._builtin_tool_names()` (registry keys, the three tradecraft tools and `SYSTEM_MCP_TOOL_NAMES`), both ways | `agentic/tests/test_reserved_tool_names_parity.py` |
 | server tools -> `SYSTEM_MCP_TOOL_NAMES` (one direction: a stale allowlist name passes) | `agentic/tests/test_system_mcp_tool_coverage.py` |
@@ -299,14 +293,14 @@ overlay) plus tools injected from MCP manifests at runtime.
 | Default phase map (28 tools) | `TOOL_PHASE_MAP` `agentic/project_settings.py:297` | PART (phase-gating tests) | A tool missing from the map is **denied in every phase** (`is_tool_allowed_in_phase` returns False for an unmapped tool) |
 | Same map as a Prisma JSON default | `agentToolPhaseMap @default(...)` `webapp/prisma/schema.prisma:1481` | TEST (`agentic/tests/test_prisma_default_parity.py` compares every `AGENT_SETTING_COLUMNS` entry through `registry.json`, which `registry.prisma.test.ts` keeps equal to the schema) | Matches Python (28 = 28, identical phases). **Frozen copy:** see below |
 | UI tool matrix | inline array `ToolMatrixSection.tsx:284` | NONE | Matches today (28 ids). The `⚠` label is a hand marker on two tools, unrelated to `DANGEROUS_TOOLS` |
-| Which tool needs which API key (6 tools), 4 copies | `TOOL_KEY_INFO` + `fetchKeyStatus` (`ToolMatrixSection.tsx:50,181-186`), `API_KEY_INFO` (`AIAssistantDrawer/hooks/useApiKeyModal.ts:6-13`; `fetchApiKeyStatus` now derives from it), `TOOL_KEY_LABEL` (`ToolExecutionCard.tsx:19-26`), hint text in `app/settings/page.tsx:1270-1319` and the URLScan entry at `:1354` | NONE | The URLScan hint disagrees (#124) |
+| Which tool needs which API key (6 tools), 4 copies | `TOOL_KEY_INFO` + `fetchKeyStatus` (`ToolMatrixSection.tsx:50,181-186`), `API_KEY_INFO` (`AIAssistantDrawer/hooks/useApiKeyModal.ts:6-13`; `fetchApiKeyStatus` now derives from it), `TOOL_KEY_LABEL` (`ToolExecutionCard.tsx:19-26`), hint text in `app/settings/page.tsx:1270-1319` and the URLScan entry at `:1354` | NONE (the settings page's URLScan badges and hint: `page.urlscanKey.test.tsx`) | Agree today |
 | RoE forbidden-tool vocabulary | closed vocabulary `roeForbiddenTools` in `recon_settings/registry.yaml` | TEST (`test_forbidden_tool_vocabulary.py`) | A tool not in it is the one an engagement cannot forbid |
 | RoE enforcement | `roe_gate.check_tool_call` (`agentic/orchestrator_helpers/roe_gate.py`), asked by the single-tool node, the plan wave and every fireteam member | TEST (`agentic/tests/test_roe_gate.py`) | A new executor path must ask it; the test fails a module that calls `tool_executor.execute` without it |
 | RoE category -> tools | `CATEGORY_TOOL_MAP` (`roe_gate.py`) | TEST (keys: `test_forbidden_tool_vocabulary.py`; members are registry keys: `test_roe_gate.py`) | A new tool in a forbidden class must be added to its category |
 | Recon-budget discovery tools | `RECON_DISCOVERY_TOOLS` (`roe_gate.py`), a hand list: no registry field marks a discovery tool | PART (`test_roe_gate.py`: every name is a registry key) | A new discovery tool left out is not budgeted |
 | Dangerous tools (confirmation gate) | `DANGEROUS_TOOLS` `agentic/project_settings.py:51`; the TS copy `DANGEROUS_AGENT_TOOLS` (`webapp/src/lib/authz/settingsRisk.ts:238`) | PART (`test_tool_confirmation.py:181-194` pins the 19 by equality); TEST for the TS copy (`settingsRisk.test.ts` reads the Python set; skips in a webapp-only tree) | A new traffic-emitting tool left out runs **without confirmation** |
 | Fireteam mutex groups | `TOOL_MUTEX_GROUPS` (`agentic/project_settings.py:82`), read by `_validate_mutex_groups` (`fireteam_deploy_node.py`) | TEST (`agentic/tests/test_fireteam_mutex_groups.py`) | `state.py:574` is the LLM-filled `tools` field the check reads, not a stored list |
-| Reserved names for user MCP tools (TS) | `BUILTIN_RESERVED_TOOL_NAMES` `webapp/src/lib/mcp/schema.ts:26` | TEST (`agentic/tests/test_reserved_tool_names_parity.py`, both ways) | A new system MCP tool must be added to the TS list too; the parity test fails until it is. The comment above it names only `tradecraft_lookup` (#106) |
+| Reserved names for user MCP tools (TS) | `BUILTIN_RESERVED_TOOL_NAMES` `webapp/src/lib/mcp/schema.ts:26` | TEST (`agentic/tests/test_reserved_tool_names_parity.py`, both ways) | A new system MCP tool must be added to the TS list too; the parity test fails until it is |
 | System server ids and ports, 5 copies | `SYSTEM_SERVER_IDS` (`agentic/mcp_registry.py:34`, `webapp/src/lib/mcp/schema.ts`), `_build_system_mcp_servers` (`agentic/tools.py:290`), `SERVERS` (`mcp/servers/run_servers.py:56`), the smoke-test module list (`mcp/kali-sandbox/Dockerfile:543`) | NONE | Agree today (5) |
 | Names the Kali MCP servers expose | `SYSTEM_MCP_TOOL_NAMES` `agentic/tools.py:365` | PART (one direction) | Its comment records the failure: `execute_osv_scanner` was missing, so every call returned "Tool not found". Matches the 23 server tools today |
 | CLIs the agent is told exist in Kali | the `kali_shell` description, skill prompts, `mcp/servers/proxy_brain_manual.md` | NONE (the Kali build smoke-tests only MCP imports and HTTP/2); every name was checked against the built image on 2026-10-25 | The agent runs a command that is not installed; a Kali rolling update can drop a package |
@@ -408,12 +402,13 @@ close:
    the GVM and GitHub merges add non-column keys the POST strips): what the
    **form starts from** and what a **preset apply resets to**
 5. `MINIMAL_DEFAULTS` (`ProjectForm/formDefaults.ts`, which also copies the 7
-   hostname-policy defaults at `:18-24`) and per-section fallbacks: 7 display
-   fallbacks differ from both defaults today (`hakrawlerParallelism` 4/5,
-   `jsluiceParallelism` 3/5, `katanaParallelism` 5/8, `katanaConcurrency` 10/15,
-   `kiterunnerParallelism` 2/3, `paramspiderWorkers` 5/8,
-   `dnsMaxWorkers` 50/80), and so do 12 of the 171 values an `onChange` writes
-   when the field is cleared: the same 7 plus 5 more (#93)
+   hostname-policy defaults at `:18-24`) and per-section fallbacks: every
+   numeric display or cleared-field fallback in `ProjectForm/sections/*.tsx`
+   reads the registry default through `numericDefault(key)` (`formDefaults.ts`),
+   and `sections/clearedFallbacks.test.ts` fails a literal that differs from it
+   (15 differed until 2026-11-19, #93). Separate and open: about 20 `|| N`
+   fallbacks swallow a typed 0 on fields whose minimum is 0 (e.g.
+   `httpxRetries`, `nucleiRetries`, `masscanWait`, `roeDataRetentionDays`)
 6. every **existing row** (needs a SQL backfill)
 7. the literal fallbacks of `settings.get('KEY', literal)` in `recon/` and
    `recon_orchestrator/`: 98 of 1,001 differ from `DEFAULT_SETTINGS` (e.g.
@@ -528,12 +523,12 @@ model reads.
 
 | Fact | Copies | Guard | Fails how |
 |---|---|---|---|
-| Partial-recon tool ids (34) | dispatch `recon/partial_recon.py:508-577`; `PARTIAL_TOOL_SWITCHES` (`partial_recon.py:135`); `SECTION_INPUT_MAP` (`nodeMapping.ts`, + 4 non-partial keys); `TOOL_QUERIES` (graph-inputs `[toolId]/route.ts:212`); `PARTIAL_RECON_SUPPORTED_TOOLS` (`recon-types.ts:233`); `workflowDefinition.ts` (no `Uncover` node on purpose: it runs from `ProjectForm.tsx`); `PartialReconModal.tsx` `TOOL_DESCRIPTIONS` | PART (per-tool wiring tests; `test_partial_stealth_refusal.py` for the switches) | The dispatch, the switches, `SECTION_INPUT_MAP`, `TOOL_QUERIES` and the supported set agree at 34; the modal has no `OriginDiscovery` description (#124) |
+| Partial-recon tool ids (34) | dispatch `recon/partial_recon.py:508-577`; `PARTIAL_TOOL_SWITCHES` (`partial_recon.py:135`); `SECTION_INPUT_MAP` (`nodeMapping.ts`, + 4 non-partial keys); `TOOL_QUERIES` (graph-inputs `[toolId]/route.ts:212`); `PARTIAL_RECON_SUPPORTED_TOOLS` (`recon-types.ts:233`); `workflowDefinition.ts` (no `Uncover` node on purpose: it runs from `ProjectForm.tsx`); `PartialReconModal.tsx` `TOOL_DESCRIPTIONS` | PART (per-tool wiring tests; `test_partial_stealth_refusal.py` for the switches) | The dispatch, the switches, `SECTION_INPUT_MAP`, `TOOL_QUERIES` and the supported set agree at 34; the modal describes every partial-recon tool (`PartialReconModal.runButton.test.tsx`) |
 | Tools refused, or limited to hostnames, in IP mode | `IP_MODE_REFUSED_TOOLS`, `IP_MODE_NAME_ONLY_TOOLS` (`recon/partial_recon_modules/helpers.py:415-430`) <-> `webapp/src/lib/partialReconScope.ts:245-261` | NONE across the two (`partialReconScope.test.ts` iterates only the TS list) | Agree today (3 refused, 3 hostname-only) |
 | Graph-input queries | `TOOL_QUERIES` in the graph-inputs route (the live implementation since the Python one moved here) | TEST (`recon/tests/test_graph_writes_documented.py` reads webapp Cypher) | |
 | Phase strings | `GVM_PHASES`, `GITHUB_HUNT_PHASES`, `TRUFFLEHOG_PHASES` (`recon-types.ts`); `*_PHASE_PATTERNS` (`container_manager.py`); `*State.total_phases` (`models.py`) | TEST (`recon-types.phases.test.ts`, `test_phase_totals.py`) | Agree today: recon has 6 (`RECON_TOTAL_PHASES` in `recon-types.ts`) |
 | Execution groups and their order | `recon/main.py` (GROUP 1..6; Phase A at `:2812-2831` registers 7 tools; GROUP 5's pool in `resource_enum.py` runs Katana, Hakrawler, GAU and ParamSpider, then Kiterunner, jsluice, FFuf, ZAP, Arjun and OpenAPI in turn) | `recon/tests` per group | The docs restate it by hand (`Recon-Pipeline-Workflow.md`, `Running-Reconnaissance.md`, `README.RECON.md`, `Origin-Discovery.md`), with nothing comparing them; they agree since 2026-11-19 (#108, #109); a renamed heading breaks wiki anchors until the gate's docs test runs |
-| Per-tool explanations in the UI | `WorkflowView/inputLogicTooltips.tsx`, `PartialReconModal.tsx`; `workflowDefinition.ts` traffic badges (6 differ from the registry, 5 of them "both", which the registry cannot express); `toolNames` in `GeneratePresetModal.tsx:27-69` (lacks tlsx, routeExposure, ipAttribution and others; a missing one shows its raw key) | NONE | Hand prose on dedup keys, sources, limits |
+| Per-tool explanations in the UI | `WorkflowView/inputLogicTooltips.tsx`, `PartialReconModal.tsx`; `workflowDefinition.ts` traffic badges (6 differ from the registry, 5 of them "both", which the registry cannot express); the preset modal's toggle labels, read from the registry by `enabledKeyLabel()` (`GeneratePresetModal.tsx`; `GeneratePresetModal.labels.test.ts` names every `*Enabled` key the preset schema accepts) | NONE | Hand prose on dedup keys, sources, limits |
 | Tool image lists, 5 copies | `*_DOCKER_IMAGE` defaults (`recon/project_settings.py`), `IMAGES` (`recon/entrypoint.sh`), `_DEFAULT_ALLOWED_IMAGES` (broker), `remove_redamon_images` (reads `IMAGES`), the registry's `tools.*.image` (15); plus `settings.get(...)` fallbacks in modules. A stop selects tool containers by run label, not by image | TEST (`test_image_parity.py` both ways, `redamon_runtime_images_test.sh`); PART for the registry copy (`registry.tools.test.ts`) | Agree today (15 images); every broker image beyond recon's names its caller (`BROKER_IMAGES_BEYOND_RECON`, 4) |
 | Red Zone "network initial access" | `PORT_CATEGORY`, `NET_VULN_TYPES` (`netInitAccess/route.ts`) vs `security_checks.py` | TEST (`recon/tests/test_net_init_access_parity.py`) | `cache_purge_exposed` is excluded on purpose (a cache-DoS finding, not an access vector) |
 | Every Red Zone / Insights query | `webapp/src/app/api/analytics/**/route.ts` | PART (route tests with mocked results; `insightsDeclared.test.ts` covers one predicate) | Hard-coded labels, properties and `type` strings |
@@ -747,7 +742,7 @@ and the webapp build cannot import across its root. So shared facts are copied.
 | `docs/readmes/coding_agent_prompts/*.md` | crude checks in `tests/test_docs_not_stale.py` (retired names, deny reasons, generated files); cited paths: TEST (`tests/docs_cited_paths_test.sh`); function names and layer counts: NONE (the prompts were rewritten from the code on 2026-11-19 and cite symbols, not `~line` hints; #101-#104) |
 | The built-in skill layer list: `skills/builtin-agent-skill/SKILL.md` (10), `AGENTS.md` (10), this page's 4.2 (ten), `PROMPT.ADD_BUILTIN_AGENT_SKILL.md` (10) | NONE (agree since 2026-11-19, #102) |
 | `skills/*/SKILL.md` layer tables and file lists | `drift-audit.sh` (a link resolves from the file's folder) and `--docs` in the gate; `#L<n>` anchors: TEST (`tests/test_ruleset_line_anchors.py`) |
-| `AGENTS.md` per component (`CLAUDE.md` is a symlink to it in the root and in six component folders), incl. QA checklists | `drift-audit.sh`; the root's claim that each component root has one is false for `mcp/` and `graph_db/` (#106) |
+| `AGENTS.md` per component (`CLAUDE.md` is a symlink to it in the root and in six component folders), incl. QA checklists | `drift-audit.sh`; the root names the component roots that carry one (`mcp/` and `graph_db/` follow the root file) |
 | `AGENTS.md` SKILLS CATALOGUE (by hand) | none; 20 = 20 today (21 folders under `skills/`, `skill-sync` included) |
 | `drift-audit.sh` `ROOTS` and `sync.sh` scope map | none; cover every `AGENTS.md` today (9 roots, 7 scopes, 7 files) |
 

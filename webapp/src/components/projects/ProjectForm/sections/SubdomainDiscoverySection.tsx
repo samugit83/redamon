@@ -8,6 +8,7 @@ import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 import { RegistryFields } from '../RegistryFields'
+import { numericDefault } from '../formDefaults'
 import { resolveScopeGroups } from '@/lib/scopeGroups'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
@@ -417,8 +418,8 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
                 <input
                   type="number"
                   className="textInput"
-                  value={data.dnsMaxWorkers ?? 50}
-                  onChange={(e) => updateField('dnsMaxWorkers', parseInt(e.target.value) || 50)}
+                  value={data.dnsMaxWorkers ?? numericDefault('dnsMaxWorkers')}
+                  onChange={(e) => updateField('dnsMaxWorkers', parseInt(e.target.value) || numericDefault('dnsMaxWorkers'))}
                   min={1}
                   max={200}
                 />

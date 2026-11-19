@@ -9,6 +9,7 @@ import { documentInProjectScope } from '@/lib/openapiSourceStatus'
 import { useOpenApiSourceLabels } from '@/hooks/useOpenApiSourceLabels'
 import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -45,9 +46,9 @@ function newSourceId(): string {
     : `src-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-function clamp(raw: string, min: number, max: number): number {
+function clamp(raw: string, min: number, max: number, cleared: number): number {
   const n = Number.parseInt(raw, 10)
-  return Number.isNaN(n) ? min : Math.min(max, Math.max(min, n))
+  return Number.isNaN(n) ? cleared : Math.min(max, Math.max(min, n))
 }
 
 const BADGE_TONES: Record<string, string> = {
@@ -158,12 +159,12 @@ export function OpenApiSection({ data, updateField, onRun, projectId }: OpenApiS
               <div className={styles.fieldRow}>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Fetch timeout (seconds)</label>
-                  <input type="number" className="textInput" min={1} max={60} value={data.openapiTimeout ?? 10} onChange={(event) => updateField('openapiTimeout', clamp(event.target.value, 1, 60))} />
+                  <input type="number" className="textInput" min={1} max={60} value={data.openapiTimeout ?? 10} onChange={(event) => updateField('openapiTimeout', clamp(event.target.value, 1, 60, numericDefault('openapiTimeout')))} />
                   <span className={styles.fieldHint}>Per-document HTTP timeout, from 1 to 60 seconds.</span>
                 </div>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Maximum documents</label>
-                  <input type="number" className="textInput" min={1} max={200} value={data.openapiMaxDocuments ?? 50} onChange={(event) => updateField('openapiMaxDocuments', clamp(event.target.value, 1, 200))} />
+                  <input type="number" className="textInput" min={1} max={200} value={data.openapiMaxDocuments ?? 50} onChange={(event) => updateField('openapiMaxDocuments', clamp(event.target.value, 1, 200, numericDefault('openapiMaxDocuments')))} />
                   <span className={styles.fieldHint}>Specification documents imported per run, from 1 to 200.</span>
                 </div>
               </div>

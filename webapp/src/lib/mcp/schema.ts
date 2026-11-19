@@ -18,8 +18,9 @@ export type Transport = (typeof TRANSPORTS)[number]
  * Tool names reserved by built-in / system tools - user MCP tools must not use these.
  *
  * Must equal what the agent rejects at manifest load: `_builtin_tool_names()` in
- * agentic/mcp_registry.py (the TOOL_REGISTRY keys, `tradecraft_lookup`, and every
- * tool a system MCP server exposes, SYSTEM_MCP_TOOL_NAMES).
+ * agentic/mcp_registry.py (the TOOL_REGISTRY keys other than the MCP-injected ones,
+ * the three tradecraft tools `tradecraft_lookup`, `tradecraft_search` and
+ * `tradecraft_ask`, and every tool a system MCP server exposes, SYSTEM_MCP_TOOL_NAMES).
  * A name missing here is accepted by the form and then refused by the agent.
  * agentic/tests/test_reserved_tool_names_parity.py compares the two sets.
  */

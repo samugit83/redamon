@@ -8,6 +8,7 @@ import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 import { FileImportButton } from '../FileImportButton'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -121,8 +122,8 @@ export function KatanaSection({ data, updateField, onRun }: KatanaSectionProps) 
               <input
                 type="number"
                 className="textInput"
-                value={data.katanaParallelism ?? 5}
-                onChange={(e) => updateField('katanaParallelism', parseInt(e.target.value) || 5)}
+                value={data.katanaParallelism ?? numericDefault('katanaParallelism')}
+                onChange={(e) => updateField('katanaParallelism', parseInt(e.target.value) || numericDefault('katanaParallelism'))}
                 min={1}
                 max={50}
               />
@@ -133,8 +134,8 @@ export function KatanaSection({ data, updateField, onRun }: KatanaSectionProps) 
               <input
                 type="number"
                 className="textInput"
-                value={data.katanaConcurrency ?? 10}
-                onChange={(e) => updateField('katanaConcurrency', parseInt(e.target.value) || 10)}
+                value={data.katanaConcurrency ?? numericDefault('katanaConcurrency')}
+                onChange={(e) => updateField('katanaConcurrency', parseInt(e.target.value) || numericDefault('katanaConcurrency'))}
                 min={1}
                 max={50}
               />

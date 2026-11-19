@@ -1352,9 +1352,9 @@ export default function SettingsPage() {
             />
             <SecretField
               label="URLScan API Key"
-              hint="Optional - used by URLScan.io OSINT enrichment for higher rate limits. Works without key (public results only)"
+              hint="Optional - used by the recon pipeline's URLScan.io enrichment for higher rate limits, and passed to the agent's execute_gau for its URLScan source. Works without a key (public results only)"
               signupUrl="https://urlscan.io/user/signup"
-              badges={['Recon Pipeline']}
+              badges={['AI Agent', 'Recon Pipeline']}
               value={settings.urlscanApiKey}
               visible={!!visibleFields.urlscanApiKey}
               onToggle={() => toggleFieldVisibility('urlscanApiKey')}

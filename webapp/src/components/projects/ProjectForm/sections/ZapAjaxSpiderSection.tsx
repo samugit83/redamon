@@ -8,6 +8,7 @@ import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 import { FileImportButton } from '../FileImportButton'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -176,7 +177,7 @@ export function ZapAjaxSpiderSection({ data, updateField, onRun }: ZapAjaxSpider
                     type="number"
                     className="textInput"
                     value={data.zapAjaxSpiderMaxUrls}
-                    onChange={(e) => updateField('zapAjaxSpiderMaxUrls', parseInt(e.target.value) || 5000)}
+                    onChange={(e) => updateField('zapAjaxSpiderMaxUrls', parseInt(e.target.value) || numericDefault('zapAjaxSpiderMaxUrls'))}
                     min={1}
                   />
                   <span className={styles.fieldHint}>Maximum in-scope URLs to ingest into the graph</span>

@@ -7,6 +7,7 @@ import { useToast, WikiInfoButton } from '@/components/ui'
 import { FeatureModelLine, useFeatureModelGate } from '@/components/shared/FeatureModelGate'
 import { featureModelMessage, readFeatureModelCode } from '@/lib/llmFeatures'
 import { ApiError, readApiError, toApiError } from '@/lib/apiError'
+import { field, tool } from '@/lib/reconSettings/registry'
 import formStyles from './ProjectForm.module.css'
 import styles from './GeneratePresetModal.module.css'
 
@@ -17,61 +18,49 @@ interface GeneratePresetModalProps {
   userId: string | null | undefined
 }
 
+// The registry names tools, not the feature toggles inside them, so a feature
+// is read off its key; these words would otherwise come out as "Ai", "Mcp".
+const ACRONYMS: Record<string, string> = {
+  Ai: 'AI', Db: 'DB', Mcp: 'MCP', Ns: 'NS', Openapi: 'OpenAPI', Rag: 'RAG', Sdk: 'SDK', Txt: 'TXT', Yara: 'YARA',
+}
+
+const capitalize = (w: string) => w.charAt(0).toUpperCase() + w.slice(1)
+const camelId = (id: string) => id.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())
+
+/**
+ * A readable name for a generated preset's `*Enabled` key, from the registry.
+ *
+ * A tool's own switch is the tool's title (`tlsxEnabled` -> "tlsx"); a feature
+ * toggle inside a tool is the title and the rest of the key
+ * (`nucleiTakeoversEnabled` -> "Nuclei: Takeovers"). A hand-kept map of names
+ * missed every tool added after it.
+ */
+export function enabledKeyLabel(key: string): string {
+  const bare = key.replace(/Enabled$/, '')
+  const spec = field(key)
+  const owner = spec ? tool(spec.tool) : undefined
+  if (!spec || !owner) return bare
+  const prefix = camelId(spec.tool)
+  if ((spec.runtime_key != null && spec.runtime_key === owner.enabled_key) || bare === prefix) {
+    return owner.title
+  }
+  const rest = bare.startsWith(prefix) ? bare.slice(prefix.length) : bare
+  const words = rest.match(/[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])/g) ?? [rest]
+  const feature = words
+    .map((w, i) => ACRONYMS[capitalize(w)] ?? (i === 0 ? capitalize(w) : w.toLowerCase()))
+    .join(' ')
+  return `${owner.title}: ${feature}`
+}
+
 /** Summarise the generated parameters for the review step. */
 function buildSummary(params: Record<string, unknown>) {
   const enabled: string[] = []
   const disabled: string[] = []
   const tuned: string[] = []
 
-  // Tool name map for readable labels
-  const toolNames: Record<string, string> = {
-    naabuEnabled: 'Naabu',
-    masscanEnabled: 'Masscan',
-    nmapEnabled: 'Nmap',
-    httpxEnabled: 'httpx',
-    wappalyzerEnabled: 'Wappalyzer',
-    bannerGrabEnabled: 'Banner Grab',
-    katanaEnabled: 'Katana',
-    hakrawlerEnabled: 'Hakrawler',
-    zapAjaxSpiderEnabled: 'ZAP Ajax Spider',
-    jsluiceEnabled: 'jsluice',
-    jsReconEnabled: 'JS Recon',
-    ffufEnabled: 'ffuf',
-    arjunEnabled: 'Arjun',
-    gauEnabled: 'GAU',
-    paramspiderEnabled: 'ParamSpider',
-    kiterunnerEnabled: 'Kiterunner',
-    openapiEnabled: 'OpenAPI',
-    nucleiEnabled: 'Nuclei',
-    cveLookupEnabled: 'CVE Lookup',
-    mitreEnabled: 'MITRE',
-    securityCheckEnabled: 'Security Checks',
-    osintEnrichmentEnabled: 'OSINT Enrichment',
-    shodanEnabled: 'Shodan',
-    urlscanEnabled: 'URLScan',
-    censysEnabled: 'Censys',
-    fofaEnabled: 'FOFA',
-    otxEnabled: 'OTX',
-    netlasEnabled: 'Netlas',
-    virusTotalEnabled: 'VirusTotal',
-    zoomEyeEnabled: 'ZoomEye',
-    criminalIpEnabled: 'CriminalIP',
-    uncoverEnabled: 'Uncover',
-    subdomainDiscoveryEnabled: 'Subdomain Discovery',
-    crtshEnabled: 'crt.sh',
-    hackerTargetEnabled: 'HackerTarget',
-    knockpyReconEnabled: 'Knockpy',
-    subfinderEnabled: 'Subfinder',
-    amassEnabled: 'Amass',
-    purednsEnabled: 'PureDNS',
-    whoisEnabled: 'WHOIS',
-    dnsEnabled: 'DNS',
-    trufflehogEnabled: 'Trufflehog',
-  }
-
   for (const [key, value] of Object.entries(params)) {
     if (key.endsWith('Enabled') && typeof value === 'boolean') {
-      const name = toolNames[key] || key.replace(/Enabled$/, '')
+      const name = enabledKeyLabel(key)
       if (value) enabled.push(name)
       else disabled.push(name)
     } else if (!key.endsWith('Enabled')) {

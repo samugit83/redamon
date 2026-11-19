@@ -8,6 +8,7 @@ import styles from '../ProjectForm.module.css'
 import { NodeInfoTooltip } from '../NodeInfoTooltip'
 import { TimeEstimate } from '../TimeEstimate'
 import { FileImportButton } from '../FileImportButton'
+import { numericDefault } from '../formDefaults'
 
 type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
 
@@ -143,8 +144,8 @@ export function KiterunnerSection({ data, updateField, onRun }: KiterunnerSectio
                   <input
                     type="number"
                     className="textInput"
-                    value={data.kiterunnerParallelism ?? 2}
-                    onChange={(e) => updateField('kiterunnerParallelism', parseInt(e.target.value) || 2)}
+                    value={data.kiterunnerParallelism ?? numericDefault('kiterunnerParallelism')}
+                    onChange={(e) => updateField('kiterunnerParallelism', parseInt(e.target.value) || numericDefault('kiterunnerParallelism'))}
                     min={1}
                     max={5}
                   />
