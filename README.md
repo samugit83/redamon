@@ -373,6 +373,8 @@ docker container prune -f                         # Remove stopped containers
 
 > For a complete development reference -- hot-reload rules, common commands, important rules, and AI-assisted coding guidelines -- see the **[Developer Guide](docs/readmes/README.DEV.md)**.
 
+> For routing scan-tool egress through a VPN or proxy -- what exists today and what the old Tor settings became -- see **[Egress routing for scan tools](docs/readmes/README.EGRESS.md)**.
+
 ---
 
 ### Knowledge Base (RAG-Enhanced Web Search)
