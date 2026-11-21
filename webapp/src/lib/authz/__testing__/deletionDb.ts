@@ -14,6 +14,8 @@
  *   shares, conversations, MCP tokens, device sessions), and a project into its rows;
  * - `failNext(table, op)` makes the next such write throw (P1017), as a lost database would.
  */
+import { now } from '../clock'
+
 type Row = Record<string, unknown>
 type Where = Row
 
@@ -139,7 +141,9 @@ export function createDeletionDb(): DeletionDb {
       count: async ({ where }: { where?: Where } = {}) => find(where).length,
       create: async ({ data, select }: { data: Row; select?: Row }) => {
         guard(name, 'create')
-        const row: Row = { id: `${name}-${++state.seq}`, createdAt: new Date(Date.UTC(2026, 10, 13) + state.seq), ...data }
+        // Stamped by the clock the code under test reads (a pinned one included), never a fixed
+        // date: a 7-day transfer offer created here must not read as lapsed on the day the suite runs.
+        const row: Row = { id: `${name}-${++state.seq}`, createdAt: new Date(now().getTime() + state.seq), ...data }
         rows(name).push(row)
         return pick(row, select)
       },
