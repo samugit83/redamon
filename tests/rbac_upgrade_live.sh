@@ -6,8 +6,9 @@
 # Each scenario is a full dump (schema and data) in tests/fixtures/rbac_upgrade/<name>.sql,
 # made with the pinned redamon-webapp:rbac-7.7.2 image (git archive 442debbf:webapp), so
 # it keeps the 7.7.x shape while redamon-webapp:latest moves on. The startup list is the
-# image's /app/entrypoint.sh minus its last line (exec node server.js), which
-# webapp/Dockerfile writes: the harness runs exactly what the image runs at boot.
+# image's /app/entrypoint.sh minus its last line (the server start: exec node server.js up
+# to 7.9.x, exec node scripts/serve.cjs from 7.10.0), which webapp/Dockerfile writes: the
+# harness runs exactly what the image runs at boot.
 #
 # After every run it asserts:
 #   - nothing changed but what the upgrade adds by design: the row count of every table
@@ -609,9 +610,10 @@ reset_db() {
     -c 'DROP DATABASE IF EXISTS redamon WITH (FORCE)' -c 'CREATE DATABASE redamon' >/dev/null
 }
 
-# The startup list as the image writes it, minus `exec node server.js`. The guard stops
+# The startup list as the image writes it, minus the server start (`exec node server.js`
+# in the pinned 7.7.2 image, `exec node scripts/serve.cjs` from 7.10.0). The guard stops
 # the harness from silently skipping a step a later Dockerfile appends after the server.
-LIST_CMD='tail -n 1 /app/entrypoint.sh | grep -qx "exec node server.js" || { echo "[harness] /app/entrypoint.sh does not end with exec node server.js"; exit 97; }; sed "\$d" /app/entrypoint.sh | sh'
+LIST_CMD='tail -n 1 /app/entrypoint.sh | grep -qxE "exec node (server\.js|scripts/serve\.cjs)" || { echo "[harness] /app/entrypoint.sh does not end with the server start"; exit 97; }; sed "\$d" /app/entrypoint.sh | sh'
 
 run_list() { # image log_file [url_suffix] -> exit code of the list
   docker run --rm --label "$LABEL" --network "$NET" \

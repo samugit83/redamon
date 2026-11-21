@@ -368,7 +368,7 @@ which would decide the stack's real members' grants. It needs the same container
 ### The RBAC upgrade harness
 
 `tests/rbac_upgrade_live.sh` runs a webapp image's own startup list (its `/app/entrypoint.sh`
-without `exec node server.js`) against synthetic 7.7.x-shaped databases, in throwaway
+without its last line, the server start) against synthetic 7.7.x-shaped databases, in throwaway
 containers on a private network, and checks what the upgrade did. The scenarios are full dumps
 in `tests/fixtures/rbac_upgrade/` (one admin, several, none, passwordless admins, tunnel and
 capture rows, members with and without passwords), made with the pinned image
