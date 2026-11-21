@@ -374,17 +374,33 @@ def test_the_route_reads_with_a_browser(sites, monkeypatch):
 
 def test_the_jobs_fetcher_renders_through_the_agents_browser(monkeypatch):
     """The fetcher the route and the jobs bind holds the agent's MCP manager: its render runs
-    the guarded script in the sandbox (net's module default answers browser_unavailable)."""
+    the guarded script in the sandbox (net's module default answers browser_unavailable).
+    Group 1: the render is the bound person's (a job's owner, a route's account); shared mode
+    is set explicitly and renders through the agent's manager; with no person, no browser."""
     import types
+    from contextlib import asynccontextmanager
     from unittest.mock import patch
 
+    import sandbox_contract
+    import sandbox_router
     from orchestrator_helpers import fetch_guard
     from tradecraft_doubles import RecordingMcp
 
+    @asynccontextmanager
+    async def shared_sandbox(user_id, *, project_id, kind, view=None):
+        yield sandbox_router.SandboxHandle(
+            user_id=user_id, view="own", instance=sandbox_contract.SHARED_INSTANCE, host="kali-sandbox",
+            token="", tunnel_token="", ports=sandbox_contract.PORTS, reverse_port=4444,
+            mode=sandbox_contract.MODE_SHARED)
+
+    monkeypatch.setattr(sandbox_router, "using", shared_sandbox)
     mcp = RecordingMcp(reply="<html><body>rendered by the sandbox</body></html>")
     monkeypatch.setitem(sys.modules, "api", types.SimpleNamespace(orchestrator=types.SimpleNamespace(_mcp_manager=mcp)))
     with patch.object(fetch_guard, "_resolve_ips", lambda _host: ["93.184.216.34"]):
-        rendered = run(jobs.default_fetcher().render(WIKI, clean=True))
+        with jobs.sandbox_person("user_owner_fake"):
+            rendered = run(jobs.default_fetcher().render(WIKI, clean=True))
+        unbound = run(jobs.default_fetcher().render(WIKI, clean=True))
         default = run(net.GuardedFetcher().render(WIKI))
     assert rendered.error == "" and "rendered by the sandbox" in rendered.html and len(mcp.calls) == 1
+    assert unbound.error == "browser_unavailable" and len(mcp.calls) == 1
     assert default.error == "browser_unavailable"

@@ -52,7 +52,9 @@ from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 from startup_guard import check_single_worker
 from utils import get_session_count
 from websocket_api import (WebSocketManager, websocket_endpoint, MessageType,
-                           CLOSE_SCOPES, PROXIED_SOCKETS, SOCKET_KINDS, close_sockets)
+                           CLOSE_SCOPES, PROXIED_SOCKETS, SOCKET_KINDS, close_sockets,
+                           subscribe_sandbox_status, unsubscribe_sandbox_status)
+import sandbox_hold
 import workspace_fs
 import job_runner
 import ws_job_emitter
@@ -101,6 +103,10 @@ async def lifespan(app: FastAPI):
 
     # Initialize WebSocket manager
     ws_manager = WebSocketManager()
+    # The drawer hears its run's Kali sandbox starting or unavailable, and live sessions or
+    # an active tunnel hold their sandbox (group 1). Neither waits on the gateway here.
+    subscribe_sandbox_status(ws_manager)
+    sandbox_hold.start()
 
     # Background job recovery: flip any meta files marked 'running' on disk
     # (from a previous agent process that died mid-job) to 'interrupted' so
@@ -150,6 +156,8 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down RedAmon Agent API...")
     idle_upload_sweeper.cancel()
+    await sandbox_hold.stop()
+    unsubscribe_sandbox_status()
     if orchestrator:
         await orchestrator.close()
 

@@ -73,7 +73,9 @@ def bound_coverage() -> Optional[dict]:
 
 def _bind_browser_fetcher() -> None:
     """The run's reads reach the sandbox browser for a thin page, as 1.x did: the module's
-    default fetcher has no MCP manager. A fetcher a caller bound already (a test's) stays."""
+    default fetcher has no MCP manager. The browser is the run person's own Kali sandbox
+    (jobs.SandboxBrowser reads the run actor when it renders). A fetcher a caller bound
+    already (a test's) stays."""
     from tradecraft import net
     from tradecraft.jobs import _agent_mcp_manager
 

@@ -30,6 +30,7 @@ thread carries no context variable, so nothing there can read a run's settings.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import functools
 import sys
@@ -38,7 +39,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterator, Optional
 
 from agent_in_the_loop import is_loop_model
 from logging_config import get_logger
@@ -78,18 +79,75 @@ def error_code_of(exc: BaseException) -> str:
     return code if isinstance(code, str) and code in ERROR_CODES else "internal_error"
 
 
-def _agent_mcp_manager() -> Any:
-    # The orchestrator's MCP manager, for the browser tier. api.py imports this module's
-    # router, so the running app is looked up at call time; outside the agent process (a
-    # test, a script) there is none and pages are read without the browser.
+BROWSER_TOOL = "execute_playwright"
+
+
+def _orchestrator_mcp_manager() -> Any:
+    # api.py imports this module's router, so the running app is looked up at call time;
+    # outside the agent process (a test, a script) there is none.
     agent_api = sys.modules.get("api")
     return getattr(getattr(agent_api, "orchestrator", None), "_mcp_manager", None)
 
 
+def _agent_mcp_manager() -> Any:
+    """The browser tier's MCP manager: a SandboxBrowser in the agent process, None outside it
+    (pages are then read without the browser)."""
+    return SandboxBrowser() if _orchestrator_mcp_manager() is not None else None
+
+
+class SandboxBrowser:
+    """The sandbox's browser, for the person bound to the work when it renders (group 1):
+    a job's owner, a synchronous route's account, a chat run's person (the run actor, in the
+    `act_as` view under act-as). No person, no browser: a page is never rendered in someone
+    else's sandbox. In shared mode the agent's own MCP manager renders it, as before."""
+
+    async def get_tools(self) -> list:
+        from sandbox_router import sandbox_user
+
+        return [_SandboxBrowserTool()] if sandbox_user() else []
+
+
+class _SandboxBrowserTool:
+    name = BROWSER_TOOL
+
+    async def ainvoke(self, args: dict) -> Any:
+        import sandbox_contract
+        import sandbox_router
+
+        # One `tradecraft` lease for the render, ended with it.
+        async with sandbox_router.using(sandbox_router.sandbox_user(), project_id=None,
+                                        kind="tradecraft") as handle:
+            if handle.mode == sandbox_contract.MODE_PER_USER:
+                tool = await sandbox_router.tool_for(BROWSER_TOOL, handle)
+            else:
+                tool = await _shared_browser_tool()
+            if tool is None:
+                raise LookupError("browser_unavailable")
+            return await tool.ainvoke(args)
+
+
+async def _shared_browser_tool() -> Any:
+    manager = _orchestrator_mcp_manager()
+    tools = await manager.get_tools() if manager is not None else []
+    return next((t for t in tools or [] if getattr(t, "name", "") == BROWSER_TOOL), None)
+
+
+@contextlib.contextmanager
+def sandbox_person(user_id: Optional[str], *, acting: bool = False) -> Iterator[None]:
+    """Binds whose Kali sandbox the browser tier uses for the work inside: a job's owner, or
+    the account a synchronous route's request names. It wins over a run actor in the task.
+    ``acting``: an admin acting as that person started the work, which then runs in the
+    person's `act_as` view (TD-26)."""
+    from sandbox_router import for_person
+
+    with for_person(user_id or "", acting=acting):
+        yield
+
+
 def default_fetcher() -> net.Fetcher:
     """The fetcher the agent's jobs and synchronous tradecraft routes use: the address guard
-    on every hop, and the sandbox browser through the agent's own MCP manager (net's module
-    default has none, so its every render would answer browser_unavailable)."""
+    on every hop, and the sandbox browser of the bound person (net's module default has
+    none, so its every render would answer browser_unavailable)."""
     return net.GuardedFetcher(_agent_mcp_manager())
 
 
@@ -148,11 +206,14 @@ class JobRunner:
     def spawn(self, coro_fn: Callable[[], Awaitable[Any]], name: str) -> asyncio.Task:
         return self._spawn(coro_fn, name)
 
-    def _spawn(self, coro_fn: Callable[[], Awaitable[Any]], name: str) -> asyncio.Task:
-        """A task in a fresh context, with only the runner's clock and fetcher bound."""
+    def _spawn(self, coro_fn: Callable[[], Awaitable[Any]], name: str,
+               person: Optional[str] = None, acting: bool = False) -> asyncio.Task:
+        """A task in a fresh context, with only the runner's clock and fetcher bound, and
+        ``person`` (a job's owner) as the person whose sandbox its browser uses."""
 
         async def wrapped():
-            with tc_clock.use_clock(self._clock or tc_clock._REAL), net.use_fetcher(self._fetcher_factory()):
+            with tc_clock.use_clock(self._clock or tc_clock._REAL), net.use_fetcher(self._fetcher_factory()), \
+                    (sandbox_person(person, acting=acting) if person else contextlib.nullcontext()):
                 return await coro_fn()
 
         task = asyncio.get_running_loop().create_task(wrapped(), name=name, context=contextvars.Context())
@@ -243,7 +304,8 @@ class JobRunner:
             running = _Running(user, job)
             self._running[job.job_id] = running
             busy.add(user)
-            running.task = self._spawn(lambda r=running: self._run(r), f"tradecraft-job-{job.job_id}")
+            running.task = self._spawn(lambda r=running: self._run(r), f"tradecraft-job-{job.job_id}",
+                                       person=user, acting=bool(job.real_actor_user_id))
 
     # --- running a job ----------------------------------------------------------------
 

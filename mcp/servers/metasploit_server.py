@@ -1290,6 +1290,19 @@ def msf_restart(_redamon_owner: str = "") -> str:
 PROGRESS_PORT = int(os.getenv("MSF_PROGRESS_PORT", "8013"))
 
 
+def _sessions_of_an_unstarted_console() -> Optional[dict]:
+    """The session list of a per-user sandbox whose console was never started, or None.
+
+    The agent's hold watcher reads every per-user sandbox's /sessions once a minute, and
+    get_msf_console() would start msfconsole (seconds, and hundreds of MB of the sandbox's
+    memory) for a console that holds nothing: no session, job or non-MSF session exists
+    before it starts. The shared container still starts it on this read."""
+    if os.environ.get("REDAMON_SANDBOX_MODE") != "per_user" or _msf_console is not None:
+        return None
+    return {"sessions": [], "jobs": [], "non_msf_sessions": [],
+            "cache_age_seconds": -1, "agent_busy": False}
+
+
 class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler):
     """HTTP handler for progress + session management endpoints.
 
@@ -1380,6 +1393,10 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
 
         elif resource == 'sessions':
             try:
+                idle = _sessions_of_an_unstarted_console()
+                if idle is not None:
+                    self._send_json(200, idle)
+                    return
                 msf = get_msf_console()
                 data = msf.get_sessions_data()
                 self._send_json(200, data)
