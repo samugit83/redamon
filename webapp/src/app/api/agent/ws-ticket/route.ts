@@ -16,6 +16,7 @@ import { sessionTicketRefusal } from '@/lib/authz/conversationRun'
 import { recordOwnerCredentialSpend, type SpendFeature } from '@/lib/authz/ownerSpend'
 import { safeErrorCode } from '@/lib/routeErrors'
 import { agentRunQuotaRefusal } from '@/lib/authz/quotas'
+import { touchSandbox } from '@/lib/sandbox/gateway'
 
 /**
  * The sockets whose work spends the project owner's model and keys (step 5.6, C1): the chat's agent
@@ -211,6 +212,15 @@ export const POST = withRouteErrors('Could not issue a ticket for the agent conn
       targetId: projectId,
       after: { via: terminalVia, ...(actor !== eff.userId ? { actingAsUserId: eff.userId } : {}) },
       source: 'ui',
+    })
+  }
+  // The warm-up (group 1): a socket that reaches the Kali tools starts the ticket person's sandbox
+  // in the background, in the act_as view when the ticket carries `act`. Never awaited, never
+  // throwing: this answer and every decision above stay as they are.
+  if (ticket && (socket === 'agent' || socket === 'kali-terminal')) {
+    void touchSandbox(eff.userId, {
+      actingAs: realActor !== undefined,
+      actor: auditActorOf({ id: actor ?? eff.userId, email: actorEmail }, eff.userId),
     })
   }
   return NextResponse.json({ ticket })
