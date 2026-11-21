@@ -35,6 +35,7 @@ import { assertMcpProjectAccess, requireScope } from '@/lib/mcpAuth'
 import { McpToolError } from '@/lib/mcp/errors'
 import { kaliExec, kaliJobCancel, kaliJobStatus, type KaliJob } from '@/lib/mcp/kaliClient'
 import { enforceRate, type McpContext } from '@/lib/mcp/tools'
+import { KALI_EXEC_STATUS_STARTING, type KaliExecErrorCode } from '@/lib/sandbox/contract'
 
 /**
  * The default-on lives in docker-compose.yml (`:-true`), not here: an unset
@@ -105,10 +106,39 @@ function auditExec(
   })
 }
 
+const STARTING_NOTE =
+  'Your Kali sandbox is starting, so the command has not run yet: it runs as soon as the ' +
+  'sandbox is ready (seconds; a first Metasploit command takes about 20 more). Call ' +
+  'kali_output with this jobId and nextCursor to follow it, or kali_cancel to drop it. Do ' +
+  'not start it again.'
+
+/** What a caller can do about each sandbox failure: only some of them pass with time. */
+const SANDBOX_NOTES: Record<KaliExecErrorCode, string> = {
+  ram:
+    'The command was not run: your Kali sandbox could not start because the instance\'s ' +
+    'memory is in use by scans and other sandboxes. Retry later, in minutes rather than ' +
+    'seconds, or ask a person to free memory; an immediate retry is refused the same way.',
+  hard:
+    'The command was not run: the instance\'s limit on running Kali sandboxes is reached. ' +
+    'Retry later, once another sandbox has stopped.',
+  sandbox_refused:
+    'The command was not run: the token\'s owner may not use the Kali sandbox on this ' +
+    'project (it is not shared with them for Use AI agent or Exploitation & shells, or their ' +
+    'account may not use the Kali tools). Retrying will not help; tell a person.',
+  sandbox_error:
+    'Your Kali sandbox could not start. Retry once a little later; if it fails again, tell a ' +
+    'person instead of retrying in a loop.',
+  sandbox_stopped:
+    'Your Kali sandbox stopped while the command ran. Whatever it printed before is in ' +
+    'output, but the run is INCOMPLETE - do not report it as clean. Run it again if it is ' +
+    'still needed: the sandbox starts again with an empty /tmp.',
+}
+
 /** The wire shape, with the note a caller needs to act on an unfinished job. */
 function jobResult(projectId: string, job: KaliJob): Record<string, unknown> {
+  const starting = job.status === KALI_EXEC_STATUS_STARTING
   const running = job.status === 'running'
-  const timedOut = !running && /timed out/i.test(job.failure ?? '')
+  const timedOut = !running && !starting && /timed out/i.test(job.failure ?? '')
   return {
     projectId,
     jobId: job.jobId,
@@ -120,7 +150,12 @@ function jobResult(projectId: string, job: KaliJob): Record<string, unknown> {
     ...(job.truncated ? { truncated: true } : {}),
     ...(job.command ? { command: job.command } : {}),
     ...(job.failure ? { failure: job.failure } : {}),
-    note: running
+    ...(job.errorCode ? { errorCode: job.errorCode } : {}),
+    note: job.errorCode
+      ? SANDBOX_NOTES[job.errorCode]
+      : starting
+      ? STARTING_NOTE
+      : running
       ? 'Still running. Call kali_output with this jobId and nextCursor for more, or ' +
         'kali_cancel to stop it.'
       : timedOut
@@ -166,7 +201,9 @@ export async function execCommand(
 
   let job: KaliJob
   try {
-    job = await kaliExec(projectId, trimmed, waitSeconds)
+    // The token's owner, not the project's owner from the access check: the
+    // command runs in that person's own sandbox.
+    job = await kaliExec(projectId, trimmed, waitSeconds, ctx.token.userId)
   } catch (err) {
     // Audited BEFORE rethrowing: a refusal is the only record that someone
     // tried to reach outside their scope, and it is the more interesting half.
@@ -182,6 +219,7 @@ export async function execCommand(
     command: job.command ?? trimmed,
     jobId: job.jobId,
     status: job.status,
+    ...(job.errorCode ? { errorCode: job.errorCode } : {}),
   })
   return jobResult(projectId, job)
 }

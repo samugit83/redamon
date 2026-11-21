@@ -41,6 +41,7 @@ vi.mock('@/lib/authz/projectAccess', async (orig) => {
 
 import { McpScopeError, McpAccessDenied, McpLevelDenied, __resetRateLimiter, type McpScope } from '@/lib/mcpAuth'
 import { projectAccess, type ProjectAccess, type ProjectAccessToggles } from '@/lib/authz/projectAccess'
+import { SANDBOX_REFUSED } from '@/lib/sandbox/contract'
 import { McpToolError } from './errors'
 import { cancelCommand, execCommand, kaliExecEnabled, readCommandOutput } from './kaliTools'
 import type { McpContext } from './tools'
@@ -174,12 +175,12 @@ describe('kali_exec', () => {
     // copy of the rules, and the copy that drifts is the one that lets
     // something through.
     await execCommand(ctx(), 'p1', "curl -A 'Mozilla 5.0' https://acme.tld")
-    expect(h.exec).toHaveBeenCalledWith('p1', "curl -A 'Mozilla 5.0' https://acme.tld", undefined)
+    expect(h.exec).toHaveBeenCalledWith('p1', "curl -A 'Mozilla 5.0' https://acme.tld", undefined, 'owner')
   })
 
   test('trims but does not otherwise alter the command', async () => {
     await execCommand(ctx(), 'p1', '  curl https://acme.tld  ')
-    expect(h.exec).toHaveBeenCalledWith('p1', 'curl https://acme.tld', undefined)
+    expect(h.exec).toHaveBeenCalledWith('p1', 'curl https://acme.tld', undefined, 'owner')
   })
 
   test('returns the job with the cursor needed to read on', async () => {
@@ -340,6 +341,122 @@ describe('a finished job that FAILED', () => {
   })
 })
 
+describe('the person whose sandbox runs the command (group 1)', () => {
+  test('is the token\'s owner, never the project\'s owner', async () => {
+    // The tenant (the project's owner) and the person differ on a shared project.
+    // A command must run in the person's own sandbox, so the agent gets the
+    // token's user, whatever the access check answered as the project's owner.
+    vi.mocked(projectAccess).mockResolvedValueOnce(
+      { project: { id: 'p1', userId: 'owner' }, level: 'write', toggles: { rawData: true, exploit: true }, via: 'share' } as ProjectAccess
+    )
+    const c: McpContext = {
+      token: { tokenId: 't3', userId: 'person-9', tokenPrefix: 'rdmn_mcp_cccccccc', name: 'agent', scopes: ['kali:exec'], sharedProjects: { allowlist: [] } },
+    }
+    await execCommand(c, 'p1', 'id')
+    expect(h.exec).toHaveBeenCalledTimes(1)
+    expect(h.exec.mock.calls[0][3]).toBe('person-9')
+    const actual = await vi.importActual<typeof import('@/lib/authz/projectAccess')>('@/lib/authz/projectAccess')
+    vi.mocked(projectAccess).mockImplementation(actual.projectAccess)
+  })
+})
+
+describe('a sandbox that is starting (group 1)', () => {
+  const starting = { jobId: 'j1', status: 'starting', exitCode: null, output: '', nextCursor: 0 }
+
+  test('kali_exec answers starting at once and says to poll kali_output', async () => {
+    h.exec.mockResolvedValue({ ...starting, command: 'nmap -sV acme.tld' })
+    const r = await execCommand(ctx(), 'p1', 'nmap -sV acme.tld') as Record<string, unknown>
+    expect(r.status).toBe('starting')
+    expect(r.jobId).toBe('j1')
+    expect(r.note).toMatch(/sandbox is starting/i)
+    expect(r.note).toMatch(/kali_output/)
+  })
+
+  test('a starting job is never presented as finished', async () => {
+    // The dangerous direction: "Finished" with empty output reads as a clean run.
+    h.status.mockResolvedValue(starting)
+    const r = await readCommandOutput(ctx(), 'p1', 'j1') as Record<string, unknown>
+    expect(r.status).toBe('starting')
+    expect(r.note).not.toMatch(/Finished/)
+    expect(r.errorCode).toBeUndefined()
+  })
+
+  test('the start is audited with its status', async () => {
+    h.exec.mockResolvedValue({ ...starting, command: 'id' })
+    await execCommand(ctx(), 'p1', 'id')
+    const row = h.writeAudit.mock.calls[0][0]
+    expect(row.action).toBe('mcp.kali_exec')
+    expect(row.after.status).toBe('starting')
+  })
+})
+
+describe('a sandbox that could not be used (group 1)', () => {
+  const failedFor = (errorCode: string, failure: string) =>
+    ({ jobId: 'j1', status: 'failed', exitCode: null, output: '', nextCursor: 0, errorCode, failure })
+
+  test('ram: the code, the governor\'s sentence, and retry later', async () => {
+    h.status.mockResolvedValue(failedFor('ram', 'not enough free memory to start this sandbox now'))
+    const r = await readCommandOutput(ctx(), 'p1', 'j1') as Record<string, unknown>
+    expect(r.errorCode).toBe('ram')
+    expect(r.failure).toBe('not enough free memory to start this sandbox now')
+    expect(r.note).toMatch(/memory is in use/i)
+    expect(r.note).toMatch(/retry later/i)
+    expect(r.note).toMatch(/not run/i)
+  })
+
+  test('hard: the instance\'s sandbox limit, retry later', async () => {
+    h.status.mockResolvedValue(failedFor('hard', '3 of 3 sandboxes allowed'))
+    const r = await readCommandOutput(ctx(), 'p1', 'j1') as Record<string, unknown>
+    expect(r.errorCode).toBe('hard')
+    expect(r.note).toMatch(/limit/i)
+    expect(r.note).toMatch(/retry later/i)
+  })
+
+  test('sandbox_refused: the owner of the token may not use it here, and retrying will not help', async () => {
+    h.status.mockResolvedValue(failedFor('sandbox_refused', SANDBOX_REFUSED))
+    const r = await readCommandOutput(ctx(), 'p1', 'j1') as Record<string, unknown>
+    expect(r.errorCode).toBe('sandbox_refused')
+    expect(r.failure).toBe(SANDBOX_REFUSED)
+    expect(r.note).toMatch(/retrying will not help/i)
+    expect(r.note).not.toMatch(/retry later/i)
+  })
+
+  test('sandbox_stopped: the run is incomplete, never clean', async () => {
+    h.status.mockResolvedValue({ ...failedFor('sandbox_stopped', 'The Kali sandbox stopped during the command.'), output: 'partial\n' })
+    const r = await readCommandOutput(ctx(), 'p1', 'j1') as Record<string, unknown>
+    expect(r.errorCode).toBe('sandbox_stopped')
+    expect(r.output).toBe('partial\n')
+    expect(r.note).toMatch(/INCOMPLETE/)
+  })
+
+  test('sandbox_error: no retry loop', async () => {
+    h.status.mockResolvedValue(failedFor('sandbox_error', 'The Kali sandbox could not start.'))
+    const r = await readCommandOutput(ctx(), 'p1', 'j1') as Record<string, unknown>
+    expect(r.errorCode).toBe('sandbox_error')
+    expect(r.note).toMatch(/could not start/i)
+  })
+
+  test('kali_exec returns the code too, and audits it', async () => {
+    h.exec.mockResolvedValue({ ...failedFor('ram', 'not enough free memory'), command: 'id' })
+    const r = await execCommand(ctx(), 'p1', 'id') as Record<string, unknown>
+    expect(r.errorCode).toBe('ram')
+    expect(h.writeAudit.mock.calls[0][0].after.errorCode).toBe('ram')
+  })
+
+  test('a refusal thrown by the client is audited under its code', async () => {
+    h.exec.mockRejectedValue(new McpToolError(`${SANDBOX_REFUSED} (errorCode: sandbox_refused)`, 'sandbox_refused'))
+    await expect(execCommand(ctx(), 'p1', 'id')).rejects.toThrow(/errorCode: sandbox_refused/)
+    const row = h.writeAudit.mock.calls[0][0]
+    expect(row.action).toBe('mcp.kali_exec.refused')
+    expect(row.after.reason).toBe('sandbox_refused')
+  })
+
+  test('an ordinary job carries no errorCode', async () => {
+    const r = await readCommandOutput(ctx(), 'p1', 'j1') as Record<string, unknown>
+    expect('errorCode' in r).toBe(false)
+  })
+})
+
 // Step 5.10 (SH-49): on a project shared with the token's user the sandbox tools need the token's
 // opt-in to shared projects (step 4.10), the `kali:exec` scope (kept only while the user holds
 // `agent:kali_exec`, step 3.10) and agent:kali_exec's level W+X: a Read + Write share with
@@ -366,7 +483,7 @@ describe('a project shared with the token user (step 5.10)', () => {
     policy.mockResolvedValue(shared('write', { exploit: true }))
     const out = await execCommand(collab(), 'p1', 'curl https://acme.tld')
     expect(out).toMatchObject({ projectId: 'p1', status: 'done' })
-    expect(h.exec).toHaveBeenCalledWith('p1', 'curl https://acme.tld', undefined)
+    expect(h.exec).toHaveBeenCalledWith('p1', 'curl https://acme.tld', undefined, 'collab')
     expect(h.writeAudit).toHaveBeenCalledWith(expect.objectContaining({ actorId: 'collab', action: 'mcp.kali_exec', targetId: 'p1' }))
     await readCommandOutput(collab(), 'p1', 'j1')
     await cancelCommand(collab(), 'p1', 'j1')

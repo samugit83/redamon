@@ -323,6 +323,20 @@ export const SANDBOX_TOOL_NAMES: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * A per-user sandbox in kali_exec and kali_output: each code says whether
+ * waiting helps, so an agent does not retry what can never pass.
+ */
+const KALI_SANDBOX_STATES =
+  'Status "starting": your sandbox is starting and the command has not run yet; poll ' +
+  'kali_output with the jobId until it runs, and do not start it again. When the sandbox ' +
+  'cannot be used the job fails with an `errorCode`: "ram" - the instance\'s memory is in use ' +
+  'by scans and other sandboxes, so retry later; "hard" - the instance\'s limit on running ' +
+  'sandboxes is reached, so retry later; "sandbox_refused" - the token\'s owner may not use the ' +
+  'Kali sandbox on this project, and retrying will not help; "sandbox_error" - the sandbox could ' +
+  'not start, so retry once later, then tell a person; "sandbox_stopped" - the sandbox stopped ' +
+  'during the command, so its output is INCOMPLETE.'
+
+/**
  * The Agent in the Loop tools. Withdrawn like the sandbox tools while
  * AGENT_IN_THE_LOOP_ENABLED is off (the default), so no client plans around them.
  */
@@ -1731,12 +1745,15 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'does not exist on this path. Read the project\'s target with get_recon_settings and ' +
         'aim only at what it names. Scanning or attacking a host you are not authorised for is ' +
         'illegal in most jurisdictions, and this tool will not stop you doing it.\n\n' +
-        'Files persist in /tmp between calls, so you can stage multi-step work through them. ' +
+        'Files persist in /tmp between calls while the sandbox runs, so you can stage ' +
+        'multi-step work through them; a sandbox left unused may be stopped (by default after ' +
+        '20 minutes) and then starts again with an empty /tmp. ' +
         'One command is capped at 300 seconds by the sandbox: split long scans (fewer nuclei ' +
         '-tags, a smaller nmap port range, testssl --fast) rather than having them killed ' +
         'mid-run.\n\n' +
         'It waits briefly and returns the output if the command finished. If it is still ' +
         'running you get a jobId: poll kali_output with it, and kali_cancel stops it.\n\n' +
+        `${KALI_SANDBOX_STATES}\n\n` +
         `${UNTRUSTED_DATA_NOTE}`,
       annotations: {
         readOnlyHint: false,
@@ -1775,6 +1792,7 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'true there is more to fetch at the new nextCursor.\n\n' +
         'While `status` is "running" the command has not finished and the output is partial. ' +
         'Do not report a partial answer as a complete one.\n\n' +
+        `${KALI_SANDBOX_STATES}\n\n` +
         `${UNTRUSTED_DATA_NOTE}`,
       annotations: READ_ONLY,
       _meta: scopesMeta({ required: ['kali:exec'] }),

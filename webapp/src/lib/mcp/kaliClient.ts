@@ -14,6 +14,14 @@
 import { agentBaseUrl } from '@/lib/agentFetch'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { McpToolError } from '@/lib/mcp/errors'
+import {
+  KALI_EXEC_ERROR_CODES,
+  MODAL_HARD_BODY,
+  MODAL_RAM_BODY,
+  SANDBOX_REFUSED,
+  type KALI_EXEC_STATUS_STARTING,
+  type KaliExecErrorCode,
+} from '@/lib/sandbox/contract'
 
 const TOOLBOX_TIMEOUT_MS = 10_000
 
@@ -71,9 +79,18 @@ export function __resetToolboxCache(): void {
 const EXEC_TIMEOUT_MS = 90_000
 const POLL_TIMEOUT_MS = 30_000
 
+/**
+ * The agent's job statuses. `starting` comes with per-user sandboxes: the
+ * caller's sandbox is starting and the command waits for it. A status not
+ * listed here is passed on as the agent wrote it.
+ */
+export type KaliJobStatus =
+  | typeof KALI_EXEC_STATUS_STARTING
+  | 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted' | 'unknown'
+
 export interface KaliJob {
   jobId: string
-  status: string
+  status: KaliJobStatus | (string & {})
   exitCode: number | null
   output: string
   nextCursor: number
@@ -81,12 +98,35 @@ export interface KaliJob {
   command?: string
   /** The agent's reason a finished job failed, e.g. the 300s sandbox cap. */
   failure?: string
+  /** Why the job could not use its sandbox; `failure` then says it in words. */
+  errorCode?: KaliExecErrorCode
   startedAt?: string | null
   endedAt?: string | null
 }
 
+function sandboxErrorCode(value: unknown): KaliExecErrorCode | undefined {
+  return KALI_EXEC_ERROR_CODES.find(code => code === value)
+}
+
+/**
+ * The words for a sandbox the job could not use. Only the governor's sentence
+ * (`ram`, `hard`) is quoted, because it is written for the caller; a refusal
+ * always reads as the contract's text, and the rest as fixed lines (errors.ts).
+ */
+function sandboxFailure(code: KaliExecErrorCode, upstream: unknown): string {
+  const governor = typeof upstream === 'string' ? upstream.trim().slice(0, 300) : ''
+  switch (code) {
+    case 'ram': return governor || MODAL_RAM_BODY
+    case 'hard': return governor || MODAL_HARD_BODY
+    case 'sandbox_refused': return SANDBOX_REFUSED
+    case 'sandbox_error': return 'The Kali sandbox could not start.'
+    case 'sandbox_stopped': return 'The Kali sandbox stopped during the command.'
+  }
+}
+
 /** The agent answers snake_case; the MCP surface speaks camelCase throughout. */
 function toJob(raw: Record<string, unknown>): KaliJob {
+  const errorCode = sandboxErrorCode(raw.error_code)
   return {
     jobId: String(raw.job_id ?? ''),
     status: String(raw.status ?? 'unknown'),
@@ -98,7 +138,9 @@ function toJob(raw: Record<string, unknown>): KaliJob {
     // WHY a finished job failed. Dropping it left "exitCode 1" with no reason,
     // and the most common reason is the sandbox's 300s cap - which an agent
     // can only act on if it is told.
-    ...(typeof raw.error === 'string' && raw.error ? { failure: raw.error } : {}),
+    ...(errorCode
+      ? { errorCode, failure: sandboxFailure(errorCode, raw.error) }
+      : typeof raw.error === 'string' && raw.error ? { failure: raw.error } : {}),
     startedAt: (raw.started_at as string) ?? null,
     endedAt: (raw.ended_at as string) ?? null,
   }
@@ -119,6 +161,13 @@ async function execFailure(resp: Response): Promise<never> {
     // Non-JSON body: nothing safe to quote.
   }
   const message = typeof detail.error === 'string' ? detail.error : ''
+
+  // A sandbox the command could not use, answered as an error rather than as a
+  // failed job. Only the message reaches the MCP caller, so it names the code.
+  const code = sandboxErrorCode(detail.error_code)
+  if (code && (resp.status < 500 || resp.status === 503)) {
+    throw new McpToolError(`${sandboxFailure(code, message)} (errorCode: ${code})`, code)
+  }
 
   if (resp.status === 400) {
     throw new McpToolError(message || 'That command was refused.', 'refused')
@@ -178,10 +227,15 @@ async function agentJson(
   return toJob((await resp.json()) as Record<string, unknown>)
 }
 
+/**
+ * `userId` is the person whose own sandbox runs the command: the token's owner,
+ * never the project's owner, who is only the tenant whose folder it runs on.
+ */
 export async function kaliExec(
   projectId: string,
   command: string,
-  waitSeconds?: number
+  waitSeconds: number | undefined,
+  userId: string
 ): Promise<KaliJob> {
   return agentJson(
     '/kali/exec',
@@ -189,6 +243,7 @@ export async function kaliExec(
       method: 'POST',
       body: JSON.stringify({
         project_id: projectId,
+        user_id: userId,
         command,
         ...(waitSeconds === undefined ? {} : { wait_seconds: waitSeconds }),
       }),

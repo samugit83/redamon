@@ -86,6 +86,9 @@ const AGENT_FACING = [
   // the loop skill teaches the whole procedure.
   'loopTools.ts',
   'loopSkill.ts',
+  // kali_exec's result notes and the sandbox refusals tell an agent what to call next.
+  'kaliTools.ts',
+  'kaliClient.ts',
 ]
 
 /**
@@ -229,6 +232,9 @@ describe('P8: every tool named in an agent-facing string exists', () => {
       // A token that opts in also reaches the projects shared with its user (step 4.10).
       /only ever sees that user'?s own projects/i,
       /see only this token owner'?s own projects/i,
+      // Per-user sandboxes (group 1) stop when unused and start again with an
+      // empty /tmp, so files there last only while the sandbox runs.
+      /Files persist in \/tmp between calls, so/i,
     ]
     const problems: string[] = []
     for (const file of AGENT_FACING) {
