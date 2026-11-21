@@ -8,7 +8,9 @@
  * and each press writes `agent.emergency_stop` (scope, count). GET tells the toolbar
  * which scope a press would have, without counting as a use.
  *
- * The session and the account read are mocked; sharedToolAccess is the real one.
+ * The session and the account read are mocked; sharedToolAccess is the real one. The Kali
+ * sandboxes stop too (group 1, D22): every one for the global scope, the presser's own otherwise,
+ * through the lifecycle hook (a double; shared mode unless a test says otherwise).
  *
  * Run: npx vitest run src/app/api/agent/emergency-stop-all/route.test.ts
  *
@@ -22,6 +24,8 @@ const mockLoadPrincipal = vi.fn()
 const mockWriteAudit = vi.fn()
 const mockCutoff = vi.fn()
 const mockAgentFetch = vi.fn()
+const mockSandboxStop = vi.fn()
+const order: string[] = []
 
 vi.mock('@/lib/session', () => ({
   requireSession: (...a: unknown[]) => mockRequireSession(...a),
@@ -37,7 +41,10 @@ vi.mock('@/lib/prisma', () => ({
 }))
 vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agentFetch')>()),
-  agentFetch: (...a: unknown[]) => mockAgentFetch(...a),
+  agentFetch: (...a: unknown[]) => { order.push('agent'); return mockAgentFetch(...a) },
+}))
+vi.mock('@/lib/sandbox/lifecycle', () => ({
+  sandboxEmergencyStop: (...a: unknown[]) => { order.push('sandboxes'); return mockSandboxStop(...a) },
 }))
 
 import { GET, POST } from './route'
@@ -83,6 +90,8 @@ beforeEach(() => {
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
   mockCutoff.mockReset().mockResolvedValue({ createdAt: CUTOFF })
   mockAgentFetch.mockReset()
+  mockSandboxStop.mockReset().mockResolvedValue({ mode: 'shared' })
+  order.length = 0
   resetSharedToolsForTests()
   setFlagsForTests({})
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -214,6 +223,71 @@ describe('POST /api/agent/emergency-stop-all', () => {
     expect(res.ok).toBe(false)
     expect((await res.json()).upstreamStatus).toBe(401)
     expect(stopRows()).toEqual([])
+  })
+})
+
+describe('the Kali sandboxes stop too (group 1, D22)', () => {
+  const nobody = { onBehalfOfUserId: null, actorEmail: null }
+
+  test('admin → every sandbox, with the presser, after the agent stopped the runs in them', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    agentAnswers({ stopped: 5 })
+    mockSandboxStop.mockResolvedValue({ mode: 'per_user', stopped: 3 })
+
+    const res = await post()
+
+    expect(await res.json()).toEqual({ scope: 'all', stopped: 5, sandboxes: { stopped: 3 } })
+    expect(mockSandboxStop).toHaveBeenCalledTimes(1)
+    expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'all' }, { actorId: 'admin-1', ...nobody })
+    expect(order).toEqual(['agent', 'sandboxes'])
+    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 5, via: 'admin' })
+  })
+
+  test('member → only their own sandboxes (both views), never anyone else\'s', async () => {
+    signedIn(principal('member-1', 'standard'))
+    agentAnswers({ stopped: 2 })
+    mockSandboxStop.mockResolvedValue({ mode: 'per_user', stopped: 1 })
+
+    expect(await (await post()).json()).toEqual({ scope: 'own', stopped: 2, sandboxes: { stopped: 1 } })
+    expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'own', userId: 'member-1' }, { actorId: 'member-1', ...nobody })
+  })
+
+  test('shared mode: the answer is today\'s', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    agentAnswers({ stopped: 5 })
+
+    expect(await (await post()).json()).toEqual({ scope: 'all', stopped: 5 })
+    expect(mockSandboxStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('a sandbox stop that failed is in the answer, by its code', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    agentAnswers({ stopped: 0 })
+    mockSandboxStop.mockResolvedValue({ error: 'orchestrator_unreachable', stopped: 0 })
+
+    expect(await (await post()).json()).toEqual({ scope: 'all', stopped: 0, sandboxes: { error: 'orchestrator_unreachable' } })
+  })
+
+  test('an agent that cannot be reached does not keep the sandboxes running (the answer stays the agent\'s)', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    mockAgentFetch.mockRejectedValue(new AgentUnreachableError(Object.assign(new Error('x'), { code: 'ECONNREFUSED' })))
+    mockSandboxStop.mockResolvedValue({ mode: 'per_user', stopped: 2 })
+
+    const res = await post()
+
+    expect(res.status).toBe(503)
+    expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'all' }, { actorId: 'admin-1', ...nobody })
+  })
+
+  test('no session, an account gone or a failed account read stop no sandbox; asking the scope stops none', async () => {
+    mockRequireSession.mockResolvedValue(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+    await post()
+    mockRequireSession.mockResolvedValue({ userId: 'gone', role: 'standard' })
+    mockLoadPrincipal.mockResolvedValue(null)
+    await post()
+    signedIn(principal('admin-1', 'admin'))
+    await get()
+    expect(mockSandboxStop).not.toHaveBeenCalled()
   })
 })
 

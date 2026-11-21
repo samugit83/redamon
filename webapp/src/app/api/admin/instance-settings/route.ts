@@ -22,6 +22,7 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { stopAllNavigatorRuns } from '@/lib/navigator/stopAll'
+import { reconcileRunningSandboxes } from '@/lib/sandbox/lifecycle'
 import {
   CAPTURE_FIELDS, changedCaptureFields, changedTunnelFields, instanceSettingsInForce, maskSecret,
   parseCapturePatch, writeInstanceSettings,
@@ -338,7 +339,12 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     ...(Object.keys(changedKeys).length ? { changedKeys } : {}),
     ...(a.tunnelsPerPerson ? { skipMirror: ['tunnel'] as const } : {}),
   })
-  if (sharingChanges.length) invalidateSharingPolicy()
+  if (sharingChanges.length) {
+    invalidateSharingPolicy()
+    // A narrower policy drops shared projects from people's Kali sandbox lists (group 1): the running
+    // sandboxes are reconciled now, in the background; the RBAC sweep's backstop catches any it misses.
+    void reconcileRunningSandboxes(auditActorOf(sessionActor(a.session))).catch(() => undefined)
+  }
   // Off: every answer being written ends now; each tool call refuses from here anyway (fresh switch read).
   if (navigatorChange && saved.navigatorEnabled === false) stopAllNavigatorRuns()
 

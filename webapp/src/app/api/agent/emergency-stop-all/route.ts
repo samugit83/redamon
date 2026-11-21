@@ -7,6 +7,7 @@ import { writeAudit } from '@/lib/audit'
 import { actorFields, auditActorOf, sessionActor } from '@/lib/auditActor'
 import { agentErrorResponse, callAgent } from '../agentProxy'
 import { navigatorRuns } from '@/lib/navigator/runRegistry'
+import { sandboxEmergencyStop } from '@/lib/sandbox/lifecycle'
 
 const FAILED = 'Failed to stop agents'
 
@@ -58,17 +59,24 @@ export const POST = withRouteErrors(FAILED, async () => {
     }, FAILED)
   // AI Navigator answers stop too: every one for the global scope, the person's own otherwise.
   const navigator = who.scope === 'all' ? navigatorRuns().abortAll() : navigatorRuns().abortFor({ personId: who.userId })
+  const presser = auditActorOf({ id: who.userId, email: who.actorEmail })
+  // The Kali sandboxes (group 1, D22) stop after the agent has ended the runs inside them, and also
+  // when the agent could not be reached: a runaway shell must not outlive the press.
+  const sandbox = await sandboxEmergencyStop(who.scope === 'all' ? { scope: 'all' } : { scope: 'own', userId: who.userId }, presser)
   if (!call.ok) return call.response
   if (!call.res.ok) return agentErrorResponse(call.res, FAILED)
   const { stopped } = await call.res.json()
   const count = (typeof stopped === 'number' ? stopped : 0) + navigator
   await writeAudit({
-    ...actorFields(auditActorOf({ id: who.userId, email: who.actorEmail })),
+    ...actorFields(presser),
     action: 'agent.emergency_stop',
     targetType: who.scope === 'all' ? 'instance' : 'user',
     targetId: who.scope === 'all' ? null : who.userId,
     after: { scope: who.scope, count, via: who.via },
     source: 'ui',
   })
-  return NextResponse.json({ scope: who.scope, stopped: count })
+  // Shared mode stops no sandbox and the answer stays the one before group 1.
+  const sandboxes = 'error' in sandbox ? { sandboxes: { error: sandbox.error } }
+    : sandbox.mode === 'per_user' ? { sandboxes: { stopped: sandbox.stopped } } : {}
+  return NextResponse.json({ scope: who.scope, stopped: count, ...sandboxes })
 })

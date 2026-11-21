@@ -7,7 +7,8 @@
  * engagement authorization (that foreign key is Restrict).
  *
  * The order is the contract. In-flight work stops first: a scan mid-write would
- * otherwise recreate the project's graph after the clear. The authorization
+ * otherwise recreate the project's graph after the clear, and a Kali sandbox
+ * would keep the project folder mounted while it is purged. The authorization
  * records are archived before the row. The workspace goes only once the row is
  * gone, because the agent purges only a project the web app answers 404 for. The
  * files and the graph go last.
@@ -30,6 +31,7 @@ import { orchestratorFetch } from '@/lib/orchestrator'
 import { purgeProjectWorkspace } from '@/lib/workspacePurge'
 import { graphTriage } from '@/lib/triageClient'
 import { navigatorRuns } from '@/lib/navigator/runRegistry'
+import { sandboxAccessChanged, sandboxProjectDeleted } from '@/lib/sandbox/lifecycle'
 
 // Fallback for the file deletion when the orchestrator is unreachable.
 const RECON_OUTPUT_PATH = process.env.RECON_OUTPUT_PATH || '/data/recon-output'
@@ -45,6 +47,7 @@ export const TEARDOWN_STEPS = [
   'stop_chats',
   'stop_navigator',
   'stop_scans',
+  'stop_sandboxes',
   'archive_authorizations',
   'delete_project',
   'purge_workspace',
@@ -137,6 +140,19 @@ async function stopProjectChatRuns(projectId: string): Promise<boolean> {
     }
   })
   return allStopped
+}
+
+/**
+ * Stop every Kali sandbox instance that mounts the project (group 1, TD-27): its folder is mounted
+ * read-write and must not be in use when the workspace is purged. Best-effort (never throws).
+ */
+async function stopProjectSandboxes(projectId: string): Promise<boolean> {
+  try {
+    return !('error' in await sandboxProjectDeleted(projectId))
+  } catch (e) {
+    console.warn('Could not stop the Kali sandboxes before project delete:', e)
+    return false
+  }
 }
 
 /** Delete the project's output JSON files: through the orchestrator, which can write them. */
@@ -266,6 +282,8 @@ export async function teardownProject(
     stopPartialRecons(id),
   ])
   record('stop_scans', stops.every(s => s.status === 'fulfilled' && s.value !== false))
+  // A failure does not block the delete: a kept retry, or the instance's next ensure, stops it.
+  record('stop_sandboxes', await stopProjectSandboxes(id))
 
   // Archive the authorization records BEFORE the delete. Every other Project
   // child cascades; these do not, because the record of what authorized a
@@ -293,6 +311,12 @@ export async function teardownProject(
     const gone = !!error && typeof error === 'object' && 'code' in error && error.code === 'P2025'
     if (!gone) logFatal('delete_project')
     return { ok: false, steps, failedStep: 'delete_project', code: gone ? 'project_not_found' : 'delete_failed', error }
+  }
+
+  // An ensure that read the project list before the row went can have started an
+  // instance mounting the project since the first stop; no list names it now.
+  if (!await stopProjectSandboxes(id)) {
+    steps.find(s => s.step === 'stop_sandboxes')!.outcome = 'failed'
   }
 
   // The agent workspace, only once the row is gone: the agent acts only on a
@@ -339,6 +363,9 @@ export async function teardownProject(
     console.warn(`Failed to delete Neo4j data: ${neo4jError}`)
     record('clear_graph', false)
   }
+
+  // The owner may have lost their last project: a sandbox left with nothing to mount stops.
+  await sandboxAccessChanged([project.userId]).catch(() => undefined)
 
   return { ok: true, steps }
 }

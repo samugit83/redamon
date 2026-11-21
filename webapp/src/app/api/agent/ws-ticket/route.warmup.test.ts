@@ -3,7 +3,8 @@
  * or the Kali terminal (`kali-terminal`) socket is minted, the route starts the ticket person's
  * sandbox in the background (`touchSandbox(sub, {actingAs})`), so the first Kali tool does not wait
  * for a cold start. It is never awaited and never changes the answer: the ticket, its status and its
- * decisions are exactly what they were. Under act-as the ticket's person is the account acted as and
+ * decisions are exactly what they were. Mints in a burst warm each person and view up once (S14: the
+ * mint has no rate limit; lib/sandbox/lifecycle.ts holds the cool-down). Under act-as the ticket's person is the account acted as and
  * the view `act_as`; the start's audit row names the admin. Triage and CodeFix sockets, a refused
  * mint and a ticket that could not be signed warm nothing up.
  *
@@ -62,6 +63,7 @@ vi.mock('@/lib/prisma', () => ({
 }))
 
 import { POST } from './route'
+import { resetSandboxLifecycleForTests } from '@/lib/sandbox/lifecycle'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { clearSharingPolicyCacheForTests } from '@/lib/authz/sharingPolicy'
 import { clearCapabilityCachesForTests } from '@/lib/authz/capabilities'
@@ -90,6 +92,7 @@ beforeEach(() => {
   h.createWsTicket.mockResolvedValue('signed.ticket.value')
   h.touchSandbox.mockReset()
   h.touchSandbox.mockResolvedValue(undefined)
+  resetSandboxLifecycleForTests()
   setFlagsForTests({ identity: true, permissions: true, sharing: true })
   clearSharingPolicyCacheForTests()
   clearCapabilityCachesForTests()
@@ -122,6 +125,7 @@ describe('the warm-up after a ticket for a socket that reaches the Kali tools', 
     signedInAs('admin-1', 'bob')
     expect((await post('agent', 'P-bob')).status).toBe(200)
     expect(h.touchSandbox).toHaveBeenLastCalledWith('bob', { actingAs: true, actor: { actorId: 'admin-1', onBehalfOfUserId: 'bob', actorEmail: null } })
+    resetSandboxLifecycleForTests()
     expect((await post('kali-terminal', 'P-bob')).status).toBe(200)
     expect(h.touchSandbox).toHaveBeenLastCalledWith('bob', { actingAs: true, actor: { actorId: 'admin-1', onBehalfOfUserId: 'bob', actorEmail: 'admin-1@example.test' } })
   })
@@ -141,6 +145,18 @@ describe('the warm-up after a ticket for a socket that reaches the Kali tools', 
     const res = await post('agent')
     expect([res.status, await res.json()]).toEqual([200, { ticket: null }])
     expect(h.touchSandbox).not.toHaveBeenCalled()
+  })
+
+  test('a burst of mints warms the person and view up once; the other view is its own', async () => {
+    signedInAs('alice')
+    for (let i = 0; i < 4; i++) expect((await post(i % 2 ? 'agent' : 'kali-terminal')).status).toBe(200)
+    expect(h.touchSandbox).toHaveBeenCalledTimes(1)
+    signedInAs('admin-1', 'bob')
+    expect((await post('agent', 'P-bob')).status).toBe(200)
+    signedInAs('bob')
+    expect((await post('agent', 'P-bob')).status).toBe(200)
+    expect(h.touchSandbox.mock.calls.map(([who, opts]) => [who, (opts as { actingAs: boolean }).actingAs]))
+      .toEqual([['alice', false], ['bob', true], ['bob', false]])
   })
 
   test('never awaited: a warm-up that has not finished does not hold the answer back', async () => {
