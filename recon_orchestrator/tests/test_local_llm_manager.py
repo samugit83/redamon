@@ -206,7 +206,32 @@ class TestContainerBringup(unittest.TestCase):
         self.assertNotIn("network_mode", kwargs)
         self.assertEqual(kwargs["network"], llm.LLM_NETWORK)
         # Port must be published so host-network scan containers reach localhost.
-        self.assertEqual(kwargs["ports"], {f"{llm.LLM_PORT}/tcp": llm.LLM_PORT})
+        self.assertEqual(kwargs["ports"], {f"{llm.LLM_PORT}/tcp": ("127.0.0.1", llm.LLM_PORT)})
+
+    def test_port_published_on_loopback_only(self):
+        # T9/D29: Ollama's API has no auth; a bare port (or a 0.0.0.0 host)
+        # publishes it on every host interface, past ufw, to the LAN or internet.
+        self.client.containers.get.side_effect = NotFound("absent")
+        self.client.images.get.return_value = MagicMock()
+        self.client.containers.run.return_value = fake_container()
+        self.mgr._ensure_container()
+        ports = self.client.containers.run.call_args.kwargs["ports"]
+        self.assertEqual(len(ports), 1)
+        for binding in ports.values():
+            self.assertIsInstance(binding, tuple, "a bare host port binds every interface")
+            self.assertEqual(binding[0], "127.0.0.1")
+        self.assertEqual(llm.LLM_PUBLISH_HOST, "127.0.0.1")
+
+    def test_ollama_listens_on_the_container_interface_for_the_port_forward(self):
+        # OLLAMA_HOST=0.0.0.0 is the container's own interface, which Docker's
+        # port forward needs (127.0.0.1 there would break it); exposure is
+        # decided by the host-side binding above.
+        self.client.containers.get.side_effect = NotFound("absent")
+        self.client.images.get.return_value = MagicMock()
+        self.client.containers.run.return_value = fake_container()
+        self.mgr._ensure_container()
+        kwargs = self.client.containers.run.call_args.kwargs
+        self.assertEqual(kwargs["environment"]["OLLAMA_HOST"], f"0.0.0.0:{llm.LLM_PORT}")
 
     def test_run_mounts_weights_volume_rw(self):
         self.client.containers.get.side_effect = NotFound("absent")

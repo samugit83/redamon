@@ -794,12 +794,16 @@ for p in 3000 8090; do
   elif printf '%s\n' "\$hits" | grep -qvE '^127\.0\.0\.1:|^\[::1\]:'; then err "port \${p} bound off-loopback: \$hits"; rc=1;
   else success "port \${p} loopback-only"; fi
 done
-step "Internal ports must never bind off-loopback (datastores, orchestrator, 4444 catcher)"
+step "Internal ports must never bind off-loopback (datastores, orchestrator, 4444 catcher, Ollama judge)"
 db_bad=0
 # 4444 is the reverse-shell catcher: loopback-bound at rest (exposed per-engagement
 # only via 'deploy.sh revshell-open', which adds a host-side socat forwarder, not a
 # docker port change), so its docker binding must always be loopback here.
-for p in 5432 7474 7687 8010 4444; do
+# 11434 is the AI attack-surface judge (Ollama, no authentication). The orchestrator
+# publishes it through the Docker SDK while a scan holds it, so the prod overlay
+# cannot re-bind it and ufw does not filter it: it listens only during a scan, and
+# then only on loopback.
+for p in 5432 7474 7687 8010 4444 11434; do
   hits=\$(printf '%s\n' "\$LB" | grep -E "[:.]\${p}\b" || true)
   if [ -n "\$hits" ] && printf '%s\n' "\$hits" | grep -qvE '^127\.0\.0\.1:|^\[::1\]:'; then err "port \${p} off-loopback: \$hits"; rc=1; db_bad=1; fi
 done

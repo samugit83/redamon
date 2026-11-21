@@ -403,6 +403,12 @@ Putting it on a public IP invalidates that, so the deploy closes the gap:
   the host's public IP and start the msf handler in RedAmon. (Alternative: a tunnel
   ngrok/chisel to `127.0.0.1:4444` with `TUNNELS_ENABLED=true`; never run a world-open 4444
   and a tunnel at once.)
+- **The AI attack-surface judge (Ollama, `11434`)** has no authentication of its own. The
+  orchestrator starts it only while an AI attack-surface scan runs and publishes it on
+  `127.0.0.1` only: the scan's host-network containers reach it at `localhost:11434`, nothing
+  off the host does. It is published through the Docker SDK, so the prod overlay cannot re-bind
+  it and ufw does not filter it; the loopback binding is the control, and `verify` fails if
+  11434 ever listens off-loopback.
 - If `ENABLE_GVM=true`, the install generates a strong `GVM_PASSWORD`, pins it in the server
   `.env`, and applies it to gvmd's `admin` user (so the app and gvmd never disagree). The
   deploy prints `admin / <password>` once; it is always recoverable with
@@ -423,9 +429,9 @@ loopback re-bind is ever wrong (e.g. a stray `docker compose up` that republishe
 | **22/tcp** | your IP only | SSH management |
 
 **Open nothing else.** In particular do **not** open `8090` (agent), `3000` (webapp),
-`5432`/`7687`/`7474` (PostgreSQL/Neo4j), or `8000-8016`/`4444`/`8015` (Kali MCP / progress /
-tunnel manager / PTY / reverse-shell) — all are loopback-bound and reached only through nginx
-on `443`. Opening `8090` would expose the agent's unauthenticated WebSockets (including the
+`5432`/`7687`/`7474` (PostgreSQL/Neo4j), `8000-8016`/`4444`/`8015` (Kali MCP / progress /
+tunnel manager / PTY / reverse-shell), or `11434` (the AI attack-surface judge, Ollama) — all
+are loopback-bound and reached only through nginx on `443`, or not at all from outside the host. Opening `8090` would expose the agent's unauthenticated WebSockets (including the
 anonymous **root PTY** `/ws/kali-terminal`) and its REST surface directly, bypassing nginx and
 its session gate. The browser reaches the agent's WebSockets at `wss://<domain>/ws/…` on `443`
 (nginx → `127.0.0.1:8090`), so `8090` never needs to be publicly reachable.
@@ -445,8 +451,10 @@ its session gate. The browser reaches the agent's WebSockets at `wss://<domain>/
 2. `./deploy.sh init` -> type `INIT` to confirm the wipe.
 3. Watch: teardown -> host bootstrap -> hardening -> clone + overlay -> `redamon.sh install`
    (30-60 min build) -> secrets gate -> admin bootstrap -> nginx + TLS -> verify.
-4. Verification asserts loopback binds (3000/8090 on 127.0.0.1 only), datastores never
-   off-loopback, container health, an admin exists, and `https://<domain>/api/health` -> 200.
+4. Verification asserts loopback binds (3000/8090 on 127.0.0.1 only), datastores, the
+   orchestrator, the 4444 catcher and the Ollama judge (11434, while an AI attack-surface scan
+   runs) never off-loopback, container health, an admin exists, and
+   `https://<domain>/api/health` -> 200.
 5. Log in at `https://<domain>/`.
 
 `DRY_RUN=true ./deploy.sh init` prints the resolved plan without touching the host.
