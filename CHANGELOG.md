@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.10.0] - 2026-11-21
+
+Security fixes for what an attacker with no account can do from the network: lock any account out of signing in, and keep the browser's own sign-in working through it.
+
+### Security
+
+- **Anyone who could reach the sign-in page could keep any account out, Root included.** Five wrong passwords for an e-mail locked it for 15 minutes for every browser, the right password included, and a script could repeat that every quarter hour for as long as it liked; only a webapp restart cleared it. A browser that has signed in to an account before now keeps signing in to it through such a lockout. A successful sign-in leaves a signed *known device* entry in an httpOnly cookie (`redamon-login-device`, SameSite=Strict, sent only to `/api/auth/login`, kept 180 days, up to five accounts per browser), bound to the e-mail it signed in with and never holding it in clear, and a browser with such an entry is counted on a lockout of its own. A browser without one is still locked out, so password guessing stays capped as before. Audit rows of a sign-in, a failure or a lockout through a known device carry `knownDevice: true`.
+
+### What changes for you
+
+- The known-device protection starts with each browser's first successful sign-in after the update.
+
 ## [7.9.0] - 2026-11-19
 
 AI Navigator, a read-only chat about RedAmon and your project's data; Tradecraft 2.0, each account's library of knowledge sites that the agent reads during an engagement; and security fixes for the graph's tenant filters and for Tradecraft. Tradecraft 2.0 replaces 1.x at the agent's first start: read *What changes for you* and *Upgrade* first.
