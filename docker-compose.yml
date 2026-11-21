@@ -518,6 +518,12 @@ services:
       # capture config (source of truth = DB) into this shared volume so the
       # credential-free proxy can hot-reload it. Same volume the proxy mounts at /spool.
       - capture_spool:/spool
+      # Per-user Kali sandboxes: mounted so the orchestrator reads each folder's
+      # HOST path from Docker's mount table and creates the per-person and
+      # per-project subfolders it binds into a sandbox. No sandbox mounts them whole.
+      - ./agentic/agent-workspace:/app/agent-workspace
+      - ./mcp/output:/app/mcp-output
+      - ./mcp/servers:/app/mcp-servers:ro
     environment:
       # Host paths are auto-detected from container mounts (no hardcoded paths needed)
       RECON_IMAGE: redamon-recon:latest
@@ -538,6 +544,14 @@ services:
       GVM_NO_PROGRESS_TIMEOUT: ${GVM_NO_PROGRESS_TIMEOUT:-}
       # Seconds between mid-scan scanner liveness re-checks (0 disables).
       GVM_LIVENESS_INTERVAL: ${GVM_LIVENESS_INTERVAL:-}
+      # Per-user Kali sandboxes. All optional: empty keeps the defaults in
+      # recon_orchestrator/sandbox_contract.py, and redamon.sh never writes them.
+      KALI_SANDBOX_IDLE_MINUTES: ${KALI_SANDBOX_IDLE_MINUTES:-}
+      KALI_SANDBOX_MAX_CONCURRENT: ${KALI_SANDBOX_MAX_CONCURRENT:-}
+      KALI_SANDBOX_PORT_POOL: ${KALI_SANDBOX_PORT_POOL:-}
+      KALI_SANDBOX_MODE: ${KALI_SANDBOX_MODE:-}
+      # Existing knob, now applied to each person's sandbox terminal.
+      TERMINAL_MAX_SESSIONS: ${TERMINAL_MAX_SESSIONS:-}
       # Inbound API auth: the orchestrator validates this on every request (except
       # /health). Shared ONLY with the webapp — deliberately NOT forwarded to the
       # spawned recon/scan containers, so a compromised recon container (which does
@@ -744,6 +758,11 @@ services:
     build:
       context: ./mcp
       dockerfile: kali-sandbox/Dockerfile
+      args:
+        MSF_REFRESH_STAMP: "${MSF_REFRESH_STAMP:-}"
+    # Fixed tag: the orchestrator starts each person's sandbox from this image
+    # (recon_orchestrator/sandbox_contract.py, IMAGE).
+    image: redamon-kali-sandbox:latest
     container_name: redamon-kali
     mem_limit: ${KALI_MEM:-1g}              # sized from host RAM by redamon.sh
     # D1 owns the Kali sandbox's pids/cpu ceiling (E1 was removed). Very
@@ -986,6 +1005,10 @@ services:
       DATABASE_URL: "postgresql://${POSTGRES_USER:-redamon}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set - run redamon.sh (STRIDE S13)}@postgres:5432/${POSTGRES_DB:-redamon}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # The agent joins every per-user Kali sandbox network; with forwarding on, a
+    # sandbox (it holds NET_ADMIN) could route through it into redamon-network.
+    sysctls:
+      net.ipv4.ip_forward: "0"
     volumes:
       - ./agentic/logs:/app/logs
       - ./agentic/skills:/app/skills:ro
@@ -1367,8 +1390,13 @@ services:
     container_name: redamon-capture-proxy
     # confdir=/ca keeps the mitmproxy CA (a forge-anything key, §15.9) on a
     # restricted volume readable only by this container; the private key never
-    # leaves it. stream_large_bodies bounds memory on huge responses.
-    command: ["mitmdump","--quiet","--set","confdir=/ca","--set","connection_strategy=lazy","--set","stream_large_bodies=5m","--listen-port","8888","-s","/app/capture_addon.py"]
+    # leaves it. stream_large_bodies bounds memory on huge responses. rawtcp=false:
+    # the egress guard runs on HTTP requests only, so a non-HTTP stream after a
+    # CONNECT would be relayed raw to any address, a Kali sandbox's included.
+    command: ["mitmdump","--quiet","--set","confdir=/ca","--set","connection_strategy=lazy","--set","stream_large_bodies=5m","--set","rawtcp=false","--listen-port","8888","-s","/app/capture_addon.py"]
+    # The proxy joins every per-user Kali sandbox network: no forwarding between them.
+    sysctls:
+      net.ipv4.ip_forward: "0"
     environment:
       CAPTURE_SPOOL_DIR: /spool
       CAPTURE_BODIES_DIR: /bodies
@@ -1382,7 +1410,9 @@ services:
       # Extra RedAmon service IPs the proxy must never reach: a SECURITY invariant,
       # NOT a DB-tunable knob (never gated by the egress toggles), so it stays on the
       # env and is always enforced.
-      CAPTURE_BLOCKED_IPS: "${CAPTURE_BLOCKED_IPS:-}"
+      # The per-user sandbox pool is always refused (TD-24), so the proxy never
+      # carries one sandbox's request to another; operator entries follow.
+      CAPTURE_BLOCKED_IPS: "10.214.0.0/16,${CAPTURE_BLOCKED_IPS:-}"
     # Target-facing plane ONLY. No redamon-network -> structurally cannot reach
     # Postgres/Neo4j/agent/webapp/orchestrator. Holds NO DB creds, NO signing key.
     networks:

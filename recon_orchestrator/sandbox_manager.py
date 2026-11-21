@@ -53,6 +53,36 @@ logger = logging.getLogger(__name__)
 # it a guest's default route could move onto a sandbox network: refuse to start.
 GW_PRIORITY_MIN_API = (1, 48)
 
+# Pinned on every sandbox network, so a daemon's `default-network-opts` cannot
+# change them: IPv4 only (the pool, the proxy's denylist and the guests'
+# forwarding switch are IPv4), containers reach each other (the agent and the
+# proxy reach the sandbox), NAT egress for the tools, no direct routing into the
+# network from outside the host, and a published pool port that names no address
+# binds the loopback. IPv6 is turned off by the option: docker-py 7.2 sends
+# EnableIPv6 only when it is true, and without it the engine takes the option.
+# A network that is IPv6 anyway is refused (_network_problem).
+IPV6_OPTION = "com.docker.network.enable_ipv6"
+NETWORK_OPTIONS = {
+    IPV6_OPTION: "false",
+    "com.docker.network.bridge.enable_icc": "true",
+    "com.docker.network.bridge.enable_ip_masquerade": "true",
+    "com.docker.network.bridge.gateway_mode_ipv4": "nat",
+    "com.docker.network.bridge.host_binding_ipv4": "127.0.0.1",
+}
+
+# `docker compose run agent ...` makes a second container with the agent's
+# service label; it is never a guest of a sandbox network.
+COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff"
+
+# The compose line that gives the orchestrator each host folder a sandbox binds a
+# part of: without it the host path is unknown and no sandbox can start.
+COMPOSE_MOUNTS = {
+    sc.MOUNT_WORKSPACE: "./agentic/agent-workspace:/app/agent-workspace",
+    sc.MOUNT_OUTPUT: "./mcp/output:/app/mcp-output",
+    sc.MOUNT_SERVERS: "./mcp/servers:/app/mcp-servers:ro",
+    sc.MOUNT_GRAPH_DB: "./graph_db:/app/graph_db:ro",
+}
+
 # Below the 1024 every service container runs with: under CPU contention the
 # platform's services win over any number of sandboxes (a fork bomb in one is
 # also capped by its own CPUs and process count). Docker maps it to cpu.weight.
@@ -553,16 +583,27 @@ class SandboxManager:
                     del self._pending[user_id]
 
     def _new_instance_id(self, user_id: str) -> str:
-        """Instance ids are 24 random bits and the ledger key omits the view, so
-        an id already held by the person (either view) is drawn again."""
-        taken = {i.instance for i in self.instances(user_id)}
+        """Instance ids are 24 random bits, unique server-wide: the webapp pairs
+        sessions and audit rows by `<instance>:<n>` and the agent routes
+        `?sandbox=<instance>`, so an id any live or adopted instance of anyone
+        holds (either view) is drawn again."""
+        taken = {i.instance for i in self.instances()}
         for _ in range(INSTANCE_DRAWS):
             candidate = sc.new_instance()
             if candidate not in taken:
                 return candidate
         raise SandboxStartError(sc.ERR_START_FAILED, "no free instance id")
 
+    def _missing_compose_mounts(self) -> list:
+        return [line for kind, line in COMPOSE_MOUNTS.items() if not self.host_bases.get(kind)]
+
     async def _start_locked(self, user_id: str, view: str, projects: tuple) -> Instance:
+        missing = self._missing_compose_mounts()
+        if missing:
+            self._warn_once("missing-mounts:" + ",".join(missing),
+                            f"[sandbox] cannot start a sandbox: the recon-orchestrator service lacks "
+                            f"the compose mount(s) {', '.join(missing)}; recreate it with ./redamon.sh up")
+            raise SandboxStartError(sc.ERR_START_FAILED, "the orchestrator lacks a folder a sandbox mounts")
         api = _api_version(getattr(self.client.api, "api_version", None))
         if api is None or api < GW_PRIORITY_MIN_API:
             engine = await asyncio.to_thread(self._engine_version_sync)
@@ -1154,6 +1195,29 @@ class SandboxManager:
     async def _ensure_guests(self, network: str, *, strict: bool) -> None:
         await asyncio.to_thread(self._guests_sync, network, strict)
 
+    async def attach_capture_proxy_everywhere(self) -> int:
+        """TD-25 for a capture proxy the orchestrator has just (re)started: a new
+        container, on no sandbox network. Each live network gets the guest check,
+        which attaches the proxy only when it forwards nothing and refuses the
+        pool. Under each person's lock, as the idle loop's check; one failing
+        network is logged and never stops the others. Returns the networks checked."""
+        people = self._people()
+        results = await asyncio.gather(*(self._shielded(self._attach_guests_of(u)) for u in people),
+                                       return_exceptions=True)
+        return sum(r for r in results if isinstance(r, int))
+
+    async def _attach_guests_of(self, user_id: str) -> int:
+        checked = 0
+        async with self._user_lock(user_id):
+            networks = {i.network for i in self.instances(user_id) if i.state != "stopping"}
+            for network in sorted(networks):
+                try:
+                    await asyncio.to_thread(self._guests_sync, network, False, True)
+                    checked += 1
+                except Exception as e:  # noqa: BLE001 - the idle loop retries
+                    logger.warning(f"[sandbox] guest check of {network} failed: {type(e).__name__}")
+        return checked
+
     def _guests_sync(self, network: str, strict: bool, force: bool = False) -> None:
         """TD-23..25: the agent (alias ``agent``) and the capture proxy on the
         network, each only when it cannot forward between its networks, the proxy
@@ -1214,19 +1278,24 @@ class SandboxManager:
             found = self.client.containers.list(filters={"label": [
                 f"{sc.COMPOSE_SERVICE_LABEL}={sc.AGENT_COMPOSE_SERVICE}",
                 f"{sc.COMPOSE_PROJECT_LABEL}={self.own_compose_project}"]})
-            found = [c for c in found if not (c.labels or {}).get(BROKER_OWNED_LABEL)]
+            found = [c for c in found if not (c.labels or {}).get(BROKER_OWNED_LABEL)
+                     and not self._one_off(c)]
         if not found:
             try:
                 c = self.client.containers.get(sc.AGENT_CONTAINER_NAME)
                 labels = c.labels or {}
                 # By name only when it is not another compose project's agent.
                 project = labels.get(sc.COMPOSE_PROJECT_LABEL)
-                if c.status == "running" and not labels.get(BROKER_OWNED_LABEL) and \
+                if c.status == "running" and not labels.get(BROKER_OWNED_LABEL) and not self._one_off(c) and \
                         (not project or project == self.own_compose_project):
                     found = [c]
             except NotFound:
                 pass
         return found
+
+    @staticmethod
+    def _one_off(container) -> bool:
+        return str((container.labels or {}).get(COMPOSE_ONEOFF_LABEL, "")).lower() == "true"
 
     def _find_proxy_sync(self):
         try:
@@ -1294,25 +1363,11 @@ class SandboxManager:
             net = self.client.networks.get(name)
         except NotFound:
             net = None
+        key = sc.sandbox_key(user_id, view)
         if net is not None:
-            attrs = net.attrs or {}
-            labels = attrs.get("Labels") or {}
-            expected = self._network_labels(user_id, view)
-            subnets = [c.get("Subnet") for c in ((attrs.get("IPAM") or {}).get("Config") or [])]
-            pool = ipaddress.ip_network(sc.SUBNET_POOL)
-            def in_pool(subnet) -> bool:
-                try:
-                    net_ = ipaddress.ip_network(subnet, strict=False)
-                except (TypeError, ValueError):
-                    return False
-                return net_.version == pool.version and net_.subnet_of(pool)
-
-            ok = (attrs.get("Name") == name and all(labels.get(k) == v for k, v in expected.items())
-                  and not labels.get(BROKER_OWNED_LABEL) and attrs.get("Driver") == sc.NETWORK_DRIVER
-                  and not attrs.get("Internal") and subnets and all(in_pool(s) for s in subnets))
-            if not ok:
-                logger.error(f"[sandbox] a network named like the sandbox network of key="
-                             f"{expected[sc.LABEL_KEY]} exists and is not the orchestrator's; not used")
+            problem = self._network_problem(net, user_id, view)
+            if problem:
+                logger.error(f"[sandbox] the existing sandbox network of key={key} is not used: {problem}")
                 raise SandboxStartError(sc.ERR_START_FAILED, "the sandbox network name is taken")
             return net
         used = []
@@ -1326,9 +1381,48 @@ class SandboxManager:
         ipam = docker.types.IPAMConfig(pool_configs=[
             docker.types.IPAMPool(subnet=subnet, gateway=sc.gateway_for(subnet))])
         self._guest_cache.pop(name, None)
-        return self.client.networks.create(name, driver=sc.NETWORK_DRIVER, internal=sc.NETWORK_INTERNAL,
-                                           labels=self._network_labels(user_id, view), ipam=ipam,
-                                           check_duplicate=True)
+        net = self.client.networks.create(name, driver=sc.NETWORK_DRIVER, internal=sc.NETWORK_INTERNAL,
+                                          labels=self._network_labels(user_id, view), ipam=ipam,
+                                          check_duplicate=True, options=dict(NETWORK_OPTIONS))
+        # What the engine made, not what was asked: a daemon that ignores the
+        # option still turns IPv6 on.
+        problem = self._network_problem(net, user_id, view)
+        if problem:
+            logger.error(f"[sandbox] the new sandbox network of key={key} is removed: {problem}")
+            self._remove_network_sync(name)
+            raise SandboxStartError(sc.ERR_START_FAILED, "the sandbox network could not be made IPv4-only")
+        return net
+
+    def _network_problem(self, net, user_id: str, view: str) -> Optional[str]:
+        """Why ``net`` is not the view's sandbox network as this orchestrator makes
+        it, or None: its name and labels (owner included, no broker label), a plain
+        bridge, IPv6 off, and IPv4 subnets of the sandbox pool only."""
+        attrs = net.attrs or {}
+        labels = attrs.get("Labels") or {}
+        if attrs.get("Name") != sc.network_name(user_id, view) or labels.get(BROKER_OWNED_LABEL) or \
+                any(labels.get(k) != v for k, v in self._network_labels(user_id, view).items()):
+            return "it is not this orchestrator's network"
+        if attrs.get("Driver") != sc.NETWORK_DRIVER or attrs.get("Internal"):
+            return "it is not a plain bridge"
+        if attrs.get("EnableIPv6"):
+            return "it has IPv6 on"
+        pool = ipaddress.ip_network(sc.SUBNET_POOL)
+        subnets = [c.get("Subnet") for c in ((attrs.get("IPAM") or {}).get("Config") or [])]
+        for subnet in subnets:
+            try:
+                cidr = ipaddress.ip_network(subnet, strict=False)
+            except (TypeError, ValueError):
+                return "its subnet is unreadable"
+            if cidr.version != pool.version or not cidr.subnet_of(pool):
+                return "a subnet is not an IPv4 subnet of the sandbox pool"
+        return None if subnets else "it has no subnet"
+
+    def _network_problem_by_name_sync(self, user_id: str, view: str) -> Optional[str]:
+        try:
+            net = self.client.networks.get(sc.network_name(user_id, view))
+        except NotFound:
+            return "its network is gone"
+        return self._network_problem(net, user_id, view)
 
     def _network_labels(self, user_id: str, view: str) -> dict:
         return {**sc.network_labels(user_id, view), LABEL_OWNER: self.owner}
@@ -1625,6 +1719,11 @@ class SandboxManager:
             if inst is not None and any(i.user_id == inst.user_id and i.instance == inst.instance
                                         for i, _, _ in candidates):
                 inst, problem = None, "duplicate instance id"
+            if inst is not None:
+                network_problem = await asyncio.to_thread(
+                    self._network_problem_by_name_sync, inst.user_id, inst.view)
+                if network_problem:
+                    inst, problem = None, f"its network is refused: {network_problem}"
             if inst is None:
                 logger.warning(f"[sandbox] removing sandbox-labelled container {c.id[:12]}: {problem}")
                 if await asyncio.to_thread(self._force_remove_sync, c):

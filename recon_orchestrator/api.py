@@ -15,10 +15,12 @@ from typing import Optional
 import docker
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sse_starlette.sse import EventSourceResponse
 
+import sandbox_contract as sc
 from auth import is_orchestrator_request_authorized
+from sandbox_manager import SandboxError, SandboxManager
 from recon_settings.engagement import derive_roe_enabled
 from container_manager import ContainerManager, scanner_key
 from job_credential import JobCredentialRefused, master_key_is_weak, verify_job_credential
@@ -66,6 +68,11 @@ from models import (
     AiAttackSurfaceState,
     AiAttackSurfaceStatus,
     AiAttackSurfaceListResponse,
+    SandboxEnsureRequest,
+    SandboxLeaseRequest,
+    SandboxReconcileRequest,
+    SandboxStopProjectRequest,
+    SandboxStopRequest,
 )
 
 # Configure logging
@@ -441,6 +448,14 @@ def _spawned_webapp_url() -> str:
 container_manager: ContainerManager = None
 # On-demand local LLM (Ollama) judge/attacker for the AI Attack Surface layer
 local_llm_manager: LocalLlmManager = None
+# Per-user Kali sandboxes (group 1). Built in lifespan. The /sandboxes routes serve
+# once adoption has finished (B.7): a start made while adoption runs would be
+# removed by it, and a stop made before it would miss the sandboxes it adopts.
+sandbox_manager: Optional[SandboxManager] = None
+_sandboxes_adopted = False
+# Adoption that failed at start-up (Docker unreachable) is retried this often.
+SANDBOX_ADOPT_RETRY_S = 30
+_sandbox_retry_sleep = asyncio.sleep
 
 # How often the background reaper refreshes AI-attack states (releases orphaned
 # Ollama leases from runs whose UI disconnected before completion).
@@ -766,10 +781,67 @@ async def _capture_config_reconcile():
         await asyncio.sleep(interval)
 
 
+def _own_compose_project(client) -> Optional[str]:
+    """This orchestrator's compose project, read from its own container's labels.
+    The sandbox manager finds the agent within it and labels its sandboxes with
+    it, so another RedAmon stack on the same daemon keeps its own. Blocking."""
+    try:
+        labels = client.containers.get(socket.gethostname()).labels or {}
+    except Exception as e:  # noqa: BLE001 - not under compose, or Docker unreachable
+        logger.warning(f"[sandbox] could not read this orchestrator's compose project: {type(e).__name__}")
+        return None
+    project = labels.get(sc.COMPOSE_PROJECT_LABEL)
+    return project if isinstance(project, str) and project else None
+
+
+def _build_sandbox_manager(cm: ContainerManager, own_project: Optional[str]) -> SandboxManager:
+    """The host folders come from the orchestrator's own mounts only (no environment
+    fallback): a kind left out is reported by the manager, at the first start, with
+    the compose mount it needs."""
+    host_bases = {
+        sc.MOUNT_WORKSPACE: _host_mounts.get(sc.MOUNT_HOST_BASES[sc.MOUNT_WORKSPACE], ""),
+        sc.MOUNT_OUTPUT: _host_mounts.get(sc.MOUNT_HOST_BASES[sc.MOUNT_OUTPUT], ""),
+        sc.MOUNT_SERVERS: _host_mounts.get(sc.MOUNT_HOST_BASES[sc.MOUNT_SERVERS], ""),
+        sc.MOUNT_GRAPH_DB: GRAPH_DB_PATH,
+        sc.MOUNT_CUSTOM_TEMPLATES: CUSTOM_TEMPLATES_PATH,
+    }
+    return SandboxManager(cm.client, cm.ledger, host_bases, cm.supply_chain_osv_db_volume, own_project)
+
+
+def _wire_sandbox_manager(cm: ContainerManager, manager: SandboxManager) -> None:
+    """Before adoption: an adopted sandbox's reservation must never be freed by the
+    30 s reaper, and a recreated capture proxy is attached to every live network."""
+    cm.extra_reservation_keys = manager.reservation_keys
+    cm.on_capture_proxy_started = manager.attach_capture_proxy_everywhere
+
+
+async def _adopt_sandboxes(manager: SandboxManager) -> bool:
+    """One adoption attempt; True once the routes may serve."""
+    global _sandboxes_adopted
+    try:
+        summary = await manager.adopt()
+    except Exception as e:  # noqa: BLE001 - Docker unreachable: retried in the background
+        logger.warning(f"[sandbox] adoption failed ({type(e).__name__}); the sandbox routes answer 503 "
+                       f"until it succeeds, retried every {SANDBOX_ADOPT_RETRY_S} s")
+        return False
+    logger.info(f"[sandbox] adoption done: {summary}")
+    _sandboxes_adopted = True
+    return True
+
+
+async def _run_sandboxes(manager: SandboxManager, adopted: bool) -> None:
+    """Retry a failed adoption until it succeeds, then run the idle loop (in both
+    modes: per-user sandboxes left after a switch back to shared stop when idle)."""
+    while not adopted:
+        await _sandbox_retry_sleep(SANDBOX_ADOPT_RETRY_S)
+        adopted = await _adopt_sandboxes(manager)
+    await manager.run_idle_loop()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize and cleanup resources"""
-    global container_manager, local_llm_manager
+    global container_manager, local_llm_manager, sandbox_manager
     logger.info("Starting Recon Orchestrator...")
     container_manager = ContainerManager(recon_image=RECON_IMAGE, gvm_image=GVM_IMAGE, github_hunt_image=GITHUB_HUNT_IMAGE, trufflehog_image=TRUFFLEHOG_IMAGE, ai_attack_image=AI_ATTACK_SURFACE_IMAGE, supply_chain_image=SUPPLY_CHAIN_IMAGE)
     # Share the orchestrator's docker client so the LLM lifecycle uses the same daemon.
@@ -800,6 +872,13 @@ async def lifespan(app: FastAPI):
     # or crashed). A scan outlives an orchestrator restart without being
     # adopted, so a run the daemon still lists as live keeps its own.
     await container_manager._run_blocking(container_manager.sweep_trufflehog_stages)
+    # Per-user Kali sandboxes: wired, then adopted once, before the app serves a
+    # request (uvicorn accepts none until this function yields).
+    own_project = await asyncio.to_thread(_own_compose_project, container_manager.client)
+    sandbox_manager = _build_sandbox_manager(container_manager, own_project)
+    _wire_sandbox_manager(container_manager, sandbox_manager)
+    sandboxes = asyncio.create_task(
+        _run_sandboxes(sandbox_manager, await _adopt_sandboxes(sandbox_manager)))
     reaper = asyncio.create_task(_ai_attack_reaper())
     capture_reconciler = asyncio.create_task(_capture_config_reconcile())
     # Scan Timeline (Section 7.2): the scheduler worker lives here because the
@@ -812,6 +891,13 @@ async def lifespan(app: FastAPI):
     job_dispatcher = asyncio.create_task(job_dispatcher_loop(lambda: container_manager))
     yield
     logger.info("Shutting down Recon Orchestrator...")
+    # Sandboxes keep running: the next start adopts them. A stop already under
+    # way is given a moment to finish.
+    sandboxes.cancel()
+    try:
+        await asyncio.wait_for(sandbox_manager.join_background(), 5)
+    except Exception:  # noqa: BLE001 - shutting down
+        pass
     reaper.cancel()
     capture_reconciler.cancel()
     scan_scheduler.cancel()
@@ -994,6 +1080,124 @@ async def system_active_scans():
             add("ai_attack", state, run_id=run_id, tool_id=getattr(state, "tool", ""))
 
     return {"scans": out}
+
+
+# --------------------------------------------------------------------------
+# Per-user Kali sandboxes (group 1, B.9 of docs/readmes/README.KALI_SANDBOX.md).
+# The key middleware above guards every route. An error answers
+# {"detail": {"code", "detail"}} with the contract's code and a fixed sentence
+# (never a path, a token or Docker's text); a governor refusal adds its payload.
+# --------------------------------------------------------------------------
+_ERR_INVALID_STOP_REASON = "invalid_stop_reason"
+
+
+def _sandbox_unavailable() -> HTTPException:
+    return HTTPException(status_code=503, detail={
+        "code": sc.ERR_START_FAILED, "detail": "the sandbox manager is not ready yet"})
+
+
+def _adopted_sandbox_manager() -> SandboxManager:
+    if sandbox_manager is None or not _sandboxes_adopted:
+        raise _sandbox_unavailable()
+    return sandbox_manager
+
+
+async def _sandbox_call(awaitable):
+    try:
+        return await awaitable
+    except SandboxError as e:
+        raise HTTPException(status_code=e.status, detail=e.payload()) from None
+    except ValueError as e:
+        if str(e) != _ERR_INVALID_STOP_REASON:
+            raise
+        raise HTTPException(status_code=400, detail={
+            "code": _ERR_INVALID_STOP_REASON, "detail": "not a stop reason"}) from None
+
+
+# Declared before GET /sandboxes/{user_id}, which would otherwise take "mode" as a
+# user id. Read from the environment: it needs neither the manager nor adoption.
+@app.get(sc.ROUTE_MODE)
+async def sandbox_mode():
+    return {"mode": sc.mode_from_env(os.environ.get(sc.MODE_ENV))}
+
+
+@app.get(sc.ROUTE_LIST)
+async def sandbox_list():
+    """Every running and draining instance WITH its host and token: the agent's
+    fan-out list, reached through the webapp only."""
+    mgr = _adopted_sandbox_manager()
+    return {"mode": mgr.mode(), "sandboxes": mgr.list_running()}
+
+
+@app.post(sc.ROUTE_ENSURE)
+async def sandbox_ensure(req: SandboxEnsureRequest):
+    if sandbox_manager is None:
+        raise _sandbox_unavailable()
+    # Shared mode starts nothing, so it answers without waiting for adoption.
+    mgr = sandbox_manager if sandbox_manager.mode() == sc.MODE_SHARED else _adopted_sandbox_manager()
+    answer = await _sandbox_call(mgr.ensure(req.user_id, req.projects, view=req.view,
+                                            need_project=req.need_project, wait=req.wait,
+                                            touch=req.touch))
+    running = answer.get("mode") == sc.MODE_SHARED or answer.get("state") == "running"
+    return JSONResponse(status_code=200 if running else 202, content=answer)
+
+
+@app.post(sc.ROUTE_STOP_PROJECT)
+async def sandbox_stop_project(req: SandboxStopProjectRequest):
+    mgr = _adopted_sandbox_manager()
+    return {"stopped": await _sandbox_call(mgr.stop_project(req.project_id, req.reason))}
+
+
+@app.post(sc.ROUTE_STOP_ALL)
+async def sandbox_stop_all(req: SandboxStopRequest):
+    mgr = _adopted_sandbox_manager()
+    return {"stopped": await _sandbox_call(mgr.stop_all(req.reason))}
+
+
+@app.get(sc.ROUTE_STATUS)
+async def sandbox_status(user_id: str):
+    """Both views of a person, never a token."""
+    mgr = _adopted_sandbox_manager()
+    if not sc.valid_user_id(user_id):
+        raise HTTPException(status_code=400, detail={
+            "code": sc.ERR_INVALID_USER_ID, "detail": "not a valid user id"})
+    return mgr.status(user_id)
+
+
+@app.post(sc.ROUTE_LEASES)
+async def sandbox_lease(user_id: str, req: SandboxLeaseRequest):
+    mgr = _adopted_sandbox_manager()
+    return await _sandbox_call(mgr.lease(user_id, req.instance, req.lease_id, req.kind))
+
+
+@app.delete(sc.ROUTE_LEASE, status_code=204)
+async def sandbox_release(user_id: str, lease_id: str):
+    mgr = _adopted_sandbox_manager()
+    await _sandbox_call(mgr.release_lease(user_id, lease_id))
+    return Response(status_code=204)
+
+
+@app.post(sc.ROUTE_RECONCILE)
+async def sandbox_reconcile(user_id: str, req: SandboxReconcileRequest):
+    mgr = _adopted_sandbox_manager()
+    return {"stopped": await _sandbox_call(mgr.reconcile(user_id, req.projects, req.act_as_projects))}
+
+
+@app.post(sc.ROUTE_STOP_USER)
+async def sandbox_stop_user(user_id: str, req: SandboxStopRequest):
+    mgr = _adopted_sandbox_manager()
+    return {"stopped": await _sandbox_call(mgr.stop_user(user_id, req.reason))}
+
+
+# Last of the /sandboxes routes. The webapp reads a 404 without a code as an
+# orchestrator that has no sandbox routes (and a stop then as "nothing to stop"),
+# so a path no route above matches (an id holding a slash, an unknown action)
+# answers the contract's 404 code instead of FastAPI's bare one.
+@app.api_route("/sandboxes/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+               include_in_schema=False)
+async def sandbox_no_route(rest: str):
+    raise HTTPException(status_code=404, detail={
+        "code": sc.ERR_UNKNOWN_INSTANCE, "detail": "no such sandbox route or instance"})
 
 
 @app.get("/local-llm/status")

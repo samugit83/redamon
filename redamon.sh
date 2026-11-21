@@ -69,6 +69,10 @@ UPDATE_PENDING_FILE="$SCRIPT_DIR/.update-pending"
 #   - AI Attack Surface scan containers:  redamon-ai-attack-<proj>-<run>
 #   - On-demand local LLM (Ollama) judge/attacker:  redamon-local-llm
 #   - CodeFix build sandboxes (T6/E10):  redamon-codefix-<job>
+#   - Per-user Kali sandboxes and their nuclei templates refresher: selected by
+#     the label redamon.sandbox=1 and this stack's owner label
+#     (remove_spawned_containers), never by name, so the shared redamon-kali,
+#     other plans' containers and another stack's sandboxes are never caught.
 # Orchestrator-spawned, NON-compose-managed containers (repeated name filters are
 # OR'd by docker ps). Includes the capture proxy + ingest pair: they are spawned by
 # the orchestrator with restart:unless-stopped and live in the "capture" profile, so
@@ -3055,13 +3059,45 @@ cmd_reset_password() {
 # none are present. Must run BEFORE `compose down --volumes` so the local-llm
 # container releases the models volume and it can actually be removed.
 remove_spawned_containers() {
-    local ids
+    local ids sandboxes
     ids=$(docker ps -aq "${SPAWNED_CONTAINER_NAME_FILTERS[@]}" 2>/dev/null || true)
+    # A separate call: docker ps ANDs a label filter with the name filters.
+    sandboxes=$(docker ps -aq "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null || true)
     if [[ -n "$ids" ]]; then
         info "Removing orchestrator-spawned AI containers (scan + local LLM)..."
         # shellcheck disable=SC2086
         docker rm -f $ids >/dev/null 2>&1 || true
     fi
+    if [[ -n "$sandboxes" ]]; then
+        info "Removing per-user Kali sandboxes..."
+        # shellcheck disable=SC2086
+        docker rm -f $sandboxes >/dev/null 2>&1 || true
+    fi
+}
+
+# Per-user Kali sandboxes and their networks carry the label redamon.sandbox=1
+# and the owner label redamon.sandbox.owner=<compose project> the orchestrator
+# writes (recon_orchestrator/sandbox_manager.py, LABEL_OWNER): another RedAmon
+# stack on the same daemon (a test stack) keeps its own.
+_SANDBOX_LABEL_FILTERS=(--filter label=redamon.sandbox=1)
+_sandbox_owner_filter() {
+    printf 'label=redamon.sandbox.owner=%s' "$(compose_project_name)"
+}
+
+# Per-user Kali sandbox networks (one per person and view) and the nuclei
+# templates volume they mount, all made at runtime by the orchestrator, so
+# `compose down` never removes them; the volume's name has no <project>_ prefix,
+# so purge's volume sweep misses it. Run after the sandboxes are gone; an
+# endpoint still attached (a lab an operator connected) is disconnected first.
+_purge_kali_sandbox_resources() {
+    local net ep
+    for net in $(docker network ls -q "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null || true); do
+        for ep in $(docker network inspect -f '{{range $id, $c := .Containers}}{{$id}} {{end}}' "$net" 2>/dev/null || true); do
+            docker network disconnect -f "$net" "$ep" >/dev/null 2>&1 || true
+        done
+        docker network rm "$net" >/dev/null 2>&1 || true
+    done
+    docker volume rm redamon-kali-nuclei-templates >/dev/null 2>&1 || true
 }
 
 # The third-party tool images recon/entrypoint.sh pre-pulls (its IMAGES array),
@@ -4972,6 +5008,7 @@ cmd_purge() {
     # attached to them), so `compose down` never removes them.
     docker network rm redamon-codefix-net >/dev/null 2>&1 || true
     docker network rm "${TRUFFLEHOG_NETWORK:-redamon-trufflehog-net}" >/dev/null 2>&1 || true
+    _purge_kali_sandbox_resources
     # Per-run TruffleHog scratch dirs (job file + findings before publication).
     # One per project+source, so bounded — but `purge` claims to leave nothing.
     rm -rf /tmp/redamon/trufflehog_* >/dev/null 2>&1 || true
@@ -5235,6 +5272,20 @@ cmd_status() {
         echo ""
         echo -e "  ${CYAN}AI Attack Surface (on-demand, orchestrator-spawned):${NC}"
         echo "$spawned"
+    fi
+
+    _status_kali_sandboxes
+}
+
+# Names and status only: a sandbox's environment holds its tokens.
+_status_kali_sandboxes() {
+    local sandboxes
+    sandboxes=$(docker ps -a "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" \
+                --format '    {{.Names}}  ({{.Status}})' 2>/dev/null || true)
+    if [[ -n "$sandboxes" ]]; then
+        echo ""
+        echo -e "  ${CYAN}Kali sandboxes (one per person, orchestrator-spawned):${NC}"
+        echo "$sandboxes"
     fi
 }
 
@@ -5701,6 +5752,24 @@ prune_removed_containers() {
     return 0
 }
 
+# The Kali image has a fixed tag, redamon-kali-sandbox:latest: the orchestrator
+# starts each person's sandbox from it (docker-compose.yml `image:`). A checkout
+# whose compose project is not `redamon` built it as <project>-kali-sandbox:latest;
+# without this tag `up` refuses a missing core image (ensure_core_images) and
+# `update` rebuilds the whole image. Touches no container, so --preview is safe.
+_kali_image_tag_once() {
+    command -v docker >/dev/null 2>&1 || return 0
+    local want="redamon-kali-sandbox:latest" old
+    docker image inspect "$want" >/dev/null 2>&1 && return 0
+    old="$(compose_project_name)-kali-sandbox:latest"
+    [[ "$old" == "$want" ]] && return 0
+    docker image inspect "$old" >/dev/null 2>&1 || return 0
+    if docker tag "$old" "$want" >/dev/null 2>&1; then
+        info "Tagged the Kali sandbox image $old as $want"
+    fi
+    return 0
+}
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -5737,7 +5806,7 @@ esac
 # Running it here also means the .env block is written BEFORE any `docker compose
 # up` in those commands reads it.
 case "${1:-help}" in
-    install|update|up) export_resource_caps; prune_removed_containers ;;
+    install|update|up) export_resource_caps; prune_removed_containers; _kali_image_tag_once ;;
 esac
 
 case "${1:-help}" in
