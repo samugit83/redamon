@@ -187,7 +187,7 @@ describe('the webapp entrypoint', () => {
   test('runs the backfill after db push and before the server, never fatally', () => {
     const push = entry.indexOf('db push')
     const backfill = entry.indexOf('backfill-jev-provider-selection.mjs')
-    const server = entry.indexOf('exec node server.js')
+    const server = entry.indexOf('exec node scripts/serve.cjs')
     expect(backfill).toBeGreaterThan(push)
     expect(server).toBeGreaterThan(backfill)
     // No `|| exit`: the script logs a failure and the next boot retries it.

@@ -451,13 +451,13 @@ describe('the startup lists', () => {
     const grants = entry.indexOf('backfill-rbac-legacy-grants.mjs')
     const root = entry.indexOf('backfill-rbac-root.mjs')
     const ours = entry.indexOf('backfill-rbac-legacy-overrides.mjs')
-    const server = entry.indexOf('exec node server.js')
+    const server = entry.indexOf('exec node scripts/serve.cjs')
     expect(push).toBeGreaterThan(0)
     expect(grants).toBeGreaterThan(push)
     expect(root).toBeGreaterThan(grants)
     expect(ours).toBeGreaterThan(root)
     expect(server).toBeGreaterThan(ours)
-    expect(entry).toMatch(/\\nnode scripts\/backfill-rbac-legacy-overrides\.mjs 2>&1\\nexec node server\.js/)
+    expect(entry).toMatch(/\\nnode scripts\/backfill-rbac-legacy-overrides\.mjs 2>&1\\nexec node scripts\/serve\.cjs/)
   })
 
   test('the dev command runs it in the same place', () => {

@@ -9,17 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [7.10.0] - 2026-11-21
 
-Security fixes for what an attacker with no account can do from the network: rewrite or fill the AI attack-surface judge, and lock any account out of signing in.
+Security fixes for what an attacker with no account can do from the network: rewrite or fill the AI attack-surface judge, lock any account out of signing in, and exhaust the webapp's memory with large request bodies.
 
 ### Security
 
 - **The AI attack-surface judge listened on every network interface, with no authentication.** While an AI attack-surface scan ran, the Ollama judge was published on `0.0.0.0:11434` and `[::]:11434`, past ufw (Docker's own iptables rules come first) and past the deploy's prod overlay (the orchestrator publishes it through the Docker SDK). Anyone on the LAN, on the internet where the cloud firewall left 11434 open, or in any container on a Docker bridge could rewrite the judge model, so every tenant's AI scans were graded wrong (`/api/create`, `/api/copy`), or pull models until the host disk holding the databases was full (`/api/pull`; the model volume outlives the scan). It is now published on `127.0.0.1` only: the scan's host-network containers still reach it at `localhost:11434`, nothing off the host does. `deploy.sh verify` now fails when 11434 listens off-loopback, and the deploy README lists it among the ports never to open.
 
 - **Anyone who could reach the sign-in page could keep any account out, Root included.** Five wrong passwords for an e-mail locked it for 15 minutes for every browser, the right password included, and a script could repeat that every quarter hour for as long as it liked; only a webapp restart cleared it. A browser that has signed in to an account before now keeps signing in to it through such a lockout. A successful sign-in leaves a signed *known device* entry in an httpOnly cookie (`redamon-login-device`, SameSite=Strict, sent only to `/api/auth/login`, kept 180 days, up to five accounts per browser), bound to the e-mail it signed in with and never holding it in clear, and a browser with such an entry is counted on a lockout of its own. A browser without one is still locked out, so password guessing stays capped as before. Audit rows of a sign-in, a failure or a lockout through a known device carry `knownDevice: true`.
+- **Anyone who reached the webapp could exhaust its memory without signing in.** For every request other than a GET, Next.js copies the body, up to 60 MB, before its middleware checks the login, and waits for the whole body before it answers, a 401 included: a few dozen such requests held the webapp's single process at its memory limit (a live run against the real server held 12 unauthenticated 60 MB requests at the 1 GiB cap, with no answer to any of them) until the kernel killed it, and every restart also wiped the sign-in lockouts. The server now starts through `scripts/serve.cjs`, which refuses a body over 1 MiB from a caller with no credential from its headers alone, before Next.js reads a byte of it (`413 body_too_large_unauthenticated`; a chunked body is cut off once it passes 1 MiB). The credentials that keep the 60 MB uploads working are checked the way the webapp checks them: a valid login cookie, the internal or scanner key of a RedAmon service, and a plugin call token. Smaller bodies, GET and HEAD pass untouched. In the same live run the webapp answered all 12 with 413 and stayed at 197 MiB.
 
 ### What changes for you
 
 - The known-device protection starts with each browser's first successful sign-in after the update.
+- The webapp image starts differently (`exec node scripts/serve.cjs` instead of `node server.js`), so `update` rebuilds it. A script or override of your own that starts `server.js` directly runs without the request-body guard. `./redamon.sh up dev` (`next dev`) does not use it either.
+- The recon orchestrator change is picked up by its restart during `update` (its source is mounted, no rebuild).
 
 ## [7.9.0] - 2026-11-19
 

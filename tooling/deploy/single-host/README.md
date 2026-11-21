@@ -163,7 +163,7 @@ flag it manages. Control KB with `ENABLE_KB` only.
 ### First admin (required for init)
 | Key | Purpose |
 |---|---|
-| `ADMIN_NAME` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | The first admin user, created automatically during `init`; it is the instance's Root. The password must be 12 characters to 72 bytes (bcrypt reads no further); `init` refuses anything else before it touches the server. Use a strong password: the app locks an email for 15 minutes after 5 failed sign-ins, and nginx `limit_req` brakes the login route. With `RBAC_IDENTITY_ENABLED=true` in the app `.env` on the server, every `update` confirms the admin `ADMIN_EMAIL` names as Root when there are several (see Update and rollback). |
+| `ADMIN_NAME` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | The first admin user, created automatically during `init`; it is the instance's Root. The password must be 12 characters to 72 bytes (bcrypt reads no further); `init` refuses anything else before it touches the server. Use a strong password: the app locks an email for 15 minutes after 5 failed sign-ins (a browser that signed in to it before keeps signing in), and nginx `limit_req` brakes the login route. With `RBAC_IDENTITY_ENABLED=true` in the app `.env` on the server, every `update` confirms the admin `ADMIN_EMAIL` names as Root when there are several (see Update and rollback). |
 
 ### Optional app config (appended to the server .env)
 | Key | Purpose |
@@ -378,9 +378,17 @@ Putting it on a public IP invalidates that, so the deploy closes the gap:
 - The webapp trusts `X-Internal-Key` as a service-to-service **auth bypass** and injects
   `X-User-Id` / `X-User-Role` downstream after auth. nginx **strips these inbound headers** on
   every request (plus `X-Powered-By`) so a client can never spoof identity or bypass auth.
-- There is **no login rate-limit or lockout** in the app. nginx supplies `limit_req` on
-  `/api/auth/login` (5r/m) and a general `/api/` limit (30r/s), a per-IP connection cap, and
-  slowloris timeouts.
+- **Sign-in throttling** is layered. nginx supplies `limit_req` on `/api/auth/login` (5r/m)
+  and a general `/api/` limit (30r/s), a per-IP connection cap, and slowloris timeouts. The app
+  locks an e-mail for 15 minutes after 5 failed sign-ins, and the client IP too (`TRUST_PROXY`
+  makes nginx's `X-Forwarded-For` trusted). A browser that has signed in to an account before
+  carries a signed *known device* cookie (`redamon-login-device`, sent only to
+  `/api/auth/login`) and is counted on a lockout of its own, so a stranger's failed sign-ins
+  cannot keep the account's own browsers out.
+- **Request bodies before authentication:** nginx accepts up to `client_max_body_size 60m`
+  (the largest upload), and the webapp refuses any body over 1 MiB from a caller with no valid
+  login cookie (`413 body_too_large_unauthenticated`) from its headers, before Next.js reads it,
+  so a stranger cannot fill the webapp's memory with large bodies.
 - **Headers:** the webapp sets none of its own, so nginx is authoritative - HSTS, a tightened
   CSP (no `unsafe-eval`; `object-src 'none'`; `base-uri`/`form-action 'self'`), `X-Frame-Options
   DENY`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, and COOP/CORP.
