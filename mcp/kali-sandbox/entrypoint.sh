@@ -60,7 +60,12 @@ deferred_init() {
     # The webapp takes the call only with the inbound tunnel token this sandbox already
     # holds (F-23). printf is a shell builtin and curl reads the header from stdin
     # (-H @-), so the token is on no command line another process here can read.
-    if [ -z "${TUNNEL_AUTH_TOKEN:-}" ]; then
+    if [ "${REDAMON_SANDBOX_MODE:-}" = "per_user" ]; then
+        # A per-user sandbox (started by the orchestrator, sandbox_contract.py) must
+        # never fetch the instance-wide tunnel config: the agent pushes this person's
+        # own config to 8015, so a start never brings back anybody's tunnel (I9).
+        echo "[*] [deferred] Per-user sandbox: tunnels are pushed by the agent, no sync from the webapp"
+    elif [ -z "${TUNNEL_AUTH_TOKEN:-}" ]; then
         echo "[*] [deferred] TUNNEL_AUTH_TOKEN not set: no tunnel sync (the tunnel manager refuses every push, so no tunnel can be up)"
     else
         echo "[*] [deferred] Requesting tunnel config sync from webapp..."
