@@ -36,6 +36,7 @@ import {
   writePresetsRefusal,
 } from './sharePresets'
 import type { MyAccess } from '@/lib/authz/projectAccess'
+import { SHARE_KEYS_LENT_TEXT } from '@/lib/sandbox/contract'
 
 const NONE = { runScans: false, useAgent: false, exploit: false, manage: false }
 
@@ -99,6 +100,20 @@ describe('toggles and their warnings (HD-22, SH-29)', () => {
     expect(notices.exploit).toContain(SANDBOX_NOTICE)
     expect(notices.rawData).toEqual([RAW_DATA_WARNING])
     expect(SANDBOX_NOTICE).toMatch(/sandbox shared by every project on this server/)
+  })
+
+  // Group 1, I11 (OD-G1-k): the owner's WPScan, URLScan and ProjectDiscovery keys reach the sandbox
+  // of a collaborator who runs the agent on the project, so both run toggles say so, right after the
+  // sandbox notice, whatever the sandbox mode (the text is true in both).
+  test('Use AI agent and Exploitation say the owner\'s third-party keys are lent (I11)', () => {
+    const notices = Object.fromEntries(SHARE_TOGGLES.map(t => [t.id, t.notices]))
+    for (const id of ['useAgent', 'exploit']) {
+      expect(notices[id]).toContain(SHARE_KEYS_LENT_TEXT)
+      expect(notices[id].indexOf(SHARE_KEYS_LENT_TEXT)).toBe(notices[id].indexOf(SANDBOX_NOTICE) + 1)
+    }
+    for (const id of ['rawData', 'runScans', 'manage']) expect(notices[id]).not.toContain(SHARE_KEYS_LENT_TEXT)
+    expect(SHARE_KEYS_LENT_TEXT).toMatch(/WPScan, URLScan and ProjectDiscovery keys inside a Kali sandbox/)
+    expect(SHARE_KEYS_LENT_TEXT).toMatch(/can read them while their runs use them/)
   })
 
   test('Run scans and Use AI agent carry the target credentials', () => {

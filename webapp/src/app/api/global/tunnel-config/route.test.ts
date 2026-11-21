@@ -61,41 +61,22 @@ const userFindUnique = vi.fn(async (args: { where: { id: string } }) => ({
 }))
 const auditFindFirst = vi.fn(async () => ({ createdAt: new Date('2030-01-01T00:00:00Z') }))
 
-/** findUnique by the account: here a row's id is its account's id. */
-const settingsFindUnique = vi.fn(async (args: { where: { userId: string }; select: Record<string, true> }) => {
-  const hit = rows.find(r => r.id === args.where.userId)
-  return hit ? Object.fromEntries(Object.keys(args.select).map(k => [k, hit[k as keyof Row]])) : null
-})
-
 vi.mock('@/lib/prisma', () => ({
   default: {
-    userSettings: {
-      findFirst: (a: Parameters<typeof settingsFindFirst>[0]) => settingsFindFirst(a),
-      findUnique: (a: Parameters<typeof settingsFindUnique>[0]) => settingsFindUnique(a),
-    },
+    userSettings: { findFirst: (a: Parameters<typeof settingsFindFirst>[0]) => settingsFindFirst(a) },
     user: { findUnique: (a: { where: { id: string } }) => userFindUnique(a) },
     auditLog: { findFirst: () => auditFindFirst(), create: vi.fn() },
   },
 }))
 
-// The sandbox mode the orchestrator names (group 1, D.2: every test sets it); null: no answer.
-const mode = vi.hoisted(() => ({ value: 'shared' as string | null }))
-vi.mock('@/lib/sandbox/gateway', () => ({
-  sandboxMode: async () => {
-    if (mode.value === null) throw new Error('orchestrator unreachable')
-    return mode.value
-  },
-}))
-
 import { GET } from './route'
 import { createToken } from '@/lib/auth'
-import { resetTunnelEffectsForTests } from '@/lib/sharedSettingsEffects'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { resetSharedToolsForTests } from '@/lib/authz/sharedTools'
 
 const KEY = 'internal-key-tunnel-config'
-const get = (headers: Record<string, string> = {}, query = '') =>
-  GET(new NextRequest(`http://localhost:3000/api/global/tunnel-config${query}`, { headers }))
+const get = (headers: Record<string, string> = {}) =>
+  GET(new NextRequest('http://localhost:3000/api/global/tunnel-config', { headers }))
 
 const row = (id: string, over: Partial<Row>): Row => ({
   id, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', tunnelsEnabled: false,
@@ -103,9 +84,6 @@ const row = (id: string, over: Partial<Row>): Row => ({
 })
 
 beforeEach(() => {
-  mode.value = 'shared'
-  resetTunnelEffectsForTests()
-  settingsFindUnique.mockClear()
   authCookie = undefined
   rows = [row('only', { ngrokAuthtoken: 'fake-ngrok-token', chiselServerUrl: 'http://vps.example:9090', chiselAuth: 'u:p' })]
   settingsFindFirst.mockClear()
@@ -203,62 +181,5 @@ describe('the row it answers with', () => {
     expect(settingsFindFirst.mock.calls[0][0].orderBy).toEqual([
       { tunnelsEnabled: 'desc' }, { updatedAt: 'desc' }, { id: 'asc' },
     ])
-  })
-})
-
-describe('per-user Kali sandboxes (group 1, OQ-G1-2 A): one person\'s own tunnel, never the instance\'s or another\'s', () => {
-  const EMPTY = { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
-  const internal = { 'x-internal-key': KEY }
-
-  beforeEach(() => {
-    mode.value = 'per_user'
-    // The flip push to the shared container on the first per_user answer.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 200 })))
-    vi.spyOn(console, 'info').mockImplementation(() => {})
-    rows = [
-      row('alice', { tunnelsEnabled: true, ngrokAuthtoken: 'alice-ngrok', chiselServerUrl: 'http://alice.example:9090', chiselAuth: 'a:p' }),
-      row('bob', { tunnelsEnabled: false, chiselServerUrl: 'http://bob.example:9090' }),
-    ]
-  })
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-
-  test('the person named answers their own row while their tunnel is on', async () => {
-    const res = await get(internal, '?userId=alice')
-    expect(await res.json()).toEqual({ ngrokAuthtoken: 'alice-ngrok', chiselServerUrl: 'http://alice.example:9090', chiselAuth: 'a:p' })
-    expect(settingsFindFirst).not.toHaveBeenCalled()
-  })
-
-  test('a person whose tunnel is off answers empty values, never another person\'s', async () => {
-    expect(await (await get(internal, '?userId=bob')).json()).toEqual(EMPTY)
-    expect(await (await get(internal, '?userId=nobody')).json()).toEqual(EMPTY)
-  })
-
-  test('no person, or one that is not an account id, answers empty values: no row is picked for everybody', async () => {
-    for (const query of ['', '?userId=', '?userId=..%2Falice', '?userId=a%20b']) {
-      expect(await (await get(internal, query)).json(), query).toEqual(EMPTY)
-    }
-    expect(settingsFindFirst).not.toHaveBeenCalled()
-  })
-
-  test('identity switch on: the unused instance row is never answered', async () => {
-    setFlagsForTests({ identity: true })
-    expect(await (await get(internal, '?userId=bob')).json()).toEqual(EMPTY)
-    expect(await (await get(internal)).json()).toEqual(EMPTY)
-  })
-
-  test('a mode nobody named answers empty values, with or without a person (review F1): never alice\'s tunnel for bob', async () => {
-    mode.value = null
-    expect(await (await get(internal, '?userId=bob')).json()).toEqual(EMPTY)
-    expect(await (await get(internal)).json()).toEqual(EMPTY)
-    expect(settingsFindFirst).not.toHaveBeenCalled()
-    expect(settingsFindUnique).not.toHaveBeenCalled()
-  })
-
-  test('still the internal key only', async () => {
-    expect((await get({}, '?userId=alice')).status).toBe(404)
-    expect(settingsFindUnique).not.toHaveBeenCalled()
   })
 })

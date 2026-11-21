@@ -20,17 +20,35 @@
  * The list leaves out what the caller may not see, with no count of it. Interact and
  * kill look their target up in the same list and refuse anything else, so an id that
  * is not in the caller's list does not exist for them (404).
+ *
+ * With per-user Kali sandboxes (group 1, TD-11) every sandbox runs its own console, which numbers
+ * its sessions from 1: the agent tags each session, job and listener with its `sandbox` instance (the
+ * shared container's as `shared`), and a target is the pair (instance, number). The pair is looked up
+ * whole and its own project authorized, so a number the caller may drive in one sandbox never
+ * reaches the same number in another. A row without a tag is the shared container of shared mode,
+ * reached only when no instance is named.
+ *
+ * A sandbox's root answers its session manager, chat ids included, so a per-user row counts for its
+ * chat's project only when the agent's own tags (`sandbox_user`, `sandbox_view`, which the agent adds
+ * from the sandbox handle after the sandbox's row) name the person who wrote that chat AND the project
+ * is one that person's sandbox mounts for that view (the gateway's mount list, read fresh). Otherwise
+ * the row is unattributed, as an untagged one: only holders of every session see and drive it. The
+ * tags never reach the browser (the instance stays opaque, TD-11). Rows whose id is not the session
+ * manager's shape are dropped: the id goes into a browser URL.
  */
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getEffectiveUser, requireSession } from '@/lib/session'
+import { SHARED_INSTANCE, VIEWS, type SandboxView } from '@/lib/sandbox/contract'
+import { sandboxProjectsFor } from '@/lib/sandbox/gateway'
+import { validInstance, validUserId } from '@/lib/sandbox/orchestratorClient'
 import { PERMISSIONS } from './permissions'
 import { loadPrincipal, type Principal } from './principal'
 import { meetsLevel, projectAccess } from './projectAccess'
 import { sharedToolAccess, type SharedToolAccess } from './sharedTools'
 import { visibleProjects } from './visibleProjects'
 
-type Row = Record<string, unknown> & { id?: unknown; chat_session_id?: unknown }
+type Row = Record<string, unknown> & { id?: unknown; chat_session_id?: unknown; sandbox?: unknown }
 type ProjectRow = Row & { project_id: string | null }
 
 export interface VisibleSessions {
@@ -39,6 +57,52 @@ export interface VisibleSessions {
   non_msf_sessions: ProjectRow[]
   cache_age_seconds?: unknown
   agent_busy?: unknown
+  /** How many sandboxes the agent could not ask (per-user mode): their sessions are missing. */
+  unavailable_count?: number
+  /** Their instance ids, only for holders of every session. */
+  unavailable?: string[]
+}
+
+/**
+ * The tags the agent adds to each per-user row from the sandbox handle, after the sandbox's own
+ * fields, so the sandbox cannot set them: whose sandbox the row comes from, and which view.
+ */
+export const SANDBOX_PERSON_FIELD = 'sandbox_user'
+export const SANDBOX_VIEW_FIELD = 'sandbox_view'
+
+// The session manager's ids (mcp/servers/metasploit_server.py): an integer for a Metasploit session
+// or job, `raw-<milliseconds>` for a listener.
+const NUMBER_ID = /^\d{1,10}$/
+const LISTENER_ID = /^raw-\d{1,20}$/
+
+function wellShaped(row: Row, kind: 'number' | 'listener'): boolean {
+  if (kind === 'listener') return typeof row.id === 'string' && LISTENER_ID.test(row.id)
+  if (typeof row.id === 'number') return Number.isSafeInteger(row.id) && row.id >= 0
+  return typeof row.id === 'string' && NUMBER_ID.test(row.id)
+}
+
+/** The person and view whose sandbox a row comes from, as the agent tagged it; null when absent or malformed. */
+export function sandboxPersonOf(row: Row): { userId: string; view: SandboxView } | null {
+  const userId = row[SANDBOX_PERSON_FIELD]
+  const view = row[SANDBOX_VIEW_FIELD]
+  if (!validUserId(userId) || !(VIEWS as readonly unknown[]).includes(view)) return null
+  return { userId, view: view as SandboxView }
+}
+
+/** The row as the browser gets it: without the agent's person and view tags. */
+function withoutPerson<T extends Row>(row: T): T {
+  const { [SANDBOX_PERSON_FIELD]: _person, [SANDBOX_VIEW_FIELD]: _view, ...rest } = row
+  return rest as T
+}
+
+/** A sandbox instance as the agent and the drive routes name it: six hex characters, or `shared`. */
+export function isSandboxInstance(value: unknown): value is string {
+  return value === SHARED_INSTANCE || validInstance(value)
+}
+
+/** The instance a row of the agent's list belongs to; null for the untagged rows of shared mode. */
+function rowSandbox(row: Row): string | null {
+  return typeof row.sandbox === 'string' && row.sandbox ? row.sandbox : null
 }
 
 export interface SessionsViewer {
@@ -56,11 +120,16 @@ export type SessionAccessVia = 'owner' | 'share' | NonNullable<SharedToolAccess[
 export interface SessionTarget {
   projectId: string | null
   via: SessionAccessVia
+  /** The person whose sandbox runs it, as the agent tagged the row (per-user rows only), for the audit. */
+  sandboxUser?: string
 }
 
-interface ChatProject {
+export interface ChatProject {
   projectId: string
+  /** The project's owner. */
   ownerId: string
+  /** Who wrote the conversation. */
+  authorId: string | null
 }
 
 /** The caller, or the 401 / coded 500 the route returns. A failed account read throws. */
@@ -76,7 +145,7 @@ export async function resolveSessionsViewer(): Promise<SessionsViewer | NextResp
 }
 
 function rows(value: unknown): Row[] {
-  return Array.isArray(value) ? value.filter((r): r is Row => !!r && typeof r === 'object') : []
+  return Array.isArray(value) ? value.filter((r): r is Row => !!r && typeof r === 'object' && !Array.isArray(r)) : []
 }
 
 function chatId(row: Row): string | null {
@@ -90,9 +159,50 @@ async function chatProjects(chatIds: (string | null)[]): Promise<Map<string, Cha
   if (wanted.length === 0) return out
   const found = await prisma.conversation.findMany({
     where: { sessionId: { in: wanted } },
-    select: { sessionId: true, projectId: true, project: { select: { userId: true } } },
+    select: { sessionId: true, projectId: true, userId: true, project: { select: { userId: true } } },
   })
-  for (const c of found) out.set(c.sessionId, { projectId: c.projectId, ownerId: c.project.userId })
+  for (const c of found) out.set(c.sessionId, { projectId: c.projectId, ownerId: c.project.userId, authorId: c.userId ?? null })
+  return out
+}
+
+/**
+ * Whether a row's chat may stand for its project. The shared container's rows (untagged or `shared`)
+ * keep the chat rule they always had. A per-user row counts only when the agent's person tag names
+ * the chat's author and the project is that person's own or in their sandbox's mount list for the
+ * tagged view (read once per person and view; a failed read attributes nothing). Each call makes one
+ * judge, so a list is judged against one read of the mount lists.
+ */
+export function chatAttribution(): (row: Row, chat: ChatProject | undefined) => Promise<ChatProject | undefined> {
+  const mounts = new Map<string, Promise<string[] | null>>()
+  const mountsOf = (userId: string, view: SandboxView): Promise<string[] | null> => {
+    const key = `${view}:${userId}`
+    let list = mounts.get(key)
+    if (!list) {
+      list = sandboxProjectsFor(userId, { actingAs: view === 'act_as' }).catch(() => null)
+      mounts.set(key, list)
+    }
+    return list
+  }
+  return async (row, chat) => {
+    if (!chat) return undefined
+    if (!validInstance(row.sandbox)) return chat
+    const person = sandboxPersonOf(row)
+    if (!person || chat.authorId !== person.userId) return undefined
+    if (chat.ownerId === person.userId) return chat
+    return (await mountsOf(person.userId, person.view))?.includes(chat.projectId) ? chat : undefined
+  }
+}
+
+/** The project each row's chat stands for, judged by `chatAttribution`. */
+async function attributedProjects(list: Row[]): Promise<Map<Row, ChatProject>> {
+  const chats = await chatProjects(list.map(chatId))
+  const judge = chatAttribution()
+  const out = new Map<Row, ChatProject>()
+  for (const row of list) {
+    const chat = chatId(row)
+    const project = await judge(row, chat ? chats.get(chat) : undefined)
+    if (project) out.set(row, project)
+  }
   return out
 }
 
@@ -120,59 +230,78 @@ async function sharedShellProjects(viewer: SessionsViewer, projects: Iterable<Ch
   return reached
 }
 
-function payloadParts(payload: unknown) {
+/** The agent's answer, each list keeping only rows whose id has the session manager's shape. */
+export function payloadParts(payload: unknown) {
   const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
-  return { p, sessions: rows(p.sessions), jobs: rows(p.jobs), listeners: rows(p.non_msf_sessions) }
+  return {
+    p,
+    sessions: rows(p.sessions).filter((r) => wellShaped(r, 'number')),
+    jobs: rows(p.jobs).filter((r) => wellShaped(r, 'number')),
+    listeners: rows(p.non_msf_sessions).filter((r) => wellShaped(r, 'listener')),
+  }
+}
+
+/** The sandbox instances the agent could not ask, once each; null when it named none. */
+export function unavailableInstances(payload: unknown): string[] | null {
+  const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+  return Array.isArray(p.unavailable) ? [...new Set(p.unavailable.filter(isSandboxInstance))] : null
 }
 
 /** The agent's session list as `viewer` may see it, each session and listener naming its project. */
 export async function visibleSessions(payload: unknown, viewer: SessionsViewer): Promise<VisibleSessions> {
   const { p, sessions, jobs, listeners } = payloadParts(payload)
-  const projects = await chatProjects([...sessions, ...listeners].map(chatId))
+  const projects = await attributedProjects([...sessions, ...listeners])
   const shared = viewer.all.allowed ? new Set<string>() : await sharedShellProjects(viewer, projects.values())
-  const tag = (row: Row): ProjectRow => {
-    const chat = chatId(row)
-    return { ...row, project_id: (chat && projects.get(chat)?.projectId) || null }
-  }
+  const tag = (row: Row): ProjectRow => ({ ...withoutPerson(row), project_id: projects.get(row)?.projectId ?? null })
   const seen = (row: Row): boolean => {
     if (viewer.all.allowed) return true
-    const chat = chatId(row)
-    const project = chat ? projects.get(chat) : undefined
+    const project = projects.get(row)
     return !!project && (project.ownerId === viewer.effectiveUserId || shared.has(project.projectId))
   }
   const out: VisibleSessions = {
     sessions: sessions.filter(seen).map(tag),
-    jobs: viewer.all.allowed ? jobs : [],
+    jobs: viewer.all.allowed ? jobs.map(withoutPerson) : [],
     non_msf_sessions: listeners.filter(seen).map(tag),
   }
   if ('cache_age_seconds' in p) out.cache_age_seconds = p.cache_age_seconds
   if ('agent_busy' in p) out.agent_busy = p.agent_busy
+  const unavailable = unavailableInstances(p)
+  if (unavailable) {
+    out.unavailable_count = unavailable.length
+    // Another person's instance id names a sandbox the viewer has no business with.
+    if (viewer.all.allowed) out.unavailable = unavailable
+  }
   return out
 }
 
 /**
- * Whether `viewer` may drive the session or job `id` of the agent's list, and through what.
- * Null when it is not in the caller's view (the route answers 404). Driving another
- * project's session under the escape hatch is a use, recorded as such.
+ * Whether `viewer` may drive the session or job `id` of sandbox `sandbox` in the agent's list, and
+ * through what. The pair is matched whole: `sandbox` null matches only an untagged row (shared mode).
+ * Null when it is not in the caller's view (the route answers 404). Driving another project's
+ * session under the escape hatch is a use, recorded as such.
  */
 export async function authorizeSessionTarget(
   payload: unknown,
   viewer: SessionsViewer,
   kind: 'session' | 'job',
   id: string,
+  sandbox: string | null = null,
 ): Promise<SessionTarget | null> {
   const { sessions, jobs } = payloadParts(payload)
-  const row = (kind === 'session' ? sessions : jobs).find(r => String(r.id) === id)
-  if (!row) return null
+  const matches = (kind === 'session' ? sessions : jobs).filter(r => String(r.id) === id && rowSandbox(r) === sandbox)
+  // One console never lists a number twice; two rows for one pair is an answer this cannot trust.
+  if (matches.length !== 1) return null
+  const row = matches[0]
+  const person = validInstance(row.sandbox) ? sandboxPersonOf(row) : null
+  const sandboxUser = person ? { sandboxUser: person.userId } : {}
   let projectId: string | null = null
   if (kind === 'session') {
-    const chat = chatId(row)
-    const project = chat ? (await chatProjects([chat])).get(chat) : undefined
+    const project = (await attributedProjects([row])).get(row)
     projectId = project?.projectId ?? null
-    if (project && project.ownerId === viewer.effectiveUserId) return { projectId, via: 'owner' }
-    if (project && (await sharedShellProjects(viewer, [project])).has(project.projectId)) return { projectId, via: 'share' }
+    if (project && project.ownerId === viewer.effectiveUserId) return { projectId, via: 'owner', ...sandboxUser }
+    if (project && (await sharedShellProjects(viewer, [project])).has(project.projectId)) return { projectId, via: 'share', ...sandboxUser }
   }
   if (!viewer.all.allowed || !viewer.all.via) return null
   if (viewer.all.via === 'compat') await sharedToolAccess(viewer.principal, 'shell_sessions_all')
-  return { projectId, via: viewer.all.via }
+  return { projectId, via: viewer.all.via, ...sandboxUser }
 }

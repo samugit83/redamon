@@ -3,7 +3,14 @@
 import { memo, useState, useCallback } from 'react'
 import { Monitor, Globe, MessageSquare, Skull, Square, Loader2 } from 'lucide-react'
 import type { MsfSession, MsfJob, NonMsfSession } from '@/lib/websocket-types'
+import { sessionRowKey } from '@/hooks/useActiveSessions'
 import styles from './SessionCard.module.css'
+
+/** The Kali sandbox instance a row runs in, when the agent named one (per-user sandboxes). */
+function SandboxTag({ sandbox }: { sandbox?: string }) {
+  if (!sandbox) return null
+  return <span className={styles.sandboxTag} title="Kali sandbox instance">{sandbox}</span>
+}
 
 // ── Session card ──
 
@@ -33,9 +40,11 @@ export const SessionCard = memo(function SessionCard({
     <div
       className={`${styles.card} ${isSelected ? styles.cardSelected : ''}`}
       onClick={onSelect}
+      data-session-key={sessionRowKey(session)}
     >
       <div className={styles.cardHeader}>
         <span className={styles.sessionId}>#{session.id}</span>
+        <SandboxTag sandbox={session.sandbox} />
         <span className={`${styles.typeBadge} ${isMeterpreter ? styles.meterpreter : styles.shell}`}>
           {isMeterpreter ? 'meterpreter' : 'shell'}
         </span>
@@ -99,6 +108,7 @@ export const NonMsfCard = memo(function NonMsfCard({
     >
       <div className={styles.cardHeader}>
         <span className={styles.sessionId}>{session.id}</span>
+        <SandboxTag sandbox={session.sandbox} />
         <span className={`${styles.typeBadge} ${styles.listener}`}>
           {session.tool || session.type}
         </span>
@@ -131,9 +141,10 @@ export const JobCard = memo(function JobCard({ job, onKill }: JobCardProps) {
   }, [onKill])
 
   return (
-    <div className={styles.jobCard}>
+    <div className={styles.jobCard} data-session-key={sessionRowKey(job)}>
       <div className={styles.jobInfo}>
         <span className={styles.jobName}>{job.name}</span>
+        <SandboxTag sandbox={job.sandbox} />
         {job.port > 0 && (
           <span className={styles.jobMeta}>:{job.port}</span>
         )}

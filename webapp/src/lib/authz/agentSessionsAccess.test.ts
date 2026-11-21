@@ -362,9 +362,11 @@ describe('a project shared with the viewer (step 5.10)', () => {
     const v = await viewerFor(principal('member-a'))
     const target = await authorizeSessionTarget(agentList(), v, 'session', '2')
     const { auditDrive } = await import('@/app/api/agent/sessions/sessionDrive')
-    await auditDrive('agent.session_kill', 'session', '2', v, target!)
+    // Group 1 (TD-11): an untagged row is the shared container's, named `shared:<number>`.
+    await auditDrive('agent.session_kill', 'session', '2', null, v, target!)
     expect(mockWriteAudit).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'agent.session_kill', actorId: 'member-a', after: { projectId: 'project-b', via: 'share' },
+      action: 'agent.session_kill', actorId: 'member-a', targetId: 'shared:2',
+      after: { projectId: 'project-b', via: 'share', sandbox: 'shared' },
     }))
   })
 })

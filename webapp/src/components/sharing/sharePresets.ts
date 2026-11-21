@@ -13,6 +13,7 @@
 import type { MyAccess } from '@/lib/authz/projectAccess'
 import type { ShareGrantable } from '@/lib/authz/projectShares'
 import { PERMISSIONS } from '@/lib/authz/permissions'
+import { SHARE_KEYS_LENT_TEXT } from '@/lib/sandbox/contract'
 
 export type ShareAccessLevel = 'read' | 'write'
 export type ShareToggleId = 'rawData' | 'runScans' | 'useAgent' | 'exploit' | 'manage'
@@ -95,12 +96,14 @@ export const SHARE_TOGGLES: readonly ShareToggleInfo[] = [
   {
     id: 'useAgent', label: 'Use AI agent', level: 'write',
     description: 'Chat, Fireteam, triage runs, CodeFix and assistants.',
-    notices: [...(sandboxShared ? [SANDBOX_NOTICE] : []), TARGET_CREDENTIALS_WARNING],
+    // Group 1, I11 (OD-G1-k): the owner's third-party keys reach the collaborator's own sandbox,
+    // in either sandbox mode.
+    notices: [...(sandboxShared ? [SANDBOX_NOTICE] : []), SHARE_KEYS_LENT_TEXT, TARGET_CREDENTIALS_WARNING],
   },
   {
     id: 'exploit', label: 'Exploitation & shells', level: 'write',
     description: 'Approve exploitation and dangerous tools, project shell sessions, Kali exec.',
-    notices: sandboxShared ? [SANDBOX_NOTICE] : [],
+    notices: [...(sandboxShared ? [SANDBOX_NOTICE] : []), SHARE_KEYS_LENT_TEXT],
   },
   {
     id: 'manage', label: 'Manage (co-owner)', level: 'write',

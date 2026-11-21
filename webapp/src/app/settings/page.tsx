@@ -192,7 +192,6 @@ function getProviderLabel(providerType: string): string {
 const PROVIDERS_LOAD_FAILED = "Couldn't load your providers"
 const SETTINGS_LOAD_FAILED = "Couldn't load your saved keys"
 const CHAT_SKILLS_LOAD_FAILED = "Couldn't load your chat skills"
-const TUNNEL_OFF_FAILED = 'Your tunnel was not turned off'
 
 // MAX_SKILLS_PER_USER in the chat-skills routes; agent skills have their own, larger cap.
 const CHAT_SKILLS_PER_USER = 50
@@ -252,14 +251,6 @@ export default function SettingsPage() {
   const [canManageTunnels, setCanManageTunnels] = useState(true)
   // With the identity switch on the tunnel is an instance setting, saved on its own (step 2.4).
   const [tunnelAtInstance, setTunnelAtInstance] = useState(false)
-  // Per-user Kali sandboxes: the tunnel is this person's own, in their own sandbox (group 1).
-  const [tunnelsPerPerson, setTunnelsPerPerson] = useState(false)
-  const [tunnelTurningOff, setTunnelTurningOff] = useState(false)
-  // Remounts the tunnel status after a turn-off, so it reads the state again.
-  const [tunnelStatusKey, setTunnelStatusKey] = useState(0)
-  // A person's sandbox restarts often and its start turns their tunnel off (I19), so a page left
-  // open must not send the toggle it loaded: only a toggle the person moved since the last load.
-  const [tunnelToggled, setTunnelToggled] = useState(false)
 
   // Key Rotation
   const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationInfo>>({})
@@ -564,9 +555,7 @@ export default function SettingsPage() {
           setRotationConfigs(data.rotationConfigs)
         }
         setCanManageTunnels(data.canManageTunnels !== false)
-        setTunnelsPerPerson(data.tunnelScope === 'own_sandbox')
-        setTunnelToggled(false)
-        setTunnelAtInstance(data.sharedSettingsAt === 'instance' && data.tunnelScope !== 'own_sandbox')
+        setTunnelAtInstance(data.sharedSettingsAt === 'instance')
         setSettingsLoaded(true)
         setSettingsLoadError(null)
       } else {
@@ -654,8 +643,7 @@ export default function SettingsPage() {
       const settingsPayload = Object.fromEntries(
         Object.entries(settings).filter(([k]) =>
           !k.startsWith('captureProxy') && !k.startsWith('captureEgress') && k !== 'featureModels'
-          && (canManageTunnels || !(TUNNEL_SETTING_KEYS as readonly string[]).includes(k))
-          && !(k === 'tunnelsEnabled' && tunnelsPerPerson && !tunnelToggled))
+          && (canManageTunnels || !(TUNNEL_SETTING_KEYS as readonly string[]).includes(k)))
       )
       const send = (stepUpPassword?: string) => fetch(`/api/users/${userId}/settings`, {
         method: 'PUT',
@@ -727,7 +715,6 @@ export default function SettingsPage() {
           setRotationConfigs(data.rotationConfigs)
         }
         setSettingsDirty(false)
-        setTunnelToggled(false)
         toast.success('Settings saved')
         const warnings = saveWarningLines(data)
         if (warnings.length) toast.warning(warnings.join('\n'), 'Saved, but not applied')
@@ -765,47 +752,7 @@ export default function SettingsPage() {
     } finally {
       setSettingsSaving(false)
     }
-  }, [userId, settings, rotationConfigs, settingsLoaded, settingsLoadError, canManageTunnels, tunnelsPerPerson, tunnelToggled])
-
-  // Turning one's own tunnel off needs no permission (per-user sandboxes): a person who lost the
-  // Tunnels permission still stops the tunnel their sandbox runs.
-  const turnOwnTunnelOff = useCallback(async () => {
-    if (!userId) return
-    setTunnelTurningOff(true)
-    try {
-      const resp = await fetch(`/api/users/${userId}/settings`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tunnelsEnabled: false }),
-      })
-      if (!resp.ok) {
-        toast.error((await readApiError(resp, TUNNEL_OFF_FAILED)).message)
-        return
-      }
-      const data = await resp.json()
-      setSettings(prev => ({ ...prev, tunnelsEnabled: data.tunnelsEnabled === true }))
-      setTunnelStatusKey(k => k + 1)
-      toast.success('Your tunnel is off')
-      const warnings = saveWarningLines(data)
-      if (warnings.length) toast.warning(warnings.join('\n'), 'Saved, but not applied')
-    } catch (err) {
-      toast.error(failureText(TUNNEL_OFF_FAILED, err))
-    } finally {
-      setTunnelTurningOff(false)
-    }
-  }, [userId, toast])
-
-  // Per-user Kali sandboxes: the person's own tunnel state, with its off control.
-  const ownTunnelStatus = (
-    <TunnelStatusReadOnly
-      key={tunnelStatusKey}
-      perPerson
-      canManage={canManageTunnels}
-      flagOn={settings.tunnelsEnabled}
-      onTurnOff={turnOwnTunnelOff}
-      turningOff={tunnelTurningOff}
-    />
-  )
+  }, [userId, settings, rotationConfigs, settingsLoaded, settingsLoadError, canManageTunnels])
 
   const updateSetting = useCallback(<K extends keyof UserSettings>(field: K, value: UserSettings[K]) => {
     setSettings(prev => ({ ...prev, [field]: value }))
@@ -1644,13 +1591,9 @@ export default function SettingsPage() {
           </h2>
         </div>
         <p className={styles.sectionHint}>
-          {tunnelsPerPerson
-            ? (canManageTunnels
-              ? 'Configure reverse shell tunneling with your own ngrok or chisel credentials. Your tunnel runs in your own Kali sandbox, and it is turned off whenever your sandbox restarts (a sandbox stops after a while unused) - turn it on again each time. It exposes an internet-reachable listener, breaking the LAN-only posture.'
-              : 'Reverse shell tunneling runs in each person\'s own Kali sandbox, with their own credentials.')
-            : canManageTunnels
-              ? 'Configure reverse shell tunneling. Choose ngrok (free, single port) or chisel (requires VPS). Tunnels must be explicitly enabled below and are turned OFF automatically on restart - re-enable them each session (they expose an internet-reachable listener, breaking the LAN-only posture).'
-              : 'Reverse shell tunneling (ngrok or chisel) is one listener shared by every user of this instance.'}
+          {canManageTunnels
+            ? 'Configure reverse shell tunneling. Choose ngrok (free, single port) or chisel (requires VPS). Tunnels must be explicitly enabled below and are turned OFF automatically on restart - re-enable them each session (they expose an internet-reachable listener, breaking the LAN-only posture).'
+            : 'Reverse shell tunneling (ngrok or chisel) is one listener shared by every user of this instance.'}
         </p>
         {settingsLoading ? (
           <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
@@ -1662,24 +1605,20 @@ export default function SettingsPage() {
         ) : tunnelAtInstance ? (
           <InstanceTunnelSection />
         ) : !canManageTunnels ? (
-          tunnelsPerPerson ? ownTunnelStatus : <TunnelStatusReadOnly />
+          <TunnelStatusReadOnly />
         ) : (
-          <>
-          {tunnelsPerPerson && ownTunnelStatus}
           <div className={styles.settingsGrid}>
             <div className="formGroup">
               <label className="formLabel" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                 <input
                   type="checkbox"
                   checked={settings.tunnelsEnabled}
-                  onChange={e => { setTunnelToggled(true); updateSetting('tunnelsEnabled', e.target.checked) }}
+                  onChange={e => updateSetting('tunnelsEnabled', e.target.checked)}
                 />
                 <span>Enable tunnels</span>
               </label>
               <span className="formHint">
-                {tunnelsPerPerson
-                  ? 'When off, saved credentials are stored but no tunnel is started. Enabling starts your Kali sandbox if needed and exposes its reverse-shell listener to the internet via ngrok/chisel.'
-                  : 'When off, saved credentials are stored but no tunnel is started. Enabling exposes port 4444 to the internet via ngrok/chisel.'}
+                When off, saved credentials are stored but no tunnel is started. Enabling exposes port 4444 to the internet via ngrok/chisel.
               </span>
             </div>
             <SecretField
@@ -1714,7 +1653,6 @@ export default function SettingsPage() {
               onChange={v => updateSetting('chiselAuth', v)}
             />
           </div>
-          </>
         )}
       </div></>}
 

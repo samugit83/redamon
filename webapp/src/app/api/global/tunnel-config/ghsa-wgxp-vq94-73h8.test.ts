@@ -21,8 +21,6 @@
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { NextRequest } from 'next/server'
-// The Kali sandbox mode the orchestrator names: shared (group 1, D.2: every test sets it).
-vi.mock('@/lib/sandbox/gateway', () => ({ sandboxMode: async () => 'shared' }))
 
 const INTERNAL_KEY = 'internal-key-ghsa-wgxp'
 const SCANNER_KEY = 'scanner-key-ghsa-wgxp'

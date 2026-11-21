@@ -47,6 +47,11 @@ vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agentFetch')>()),
   agentFetch: (...a: unknown[]) => mockAgentFetch(...a),
 }))
+const mockMode = vi.fn()
+vi.mock('@/lib/sandbox/gateway', () => ({
+  sandboxMode: (...a: unknown[]) => mockMode(...a),
+  sandboxProjectsFor: async (userId: string) => [`project-${userId}`],
+}))
 
 import { GET as listSessions } from './route'
 import { POST as interact } from './[id]/interact/route'
@@ -92,13 +97,14 @@ beforeEach(() => {
   mockEffectiveUser.mockReset()
   mockLoadPrincipal.mockReset()
   mockConversations.mockReset().mockImplementation(async () => [
-    { sessionId: 'chat-alice', projectId: 'project-alice', project: { userId: 'alice' } },
-    { sessionId: 'chat-bob', projectId: 'project-bob', project: { userId: 'bob' } },
+    { sessionId: 'chat-alice', projectId: 'project-alice', userId: 'alice', project: { userId: 'alice' } },
+    { sessionId: 'chat-bob', projectId: 'project-bob', userId: 'bob', project: { userId: 'bob' } },
   ])
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
   mockAgentFetch.mockReset().mockImplementation(async (path: string) => (
     path === '/sessions' ? json(AGENT_LIST) : json({ busy: false, output: 'uid=0(root) alice-target' })
   ))
+  mockMode.mockReset().mockResolvedValue('shared')
   resetSharedToolsForTests()
   setFlagsForTests({})
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -146,6 +152,7 @@ describe('GHSA-w454-6hwp-fm58: Bob against Alice by sequential id', () => {
     expect(drives()).toEqual(['/sessions/1/interact'])
     const row = mockWriteAudit.mock.calls[0][0]
     expect(row.action).toBe('agent.session_interact')
+    expect(row.targetId).toBe('shared:1')
     expect(JSON.stringify(row)).not.toContain('hostname')
   })
 
@@ -154,5 +161,66 @@ describe('GHSA-w454-6hwp-fm58: Bob against Alice by sequential id', () => {
     mockRequireSession.mockResolvedValue(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
     expect((await listSessions(new NextRequest('http://x/api/agent/sessions'))).status).toBe(401)
     expect(mockAgentFetch).not.toHaveBeenCalled()
+  })
+})
+
+// Group 1 (TD-11): with one sandbox per person every console numbers its sessions from 1, so
+// Alice's session 1 and Bob's session 1 coexist. Bob names Alice's instance with her number, his own
+// instance with hers, and leaves the instance out: each is refused before any console is reached.
+// The agent tags each row with its sandbox's person after the sandbox's own fields (review F1); and
+// Bob's sandbox, whose root answers its session manager, cannot pass his row off as Alice's.
+describe('GHSA-w454-6hwp-fm58 replayed across per-user sandboxes', () => {
+  const PER_USER = {
+    sessions: [
+      { ...AGENT_LIST.sessions[0], sandbox: 'a11ce0', sandbox_user: 'alice', sandbox_view: 'own' },
+      { ...AGENT_LIST.sessions[1], id: 1, sandbox: 'b0b000', sandbox_user: 'bob', sandbox_view: 'own' },
+      // Bob's sandbox claiming Alice's chat id for a session it holds.
+      { id: 2, type: 'meterpreter', chat_session_id: 'chat-alice', sandbox: 'b0b000', sandbox_user: 'bob', sandbox_view: 'own' },
+    ],
+    jobs: [{ ...AGENT_LIST.jobs[0], sandbox: 'a11ce0', sandbox_user: 'alice', sandbox_view: 'own' }],
+    non_msf_sessions: [],
+    unavailable: [],
+  }
+
+  beforeEach(() => {
+    mockMode.mockResolvedValue('per_user')
+    mockAgentFetch.mockImplementation(async (path: string) => (
+      path === '/sessions' ? json(PER_USER) : json({ busy: false, output: 'uid=0(root)' })
+    ))
+  })
+
+  test("Bob's list names his own instance only, and nothing of Alice's", async () => {
+    signedIn('bob')
+    const body = await (await listSessions(new NextRequest('http://x/api/agent/sessions'))).json()
+    expect(body.sessions.map((s: { id: number; sandbox: string }) => `${s.sandbox}:${s.id}`)).toEqual(['b0b000:1'])
+    expect(JSON.stringify(body)).not.toContain(ALICE_TARGET)
+  })
+
+  test("Bob against Alice's instance, or without an instance: refused, nothing typed or killed", async () => {
+    signedIn('bob')
+    expect((await interact(post({ command: 'id' }), params('1'))).status).toBe(400)
+    const aliceInstance = new NextRequest('http://x/api?sandbox=a11ce0', { method: 'POST', body: '{"command":"id"}', headers: { 'content-type': 'application/json' } })
+    expect((await interact(aliceInstance, params('1'))).status).toBe(404)
+    expect((await killSession(new NextRequest('http://x/api?sandbox=a11ce0', { method: 'POST' }), params('1'))).status).toBe(404)
+    expect((await killJob(new NextRequest('http://x/api?sandbox=a11ce0', { method: 'POST' }), params('7'))).status).toBe(404)
+    expect(drives()).toEqual([])
+    expect(mockWriteAudit).not.toHaveBeenCalled()
+  })
+
+  test("Bob's sandbox naming Alice's chat neither shows in Alice's list nor takes her commands", async () => {
+    signedIn('alice')
+    const body = await (await listSessions(new NextRequest('http://x/api/agent/sessions'))).json()
+    expect(body.sessions.map((s: { id: number; sandbox: string }) => `${s.sandbox}:${s.id}`)).toEqual(['a11ce0:1'])
+    const planted = new NextRequest('http://x/api?sandbox=b0b000', { method: 'POST', body: '{"command":"id"}', headers: { 'content-type': 'application/json' } })
+    expect((await interact(planted, params('2'))).status).toBe(404)
+    expect(drives()).toEqual([])
+  })
+
+  test('CONTROL: Bob drives his own session 1 in his own instance', async () => {
+    signedIn('bob')
+    const own = new NextRequest('http://x/api?sandbox=b0b000', { method: 'POST', body: '{"command":"id"}', headers: { 'content-type': 'application/json' } })
+    expect((await interact(own, params('1'))).status).toBe(200)
+    expect(drives()).toEqual(['/sessions/1/interact?sandbox=b0b000'])
+    expect(mockWriteAudit.mock.calls[0][0].targetId).toBe('b0b000:1')
   })
 })

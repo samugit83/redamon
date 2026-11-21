@@ -6,25 +6,8 @@ import styles from '@/components/settings/Settings.module.css'
 
 type TunnelView = { kind: 'loading' } | { kind: 'error' } | { kind: 'loaded'; providers: string[] }
 
-interface Props {
-  /** Per-user Kali sandboxes: the state is the person's own tunnel. */
-  perPerson?: boolean
-  /** The person may turn a tunnel on (per-person mode changes only the hint). */
-  canManage?: boolean
-  /** The stored setting reads on. */
-  flagOn?: boolean
-  /** Per-person mode: turn one's own tunnel off, offered while it runs or the setting reads on. */
-  onTurnOff?: () => void
-  turningOff?: boolean
-}
-
-/**
- * The Tunneling section's tunnel state and who manages it, for an account that may not change the
- * tunnel. Per-user Kali sandboxes: the person's own tunnel; turning one on is what the Tunnels
- * permission allows, and turning it off is offered whenever a tunnel runs or the setting reads on,
- * so a stop that never reached the sandbox can be sent again.
- */
-export function TunnelStatusReadOnly({ perPerson = false, canManage = false, flagOn = false, onTurnOff, turningOff = false }: Props = {}) {
+/** The Tunneling section for an account that may not change the tunnel: its state and who manages it. */
+export function TunnelStatusReadOnly() {
   const [view, setView] = useState<TunnelView>({ kind: 'loading' })
   useEffect(() => {
     let live = true
@@ -39,14 +22,6 @@ export function TunnelStatusReadOnly({ perPerson = false, canManage = false, fla
     return () => { live = false }
   }, [])
 
-  const running = view.kind === 'loaded' && view.providers.length > 0
-  const offerOff = perPerson && !!onTurnOff && (running || flagOn)
-  const hint = !perPerson
-    ? 'The tunnel is managed by an administrator.'
-    : canManage
-      ? 'Your own tunnel, in your own Kali sandbox.'
-      : 'Your own tunnel, in your own Kali sandbox. Turning one on needs the Tunnels permission; turning yours off does not.'
-
   return (
     <div className={styles.settingsGrid}>
       <div className="formGroup">
@@ -56,14 +31,7 @@ export function TunnelStatusReadOnly({ perPerson = false, canManage = false, fla
           {view.kind === 'error' && 'Status unavailable'}
           {view.kind === 'loaded' && (view.providers.length ? `On (${view.providers.join(' and ')})` : 'Off')}
         </span>
-        <span className="formHint">{hint}</span>
-        {offerOff && (
-          <div>
-            <button type="button" className="secondaryButton" onClick={onTurnOff} disabled={turningOff}>
-              {turningOff ? <><Loader2 size={14} className={styles.spin} /> Turning off...</> : 'Turn my tunnel off'}
-            </button>
-          </div>
-        )}
+        <span className="formHint">The tunnel is managed by an administrator.</span>
       </div>
     </div>
   )

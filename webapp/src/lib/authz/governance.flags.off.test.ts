@@ -203,6 +203,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/api/admin/instance-settings/route.ts',
       'src/app/api/admin/operations/agent-runs/stop/route.ts',
       'src/app/api/admin/operations/route.ts',
+      'src/app/api/admin/operations/sandboxes/stop/route.ts',
       'src/app/api/admin/projects/[id]/route.ts',
       'src/app/api/admin/projects/route.ts',
       'src/app/api/admin/shares/[projectId]/[userId]/route.ts',
@@ -611,5 +612,37 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.5): the operations view does not e
     expect(() => AdminLayout({ children: createElement(OperationsPage) })).toThrow('NEXT_NOT_FOUND')
     expect(nav.notFound).toHaveBeenCalledTimes(1)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  // Group 1 (WI-S16-6): the operator's stop of one person's Kali sandboxes belongs to the same view, so
+  // with the switch off it does not exist either: 404 before the session, the database, the agent or the
+  // orchestrator is read, and no sandbox stops.
+  test('POST /api/admin/operations/sandboxes/stop answers 404 and reads neither the session, the database, the agent nor the orchestrator', async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    vi.doMock('@/lib/session', () => ({
+      requireSession: vi.fn(async () => { touched('session'); return { userId: 'ops-1', role: 'admin' } }),
+      getSession: vi.fn(async () => { touched('session'); return { userId: 'ops-1', role: 'admin' } }),
+    }))
+    vi.doMock('@/lib/agentFetch', () => ({ agentFetch: vi.fn(async () => { touched('agent'); return new Response('{}') }), AgentUnreachableError: Error }))
+    vi.doMock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn(async () => { touched('orchestrator'); return new Response('{}') }) }))
+    const { POST: stopSandbox } = await import('@/app/api/admin/operations/sandboxes/stop/route')
+    for (const on of ['', 'true']) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', on)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', on)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect((await stopSandbox(new Request('http://redamon.test/api/admin/operations/sandboxes/stop', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: 'm-1' }),
+      }) as never)).status).toBe(404)
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/session')
+    vi.doUnmock('@/lib/agentFetch')
+    vi.doUnmock('@/lib/orchestrator')
   })
 })

@@ -11,7 +11,11 @@
  *     project and whether a run is active, and the admin behind an act-as run;
  *   - triage runs: `TriageRun` rows still running or publishing whose heartbeat is fresh;
  *   - shell sessions: the agent's session list, each tied to its project through the chat that
- *     opened it (`Conversation.sessionId`, the 1.13 mapping).
+ *     opened it (`Conversation.sessionId`, the 1.13 mapping), and to the Kali sandbox instance it runs
+ *     in (group 1, TD-11: every per-user sandbox numbers its sessions from 1, so a row is the pair);
+ *   - Kali sandboxes: the orchestrator's running per-user sandboxes through the gateway
+ *     (`listSandboxes`, group 1), with their person, view, state and times; never a token, a host or
+ *     a project list.
  * Each outside source is best effort: one that does not answer is reported by its code and the
  * rest still render. Names and ids only: no target, no address, no chat title, no project content,
  * and listing writes no audit row.
@@ -19,7 +23,8 @@
  * Stopping one agent run (`stopAgentRun`) is the per-run half of the emergency stop: it needs the
  * permission that already stops every user's runs (platform:emergency_stop through sharedTools.ts,
  * its escape hatch included), is audited `agent.run_stop` with the run's project, and is never
- * refused for anything the run is doing.
+ * refused for anything the run is doing. Stopping one person's Kali sandboxes (`stopPersonSandbox`)
+ * needs the same permission and is audited `sandbox.stopped` by the gateway.
  */
 import { NextResponse, type NextRequest } from 'next/server'
 import prisma from '@/lib/prisma'
@@ -29,6 +34,12 @@ import { orchestratorFetch } from '@/lib/orchestrator'
 import { upstreamErrorResponse, upstreamFailure } from '@/lib/routeErrors'
 import { LIVE_TRIAGE_STATUSES, heartbeatIsStale } from '@/lib/triageRun'
 import type { Session } from '@/lib/session'
+import { auditActorOf, sessionActor } from '@/lib/auditActor'
+import { actingAsUserId } from '@/lib/userAudit'
+import { listSandboxes, sandboxFailureResponse, stopSandbox, type OperationsSandbox } from '@/lib/sandbox/gateway'
+import { OrchestratorUnreachable, SandboxError, validInstance, validUserId } from '@/lib/sandbox/orchestratorClient'
+import type { SandboxMode, SandboxState, SandboxView } from '@/lib/sandbox/contract'
+import { chatAttribution, isSandboxInstance, payloadParts, sandboxPersonOf, unavailableInstances, type ChatProject } from './agentSessionsAccess'
 import { now } from './clock'
 import { forbiddenResponse } from './guards'
 import { personAuditEntry } from './permissionAdmin'
@@ -107,20 +118,38 @@ export interface OpsShell {
   id: string
   kind: 'session' | 'listener'
   type: string
+  /** The Kali sandbox instance it runs in; null for the shared container's untagged rows. */
+  sandbox: string | null
   /** Null when no chat is known to have opened it. */
   project: OpsProject | null
   /** The person whose chat opened it. */
   person: OpsPerson | null
 }
 
+/** A running per-user Kali sandbox: whose, which view, its state and times (ISO). No token, host or projects. */
+export interface OpsSandbox {
+  key: string
+  instance: string
+  person: OpsPerson
+  /** `own`: the person's own work; `act_as`: an admin acting as them (TD-26). */
+  view: SandboxView
+  state: SandboxState
+  createdAt: string | null
+  lastUsed: string | null
+  stopAt: string | null
+}
+
 export interface OperationsView {
   generatedAt: string
-  /** Decided by the server; the stop route decides again. */
+  /** Decided by the server; the stop routes decide again (runs and sandboxes alike: platform:emergency_stop). */
   actions: { stopRuns: boolean }
   agentRuns: { state: SourceState; runs: OpsAgentRun[] }
   scans: { orchestrator: SourceState; running: OpsScan[]; queued: OpsScan[]; queuedTotal: number }
   triageRuns: OpsTriageRun[]
-  shells: { state: SourceState; sessions: OpsShell[]; jobs: number }
+  /** `unavailable`: how many sandboxes the agent could not ask; their sessions are missing. */
+  shells: { state: SourceState; sessions: OpsShell[]; jobs: number; unavailable: number }
+  /** `mode` is null when the orchestrator did not answer. */
+  sandboxes: { state: SourceState; mode: SandboxMode | null; list: OpsSandbox[] }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -330,18 +359,59 @@ interface ShellRow {
   id: string
   kind: OpsShell['kind']
   type: string
+  sandbox: string | null
   chat: string | null
+  /** Whose sandbox it runs in, as the agent tagged a per-user row; null otherwise. */
+  sandboxPerson: string | null
+  /** The agent's row, which the attribution judge reads (agentSessionsAccess.ts chatAttribution). */
+  raw: Record<string, unknown>
 }
 
-/** The agent's `GET /sessions`: only the id, the kind and the chat of each; never its target or connection. */
-function shellsOf(body: unknown): { rows: ShellRow[]; jobs: number } {
-  const p = isRecord(body) ? body : {}
-  const list = (value: unknown, kind: OpsShell['kind']): ShellRow[] => (Array.isArray(value) ? value : [])
-    .filter(isRecord)
-    .filter((r) => r.id !== undefined && r.id !== null && String(r.id) !== '')
-    .map((r) => ({ id: String(r.id), kind, type: str(r.type) || 'unknown', chat: str(r.chat_session_id) || null }))
-  return { rows: [...list(p.sessions, 'session'), ...list(p.non_msf_sessions, 'listener')], jobs: Array.isArray(p.jobs) ? p.jobs.length : 0 }
+/**
+ * The agent's `GET /sessions`: only the id, the kind, the sandbox instance, the chat and the sandbox's
+ * person of each; never its target or connection. Rows are keyed by (instance, id): two sandboxes both
+ * number from 1. Rows whose id is not the session manager's shape are dropped (payloadParts).
+ */
+function shellsOf(body: unknown): { rows: ShellRow[]; jobs: number; unavailable: number } {
+  const { sessions, jobs, listeners } = payloadParts(body)
+  const shell = (kind: OpsShell['kind']) => (r: Record<string, unknown>): ShellRow => ({
+    id: String(r.id), kind, type: str(r.type) || 'unknown',
+    sandbox: isSandboxInstance(r.sandbox) ? r.sandbox : null, chat: str(r.chat_session_id) || null,
+    sandboxPerson: sandboxPersonOf(r)?.userId ?? null, raw: r,
+  })
+  return {
+    rows: [...sessions.map(shell('session')), ...listeners.map(shell('listener'))],
+    jobs: jobs.length,
+    unavailable: unavailableInstances(body)?.length ?? 0,
+  }
 }
+
+/** A code for a failed sandbox read or stop: the transport's, the contract's, or a generic one. */
+function sandboxFailureCode(err: unknown): string {
+  if (err instanceof OrchestratorUnreachable) return upstreamFailure('orchestrator', err.cause_, '').body.code
+  if (err instanceof SandboxError) return err.code
+  return 'orchestrator_error'
+}
+
+/** The gateway's sandbox list (no host, no token), given up after SOURCE_TIMEOUT_MS like every other source. */
+async function sandboxSource(): Promise<Fetched<{ mode: SandboxMode; sandboxes: OperationsSandbox[] }>> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<Fetched<never>>((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false, code: 'orchestrator_timeout' }), SOURCE_TIMEOUT_MS)
+  })
+  const read = listSandboxes().then(
+    (value): Fetched<{ mode: SandboxMode; sandboxes: OperationsSandbox[] }> => ({ ok: true, value }),
+    (err: unknown): Fetched<never> => ({ ok: false, code: sandboxFailureCode(err) }),
+  )
+  try {
+    return await Promise.race([read, timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Epoch seconds as ISO, or null. */
+const epochIso = (s: number | null | undefined): string | null => (typeof s === 'number' && Number.isFinite(s) ? new Date(s * 1000).toISOString() : null)
 
 // ---------------------------------------------------------------------------------------------
 // The view.
@@ -353,7 +423,7 @@ const QUEUE_SELECT = {
 
 export async function readOperations(session: Session): Promise<OperationsView> {
   const principal = await loadPrincipal(session.userId)
-  const [stop, runningQueue, queued, queuedTotal, scanJobs, triage, live, agentAnswer, shellAnswer] = await Promise.all([
+  const [stop, runningQueue, queued, queuedTotal, scanJobs, triage, live, agentAnswer, shellAnswer, sandboxAnswer] = await Promise.all([
     principal ? sharedToolAccess(principal, 'emergency_stop_all', { record: false }) : null,
     prisma.jobQueue.findMany({
       where: { status: { in: ['running', 'dispatching'] } }, orderBy: { startedAt: 'desc' }, take: RUNNING_LIMIT, select: QUEUE_SELECT,
@@ -377,6 +447,7 @@ export async function readOperations(session: Session): Promise<OperationsView> 
     liveScans(),
     agentRead('/agent-sessions/all'),
     agentRead('/sessions'),
+    sandboxSource(),
   ])
 
   const at = now()
@@ -385,7 +456,8 @@ export async function readOperations(session: Session): Promise<OperationsView> 
   // A stale heartbeat is a crashed run; findLiveTriageRun marks it failed, this read-only view only leaves it out.
   const triageRuns = triage.filter((r) => !heartbeatIsStale(r.heartbeatAt, at.getTime()))
   const sessions = agentAnswer.ok ? agentSessionsOf(agentAnswer.value) : []
-  const shells = shellAnswer.ok ? shellsOf(shellAnswer.value) : { rows: [], jobs: 0 }
+  const shells = shellAnswer.ok ? shellsOf(shellAnswer.value) : { rows: [], jobs: 0, unavailable: 0 }
+  const sandboxes = sandboxAnswer.ok ? sandboxAnswer.value.sandboxes : []
 
   const chats = [...new Set(shells.rows.map((s) => s.chat).filter((c): c is string => !!c))]
   const conversations = chats.length === 0 ? [] : await prisma.conversation.findMany({
@@ -400,12 +472,27 @@ export async function readOperations(session: Session): Promise<OperationsView> 
   const projectRows = projectIds.size === 0 ? [] : await prisma.project.findMany({
     where: { id: { in: [...projectIds] } }, select: { id: true, name: true, userId: true },
   })
+  const ownerOf = new Map(projectRows.map((p) => [p.id, p.userId]))
+
+  // A per-user shell stands for its chat's project only when its sandbox's person wrote the chat and
+  // mounts the project (agentSessionsAccess.ts): a sandbox's root answers its own session manager.
+  const judge = chatAttribution()
+  const shellProject = new Map<ShellRow, ChatProject>()
+  for (const s of shells.rows) {
+    const c = s.chat ? chatOf.get(s.chat) : undefined
+    const chat = c ? { projectId: c.projectId, ownerId: ownerOf.get(c.projectId) ?? '', authorId: c.userId } : undefined
+    const attributed = await judge(s.raw, chat)
+    if (attributed) shellProject.set(s, attributed)
+  }
+
   const personIds = new Set<string>([
     ...projectRows.map((p) => p.userId),
     ...[...scans, ...waiting].map((s) => s.actorId),
     ...triageRuns.flatMap((r) => [r.actorUserId, r.realActorUserId]),
     ...sessions.flatMap((s) => [s.userId, s.actorId]),
     ...conversations.map((c) => c.userId),
+    ...shells.rows.map((s) => s.sandboxPerson),
+    ...sandboxes.map((s) => s.user_id),
   ].filter((id): id is string => !!id))
   const userRows = personIds.size === 0 ? [] : await prisma.user.findMany({
     where: { id: { in: [...personIds] } }, select: { id: true, name: true },
@@ -452,13 +539,25 @@ export async function readOperations(session: Session): Promise<OperationsView> 
     shells: {
       state: shellAnswer.ok ? { ok: true } : { ok: false, code: shellAnswer.code },
       sessions: shells.rows.map((s): OpsShell => {
-        const chat = s.chat ? chatOf.get(s.chat) : undefined
+        const attributed = shellProject.get(s)
+        const author = s.chat ? chatOf.get(s.chat)?.userId : undefined
         return {
-          key: `${s.kind}:${s.id}`, id: s.id, kind: s.kind, type: s.type,
-          project: chat ? project(chat.projectId) : null, person: chat ? person(chat.userId) : null,
+          key: s.sandbox ? `${s.kind}:${s.sandbox}:${s.id}` : `${s.kind}:${s.id}`, id: s.id, kind: s.kind, type: s.type,
+          sandbox: s.sandbox, project: attributed ? project(attributed.projectId) : null,
+          // A per-user shell is its sandbox's person's; the shared container's, its chat's author's.
+          person: validInstance(s.sandbox) ? maybePerson(s.sandboxPerson) : maybePerson(author),
         }
       }),
       jobs: shells.jobs,
+      unavailable: shells.unavailable,
+    },
+    sandboxes: {
+      state: sandboxAnswer.ok ? { ok: true } : { ok: false, code: sandboxAnswer.code },
+      mode: sandboxAnswer.ok ? sandboxAnswer.value.mode : null,
+      list: sandboxes.map((s): OpsSandbox => ({
+        key: `${s.user_id}:${s.instance}`, instance: s.instance, person: person(s.user_id), view: s.view, state: s.state,
+        createdAt: epochIso(s.created_at), lastUsed: epochIso(s.last_used), stopAt: epochIso(s.stop_at),
+      })),
     },
   }
 }
@@ -538,4 +637,36 @@ export async function stopAgentRun(request: NextRequest, session: Session, targe
     }))
   }
   return NextResponse.json({ stopped })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stopping one person's Kali sandboxes (group 1, WI-S16-6).
+
+/** The person whose sandboxes a stop names, from the request body; a bad one answers 400 naming it. */
+export function parseSandboxTarget(body: Record<string, unknown>): { userId: string } | TargetProblem {
+  const userId = body.userId
+  if (!validUserId(userId)) return { error: 'The sandbox to stop needs a valid userId.', code: 'invalid_target', field: 'userId' }
+  return { userId }
+}
+
+const SANDBOX_STOP_FAILED = 'Could not stop the sandbox'
+
+/**
+ * Stops both views of one person's Kali sandboxes as an operator stop: the signed-in person must hold
+ * platform:emergency_stop (read fresh, a use of the escape hatch when held that way), as for one agent
+ * run. The gateway writes the `sandbox.stopped` row naming the admin (and the account acted as) only
+ * when something stopped, and forgets the person's clients at the agent; `{stopped: 0}` otherwise. A
+ * stop that fails is the orchestrator's code, never its text.
+ */
+export async function stopPersonSandbox(request: NextRequest, session: Session, userId: string): Promise<NextResponse> {
+  const principal = await loadPrincipal(session.userId, { fresh: true })
+  const access = principal ? await sharedToolAccess(principal, 'emergency_stop_all') : null
+  if (!access?.allowed) return forbiddenResponse('platform:emergency_stop')
+  const actor = auditActorOf(sessionActor(session), await actingAsUserId(request, session))
+  try {
+    return NextResponse.json({ stopped: await stopSandbox(userId, 'operator', actor) })
+  } catch (err) {
+    console.error(`[rbac] operations sandbox stop failed actor=${session.userId} code=${sandboxFailureCode(err)}`)
+    return sandboxFailureResponse(err, SANDBOX_STOP_FAILED)
+  }
 }

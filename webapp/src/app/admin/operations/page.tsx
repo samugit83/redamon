@@ -7,8 +7,9 @@ import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/Forbidde
 import { fetchJson, toApiError } from '@/lib/apiError'
 import { scanKindText } from '@/components/settings/api-usage/format'
 import type {
-  OperationsView, OpsAgentRun, OpsPerson, OpsProject, OpsScan, OpsShell, OpsTriageRun, SourceState,
+  OperationsView, OpsAgentRun, OpsPerson, OpsProject, OpsSandbox, OpsScan, OpsShell, OpsTriageRun, SourceState,
 } from '@/lib/authz/adminOperations'
+import { partialAnswerLine } from '@/lib/sandbox/contract'
 import { useConsoleSections } from '../AdminConsole'
 import { whenLabel } from '../shares/shareWords'
 import { ConsoleHeader } from '../ConsoleHeader'
@@ -116,6 +117,15 @@ function scanKind(s: OpsScan): string {
   return s.detail ? `${scanKindText(s.kind)} · ${s.detail}` : scanKindText(s.kind)
 }
 
+const SANDBOX_STATES: Record<OpsSandbox['state'], string> = {
+  starting: 'Starting', running: 'Running', draining: 'Draining', stopping: 'Stopping',
+}
+const SANDBOX_VIEWS: Record<OpsSandbox['view'], string> = { own: 'Own work', act_as: 'An admin acting as them' }
+
+function personLabel(person: OpsPerson): string {
+  return person.name || `Account ${person.id}`
+}
+
 /**
  * The admin console's Operations section (step 6.5; GV-06, GV-18): the agent runs, scans, queued scans,
  * triage runs and shell sessions of every user, each with its project's owner and its actor, read again
@@ -123,7 +133,8 @@ function scanKind(s: OpsScan): string {
  * gets the global emergency stop and a stop per running agent run, each behind the app's danger
  * confirmation; their routes decide again. A source that does not answer is named and the rest still
  * show; a failed refresh keeps the last data with a notice. The console shows the denied state to
- * anyone without platform:operations before this page renders.
+ * anyone without platform:operations before this page renders. The running Kali sandboxes (group 1)
+ * are listed with a Stop per person for the same holders; shells name the sandbox they run in.
  */
 export default function AdminOperationsPage() {
   const alerts = useAlertModal()
@@ -186,6 +197,30 @@ export default function AdminOperationsPage() {
         : `You may no longer stop other people's runs: stopped ${runs} of your own.`)
     } catch (err) {
       await alerts.alertError(toApiError(err, 'The emergency stop failed').message, 'Emergency stop failed')
+    } finally {
+      setStopping(null)
+      void load()
+    }
+  }
+
+  async function stopSandbox(box: OpsSandbox) {
+    const who = personLabel(box.person)
+    const confirmed = await alerts.dangerConfirm(
+      `${who}'s Kali sandbox stops now, both its own and any acting-as one: its shells, sessions and tunnels end, and files outside its project folders are lost.`,
+      'Stop this Kali sandbox',
+      { confirmLabel: 'Stop the sandbox' },
+    )
+    if (!confirmed) return
+    setStopping(`sandbox:${box.key}`)
+    try {
+      const { stopped } = await fetchJson<{ stopped: number }>('/api/admin/operations/sandboxes/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: box.person.id }),
+      }, 'Could not stop the sandbox')
+      setNotice(stopped > 0 ? `Stopped ${who}'s Kali sandbox.` : `${who}'s Kali sandbox had already stopped.`)
+    } catch (err) {
+      await alerts.alertError(toApiError(err, 'Could not stop the sandbox').message, 'Could not stop the sandbox')
     } finally {
       setStopping(null)
       void load()
@@ -364,13 +399,16 @@ export default function AdminOperationsPage() {
 
           <Section id="ops-shells" title="Shell sessions" count={data.shells.sessions.length}>
             <SourceDown state={data.shells.state} what="Shell sessions cannot be listed now" />
+            {data.shells.state.ok && data.shells.unavailable > 0 && (
+              <p className={styles.sourceDown} role="status">{partialAnswerLine(data.shells.unavailable)}</p>
+            )}
             {data.shells.state.ok && (data.shells.sessions.length === 0 ? (
               <p className={consoleStyles.state}>No shell session or listener is open.</p>
             ) : (
-              <Table label="Shell sessions" head={['Session', 'Project', 'Owner', 'Opened from the chat of']}>
+              <Table label="Shell sessions" head={['Session', 'Project', 'Owner', 'Person']}>
                 {data.shells.sessions.map((s: OpsShell) => (
                   <tr key={s.key} className={pageStyles.tr}>
-                    <td className={pageStyles.td}>{s.kind === 'listener' ? 'Listener' : 'Session'} {s.id} · {s.type}</td>
+                    <td className={pageStyles.td}>{s.kind === 'listener' ? 'Listener' : 'Session'} {s.id} · {s.type}{s.sandbox && ` · sandbox ${s.sandbox}`}</td>
                     <ProjectCells project={s.project} linkUsers={linkUsers} />
                     <td className={pageStyles.td}><Person person={s.person} linkUsers={linkUsers} /></td>
                   </tr>
@@ -380,6 +418,43 @@ export default function AdminOperationsPage() {
             {data.shells.state.ok && data.shells.jobs > 0 && (
               <p className={overviewStyles.count}>{data.shells.jobs} background job{data.shells.jobs === 1 ? '' : 's'} (handlers) running in the shared Metasploit console.</p>
             )}
+          </Section>
+
+          <Section id="ops-sandboxes" title="Kali sandboxes" count={data.sandboxes.list.length}>
+            <SourceDown state={data.sandboxes.state} what="Kali sandboxes cannot be listed now" />
+            {data.sandboxes.state.ok && (data.sandboxes.list.length === 0 ? (
+              <p className={consoleStyles.state}>
+                {data.sandboxes.mode === 'shared'
+                  ? 'No per-user sandbox: every Kali tool runs in the shared container.'
+                  : 'No Kali sandbox is running.'}
+              </p>
+            ) : (
+              <Table label="Kali sandboxes" head={['Person', 'Works as', 'State', 'Started', 'Last used', 'Stops', 'Actions']}>
+                {data.sandboxes.list.map((box) => (
+                  <tr key={box.key} className={pageStyles.tr}>
+                    <td className={pageStyles.td}><Person person={box.person} linkUsers={linkUsers} /></td>
+                    <td className={pageStyles.td}>{SANDBOX_VIEWS[box.view] ?? box.view}</td>
+                    <td className={pageStyles.td}>{SANDBOX_STATES[box.state] ?? box.state}</td>
+                    <td className={pageStyles.td}><When iso={box.createdAt} /></td>
+                    <td className={pageStyles.td}><When iso={box.lastUsed} /></td>
+                    <td className={pageStyles.td}><When iso={box.stopAt} /></td>
+                    <td className={pageStyles.td}>
+                      {data.actions.stopRuns && (
+                        <button
+                          type="button"
+                          className={`${pageStyles.actionButton} ${pageStyles.deleteButton}`}
+                          aria-label={`Stop ${personLabel(box.person)}'s Kali sandbox`}
+                          onClick={() => void stopSandbox(box)}
+                          disabled={stopping !== null}
+                        >
+                          {stopping === `sandbox:${box.key}` ? 'Stopping…' : 'Stop'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </Table>
+            ))}
           </Section>
         </>
       )}

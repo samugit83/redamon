@@ -4,9 +4,12 @@
  * list is fetched and the id looked up) and answer 404 for anything else, before the
  * command reaches the session. Each drive writes `agent.session_interact` /
  * `agent.session_kill` / `agent.job_kill` (session id, project id; never the command).
+ * The agent's list here is the shared container's (untagged rows, shared mode): a drive is
+ * recorded as `shared:<number>` with the instance in `after` (group 1, WI-S16-2); the per-user
+ * lists and `?sandbox=` are agentSessionsAccess.sandbox.test.ts.
  *
- * The session, the account read, Prisma and agentFetch are mocked; the access rule and
- * sharedToolAccess are the real ones.
+ * The session, the account read, Prisma, agentFetch and the sandbox mode are mocked; the access
+ * rule and sharedToolAccess are the real ones.
  *
  * @vitest-environment node
  */
@@ -41,6 +44,7 @@ vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agentFetch')>()),
   agentFetch: (...a: unknown[]) => mockAgentFetch(...a),
 }))
+vi.mock('@/lib/sandbox/gateway', () => ({ sandboxMode: async () => 'shared', sandboxProjectsFor: async () => [] }))
 
 import { GET as listSessions } from './route'
 import { POST as interact } from './[id]/interact/route'
@@ -168,8 +172,8 @@ describe('POST /api/agent/sessions/[id]/interact', () => {
     const rows = auditRows()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
-      actorId: 'member-a', action: 'agent.session_interact', targetType: 'msf_session', targetId: '1',
-      after: { projectId: 'project-a', via: 'owner' }, source: 'ui',
+      actorId: 'member-a', action: 'agent.session_interact', targetType: 'msf_session', targetId: 'shared:1',
+      after: { projectId: 'project-a', via: 'owner', sandbox: 'shared' }, source: 'ui',
     })
     expect(JSON.stringify(rows)).not.toContain('shadow')
   })
@@ -236,7 +240,7 @@ describe('POST /api/agent/sessions/[id]/kill', () => {
     expect((await killSession(post(), params('1'))).status).toBe(200)
     expect(drives()).toEqual(['/sessions/1/kill'])
     expect(auditRows()[0]).toMatchObject({
-      action: 'agent.session_kill', targetType: 'msf_session', targetId: '1', after: { projectId: 'project-a', via: 'owner' },
+      action: 'agent.session_kill', targetType: 'msf_session', targetId: 'shared:1', after: { projectId: 'project-a', via: 'owner', sandbox: 'shared' },
     })
   })
 
@@ -263,6 +267,6 @@ describe('POST /api/agent/jobs/[id]/kill', () => {
     agent({ busy: false, output: 'Stopping job 0' })
     expect((await killJob(post(), params('0'))).status).toBe(200)
     expect(drives()).toEqual(['/jobs/0/kill'])
-    expect(auditRows()[0]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: '0', after: { via: 'admin' } })
+    expect(auditRows()[0]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'shared:0', after: { via: 'admin', sandbox: 'shared' } })
   })
 })

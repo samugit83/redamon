@@ -153,3 +153,22 @@
   color: var(--status-error, #ef4444);
   overflow-wrap: anywhere;
 }
+
+.stopWarning,
+.partialAnswer {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.stopWarning {
+  color: var(--status-warning, #f59e0b);
+}
+
+.partialAnswer {
+  color: var(--text-secondary);
+}

@@ -618,9 +618,12 @@ export interface WebSocketState {
 // =============================================================================
 // ACTIVE SESSIONS (REST polling, not WebSocket)
 // =============================================================================
+// With per-user Kali sandboxes every console numbers its sessions from 1: a row is the pair
+// (`sandbox` instance, `id`), and a row without `sandbox` is the shared container's (group 1, TD-11).
 
 export interface MsfSession {
   id: number
+  sandbox?: string
   type: 'meterpreter' | 'shell' | 'unknown'
   info: string
   connection: string
@@ -630,6 +633,7 @@ export interface MsfSession {
 
 export interface MsfJob {
   id: number
+  sandbox?: string
   name: string
   payload: string
   port: number
@@ -637,6 +641,7 @@ export interface MsfJob {
 
 export interface NonMsfSession {
   id: string
+  sandbox?: string
   type: string
   tool: string
   command: string
@@ -649,6 +654,10 @@ export interface SessionsData {
   non_msf_sessions: NonMsfSession[]
   cache_age_seconds: number
   agent_busy: boolean
+  /** How many sandboxes did not answer: their sessions are missing from the lists. */
+  unavailable_count?: number
+  /** Their instance ids, for holders of every session only. */
+  unavailable?: string[]
 }
 
 export interface SessionInteractResult {

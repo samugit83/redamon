@@ -37,6 +37,8 @@ interface TerminalLine {
 
 interface SessionTerminalProps {
   sessionId: number | null
+  /** Which row is open, (sandbox, number): two sandboxes' session 1 are two terminals. Defaults to the number. */
+  sessionKey?: string | null
   sessionType: 'meterpreter' | 'shell' | string
   agentBusy: boolean
   projectId: string
@@ -45,6 +47,7 @@ interface SessionTerminalProps {
 
 export const SessionTerminal = memo(function SessionTerminal({
   sessionId,
+  sessionKey,
   sessionType,
   agentBusy,
   projectId,
@@ -61,20 +64,21 @@ export const SessionTerminal = memo(function SessionTerminal({
   const outputRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const nlpInputRef = useRef<HTMLInputElement>(null)
-  const prevSessionRef = useRef<number | null>(null)
+  const prevSessionRef = useRef<string | number | null>(null)
   const { ensureFeatureModel, fetchWithFeatureModel } = useFeatureModelGate()
+  const openRow = sessionKey ?? sessionId
 
   // Clear terminal when session changes
   useEffect(() => {
-    if (sessionId !== prevSessionRef.current) {
+    if (openRow !== prevSessionRef.current) {
       setLines([])
       setInput('')
       setHistoryIndex(-1)
       setNlpInput('')
       setNlpError(null)
-      prevSessionRef.current = sessionId
+      prevSessionRef.current = openRow
     }
-  }, [sessionId])
+  }, [openRow])
 
   // Auto-scroll to bottom on new output
   useEffect(() => {
@@ -88,7 +92,7 @@ export const SessionTerminal = memo(function SessionTerminal({
     if (sessionId !== null) {
       inputRef.current?.focus()
     }
-  }, [sessionId])
+  }, [sessionId, openRow])
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || !sessionId || isSending) return

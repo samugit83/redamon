@@ -42,8 +42,6 @@ vi.mock('@/lib/prisma', () => ({
 
 const fetchSpy = vi.fn(async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }))
 vi.stubGlobal('fetch', fetchSpy)
-// The Kali sandbox mode the orchestrator names: shared (group 1, D.2: every test sets it).
-vi.mock('@/lib/sandbox/gateway', async (orig) => ({ ...(await orig() as object), sandboxMode: async () => 'shared' }))
 
 import { createToken } from '@/lib/auth'
 

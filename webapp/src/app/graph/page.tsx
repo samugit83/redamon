@@ -2055,6 +2055,7 @@ export default function GraphPage() {
               agentBusy={activeSessions.agentBusy}
               isLoading={activeSessions.isLoading}
               error={activeSessions.error}
+              unavailable={activeSessions.unavailableCount}
               projectId={projectId || ''}
               onInteract={activeSessions.interactWithSession}
               onKillSession={activeSessions.killSession}

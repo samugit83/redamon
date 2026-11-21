@@ -23,6 +23,30 @@ export function useSessionsAccess(): SessionsAccess {
   return flags?.permissions === true && !held ? 'refused' : 'allowed'
 }
 
+/**
+ * A session or job to drive: its number and, with per-user Kali sandboxes, the instance it runs in
+ * (every console numbers from 1; group 1, TD-11). No instance: the shared container's row.
+ */
+export interface SessionRef {
+  id: number
+  sandbox?: string | null
+}
+
+/** The key of a row: (sandbox, number), so two sandboxes' session 1 are two rows. */
+export function sessionRowKey(row: { id: number | string; sandbox?: string | null }): string {
+  return `${row.sandbox ?? ''}:${row.id}`
+}
+
+function refOf(target: number | SessionRef): SessionRef {
+  return typeof target === 'number' ? { id: target, sandbox: null } : target
+}
+
+/** The webapp route of a drive, naming the row's instance when it has one. The id is encoded: it comes from a sandbox. */
+function drivePath(kind: 'sessions' | 'jobs', ref: SessionRef, action: 'interact' | 'kill'): string {
+  const path = `/api/agent/${kind}/${encodeURIComponent(String(ref.id))}/${action}`
+  return ref.sandbox ? `${path}?sandbox=${encodeURIComponent(ref.sandbox)}` : path
+}
+
 interface UseActiveSessionsOptions {
   enabled?: boolean
   fastPoll?: boolean // 3s when true, 10s when false
@@ -32,17 +56,19 @@ interface UseActiveSessionsReturn {
   sessions: MsfSession[]
   jobs: MsfJob[]
   nonMsfSessions: NonMsfSession[]
+  /** How many sandboxes the agent could not ask: their sessions are missing from the lists. */
+  unavailableCount: number
   agentBusy: boolean
   isLoading: boolean
   error: string | null
   totalCount: number
   /** The person may not use shell sessions (useSessionsAccess): nothing is asked, the lists are empty. */
   refused: boolean
-  interactWithSession: (sessionId: number, command: string) => Promise<SessionInteractResult>
+  interactWithSession: (session: number | SessionRef, command: string) => Promise<SessionInteractResult>
   /** Rejects with an ApiError when the kill failed; the row is back in the list by then. */
-  killSession: (sessionId: number) => Promise<void>
+  killSession: (session: number | SessionRef) => Promise<void>
   /** Rejects with an ApiError when the kill failed; the row is back in the list by then. */
-  killJob: (jobId: number) => Promise<void>
+  killJob: (job: number | SessionRef) => Promise<void>
   refetch: () => Promise<void>
 }
 
@@ -56,13 +82,14 @@ export function useActiveSessions({
   const [sessions, setSessions] = useState<MsfSession[]>([])
   const [jobs, setJobs] = useState<MsfJob[]>([])
   const [nonMsfSessions, setNonMsfSessions] = useState<NonMsfSession[]>([])
+  const [unavailableCount, setUnavailableCount] = useState(0)
   const [agentBusy, setAgentBusy] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const pollingRef = useRef<NodeJS.Timeout | null>(null)
-  // Track killed sessions/jobs so polls don't re-add them
-  const killedSessionsRef = useRef<Set<number>>(new Set())
-  const killedJobsRef = useRef<Set<number>>(new Set())
+  // Track killed sessions/jobs (by sessionRowKey) so polls don't re-add them
+  const killedSessionsRef = useRef<Set<string>>(new Set())
+  const killedJobsRef = useRef<Set<string>>(new Set())
   const access = useSessionsAccess()
   const refused = access === 'refused'
   const active = enabled && access === 'allowed'
@@ -73,6 +100,7 @@ export function useActiveSessions({
     setSessions([])
     setJobs([])
     setNonMsfSessions([])
+    setUnavailableCount(0)
     setAgentBusy(false)
     setError(null)
   }, [refused])
@@ -86,17 +114,19 @@ export function useActiveSessions({
       const data = await resp.json()
       const liveSessions: MsfSession[] = data.sessions || []
       const liveJobs: MsfJob[] = data.jobs || []
-      // Clear killed IDs that are truly gone from the server
-      for (const sid of killedSessionsRef.current) {
-        if (!liveSessions.some(s => s.id === sid)) killedSessionsRef.current.delete(sid)
+      // Clear killed keys that are truly gone from the server
+      for (const key of killedSessionsRef.current) {
+        if (!liveSessions.some(s => sessionRowKey(s) === key)) killedSessionsRef.current.delete(key)
       }
-      for (const jid of killedJobsRef.current) {
-        if (!liveJobs.some(j => j.id === jid)) killedJobsRef.current.delete(jid)
+      for (const key of killedJobsRef.current) {
+        if (!liveJobs.some(j => sessionRowKey(j) === key)) killedJobsRef.current.delete(key)
       }
       // Filter out sessions/jobs that are pending kill
-      setSessions(liveSessions.filter(s => !killedSessionsRef.current.has(s.id)))
-      setJobs(liveJobs.filter(j => !killedJobsRef.current.has(j.id)))
+      setSessions(liveSessions.filter(s => !killedSessionsRef.current.has(sessionRowKey(s))))
+      setJobs(liveJobs.filter(j => !killedJobsRef.current.has(sessionRowKey(j))))
       setNonMsfSessions(data.non_msf_sessions || [])
+      const unavailable = data.unavailable_count
+      setUnavailableCount(Number.isSafeInteger(unavailable) && unavailable > 0 ? unavailable : 0)
       setAgentBusy(data.agent_busy || false)
       setError(null)
     } catch (err) {
@@ -105,9 +135,9 @@ export function useActiveSessions({
     }
   }, [])
 
-  const interactWithSession = useCallback(async (sessionId: number, command: string): Promise<SessionInteractResult> => {
+  const interactWithSession = useCallback(async (session: number | SessionRef, command: string): Promise<SessionInteractResult> => {
     try {
-      const resp = await fetch(`/api/agent/sessions/${sessionId}/interact`, {
+      const resp = await fetch(drivePath('sessions', refOf(session), 'interact'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command }),
@@ -123,31 +153,35 @@ export function useActiveSessions({
 
   // A failed kill puts the row back (the session is still alive) and rejects,
   // so the caller can say why; it used to stay hidden from every later poll.
-  const killSession = useCallback(async (sessionId: number) => {
+  const killSession = useCallback(async (session: number | SessionRef) => {
+    const ref = refOf(session)
+    const key = sessionRowKey(ref)
     // Mark as killed immediately so polls don't re-add it
-    killedSessionsRef.current.add(sessionId)
-    setSessions(prev => prev.filter(s => s.id !== sessionId))
+    killedSessionsRef.current.add(key)
+    setSessions(prev => prev.filter(s => sessionRowKey(s) !== key))
     try {
-      const resp = await fetch(`/api/agent/sessions/${sessionId}/kill`, { method: 'POST' })
-      if (!resp.ok) throw await readApiError(resp, `Failed to kill session ${sessionId}`)
+      const resp = await fetch(drivePath('sessions', ref, 'kill'), { method: 'POST' })
+      if (!resp.ok) throw await readApiError(resp, `Failed to kill session ${ref.id}`)
     } catch (err) {
-      killedSessionsRef.current.delete(sessionId)
+      killedSessionsRef.current.delete(key)
       await fetchSessions()
-      throw toApiError(err, `Failed to kill session ${sessionId}`)
+      throw toApiError(err, `Failed to kill session ${ref.id}`)
     }
   }, [fetchSessions])
 
-  const killJob = useCallback(async (jobId: number) => {
+  const killJob = useCallback(async (job: number | SessionRef) => {
+    const ref = refOf(job)
+    const key = sessionRowKey(ref)
     // Mark as killed immediately so polls don't re-add it
-    killedJobsRef.current.add(jobId)
-    setJobs(prev => prev.filter(j => j.id !== jobId))
+    killedJobsRef.current.add(key)
+    setJobs(prev => prev.filter(j => sessionRowKey(j) !== key))
     try {
-      const resp = await fetch(`/api/agent/jobs/${jobId}/kill`, { method: 'POST' })
-      if (!resp.ok) throw await readApiError(resp, `Failed to kill job ${jobId}`)
+      const resp = await fetch(drivePath('jobs', ref, 'kill'), { method: 'POST' })
+      if (!resp.ok) throw await readApiError(resp, `Failed to kill job ${ref.id}`)
     } catch (err) {
-      killedJobsRef.current.delete(jobId)
+      killedJobsRef.current.delete(key)
       await fetchSessions()
-      throw toApiError(err, `Failed to kill job ${jobId}`)
+      throw toApiError(err, `Failed to kill job ${ref.id}`)
     }
   }, [fetchSessions])
 
@@ -183,6 +217,7 @@ export function useActiveSessions({
     sessions,
     jobs,
     nonMsfSessions,
+    unavailableCount,
     agentBusy,
     isLoading: isLoading || (enabled && access === 'pending'),
     error,

@@ -237,6 +237,22 @@ describe('warnings and the Read + Write presets', () => {
     expect(within(write).getAllByText(/target credentials/).length).toBeGreaterThan(0)
   })
 
+  test('the lent-keys notice (I11, OD-G1-k) beside Use AI agent and Exploitation & shells, not beside the other toggles', async () => {
+    renderDialog()
+    await dialog().findByText('Not shared with anyone yet.')
+    const write = dialog().getByRole('group', { name: /Read \+ Write/ })
+    const lent = /use your WPScan, URLScan and ProjectDiscovery keys inside a Kali sandbox/
+    const describedBy = (name: RegExp) => {
+      const box = within(write).getByRole('checkbox', { name })
+      const id = box.getAttribute('aria-describedby')
+      return id ? document.getElementById(id)?.textContent ?? '' : ''
+    }
+    expect(describedBy(/^Use AI agent/)).toMatch(lent)
+    expect(describedBy(/^Exploitation & shells/)).toMatch(lent)
+    expect(describedBy(/^Run scans/)).not.toMatch(lent)
+    expect(describedBy(/^Manage \(co-owner\)/)).not.toMatch(lent)
+  })
+
   test('write switch off: the four write presets disabled, "Coming when write sharing is on"', async () => {
     renderDialog()
     await dialog().findByText('Not shared with anyone yet.')

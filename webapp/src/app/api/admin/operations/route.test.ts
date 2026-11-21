@@ -11,6 +11,15 @@
  * same-origin JSON, calls the agent's /agent-session/stop for exactly that run and is audited
  * `agent.run_stop` only when a run stopped.
  *
+ * Group 1 (WI-S16-6): the running Kali sandboxes come from the orchestrator through the gateway
+ * (`listSandboxes`), with their person, view, state and times and never a token, a host or a project
+ * list; shells keep their sandbox instance, so two sessions numbered alike in two sandboxes stay two
+ * rows, and the view says how many sandboxes did not answer. POST .../sandboxes/stop stops one
+ * person's sandboxes under platform:emergency_stop, audited `sandbox.stopped` by the gateway. A
+ * per-user shell counts for its chat's project only when the agent's tags name the person who wrote
+ * the chat and whose sandbox mounts the project (review F1); a row whose id is not the session
+ * manager's shape is dropped (review F2).
+ *
  * The routes and lib/authz/adminOperations.ts are real; the session, the permission answers, the
  * principal, the shared-tool decision, the act-as reader, the agent, the orchestrator, the clock and
  * Prisma are doubles (Prisma inline: the queries and the audit rows are asserted).
@@ -41,6 +50,7 @@ const h = vi.hoisted(() => ({
     auditCreate: vi.fn(),
   },
   shared: vi.fn(),
+  mounts: vi.fn(),
 }))
 
 vi.mock('@/lib/prisma', () => {
@@ -75,12 +85,18 @@ vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   agentFetch: h.agent,
 }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: h.orchestrator }))
+vi.mock('@/lib/sandbox/gateway', async (orig) => ({
+  ...(await orig<typeof import('@/lib/sandbox/gateway')>()),
+  sandboxProjectsFor: (...a: unknown[]) => h.mounts(...a),
+}))
 
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { setNowForTests } from '@/lib/authz/clock'
 import { AgentUnreachableError } from '@/lib/agentFetch'
 import { GET as readView } from './route'
 import { POST as stopRun } from './agent-runs/stop/route'
+import { POST as stopSandboxRoute } from './sandboxes/stop/route'
+import { resetSandboxGatewayForTests } from '@/lib/sandbox/gateway'
 
 const NOW = new Date('2026-11-13T12:00:00.000Z')
 const GOV = { identity: true, permissions: true, governance: true }
@@ -91,6 +107,9 @@ let agentSessions: () => Response | Promise<Response>
 let agentShells: () => Response | Promise<Response>
 let agentStop: (body: Record<string, unknown>) => Response | Promise<Response>
 let liveAnswer: () => Response | Promise<Response>
+let sandboxList: () => Response | Promise<Response>
+let sandboxStatus: (userId: string) => Response | Promise<Response>
+let sandboxStop: (userId: string, body: Record<string, unknown>) => Response | Promise<Response>
 
 function queueRow(id: string, over: Record<string, unknown> = {}) {
   return {
@@ -119,7 +138,15 @@ function stop(body: unknown = { userId: 'mem-a', projectId: 'p-1', sessionId: 's
     body: typeof body === 'string' ? body : JSON.stringify(body),
   }))
 }
+function stopSandbox(body: unknown = { userId: 'mem-a' }, headers: Record<string, string> = {}) {
+  return stopSandboxRoute(new NextRequest('http://redamon.test/api/admin/operations/sandboxes/stop', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', host: 'redamon.test', origin: 'http://redamon.test', ...headers },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  }))
+}
 const body = async (res: Response) => res.json() as Promise<Record<string, any>>
+const orchestratorCalls = () => h.orchestrator.mock.calls.map((c) => `${(c[1] as RequestInit | undefined)?.method ?? 'GET'} ${new URL(String(c[0])).pathname}`)
 const auditRows = () => h.db.auditCreate.mock.calls.map((c) => c[0].data)
 const agentPaths = () => h.agent.mock.calls.map((c) => c[0])
 
@@ -148,15 +175,30 @@ beforeEach(() => {
   agentShells = () => json({ sessions: [], jobs: [], non_msf_sessions: [] })
   agentStop = () => json({ stopped: true })
   liveAnswer = () => json({ scans: [] })
+  sandboxList = () => json({ mode: 'shared', sandboxes: [] })
+  sandboxStatus = () => json({ mode: 'per_user', instances: [] })
+  sandboxStop = () => json({ stopped: 1 })
+  resetSandboxGatewayForTests()
+  h.mounts.mockReset().mockImplementation(async (userId: string) => ({ 'mem-a': ['p-1'], 'mem-b': ['p-2'] } as Record<string, string[]>)[userId] ?? [])
   h.agent.mockReset()
   h.agent.mockImplementation(async (path: string, init?: RequestInit) => {
     if (path === '/agent-sessions/all') return agentSessions()
     if (path === '/sessions') return agentShells()
     if (path === '/agent-session/stop') return agentStop(JSON.parse(String(init?.body)))
+    if (/^\/sandboxes\/[^/]+\/drop$/.test(path)) return json({ dropped: true })
     return json({}, 404)
   })
   h.orchestrator.mockReset()
-  h.orchestrator.mockImplementation(async () => liveAnswer())
+  h.orchestrator.mockImplementation(async (url: string, init?: RequestInit) => {
+    const path = new URL(String(url)).pathname
+    if (path === '/system/active-scans') return liveAnswer()
+    if (path === '/sandboxes') return sandboxList()
+    const stop = path.match(/^\/sandboxes\/([^/]+)\/stop$/)
+    if (stop && init?.method === 'POST') return sandboxStop(decodeURIComponent(stop[1]), JSON.parse(String(init.body)))
+    const status = path.match(/^\/sandboxes\/([^/]+)$/)
+    if (status) return sandboxStatus(decodeURIComponent(status[1]))
+    return json({ detail: 'Not Found' }, 404)
+  })
   vi.spyOn(console, 'info').mockImplementation(() => {})
 })
 afterEach(() => {
@@ -320,7 +362,7 @@ describe('lists runs with owners and actors', () => {
         { id: 3, type: 'meterpreter', info: 'root @ host', connection: '198.51.100.1:4444 -> 203.0.113.9:5555', target_ip: '203.0.113.9', chat_session_id: 'chat-1' },
         { id: 4, type: 'shell', target_ip: '203.0.113.10', chat_session_id: null },
       ],
-      non_msf_sessions: [{ id: 'nc-1', type: 'netcat', chat_session_id: 'chat-2' }],
+      non_msf_sessions: [{ id: 'raw-1', type: 'netcat', chat_session_id: 'chat-2' }],
       jobs: [{ id: 0 }, { id: 1 }],
     })
     h.db.conversationFindMany.mockResolvedValue([
@@ -332,10 +374,11 @@ describe('lists runs with owners and actors', () => {
     const out = await body(res)
     expect(out.shells.state).toEqual({ ok: true })
     expect(out.shells.jobs).toBe(2)
+    expect(out.shells.unavailable).toBe(0)
     expect(out.shells.sessions).toEqual([
-      { key: 'session:3', id: '3', kind: 'session', type: 'meterpreter', project: { id: 'p-1', name: 'p-1 name', owner: { id: 'own-a', name: 'Name own-a' } }, person: { id: 'mem-a', name: 'Name mem-a' } },
-      { key: 'session:4', id: '4', kind: 'session', type: 'shell', project: null, person: null },
-      { key: 'listener:nc-1', id: 'nc-1', kind: 'listener', type: 'netcat', project: { id: 'p-2', name: 'p-2 name', owner: { id: 'own-b', name: 'Name own-b' } }, person: { id: 'mem-b', name: 'Name mem-b' } },
+      { key: 'session:3', id: '3', kind: 'session', type: 'meterpreter', sandbox: null, project: { id: 'p-1', name: 'p-1 name', owner: { id: 'own-a', name: 'Name own-a' } }, person: { id: 'mem-a', name: 'Name mem-a' } },
+      { key: 'session:4', id: '4', kind: 'session', type: 'shell', sandbox: null, project: null, person: null },
+      { key: 'listener:raw-1', id: 'raw-1', kind: 'listener', type: 'netcat', sandbox: null, project: { id: 'p-2', name: 'p-2 name', owner: { id: 'own-b', name: 'Name own-b' } }, person: { id: 'mem-b', name: 'Name mem-b' } },
     ])
     expect(raw).not.toContain('203.0.113')
     expect(raw).not.toContain('root @ host')
@@ -347,7 +390,8 @@ describe('lists runs with owners and actors', () => {
     expect(out.agentRuns.runs).toEqual([])
     expect(out.scans).toEqual({ orchestrator: { ok: true }, running: [], queued: [], queuedTotal: 0 })
     expect(out.triageRuns).toEqual([])
-    expect(out.shells).toEqual({ state: { ok: true }, sessions: [], jobs: 0 })
+    expect(out.shells).toEqual({ state: { ok: true }, sessions: [], jobs: 0, unavailable: 0 })
+    expect(out.sandboxes).toEqual({ state: { ok: true }, mode: 'shared', list: [] })
     expect(h.db.projectFindMany).not.toHaveBeenCalled()
     expect(h.db.userFindMany).not.toHaveBeenCalled()
     expect(h.db.conversationFindMany).not.toHaveBeenCalled()
@@ -362,7 +406,7 @@ describe('a source that does not answer', () => {
     expect(res.status).toBe(200)
     const out = await body(res)
     expect(out.agentRuns).toEqual({ state: { ok: false, code: 'agent_unreachable' }, runs: [] })
-    expect(out.shells).toEqual({ state: { ok: false, code: 'agent_unreachable' }, sessions: [], jobs: 0 })
+    expect(out.shells).toEqual({ state: { ok: false, code: 'agent_unreachable' }, sessions: [], jobs: 0, unavailable: 0 })
     expect(out.triageRuns).toHaveLength(1)
   })
 
@@ -385,6 +429,7 @@ describe('a source that does not answer', () => {
     const out = await body(await view())
     expect(out.scans.orchestrator).toEqual({ ok: false, code: 'orchestrator_unreachable' })
     expect(out.scans.running.map((s: any) => s.key)).toEqual(['scan:sj-1'])
+    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_unreachable' }, mode: null, list: [] })
   })
 
   test('a failed database read is a coded 500 without the error text', async () => {
@@ -497,5 +542,241 @@ describe('POST /api/admin/operations/agent-runs/stop', () => {
     h.session = null
     expect((await stop()).status).toBe(401)
     expect(h.agent).not.toHaveBeenCalled()
+  })
+})
+
+describe('Kali sandboxes and shells across sandboxes (group 1, WI-S16-6)', () => {
+  const T0 = Date.UTC(2026, 10, 13, 9, 0, 0) / 1000
+  const iso = (epoch: number) => new Date(epoch * 1000).toISOString()
+
+  beforeEach(() => {
+    sandboxList = () => json({
+      mode: 'per_user',
+      sandboxes: [
+        { user_id: 'mem-a', view: 'own', instance: 'aaaaa1', host: 'redamon-kali-0123456789abcdef-aaaaa1', token: 'tok-SECRET-a', state: 'running' },
+        { user_id: 'mem-b', view: 'act_as', instance: 'bbbbb1', host: 'redamon-kali-fedcba9876543210-bbbbb1', token: 'tok-SECRET-b', state: 'draining' },
+      ],
+    })
+    sandboxStatus = (userId) => json({
+      mode: 'per_user',
+      instances: userId === 'mem-a'
+        ? [{ instance: 'aaaaa1', view: 'own', state: 'running', projects_hash: 'feedfacecafebeef', created_at: T0, last_used: T0 + 600, lease_kinds: ['run'], stop_at: T0 + 1800, stop_reason: null, warn: false, reverse_port: 4444 }]
+        : [],
+    })
+  })
+
+  test('each running sandbox with its person, view, state and times; never a token, a host or a project list', async () => {
+    const res = await view()
+    const raw = await res.clone().text()
+    const out = await body(res)
+    expect(out.sandboxes.state).toEqual({ ok: true })
+    expect(out.sandboxes.mode).toBe('per_user')
+    expect(out.sandboxes.list).toEqual([
+      {
+        key: 'mem-a:aaaaa1', instance: 'aaaaa1', person: { id: 'mem-a', name: 'Name mem-a' }, view: 'own', state: 'running',
+        createdAt: iso(T0), lastUsed: iso(T0 + 600), stopAt: iso(T0 + 1800),
+      },
+      {
+        key: 'mem-b:bbbbb1', instance: 'bbbbb1', person: { id: 'mem-b', name: 'Name mem-b' }, view: 'act_as', state: 'draining',
+        createdAt: null, lastUsed: null, stopAt: null,
+      },
+    ])
+    for (const leak of ['tok-SECRET', 'redamon-kali-', 'feedfacecafebeef', 'projects', 'lease_kinds', 'reverse_port']) {
+      expect(raw).not.toContain(leak)
+    }
+    expect(h.db.auditCreate).not.toHaveBeenCalled()
+  })
+
+  test('two shells numbered alike in two sandboxes stay two rows, each naming its instance; the unavailable count is carried', async () => {
+    agentShells = () => json({
+      sessions: [
+        { id: 1, type: 'shell', chat_session_id: 'chat-1', sandbox: 'aaaaa1', sandbox_user: 'mem-a', sandbox_view: 'own' },
+        { id: 1, type: 'meterpreter', chat_session_id: 'chat-2', sandbox: 'bbbbb1', sandbox_user: 'mem-b', sandbox_view: 'own' },
+      ],
+      non_msf_sessions: [{ id: 'raw-1', type: 'netcat', chat_session_id: null, sandbox: 'bbbbb1', sandbox_user: 'mem-b', sandbox_view: 'own' }],
+      jobs: [{ id: 0, sandbox: 'aaaaa1' }, { id: 0, sandbox: 'bbbbb1' }],
+      unavailable: ['ccccc1', 'ddddd1'],
+    })
+    h.db.conversationFindMany.mockResolvedValue([
+      { sessionId: 'chat-1', projectId: 'p-1', userId: 'mem-a' },
+      { sessionId: 'chat-2', projectId: 'p-2', userId: 'mem-b' },
+    ])
+    const shells = (await body(await view())).shells
+    expect(shells.sessions.map((s: any) => [s.key, s.id, s.sandbox, s.project?.id])).toEqual([
+      ['session:aaaaa1:1', '1', 'aaaaa1', 'p-1'],
+      ['session:bbbbb1:1', '1', 'bbbbb1', 'p-2'],
+      ['listener:bbbbb1:raw-1', 'raw-1', 'bbbbb1', undefined],
+    ])
+    expect(new Set(shells.sessions.map((s: any) => s.key)).size).toBe(3)
+    expect(shells.jobs).toBe(2)
+    expect(shells.unavailable).toBe(2)
+  })
+
+  test('the sandbox source does not answer, or answers outside the contract: its code, the rest still render', async () => {
+    sandboxList = () => json({ detail: 'Internal Server Error' }, 500)
+    let out = await body(await view())
+    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_error' }, mode: null, list: [] })
+    expect(out.scans.orchestrator).toEqual({ ok: true })
+    sandboxList = () => new Promise<Response>(() => {})
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const pending = view()
+      await vi.advanceTimersByTimeAsync(8_500)
+      out = await body(await pending)
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_timeout' }, mode: null, list: [] })
+  })
+
+  test('an orchestrator without the sandbox routes: shared mode, no sandbox', async () => {
+    sandboxList = () => json({ detail: 'Not Found' }, 404)
+    expect((await body(await view())).sandboxes).toEqual({ state: { ok: true }, mode: 'shared', list: [] })
+  })
+})
+
+describe('POST /api/admin/operations/sandboxes/stop', () => {
+  beforeEach(() => { h.held = new Set(['platform:operations']) })
+  const stops = () => orchestratorCalls().filter((c) => c.startsWith('POST /sandboxes/'))
+
+  test("stops one person's sandboxes as an operator stop, audited sandbox.stopped with the admin as actor", async () => {
+    let sent: Record<string, unknown> | null = null
+    sandboxStop = (userId, b) => { sent = { userId, ...b }; return json({ stopped: 2 }) }
+    const res = await stopSandbox()
+    expect(res.status).toBe(200)
+    expect(await body(res)).toEqual({ stopped: 2 })
+    expect(sent).toEqual({ userId: 'mem-a', reason: 'operator' })
+    expect(h.touched).toContain('principal:ops-1:fresh')
+    expect(h.shared).toHaveBeenCalledWith(expect.objectContaining({ id: 'ops-1' }), 'emergency_stop_all')
+    expect(agentPaths()).toContain('/sandboxes/mem-a/drop')
+    expect(auditRows()).toEqual([expect.objectContaining({
+      action: 'sandbox.stopped', actorId: 'ops-1', targetType: 'user', targetId: 'mem-a',
+      after: { reason: 'operator', stopped: 2 },
+    })])
+    expect(auditRows()[0].onBehalfOfUserId ?? null).toBeNull()
+    expect(JSON.stringify(auditRows())).not.toMatch(/tok-|token/)
+  })
+
+  test('without platform:emergency_stop: 403 naming it, nothing stopped, no row', async () => {
+    h.stopVia = null
+    const res = await stopSandbox()
+    expect(res.status).toBe(403)
+    expect(await body(res)).toMatchObject({ code: 'forbidden', permission: 'platform:emergency_stop' })
+    expect(stops()).toEqual([])
+    expect(h.db.auditCreate).not.toHaveBeenCalled()
+  })
+
+  test('without platform:operations: 403 naming it before the stop permission or the orchestrator', async () => {
+    h.held = new Set()
+    const res = await stopSandbox()
+    expect(res.status).toBe(403)
+    expect((await body(res)).permission).toBe('platform:operations')
+    expect(h.shared).not.toHaveBeenCalled()
+    expect(h.orchestrator).not.toHaveBeenCalled()
+  })
+
+  test('held through the escape hatch: allowed, the decision counted as a use', async () => {
+    h.stopVia = 'compat'
+    expect((await stopSandbox()).status).toBe(200)
+    expect(h.shared).toHaveBeenCalledWith(expect.anything(), 'emergency_stop_all')
+    expect(h.shared.mock.calls.find((c) => c[1] === 'emergency_stop_all')?.[2]).toBeUndefined()
+  })
+
+  test('under act-as the row names the real person and the account acted as', async () => {
+    h.actingAs = 'mem-z'
+    await stopSandbox()
+    expect(auditRows()[0]).toMatchObject({ action: 'sandbox.stopped', actorId: 'ops-1', onBehalfOfUserId: 'mem-z' })
+  })
+
+  test('nothing running: stopped 0 and no row', async () => {
+    sandboxStop = () => json({ stopped: 0 })
+    expect(await body(await stopSandbox())).toEqual({ stopped: 0 })
+    expect(h.db.auditCreate).not.toHaveBeenCalled()
+    expect(agentPaths()).not.toContain('/sandboxes/mem-a/drop')
+  })
+
+  test('cross-origin 403 and a non-JSON body 415, nothing stopped', async () => {
+    expect((await stopSandbox(undefined, { origin: 'http://evil.test' })).status).toBe(403)
+    expect((await stopSandbox('userId=mem-a', { 'content-type': 'application/x-www-form-urlencoded' })).status).toBe(415)
+    expect(h.orchestrator).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    [{}],
+    [{ userId: '' }],
+    [{ userId: 'mem-a/../x' }],
+    [{ userId: 'ensure' }],
+    [{ userId: 'stop-all' }],
+    [{ userId: 'x'.repeat(65) }],
+    [{ userId: 7 }],
+  ])('a bad person answers 400 invalid_target naming userId: %j', async (target) => {
+    const res = await stopSandbox(target)
+    expect(res.status).toBe(400)
+    expect(await body(res)).toMatchObject({ code: 'invalid_target', field: 'userId' })
+    expect(stops()).toEqual([])
+  })
+
+  test('the orchestrator unreachable: 503 with its code and an [rbac] line, no row', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.orchestrator.mockImplementation(async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }) })
+    const res = await stopSandbox()
+    expect(res.status).toBe(503)
+    expect((await body(res)).code).toBe('orchestrator_unreachable')
+    expect(errors.mock.calls.some((c) => String(c[0]).startsWith('[rbac] operations sandbox stop failed'))).toBe(true)
+    expect(h.db.auditCreate).not.toHaveBeenCalled()
+  })
+
+  test('with RBAC_GOVERNANCE_ENABLED off: 404, nothing read', async () => {
+    setFlagsForTests({ identity: true, permissions: true })
+    expect((await stopSandbox()).status).toBe(404)
+    expect(h.touched).toEqual([])
+    expect(h.orchestrator).not.toHaveBeenCalled()
+  })
+
+  test('signed out: 401', async () => {
+    h.session = null
+    expect((await stopSandbox()).status).toBe(401)
+    expect(h.orchestrator).not.toHaveBeenCalled()
+  })
+})
+
+describe('shells of per-user sandboxes: attribution and id shape (review F1, F2)', () => {
+  beforeEach(() => {
+    h.db.conversationFindMany.mockResolvedValue([
+      { sessionId: 'chat-1', projectId: 'p-1', userId: 'mem-a' },
+      { sessionId: 'chat-2', projectId: 'p-2', userId: 'mem-b' },
+    ])
+  })
+
+  test("a sandbox naming another person's chat, or a project its person's sandbox does not mount, is shown unattributed, under its own person", async () => {
+    agentShells = () => json({
+      sessions: [
+        { id: 7, type: 'meterpreter', chat_session_id: 'chat-2', sandbox: 'aaaaa1', sandbox_user: 'mem-a', sandbox_view: 'own' },
+        { id: 8, type: 'shell', chat_session_id: 'chat-1', sandbox: 'aaaaa1', sandbox_user: 'mem-a', sandbox_view: 'act_as' },
+        { id: 9, type: 'shell', chat_session_id: 'chat-1', sandbox: 'aaaaa1' },
+        { id: 10, type: 'shell', chat_session_id: 'chat-1', sandbox: 'aaaaa1', sandbox_user: 'mem-a', sandbox_view: 'own' },
+      ],
+      non_msf_sessions: [], jobs: [],
+    })
+    h.mounts.mockImplementation(async (userId: string, opts: { actingAs?: boolean } = {}) => (userId === 'mem-a' && !opts.actingAs ? ['p-1'] : []))
+    const rows = (await body(await view())).shells.sessions
+    expect(rows.map((s: any) => [s.id, s.project?.id ?? null, s.person?.id ?? null])).toEqual([
+      ['7', null, 'mem-a'],
+      ['8', null, 'mem-a'],
+      ['9', null, null],
+      ['10', 'p-1', 'mem-a'],
+    ])
+    expect(h.mounts).toHaveBeenCalledWith('mem-a', { actingAs: true })
+  })
+
+  test('rows whose id is not the session manager\'s shape are dropped, and not counted as jobs', async () => {
+    agentShells = () => json({
+      sessions: [{ id: '../emergency-stop-all?', type: 'shell', chat_session_id: 'chat-1' }, { id: 3, type: 'shell', chat_session_id: 'chat-1' }],
+      non_msf_sessions: [{ id: 'nc-1', type: 'netcat' }, { id: 'raw-12', type: 'netcat' }],
+      jobs: [{ id: '../x' }, { id: 0 }],
+    })
+    const shells = (await body(await view())).shells
+    expect(shells.sessions.map((s: any) => s.key)).toEqual(['session:3', 'listener:raw-12'])
+    expect(shells.jobs).toBe(1)
   })
 })
