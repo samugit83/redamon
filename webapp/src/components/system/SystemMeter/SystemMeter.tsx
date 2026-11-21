@@ -23,7 +23,8 @@ function Meter({ label, pct, value, detail, tone }: { label: string; pct: number
  * htop-style RAM + CPU meters for the bottom-right of the footer (Part 5).
  * The RAM number shown is FREE ram (available), consistent with the bar % so the
  * two agree. The governor's separate "room for a new scan" (remaining_for_new,
- * which subtracts memory reserved by running scans) is in the tooltip.
+ * which subtracts memory reserved by running scans and Kali sandboxes) is in the
+ * tooltip, with what each of the two reserves.
  */
 export function SystemMeter() {
   const { data, error } = useSystemStats()
@@ -47,10 +48,18 @@ export function SystemMeter() {
   const diskFree = disk?.free ?? 0
   const diskPct = diskTotal > 0 ? (100 * (diskTotal - diskFree)) / diskTotal : 0
 
+  // `committed` holds the sandboxes' bytes too: each count gets its own share.
+  const sandboxes = m.active_sandboxes ?? 0
+  const sandboxBytes = m.sandbox_committed ?? 0
+  const reserving = [
+    m.active_scans
+      ? `${m.active_scans} scan${m.active_scans === 1 ? '' : 's'} reserving ${toGB(Math.max(0, m.committed - sandboxBytes))} GB`
+      : null,
+    sandboxes ? `${sandboxes} sandbox${sandboxes === 1 ? '' : 'es'} reserving ${toGB(sandboxBytes)} GB` : null,
+  ].filter(Boolean).join(', ')
   const ramTooltip = [
     `${toGB(m.available)} GB free of ${toGB(total)} GB (${Math.round(ramPct)}% used)`,
-    `${toGB(m.remaining_for_new)} GB available for a new scan` +
-      (m.active_scans ? ` (${m.active_scans} scan${m.active_scans === 1 ? '' : 's'} reserving ${toGB(m.committed)} GB)` : ''),
+    `${toGB(m.remaining_for_new)} GB available for a new scan` + (reserving ? ` (${reserving})` : ''),
   ].join('\n')
 
   // Meters only. Queue/scan state lives in the Scans tab on /graph, not

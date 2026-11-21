@@ -33,6 +33,9 @@ vi.mock('@/hooks/agentWsUrl', () => ({
   buildAgentWsUrl: (path: string, ticket?: string) => `ws://agent.test${path}${ticket ? `?ticket=${ticket}` : ''}`,
 }))
 
+// The terminal shows the sandbox modal through useAlertModal, so it renders under
+// the provider the app shell gives it.
+import { AlertProvider } from '@/components/ui'
 import { KaliTerminal, disconnectLine, ticketFailureLine } from './KaliTerminal'
 import { ApiError } from '@/lib/apiError'
 
@@ -74,21 +77,21 @@ afterEach(() => {
 describe('KaliTerminal connection failures', () => {
   test("a refused mint prints the route's reason and status, and dials nothing", async () => {
     mint(404, { error: 'Not found' })
-    render(<KaliTerminal userId="u1" projectId="p1" />)
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     await waitFor(() => expect(lines()).toContain('✗ Terminal authentication failed: Not found (HTTP 404)'))
     expect(FakeSocket.instances).toHaveLength(0)
   })
 
   test('no ticket secret on the webapp prints the update hint', async () => {
     mint(200, { ticket: null })
-    render(<KaliTerminal userId="u1" projectId="p1" />)
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     await waitFor(() => expect(lines().some(l => l.includes('the webapp issued no ticket (AGENT_WS_TICKET_SECRET is not set)'))).toBe(true))
     expect(FakeSocket.instances).toHaveLength(0)
   })
 
   test('a close prints the code and the reason the agent wrote', async () => {
     mint(200, { ticket: 'tkt' })
-    render(<KaliTerminal userId="u1" projectId="p1" />)
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
     act(() => {
       FakeSocket.instances[0].onclose?.({ code: 1011, reason: 'Kali sandbox terminal unavailable (ConnectionRefusedError)' } as CloseEvent)
@@ -98,7 +101,7 @@ describe('KaliTerminal connection failures', () => {
 
   test('a socket error names the URL without the ticket', async () => {
     mint(200, { ticket: 'secret-ticket' })
-    render(<KaliTerminal userId="u1" projectId="p1" />)
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
     act(() => { FakeSocket.instances[0].onerror?.() })
     const line = lines().find(l => l.includes('WebSocket connection to'))

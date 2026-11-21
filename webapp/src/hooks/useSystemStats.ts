@@ -11,8 +11,14 @@ export interface SystemStats {
     os_headroom: number
     service_baseline: number
     scan_pool: number
+    /** Every reservation: scans' and Kali sandboxes' bytes together. */
     committed: number
+    /** Scans only. */
     active_scans: number
+    // Kali sandboxes (group 1); absent from an orchestrator older than the sandbox class.
+    active_sandboxes?: number
+    sandbox_committed?: number
+    sandbox_envelope?: number
     remaining_for_new: number
     pressure: 'ok' | 'warn' | 'critical'
   }

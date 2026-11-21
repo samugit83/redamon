@@ -7,6 +7,8 @@ import type { FitAddon } from '@xterm/addon-fit'
 import { buildAgentWsUrl } from '@/hooks/agentWsUrl'
 import { describeWsClose, wsUrlForDisplay } from '@/hooks/agentWsClose'
 import { mintWsTicket, type WsTicketResult } from '@/lib/wsTicket'
+import { useSandboxUnavailable } from '@/hooks/useSandboxUnavailable'
+import { TERMINAL_STARTING_BANNER, parseSandboxFrame, sandboxCloseLine } from './sandboxFrames'
 import styles from './KaliTerminal.module.css'
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -58,6 +60,12 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
   const fitAddonRef = useRef<FitAddon | null>(null)
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [sandboxBanner, setSandboxBanner] = useState<string | null>(null)
+  // connect() is created once, so what it calls later is read through refs.
+  const showSandboxUnavailable = useSandboxUnavailable()
+  const showUnavailableRef = useRef(showSandboxUnavailable)
+  showUnavailableRef.current = showSandboxUnavailable
+  const reconnectRef = useRef<() => void>(() => {})
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null)
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const inputDisposablesRef = useRef<Array<{ dispose: () => void }>>([])
@@ -195,6 +203,10 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
     const ws = new WebSocket(url)
     wsRef.current = ws
     connectingRef.current = false
+    // Per connection: sandbox frames are read only until the PTY speaks, and an
+    // `unavailable` frame shows one modal, whose Retry replaces the reconnect loop.
+    let ptyStarted = false
+    let unavailableReason: string | null = null
 
     ws.binaryType = 'arraybuffer'
 
@@ -253,11 +265,31 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
     }
 
     ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
+      // binaryType is 'arraybuffer': anything not a string is PTY output.
+      if (typeof event.data !== 'string') {
+        if (!ptyStarted) {
+          ptyStarted = true
+          setSandboxBanner(null)
+        }
         terminal.write(new Uint8Array(event.data))
-      } else {
-        terminal.write(event.data)
+        return
       }
+      const sandbox = ptyStarted ? null : parseSandboxFrame(event.data)
+      if (!sandbox) {
+        terminal.write(event.data)
+        return
+      }
+      if (sandbox.state === 'starting') {
+        setSandboxBanner(TERMINAL_STARTING_BANNER)
+        return
+      }
+      setSandboxBanner(null)
+      if (sandbox.state !== 'unavailable' || unavailableReason) return
+      const reason = sandbox.reason ?? 'error'
+      unavailableReason = reason
+      void showUnavailableRef.current(sandbox).then((answer) => {
+        if (answer === 'retry' && reason !== 'refused' && mountedRef.current) reconnectRef.current()
+      })
     }
 
     ws.onerror = () => {
@@ -276,7 +308,15 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
       }
 
       setStatus('disconnected')
-      terminal.writeln(`\n\x1b[1;31m\u2717 ${disconnectLine(event.code, event.reason)}\x1b[0m`)
+      setSandboxBanner(null)
+      const sandboxLine = sandboxCloseLine(event.code, event.reason, unavailableReason)
+      terminal.writeln(`\n\x1b[1;31m\u2717 ${sandboxLine ?? disconnectLine(event.code, event.reason)}\x1b[0m`)
+
+      // The sandbox modal's Retry reconnects; a refused sandbox never does by itself.
+      if (unavailableReason) {
+        if (unavailableReason !== 'refused') terminal.writeln('\x1b[2;37m  Click "Reconnect" to try again.\x1b[0m')
+        return
+      }
 
       // Auto-reconnect with exponential backoff
       const attempt = reconnectAttemptRef.current
@@ -305,6 +345,7 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
       wsRef.current = null
     }
     setStatus('disconnected')
+    setSandboxBanner(null)
   }, [])
 
   const reconnect = useCallback(() => {
@@ -312,6 +353,7 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
     disconnect()
     reconnectTimerRef.current = setTimeout(() => connect(), 200)
   }, [disconnect, connect])
+  reconnectRef.current = reconnect
 
   const toggleFullscreen = useCallback(() => {
     setIsFullscreen(prev => !prev)
@@ -462,6 +504,7 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
         </div>
       </div>
       <div className={styles.sharedNotice} role="note">{SHARED_ENVIRONMENT_NOTICE}</div>
+      {sandboxBanner && <div className={styles.sandboxBanner} role="status">{sandboxBanner}</div>}
       <div ref={termRef} className={styles.terminal} role="application" aria-label="Kali Linux terminal" />
     </div>
   )

@@ -31,6 +31,9 @@ vi.mock('@/hooks/agentWsUrl', () => ({
   buildAgentWsUrl: (path: string, ticket?: string) => `ws://agent.test${path}${ticket ? `?ticket=${ticket}` : ''}`,
 }))
 
+// The terminal shows the sandbox modal through useAlertModal, so it renders under
+// the provider the app shell gives it.
+import { AlertProvider } from '@/components/ui'
 import { KaliTerminal, ticketFailureLine, SHARED_ENVIRONMENT_NOTICE } from './KaliTerminal'
 import { ApiError } from '@/lib/apiError'
 
@@ -78,7 +81,7 @@ describe('KaliTerminal shared-environment banner', () => {
 
   test('shown before and after the socket connects, as a labelled note', async () => {
     mint(200, { ticket: 'tkt' })
-    render(<KaliTerminal userId="u1" projectId="p1" />)
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     const note = screen.getByRole('note')
     expect(note.textContent).toBe(SHARED_ENVIRONMENT_NOTICE)
     await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
@@ -88,7 +91,7 @@ describe('KaliTerminal shared-environment banner', () => {
 
   test('still shown when the terminal is refused', async () => {
     mint(403, { error: 'The Kali terminal is open to administrators and to accounts that kept it at the upgrade.', code: 'forbidden', permission: 'platform:kali_terminal' })
-    render(<KaliTerminal userId="u1" projectId="p1" />)
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     await waitFor(() => expect(written.some(l => plain(l).includes('Kali terminal is open to administrators'))).toBe(true))
     expect(screen.getByRole('note').textContent).toBe(SHARED_ENVIRONMENT_NOTICE)
   })
@@ -97,7 +100,7 @@ describe('KaliTerminal shared-environment banner', () => {
 describe('KaliTerminal ticket', () => {
   test('the ticket it mints names the terminal socket', async () => {
     mint(200, { ticket: 'tkt' })
-    render(<KaliTerminal userId="u1" projectId="p1" />)
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(JSON.parse(String(init.body))).toMatchObject({ projectId: 'p1', socket: 'kali-terminal' })
@@ -105,7 +108,7 @@ describe('KaliTerminal ticket', () => {
 
   test('the init frame carries no identity: the agent proxy supplies it', async () => {
     mint(200, { ticket: 'tkt' })
-    render(<KaliTerminal userId="u1" projectId="p1" />)
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
     act(() => { FakeSocket.instances[0].onopen?.() })
     expect(JSON.parse(FakeSocket.instances[0].sent[0])).toEqual({ type: 'init' })

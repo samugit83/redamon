@@ -36,6 +36,8 @@ import { useOptionalAuth } from '@/providers/AuthProvider'
 import { useOptionalProject } from '@/providers/ProjectProvider'
 import { loopDisplay, stampLoopStatus, type LoopStatusView } from './hooks/loopStatus'
 import { useRateLimitWait } from './hooks/rateLimitWait'
+import { SANDBOX_RETRY_NOT_SENT, useSandboxStatus } from './hooks/sandboxStatus'
+import { useSandboxUnavailable } from '@/hooks/useSandboxUnavailable'
 import { useConversationPolicy, useConversations } from '@/hooks/useConversations'
 import { useProjectAccess, useRefusal } from '@/hooks/useRefusal'
 import { useNavigatorObstacle } from '@/components/navigator/obstacles'
@@ -62,7 +64,7 @@ import { ApiKeyModal } from './ApiKeyModal'
 import { SkillDataNotice } from './SkillDataNotice'
 
 // Types
-import type { AIAssistantDrawerProps } from './types'
+import type { AIAssistantDrawerProps, Message } from './types'
 
 // Persisted drawer width (per-user via localStorage)
 const WIDTH_STORAGE_KEY = 'redamon-ai-assistant-drawer-width'
@@ -142,6 +144,19 @@ export function AIAssistantDrawer({
     pendingApprovalToolId, pendingApprovalWaveId, answerUndo,
     resetInteractionState,
   } = useInteractionState()
+
+  // The run's Kali sandbox: the "starting" line, and its modal once per run. Retry
+  // goes through resendRunRef, set below once the socket can send.
+  const showSandboxUnavailable = useSandboxUnavailable()
+  const resendRunRef = useRef<(query: string, shown: string) => void>(() => {})
+  const { sandboxWord, onSandboxStatus, noteRunStart } = useSandboxStatus({
+    isLoading,
+    sessionId,
+    projectId,
+    showUnavailable: showSandboxUnavailable,
+    runEnded: () => !isLoadingRef.current && !awaitingApprovalRef.current && !awaitingQuestionRef.current && !awaitingToolConfirmationRef.current,
+    resend: (query, shown) => resendRunRef.current(query, shown),
+  })
 
   const {
     messagesEndRef, messagesContainerRef,
@@ -321,6 +336,7 @@ export function AIAssistantDrawer({
     onGraphMutation: onRefetchGraph,
     setLoopStatus,
     setRateLimitWait,
+    onSandboxStatus,
   })
 
   const {
@@ -356,6 +372,16 @@ export function AIAssistantDrawer({
   // The agent's own health answer (container down vs. refusing) once the socket gave up.
   const agentHealth = useAgentHealth({ enabled: status === ConnectionStatus.FAILED })
 
+  // Every query and every resume starts a run: the sandbox modal shows once per run.
+  const sendQueryForRun = useCallback((question: string, shown?: string) => {
+    noteRunStart(question, shown)
+    sendQuery(question)
+  }, [noteRunStart, sendQuery])
+  const sendResumeForRun = useCallback(() => {
+    noteRunStart()
+    sendResume()
+  }, [noteRunStart, sendResume])
+
   // ─── Send handlers ────────────────────────────────────────────────────────
   const {
     inputRef,
@@ -384,7 +410,8 @@ export function AIAssistantDrawer({
     isProcessingQuestion, awaitingQuestionRef,
     isProcessingToolConfirmation, awaitingToolConfirmationRef,
     pendingApprovalToolId, pendingApprovalWaveId, answerUndo,
-    sendQuery, sendGuidance, sendSkillInject, sendApproval, sendToolConfirmation, sendFireteamMemberConfirmation, sendAnswer, sendStop, sendResume, sendToolStop,
+    sendQuery: sendQueryForRun, sendGuidance, sendSkillInject, sendApproval, sendToolConfirmation,
+    sendFireteamMemberConfirmation, sendAnswer, sendStop, sendResume: sendResumeForRun, sendToolStop,
     conversationId, setConversationId, projectId, userId, sessionId,
     createConversation, saveMessage, updateConvMeta,
   })
@@ -405,6 +432,24 @@ export function AIAssistantDrawer({
     if (!isConnectedRef.current) { toast.error(DECISION_NOT_SENT, 'Not connected'); return }
     handleTimelineToolConfirmation(itemId, decision)
   }, [handleTimelineToolConfirmation, toast])
+
+  // Retry from the sandbox modal: the run's query again, as a new run, under the
+  // text the chat showed when the run started (a chat skill's context is sent, not shown).
+  useEffect(() => {
+    resendRunRef.current = (query: string, shown: string) => {
+      if (!isConnectedRef.current) { toast.error(SANDBOX_RETRY_NOT_SENT, 'Not connected'); return }
+      const message: Message = {
+        type: 'message',
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: shown,
+        timestamp: new Date(),
+      }
+      setChatItems(prev => [...prev, message])
+      setIsLoading(true)
+      sendQueryForRun(query, shown)
+    }
+  }, [sendQueryForRun, setChatItems, setIsLoading, toast])
 
   // ─── Markdown download ────────────────────────────────────────────────────
   const { handleDownloadMarkdown } = useDownloadMarkdown({
@@ -646,6 +691,7 @@ export function AIAssistantDrawer({
         handleToolStop={handleToolStop}
         loop={loop}
         rateLimitWord={rateLimitWord}
+        sandboxWord={sandboxWord}
       />
 
       <ApprovalDialog

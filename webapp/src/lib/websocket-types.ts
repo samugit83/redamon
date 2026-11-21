@@ -81,6 +81,10 @@ export enum MessageType {
   // A model call waits for the provider's rate limit to clear before its next
   // try. Sent only, never persisted.
   RATE_LIMIT_WAIT = 'rate_limit_wait',
+
+  // The run's Kali sandbox is starting, ready or unavailable (SANDBOX_STATUS of
+  // lib/sandbox/contract.ts). Sent only, never persisted.
+  SANDBOX_STATUS = 'sandbox_status',
 }
 
 /**
@@ -413,6 +417,9 @@ export interface LoopStatusPayload {
    *  An agent built before this field omits it, and the drawer then shows no risk icon. */
   toolConfirmation?: boolean
 }
+
+/** The payload of SANDBOX_STATUS: the contract's type, so the two never drift. */
+export type { SandboxLimit, SandboxStatusPayload } from './sandbox/contract'
 
 /** A rate-limit wait: `seconds` before retry number `retry` of a `purpose` call. */
 export interface RateLimitWaitPayload {

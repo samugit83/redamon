@@ -161,6 +161,9 @@ class MessageType(str, Enum):
     # A model call is waiting for the provider's rate limit to clear before its
     # next try. Sent, never persisted: a pause, not part of the conversation.
     RATE_LIMIT_WAIT = "rate_limit_wait"
+    # The run's Kali sandbox is starting, ready or unavailable
+    # (sandbox_contract.SANDBOX_STATUS). Sent, never persisted.
+    SANDBOX_STATUS = "sandbox_status"
 
 
 # =============================================================================
