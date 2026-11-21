@@ -24,6 +24,7 @@ Ready-to-use attack skill workflows contributed by the community. Download any `
 | [subdomain_takeover.md](subdomain_takeover.md) | [@samugit83](https://github.com/samugit83) | Dangling CNAME / orphaned NS / unverified provider claim across S3, GitHub Pages, Heroku, Azure, CloudFront, Fastly and ~80 more |
 | [insecure_file_uploads.md](insecure_file_uploads.md) | [@samugit83](https://github.com/samugit83) | Web shells, SVG/HTML stored XSS, magic-byte and config-drop bypass, ImageMagick/Ghostscript/ExifTool abuse, zip slip, presigned-URL tampering, processing-race AV bypass |
 | [php2shell_upload_progress.md](php2shell_upload_progress.md) | [@samugit83](https://github.com/samugit83) | php2shell (CVE-2026-109618/109619) exposure check: fingerprint PHP version, decide the affected range, corroborate the `session.upload_progress` path non-destructively, and verify the mitigation. Detection and triage only, no exploitation |
+| [exposed_file_discovery.md](exposed_file_discovery.md) | [@rajyavardhan01](https://github.com/rajyavardhan01) | Active discovery of exposed config, VCS, and backup artifacts (`.git`, `.env`, `.svn`, `.DS_Store`, backups) when the route-exposure scan is off: queries the graph first, enumerates candidates by kind on existence/shape only (no file bodies), then hands proof and secret validation to the built-in `path_traversal`. Disable that built-in on import |
 
 ## Contributing
 
