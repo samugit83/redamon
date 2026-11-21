@@ -15,7 +15,7 @@ import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Iterable, Optional
 
 import docker
 from docker.errors import NotFound, APIError
@@ -713,6 +713,13 @@ class ContainerManager:
                     f"pool {self.ledger.scan_pool() // (1024**2)} MB)")
         return key
 
+    def extra_reservation_keys(self) -> Iterable[str]:
+        """Reservation keys owned outside this class (per-user Kali sandboxes): the
+        sandbox manager answers for them, so the 30 s reaper never frees a live one.
+        The orchestrator replaces this on the instance with the sandbox manager's
+        reservation_keys once that manager runs; until then no one holds such a key."""
+        return set()
+
     def _active_scan_keys(self) -> set:
         """All reservation keys whose scan is genuinely still RUNNING/STARTING.
         Used by reconcile() to release reservations for finished/dead scans without
@@ -757,6 +764,14 @@ class ContainerManager:
         # until the sandbox is stopped/reaped, or the reaper would free live bytes.
         for job_id in self.codefix_sandboxes:
             keys.add(self._scan_key("codefix", job_id))
+        try:
+            keys |= set(self.extra_reservation_keys())
+        except Exception as e:  # noqa: BLE001
+            # Keep every sandbox reservation the hook could not vouch for (over-count,
+            # never under-count) and still let the reaper free finished scans' bytes.
+            logger.warning(f"[governor] extra reservation keys unavailable, keeping every "
+                           f"sandbox reservation this pass: {type(e).__name__}")
+            keys |= self.ledger.sandbox_keys()
         return keys
 
     def active_scan_projects(self) -> set:
