@@ -242,11 +242,14 @@ export async function orchestratorList(): Promise<SandboxListAnswer> {
   return { mode: body.mode, sandboxes }
 }
 
-/** GET /sandboxes/mode. */
+/**
+ * GET /sandboxes/mode. It answers only 200 `{mode}` (B.9): any error, contract code or not, is no
+ * answer, never passed on (a coded one is another route's, e.g. `GET /sandboxes/{user_id}` matched first).
+ */
 export async function orchestratorMode(): Promise<SandboxMode> {
   const { res, body } = await call(url(ROUTE_MODE), { method: 'GET' })
   if (routeMissing(res, body)) throw new SandboxError(404, ROUTES_MISSING)
-  if (!res.ok) throw failure(res, body)
+  if (!res.ok) throw new SandboxError(502, ORCHESTRATOR_ERROR)
   if (!isObject(body) || !isMode(body.mode)) throw badAnswer()
   return body.mode
 }

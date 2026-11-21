@@ -372,15 +372,13 @@ describe('ensureSandbox', () => {
     expect(ensures()).toEqual([])
   })
 
-  test('a refusal is a refusal in every mode, never answered as shared', async () => {
-    on('GET /sandboxes/mode', () => [200, { mode: 'shared' }])
+  test('in per-user mode a refusal is a 403, never answered as shared', async () => {
     on('POST /sandboxes/ensure', () => [200, { mode: 'shared' }])
-    await sandboxMode()
-    await ensureSandbox('alice')
     setUser('bob', { status: 'disabled' })
     expect((await refusal(ensureSandbox('bob'))).code).toBe('sandbox_user_refused')
     expect((await refusal(ensureSandbox('carol', { needProject: 'PA' }))).code).toBe('sandbox_project_refused')
-    expect(ensures().map((b) => b.user_id)).toEqual(['alice'])
+    expect((await refusal(ensureSandbox('analyst'))).code).toBe('sandbox_user_refused')
+    expect(ensures()).toEqual([])
   })
 
   test('a fresh start on the own view turns the person\'s tunnels off and writes sandbox.started, once', async () => {
@@ -484,6 +482,60 @@ describe('ensureSandbox', () => {
   })
 })
 
+describe('shared mode answers before the person checks, as today; per-user mode refuses', () => {
+  const sharedMode = () => on('GET /sandboxes/mode', () => [200, { mode: 'shared' }])
+
+  test('shared mode + a person without agent:chat, agent:kali_exec or platform:kali_terminal: shared, nothing read', async () => {
+    sharedMode()
+    setUser('carol', { permissionSets: [{ setId: 'builtin:automation' }] })
+    expect(await ensureSandbox('analyst')).toEqual({ mode: 'shared' })
+    expect(await ensureSandbox('carol', { needProject: 'PC' })).toEqual({ mode: 'shared' })
+    expect(h.userReads).not.toHaveBeenCalled()
+    expect(ensures()).toEqual([])
+  })
+
+  test('shared mode + a project outside the list (a read share, another tenant\'s, act-as on a share): shared', async () => {
+    sharedMode()
+    for (const [needProject, actingAs] of [['PE', false], ['PA', false], ['PC', true]] as Array<[string, boolean]>) {
+      expect([needProject, await ensureSandbox('bob', { needProject, actingAs })]).toEqual([needProject, { mode: 'shared' }])
+    }
+  })
+
+  test('per-user mode + the same: 403 with the contract\'s codes, the orchestrator\'s ensure never asked', async () => {
+    setUser('carol', { permissionSets: [{ setId: 'builtin:automation' }] })
+    expect((await refusal(ensureSandbox('analyst'))).code).toBe('sandbox_user_refused')
+    expect((await refusal(ensureSandbox('carol', { needProject: 'PC' }))).code).toBe('sandbox_user_refused')
+    for (const [needProject, actingAs] of [['PE', false], ['PA', false], ['PC', true]] as Array<[string, boolean]>) {
+      const err = await refusal(ensureSandbox('bob', { needProject, actingAs }))
+      expect([needProject, err.status, err.code]).toEqual([needProject, 403, 'sandbox_project_refused'])
+    }
+    expect(ensures()).toEqual([])
+  })
+
+  test('an outage: 503 orchestrator_unavailable, never an invented mode', async () => {
+    h.down = true
+    for (const userId of ['analyst', 'bob']) {
+      const err = await refusal(ensureSandbox(userId, { needProject: 'PA' }))
+      expect([userId, err.status, err.code]).toEqual([userId, 503, 'orchestrator_unavailable'])
+    }
+  })
+
+  test('the mode is asked fresh in every call: a switch between two calls counts at once', async () => {
+    sharedMode()
+    expect(await ensureSandbox('analyst')).toEqual({ mode: 'shared' })
+    on('GET /sandboxes/mode', () => [200, { mode: 'per_user' }])
+    expect((await refusal(ensureSandbox('analyst'))).code).toBe('sandbox_user_refused')
+    expect(callsTo('GET', '/sandboxes/mode')).toHaveLength(2)
+  })
+
+  test('invalid ids are still 400s before the mode is asked', async () => {
+    sharedMode()
+    expect((await refusal(ensureSandbox('../bob'))).code).toBe('invalid_user_id')
+    expect((await refusal(ensureSandbox('bob', { needProject: '..' }))).code).toBe('invalid_project_id')
+    expect(h.calls).toEqual([])
+  })
+})
+
 describe('the orchestrator down: the webapp never invents a mode (the agent decides from its own last answer)', () => {
   const seen = async (mode: 'shared' | 'per_user') => {
     on('GET /sandboxes/mode', () => [200, { mode }])
@@ -516,8 +568,8 @@ describe('the orchestrator down: the webapp never invents a mode (the agent deci
     await unavailable(ensureSandbox('bob'))
   })
 
-  test('a refused account + an outage: 403 sandbox_user_refused, whatever mode was seen', async () => {
-    setUser('bob', { status: 'disabled' })
+  test('a refused account or a project outside the list + an outage: 503 too, whatever mode was seen (the mode comes first)', async () => {
+    setUser('carol', { status: 'disabled' })
     h.down = true
     for (const mode of [null, 'shared', 'per_user'] as const) {
       if (mode) {
@@ -525,26 +577,26 @@ describe('the orchestrator down: the webapp never invents a mode (the agent deci
         await seen(mode)
         h.down = true
       }
-      const err = await refusal(ensureSandbox('bob'))
-      expect([mode, err.status, err.code]).toEqual([mode, 403, 'sandbox_user_refused'])
+      await unavailable(ensureSandbox('carol'))
+      await unavailable(ensureSandbox('bob', { needProject: 'PA' }))
     }
+    expect(ensures()).toEqual([])
   })
 
-  test('a project outside the list + an outage: 403 sandbox_project_refused (a read share, another tenant\'s project)', async () => {
-    h.down = true
-    for (const needProject of ['PE', 'PA']) {
-      const err = await refusal(ensureSandbox('bob', { needProject }))
-      expect([needProject, err.status, err.code]).toEqual([needProject, 403, 'sandbox_project_refused'])
-    }
-  })
-
-  test('a server error or a refused orchestrator key is not an answer: 503, never shared', async () => {
-    for (const [status, body] of [[500, { detail: 'Internal Server Error' }], [401, { detail: 'Unauthorized' }]] as Array<[number, unknown]>) {
+  test('a server error, a refused orchestrator key, a missing mode route or any coded error from the mode route is not an answer: 503, never shared', async () => {
+    // The mode route answers only 200 {mode} (B.9): a contract code there is another route's answer
+    // (e.g. GET /sandboxes/{user_id} registered first, which refuses "mode" as a user id).
+    for (const [status, body] of [
+      [500, { detail: 'Internal Server Error' }], [401, { detail: 'Unauthorized' }], [404, { detail: 'Not Found' }],
+      [403, { detail: { code: 'sandbox_user_refused' } }], [409, { detail: { ...RAM, code: 'sandbox_ram' } }],
+      [503, { detail: { code: 'sandbox_start_failed' } }], [400, { detail: { code: 'invalid_user_id' } }],
+      [404, { detail: { code: 'unknown_instance' } }],
+    ] as Array<[number, unknown]>) {
       on('GET /sandboxes/mode', () => [status, body])
-      on('POST /sandboxes/ensure', () => [status, body])
       await unavailable(ensureSandbox('bob'))
-      expect((await refusal(ensureSandbox('bob', { needProject: 'PA' }))).code).toBe('sandbox_project_refused')
+      await unavailable(ensureSandbox('bob', { needProject: 'PA' }))
     }
+    expect(ensures()).toEqual([])
   })
 
   test('an outage inside the re-check after a fresh start is 503 too', async () => {
@@ -568,10 +620,11 @@ describe('the orchestrator down: the webapp never invents a mode (the agent deci
     }
     h.down = true
     expect(await ask({ userId: 'bob' })).toEqual([503, { error: expect.any(String), code: 'orchestrator_unavailable' }])
-    expect(await ask({ userId: 'bob', projectId: 'PA' })).toEqual([403, { error: expect.any(String), code: 'sandbox_project_refused' }])
+    expect(await ask({ userId: 'bob', projectId: 'PA' })).toEqual([503, { error: expect.any(String), code: 'orchestrator_unavailable' }])
     h.down = false
-    on('POST /sandboxes/ensure', () => [200, { mode: 'shared' }])
-    expect(await ask({ userId: 'bob' })).toEqual([200, { mode: 'shared' }])
+    expect(await ask({ userId: 'bob', projectId: 'PA' })).toEqual([403, { error: expect.any(String), code: 'sandbox_project_refused' }])
+    on('GET /sandboxes/mode', () => [200, { mode: 'shared' }])
+    expect(await ask({ userId: 'bob', projectId: 'PA' })).toEqual([200, { mode: 'shared' }])
     vi.unstubAllEnvs()
   })
 
@@ -579,9 +632,10 @@ describe('the orchestrator down: the webapp never invents a mode (the agent deci
     await seen('per_user')
     h.script.delete('GET /sandboxes/mode')
     expect(await sandboxMode({ fresh: true })).toBe('shared')
-    on('POST /sandboxes/ensure', () => [202, { mode: 'per_user', state: 'starting', instance: INSTANCE, fresh: false }])
+    const asked = callsTo('GET', '/sandboxes/mode').length
     await touchSandbox('bob')
-    expect(ensures()).toHaveLength(1)
+    // The warm-up still runs (per-user mode is the last named), and its ensure answers 503 for the missing route.
+    expect(callsTo('GET', '/sandboxes/mode').length).toBe(asked + 1)
   })
 })
 

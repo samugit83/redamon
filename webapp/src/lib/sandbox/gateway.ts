@@ -22,10 +22,12 @@
  * the list it was sent.
  *
  * The webapp never invents a mode for an `ensure`: it answers a mode only when the orchestrator
- * named it in that call (`{mode: "shared"}` while the switch is off). A refusal is a refusal in every
- * mode. An orchestrator out of reach, or answering outside the contract (a crash, a wrong key, a
- * route it lacks), is 503 `orchestrator_unavailable`, and the agent applies its own last-answered mode
- * (TD-6): shared stays shared through an outage, per-user fails closed. One owner for that decision.
+ * named it in that call. Each `ensure` asks the mode first: shared mode (while the switch is off)
+ * answers `{mode: "shared"}` before the person and project checks, so shared mode stays exactly as
+ * today; per-user mode runs them, and a refusal is a 403, never shared. An orchestrator out of reach,
+ * or answering outside the contract (a crash, a wrong key, a route it lacks), is 503
+ * `orchestrator_unavailable`, and the agent applies its own last-answered mode (TD-6): shared stays
+ * shared through an outage, per-user fails closed. One owner for that decision.
  *
  * Server-side only.
  */
@@ -203,10 +205,11 @@ export interface EnsureOptions {
 }
 
 /**
- * The person's sandbox for the agent: refused (403) unless the account may have one and the project
- * hint is in the list; then the orchestrator's answer (running, starting, or shared). A start this
- * call caused writes `sandbox.started` and, on the own view, turns the person's tunnels off (B.16).
- * No answer from the orchestrator, at any step, is 503 `orchestrator_unavailable`.
+ * The person's sandbox for the agent. The orchestrator's mode is asked first: shared mode answers
+ * shared before any check. In per-user mode it is refused (403) unless the account may have one and
+ * the project hint is in the list; then the orchestrator's answer (running, starting, or shared). A
+ * start this call caused writes `sandbox.started` and, on the own view, turns the person's tunnels
+ * off (B.16). No answer from the orchestrator, at any step, is 503 `orchestrator_unavailable`.
  */
 export async function ensureSandbox(userId: string, opts: EnsureOptions = {}): Promise<EnsureAnswer> {
   try {
@@ -223,6 +226,13 @@ async function ensureAttempt(userId: string, opts: EnsureOptions, attempt: numbe
   const actingAs = opts.actingAs === true
   const touch = opts.touch === true
   const view: SandboxView = actingAs ? 'act_as' : 'own'
+
+  // The mode first, asked in this call: in shared mode nobody gets a sandbox of their own, so the
+  // person and project checks below would refuse work the shared container does today (a set with
+  // triage:run but no agent permission, act-as on a share).
+  const mode = await orchestratorMode()
+  seeMode(mode)
+  if (mode === 'shared') return { mode: 'shared' }
 
   if (await sandboxUserRefusal(userId)) throw new SandboxError(403, ERR_USER_REFUSED)
   const projects = await sandboxProjectsFor(userId, { actingAs })
