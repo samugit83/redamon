@@ -11,8 +11,11 @@ from state import AgentState
 from orchestrator_helpers import roe_gate
 from orchestrator_helpers.json_utils import json_dumps_safe
 from orchestrator_helpers.config import get_identifiers, get_tenant_id
-from tools import set_tenant_context, set_phase_context, set_graph_view_context
-from kali_auth import kali_auth_headers, note_kali_refusal
+from tools import (
+    current_sandbox_handle, kali_auth_headers_for_run, kali_base_for_run,
+    set_graph_view_context, set_phase_context, set_tenant_context,
+)
+from kali_auth import note_kali_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +157,8 @@ async def execute_tool_node(
             tool_name,
             tool_args,
             phase,
-            progress_callback=streaming_cb.on_tool_output_chunk
+            progress_callback=streaming_cb.on_tool_output_chunk,
+            progress_port="sessions",
         )
     elif is_long_running_hydra and streaming_cb:
         logger.info(f"[{user_id}/{project_id}/{session_id}] Using execute_with_progress for Hydra brute force")
@@ -163,7 +167,8 @@ async def execute_tool_node(
             tool_args,
             phase,
             progress_callback=streaming_cb.on_tool_output_chunk,
-            progress_url=os.environ.get('MCP_HYDRA_PROGRESS_URL', 'http://kali-sandbox:8014/progress')
+            progress_url=os.environ.get('MCP_HYDRA_PROGRESS_URL', 'http://kali-sandbox:8014/progress'),
+            progress_port="hydra",
         )
     else:
         _tool_coro = tool_executor.execute(tool_name, tool_args, phase)
@@ -283,8 +288,13 @@ async def execute_tool_node(
     except Exception:
         pass
 
+    # The session manager of the sandbox this call ran in, with that sandbox's bearer:
+    # today's address and token in shared mode, none for a per-user run without one.
+    run_sandbox = current_sandbox_handle(project_id)
+    session_manager_base = kali_base_for_run("sessions", session_manager_base, run_sandbox)
+
     # Detect new Metasploit sessions and register chat mapping
-    if tool_name == "metasploit_console" and tool_output:
+    if tool_name == "metasploit_console" and tool_output and session_manager_base:
         for match in re.finditer(r'session\s+(\d+)\s+opened', tool_output, re.IGNORECASE):
             msf_session_id = int(match.group(1))
             try:
@@ -292,14 +302,14 @@ async def execute_tool_node(
                     resp = await client.post(
                         f"{session_manager_base}/session-chat-map",
                         json={"msf_session_id": msf_session_id, "chat_session_id": session_id},
-                        headers=kali_auth_headers(),
+                        headers=kali_auth_headers_for_run(run_sandbox),
                     )
                     note_kali_refusal(resp.status_code, "/session-chat-map")
             except Exception:
                 pass  # Best effort, don't break execution
 
     # Register non-MSF listeners (netcat, socat) created via kali_shell
-    if tool_name == "kali_shell" and tool_args:
+    if tool_name == "kali_shell" and tool_args and session_manager_base:
         cmd = tool_args.get("command", "")
         if re.search(r'(nc|ncat)\s+.*-l', cmd) or 'socat' in cmd:
             try:
@@ -308,7 +318,7 @@ async def execute_tool_node(
                         f"{session_manager_base}/non-msf-sessions",
                         json={"type": "listener", "tool": "netcat", "command": cmd,
                                "chat_session_id": session_id},
-                        headers=kali_auth_headers(),
+                        headers=kali_auth_headers_for_run(run_sandbox),
                     )
                     note_kali_refusal(resp.status_code, "/non-msf-sessions")
             except Exception:

@@ -272,9 +272,10 @@ class TestWhoseSandbox(RouterTest):
             with self.assertRaises(SandboxUnavailable):
                 await router.acquire("bob", project_id="p1", kind="exec", view="own")
         self.assertEqual(self.gateway.ensures(), [])
-        # The narrower act_as view may be asked for explicitly from anywhere.
+        # The act_as view may be named by act-as work only (S10, review item b).
         current_run_actor.set(None)
-        handle = await router.acquire("bob", project_id="p1", kind="exec", view="act_as")
+        with router.for_person("bob", acting=True):
+            handle = await router.acquire("bob", project_id="p1", kind="exec", view="act_as")
         self.assertEqual(handle.view, contract.VIEW_ACT_AS)
         await router.release(handle)
 
@@ -546,7 +547,8 @@ class TestClients(RouterTest):
 
     async def test_drop_forgets_both_views(self):
         own = await router.acquire("bob", project_id="p1", kind="run")
-        acting = await router.acquire("bob", project_id="p1", kind="run", view="act_as")
+        with router.for_person("bob", acting=True):
+            acting = await router.acquire("bob", project_id="p1", kind="run", view="act_as")
         alice = await router.acquire("alice", project_id="p1", kind="run")
         import tools
         with mock.patch.object(tools.MCPToolsManager, "get_tools", _fake_get_tools):
@@ -618,7 +620,7 @@ class TestLeases(RouterTest):
                     await self._until(lambda: len(seen) >= 3)
                     await router.release(handle)
         self.assertIsNotNone(seen[0][0], "the first take runs in the acquirer's task")
-        self.assertTrue(all(entry == (None, None, "") for entry in seen[1:]), seen[1:])
+        self.assertTrue(all(entry == (None, None, None) for entry in seen[1:]), seen[1:])
 
     async def test_renew_refused_drops_client(self):
         self.actor("bob", "alice", session_id="sess-r")
@@ -959,6 +961,8 @@ class TestSharedMode(RouterTest):
 class TestRunScope(RouterTest):
 
     async def test_run_scope_acquires_lazily_and_releases(self):
+        # current_handle() answers only the run's person (S10, review item a).
+        self.actor("bob", "alice")
         async with router.run_scope("sess-9"):
             self.assertIsNone(router.current_handle())
             self.assertEqual(self.gateway.requests, [], "no sandbox for a run that uses no Kali tool")
@@ -1056,7 +1060,8 @@ class TestRunScope(RouterTest):
         async with router.run_scope("sess-1"):
             bob = await router.acquire("bob", project_id="p1", kind="run")
             carol = await router.acquire("carol", project_id="p1", kind="run")
-            acting = await router.acquire("bob", project_id="p1", kind="run", view="act_as")
+            with router.for_person("bob", acting=True):
+                acting = await router.acquire("bob", project_id="p1", kind="run", view="act_as")
             self.assertEqual((carol.user_id, acting.view), ("carol", "act_as"))
             self.assertEqual(len({bob.token, carol.token, acting.token}), 3)
 

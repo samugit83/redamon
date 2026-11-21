@@ -45,6 +45,8 @@ from orchestrator_helpers.llm_setup import apply_project_settings
 from agent_context import current_llm, current_llm_wait_listener
 from agent_in_the_loop.broker import get_broker
 from agent_in_the_loop import is_loop_llm
+import sandbox_contract
+import sandbox_router
 from prompt_safety import fence_node_context
 from orchestrator_helpers.streaming import clear_stale_streaming_state, emit_streaming_events
 from orchestrator_helpers.body_sweep import sweep_session_bodies
@@ -268,12 +270,17 @@ class AgentOrchestrator:
         import mcp_registry
         system_servers = _build_system_mcp_servers()
         mcp_registry.set_current(system_servers)
-        server_configs, env_warnings = mcp_registry.to_mcp_servers_dict(system_servers)
+        # Per-user mode: the five system servers are each person's own (sandbox_router),
+        # never a connection of this shared manager, which holds user servers only.
+        include_system = self._want_system_servers()
+        server_configs, env_warnings = mcp_registry.to_mcp_servers_dict(
+            system_servers if include_system else [])
         if env_warnings:
             mcp_registry.set_current(system_servers, warnings=env_warnings)
 
         mcp_manager = MCPToolsManager(server_configs=server_configs)
-        mcp_tools = await mcp_manager.get_tools()
+        mcp_tools = await mcp_manager.get_tools() if server_configs else []
+        self._system_servers_loaded = include_system
 
         # No client of its own: text-to-Cypher runs on the calling run's client
         # (current_llm), so it is never another owner's.
@@ -321,6 +328,7 @@ class AgentOrchestrator:
             graph_schema_tool=graph_schema_tool,
             graph_summary_tool=graph_summary_tool,
         )
+        self.tool_executor.shared_system_loader = self._load_shared_system_servers
         # No declared_tool_names filter at startup — only system MCP tools
         # are loaded. User MCPs (with their declared filter) come through
         # reload_mcp_manifests() once project settings are available.
@@ -364,7 +372,8 @@ class AgentOrchestrator:
         async with self.__dict__.setdefault("_mcp_reload_lock", asyncio.Lock()):
             if user_servers_raw is None:
                 user_servers_raw = guard.loaded_servers or []
-            if not force and guard.loaded_hash == server_set_hash(user_servers_raw):
+            if (not force and guard.loaded_hash == server_set_hash(user_servers_raw)
+                    and getattr(self, "_system_servers_loaded", True) == self._want_system_servers()):
                 return None
             if not guard.admit_reload(owner_id, user_servers_raw, via="reload" if force else "run"):
                 raise McpToolsetBusy()
@@ -396,8 +405,11 @@ class AgentOrchestrator:
         user_servers, parse_errors = mcp_registry.parse_user_servers(user_servers_raw)
         system_servers = _build_system_mcp_servers()
         all_servers = system_servers + user_servers
+        # Per-user mode connects the user servers only: the system ones are each person's.
+        include_system = self._want_system_servers()
+        connected = all_servers if include_system else user_servers
 
-        server_configs, env_warnings = mcp_registry.to_mcp_servers_dict(all_servers)
+        server_configs, env_warnings = mcp_registry.to_mcp_servers_dict(connected)
         mcp_registry.set_current(all_servers, errors=parse_errors, warnings=env_warnings)
 
         declared_user_tools = apply_mcp_manifests_to_registry(user_servers)
@@ -406,12 +418,18 @@ class AgentOrchestrator:
         # Swap the manager's config and force a reconnect to bind a fresh
         # MultiServerMCPClient that includes any new user-MCP URLs. Forced: a
         # transport-error rebuild that finished meanwhile used the previous configs.
-        if hasattr(self, '_mcp_manager') and self._mcp_manager is not None:
+        if hasattr(self, '_mcp_manager') and self._mcp_manager is not None and not server_configs:
+            # Per-user mode and no user server: nothing for the shared manager to hold.
+            await self._mcp_manager.disconnect()
+            self.tool_executor.register_mcp_tools([], declared_tool_names=declared_user_tools)
+            self._system_servers_loaded = False
+        elif hasattr(self, '_mcp_manager') and self._mcp_manager is not None:
             self._mcp_manager.replace_server_configs(server_configs)
             new_gen, new_tools = await self._mcp_manager.reconnect(
                 self._mcp_manager.generation, reason="mcp_manifest_reload", force=True,
             )
             if new_tools:
+                self._system_servers_loaded = include_system
                 self.tool_executor.register_mcp_tools(
                     new_tools,
                     declared_tool_names=declared_user_tools,
@@ -424,13 +442,17 @@ class AgentOrchestrator:
             else:
                 loaded = False
                 system_tools = []
-                if user_servers:
+                self._system_servers_loaded = False
+                if user_servers and include_system:
                     system_configs, _ = mcp_registry.to_mcp_servers_dict(system_servers)
                     self._mcp_manager.replace_server_configs(system_configs)
                     _, system_tools = await self._mcp_manager.reconnect(
                         self._mcp_manager.generation, reason="mcp_manifest_reload_system_only",
                         force=True,
                     )
+                    self._system_servers_loaded = bool(system_tools)
+                elif not include_system:
+                    await self._mcp_manager.disconnect()
                 self.tool_executor.register_mcp_tools(system_tools or [], declared_tool_names=set())
                 # A disabled server was never part of this load, so it is not a failed one.
                 tried = sum(1 for s in user_servers if s.enabled)
@@ -446,6 +468,23 @@ class AgentOrchestrator:
             "warnings": [w.model_dump() for w in env_warnings],
             "declared_user_tool_names": sorted(declared_user_tools),
         }, loaded
+
+    @staticmethod
+    def _want_system_servers() -> bool:
+        """Whether the shared manager connects the five system servers: in shared mode, as
+        the sandbox router last heard it (the contract's default before any answer)."""
+        return sandbox_router.current_mode() == sandbox_contract.MODE_SHARED
+
+    async def _load_shared_system_servers(self) -> None:
+        """Shared mode was answered while the shared manager holds no system server (it
+        was last loaded in per-user mode): load the loaded set again with them. A load that
+        already held them is left alone: a tool missing there is missing, as before."""
+        if getattr(self, "_system_servers_loaded", True):
+            return
+        try:
+            await self._load_mcp_toolset(None, None, force=False)
+        except McpToolsetBusy:
+            logger.warning("[sandbox] system servers not loaded: another owner's run holds the toolset")
 
     def _setup_knowledge_base(self):
         """
@@ -901,7 +940,8 @@ class AgentOrchestrator:
             }
 
             async with self._mcp_toolset_lease(tenant_user_id or user_id):
-                final_state = await self.graph.ainvoke(input_data, config)
+                async with sandbox_router.run_scope(session_id):
+                    final_state = await self.graph.ainvoke(input_data, config)
 
             return self._build_response(final_state)
 
@@ -1093,7 +1133,9 @@ class AgentOrchestrator:
             listener = current_llm_wait_listener.set(
                 getattr(streaming_callback, "on_rate_limit_wait", None))
             try:
-                async with get_broker().run_scope(
+                # The run's Kali tools take one sandbox lease, on the first call, released
+                # when the run ends (sandbox_router); its nodes and members share it.
+                async with sandbox_router.run_scope(session_id), get_broker().run_scope(
                         user_id, project_id, session_id, streaming_callback, uses_loop=uses_loop,
                         tool_confirmation=bool(get_setting('REQUIRE_TOOL_CONFIRMATION', True))) as scope:
                     async for event in self.graph.astream(graph_input, config, stream_mode="values"):

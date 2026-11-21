@@ -17,7 +17,7 @@ import threading
 import logging
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,12 @@ STDIO_HOME = "/var/lib/redamon-mcp"
 STDIO_PRIVDROP = "/usr/bin/setpriv"
 STDIO_PRIVDROP_ARGS: Tuple[str, ...] = (
     f"--reuid={STDIO_UID}", f"--regid={STDIO_GID}", "--clear-groups", "--no-new-privs",
+)
+
+SANDBOX_ADDRESS_REFUSED = "sandbox_address_refused"
+SANDBOX_ADDRESS_REFUSED_MESSAGE = (
+    "the server's address is on the Kali sandbox network (10.214.0.0/16), which the agent "
+    "never dials for an MCP server you add"
 )
 
 TOKEN_ENV_VAR_REFUSED = "token_env_var_refused"
@@ -132,6 +138,10 @@ class MCPServer(BaseModel):
 
     tools: List[ToolSpec] = Field(default_factory=list)
 
+    # Set only in code (mark_system), never from a payload: an HTTP server without it
+    # connects through the sandbox-pool guard (user_server_http_client).
+    _system: bool = PrivateAttr(default=False)
+
     @model_validator(mode="after")
     def _validate_transport_fields(self) -> "MCPServer":
         if self.transport in ("sse", "streamable_http"):
@@ -193,6 +203,42 @@ def _builtin_tool_names() -> Set[str]:
     return _BUILTIN_NAME_CACHE
 
 
+def mark_system(srv: MCPServer) -> MCPServer:
+    """Mark one of the five system servers (tools._build_system_mcp_servers): it may
+    connect to a sandbox address, a per-user sandbox being where it runs."""
+    srv._system = True
+    return srv
+
+
+def sandbox_address_refusal(srv: MCPServer) -> Optional[ValidationError]:
+    """The refusal of a user's server whose URL names a Kali sandbox address literally,
+    or None: an early, readable error when it is saved or loaded. The agent sits on every
+    person's sandbox network, where ngrok's API and the reverse-shell listener check
+    nothing, so a server one person adds must never point the agent at another person's
+    sandbox (group 1, R1-F6).
+
+    It resolves no name (the load runs on the event loop). A name, a redirect or a
+    rebinding answer is refused where it matters, when the connection is opened
+    (user_server_http_client). Loading the user's servers asks it; the draft test route
+    (/mcp/test, agentic/api.py) does not yet and is to call it too."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    from orchestrator_helpers.llm_url_guard import sandbox_pool_refusal
+    if not srv.url:
+        return None
+    try:
+        host = urlsplit(srv.url).hostname
+        ipaddress.ip_address(host or "")
+    except ValueError:
+        return None
+    if sandbox_pool_refusal(host) is None:
+        return None
+    logger.warning(f"[rbac] mcp server on the sandbox network refused server={srv.id}")
+    return ValidationError(server_id=srv.id, code=SANDBOX_ADDRESS_REFUSED,
+                           message=SANDBOX_ADDRESS_REFUSED_MESSAGE)
+
+
 def validate_servers(
     servers: List[MCPServer],
     *,
@@ -226,6 +272,11 @@ def validate_servers(
                 server_id=srv.id, code="system_id_collision",
                 message=f"Server id '{srv.id}' is reserved for a system MCP server.",
             ))
+
+        if is_user_supplied:
+            refused = sandbox_address_refusal(srv)
+            if refused is not None:
+                srv_errors.append(refused)
 
         for t in srv.tools:
             if t.name in builtin_names:
@@ -352,6 +403,21 @@ def stdio_launch(srv: MCPServer) -> Tuple[str, List[str]]:
     ]
 
 
+def user_server_http_client(headers=None, timeout=None, auth=None):
+    """The HTTP client of an MCP server a user adds (an McpHttpClientFactory): it follows
+    no redirect, unlike the SDK's default, and judges the peer of every connection it
+    opens, so neither a redirect nor a name that resolves into the sandbox pool reaches
+    another person's sandbox."""
+    import httpx
+
+    from orchestrator_helpers.llm_url_guard import pool_guarded_async_transport
+    return httpx.AsyncClient(
+        transport=pool_guarded_async_transport(), follow_redirects=False,
+        # The SDK's own default when none is given (mcp.shared._httpx_utils).
+        timeout=timeout if timeout is not None else httpx.Timeout(30.0, read=300.0),
+        headers=headers, auth=auth)
+
+
 def to_mcp_servers_dict(
     servers: List[MCPServer],
 ) -> Tuple[Dict[str, Dict[str, Any]], List[ValidationError]]:
@@ -384,6 +450,8 @@ def to_mcp_servers_dict(
             }
             if headers:
                 entry["headers"] = headers
+            if not srv._system:
+                entry["httpx_client_factory"] = user_server_http_client
             config[srv.id] = entry
 
         elif srv.transport == "stdio":

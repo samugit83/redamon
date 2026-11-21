@@ -46,7 +46,7 @@ from kali_auth import kali_auth_headers_for
 
 logger = logging.getLogger(__name__)
 
-WEBAPP_API_URL = os.environ.get("WEBAPP_API_URL", "http://webapp:3000")
+WEBAPP_API_URL = os.environ.get("WEBAPP_API_URL", "http://webapp:3000").rstrip("/")
 INTERNAL_HEADERS = {"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")}
 
 LEASE_RENEW_S = contract.LEASE_RENEW_S
@@ -71,8 +71,9 @@ _transport: Optional[httpx.AsyncBaseTransport] = None
 
 #: The person of a unit of work that is not a chat run (a /kali/exec job, the terminal
 #: proxy, triage, Tradecraft jobs, session routes, the tunnel push). Set it with
-#: ``for_person``; it wins over the run actor.
-current_sandbox_user: ContextVar[str] = ContextVar("current_sandbox_user", default="")
+#: ``for_person``; it wins over the run actor. None means unbound; "" is bound to no
+#: person, which never falls back to the run actor.
+current_sandbox_user: ContextVar[Optional[str]] = ContextVar("current_sandbox_user", default=None)
 #: True when that unit of work is an admin acting as the person (a terminal ticket with
 #: ``act``, a triage run with ``real_actor_user_id``).
 current_sandbox_acting: ContextVar[bool] = ContextVar("current_sandbox_acting", default=False)
@@ -87,7 +88,7 @@ def sandbox_user() -> str:
     """The person whose sandbox runs this work: ``current_sandbox_user``, else the chat
     run's person (the ticket's ``sub``), else "". Never the tenant."""
     user = current_sandbox_user.get()
-    if user:
+    if user is not None:
         return user
     actor = current_run_actor.get()
     return actor.user_id if actor is not None and actor.user_id else ""
@@ -108,9 +109,11 @@ def sandbox_view() -> str:
 
 
 @contextmanager
-def for_person(user_id: str, *, acting: bool = False):
+def for_person(user_id: Optional[str], *, acting: bool = False):
     """Bind the person (and whether an admin acts as them) for the work inside, and
-    unbind on exit. The binding stays in the current task and the tasks it creates."""
+    unbind on exit. The binding stays in the current task and the tasks it creates.
+    An empty or missing person binds "no person": the work is refused in per-user mode,
+    never run as whoever the surrounding chat run belongs to."""
     user_token = current_sandbox_user.set(user_id if isinstance(user_id, str) else "")
     acting_token = current_sandbox_acting.set(bool(acting))
     try:
@@ -241,8 +244,10 @@ def _who(user_id: str, view: str) -> str:
 # =============================================================================
 
 def add_status_listener(fn: Callable) -> Callable:
-    """``fn({user_id, project_id, session_id, state, reason, limit, detail})`` on each
-    ``starting``, ``ready`` and ``unavailable``; it may be a coroutine function."""
+    """``fn({user_id, view, kind, project_id, session_id, state, reason, limit, detail})``
+    on each ``starting``, ``ready`` and ``unavailable``; it may be a coroutine function.
+    ``kind`` is the lease kind of the acquire or renewal (a job or Tradecraft lease taken
+    inside a chat run's task is not the run's own), ``view`` the sandbox view."""
     if fn not in _listeners:
         _listeners.append(fn)
     return fn
@@ -263,10 +268,10 @@ def _session_id() -> str:
 
 async def _emit(user_id: str, project_id: Optional[str], state: str, reason: Optional[str] = None,
                 limit: Optional[Mapping] = None, detail: str = "",
-                session_id: Optional[str] = None) -> None:
+                session_id: Optional[str] = None, *, view: str, kind: str) -> None:
     """``session_id`` None reads it from the current task (a renewal passes its own: it
     runs in a context of its own)."""
-    event = {"user_id": user_id, "project_id": project_id,
+    event = {"user_id": user_id, "view": view, "kind": kind, "project_id": project_id,
              "session_id": _session_id() if session_id is None else session_id,
              "state": state, "reason": reason, "limit": dict(limit) if limit else None,
              "detail": detail or None}
@@ -279,15 +284,16 @@ async def _emit(user_id: str, project_id: Optional[str], state: str, reason: Opt
             logger.warning("[sandbox] status listener failed: %s", type(exc).__name__)
 
 
-async def _refuse(user_id: str, project_id: Optional[str], reason: str, *,
+async def _refuse(user_id: str, project_id: Optional[str], reason: str, *, view: str, kind: str,
                   limit: Optional[Mapping] = None, detail: str = "") -> SandboxUnavailable:
     """The exception to raise, after its ``unavailable`` event (``no_user`` has none: it
     never reaches a browser)."""
     exc = SandboxUnavailable(reason, limit=limit, detail=detail)
-    logger.warning("[sandbox] %s unavailable reason=%s detail=%s",
-                   _who(user_id, contract.VIEW_OWN) if user_id else "-", reason, exc.detail)
+    logger.warning("[sandbox] %s view=%s kind=%s unavailable reason=%s detail=%s",
+                   _who(user_id, view) if user_id else "-", view, kind, reason, exc.detail)
     if reason != "no_user":
-        await _emit(user_id, project_id, "unavailable", reason, exc.limit, exc.detail)
+        await _emit(user_id, project_id, "unavailable", reason, exc.limit, exc.detail,
+                    view=view, kind=kind)
     return exc
 
 
@@ -296,18 +302,25 @@ async def _refuse(user_id: str, project_id: Optional[str], reason: str, *,
 # =============================================================================
 
 class _Unreachable(Exception):
-    """No answer is possible: no internal key, connection refused, or the route absent."""
+    """No answer is possible: no internal key, or the connection refused."""
 
 
 class _GatewayError(Exception):
-    """An outage behind a reachable gateway: no answer in time, or a 5xx that is not a
-    per-user manager's own error (the webapp answers 503 ``orchestrator_unavailable``
-    when it cannot ask the orchestrator; it never invents a mode)."""
+    """An outage behind a reachable gateway: no answer in time, or an answer that is not
+    the contract's (a 5xx that is not a per-user manager's own error, a 401, a 404 or any
+    other 4xx without a contract code). The webapp answers 503
+    ``orchestrator_unavailable`` when it cannot ask the orchestrator; it never invents a
+    mode, so the router keeps the last one answered (TD-6)."""
 
 
 #: 5xx codes only the per-user manager answers: they are answers (and prove per-user
 #: mode), never an outage that could fall back to the shared sandbox.
 _PER_USER_5XX = (contract.ERR_IMAGE_MISSING, contract.ERR_START_FAILED, contract.ERR_START_TIMEOUT)
+#: The 4xx codes the gateway's routes answer (B.9, B.10); any other 4xx is an outage.
+_CONTRACT_4XX = (contract.ERR_RAM, contract.ERR_HARD, contract.ERR_USER_REFUSED,
+                 contract.ERR_PROJECT_REFUSED, contract.ERR_INVALID_PROJECT_ID,
+                 contract.ERR_INVALID_USER_ID, contract.ERR_INVALID_VIEW,
+                 contract.ERR_UNKNOWN_INSTANCE, contract.ERR_NOT_RUNNING, contract.ERR_DRAINING)
 
 
 def _http(timeout: float) -> httpx.AsyncClient:
@@ -324,11 +337,13 @@ def _refusal(data) -> Tuple[Optional[str], Mapping]:
     return None, {}
 
 
-async def _gateway(method: str, path: str, body: Optional[dict] = None,
+async def _gateway(method: str, url: str, body: Optional[dict] = None,
                    timeout: float = contract.GATEWAY_TIMEOUT_S) -> Tuple[int, Any]:
+    """One call to the webapp gateway. Each caller writes its whole URL out as an
+    f-string on WEBAPP_API_URL, so the middleware's drift test reads the route and checks
+    it is on the internal-key allowlist."""
     if not INTERNAL_HEADERS.get("X-Internal-Key"):
         raise _Unreachable("no_internal_key")
-    url = f"{WEBAPP_API_URL.rstrip('/')}{path}"
     try:
         async with _http(timeout) as client:
             resp = await client.request(method, url, json=body, headers=INTERNAL_HEADERS)
@@ -341,10 +356,9 @@ async def _gateway(method: str, path: str, body: Optional[dict] = None,
     except Exception:  # noqa: BLE001
         data = None
     code = _refusal(data)[0]
-    # A webapp older than this agent has no such route: the gateway cannot be reached.
-    if resp.status_code == 404 and code is None:
-        raise _Unreachable("route_missing")
     if resp.status_code >= 500 and code not in _PER_USER_5XX:
+        raise _GatewayError(_status_detail(resp.status_code, code))
+    if 400 <= resp.status_code < 500 and code not in _CONTRACT_4XX:
         raise _GatewayError(_status_detail(resp.status_code, code))
     return resp.status_code, data
 
@@ -437,7 +451,7 @@ def _starting_handle(person: str, view: str, project_id: Optional[str], data: Ma
         fresh=data.get("fresh") is True)
 
 
-async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool):
+async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool, kind: str):
     """One gateway ``ensure``: ("shared", None), ("running", handle) or ("starting", handle).
     Raises SandboxUnavailable for every refusal and error."""
     body: Dict[str, Any] = {"userId": person, "wait": bool(wait)}
@@ -446,7 +460,7 @@ async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool)
     if view == contract.VIEW_ACT_AS:
         body["actingAs"] = True
     try:
-        status, data = await _gateway("POST", contract.INTERNAL_ROUTE_ENSURE, body,
+        status, data = await _gateway("POST", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/ensure", body,
                                       timeout=contract.GATEWAY_ENSURE_TIMEOUT_S)
     except (_Unreachable, _GatewayError) as exc:
         # TD-6: an outage keeps the last mode answered (the default before any answer):
@@ -455,7 +469,8 @@ async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool)
         if current_mode() == contract.MODE_SHARED:
             logger.info("[sandbox] %s (%s): shared mode, today's sandbox", what, exc)
             return "shared", None
-        raise await _refuse(person, project_id, "error", detail=f"{what} {exc}") from None
+        raise await _refuse(person, project_id, "error", view=view, kind=kind,
+                            detail=f"{what} {exc}") from None
 
     code, src = _refusal(data)
     if code in _PER_USER_5XX:
@@ -472,7 +487,8 @@ async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool)
                 return "running", handle
             logger.error("[sandbox] %s view=%s: the gateway's answer is not this person's sandbox",
                          _who(person, view), view)
-            raise await _refuse(person, project_id, "error", detail="gateway_answer_mismatch")
+            raise await _refuse(person, project_id, "error", view=view, kind=kind,
+                                detail="gateway_answer_mismatch")
     elif status == 202 and isinstance(data, dict) and data.get("mode") == contract.MODE_PER_USER:
         _note_mode(contract.MODE_PER_USER)
         if data.get("state") == "starting" and contract.valid_instance(data.get("instance")):
@@ -482,11 +498,14 @@ async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool)
         _note_mode(contract.MODE_PER_USER)
         limit = {k: src[k] for k in contract.LIMIT_PAYLOAD_KEYS if k in src}
         reason = "ram" if code == contract.ERR_RAM else "hard"
-        raise await _refuse(person, project_id, reason, limit=limit or None,
+        raise await _refuse(person, project_id, reason, view=view, kind=kind, limit=limit or None,
                             detail=src.get("detail") if isinstance(src.get("detail"), str) else code)
     elif status == 403 and code in (contract.ERR_USER_REFUSED, contract.ERR_PROJECT_REFUSED):
-        raise await _refuse(person, project_id, "refused", detail=code)
-    raise await _refuse(person, project_id, "error", detail=_status_detail(status, code))
+        # The webapp refuses a person only once the orchestrator named per-user mode.
+        _note_mode(contract.MODE_PER_USER)
+        raise await _refuse(person, project_id, "refused", view=view, kind=kind, detail=code)
+    raise await _refuse(person, project_id, "error", view=view, kind=kind,
+                        detail=_status_detail(status, code))
 
 
 async def _mode_without_person() -> str:
@@ -495,7 +514,7 @@ async def _mode_without_person() -> str:
     switch to per-user has since made wrong; the last answer, or the default before any,
     only on an outage (B.1). Any other answer without a mode is per-user (fail closed)."""
     try:
-        status, data = await _gateway("GET", contract.INTERNAL_ROUTE_LIST)
+        status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
     except (_Unreachable, _GatewayError):
         return current_mode()
     if status == 200 and isinstance(data, dict) and data.get("mode") in contract.MODES:
@@ -514,7 +533,7 @@ async def _lease_call(person: str, instance: str, lease_id: str, kind: str) -> T
     longer use a sandbox) or "transient"."""
     body = {"userId": person, "instance": instance, "leaseId": lease_id, "kind": kind}
     try:
-        status, data = await _gateway("POST", contract.INTERNAL_ROUTE_LEASE, body)
+        status, data = await _gateway("POST", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/lease", body)
     except (_Unreachable, _GatewayError) as exc:
         logger.info("[sandbox] lease call failed (%s); retried at the next renewal", exc)
         return "transient", None
@@ -540,25 +559,37 @@ def _cancel_quietly(task: Optional[asyncio.Task]) -> None:
         pass
 
 
+def _cancel_from_finalizer(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> None:
+    """A dropped handle's finalizer: the garbage collector may run it on any thread, and a
+    task may only be cancelled from its own loop's thread."""
+    if task.done():
+        return
+    try:
+        loop.call_soon_threadsafe(_cancel_quietly, task)
+    except RuntimeError:  # the loop is closed (interpreter exit): nothing left to renew
+        pass
+
+
 def _start_renewal(handle: SandboxHandle, session_id: str) -> None:
     """One renew task per handle. It holds only a weak reference to the handle and runs
     in an empty context: the acquirer's context holds its run scope, which holds the
     handle, so inheriting it would keep the handle alive and renew it forever. A handle
     dropped without ``release`` therefore stops its renewals (its lease then expires)."""
-    task = asyncio.get_running_loop().create_task(
-        _renew_loop(weakref.ref(handle), handle.user_id, handle.instance, handle.lease_id,
-                    handle.kind, handle.project_id, session_id),
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(
+        _renew_loop(weakref.ref(handle), handle.user_id, handle.view, handle.instance,
+                    handle.lease_id, handle.kind, handle.project_id, session_id),
         context=contextvars.Context())
     handle._renew_task = task
     _renewals.add(task)
     task.add_done_callback(_renewals.discard)
-    weakref.finalize(handle, _cancel_quietly, task)
+    weakref.finalize(handle, _cancel_from_finalizer, loop, task)
 
 
-async def _renew_loop(ref, person, instance, lease_id, kind, project_id, session_id) -> None:
+async def _renew_loop(ref, person, view, instance, lease_id, kind, project_id, session_id) -> None:
     while True:
         try:
-            if not await _renew_once(ref, person, instance, lease_id, kind, project_id, session_id):
+            if not await _renew_once(ref, person, view, instance, lease_id, kind, project_id, session_id):
                 return
         except asyncio.CancelledError:
             raise
@@ -566,7 +597,7 @@ async def _renew_loop(ref, person, instance, lease_id, kind, project_id, session
             logger.warning("[sandbox] lease renewal failed: %s", type(exc).__name__)
 
 
-async def _renew_once(ref, person, instance, lease_id, kind, project_id, session_id) -> bool:
+async def _renew_once(ref, person, view, instance, lease_id, kind, project_id, session_id) -> bool:
     await asyncio.sleep(LEASE_RENEW_S)
     alive = ref()
     if alive is None or not alive.usable:
@@ -585,7 +616,7 @@ async def _renew_once(ref, person, instance, lease_id, kind, project_id, session
     # an id a draining instance no longer knows is this handle's alone.
     _retire(handle, whole_instance=outcome != "draining")
     await _emit(person, project_id, "unavailable", "refused" if outcome == "refused" else "stopped",
-                session_id=session_id)
+                session_id=session_id, view=view, kind=kind)
     return False
 
 
@@ -636,7 +667,7 @@ async def _release_now(handle: SandboxHandle) -> None:
             await asyncio.wait([task], timeout=contract.GATEWAY_TIMEOUT_S)
         if handle.mode == contract.MODE_PER_USER and handle.lease_id and not handle.stale:
             try:
-                await _gateway("POST", contract.INTERNAL_ROUTE_RELEASE,
+                await _gateway("POST", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/release",
                                {"userId": handle.user_id, "leaseId": handle.lease_id})
             except (_Unreachable, _GatewayError) as exc:
                 logger.info("[sandbox] lease release not sent (%s); it expires by itself", exc)
@@ -663,24 +694,26 @@ async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str
         if user_id:
             logger.warning("[sandbox] a malformed person id was refused")
         if await _mode_without_person() == contract.MODE_PER_USER:
-            raise await _refuse("", project_id, "no_user")
+            raise await _refuse("", project_id, "no_user", view=view, kind=kind)
         return _shared_handle("", view)
     if project_id is not None and not contract.valid_project_id(project_id):
-        raise await _refuse(person, None, "error", detail=contract.ERR_INVALID_PROJECT_ID)
+        raise await _refuse(person, None, "error", view=view, kind=kind,
+                            detail=contract.ERR_INVALID_PROJECT_ID)
 
     for _attempt in range(2):
         started = False
-        outcome, handle = await _ensure(person, view, project_id, wait=False)
+        outcome, handle = await _ensure(person, view, project_id, wait=False, kind=kind)
         if outcome == "starting":
             started = True
-            await _emit(person, project_id, "starting")
+            await _emit(person, project_id, "starting", view=view, kind=kind)
             if not wait:
                 _register(handle)
                 return handle
             first_fresh = handle.fresh
-            outcome, handle = await _ensure(person, view, project_id, wait=True)
+            outcome, handle = await _ensure(person, view, project_id, wait=True, kind=kind)
             if outcome == "starting":
-                raise await _refuse(person, project_id, "error", detail=contract.ERR_START_TIMEOUT)
+                raise await _refuse(person, project_id, "error", view=view, kind=kind,
+                                    detail=contract.ERR_START_TIMEOUT)
             if handle is not None:
                 handle.fresh = handle.fresh or first_fresh
         if outcome == "shared":
@@ -699,15 +732,16 @@ async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str
             handle._apply_lease(data)
         _start_renewal(handle, _session_id())
         if started:
-            await _emit(person, project_id, "ready")
+            await _emit(person, project_id, "ready", view=view, kind=kind)
         return handle
-    raise await _refuse(person, project_id, "error", detail="lease_refused")
+    raise await _refuse(person, project_id, "error", view=view, kind=kind, detail="lease_refused")
 
 
 async def acquire(user_id: str, *, project_id: Optional[str], kind: str, wait: bool = True,
                   view: Optional[str] = None) -> SandboxHandle:
     """The person's sandbox for one unit of work, with a lease renewed every
-    ``LEASE_RENEW_S`` until ``release``. ``view=None`` is ``sandbox_view()``.
+    ``LEASE_RENEW_S`` until ``release``. ``view=None`` is ``sandbox_view()``; a named view
+    must be that one: who does the work decides the view, an argument never does.
 
     Inside ``run_scope`` a ``run`` acquire shares the scope's handle (one lease for the
     whole run, its Fireteam members included). With ``wait=False`` a cold start returns
@@ -716,13 +750,15 @@ async def acquire(user_id: str, *, project_id: Optional[str], kind: str, wait: b
     if kind not in contract.LEASE_KINDS:
         raise ValueError("invalid_lease_kind")
     user_id = user_id if isinstance(user_id, str) else ""
+    work_view = sandbox_view()
     if view is None:
-        view = sandbox_view()
-    elif contract.check_view(view) == contract.VIEW_OWN and sandbox_view() == contract.VIEW_ACT_AS:
-        # Work done while an admin acts as the person never reaches the person's own view,
-        # which mounts the projects shared with them that act-as access refuses (TD-26).
+        view = work_view
+    elif contract.check_view(view) != work_view:
+        # Act-as work never reaches the person's own view, which mounts the projects shared
+        # with them that act-as access refuses; the person's own work never reaches the
+        # act_as view, where an admin's act-as runs and their run credentials live (TD-26).
         raise await _refuse(user_id if contract.valid_user_id(user_id) else "", project_id,
-                            "refused", detail="act_as_work_in_own_view")
+                            "refused", view=work_view, kind=kind, detail="view_not_the_works")
     scope = _current_scope.get()
     if kind == RUN_KIND and scope is not None and not scope.closed:
         return await scope.handle_for(user_id, view, project_id, wait)
@@ -759,7 +795,6 @@ class _RunScope:
     def __init__(self, session_id: str):
         self.session_id = session_id if isinstance(session_id, str) else ""
         self.handles: Dict[Tuple[str, str, Optional[str]], SandboxHandle] = {}
-        self.latest: Optional[SandboxHandle] = None
         self.closed = False
         self._lock = asyncio.Lock()
 
@@ -769,7 +804,6 @@ class _RunScope:
                 key = (user_id, view, project_id)
                 held = self.handles.get(key)
                 if held is not None and held.usable:
-                    self.latest = held
                     return held
                 if held is not None:
                     del self.handles[key]
@@ -781,7 +815,6 @@ class _RunScope:
                     handle.scoped = True
                     handle._scope_ref = weakref.ref(self)
                     self.handles[key] = handle
-                    self.latest = handle
                 return handle
         return await _acquire(user_id, view, project_id, RUN_KIND, wait)
 
@@ -791,7 +824,6 @@ class _RunScope:
         self.closed = True
         handles = list(self.handles.values())
         self.handles.clear()
-        self.latest = None
         for handle in handles:
             _cancel_quietly(handle._renew_task)
         for handle in handles:
@@ -814,12 +846,47 @@ async def run_scope(session_id: str = ""):
         await scope.close()
 
 
-def current_handle() -> Optional[SandboxHandle]:
-    """The current run scope's handle, or None (no scope, no Kali call yet, or ended)."""
+def current_handle(project_id: Optional[str] = None) -> Optional[SandboxHandle]:
+    """The run scope's usable handle of this work's person and view (and ``project_id``,
+    when named), or None: no scope, no Kali call yet, ended, or held for someone else.
+    A scope may hold several persons' handles; the run's last one is never handed out."""
     scope = _current_scope.get()
-    if scope is None or scope.closed or scope.latest is None or not scope.latest.usable:
+    person = sandbox_user()
+    if scope is None or scope.closed or not person:
         return None
-    return scope.latest
+    view = sandbox_view()
+    for (user, held_view, held_project), handle in list(scope.handles.items()):
+        if (user == person and held_view == view and handle.usable
+                and (project_id is None or held_project == project_id)):
+            return handle
+    return None
+
+
+def run_scope_open() -> bool:
+    """Whether this work runs inside an open chat run scope (a ``run`` acquire shares the
+    run's lease there)."""
+    scope = _current_scope.get()
+    return scope is not None and not scope.closed
+
+
+@contextmanager
+def detach_run_scope():
+    """Work inside does not belong to the surrounding chat run: a background job the run
+    spawned outlives it, so it takes its own lease instead of the run's handle, which
+    the run's end releases."""
+    token = _current_scope.set(None)
+    try:
+        yield
+    finally:
+        _current_scope.reset(token)
+
+
+def retire(handle: Optional[SandboxHandle]) -> None:
+    """A call found this handle's sandbox gone (its client could not reconnect): every
+    handle on that instance turns stale and its client is dropped, so the next
+    ``acquire`` ensures again instead of handing the same dead instance back."""
+    if handle is not None and handle.mode == contract.MODE_PER_USER:
+        _retire(handle, whole_instance=True)
 
 
 async def is_running(user_id: str, view: Optional[str] = None) -> bool:
@@ -827,7 +894,7 @@ async def is_running(user_id: str, view: Optional[str] = None) -> bool:
     False on any failure, and the ``acquire`` that follows says why."""
     view = sandbox_view() if view is None else contract.check_view(view)
     try:
-        status, data = await _gateway("GET", contract.INTERNAL_ROUTE_LIST)
+        status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
     except (_Unreachable, _GatewayError):
         return current_mode() == contract.MODE_SHARED
     if status != 200 or not isinstance(data, dict):
@@ -867,7 +934,7 @@ async def running_sandboxes() -> List[SandboxHandle]:
     gateway's list. Shared mode: none. Raises SandboxUnavailable when the list cannot be
     read in per-user mode."""
     try:
-        status, data = await _gateway("GET", contract.INTERNAL_ROUTE_LIST)
+        status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
     except (_Unreachable, _GatewayError) as exc:
         if current_mode() == contract.MODE_SHARED:
             return []
@@ -1037,6 +1104,7 @@ class JobPhase:
 @dataclass
 class _Job:
     user_id: str
+    view: str = ""
     phase: Optional[JobPhase] = None
 
 
@@ -1056,18 +1124,27 @@ def _job_entry(job_id: str) -> _Job:
     return entry
 
 
-def note_job(job_id: str, user_id: str) -> bool:
-    """Record whose sandbox runs a background job (False, nothing recorded, without a
-    valid job id and person)."""
-    if not _valid_job_id(job_id) or not contract.valid_user_id(user_id):
+def note_job(job_id: str, user_id: str, view: Optional[str] = None) -> bool:
+    """Record whose sandbox, and which view of it, runs a background job (``view`` None:
+    this work's ``sandbox_view()``). False, nothing recorded, without a valid job id,
+    person and view."""
+    if view is None:
+        view = sandbox_view()
+    if not _valid_job_id(job_id) or not contract.valid_user_id(user_id) or view not in contract.VIEWS:
         return False
-    _job_entry(job_id).user_id = user_id
+    entry = _job_entry(job_id)
+    entry.user_id, entry.view = user_id, view
     return True
 
 
 def job_sandbox_user(job_id: str) -> str:
+    return job_sandbox(job_id)[0]
+
+
+def job_sandbox(job_id: str) -> Tuple[str, str]:
+    """(person, view) of a background job's sandbox; ("", "") when none is recorded."""
     entry = _jobs.get(job_id) if _valid_job_id(job_id) else None
-    return entry.user_id if entry is not None else ""
+    return (entry.user_id, entry.view) if entry is not None and entry.user_id else ("", "")
 
 
 def jobs_by_sandbox_user() -> Dict[str, List[str]]:

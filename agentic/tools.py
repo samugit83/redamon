@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import logging
 from collections import OrderedDict
+from contextlib import contextmanager
 from typing import List, Optional, Dict, Callable, Awaitable, TYPE_CHECKING
 from contextvars import ContextVar
 
@@ -37,6 +38,9 @@ import job_runner
 import output_offload
 from neo4j_read_pool import run_neo4j_read
 from kali_auth import kali_auth_headers, note_kali_refusal
+import sandbox_contract
+import sandbox_router
+import sandbox_runs
 from sandbox_runs import RunTagInterceptor
 
 if TYPE_CHECKING:
@@ -289,7 +293,7 @@ def _maybe_attach_curl_session(tool_args: dict) -> dict:
 # rendering metadata for them.
 def _build_system_mcp_servers():
     """Lazy import — mcp_registry imports tool_registry which imports tools."""
-    from mcp_registry import MCPServer, BearerAuth
+    from mcp_registry import MCPServer, BearerAuth, mark_system
 
     # STRIDE S10: authenticate to the Kali MCP servers with a shared bearer
     # token resolved at request time from MCP_AUTH_TOKEN. When the env var is
@@ -297,7 +301,7 @@ def _build_system_mcp_servers():
     # which fail closed (STRIDE S9), refuse the call: no token means no Kali tools.
     _mcp_auth = BearerAuth(token_env_var="MCP_AUTH_TOKEN")
 
-    return [
+    servers = [
         MCPServer(
             id="network_recon",
             name="Network Recon (kali-sandbox)",
@@ -354,6 +358,9 @@ def _build_system_mcp_servers():
             auth=_mcp_auth,
         ),
     ]
+    # Each runs in a Kali sandbox, which per user sits in the sandbox pool that a user's
+    # own MCP server may never reach (mcp_registry.user_server_http_client).
+    return [mark_system(srv) for srv in servers]
 
 
 # Tool names backed by the system MCP servers. These pass through any
@@ -382,6 +389,92 @@ SYSTEM_MCP_TOOL_NAMES = frozenset({
     # MCP tool. See docs/readmes/README.TM.SYSTEM_OVERVIEW.md trust boundaries.
     "execute_osv_scanner",
 })
+
+
+# =============================================================================
+# THE PERSON'S SANDBOX (group 1: per-user Kali sandboxes)
+# =============================================================================
+# A system tool call runs in the sandbox of the person doing the work (sandbox_router):
+# the chat run's `run` lease, or a background job's own `job` lease, bound here for
+# the job's whole runner. In shared mode the handle is the shared container's and the
+# call takes today's path through the shared manager.
+
+PROGRESS_POLL_S = 5.0
+
+
+class _BoundSandbox:
+    """The handle a background job's calls use, and the lease kind to take again with
+    when its sandbox goes away mid-job."""
+    __slots__ = ("handle", "kind")
+
+    def __init__(self, handle, kind: str):
+        self.handle = handle
+        self.kind = kind
+
+
+_bound_sandbox: ContextVar[Optional[_BoundSandbox]] = ContextVar("bound_sandbox", default=None)
+
+
+@contextmanager
+def bound_sandbox(handle, kind: str):
+    """Every routed call inside uses `handle` (a job's own lease, acquired with `kind`)
+    instead of the run's. Yields the binding: a call that finds the sandbox gone takes a
+    new handle with the same kind and stores it there, and the caller releases the
+    binding's handle when done."""
+    bound = _BoundSandbox(handle, kind)
+    token = _bound_sandbox.set(bound)
+    try:
+        yield bound
+    finally:
+        _bound_sandbox.reset(token)
+
+
+def current_sandbox_handle(project_id: Optional[str] = None):
+    """The sandbox handle this work's routed calls use: a background job's own, else the
+    run scope's for this person, view and project. None without one."""
+    bound = _bound_sandbox.get()
+    if bound is not None:
+        return bound.handle if bound.handle.usable else None
+    if project_id is None:
+        project_id = current_project_id.get() or None
+    return sandbox_router.current_handle(project_id)
+
+
+def kali_base_for_run(port_name: str, shared_url: str, handle, path: str = "") -> Optional[str]:
+    """The address of one of the run's sandbox ports: the handle's own instance per user;
+    `shared_url` (today's whole address) for a shared handle or, without one, in shared
+    mode; None for a per-user run holding no usable sandbox, which then calls nothing."""
+    if handle is not None and handle.mode == sandbox_contract.MODE_PER_USER:
+        return sandbox_router.url_for(handle, port_name, path) if handle.usable else None
+    if handle is None and sandbox_router.current_mode() == sandbox_contract.MODE_PER_USER:
+        return None
+    return shared_url
+
+
+def kali_auth_headers_for_run(handle) -> dict:
+    """The bearer for kali_base_for_run's address: the handle's own instance token per
+    user, the shared MCP_AUTH_TOKEN otherwise."""
+    if handle is not None and handle.mode == sandbox_contract.MODE_PER_USER:
+        return sandbox_router.headers_for(handle)
+    return kali_auth_headers()
+
+
+def _sandbox_refusal(exc) -> dict:
+    """The tool result for a sandbox that cannot serve the call (contract B.13); a call
+    with no person reads as a refusal, the way the model must treat it."""
+    if exc.reason == "no_user":
+        text = sandbox_contract.SANDBOX_REFUSED
+    else:
+        text = sandbox_router.unavailable_message(exc)
+    return {"success": False, "output": None, "error": text}
+
+
+def _named_tool(tools_list, name: str):
+    return next((t for t in tools_list if getattr(t, "name", None) == name), None)
+
+
+#: _call_in_sandbox's answer when the handle's sandbox went away mid-call.
+_SANDBOX_GONE = object()
 
 
 # =============================================================================
@@ -480,6 +573,14 @@ class MCPToolsManager:
     def list_tools(self) -> List:
         """Snapshot of currently cached MCP tools (empty if disconnected)."""
         return list(self._tools_cache.values())
+
+    async def disconnect(self) -> None:
+        """Forget the client and its tools: no server is configured (per-user mode and no
+        user MCP server), so there is nothing to connect to."""
+        async with self._reconnect_lock:
+            self._server_configs = {}
+            self.client = None
+            self._tools_cache = {}
 
     async def reconnect(self, seen_generation: int, reason: str = "", force: bool = False) -> tuple:
         """
@@ -2308,6 +2409,9 @@ class PhaseAwareToolExecutor:
         self.mcp_manager = mcp_manager
         self.graph_tool = graph_tool
         self.web_search_tool = web_search_tool
+        # Loads the system servers into the shared manager when shared mode is answered
+        # while it holds none (it was last loaded in per-user mode); set by the orchestrator.
+        self.shared_system_loader: Optional[Callable[[], Awaitable[None]]] = None
         self._all_tools: Dict[str, callable] = {}
         # Names of tools backed by MCP servers; only these trigger a reconnect
         # on transport errors. Graph / web_search / shodan / google_dork /
@@ -2600,6 +2704,10 @@ class PhaseAwareToolExecutor:
                         "error": f"target tool '{target_tool}' not allowed in '{phase}' phase"}
 
             executor = self  # capture for closure
+            # Read here, in the run's task: the job runs in the sandbox of the run's
+            # person and view (an act-as run's job stays in the act_as view).
+            person = sandbox_router.sandbox_user()
+            view = sandbox_router.sandbox_view()
 
             async def runner(name, a, append_log):
                 # Inner execution: skip phase check (already enforced above)
@@ -2607,7 +2715,15 @@ class PhaseAwareToolExecutor:
                 # not a stub pointing at another file.
                 inner_args = dict(a)
                 inner_args["output_mode"] = "inline"
-                result = await executor.execute(name, inner_args, phase, skip_phase_check=True)
+                # The job outlives the run that spawned it, so it is detached from the
+                # run's scope and holds its own lease.
+                with sandbox_router.for_person(person, acting=view == sandbox_contract.VIEW_ACT_AS), \
+                        sandbox_router.detach_run_scope():
+                    if name in SYSTEM_MCP_TOOL_NAMES:
+                        result = await executor._execute_job_in_sandbox(
+                            name, inner_args, phase, project_id, person, view)
+                    else:
+                        result = await executor.execute(name, inner_args, phase, skip_phase_check=True)
                 # Tee any final output to the log via append_log so it lands
                 # in jobs/<id>.log alongside any progress streaming.
                 if result.get("output"):
@@ -2642,6 +2758,25 @@ class PhaseAwareToolExecutor:
             return {"success": True, "output": str(rows), "error": None}
 
         return {"success": False, "output": None, "error": f"unknown job tool: {tool_name}"}
+
+    async def _execute_job_in_sandbox(self, name: str, args: dict, phase: str,
+                                      project_id: str, person: str, view: str) -> dict:
+        """A background job's system tool call, on a `job` lease of its own held for the
+        whole job (the run's lease ends with the run)."""
+        job_id = job_runner.current_job_id()
+        if job_id:
+            sandbox_router.note_job(job_id, person, view)
+        try:
+            handle = await sandbox_router.acquire(person, project_id=project_id, kind="job", view=view)
+        except sandbox_router.SandboxUnavailable as exc:
+            if job_id:
+                sandbox_router.job_failed(job_id, exc)
+            return _sandbox_refusal(exc)
+        with bound_sandbox(handle, "job") as bound:
+            try:
+                return await self.execute(name, args, phase, skip_phase_check=True)
+            finally:
+                await sandbox_router.release(bound.handle)
 
     async def execute(
         self,
@@ -2684,14 +2819,18 @@ class PhaseAwareToolExecutor:
         if tool_name in job_runner.JOB_TOOL_NAMES:
             return await self._dispatch_job_tool(tool_name, tool_args)
 
-        # Get the tool
-        tool = self._all_tools.get(tool_name)
-        if not tool:
-            return {
-                "success": False,
-                "output": None,
-                "error": f"Tool '{tool_name}' not found"
-            }
+        # A system Kali tool runs in the sandbox of the person doing the work, resolved
+        # below once its arguments are complete; every other tool is the executor's own.
+        routed = tool_name in SYSTEM_MCP_TOOL_NAMES
+        tool = None
+        if not routed:
+            tool = self._all_tools.get(tool_name)
+            if not tool:
+                return {
+                    "success": False,
+                    "output": None,
+                    "error": f"Tool '{tool_name}' not found"
+                }
 
         # Per-session gate: Shodan is enabled/disabled per project. Read the
         # task-isolated SHODAN_ENABLED at execute-time instead of swapping it in/out
@@ -2824,6 +2963,144 @@ class PhaseAwareToolExecutor:
             text = self._extract_text_from_output(output)
             return f"{session_note}\n\n{text}" if session_note else text
 
+        if routed:
+            return await self._execute_routed(tool_name, _invoke, output_override)
+        return await self._call_with_reconnect(tool_name, tool, _invoke, output_override)
+
+    # ------------------------------------------------------------------ routed calls
+
+    async def _execute_routed(self, tool_name: str, invoke, output_override) -> dict:
+        """A system tool call in the sandbox of the person doing the work: the job's own
+        handle, else the chat run's (one `run` lease per run, shared by its plan waves and
+        Fireteam members), else an `exec` lease for this call alone. The call and every
+        key, tag or credential in its arguments reach that one person's client only."""
+        bound = _bound_sandbox.get()
+        # Read once, when the call starts: a call still running after its run ended must
+        # not become an `exec` call with a sandbox (and a lease) of its own.
+        kind = bound.kind if bound is not None else self._routed_kind()
+
+        def run_ended() -> bool:
+            return bound is None and kind == sandbox_router.RUN_KIND and not sandbox_router.run_scope_open()
+
+        handle = None
+        try:
+            handle = await self._sandbox_for_call(bound, kind)
+            if handle.mode != sandbox_contract.MODE_PER_USER:
+                return await self._call_shared(tool_name, invoke, output_override)
+            run_key = sandbox_runs.current_run_key()
+            for attempt in range(2):
+                sandbox_runs.note_run_sandbox(run_key, handle)
+                outcome = await self._call_in_sandbox(tool_name, handle, invoke, output_override)
+                if outcome is not _SANDBOX_GONE:
+                    return outcome
+                # The sandbox went away (stopped, replaced, unreachable): once more on a
+                # fresh handle, never a loop, and never for a run that has ended (its
+                # sandbox is let go; the command must not be sent again elsewhere).
+                if attempt or run_ended():
+                    break
+                logger.warning(f"[sandbox] {tool_name}: the sandbox went away; acquiring it again")
+                handle = await self._reacquire(handle, bound, kind)
+                if run_ended():
+                    break
+            return {"success": False, "output": None, "error": sandbox_contract.SANDBOX_STOPPED}
+        except sandbox_router.SandboxUnavailable as exc:
+            return _sandbox_refusal(exc)
+        finally:
+            if bound is None and handle is not None:
+                await sandbox_router.release(handle)
+
+    @staticmethod
+    def _routed_kind() -> str:
+        return sandbox_router.RUN_KIND if sandbox_router.run_scope_open() else "exec"
+
+    async def _sandbox_for_call(self, bound, kind: str):
+        if bound is not None:
+            if bound.handle.usable:
+                return bound.handle
+            return await self._reacquire(bound.handle, bound, kind)
+        return await sandbox_router.acquire(
+            sandbox_router.sandbox_user(), project_id=current_project_id.get() or None, kind=kind)
+
+    async def _reacquire(self, handle, bound, kind: str):
+        """A fresh handle for the same work after `handle`'s sandbox went away, with the
+        lease kind the call started with. Raises SandboxUnavailable."""
+        sandbox_router.retire(handle)
+        await sandbox_router.release(handle)
+        if bound is not None:
+            bound.handle = await sandbox_router.acquire(
+                handle.user_id, project_id=handle.project_id, kind=bound.kind, view=handle.view)
+            return bound.handle
+        return await sandbox_router.acquire(
+            sandbox_router.sandbox_user(), project_id=current_project_id.get() or None, kind=kind)
+
+    async def _call_shared(self, tool_name: str, invoke, output_override) -> dict:
+        """Shared mode: today's path, the shared manager's tool."""
+        tool = self._all_tools.get(tool_name)
+        if not tool and self.shared_system_loader is not None:
+            try:
+                await self.shared_system_loader()
+            except Exception as exc:  # noqa: BLE001 - the call then reports the tool missing
+                logger.warning(f"[sandbox] loading the shared system servers failed: {type(exc).__name__}")
+            tool = self._all_tools.get(tool_name)
+        if not tool:
+            return {"success": False, "output": None, "error": f"Tool '{tool_name}' not found"}
+        return await self._call_with_reconnect(tool_name, tool, invoke, output_override)
+
+    def _tool_success(self, tool_name: str, clean_output: str, output_override) -> dict:
+        clean_output = output_offload.maybe_offload(
+            current_project_id.get(), tool_name, clean_output, override=output_override)
+        return {"success": True, "output": clean_output, "error": None}
+
+    async def _call_in_sandbox(self, tool_name: str, handle, invoke, output_override):
+        """One call on the handle's own client; a transport error rebuilds that client
+        alone (no other person's) and retries once. _SANDBOX_GONE when the sandbox is gone."""
+        try:
+            client = await sandbox_router.client_for(handle)
+        except sandbox_router.SandboxUnavailable as exc:
+            if exc.reason == "stopped" or exc.detail == "mcp_connect_failed":
+                return _SANDBOX_GONE
+            return _sandbox_refusal(exc)
+        tool = _named_tool(client.list_tools(), tool_name)
+        if tool is None:
+            return {"success": False, "output": None, "error": f"Tool '{tool_name}' not found"}
+        seen_gen = client.generation
+        try:
+            return self._tool_success(
+                tool_name, await _await_within_deadline(tool_name, invoke(tool)), output_override)
+        except ToolDeadlineExceeded as exc:
+            logger.error(f"Tool deadline exceeded: {tool_name} after {int(exc.seconds)}s")
+            return {"success": False, "output": None, "error": str(exc)}
+        except Exception as exc:
+            if not _is_mcp_transport_error(exc):
+                logger.error(f"Tool execution failed: {tool_name} - {exc}")
+                return {"success": False, "output": None, "error": str(exc)}
+            failure = exc
+        if not handle.usable:
+            return _SANDBOX_GONE
+        logger.warning(f"MCP transport error on {tool_name} in a sandbox (gen {seen_gen}): "
+                       f"{type(failure).__name__}. Rebuilding its client + retrying once.")
+        try:
+            new_gen, new_tools = await client.reconnect(seen_gen, reason=f"{tool_name}: {type(failure).__name__}")
+        except Exception as recon_exc:  # noqa: BLE001
+            logger.error(f"MCP reconnect raised: {recon_exc!r}")
+            new_gen, new_tools = seen_gen, []
+        if new_gen <= seen_gen or not new_tools:
+            return _SANDBOX_GONE
+        retry_tool = _named_tool(new_tools, tool_name)
+        if retry_tool is None:
+            return {"success": False, "output": None, "error": str(failure)}
+        try:
+            return self._tool_success(
+                tool_name, await _await_within_deadline(tool_name, invoke(retry_tool)), output_override)
+        except Exception as retry_exc:
+            logger.error(f"Retry after MCP reconnect still failed for {tool_name}: {retry_exc}")
+            return {"success": False, "output": None, "error": str(retry_exc)}
+
+    # ------------------------------------------------------------------ today's call path
+
+    async def _call_with_reconnect(self, tool_name: str, tool, _invoke, output_override) -> dict:
+        """One call on the shared manager's tool (or an in-process one), with the shared
+        manager's reconnect and one retry on a dead MCP transport."""
         is_mcp = tool_name in self._mcp_tool_names
         # Snapshot the generation BEFORE the call so concurrent failures
         # from a fireteam wave all compare against the same pre-failure
@@ -2910,8 +3187,9 @@ class PhaseAwareToolExecutor:
         tool_args: dict,
         phase: str,
         progress_callback: Callable[[str, str, bool], Awaitable[None]],
-        poll_interval: float = 5.0,
-        progress_url: str | None = None
+        poll_interval: float | None = None,
+        progress_url: str | None = None,
+        progress_port: str | None = None,
     ) -> dict:
         """
         Execute a long-running tool with integrated progress streaming.
@@ -2925,8 +3203,12 @@ class PhaseAwareToolExecutor:
             tool_args: Arguments for the tool
             phase: Current agent phase
             progress_callback: Async callback(tool_name, chunk, is_final)
-            poll_interval: How often to poll for progress (seconds)
-            progress_url: HTTP URL for progress endpoint. Defaults to Metasploit's.
+            poll_interval: How often to poll for progress (seconds); PROGRESS_POLL_S.
+            progress_url: The shared sandbox's progress URL. Defaults to Metasploit's.
+            progress_port: The contract's port name of the progress endpoint ("sessions"
+                for Metasploit, "hydra" for Hydra; from the tool name when omitted). A
+                per-user run polls its own sandbox's port with its own bearer, read at
+                each poll: the call acquires the sandbox after polling starts.
 
         Returns:
             dict with 'success', 'output', and optionally 'error'
@@ -2936,13 +3218,30 @@ class PhaseAwareToolExecutor:
             self.execute(tool_name, tool_args, phase)
         )
 
-        last_line_count = 0
-        last_output = ""
-
-        url = progress_url or os.environ.get(
+        if poll_interval is None:
+            poll_interval = PROGRESS_POLL_S
+        if progress_port is None:
+            progress_port = "hydra" if tool_name == "execute_hydra" else "sessions"
+        shared_url = progress_url or os.environ.get(
             'MCP_METASPLOIT_PROGRESS_URL',
             'http://host.docker.internal:8013/progress'
         )
+
+        try:
+            # Called on the class: tests run this method with a stand-in `self`.
+            return await PhaseAwareToolExecutor._poll_progress(execution_task, tool_name, progress_callback, poll_interval,
+                                             progress_port, shared_url)
+        finally:
+            # A cancelled poller (the tool's Stop, the run's end) takes its call along: the
+            # call would otherwise run on, and send to its sandbox, with no one waiting.
+            if not execution_task.done():
+                execution_task.cancel()
+
+    @staticmethod
+    async def _poll_progress(execution_task, tool_name, progress_callback, poll_interval,
+                             progress_port, shared_url) -> dict:
+        last_line_count = 0
+        last_output = ""
         refusal_logged = False
 
         async with httpx.AsyncClient(timeout=2.0) as client:
@@ -2953,7 +3252,11 @@ class PhaseAwareToolExecutor:
                     break
 
                 try:
-                    resp = await client.get(url, headers=kali_auth_headers())
+                    run_sandbox = current_sandbox_handle()
+                    url = kali_base_for_run(progress_port, shared_url, run_sandbox, "/progress")
+                    if url is None:
+                        continue
+                    resp = await client.get(url, headers=kali_auth_headers_for_run(run_sandbox))
                     if resp.status_code == 401 and not refusal_logged:
                         refusal_logged = note_kali_refusal(resp.status_code, url)
                     if resp.status_code == 200:
