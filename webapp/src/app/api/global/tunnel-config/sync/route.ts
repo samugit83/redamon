@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { constantTimeEqual } from '@/lib/constantTimeEqual'
 import { instanceTunnelDown } from '@/lib/sharedInstanceSettings'
+import { afterTunnelModeNamed, tunnelMode } from '@/lib/sharedSettingsEffects'
 
 // POST /api/global/tunnel-config/sync
 //
@@ -19,6 +20,12 @@ import { instanceTunnelDown } from '@/lib/sharedInstanceSettings'
 // instance settings row's too, with the identity switch on) and push an empty (stop)
 // config to the tunnel-manager. The operator must deliberately re-enable tunnels from
 // Global Settings, which is the only activation path.
+//
+// Per-user Kali sandboxes (group 1, WI-S17-3): only the shared container calls this (a per-user
+// sandbox boots without it and holds its own token), and its tunnel is nobody's own: it still goes
+// down, but no person's `tunnelsEnabled` changes, since each one describes that person's own
+// sandbox. Before the orchestrator has named a mode no person's flag changes at once; the reset
+// follows when it names shared (it can start after the shared container that calls this).
 export async function POST(request: NextRequest) {
   const expected = process.env.TUNNEL_AUTH_TOKEN || ''
   if (!expected) {
@@ -31,10 +38,15 @@ export async function POST(request: NextRequest) {
   }
   try {
     // Reflect reality in the UI: tunnels are down after a restart.
-    await prisma.userSettings.updateMany({
-      where: { tunnelsEnabled: true },
-      data: { tunnelsEnabled: false },
-    })
+    const turnPeopleOff = () => prisma.userSettings.updateMany({ where: { tunnelsEnabled: true }, data: { tunnelsEnabled: false } })
+    const { mode, named } = await tunnelMode()
+    if (!named) {
+      afterTunnelModeNamed('the boot reset of the tunnel flags', async (known) => {
+        if (known === 'shared') await turnPeopleOff()
+      })
+    } else if (mode === 'shared') {
+      await turnPeopleOff()
+    }
     await instanceTunnelDown()
 
     await fetch('http://kali-sandbox:8015/tunnel/configure', {

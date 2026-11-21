@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { getSession, isInternalRequest, isScannerRequest, requireUserAccess } from '@/lib/session'
+import { authzIdentityOf, getSession, isInternalRequest, isScannerRequest, requireUserAccess } from '@/lib/session'
 import { sanitizeBodyRules } from '@/lib/captureBodyRules'
 import { isValidGithubHost } from '@/lib/github/ownerTarget'
 import { ROTATION_TOOL_NAMES } from '@/lib/rotationTools'
@@ -24,7 +24,10 @@ import { requireSelfPermission } from '@/lib/authz/selfService'
 import { type SaveWarning } from './saveWarnings'
 import { rbacFlags } from '@/lib/authz/flags'
 import { changedCaptureFields, changedTunnelFields, parseCapturePatch } from '@/lib/sharedInstanceSettings'
-import { CAPTURE_RECREATE_FIELDS, pushTunnelConfig, reconcileCaptureProxy, type CaptureValues } from '@/lib/sharedSettingsEffects'
+import {
+  CAPTURE_RECREATE_FIELDS, pushTunnelConfig, reconcileCaptureProxy, tunnelMode, withPersonTunnelLock,
+  type CaptureValues, type TunnelMode,
+} from '@/lib/sharedSettingsEffects'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -39,6 +42,12 @@ function maskSecret(value: string): string {
 const TUNNELS_ADMIN_ONLY =
   'The tunnel is shared by the whole instance: only an administrator, or the member who configured it, can change it.'
 
+const TUNNELS_OWN_SANDBOX =
+  'Turning on a tunnel from your own Kali sandbox, or changing its settings, takes the Tunnels permission. Turning your tunnel off does not.'
+
+const TUNNELS_NOT_UNDER_ACT_AS =
+  'A tunnel is not turned on or changed while acting as another account: it would run in that account\'s own Kali sandbox, not the one your act-as work uses. Turning it off is allowed.'
+
 const MOVED_TO_INSTANCE_SETTINGS =
   'The tunnel and TrafficMind settings are instance settings: change them in the Tunneling section or the TrafficMind settings, not in your own settings.'
 
@@ -49,13 +58,18 @@ const MOVED_TO_INSTANCE_SETTINGS =
  * (sharedTools.ts). `record: false` asks without counting a use of that hatch. The PUT decides
  * on a `fresh` read, so a demoted admin or a removed grant never changes the instance's tunnel.
  */
-async function tunnelAccess(record: boolean, { fresh = false }: { fresh?: boolean } = {}): Promise<{ access: SharedToolAccess; actor: AuditActor }> {
+async function tunnelAccess(
+  record: boolean,
+  { fresh = false, actAs = false }: { fresh?: boolean; actAs?: boolean } = {},
+): Promise<{ access: SharedToolAccess; actor: AuditActor; actingAs: boolean }> {
   const session = await getSession({ fresh })
-  if (!session) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
+  if (!session) return { access: { allowed: false, via: null }, actor: auditActorOf(null), actingAs: false }
   const actor = auditActorOf(sessionActor(session))
   const principal = await loadPrincipal(session.userId, { fresh })
-  if (!principal) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
-  return { access: await sharedToolAccess(principal, 'tunnels', { record }), actor }
+  if (!principal) return { access: { allowed: false, via: null }, actor: auditActorOf(null), actingAs: false }
+  // `actAs`: whether the session acts as another account (asked only where per-user tunnels need it).
+  const actingAs = actAs && (await authzIdentityOf(session, { fresh })).actingAs !== null
+  return { access: await sharedToolAccess(principal, 'tunnels', { record }), actor, actingAs }
 }
 
 /** Whether the signed-in person may change the instance's capture policy, on a fresh read. */
@@ -64,13 +78,31 @@ async function capturePolicyHolder(): Promise<boolean> {
   return session !== null && await sessionHolds(session, 'platform:traffic_capture', { fresh: true })
 }
 
+interface TunnelHint {
+  canManageTunnels?: boolean
+  sharedSettingsAt?: 'instance'
+  /** Per-user Kali sandboxes: the tunnel is this row's own and runs in the person's own sandbox. */
+  tunnelScope?: 'own_sandbox'
+}
+
 /**
  * Tells a browser whether to offer the tunnel controls. Only a hint: a failed read leaves
  * it out, the page then keeps the controls, and the PUT still decides. With the identity
  * switch on these settings live in the instance settings (step 2.4): this row's controls
- * are off and `sharedSettingsAt` sends the page to /api/admin/instance-settings.
+ * are off and `sharedSettingsAt` sends the page to /api/admin/instance-settings. With per-user
+ * Kali sandboxes the tunnel is every person's own (`tunnelScope`), whatever the identity switch,
+ * while `sharedSettingsAt` still sends the capture settings to the instance settings.
  */
-async function tunnelControlsHint(): Promise<{ canManageTunnels?: boolean; sharedSettingsAt?: 'instance' }> {
+async function tunnelControlsHint(): Promise<TunnelHint> {
+  if ((await tunnelMode()).mode === 'per_user') {
+    const scope: TunnelHint = { tunnelScope: 'own_sandbox', ...(rbacFlags().identity ? { sharedSettingsAt: 'instance' as const } : {}) }
+    try {
+      return { canManageTunnels: (await tunnelAccess(false)).access.allowed, ...scope }
+    } catch (err) {
+      console.warn(`[rbac] tunnel access hint unavailable code=${safeErrorCode(err)}`)
+      return scope
+    }
+  }
   if (rbacFlags().identity) return { canManageTunnels: false, sharedSettingsAt: 'instance' }
   try {
     return { canManageTunnels: (await tunnelAccess(false)).access.allowed }
@@ -366,6 +398,15 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       where: { userId: id },
     })
 
+    // The tunnel settings this save changes, and the Kali sandbox mode they follow (read only
+    // then): with per-user sandboxes they are this person's own row, whatever the identity switch.
+    // An explicit "off" is read too: per-user mode sends it even when the row already reads off,
+    // since an earlier stop may not have reached the sandbox.
+    const tunnelChanges = changedTunnelFields(existing as Record<string, unknown> | null, body)
+    const explicitOff = 'tunnelsEnabled' in body && !body.tunnelsEnabled
+    const mode: TunnelMode | null = tunnelChanges.length || explicitOff ? await tunnelMode() : null
+    const perPerson = mode?.mode === 'per_user'
+
     // With the identity switch on the tunnel and capture settings live in the instance
     // settings (step 2.4): a real change of one is refused here, before anything is
     // written. Unchanged and masked values pass, since the Global Settings page and the
@@ -373,7 +414,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (rbacFlags().identity) {
       const existingRow = existing as Record<string, unknown> | null
       const moved = [
-        ...changedTunnelFields(existingRow, body),
+        ...(perPerson ? [] : tunnelChanges),
         ...changedCaptureFields(existingRow, parseCapturePatch(body, sanitizeBodyRules), body),
       ]
       if (moved.length) {
@@ -400,19 +441,33 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     // The tunnel is one listener for the whole instance (HD-06): changing it is refused
     // here, before any check of the request's values and before anything is written.
-    const tunnelChanges = changedTunnelFields(existing as Record<string, unknown> | null, body)
+    // Per-user sandboxes keep the rule for their own tunnel (only who may open the instance
+    // tunnel may open one, a single-host deploy included); turning one's own tunnel off needs
+    // nothing. Under act-as a tunnel is never turned on: it would run in the member's own
+    // sandbox, not the act_as one Kali work under act-as uses (TD-26).
+    const turnsOnOrEdits = perPerson
+      ? tunnelChanges.filter((f) => f !== 'tunnelsEnabled' || Boolean(body.tunnelsEnabled))
+      : tunnelChanges
     let tunnelActor = auditActorOf(null)
     let tunnelVia = 'internal'
     if (tunnelChanges.length && !isInternalRequest(request)) {
-      const { access, actor } = await tunnelAccess(true, { fresh: true })
-      if (!access.allowed || !access.via) {
-        return NextResponse.json(
-          { error: TUNNELS_ADMIN_ONLY, code: 'tunnels_admin_only', fields: tunnelChanges },
-          { status: 403 },
-        )
-      }
+      const { access, actor, actingAs } = await tunnelAccess(true, { fresh: true, actAs: perPerson && turnsOnOrEdits.length > 0 })
       tunnelActor = actor
-      tunnelVia = access.via
+      if (turnsOnOrEdits.length) {
+        if (!access.allowed || !access.via) {
+          return NextResponse.json(
+            { error: perPerson ? TUNNELS_OWN_SANDBOX : TUNNELS_ADMIN_ONLY, code: 'tunnels_admin_only', fields: tunnelChanges },
+            { status: 403 },
+          )
+        }
+        if (actingAs) {
+          return NextResponse.json(
+            { error: TUNNELS_NOT_UNDER_ACT_AS, code: 'tunnels_act_as_refused', fields: tunnelChanges },
+            { status: 403 },
+          )
+        }
+      }
+      tunnelVia = access.via ?? 'own_tunnel_off'
     }
 
     // The GHE host is the ALLOWLIST every supply-chain host check is made
@@ -478,42 +533,58 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // Before the upsert below, so the row it returns carries the merged map.
     if (featureModelsPatch) await applyFeatureModels(id, featureModelsPatch, featureModelsActor)
 
-    const settings = await prisma.userSettings.upsert({
-      where: { userId: id },
-      update: {
-        ...data, ...captureData,
-        ...(enabledProvided ? { tunnelsEnabled: desiredEnabled } : {}),
-        ...(captureEnabledProvided ? { captureProxyEnabled: captureDesiredEnabled } : {}),
-      },
-      create: {
-        userId: id, ...data, ...captureData,
-        tunnelsEnabled: desiredEnabled,
-        captureProxyEnabled: captureDesiredEnabled,
-      },
-    })
-
-    // The capture proxy container follows the master toggle and the spawn-time knobs.
+    // Per-user mode: one person's tunnel saves run one at a time from the write to the push, so a
+    // later "off" is never undone by an earlier "on" still waiting for the sandbox to start.
+    const serialized = <T>(fn: () => Promise<T>): Promise<T> => (perPerson ? withPersonTunnelLock(id, fn) : fn())
     const warnings: SaveWarning[] = []
-    const existingRow = existing as Record<string, unknown> | null
-    const captureWarning = await reconcileCaptureProxy(settings as CaptureValues, {
-      enabledChanged: captureEnabledProvided && captureDesiredEnabled !== (existing?.captureProxyEnabled ?? true),
-      recreateFieldChanged: CAPTURE_RECREATE_FIELDS.some((k) => k in captureData && captureData[k] !== existingRow?.[k]),
-    })
-    if (captureWarning) warnings.push(captureWarning)
-
-    // Push tunnel config to kali-sandbox when the enabled state OR a tunnel credential changed.
-    if (tunnelChanges.length) {
-      // Which fields changed and through what right, never their values.
-      await writeAudit({
-        ...actorFields(tunnelActor),
-        action: 'settings.tunnel_changed',
-        targetType: 'user',
-        targetId: id,
-        after: { fields: tunnelChanges, via: tunnelVia },
+    const settings = await serialized(async () => {
+      let row = await prisma.userSettings.upsert({
+        where: { userId: id },
+        update: {
+          ...data, ...captureData,
+          ...(enabledProvided ? { tunnelsEnabled: desiredEnabled } : {}),
+          ...(captureEnabledProvided ? { captureProxyEnabled: captureDesiredEnabled } : {}),
+        },
+        create: {
+          userId: id, ...data, ...captureData,
+          tunnelsEnabled: desiredEnabled,
+          captureProxyEnabled: captureDesiredEnabled,
+        },
       })
-      const warning = await pushTunnelConfig(settings)
-      if (warning) warnings.push(warning)
-    }
+
+      // The capture proxy container follows the master toggle and the spawn-time knobs.
+      const existingRow = existing as Record<string, unknown> | null
+      const captureWarning = await reconcileCaptureProxy(row as CaptureValues, {
+        enabledChanged: captureEnabledProvided && captureDesiredEnabled !== (existing?.captureProxyEnabled ?? true),
+        recreateFieldChanged: CAPTURE_RECREATE_FIELDS.some((k) => k in captureData && captureData[k] !== existingRow?.[k]),
+      })
+      if (captureWarning) warnings.push(captureWarning)
+
+      // Push the tunnel config when the enabled state OR a tunnel credential changed: to the shared
+      // kali-sandbox, or with per-user sandboxes to this account's own sandbox only, where an
+      // explicit "off" is sent again even when nothing changed.
+      if (mode && (tunnelChanges.length || (perPerson && explicitOff))) {
+        if (tunnelChanges.length) {
+          // Which fields changed and through what right, never their values.
+          await writeAudit({
+            ...actorFields(tunnelActor),
+            action: 'settings.tunnel_changed',
+            targetType: 'user',
+            targetId: id,
+            after: { fields: tunnelChanges, via: tunnelVia },
+          })
+        }
+        const pushed = await pushTunnelConfig(row, mode, {
+          userId: id,
+          turnedOn: tunnelChanges.includes('tunnelsEnabled') && desiredEnabled,
+          actor: tunnelActor,
+        })
+        if (pushed.warning) warnings.push(pushed.warning)
+        // A stored "on" the person's sandbox no longer runs was turned off: answer what is stored.
+        if (pushed.tunnelsEnabled !== row.tunnelsEnabled) row = { ...row, tunnelsEnabled: pushed.tunnelsEnabled }
+      }
+      return row
+    })
 
     // Handle rotation configs if provided
     const rotationConfigs: Record<string, { extraKeys?: string[]; extraKeyCount: number; rotateEveryN: number }> = {}

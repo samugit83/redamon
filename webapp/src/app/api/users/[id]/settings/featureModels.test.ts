@@ -13,6 +13,8 @@
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { NextRequest, NextResponse } from 'next/server'
+// The Kali sandbox mode the orchestrator names: shared (group 1, D.2: every test sets it).
+vi.mock('@/lib/sandbox/gateway', () => ({ sandboxMode: async () => 'shared' }))
 
 const mockFindUnique = vi.fn()
 const mockUpsert = vi.fn()
