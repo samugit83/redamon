@@ -1,4 +1,5 @@
-"""Per-user Kali sandboxes: start, stop, reconcile and adopt them (group 1).
+"""Per-user Kali sandboxes: start, stop, reconcile and adopt them, and keep them
+only while they are used (group 1).
 
 One container per person and view, started on demand. It mounts only the
 person's allowed project folders and their own output folder, and sits on a
@@ -6,8 +7,15 @@ network of its own that only the agent and the capture proxy join. The names,
 labels, mount plan, container and network specification and timings are the
 contract (``sandbox_contract.py``); this module applies them with Docker.
 
+Each unit of work holds a lease on the instance it uses, renewed every
+``LEASE_RENEW_S`` and lapsing after ``LEASE_TTL_S``. The idle loop stops an
+instance nobody leases once it has been unused for the idle minutes, one held
+only by live sessions or a tunnel (a ``hold`` lease, which is not use) after
+eight hours without use, and a replaced (draining) one once its leases end.
+
 Concurrency: one asyncio lock per person guards every decision for both of
-that person's views, and one global lock guards subnet and port allocation.
+that person's views, a lease and the idle loop's stop included, and one global
+lock guards subnet and port allocation and the retry of network removals.
 docker-py is synchronous, so every Docker call runs in a thread. The work done
 under a person's lock runs as its own task, shielded from the caller, so a
 client that hangs up mid-start never leaves a half-made sandbox behind.
@@ -18,6 +26,7 @@ holds one): a log line names the person by sandbox key.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import ipaddress
 import json
 import logging
@@ -27,6 +36,7 @@ import shutil
 import stat
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Callable, Dict, Mapping, Optional
 
 import docker
@@ -81,6 +91,70 @@ IMAGE_MISSING_DETAIL = (
 
 _LIVE_STATES = ("starting", "running", "draining", "stopping")
 
+# The agent names its leases with a UUID (the webapp checks the same shape).
+_LEASE_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+ERR_INVALID_LEASE = "invalid_sandbox_request"
+DRAIN_REASON = "replaced"
+
+# A restart loses every lease. An adopted instance therefore takes lease ids it
+# does not know, and is never stopped for holding none, for one lease lifetime,
+# while the agent's renewals (every 30 s) and the hold watcher (every 60 s) take
+# them again; else a draining one would be stopped at the first tick with its
+# sessions and jobs still running.
+ADOPTION_GRACE_S = sc.LEASE_TTL_S
+
+# A start whose readiness never settles (its health read kept failing, its
+# check task died) is stopped by the idle loop this long after its timeout.
+START_STUCK_GRACE_S = 60
+
+# Turns off the tunnels of a replaced instance (tunnel_manager.py on its own
+# loopback, an empty config). The token reaches it through the exec's
+# environment, never its command line; proxies are bypassed. The person is root
+# in there and decides what the exec prints and how long it runs, so it is
+# started detached and never attached: its output is never read, its exit code
+# is read at the next tick and proves little, and the config is sent again at
+# every tick while the instance drains. Its Docker calls run on a pool of their
+# own with a deadline, so a wedged daemon never holds the shared executor.
+TUNNEL_TOKEN_VAR = "REDAMON_TUNNEL_TOKEN"
+TUNNEL_OFF_TIMEOUT_S = 30
+TUNNEL_WORKERS = 2
+TUNNEL_THREAD_PREFIX = "sandbox-tunnel"
+TUNNEL_CALL_DEADLINE_S = 20
+TUNNEL_OFF_SCRIPT = (
+    "import os, urllib.request as r\n"
+    f"q = r.Request('http://127.0.0.1:{sc.PORTS['tunnel']}/tunnel/configure', data=b'{{}}', "
+    "method='POST', headers={'Content-Type': 'application/json', "
+    f"'Authorization': 'Bearer ' + os.environ.pop('{TUNNEL_TOKEN_VAR}')}})\n"
+    f"r.build_opener(r.ProxyHandler({{}})).open(q, timeout={TUNNEL_OFF_TIMEOUT_S}).read()\n")
+
+
+def steady_clock() -> Callable[[], float]:
+    """Epoch seconds that never jump: the wall time when it is made, moved on by
+    the monotonic clock. Lease expiry, the idle timer and the hold cap must not
+    fire because an NTP step or an operator moved the host's clock; the epoch
+    values the API reports (``stop_at``, ``expires_at``) are off by at most the
+    corrections made to the host's clock since the orchestrator started."""
+    wall0, mono0 = time.time(), time.monotonic()
+    return lambda: wall0 + (time.monotonic() - mono0)
+
+
+_DOCKER_TIME = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})")
+
+
+def _docker_created_ns(value) -> int:
+    """Docker's RFC 3339 ``Created`` in nanoseconds since the epoch, 0 when absent
+    or unreadable. Parsed, never compared as text: the engine trims trailing
+    zeros of the fraction, so ``.1234Z`` sorts after ``.12341Z`` as a string."""
+    match = _DOCKER_TIME.fullmatch(value.strip()) if isinstance(value, str) else None
+    if match is None:
+        return 0
+    zone = "+00:00" if match.group(3) == "Z" else match.group(3)
+    try:
+        seconds = int(datetime.strptime(match.group(1) + zone, "%Y-%m-%dT%H:%M:%S%z").timestamp())
+    except ValueError:
+        return 0
+    return seconds * 10 ** 9 + int((match.group(2) or "").ljust(9, "0"))
+
 
 # --- Errors -------------------------------------------------------------------------
 
@@ -98,7 +172,11 @@ class SandboxError(Exception):
 
 
 class SandboxInvalid(SandboxError, ValueError):
-    """An invalid user id, view or project id (400)."""
+    """An invalid user id, view, project id, lease id or lease kind (400)."""
+
+    def __init__(self, code: str, detail: str = ""):
+        super().__init__(code, detail)
+        self.status = 400
 
 
 class SandboxStartError(SandboxError):
@@ -139,11 +217,21 @@ class Instance:
     reverse_port: int = sc.DEFAULT_REVERSE_PORT
     pool_port: Optional[int] = None
     container_id: Optional[str] = None
+    # {lease_id: (kind, expires_at)}
     leases: dict = field(default_factory=dict)
     stop_reason: Optional[str] = None
     warn: bool = False
     start_error: Optional[SandboxError] = None
     ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # What it was started from, for the drain onto new code (TD-28).
+    image_id: Optional[str] = None
+    servers: Optional[str] = None
+    grace_until: float = 0.0
+    # Order of creation in this manager (adoption assigns it oldest first).
+    seq: int = 0
+    tunnel_exec: Optional[str] = None
+    tunnel_future: Optional[concurrent.futures.Future] = field(default=None, repr=False)
+    tunnel_confirmed: bool = False
 
     @property
     def reservation_key(self) -> str:
@@ -198,7 +286,7 @@ class SandboxManager:
     path and mounted by the host path."""
 
     def __init__(self, client, ledger, host_bases: Mapping[str, str], osv_volume: str,
-                 own_compose_project: Optional[str], clock: Callable[[], float] = time.time,
+                 own_compose_project: Optional[str], clock: Optional[Callable[[], float]] = None,
                  cpu_count: Callable[[], Optional[int]] = os.cpu_count, *,
                  local_bases: Optional[Mapping[str, str]] = None,
                  sleep: Callable = asyncio.sleep,
@@ -209,7 +297,7 @@ class SandboxManager:
         self.osv_volume = osv_volume or sc.OSV_VOLUME_DEFAULT
         self.own_compose_project = own_compose_project or None
         self.owner = self.own_compose_project or "standalone"
-        self.clock = clock
+        self.clock = clock or steady_clock()
         self.cpu_count = cpu_count
         self.local_bases = dict(sc.MOUNT_HOST_BASES if local_bases is None else local_bases)
         self._sleep = sleep
@@ -224,6 +312,9 @@ class SandboxManager:
         self._busy_ports: Dict[int, float] = {}
         self._network_retry: set = set()
         self._warned: set = set()
+        self._seq = 0
+        self._tunnel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._tunnel_pending: set = set()
 
     # --- Small helpers --------------------------------------------------------
 
@@ -253,6 +344,9 @@ class SandboxManager:
         return None
 
     def _register(self, inst: Instance) -> None:
+        if not inst.seq:
+            self._seq += 1
+            inst.seq = self._seq
         self._by_user.setdefault(inst.user_id, {})[inst.instance] = inst
 
     def _unregister(self, inst: Instance) -> None:
@@ -268,8 +362,39 @@ class SandboxManager:
     def _idle_s(self) -> int:
         return sc.idle_minutes(os.environ.get(sc.IDLE_MINUTES_ENV)) * 60
 
-    def _stop_at(self, inst: Instance) -> float:
+    @staticmethod
+    def _live_kinds(inst: Instance, now: float) -> set:
+        return {kind for kind, expires in inst.leases.values() if expires > now}
+
+    @staticmethod
+    def _prune(inst: Instance, now: float) -> None:
+        for lease_id, (_, expires) in list(inst.leases.items()):
+            if expires <= now:
+                del inst.leases[lease_id]
+
+    def _stop_at(self, inst: Instance, now: Optional[float] = None) -> float:
+        """When the idle loop will stop it if nothing changes: eight hours after its
+        last use while a hold is held, else the idle minutes after it; at once for
+        one already stopping, or draining with nothing left to finish."""
+        now = self.clock() if now is None else now
+        kinds = self._live_kinds(inst, now)
+        if inst.state == "stopping" or (inst.state == "draining" and not kinds
+                                        and now >= inst.grace_until):
+            return now
+        if sc.HOLD_LEASE_KIND in kinds:
+            return inst.last_used + sc.HOLD_MAX_NO_USE_S
         return inst.last_used + self._idle_s()
+
+    def _warn(self, inst: Instance, now: float) -> bool:
+        """The hold cap's warning, from one hour before it (any use resets it)."""
+        return (inst.state in ("running", "draining")
+                and sc.HOLD_LEASE_KIND in self._live_kinds(inst, now)
+                and now >= inst.last_used + sc.HOLD_MAX_NO_USE_S - sc.HOLD_WARN_BEFORE_S)
+
+    @staticmethod
+    def _shown_stop_reason(inst: Instance) -> Optional[str]:
+        """Why an instance is on its way out; None while it is the current one."""
+        return inst.stop_reason if inst.state in ("draining", "stopping") else None
 
     def _warn_once(self, tag: str, message: str) -> None:
         if tag not in self._warned:
@@ -374,12 +499,13 @@ class SandboxManager:
             return {"mode": mode, "state": "unavailable", "instance": None, "fresh": False}
 
     def _running_answer(self, inst: Instance, fresh: bool, mode: str) -> dict:
+        now = self.clock()
         return {"mode": mode, "user_id": inst.user_id, "view": inst.view,
                 "instance": inst.instance, "host": inst.host, "token": inst.token,
                 "tunnel_token": inst.tunnel_token, "ports": dict(sc.PORTS),
                 "reverse_port": inst.reverse_port, "projects": list(inst.projects),
-                "state": "running", "fresh": fresh, "stop_at": self._stop_at(inst),
-                "stop_reason": None, "warn": inst.warn}
+                "state": "running", "fresh": fresh, "stop_at": self._stop_at(inst, now),
+                "stop_reason": None, "warn": self._warn(inst, now)}
 
     async def _wait_ready(self, inst: Instance) -> None:
         try:
@@ -404,14 +530,21 @@ class SandboxManager:
                 if cur is not None and not replace:
                     if cur.state == "running":
                         await self._ensure_guests(cur.network, strict=True)
+                        # Use is marked under the lock: an idle tick queued behind
+                        # this ensure must not stop what it is handing out.
+                        cur.last_used = self.clock()
                     return cur, False
                 if pending.fenced:
                     raise SandboxStartError(sc.ERR_START_FAILED,
                                             "the sandbox was stopped while this start waited; ask again")
-                if replace:
-                    cur.state = "draining"
-                    self._log("draining", cur, "replaced")
-                return await self._start_locked(user_id, view, projects), True
+                # A replacement is admitted and made under its own key first: a
+                # refusal or a failed start leaves the current instance current.
+                new = await self._start_locked(user_id, view, projects)
+                if replace and cur.state in ("starting", "running"):
+                    self._mark_draining(cur, "a project it lacks is needed")
+                await self._stop_older_draining(user_id, view)
+                self._turn_off_replaced_tunnels(user_id, view)
+                return new, True
         finally:
             waiting = self._pending.get(user_id)
             if waiting is not None:
@@ -484,6 +617,7 @@ class SandboxManager:
         identities = await asyncio.to_thread(self._prepare_folders_sync, inst.user_id,
                                              inst.view, inst.projects, custom)
         servers = await asyncio.to_thread(self._servers_hash_sync)
+        inst.servers = servers
         for attempt in range(2):
             inst.reverse_port = inst.pool_port or sc.DEFAULT_REVERSE_PORT
             env = sc.container_env(inst.user_id, inst.view, inst.instance,
@@ -492,7 +626,7 @@ class SandboxManager:
             inst.tunnel_token = env[sc.ENV_TUNNEL_AUTH_TOKEN]
             kwargs = self._container_kwargs(inst, env, servers, custom)
             try:
-                inst.container_id = await asyncio.to_thread(self._create_start_sync, kwargs)
+                inst.container_id, inst.image_id = await asyncio.to_thread(self._create_start_sync, kwargs)
                 break
             except APIError as e:
                 busy = inst.pool_port is not None and any(
@@ -547,7 +681,12 @@ class SandboxManager:
         return mounts
 
     async def _finish_start(self, inst: Instance) -> None:
-        code = await self._wait_healthy(inst, self._start_timeout_s)
+        try:
+            code = await self._wait_healthy(inst, self._start_timeout_s)
+        except Exception as e:  # noqa: BLE001 - an unreadable health is a failed start
+            logger.warning(f"[sandbox] the health of key={inst.key} instance={inst.instance} "
+                           f"could not be read: {type(e).__name__}")
+            code = sc.ERR_START_FAILED
         async with self._user_lock(inst.user_id):
             # A start replaced before it was ready is draining: it still becomes
             # ready (its callers wait for it) and drains from there.
@@ -712,15 +851,18 @@ class SandboxManager:
     # --- Status ---------------------------------------------------------------
 
     def status(self, user_id: str) -> dict:
-        """Both views of a person, without tokens."""
+        """Both views of a person, without tokens. ``lease_kinds`` lists unexpired
+        leases only; ``stop_reason`` is set for an instance on its way out."""
+        now = self.clock()
         out = []
         for inst in sorted(self.instances(user_id), key=lambda i: (i.view, i.created)):
             out.append({"instance": inst.instance, "view": inst.view, "state": inst.state,
                         "projects_hash": inst.projects_hash, "created_at": inst.created,
                         "last_used": inst.last_used,
-                        "lease_kinds": sorted({kind for kind, _ in inst.leases.values()}),
-                        "stop_at": self._stop_at(inst), "stop_reason": inst.stop_reason,
-                        "warn": inst.warn, "reverse_port": inst.reverse_port})
+                        "lease_kinds": sorted(self._live_kinds(inst, now)),
+                        "stop_at": self._stop_at(inst, now),
+                        "stop_reason": self._shown_stop_reason(inst),
+                        "warn": self._warn(inst, now), "reverse_port": inst.reverse_port})
         return {"mode": self.mode(), "instances": out}
 
     def list_running(self) -> list:
@@ -730,17 +872,296 @@ class SandboxManager:
                  "token": i.token, "state": i.state}
                 for i in self.instances() if i.state in ("running", "draining")]
 
+    # --- Leases (B.8) ---------------------------------------------------------
+
+    def _owner_of(self, instance: str) -> Optional[str]:
+        for inst in self.instances():
+            if inst.instance == instance:
+                return inst.user_id
+        return None
+
+    async def lease(self, user_id: str, instance: str, lease_id: str, kind: str) -> dict:
+        """Take or renew (one upsert keyed by ``lease_id``) a lease on one of the
+        person's own instances, until ``LEASE_TTL_S`` from now. Under the person's
+        lock, so a lease and the idle loop's stop never cross: whichever takes the
+        lock first wins, and a lease after a stop is ``sandbox_not_running``.
+
+        Another person's instance is ``unknown_instance`` (404); a stopping or gone
+        one ``sandbox_not_running``; a draining one renews the ids it holds and
+        refuses others (``sandbox_draining``). A kind in ``USE_KINDS`` is use."""
+        try:
+            sc.check_user_id(user_id)
+        except ValueError as e:
+            raise SandboxInvalid(str(e)) from None
+        if kind not in sc.LEASE_KINDS or not isinstance(lease_id, str) or not _LEASE_ID.fullmatch(lease_id):
+            raise SandboxInvalid(ERR_INVALID_LEASE, "not a valid lease id or kind")
+        if not sc.valid_instance(instance):
+            raise SandboxError(sc.ERR_UNKNOWN_INSTANCE, "no such sandbox instance")
+        if user_id not in self._by_user:
+            return self._lease_refusal(user_id, instance)
+        async with self._user_lock(user_id):
+            now = self.clock()
+            inst = self.get_instance(user_id, instance)
+            if inst is None or inst.state == "stopping":
+                return self._lease_refusal(user_id, instance)
+            self._prune(inst, now)
+            if inst.state == "draining" and lease_id not in inst.leases and now >= inst.grace_until:
+                raise SandboxError(sc.ERR_DRAINING, "this sandbox is being replaced; ask for the new one")
+            expires = now + sc.LEASE_TTL_S
+            inst.leases[lease_id] = (kind, expires)
+            if kind in sc.USE_KINDS:
+                inst.last_used = now
+            inst.warn = self._warn(inst, now)
+            return {"expires_at": expires, "state": inst.state, "stop_at": self._stop_at(inst, now),
+                    "warn": inst.warn}
+
+    def _lease_refusal(self, user_id: str, instance: str):
+        owner = self._owner_of(instance)
+        if owner is not None and owner != user_id:
+            raise SandboxError(sc.ERR_UNKNOWN_INSTANCE, "no such sandbox instance")
+        raise SandboxError(sc.ERR_NOT_RUNNING, "this sandbox is not running; ask for it again")
+
+    async def release_lease(self, user_id: str, lease_id: str) -> int:
+        """Drop the person's lease ``lease_id`` from every instance of theirs that
+        holds it (idempotent). Ending a use lease is use: the idle timer counts
+        from now."""
+        try:
+            sc.check_user_id(user_id)
+        except ValueError as e:
+            raise SandboxInvalid(str(e)) from None
+        if not isinstance(lease_id, str) or not _LEASE_ID.fullmatch(lease_id) or user_id not in self._by_user:
+            return 0
+        async with self._user_lock(user_id):
+            now = self.clock()
+            dropped = 0
+            for inst in self.instances(user_id):
+                held = inst.leases.pop(lease_id, None)
+                if held is None:
+                    continue
+                dropped += 1
+                kind, expires = held
+                if kind in sc.USE_KINDS and expires > now and inst.state != "stopping":
+                    inst.last_used = max(inst.last_used, now)
+            return dropped
+
+    # --- Draining (B.7, TD-28) ------------------------------------------------
+
+    def _mark_draining(self, inst: Instance, why: str) -> None:
+        """Not current any more: new work goes to a new instance, and this one
+        stops once its leases end (reason ``replaced``)."""
+        inst.state = "draining"
+        inst.stop_reason = DRAIN_REASON
+        self._log(f"draining ({why})", inst, DRAIN_REASON)
+
+    async def _stop_older_draining(self, user_id: str, view: str) -> None:
+        """At most one draining instance per person and view: when a replacement
+        starts while an older one still drains, the older one stops (``replaced``),
+        else a new project per run kept alive by renewed leases would let one
+        person hold any number of instances. Under the person's lock."""
+        draining = [i for i in self._view_instances(user_id, view) if i.state == "draining"]
+        for inst in sorted(draining, key=lambda i: i.seq)[:-1]:
+            await self._stop_locked(inst, DRAIN_REASON)
+
+    def _turn_off_replaced_tunnels(self, user_id: str, view: str) -> None:
+        """Once a view has a new instance, its draining ones lose their tunnels:
+        the webapp turns the person's tunnel setting off on that fresh start (the
+        I19 rule), so no old instance may keep a tunnel up. A drain with no
+        replacement yet (new code) keeps it, so sessions that came in through it
+        live until then. Sent at once and again at every tick while it drains,
+        one call at a time per instance, never queued behind a wedged daemon."""
+        if self._current(user_id, view) is None:
+            return
+        for inst in self._view_instances(user_id, view):
+            if inst.state != "draining" or not inst.tunnel_token:
+                continue
+            if inst.tunnel_future is not None and not inst.tunnel_future.done():
+                continue
+            if len(self._tunnel_pending) >= TUNNEL_WORKERS:
+                return
+            if self._tunnel_pool is None:
+                self._tunnel_pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=TUNNEL_WORKERS, thread_name_prefix=TUNNEL_THREAD_PREFIX)
+            future = self._tunnel_pool.submit(self._turn_off_tunnel_sync, inst)
+            inst.tunnel_future = future
+            self._tunnel_pending.add(future)
+            future.add_done_callback(self._tunnel_pending.discard)
+            self._spawn(self._await_tunnel_call(inst, future))
+
+    async def _await_tunnel_call(self, inst: Instance, future: concurrent.futures.Future) -> None:
+        try:
+            await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), TUNNEL_CALL_DEADLINE_S)
+        except asyncio.TimeoutError:
+            # The thread stays busy until Docker answers; nothing is queued behind it.
+            logger.warning(f"[sandbox] the Docker daemon did not answer the tunnel switch-off of "
+                           f"key={inst.key} instance={inst.instance} within {TUNNEL_CALL_DEADLINE_S} s")
+
+    def _turn_off_tunnel_sync(self, inst: Instance) -> None:
+        """One step, on the tunnel pool: read how the previous switch-off ended,
+        then send another, detached. Never raises."""
+        if self.get_instance(inst.user_id, inst.instance) is not inst or inst.state != "draining":
+            return
+        api = self.client.api
+        try:
+            if inst.tunnel_exec:
+                info = api.exec_inspect(inst.tunnel_exec) or {}
+                if info.get("Running"):
+                    return
+                code = info.get("ExitCode")
+                inst.tunnel_exec = None
+                if code == 0:
+                    if not inst.tunnel_confirmed:
+                        inst.tunnel_confirmed = True
+                        logger.info(f"[sandbox] tunnel turned off key={inst.key} view={inst.view} "
+                                    f"instance={inst.instance} (replaced)")
+                else:
+                    self._warn_once(f"tunnel-exit:{inst.instance}:{code}",
+                                    f"[sandbox] turning off the tunnel of key={inst.key} "
+                                    f"instance={inst.instance} exited {code}; it is sent again")
+            created = api.exec_create(inst.container_id or inst.host, ["python3", "-c", TUNNEL_OFF_SCRIPT],
+                                      stdout=False, stderr=False,
+                                      environment={TUNNEL_TOKEN_VAR: inst.tunnel_token})
+            api.exec_start(created["Id"], detach=True)
+            inst.tunnel_exec = created["Id"]
+        except Exception as e:  # noqa: BLE001 - sent again at the next idle tick
+            self._warn_once(f"tunnel-call:{inst.instance}:{type(e).__name__}",
+                            f"[sandbox] could not turn off the tunnel of key={inst.key} "
+                            f"instance={inst.instance}: {type(e).__name__}; it is sent again")
+
+    async def _current_code(self) -> Optional[tuple]:
+        """(id of the image IMAGE names, hash of the server code) for TD-28, or
+        None when either cannot be read: a missing image or server folder drains
+        nothing (the running instances keep working)."""
+        try:
+            image = await asyncio.to_thread(self._image_sync)
+            if image is None or not os.path.isdir(self.local_bases.get(sc.MOUNT_SERVERS) or ""):
+                return None
+            return image.id, await asyncio.to_thread(self._servers_hash_sync, True)
+        except Exception as e:  # noqa: BLE001 - checked again at the next tick
+            logger.warning(f"[sandbox] cannot read the current sandbox image or server code: {type(e).__name__}")
+            return None
+
+    # --- The idle loop (B.7) --------------------------------------------------
+
+    async def run_idle_loop(self, sleep: Optional[Callable] = None) -> None:
+        """Every ``IDLE_CHECK_S``, in both modes, until cancelled: per-user
+        instances left after a switch back to ``shared`` stop as they go idle."""
+        sleep = sleep or asyncio.sleep
+        while True:
+            await sleep(sc.IDLE_CHECK_S)
+            try:
+                await self.idle_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 - the next tick tries again
+                logger.warning(f"[sandbox] idle check failed: {type(e).__name__}")
+
+    async def idle_tick(self) -> dict:
+        """One pass: drain instances on old code (TD-28), stop what is idle, held
+        too long without use, drained and finished, or left stopping by a failed
+        removal; check both guests on every live network (TD-25); retry failed
+        network removals. One failing person or network is logged and never
+        stops the pass for the others."""
+        code = await self._current_code()
+        people = self._people()
+        results = await asyncio.gather(*(self._shielded(self._tick_user(u, code)) for u in people),
+                                       return_exceptions=True)
+        summary = {"stopped": 0, "drained": 0, "failed": 0, "networks_removed": 0}
+        for user_id, result in zip(people, results):
+            if isinstance(result, BaseException):
+                summary["failed"] += 1
+                logger.warning(f"[sandbox] idle check of key={sc.sandbox_key(user_id, sc.VIEW_OWN)} "
+                               f"failed: {type(result).__name__}")
+                continue
+            summary["stopped"] += result[0]
+            summary["drained"] += result[1]
+        try:
+            summary["networks_removed"] = await self._retry_network_removals()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[sandbox] network removal retry failed: {type(e).__name__}")
+        return summary
+
+    async def _tick_user(self, user_id: str, code: Optional[tuple]) -> tuple:
+        async with self._user_lock(user_id):
+            now = self.clock()
+            drained = stopped = 0
+            for inst in self.instances(user_id):
+                self._prune(inst, now)
+            if code is not None:
+                image_id, servers = code
+                for inst in self.instances(user_id):
+                    if inst.state != "running":
+                        continue
+                    if inst.image_id and inst.image_id != image_id:
+                        self._mark_draining(inst, "new image")
+                    elif inst.servers and inst.servers != servers:
+                        self._mark_draining(inst, "new server code")
+                    else:
+                        continue
+                    drained += 1
+            for inst in self.instances(user_id):
+                reason = self._idle_reason(inst, now)
+                if reason is not None:
+                    stopped += int(await self._stop_locked(inst, reason))
+                else:
+                    inst.warn = self._warn(inst, now)
+            for view in sc.VIEWS:
+                self._turn_off_replaced_tunnels(user_id, view)
+            networks = {i.network for i in self.instances(user_id) if i.state != "stopping"}
+            for network in sorted(networks):
+                try:
+                    await asyncio.to_thread(self._guests_sync, network, False, True)
+                except Exception as e:  # noqa: BLE001 - the next ensure or tick retries
+                    logger.warning(f"[sandbox] guest check of {network} failed: {type(e).__name__}")
+            return stopped, drained
+
+    def _idle_reason(self, inst: Instance, now: float) -> Optional[str]:
+        """B.7's decision for one instance: the stop reason, or None to keep it."""
+        if inst.state == "stopping":
+            # A removal that failed earlier (the container already killed and cut off).
+            return inst.stop_reason if inst.stop_reason in sc.STOP_REASONS else "operator"
+        if not inst.ready.is_set():
+            # Its start check normally settles it; one that never did holds a
+            # reservation and blocks every ensure of the view.
+            if now - inst.created >= self._start_timeout_s + START_STUCK_GRACE_S:
+                return "start_failed"
+            return None
+        if inst.state not in ("running", "draining"):
+            return None
+        kinds = self._live_kinds(inst, now)
+        if kinds - {sc.HOLD_LEASE_KIND}:
+            return None
+        if sc.HOLD_LEASE_KIND in kinds:
+            # Sessions or a tunnel hold it, a draining one too, for at most eight
+            # hours without use (D24).
+            return "hold_unused" if now - inst.last_used >= sc.HOLD_MAX_NO_USE_S else None
+        if now < inst.grace_until:
+            return None
+        if inst.state == "draining":
+            return inst.stop_reason if inst.stop_reason in sc.STOP_REASONS else DRAIN_REASON
+        return "idle" if now - inst.last_used >= self._idle_s() else None
+
+    async def _retry_network_removals(self) -> int:
+        """Under the allocation lock: a start re-uses its view's network (found by
+        name under this same lock), so a removal never pulls one from under it."""
+        if not self._network_retry:
+            return 0
+        async with self._alloc_lock:
+            live = {i.network for i in self.instances()}
+            return await asyncio.to_thread(self.retry_network_removals, live)
+
     # --- Guests ---------------------------------------------------------------
 
     async def _ensure_guests(self, network: str, *, strict: bool) -> None:
         await asyncio.to_thread(self._guests_sync, network, strict)
 
-    def _guests_sync(self, network: str, strict: bool) -> None:
+    def _guests_sync(self, network: str, strict: bool, force: bool = False) -> None:
         """TD-23..25: the agent (alias ``agent``) and the capture proxy on the
         network, each only when it cannot forward between its networks, the proxy
         only when it refuses the sandbox pool, both at a gateway priority that
         keeps their default route where it is. A recreated guest is a new
-        container: it is attached again."""
+        container: it is attached again; so is one attached at another priority
+        (by hand, or by an engine that ignored it). ``force`` skips the cache (the
+        idle loop's check)."""
         agents = self._find_agents_sync()
         proxy = self._find_proxy_sync()
         eligible = []
@@ -769,14 +1190,22 @@ class SandboxManager:
                 eligible.append((proxy, None))
         ids = frozenset(c.id for c, _ in eligible)
         cached = self._guest_cache.get(network)
-        if cached and self.clock() - cached[0] < sc.IDLE_CHECK_S and ids <= cached[1]:
+        if not force and cached and self.clock() - cached[0] < sc.IDLE_CHECK_S and ids <= cached[1]:
             return
         net = self.client.networks.get(network)
         net.reload()
         attached = set((net.attrs.get("Containers") or {}).keys())
         for container, aliases in eligible:
-            if container.id not in attached:
-                self._connect_sync(net, container, aliases)
+            if container.id in attached:
+                endpoint = ((((container.attrs or {}).get("NetworkSettings") or {}).get("Networks") or {})
+                            .get(network) or {})
+                priority = endpoint.get("GwPriority", 0)
+                if priority == sc.GUEST_GATEWAY_PRIORITY:
+                    continue
+                logger.warning(f"[sandbox] a guest on {network} has gateway priority {priority}, not "
+                               f"{sc.GUEST_GATEWAY_PRIORITY}; attaching it again")
+                net.disconnect(container.id, force=True)
+            self._connect_sync(net, container, aliases)
         self._guest_cache[network] = (self.clock(), ids)
 
     def _find_agents_sync(self) -> list:
@@ -932,14 +1361,18 @@ class SandboxManager:
         self._network_retry.discard(name)
         return True
 
-    def retry_network_removals(self) -> int:
-        """Blocking: retry the removals that failed (for the idle loop, in a thread),
-        leaving a network a live instance uses."""
-        live = {i.network for i in self.instances()}
+    def retry_network_removals(self, live: Optional[set] = None) -> int:
+        """Blocking: retry the removals that failed, leaving a network a live
+        instance uses. The idle loop calls it in a thread under the allocation
+        lock, with ``live`` read in the event loop."""
+        if live is None:
+            live = {i.network for i in self.instances()}
         return sum(1 for name in list(self._network_retry)
                    if name not in live and self._remove_network_sync(name))
 
-    def _create_start_sync(self, kwargs: dict) -> str:
+    def _create_start_sync(self, kwargs: dict) -> tuple:
+        """(container id, the id of the image it was made from: the tag may move
+        between the image check and the create)."""
         container = self.client.containers.create(**kwargs)
         try:
             container.start()
@@ -949,7 +1382,7 @@ class SandboxManager:
             except Exception:  # noqa: BLE001 - the start error is the one to report
                 pass
             raise
-        return container.id
+        return container.id, (container.attrs or {}).get("Image")
 
     def _health_sync(self, ref: str) -> str:
         try:
@@ -1122,9 +1555,9 @@ class SandboxManager:
         except OSError:
             return False
 
-    def _servers_hash_sync(self) -> str:
+    def _servers_hash_sync(self, fresh: bool = False) -> str:
         now = self.clock()
-        if self._servers_cache and now - self._servers_cache[0] < sc.IDLE_CHECK_S:
+        if not fresh and self._servers_cache and now - self._servers_cache[0] < sc.IDLE_CHECK_S:
             return self._servers_cache[1]
         value = sc.servers_fingerprint(self.local_bases[sc.MOUNT_SERVERS])
         self._servers_cache = (now, value)
@@ -1198,18 +1631,28 @@ class SandboxManager:
                     removed += 1
                 continue
             candidates.append((inst, c, drain))
+        # The created label holds whole seconds: a replacement started in the same
+        # second as the instance it replaced is told apart by Docker's own time.
+        candidates.sort(key=lambda t: (t[0].created, _docker_created_ns((t[1].attrs or {}).get("Created"))))
+        for inst, _, _ in candidates:
+            self._seq += 1
+            inst.seq = self._seq
         adopted = []
-        for inst, c, drain in sorted(candidates, key=lambda t: t[0].created, reverse=True):
+        for inst, c, drain in reversed(candidates):
             memory = int(((c.attrs or {}).get("HostConfig") or {}).get("Memory") or 0)
             self.ledger.account(inst.reservation_key, max(memory, 1))
             inst.state = "draining" if drain or self._current(inst.user_id, inst.view) else "running"
+            inst.stop_reason = DRAIN_REASON if inst.state == "draining" else None
+            inst.grace_until = self.clock() + ADOPTION_GRACE_S
             inst.ready.set()
             self._register(inst)
             adopted.append(inst)
             if drain:
-                self._log(f"adopted draining ({drain})", inst, "replaced")
+                self._log(f"adopted draining ({drain})", inst, DRAIN_REASON)
             else:
                 self._log("adopted", inst)
+        for user_id, view in sorted({(i.user_id, i.view) for i in adopted}):
+            self._turn_off_replaced_tunnels(user_id, view)
         live = {i.network for i in adopted}
         networks = await asyncio.to_thread(
             lambda: self.client.networks.list(filters={"label": mine}))
@@ -1316,7 +1759,8 @@ class SandboxManager:
                          network=sc.network_name(user_id, view), created=0.0, last_used=0.0,
                          token=env[sc.ENV_MCP_AUTH_TOKEN], tunnel_token=env[sc.ENV_TUNNEL_AUTH_TOKEN],
                          pool_port=pool_port, reverse_port=pool_port or sc.DEFAULT_REVERSE_PORT,
-                         container_id=c.id)
+                         container_id=c.id, image_id=attrs.get("Image"),
+                         servers=labels.get(sc.LABEL_SERVERS) or None)
         try:
             probe.created = float(labels.get(sc.LABEL_CREATED) or 0)
         except ValueError:
