@@ -53,6 +53,11 @@ vi.mock('@/lib/prisma', () => {
     },
     instanceSettings: {
       findUnique: async () => clone(h.instance),
+      updateMany: async ({ where, data }: { where: Row; data: Row }) => {
+        if (!h.instance || (where.tunnelsEnabled !== undefined && h.instance.tunnelsEnabled !== where.tunnelsEnabled)) return { count: 0 }
+        h.instance = { ...h.instance, ...clone(data) }
+        return { count: 1 }
+      },
       update: async ({ data }: { data: Row }) => {
         h.instance = { ...h.instance!, ...clone(data), updatedAt: new Date() }
         return clone(h.instance)
@@ -100,8 +105,18 @@ vi.mock('@/lib/authz/stepUp', () => ({
   },
 }))
 
+// The sandbox mode the orchestrator names (group 1, D.2: every test sets it); null: no answer.
+const mode = vi.hoisted(() => ({ value: 'shared' as string | null }))
+vi.mock('@/lib/sandbox/gateway', () => ({
+  sandboxMode: async () => {
+    if (mode.value === null) throw new Error('orchestrator unreachable')
+    return mode.value
+  },
+}))
+
 import { GET, PUT } from './route'
 import { createActAsToken, createToken } from '@/lib/auth'
+import { resetTunnelEffectsForTests, sharedTunnelFlipForTests } from '@/lib/sharedSettingsEffects'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { clearPrincipalCacheForTests } from '@/lib/authz/principal'
 import { resetSharedToolsForTests } from '@/lib/authz/sharedTools'
@@ -143,6 +158,8 @@ const get = () => GET(new NextRequest('http://redamon.test/api/admin/instance-se
 const changes = () => h.audit.filter((r) => r.action === 'instance.settings_changed')
 
 beforeEach(() => {
+  mode.value = 'shared'
+  resetTunnelEffectsForTests()
   h.cookies.clear(); h.accounts.clear(); h.userSettings.clear()
   h.audit = [{ action: 'system.rbac_legacy_grants_cutoff', createdAt: CUTOFF }]
   h.failAudit = false
@@ -339,6 +356,99 @@ describe('the tunnel', () => {
       after: { fields: ['ngrokAuthtoken', 'tunnelsEnabled'], tunnelVia: 'admin', mirroredTo: { tunnel: 'member-tun' } },
     })
     expect(JSON.stringify(h.audit)).not.toContain('fake-new-token')
+  })
+})
+
+describe('per-user Kali sandboxes (group 1, OQ-G1-2 A): tunnels are per person', () => {
+  const WORKER_URL = 'http://kali-sandbox:8015/tunnel/configure'
+  const credentialPushes = () => h.fetch.mock.calls
+    .filter((c) => c[0] === WORKER_URL)
+    .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, string>)
+    .filter((b) => b.ngrokAuthtoken || b.chiselServerUrl || b.chiselAuth)
+
+  beforeEach(async () => {
+    mode.value = 'per_user'
+    await signIn('admin-a')
+  })
+
+  test('the GET marks the instance tunnel as unused: each person has their own', async () => {
+    const body = await (await get()).json()
+    expect(body).toMatchObject({ tunnelsPerPerson: true, canManageTunnels: true })
+  })
+
+  test('a tunnel change is refused before anything is written, mirrored, audited or pushed', async () => {
+    const res = await put({ tunnelsEnabled: true, ngrokAuthtoken: 'fake-new-token-5555' })
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body).toMatchObject({ code: 'tunnels_per_person', fields: ['ngrokAuthtoken', 'tunnelsEnabled'] })
+    expect(JSON.stringify(body)).not.toContain('fake-new-token')
+    expect(h.instance).toEqual(instanceRow())
+    expect(h.userSettings.size).toBe(0)
+    expect(changes()).toEqual([])
+    expect(credentialPushes()).toEqual([])
+  })
+
+  test('the capture settings still change here', async () => {
+    expect((await put({ captureProxyPort: 9000 })).status).toBe(200)
+    expect(h.instance!.captureProxyPort).toBe(9000)
+    expect(credentialPushes()).toEqual([])
+  })
+
+  test('shared mode: no per-person mark', async () => {
+    mode.value = 'shared'
+    expect((await (await get()).json()).tunnelsPerPerson).toBeUndefined()
+  })
+
+  const stopPushes = () => h.fetch.mock.calls
+    .filter((c) => c[0] === WORKER_URL)
+    .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, string>)
+    .filter((b) => !b.ngrokAuthtoken && !b.chiselServerUrl && !b.chiselAuth)
+
+  test('turning the unused instance tunnel off is allowed (review C1): the row reads off, no person\'s row is written, the shared container gets the stop config', async () => {
+    h.instance = instanceRow({ tunnelsEnabled: true })
+    await get()
+    await sharedTunnelFlipForTests()
+    h.instance = instanceRow({ tunnelsEnabled: true })
+    h.fetch.mockClear()
+    const res = await put({ tunnelsEnabled: false })
+    expect(res.status).toBe(200)
+    expect(h.instance!.tunnelsEnabled).toBe(false)
+    expect(h.userSettings.size).toBe(0)
+    expect(stopPushes()).toHaveLength(1)
+    expect(changes()[0]).toMatchObject({ after: { fields: ['tunnelsEnabled'], mirroredTo: { tunnel: null } } })
+  })
+
+  test('an explicit off with the row already off still sends the stop config', async () => {
+    await get()
+    await sharedTunnelFlipForTests()
+    h.fetch.mockClear()
+    expect((await put({ tunnelsEnabled: false })).status).toBe(200)
+    expect(stopPushes()).toHaveLength(1)
+    expect(changes()).toEqual([])
+  })
+})
+
+describe('a mode nobody named yet (review F1): no tunnel change, since it may be a person\'s', () => {
+  beforeEach(async () => {
+    mode.value = null
+    await signIn('admin-a')
+  })
+
+  test('a tunnel change is 409 sandbox_mode_unknown before anything is written, mirrored, audited or pushed', async () => {
+    const res = await put({ tunnelsEnabled: true, ngrokAuthtoken: 'fake-admin-token-7777' })
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body).toMatchObject({ code: 'sandbox_mode_unknown', fields: ['ngrokAuthtoken', 'tunnelsEnabled'] })
+    expect(JSON.stringify(body)).not.toContain('fake-admin-token')
+    expect(h.instance).toEqual(instanceRow())
+    expect(h.userSettings.size).toBe(0)
+    expect(changes()).toEqual([])
+    expect(JSON.stringify(h.fetch.mock.calls)).not.toContain('fake-admin-token')
+  })
+
+  test('the capture settings still change', async () => {
+    expect((await put({ captureProxyPort: 9000 })).status).toBe(200)
+    expect(h.instance!.captureProxyPort).toBe(9000)
   })
 })
 

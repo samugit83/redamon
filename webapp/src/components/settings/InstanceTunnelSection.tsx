@@ -12,6 +12,9 @@
  * With RBAC_GOVERNANCE_ENABLED on the tunnel moves to the admin console's Instance page (step 6.7,
  * UI-04): there it renders with `placement="instance"`, and in Global Settings whoever may change
  * it gets a link to that page instead of the controls; anyone else still sees the status.
+ *
+ * With per-user Kali sandboxes (group 1) the instance tunnel is unused (`tunnelsPerPerson`): a
+ * notice says tunnels are per person, with no controls and no Save.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Eye, EyeOff, Loader2 } from 'lucide-react'
@@ -35,7 +38,7 @@ interface Tunnel {
   chiselAuth: string
 }
 
-type View = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'readonly' } | { kind: 'edit' }
+type View = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'readonly' } | { kind: 'perPerson' } | { kind: 'edit' }
 
 const pickTunnel = (body: Record<string, unknown>): Tunnel => ({
   tunnelsEnabled: body.tunnelsEnabled === true,
@@ -70,6 +73,10 @@ export function InstanceTunnelSection({ placement = 'settings' }: { placement?: 
       const body = await resp.json() as Record<string, unknown>
       if (body.canManageTunnels !== true) {
         setView({ kind: 'readonly' })
+        return
+      }
+      if (body.tunnelsPerPerson === true) {
+        setView({ kind: 'perPerson' })
         return
       }
       const t = pickTunnel(body)
@@ -145,6 +152,19 @@ export function InstanceTunnelSection({ placement = 'settings' }: { placement?: 
     )
   }
   if (view.kind === 'readonly') return <TunnelStatusReadOnly />
+  if (view.kind === 'perPerson') {
+    return (
+      <div className={styles.settingsGrid}>
+        <div className="formGroup">
+          <span className="formLabel">Tunnel settings</span>
+          <span role="note">
+            Tunnels are per person: each person turns on their own tunnel, with their own ngrok or chisel
+            credentials, in Global Settings, and it runs in their own Kali sandbox. The instance tunnel is not used.
+          </span>
+        </div>
+      </div>
+    )
+  }
   if (movedToInstancePage) {
     return (
       <div className={styles.settingsGrid}>

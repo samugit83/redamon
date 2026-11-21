@@ -30,9 +30,18 @@ vi.mock('@/lib/prisma', () => ({
     },
   },
 }))
+// The sandbox mode the orchestrator names (group 1, D.2: every test sets it); `null` = no answer.
+const mode = vi.hoisted(() => ({ value: 'shared' as string | null }))
+vi.mock('@/lib/sandbox/gateway', () => ({
+  sandboxMode: async () => {
+    if (mode.value === null) throw new Error('orchestrator unreachable')
+    return mode.value
+  },
+}))
 
 import { POST } from './route'
 import { setFlagsForTests } from '@/lib/authz/flags'
+import { resetTunnelEffectsForTests, setTunnelModeWaitForTests, tunnelModeWaitsForTests } from '@/lib/sharedSettingsEffects'
 
 const WORKER_URL = 'http://kali-sandbox:8015/tunnel/configure'
 const TOKEN = 'fake-tunnel-token-0123456789'
@@ -45,6 +54,8 @@ const sync = (authorization?: string) => POST(new NextRequest('http://webapp:300
 let fetchSpy: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
+  mode.value = 'shared'
+  resetTunnelEffectsForTests()
   mockUpdateMany.mockReset().mockResolvedValue({ count: 0 })
   mockInstanceUpdateMany.mockReset().mockResolvedValue({ count: 0 })
   vi.stubEnv('TUNNEL_AUTH_TOKEN', TOKEN)
@@ -136,6 +147,57 @@ describe('POST /api/global/tunnel-config/sync — I19', () => {
     const res = await sync(`Bearer ${TOKEN}`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: false })
+  })
+})
+
+describe('per-user Kali sandboxes (group 1, WI-S17-3): only the shared container\'s tunnel', () => {
+  const EMPTY = { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
+
+  test('per-user mode: the shared container\'s tunnel goes down, and no person\'s tunnelsEnabled changes', async () => {
+    mode.value = 'per_user'
+    setFlagsForTests({ identity: true })
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    const res = await sync(`Bearer ${TOKEN}`)
+    expect(await res.json()).toEqual({ ok: true, configured: false })
+    expect(mockUpdateMany).not.toHaveBeenCalled()
+    // The unused instance tunnel row reads off, as the container's tunnel is.
+    expect(mockInstanceUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'instance', tunnelsEnabled: true },
+      data: { tunnelsEnabled: false },
+    })
+    const pushes = fetchSpy.mock.calls.filter(c => c[0] === WORKER_URL) as [string, RequestInit][]
+    expect(pushes.length).toBeGreaterThan(0)
+    for (const [, opts] of pushes) expect(JSON.parse(opts.body as string)).toEqual(EMPTY)
+  })
+
+  test('a mode nobody named yet resets no person\'s flag (review F1); once it is named shared, today\'s boot reset follows', async () => {
+    setTunnelModeWaitForTests(5, 2_000)
+    mode.value = null
+    expect(await (await sync(`Bearer ${TOKEN}`)).json()).toEqual({ ok: true, configured: false })
+    expect(mockUpdateMany).not.toHaveBeenCalled()
+    mode.value = 'shared'
+    await tunnelModeWaitsForTests()
+    expect(mockUpdateMany).toHaveBeenCalledWith({ where: { tunnelsEnabled: true }, data: { tunnelsEnabled: false } })
+  })
+
+  test('named per_user after the wait: still no person\'s flag', async () => {
+    setTunnelModeWaitForTests(5, 2_000)
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    mode.value = null
+    await sync(`Bearer ${TOKEN}`)
+    mode.value = 'per_user'
+    await tunnelModeWaitsForTests()
+    expect(mockUpdateMany).not.toHaveBeenCalled()
+  })
+
+  test('never named within the wait: no flag changed, one log line', async () => {
+    setTunnelModeWaitForTests(5, 30)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mode.value = null
+    await sync(`Bearer ${TOKEN}`)
+    await tunnelModeWaitsForTests()
+    expect(mockUpdateMany).not.toHaveBeenCalled()
+    expect(warn.mock.calls.filter(c => String(c[0]).includes('[tunnel]'))).toHaveLength(1)
   })
 })
 

@@ -24,11 +24,13 @@ import { InstanceTunnelSection, INSTANCE_PAGE_TUNNELS } from './InstanceTunnelSe
 
 const FLAGS_GOV = { ...FLAGS_ON, governance: true }
 let canManageTunnels = true
+let tunnelsPerPerson: boolean | undefined
 beforeEach(() => {
   canManageTunnels = true
+  tunnelsPerPerson = undefined
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (url === '/api/admin/instance-settings') {
-      return new Response(JSON.stringify({ tunnelsEnabled: true, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', canManageTunnels }))
+      return new Response(JSON.stringify({ tunnelsEnabled: true, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', canManageTunnels, tunnelsPerPerson }))
     }
     return new Response(JSON.stringify({ ngrok: { active: true } }))
   }))
@@ -69,6 +71,18 @@ describe('the Tunneling tab with RBAC_GOVERNANCE_ENABLED on', () => {
     expect(screen.getByLabelText('Chisel Server URL')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
   })
+})
+
+describe('per-user Kali sandboxes (group 1, OQ-G1-2 A)', () => {
+  test.each([['the Instance page', 'instance'], ['Global Settings', 'settings']] as const)(
+    '%s: the instance tunnel is read-only, with a notice that tunnels are per person', async (_name, placement) => {
+      tunnelsPerPerson = true
+      renderSection(FLAGS_GOV, placement)
+      expect(await screen.findByText(/Tunnels are per person/)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Save tunnel settings' })).toBeNull()
+      expect(screen.queryByLabelText('Chisel Server URL')).toBeNull()
+      expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
+    })
 })
 
 describe('with RBAC_GOVERNANCE_ENABLED off', () => {
