@@ -71,8 +71,14 @@ NETWORK_OPTIONS = {
     "com.docker.network.bridge.host_binding_ipv4": "127.0.0.1",
 }
 
-# `docker compose run agent ...` makes a second container with the agent's
-# service label; it is never a guest of a sandbox network.
+# `docker compose build` stamps the project and service labels on the agent
+# IMAGE, so every plain `docker run redamon-agent ...` (a unit gate, run_tests.sh)
+# carries them too. Only the two labels below prove that compose itself created
+# the container as a service replica: compose writes them on containers, never
+# on images. `docker compose run agent ...` writes the hash too (Compose v5: no
+# number), always marked one-off; older versions may write a number as well.
+COMPOSE_CONFIG_HASH_LABEL = "com.docker.compose.config-hash"
+COMPOSE_NUMBER_LABEL = "com.docker.compose.container-number"
 COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff"
 
 # The compose line that gives the orchestrator each host folder a sandbox binds a
@@ -1234,12 +1240,14 @@ class SandboxManager:
         for agent in agents:
             missing = self._missing_sysctls(agent)
             if missing:
-                logger.error(f"[sandbox] the agent container lacks {missing} in its sysctls, so it "
-                             f"could route between networks; it is not attached to a sandbox network")
-                if strict:
-                    raise SandboxStartError(sc.ERR_START_FAILED, "the agent container may forward packets")
+                logger.error(f"[sandbox] the agent container {agent.name} lacks {missing} in its sysctls, "
+                             f"so it could route between networks; it is not attached to a sandbox network")
                 continue
             eligible.append((agent, [sc.AGENT_ALIAS]))
+        # Replicas of the agent service are attached one by one; the start fails
+        # only when none of them may join (the agent could never reach the sandbox).
+        if strict and agents and not eligible:
+            raise SandboxStartError(sc.ERR_START_FAILED, "the agent container may forward packets")
         if not agents:
             self._warn_once("no-agent", "[sandbox] no agent container found to attach to sandbox networks")
         if proxy is not None:
@@ -1275,25 +1283,42 @@ class SandboxManager:
         self._guest_cache[network] = (self.clock(), ids)
 
     def _find_agents_sync(self) -> list:
+        """Every running replica compose created for this stack's ``agent``
+        service; else the container named ``redamon-agent``, when it is this
+        stack's compose replica or carries no compose label at all (an agent
+        started without compose). A copy of the agent image started any other
+        way is never the agent, whatever its name or sysctls."""
         found = []
         if self.own_compose_project:
-            found = self.client.containers.list(filters={"label": [
+            # docker-py inspects each listed container: without ignore_removed, one
+            # removed in between (a broker caller may churn any labels) raises.
+            listed = self.client.containers.list(ignore_removed=True, filters={"label": [
                 f"{sc.COMPOSE_SERVICE_LABEL}={sc.AGENT_COMPOSE_SERVICE}",
                 f"{sc.COMPOSE_PROJECT_LABEL}={self.own_compose_project}"]})
-            found = [c for c in found if not (c.labels or {}).get(BROKER_OWNED_LABEL)
-                     and not self._one_off(c)]
+            found = [c for c in listed if self._compose_replica(c)]
         if not found:
             try:
                 c = self.client.containers.get(sc.AGENT_CONTAINER_NAME)
-                labels = c.labels or {}
-                # By name only when it is not another compose project's agent.
-                project = labels.get(sc.COMPOSE_PROJECT_LABEL)
-                if c.status == "running" and not labels.get(BROKER_OWNED_LABEL) and not self._one_off(c) and \
-                        (not project or project == self.own_compose_project):
-                    found = [c]
             except NotFound:
-                pass
+                return []
+            labels = c.labels or {}
+            if c.status != "running" or labels.get(BROKER_OWNED_LABEL) or self._one_off(c):
+                return []
+            if labels.get(sc.COMPOSE_PROJECT_LABEL) or labels.get(sc.COMPOSE_SERVICE_LABEL):
+                if not (self.own_compose_project and self._compose_replica(c)
+                        and labels.get(sc.COMPOSE_PROJECT_LABEL) == self.own_compose_project):
+                    return []
+            found = [c]
         return found
+
+    @classmethod
+    def _compose_replica(cls, container) -> bool:
+        """Created by compose as a service replica: not a one-off, not through
+        the broker (which lets a scan write any label but its own)."""
+        labels = container.labels or {}
+        return bool(labels.get(COMPOSE_CONFIG_HASH_LABEL)) \
+            and str(labels.get(COMPOSE_NUMBER_LABEL) or "").isdigit() \
+            and not cls._one_off(container) and not labels.get(BROKER_OWNED_LABEL)
 
     @staticmethod
     def _one_off(container) -> bool:
@@ -1553,7 +1578,8 @@ class SandboxManager:
 
     def _labelled_ports_sync(self) -> set:
         ports = set()
-        for c in self.client.containers.list(all=True, filters={"label": f"{sc.LABEL_SANDBOX}={sc.LABEL_TRUE}"}):
+        for c in self.client.containers.list(all=True, ignore_removed=True,
+                                             filters={"label": f"{sc.LABEL_SANDBOX}={sc.LABEL_TRUE}"}):
             raw = (c.labels or {}).get(sc.LABEL_PORT) or ""
             if raw.isdigit():
                 ports.add(int(raw))
@@ -1708,7 +1734,7 @@ class SandboxManager:
         daemon = await asyncio.to_thread(self._daemon_facts_sync)
         mine = [f"{sc.LABEL_SANDBOX}={sc.LABEL_TRUE}", f"{LABEL_OWNER}={self.owner}"]
         containers = await asyncio.to_thread(
-            lambda: self.client.containers.list(all=True, filters={"label": mine}))
+            lambda: self.client.containers.list(all=True, ignore_removed=True, filters={"label": mine}))
         candidates, removed = [], 0
         for c in containers:
             labels = c.labels or {}

@@ -432,12 +432,30 @@ class FakeDocker:
 
 
 GUEST_SYSCTLS = dict(sc.GUEST_SYSCTLS)
+ONEOFF = "com.docker.compose.oneoff"
+CONFIG_HASH = "com.docker.compose.config-hash"
+CONTAINER_NUMBER = "com.docker.compose.container-number"
+# What `docker compose build` stamps on the agent image (as `docker image
+# inspect redamon-agent` shows it): a plain `docker run redamon-agent ...` (a
+# unit gate, run_tests.sh, a one-file test command) inherits exactly these.
+AGENT_IMAGE_LABELS = {sc.COMPOSE_PROJECT_LABEL: "redamon", sc.COMPOSE_SERVICE_LABEL: "agent",
+                      "com.docker.compose.version": "5.7.2"}
+# What compose adds on a service container it creates, and never on an image.
+COMPOSE_CONTAINER_LABELS = {CONFIG_HASH: "e" * 64, CONTAINER_NUMBER: "1", ONEOFF: "False"}
 
 
-def add_agent(d, sysctls=GUEST_SYSCTLS, project="redamon", name="redamon-agent", labels=None):
-    base = {sc.COMPOSE_SERVICE_LABEL: "agent", sc.COMPOSE_PROJECT_LABEL: project}
+def add_agent(d, sysctls=GUEST_SYSCTLS, project="redamon", name="redamon-agent", labels=None, number=1):
+    """The agent as compose creates it: the image's labels plus its own."""
+    base = {**AGENT_IMAGE_LABELS, **COMPOSE_CONTAINER_LABELS,
+            sc.COMPOSE_PROJECT_LABEL: project, CONTAINER_NUMBER: str(number)}
     base.update(labels or {})
-    return d.containers.add(name, labels=base, sysctls=sysctls)
+    return d.containers.add(name, labels=base, sysctls=sysctls, image="redamon-agent:latest")
+
+
+def add_agent_lookalike(d, name="pensive_turing", sysctls=None, labels=None):
+    """`docker run redamon-agent ...`: a random name and the image's labels only."""
+    return d.containers.add(name, labels={**AGENT_IMAGE_LABELS, **(labels or {})}, sysctls=sysctls,
+                            image="redamon-agent:latest")
 
 
 def add_proxy(d, sysctls=GUEST_SYSCTLS, blocked="172.18.0.5," + sc.SUBNET_POOL):
@@ -845,6 +863,219 @@ async def test_agent_found_by_name_when_no_compose_label(world):
     world.agent.attrs["Config"]["Labels"] = {}
     await world.mgr.ensure(ALICE, [])
     assert world.agent.id in connects_to(world, sc.network_name(ALICE, "own"))
+
+
+# --- Agent discovery: the container compose made, never a copy of its image --------
+
+# Containers that carry the agent's compose service and project labels and are
+# not this stack's agent. Each forwards (no sysctls) unless it says otherwise:
+# taken for the agent, one that forwards fails every start, one that does not
+# is attached to every sandbox network with the alias `agent`.
+NOT_THE_AGENT = {
+    "docker_run": dict(labels=AGENT_IMAGE_LABELS),
+    "docker_run_not_forwarding": dict(labels=AGENT_IMAGE_LABELS, sysctls=GUEST_SYSCTLS),
+    "compose_run": dict(labels={**AGENT_IMAGE_LABELS, **COMPOSE_CONTAINER_LABELS, ONEOFF: "True"}),
+    # What Compose v5 writes on a `docker compose run agent ...`: no number.
+    "compose_run_v5": dict(labels={**AGENT_IMAGE_LABELS, CONFIG_HASH: "e" * 64, ONEOFF: "True"},
+                           sysctls=GUEST_SYSCTLS),
+    "broker_owned": dict(labels={**AGENT_IMAGE_LABELS, **COMPOSE_CONTAINER_LABELS, BROKER: "1"},
+                         sysctls=GUEST_SYSCTLS),
+    "other_project": dict(labels={**AGENT_IMAGE_LABELS, **COMPOSE_CONTAINER_LABELS,
+                                  sc.COMPOSE_PROJECT_LABEL: "redamon-test"}),
+    "config_hash_only": dict(labels={**AGENT_IMAGE_LABELS, CONFIG_HASH: "f" * 64}),
+    "container_number_only": dict(labels={**AGENT_IMAGE_LABELS, CONTAINER_NUMBER: "2"}),
+}
+
+
+def add_not_the_agent(world, kind, name=None):
+    spec = NOT_THE_AGENT[kind]
+    return world.d.containers.add(name or f"lookalike-{kind}", labels=dict(spec["labels"]),
+                                  sysctls=spec.get("sysctls"), image="redamon-agent:latest")
+
+
+async def test_docker_run_of_the_agent_image_never_fails_a_start(world, caplog):
+    # M-b: a unit gate's `docker run redamon-agent pytest ...` was taken for the
+    # agent, lacked the sysctl, and every per-user start answered 503.
+    probe = add_agent_lookalike(world.d)
+    caplog.set_level(logging.INFO, logger="sandbox_manager")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running"
+    eps = connects_to(world, sc.network_name(ALICE, "own"))
+    assert eps[world.agent.id] == {"Aliases": [sc.AGENT_ALIAS], "GwPriority": sc.GUEST_GATEWAY_PRIORITY}
+    assert probe.id not in eps
+    assert "lacks" not in caplog.text
+
+
+@pytest.mark.parametrize("kind", sorted(NOT_THE_AGENT))
+async def test_only_the_compose_agent_is_attached_beside_a_lookalike(world, kind, caplog):
+    other = add_not_the_agent(world, kind)
+    caplog.set_level(logging.INFO, logger="sandbox_manager")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running"
+    net = world.d.networks.get(sc.network_name(ALICE, "own"))
+    assert world.agent.id in net.attrs["Containers"] and other.id not in net.attrs["Containers"]
+    assert other.id not in connects_to(world, net.name)
+    assert "lacks" not in caplog.text
+
+
+@pytest.mark.parametrize("kind", sorted(NOT_THE_AGENT))
+async def test_a_lookalike_alone_is_no_agent_and_fails_no_start(world, kind, caplog):
+    world.agent.remove(force=True)
+    other = add_not_the_agent(world, kind)
+    caplog.set_level(logging.INFO, logger="sandbox_manager")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running"
+    assert other.id not in world.d.networks.get(sc.network_name(ALICE, "own")).attrs["Containers"]
+    assert "no agent container" in caplog.text and "lacks" not in caplog.text
+
+
+@pytest.mark.parametrize("sysctls", [None, GUEST_SYSCTLS], ids=["forwarding", "not_forwarding"])
+async def test_docker_run_named_redamon_agent_is_not_taken_by_name(world, sysctls, caplog):
+    # `docker run --name redamon-agent redamon-agent ...` while the real one is
+    # gone: the image's compose labels do not make it compose's container.
+    world.agent.remove(force=True)
+    probe = add_agent_lookalike(world.d, name=sc.AGENT_CONTAINER_NAME, sysctls=sysctls)
+    caplog.set_level(logging.INFO, logger="sandbox_manager")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running"
+    assert probe.id not in world.d.networks.get(sc.network_name(ALICE, "own")).attrs["Containers"]
+    assert "no agent container" in caplog.text
+
+
+@pytest.mark.parametrize("labels,status", [
+    ({BROKER: "1"}, "running"),
+    ({**AGENT_IMAGE_LABELS, **COMPOSE_CONTAINER_LABELS, sc.COMPOSE_PROJECT_LABEL: "redamon-test"}, "running"),
+    ({}, "exited"),
+], ids=["broker_owned_without_compose_labels", "replica_of_another_project", "not_running"])
+async def test_a_redamon_agent_by_name_that_is_not_this_stacks_is_no_agent(world, labels, status, caplog):
+    world.agent.remove(force=True)
+    other = world.d.containers.add(sc.AGENT_CONTAINER_NAME, labels=labels, sysctls=GUEST_SYSCTLS,
+                                   status=status, image="redamon-agent:latest")
+    caplog.set_level(logging.INFO, logger="sandbox_manager")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running"
+    assert other.id not in world.d.networks.get(sc.network_name(ALICE, "own")).attrs["Containers"]
+    assert other.id not in connects_to(world, sc.network_name(ALICE, "own"))
+    assert "no agent container" in caplog.text
+
+
+def list_raising_without_ignore_removed(world):
+    """docker-py inspects each container it lists: one removed in between (a
+    broker caller can churn short-lived containers with any label) raises
+    NotFound, unless the call passes ignore_removed. Returns each call's flag."""
+    original = world.d.containers.list
+    flags = []
+
+    def churning(all=False, filters=None, **kw):
+        flags.append(kw.get("ignore_removed"))
+        if not kw.get("ignore_removed"):
+            raise NotFound("No such container: removed while listed")
+        return original(all=all, filters=filters)
+    world.d.containers.list = churning
+    return flags
+
+
+async def test_containers_removed_while_listed_never_fail_the_manager(world):
+    world.mp.setenv(sc.PORT_POOL_ENV, "40000-40003")
+    flags = list_raising_without_ignore_removed(world)
+    first = await world.mgr.ensure(ALICE, ["projA"])
+    assert first["state"] == "running" and first["reverse_port"] == 40000
+    again = await world.mgr.ensure(ALICE, ["projA"])
+    assert again["instance"] == first["instance"]
+    assert await world.mgr.attach_capture_proxy_everywhere() == 1
+    world.ledger.reconcile(set())
+    world.mgr = world.manager()
+    assert (await world.mgr.adopt())["adopted"] == 1
+    assert len(flags) >= 4 and all(flags)
+
+
+async def test_agent_by_name_of_a_stack_without_compose_project_needs_no_compose_label(world):
+    # An orchestrator outside compose knows no project: a compose container is
+    # never its agent, a container named redamon-agent with no compose label is.
+    mgr = world.manager(own_compose_project=None)
+    await mgr.ensure(ALICE, [])
+    assert world.agent.id not in connects_to(world, sc.network_name(ALICE, "own"))
+    await mgr.stop_all("operator")
+    world.agent.attrs["Config"]["Labels"] = {}
+    await mgr.ensure(ALICE, [])
+    assert world.agent.id in connects_to(world, sc.network_name(ALICE, "own"))
+
+
+async def test_every_compose_agent_replica_that_cannot_forward_is_attached(world):
+    second = add_agent(world.d, name="redamon-agent-2", number=2)
+    await world.mgr.ensure(ALICE, ["projA"])
+    eps = connects_to(world, sc.network_name(ALICE, "own"))
+    for agent in (world.agent, second):
+        assert eps[agent.id] == {"Aliases": [sc.AGENT_ALIAS], "GwPriority": sc.GUEST_GATEWAY_PRIORITY}
+
+
+async def test_a_replica_that_may_forward_is_left_off_and_the_others_attached(world, caplog):
+    second = add_agent(world.d, name="redamon-agent-2", number=2, sysctls=None)
+    caplog.set_level(logging.INFO, logger="sandbox_manager")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running"
+    members = world.d.networks.get(sc.network_name(ALICE, "own")).attrs["Containers"]
+    assert world.agent.id in members and second.id not in members
+    assert "net.ipv4.ip_forward" in caplog.text
+
+
+async def test_every_compose_agent_that_may_forward_still_refuses_the_start(world):
+    world.agent.attrs["HostConfig"]["Sysctls"] = None
+    add_agent(world.d, name="redamon-agent-2", number=2, sysctls={"net.ipv4.ip_forward": "1"})
+    with pytest.raises(sm.SandboxStartError) as e:
+        await world.mgr.ensure(ALICE, ["projA"])
+    assert e.value.code == sc.ERR_START_FAILED
+    assert world.created() == [] and world.d.sandbox_networks() == []
+
+
+async def test_guest_check_of_live_networks_never_attaches_a_lookalike(world):
+    await world.mgr.ensure(ALICE, ["projA"])
+    probe = add_agent_lookalike(world.d, sysctls=GUEST_SYSCTLS)
+    world.clock.now += sc.IDLE_CHECK_S + 1
+    assert await world.mgr.attach_capture_proxy_everywhere() == 1
+    await world.mgr.ensure(ALICE, ["projA"])
+    members = world.d.networks.get(sc.network_name(ALICE, "own")).attrs["Containers"]
+    assert world.agent.id in members and probe.id not in members
+
+
+async def test_adoption_never_attaches_a_lookalike(world):
+    await adopt_world(world)
+    probe = add_agent_lookalike(world.d, sysctls=GUEST_SYSCTLS)
+    await world.mgr.adopt()
+    for name in (sc.network_name(ALICE, "own"), sc.network_name(BOB, "act_as")):
+        members = world.d.networks.get(name).attrs["Containers"]
+        assert world.agent.id in members and probe.id not in members
+
+
+@pytest.mark.parametrize("real_proxy", [True, False], ids=["beside_the_proxy", "alone"])
+async def test_a_docker_run_of_the_proxy_image_is_never_a_guest(world, real_proxy):
+    # The proxy is found by its container name only (compose's or the
+    # orchestrator's own start): its image's compose labels never count.
+    if not real_proxy:
+        world.proxy.remove(force=True)
+    probe = world.d.containers.add(
+        "quirky_hopper", labels={sc.COMPOSE_PROJECT_LABEL: "redamon",
+                                 sc.COMPOSE_SERVICE_LABEL: "capture-proxy", "redamon.capture": "proxy"},
+        sysctls=GUEST_SYSCTLS, env=[f"CAPTURE_BLOCKED_IPS={sc.SUBNET_POOL}"],
+        image="redamon-capture-proxy:latest")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running"
+    members = world.d.networks.get(sc.network_name(ALICE, "own")).attrs["Containers"]
+    assert probe.id not in members and (world.proxy.id in members) is real_proxy
+
+
+async def test_a_docker_run_of_the_kali_image_is_left_alone(world):
+    # The Kali image carries compose labels only, never a sandbox, owner or
+    # templates label: adoption, the port scan and starts leave such a copy be.
+    world.mp.setenv(sc.PORT_POOL_ENV, "40000-40003")
+    probe = world.d.containers.add("eager_lovelace", labels=dict(IMAGE_LABELS),
+                                   image=sc.IMAGE, image_id=IMAGE_ID)
+    assert await world.mgr.adopt() == {"adopted": 0, "removed": 0, "networks_removed": 0}
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["reverse_port"] == 40000
+    assert not probe.removed and probe.status == "running"
+    assert probe.id not in world.d.networks.get(sc.network_name(ALICE, "own")).attrs["Containers"]
+    assert world.created(ALICE)[0].id != probe.id
 
 
 async def test_network_removal_disconnects_a_connected_lab(world):
