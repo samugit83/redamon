@@ -183,7 +183,7 @@ class TheTerminalNamesWhoOpenedIt(unittest.TestCase):
                 mock.patch.object(api.websockets, "connect", connect):
             with TestClient(api.app).websocket_connect(f"/ws/kali-terminal?ticket={ticket}") as ws:
                 ws.send_text("hi")
-                self.assertEqual(ws.receive_text(), "hi")
+                self.assertEqual(ws.receive_bytes(), b"hi")
         claims = mc.verify_run_credential(connect.call_args.kwargs["additional_headers"]["X-Redamon-Run"], "graph")
         self.assertEqual((claims["ten"], claims["sub"]), ("owner-1", "collab-1"))
         self.assertIn("user_id=owner-1", connect.call_args.args[0])

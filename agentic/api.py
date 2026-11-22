@@ -22,7 +22,7 @@ from typing import Annotated, Any, List, Literal, Optional
 
 import httpx
 import websockets
-from fastapi import Depends, FastAPI, File, Form, Query, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile, WebSocket
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,7 +36,12 @@ from llm_guard import (master_key_is_weak, require_configured_master_auth,
                        require_master_internal_auth, require_master_or_job_credential,
                        require_master_or_run_credential, run_credential_claims,
                        scan_job_ids, set_run_liveness)
-from kali_auth import kali_auth_headers
+from kali_auth import kali_auth_headers, note_kali_refusal
+import sandbox_contract
+import sandbox_router
+import sandbox_runs
+import tools
+from sandbox_http import SandboxAnswerRefused, read_answer
 from logging_config import setup_logging
 from agent_in_the_loop import is_loop_llm, is_loop_model, loop_enabled
 from agent_in_the_loop.broker import get_broker
@@ -50,7 +55,7 @@ from tradecraft.api import router as tradecraft_v2_router
 from tradecraft.jobs import recover_on_boot as tradecraft_recover_on_boot
 from prompt_safety import wrap_untrusted, UNTRUSTED_OUTPUT_GUIDANCE
 from startup_guard import check_single_worker
-from utils import get_session_count
+from utils import forget_tunnel_status, get_session_count
 from websocket_api import (WebSocketManager, websocket_endpoint, MessageType,
                            CLOSE_SCOPES, PROXIED_SOCKETS, SOCKET_KINDS, close_sockets,
                            subscribe_sandbox_status, unsubscribe_sandbox_status)
@@ -158,6 +163,7 @@ async def lifespan(app: FastAPI):
     idle_upload_sweeper.cancel()
     await sandbox_hold.stop()
     unsubscribe_sandbox_status()
+    await sandbox_router.shutdown()
     if orchestrator:
         await orchestrator.close()
 
@@ -1604,8 +1610,19 @@ async def jev_route_exposure_assess(body: RouteExposureAssessRequest, cred: Opti
 
 @app.post("/emergency-stop-all", tags=["System"], dependencies=[Depends(require_configured_master_auth)])
 async def emergency_stop_all():
-    """Emergency stop: cancel every running agent task immediately."""
+    """Emergency stop: cancel every running agent task immediately.
+
+    Every running Kali sandbox is first asked to kill the processes of the agent's runs,
+    each bounded (a hung one never holds the stop): before the runs are cancelled,
+    since a run's sandbox handles go when it ends. The webapp stops the sandboxes
+    themselves only after this answers, so no live run's retry starts one again."""
     navigator_stopped = navigator_runs.stop_all()
+    try:
+        sandboxes = await sandbox_runs.stop_all_runs()
+        logger.warning(f"Emergency stop: {sandboxes.get('answered', 0)} of {sandboxes.get('asked', 0)} "
+                       f"Kali sandbox(es) asked stopped the runs' processes")
+    except Exception as exc:  # noqa: BLE001 - the runs are cancelled whatever the sandboxes say
+        logger.warning(f"Emergency stop: the sandboxes were not asked ({type(exc).__name__})")
     if not ws_manager:
         return JSONResponse(content={"stopped": 0, "navigator": navigator_stopped}, status_code=503)
     stopped = await ws_manager.stop_all()
@@ -2098,6 +2115,21 @@ async def test_mcp_server(server: dict):
             "discovered_tools": [],
             "error": mcp_registry.TOKEN_ENV_VAR_REFUSED_MESSAGE,
             "code": mcp_registry.TOKEN_ENV_VAR_REFUSED,
+            "warnings": [],
+        }
+
+    # The agent sits on every person's Kali sandbox network, where ngrok's API and the
+    # reverse-shell listener check nothing: a draft naming a sandbox address is refused
+    # before any connection (the connection itself is guarded too, for names that
+    # resolve there).
+    refusal = await asyncio.to_thread(mcp_registry.sandbox_address_refusal, srv_obj)
+    if refusal is not None:
+        return {
+            "ok": False,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "discovered_tools": [],
+            "error": refusal.message,
+            "code": refusal.code,
             "warnings": [],
         }
 
@@ -3215,130 +3247,512 @@ async def generate_skill_metadata(body: SkillMetadataRequest):
 
 
 # =============================================================================
-# SESSION MANAGEMENT PROXY — proxies to kali-sandbox:8013 session endpoints
+# SESSION MANAGEMENT PROXY — the Kali sandboxes' Metasploit session managers (:8013)
 # =============================================================================
+# Shared mode: the shared container's session manager, as before. Per-user mode (group
+# 1, B.12): every running sandbox has its own console, which numbers its sessions from
+# 1, so the list asks every sandbox and a drive names its instance (`?sandbox=`).
 
 # Derive base URL from existing progress URL (already in docker-compose)
 _SESSION_BASE = os.environ.get(
     "MCP_METASPLOIT_PROGRESS_URL", "http://kali-sandbox:8013/progress"
 ).rsplit("/progress", 1)[0]
 
+#: Replaced by the tests with an httpx.MockTransport; None is httpx's own.
+_sandbox_transport: Optional[httpx.AsyncBaseTransport] = None
+#: Each sandbox the list asks gets this long; one that does not answer is named.
+_SESSIONS_FANOUT_S = sandbox_contract.FANOUT_TIMEOUT_S
+_SESSION_DRIVE_S = {"interact": 40.0, "kill": 15.0, "map": 5.0}
+#: An interact answer carries a command's output; everything else stays small.
+_INTERACT_MAX_BYTES = 4 * 1024 * 1024
+#: Rows taken from one sandbox's answer, per list: a hostile sandbox can answer thousands.
+_SESSION_ROWS_MAX = 500
+_SESSION_LISTS = ("sessions", "jobs", "non_msf_sessions")
+# The session manager's ids (mcp/servers/metasploit_server.py): an integer for a
+# Metasploit session or job, `raw-<milliseconds>` for a listener. They go into a URL.
+_SESSION_NUMBER_ID = re.compile(r"[0-9]{1,10}")
+_SESSION_LISTENER_ID = re.compile(r"raw-[0-9]{1,20}")
+# The agent's own tags on a per-user row, named as the webapp reads them
+# (SANDBOX_PERSON_FIELD, SANDBOX_VIEW_FIELD in webapp/src/lib/authz/agentSessionsAccess.ts).
+_SANDBOX_PERSON_FIELD = "sandbox_user"
+_SANDBOX_VIEW_FIELD = "sandbox_view"
 
-def _session_manager_reply(resp) -> JSONResponse:
+
+def _session_reply(status: int, data) -> JSONResponse:
     """The session manager's answer, except its 401: passed on as a 401 it would read as
     the webapp's key being refused, so it becomes a 502 that names the agent's bearer."""
-    if resp.status_code == 401:
+    if status == 401:
         logger.error("[rbac] session manager refused the agent's bearer: MCP_AUTH_TOKEN is "
                      "unset in the agent or differs from kali-sandbox's")
         return JSONResponse(
             content={"error": "Session manager refused the agent's credential",
                      "code": "session_manager_unauthorized"},
             status_code=502)
-    return JSONResponse(content=resp.json(), status_code=resp.status_code)
+    return JSONResponse(content=data, status_code=status)
 
 
-@app.get("/tunnel-status", tags=["System"])
-async def get_tunnel_status():
-    """Return live status of ngrok and chisel tunnels."""
-    from utils import _query_ngrok_tunnel, _query_chisel_tunnel
+def _session_manager_reply(resp) -> JSONResponse:
+    return _session_reply(resp.status_code, resp.json())
 
-    # Always try to query both — they return None gracefully if not running
-    ngrok_info = _query_ngrok_tunnel()
-    chisel_info = _query_chisel_tunnel()
 
-    return {
-        "ngrok": {"active": True, "host": ngrok_info["host"], "port": ngrok_info["port"]} if ngrok_info else {"active": False},
-        "chisel": {"active": True, "host": chisel_info["host"], "port": chisel_info["port"], "srvPort": chisel_info["srv_port"]} if chisel_info else {"active": False},
-    }
+def _sandbox_client(timeout: float) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=timeout, transport=_sandbox_transport)
+
+
+def _session_row_id_ok(list_name: str, row_id) -> bool:
+    if list_name == "non_msf_sessions":
+        return isinstance(row_id, str) and _SESSION_LISTENER_ID.fullmatch(row_id) is not None
+    if isinstance(row_id, bool):
+        return False
+    if isinstance(row_id, int):
+        return 0 <= row_id < 10 ** 10
+    return isinstance(row_id, str) and _SESSION_NUMBER_ID.fullmatch(row_id) is not None
+
+
+def _tagged_session_rows(data, instance: str, handle=None) -> Optional[dict]:
+    """One sandbox's lists, each row tagged AFTER the sandbox's own fields: its instance
+    and, for a per-user sandbox, the person and view of the agent's handle (a sandbox
+    cannot claim another's), none for the shared container (it is everybody's). Rows
+    of another id shape are dropped, and each list is capped. None for an answer that is
+    not the session manager's shape."""
+    if not isinstance(data, dict):
+        return None
+    lists = {}
+    for name in _SESSION_LISTS:
+        items = data.get(name)
+        if items is None:
+            items = []
+        if not isinstance(items, list):
+            return None
+        rows = []
+        for row in items:
+            if len(rows) >= _SESSION_ROWS_MAX:
+                break
+            if not isinstance(row, dict) or not _session_row_id_ok(name, row.get("id")):
+                continue
+            own = {k: v for k, v in row.items() if k not in (_SANDBOX_PERSON_FIELD, _SANDBOX_VIEW_FIELD)}
+            tagged = {**own, "sandbox": instance}
+            if handle is not None:
+                tagged[_SANDBOX_PERSON_FIELD] = handle.user_id
+                tagged[_SANDBOX_VIEW_FIELD] = handle.view
+            rows.append(tagged)
+        lists[name] = rows
+    return lists
+
+
+async def _sessions_of(url: str, headers: dict, instance: str, handle=None):
+    """(instance, lists) from one session manager, lists None when it did not answer in
+    time or answered outside its shape. Raises httpx.ConnectError when nothing listens."""
+    try:
+        async with _sandbox_client(_SESSIONS_FANOUT_S) as client:
+            answer = await asyncio.wait_for(
+                read_answer(client, "GET", url, headers=headers, deadline_s=_SESSIONS_FANOUT_S),
+                timeout=_SESSIONS_FANOUT_S + 0.5)
+        if answer.status != 200:
+            note_kali_refusal(answer.status, f"the session list of {instance}")
+            return instance, None
+        return instance, _tagged_session_rows(answer.json(), instance, handle)
+    except httpx.ConnectError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a deadline, a refused answer, bad JSON
+        logger.info("[sandbox] the session list of %s was not read: %s", instance, type(exc).__name__)
+        return instance, None
+
+
+async def _shared_sessions_in_per_user():
+    """The shared container's sessions while it still runs beside the per-user sandboxes
+    (until S21): opened before the flip, they stay listed (as `shared`) and killable. A
+    container that is not there (nothing listens, or no token to ask it with) is left out
+    quietly; one that does not answer is named."""
+    headers = kali_auth_headers()
+    if not headers:
+        return sandbox_contract.SHARED_INSTANCE, "absent"
+    try:
+        return await _sessions_of(f"{_SESSION_BASE}/sessions", headers, sandbox_contract.SHARED_INSTANCE)
+    except httpx.ConnectError:
+        return sandbox_contract.SHARED_INSTANCE, "absent"
+
+
+async def _sandbox_sessions(handle):
+    try:
+        return await _sessions_of(sandbox_router.url_for(handle, "sessions", "/sessions"),
+                                  sandbox_router.headers_for(handle), handle.instance, handle)
+    except Exception as exc:  # noqa: BLE001 - a stopped sandbox is a sandbox that did not answer
+        logger.info("[sandbox] the session list of %s was not read: %s", handle.instance, type(exc).__name__)
+        return handle.instance, None
+
+
+def _sandbox_list_unavailable() -> JSONResponse:
+    return JSONResponse(status_code=503, content={
+        "error": "The Kali sandbox list could not be read", "code": "sandbox_list_unavailable"})
 
 
 @app.get("/sessions", tags=["Sessions"],
          dependencies=[Depends(require_configured_master_auth)])
 async def get_sessions():
-    """List all active Metasploit sessions, background jobs, and non-MSF sessions."""
+    """List all active Metasploit sessions, background jobs, and non-MSF sessions.
+
+    Per-user mode: every running sandbox's, asked at once, each row tagged with its
+    `sandbox` instance (and its person and view); the instances that did not answer in
+    time are named in `unavailable`, and never delay the others."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{_SESSION_BASE}/sessions", headers=kali_auth_headers())
-            return _session_manager_reply(resp)
-    except httpx.TimeoutException:
-        return JSONResponse(content={"error": "Session manager timeout"}, status_code=504)
-    except Exception as e:
-        logger.error(f"Session proxy error: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=502)
+        handles = await sandbox_router.running_sandboxes()
+    except sandbox_router.SandboxUnavailable:
+        return _sandbox_list_unavailable()
+    if sandbox_router.current_mode() != sandbox_contract.MODE_PER_USER:
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=_sandbox_transport) as client:
+                resp = await client.get(f"{_SESSION_BASE}/sessions", headers=kali_auth_headers())
+                return _session_manager_reply(resp)
+        except httpx.TimeoutException:
+            return JSONResponse(content={"error": "Session manager timeout"}, status_code=504)
+        except Exception as e:
+            logger.error(f"Session proxy error: {e}")
+            return JSONResponse(content={"error": str(e)}, status_code=502)
+
+    answers = await asyncio.gather(*(_sandbox_sessions(h) for h in handles),
+                                   _shared_sessions_in_per_user())
+    merged = {name: [] for name in _SESSION_LISTS}
+    unavailable = []
+    for instance, lists in answers:
+        if lists == "absent":
+            continue
+        if lists is None:
+            unavailable.append(instance)
+            continue
+        for name in _SESSION_LISTS:
+            merged[name].extend(lists[name])
+    if unavailable:
+        logger.warning("[sandbox] %d sandbox(es) did not answer the session list", len(unavailable))
+    return JSONResponse(content={**merged, "unavailable": unavailable})
+
+
+async def _session_target(sandbox: Optional[str], person: Optional[str], view: Optional[str]):
+    """Where a drive goes: (url_for(path), headers, handle) or the route's refusal.
+
+    `shared` is the shared container (its own address and token, not the router's shared
+    handle, which retires once per-user mode is answered). An instance is looked up among
+    the running sandboxes by person and instance (and view when named), never by the
+    instance alone: ids are unique per person only, so a match of two is refused."""
+    shared = (lambda path: f"{_SESSION_BASE}{path}", kali_auth_headers(), None)
+    if sandbox == sandbox_contract.SHARED_INSTANCE:
+        return shared
+    if ((sandbox is not None and not sandbox_contract.valid_instance(sandbox))
+            or (person is not None and not sandbox_contract.valid_user_id(person))
+            or (view is not None and view not in sandbox_contract.VIEWS)):
+        return JSONResponse(status_code=400, content={
+            "error": "sandbox must name a Kali sandbox instance", "code": "invalid_sandbox"})
+    try:
+        handles = await sandbox_router.running_sandboxes()
+    except sandbox_router.SandboxUnavailable:
+        return _sandbox_list_unavailable()
+    if sandbox is None:
+        if sandbox_router.current_mode() == sandbox_contract.MODE_PER_USER:
+            return JSONResponse(status_code=400, content={
+                "error": "Name the Kali sandbox the session runs in (?sandbox=)", "code": "sandbox_required"})
+        return shared
+    matches = [h for h in handles if h.instance == sandbox
+               and (person is None or h.user_id == person) and (view is None or h.view == view)]
+    if not matches:
+        return JSONResponse(status_code=404, content={
+            "error": "No such Kali sandbox", "code": sandbox_contract.ERR_UNKNOWN_INSTANCE})
+    if len(matches) > 1:
+        return JSONResponse(status_code=409, content={
+            "error": "More than one Kali sandbox has this instance id: name its person (?sandbox_user=)",
+            "code": "sandbox_ambiguous"})
+    handle = matches[0]
+    return (lambda path: sandbox_router.url_for(handle, "sessions", path),
+            sandbox_router.headers_for(handle), handle)
+
+
+async def _session_drive(path: str, *, budget: str, body=None, sandbox=None, person=None, view=None,
+                         timeout_error: Optional[str] = None, label: str = "Session proxy"):
+    """One POST to the session manager the drive names. Shared mode goes as before; a
+    per-user sandbox's answer is read bounded, and an interaction holds a short
+    `interact` lease on that very instance (no ensure: a drive never starts a sandbox)."""
+    target = await _session_target(sandbox, person, view)
+    if isinstance(target, JSONResponse):
+        return target
+    url, headers, handle = target
+    timeout = _SESSION_DRIVE_S[budget]
+    if handle is None and sandbox is None:
+        try:
+            async with httpx.AsyncClient(timeout=timeout, transport=_sandbox_transport) as client:
+                resp = await client.post(f"{_SESSION_BASE}{path}", json=body, headers=kali_auth_headers())
+                return _session_manager_reply(resp)
+        except Exception as e:
+            if timeout_error and isinstance(e, httpx.TimeoutException):
+                return JSONResponse(content={"error": timeout_error}, status_code=504)
+            logger.error(f"{label} error: {e}")
+            return JSONResponse(content={"error": str(e)}, status_code=502)
+
+    leased = await sandbox_router.lease_listed(handle, "interact") if handle and budget == "interact" else None
+    try:
+        async with _sandbox_client(timeout) as client:
+            answer = await read_answer(
+                client, "POST", url(path), headers=headers, json=body, deadline_s=timeout,
+                max_bytes=_INTERACT_MAX_BYTES if budget == "interact" else 1024 * 1024)
+        try:
+            data = answer.json()
+        except ValueError:
+            return JSONResponse(content={"error": "The session manager's answer is not JSON"}, status_code=502)
+        return _session_reply(answer.status, data)
+    except (SandboxAnswerRefused, httpx.TimeoutException) as exc:
+        if isinstance(exc, httpx.TimeoutException) or exc.reason == "deadline":
+            return JSONResponse(content={"error": timeout_error or "Session manager timeout"}, status_code=504)
+        logger.warning(f"{label}: the answer was refused ({exc.reason})")
+        return JSONResponse(content={"error": "The session manager's answer was refused"}, status_code=502)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"{label} error: {type(exc).__name__}")
+        return JSONResponse(content={"error": f"Session manager unreachable ({type(exc).__name__})"},
+                            status_code=502)
+    finally:
+        if leased is not None:
+            await sandbox_router.release(leased)
+
+
+_SandboxParam = Annotated[Optional[str], Query(max_length=16)]
+_PersonParam = Annotated[Optional[str], Query(max_length=64)]
+_ViewParam = Annotated[Optional[str], Query(max_length=16)]
 
 
 @app.post("/sessions/{session_id}/interact", tags=["Sessions"],
           dependencies=[Depends(require_configured_master_auth)])
-async def interact_session(session_id: int, body: dict):
+async def interact_session(session_id: int, body: dict, sandbox: _SandboxParam = None,
+                           sandbox_user: _PersonParam = None, sandbox_view: _ViewParam = None):
     """Send a command to a specific Metasploit session."""
-    try:
-        async with httpx.AsyncClient(timeout=40.0) as client:
-            resp = await client.post(
-                f"{_SESSION_BASE}/sessions/{session_id}/interact", json=body,
-                headers=kali_auth_headers(),
-            )
-            return _session_manager_reply(resp)
-    except httpx.TimeoutException:
-        return JSONResponse(content={"error": "Session interaction timeout"}, status_code=504)
-    except Exception as e:
-        logger.error(f"Session interact proxy error: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=502)
+    return await _session_drive(f"/sessions/{session_id}/interact", budget="interact", body=body,
+                                sandbox=sandbox, person=sandbox_user, view=sandbox_view,
+                                timeout_error="Session interaction timeout",
+                                label="Session interact proxy")
 
 
 @app.post("/sessions/{session_id}/kill", tags=["Sessions"],
           dependencies=[Depends(require_configured_master_auth)])
-async def kill_session(session_id: int):
+async def kill_session(session_id: int, sandbox: _SandboxParam = None,
+                       sandbox_user: _PersonParam = None, sandbox_view: _ViewParam = None):
     """Kill a specific Metasploit session."""
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(f"{_SESSION_BASE}/sessions/{session_id}/kill",
-                                     headers=kali_auth_headers())
-            return _session_manager_reply(resp)
-    except Exception as e:
-        logger.error(f"Session kill proxy error: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=502)
+    return await _session_drive(f"/sessions/{session_id}/kill", budget="kill", sandbox=sandbox,
+                                person=sandbox_user, view=sandbox_view, label="Session kill proxy")
 
 
 @app.post("/jobs/{job_id}/kill", tags=["Sessions"],
           dependencies=[Depends(require_configured_master_auth)])
-async def kill_job(job_id: int):
+async def kill_job(job_id: int, sandbox: _SandboxParam = None,
+                   sandbox_user: _PersonParam = None, sandbox_view: _ViewParam = None):
     """Kill a background Metasploit job."""
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(f"{_SESSION_BASE}/jobs/{job_id}/kill",
-                                     headers=kali_auth_headers())
-            return _session_manager_reply(resp)
-    except Exception as e:
-        logger.error(f"Job kill proxy error: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=502)
+    return await _session_drive(f"/jobs/{job_id}/kill", budget="kill", sandbox=sandbox,
+                                person=sandbox_user, view=sandbox_view, label="Job kill proxy")
 
 
 @app.post("/session-chat-map", tags=["Sessions"],
           dependencies=[Depends(require_configured_master_auth)])
-async def session_chat_map(body: dict):
+async def session_chat_map(body: dict, sandbox: _SandboxParam = None,
+                           sandbox_user: _PersonParam = None, sandbox_view: _ViewParam = None):
     """Register a mapping between a Metasploit session ID and agent chat session ID."""
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(f"{_SESSION_BASE}/session-chat-map", json=body,
-                                     headers=kali_auth_headers())
-            return _session_manager_reply(resp)
-    except Exception as e:
-        logger.error(f"Session chat map proxy error: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=502)
+    return await _session_drive("/session-chat-map", budget="map", body=body, sandbox=sandbox,
+                                person=sandbox_user, view=sandbox_view, label="Session chat map proxy")
 
 
 @app.post("/non-msf-sessions", tags=["Sessions"],
           dependencies=[Depends(require_configured_master_auth)])
-async def register_non_msf_session(body: dict):
+async def register_non_msf_session(body: dict, sandbox: _SandboxParam = None,
+                                   sandbox_user: _PersonParam = None, sandbox_view: _ViewParam = None):
     """Register a non-Metasploit session (netcat, socat, etc.)."""
+    return await _session_drive("/non-msf-sessions", budget="map", body=body, sandbox=sandbox,
+                                person=sandbox_user, view=sandbox_view,
+                                label="Non-MSF session register proxy")
+
+
+# =============================================================================
+# PER-USER KALI SANDBOXES — tunnel status, tunnel push, forget a person (B.12)
+# =============================================================================
+
+_TUNNEL_INACTIVE = {"ngrok": {"active": False}, "chisel": {"active": False}}
+_TUNNEL_CONFIGURE_PATH = "/tunnel/configure"
+#: The tunnel manager stops the old tunnels (up to ~8 s) before it starts new ones.
+_TUNNEL_PUSH_S = 20.0
+_TUNNEL_ANSWER_MAX_BYTES = 64 * 1024
+_TUNNEL_FIELDS = ("ngrokAuthtoken", "chiselServerUrl", "chiselAuth")
+_TUNNEL_FIELD_MAX = 4096
+
+
+def _tunnel_answer(ngrok, chisel) -> dict:
+    return {
+        "ngrok": {"active": True, "host": ngrok["host"], "port": ngrok["port"]} if ngrok else {"active": False},
+        "chisel": {"active": True, "host": chisel["host"], "port": chisel["port"], "srvPort": chisel["srv_port"]} if chisel else {"active": False},
+    }
+
+
+async def _tunnel_manager_call(handle, method: str, path: str, body=None,
+                               timeout: float = sandbox_contract.FANOUT_TIMEOUT_S):
+    """One call to an instance's tunnel manager (8015), its answer read bounded. The
+    handle's tunnel token when it has one (an `ensure` answer), else the instance's MCP
+    token, which a per-user sandbox's tunnel manager takes only to read the status or to
+    stop the tunnels: the gateway's list carries no tunnel token."""
+    headers = sandbox_router.headers_for(handle, "tunnel") or sandbox_router.headers_for(handle)
+    async with _sandbox_client(timeout) as client:
+        return await read_answer(client, method, sandbox_router.url_for(handle, "tunnel", path),
+                                 headers=headers, json=body, max_bytes=_TUNNEL_ANSWER_MAX_BYTES,
+                                 deadline_s=timeout)
+
+
+@app.get("/tunnel-status", tags=["System"])
+async def get_tunnel_status(request: Request,
+                            user_id: Annotated[Optional[str], Query(max_length=64)] = None):
+    """Live status of the ngrok and chisel tunnels.
+
+    Shared mode: the instance tunnel, as before. Per-user mode: the master key and
+    `?user_id=`, answered with that person's own view's current instance's tunnels, and
+    inactive when none runs. A read never starts a sandbox: the graph page polls it.
+
+    The key is checked before the gateway is asked whenever per-user mode is already
+    known (or a person is named): an unauthenticated caller never makes the agent ask
+    the webapp and the orchestrator anything."""
+    if user_id is not None or sandbox_router.current_mode() == sandbox_contract.MODE_PER_USER:
+        await require_master_internal_auth(request)
+        mode = await sandbox_router.ask_mode()
+    else:
+        mode = await sandbox_router.ask_mode()
+        if mode == sandbox_contract.MODE_PER_USER:
+            await require_master_internal_auth(request)
+    if mode != sandbox_contract.MODE_PER_USER:
+        from utils import _query_ngrok_tunnel, _query_chisel_tunnel
+
+        # Always try to query both — they return None gracefully if not running
+        return _tunnel_answer(_query_ngrok_tunnel(), _query_chisel_tunnel())
+
+    if not sandbox_contract.valid_user_id(user_id or ""):
+        return JSONResponse(status_code=400, content={
+            "error": "user_id is required", "code": sandbox_contract.ERR_INVALID_USER_ID})
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(f"{_SESSION_BASE}/non-msf-sessions", json=body,
-                                     headers=kali_auth_headers())
-            return _session_manager_reply(resp)
-    except Exception as e:
-        logger.error(f"Non-MSF session register proxy error: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=502)
+        handles = await sandbox_router.running_sandboxes()
+    except sandbox_router.SandboxUnavailable:
+        return _sandbox_list_unavailable()
+    current = [h for h in handles if h.user_id == user_id and h.view == sandbox_contract.VIEW_OWN
+               and h.state == "running"]
+    if not current:
+        return dict(_TUNNEL_INACTIVE)
+    from utils import refresh_tunnel_status, tunnels_from_status
+    # Bounded, and remembered for the run's prompts (which never dial a sandbox).
+    data = await refresh_tunnel_status(current[0])
+    if data is None:
+        return JSONResponse(status_code=502, content={
+            "error": "The sandbox's tunnel manager did not answer", "code": "tunnel_status_unavailable"})
+    return _tunnel_answer(*tunnels_from_status(data))
+
+
+def _tunnel_config(raw) -> Optional[dict]:
+    """The pushed config with its three string fields (absent or null read as empty), or
+    None for any other shape. Never echoed: it holds the person's tunnel secrets."""
+    if not isinstance(raw, dict) or set(raw) - set(_TUNNEL_FIELDS):
+        return None
+    config = {}
+    for name in _TUNNEL_FIELDS:
+        value = raw.get(name)
+        if value is None:
+            value = ""
+        if not isinstance(value, str) or len(value) > _TUNNEL_FIELD_MAX:
+            return None
+        config[name] = value
+    return config
+
+
+@app.post(sandbox_contract.AGENT_ROUTE_DROP, tags=["Sandboxes"],
+          dependencies=[Depends(require_configured_master_auth)])
+async def drop_sandbox_clients(user_id: str):
+    """Forget every client and handle of the person, both views: the webapp stopped their
+    sandboxes, so the next acquire ensures again."""
+    if not sandbox_contract.valid_user_id(user_id):
+        return JSONResponse(status_code=400, content={
+            "error": "not a user id", "code": sandbox_contract.ERR_INVALID_USER_ID})
+    await sandbox_router.drop(user_id)
+    return {"ok": True}
+
+
+@app.post(sandbox_contract.AGENT_ROUTE_TUNNEL, tags=["Sandboxes"],
+          dependencies=[Depends(require_configured_master_auth)])
+async def push_sandbox_tunnel(user_id: str, request: Request):
+    """Push the person's own tunnel config (their user_settings) to their own view's
+    sandbox (B.16).
+
+    A config that starts a tunnel goes to the current instance, acquired for the push
+    (kind `interact`) and posted with its tunnel token; the hold watcher then keeps the
+    sandbox while the tunnel stays up. A config that starts nothing (every "off") stops
+    the tunnels of every own-view instance, draining ones included, with no ensure and
+    no lease: it never starts a sandbox nor counts as use."""
+    if not sandbox_contract.valid_user_id(user_id):
+        return JSONResponse(status_code=400, content={
+            "error": "not a user id", "code": sandbox_contract.ERR_INVALID_USER_ID})
+    try:
+        config = _tunnel_config(await request.json())
+    except Exception:  # noqa: BLE001 - not JSON
+        config = None
+    if config is None:
+        return JSONResponse(status_code=400, content={"error": "invalid tunnel config", "code": "invalid_body"})
+    if not (config["ngrokAuthtoken"] or config["chiselServerUrl"]):
+        return await _stop_person_tunnels(user_id)
+
+    with sandbox_router.for_person(user_id):
+        try:
+            handle = await sandbox_router.acquire(user_id, project_id=None, kind="interact")
+        except sandbox_router.SandboxUnavailable as exc:
+            status = {"refused": 403, "no_user": 403, "ram": 409, "hard": 409}.get(exc.reason, 503)
+            return JSONResponse(status_code=status, content={
+                "error": sandbox_router.unavailable_message(exc), "code": f"sandbox_{exc.reason}"})
+    try:
+        if handle.mode != sandbox_contract.MODE_PER_USER or not handle.tunnel_token:
+            # Shared mode: the webapp pushes the instance tunnel itself; the agent holds no
+            # tunnel token for the shared container.
+            return JSONResponse(status_code=409, content={
+                "error": "the Kali sandbox is shared: its tunnel is the instance's",
+                "code": "sandbox_shared_mode"})
+        try:
+            answer = await _tunnel_manager_call(handle, "POST", _TUNNEL_CONFIGURE_PATH, config,
+                                                timeout=_TUNNEL_PUSH_S)
+            data = answer.json() if answer.status == 200 else None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[sandbox] tunnel push to %s failed: %s", handle.instance, type(exc).__name__)
+            data = None
+        if not isinstance(data, dict):
+            return JSONResponse(status_code=502, content={
+                "error": "The sandbox's tunnel manager did not take the config", "code": "tunnel_push_failed"})
+        # The watcher reads the tunnel with the token this push used, and holds the
+        # sandbox while it stays up; the prompts read its status again.
+        sandbox_hold.note_tunnel(handle)
+        forget_tunnel_status([handle.key])
+        return {"ok": True, "ngrok": data.get("ngrok") is True, "chisel": data.get("chisel") is True}
+    finally:
+        await sandbox_router.release(handle)
+
+
+async def _stop_person_tunnels(user_id: str):
+    """Stop the tunnels of every live own-view instance of the person, each asked at once
+    and bounded; 502 naming the instances that did not confirm."""
+    try:
+        handles = await sandbox_router.running_sandboxes()
+    except sandbox_router.SandboxUnavailable:
+        return _sandbox_list_unavailable()
+    own = [h for h in handles if h.user_id == user_id and h.view == sandbox_contract.VIEW_OWN]
+    empty = {name: "" for name in _TUNNEL_FIELDS}
+
+    async def stop(handle) -> bool:
+        try:
+            answer = await _tunnel_manager_call(handle, "POST", _TUNNEL_CONFIGURE_PATH, empty)
+            return answer.status == 200
+        except Exception as exc:  # noqa: BLE001
+            logger.info("[sandbox] tunnel stop on %s failed: %s", handle.instance, type(exc).__name__)
+            return False
+
+    outcomes = await asyncio.gather(*(stop(h) for h in own))
+    forget_tunnel_status([h.key for h in own])
+    unavailable = [h.instance for h, ok in zip(own, outcomes) if not ok]
+    if unavailable:
+        return JSONResponse(status_code=502, content={
+            "error": "Some of the person's sandboxes did not stop their tunnels",
+            "code": "tunnel_stop_incomplete", "stopped": len(own) - len(unavailable),
+            "unavailable": unavailable})
+    return {"ok": True, "stopped": len(own)}
 
 
 # =============================================================================
@@ -5611,6 +6025,45 @@ class KaliExecRequest(BaseModel):
     project_id: str
     command: str
     wait_seconds: float = KALI_EXEC_DEFAULT_WAIT
+    # The MCP token's owner: whose Kali sandbox runs the command (group 1, B.12). A
+    # routing input the master-key caller asserts, not an audit identity (R9).
+    user_id: Optional[str] = None
+
+
+# The ledger's own refusal sentences (recon_orchestrator/admission_ledger.py,
+# _admit_sandbox). A ram/hard failure quotes one to the MCP caller; any other text
+# in that place is replaced by the contract's, since it reaches the caller verbatim.
+_GOVERNOR_SENTENCES = tuple(re.compile(p) for p in (
+    r"[0-9]{1,9} of [0-9]{1,9} Kali sandboxes allowed",
+    r"host memory critically low",
+    r"not enough reserved memory budget for another Kali sandbox",
+    r"not enough free memory to start a Kali sandbox now",
+))
+_KALI_FAILURE_TEXT = {
+    "ram": sandbox_contract.SANDBOX_UNAVAILABLE_RAM,
+    "hard": sandbox_contract.SANDBOX_UNAVAILABLE_HARD,
+    "sandbox_error": sandbox_contract.SANDBOX_UNAVAILABLE_ERROR,
+    "sandbox_refused": sandbox_contract.SANDBOX_REFUSED,
+    "sandbox_stopped": sandbox_contract.SANDBOX_STOPPED,
+}
+# The executor's own sandbox texts (tools._execute_routed), read back as their reason
+# when the sandbox failed under a call that had already started.
+_EXECUTOR_SANDBOX_REASON = {
+    sandbox_contract.SANDBOX_STOPPED: "stopped",
+    sandbox_contract.SANDBOX_REFUSED: "refused",
+    sandbox_contract.SANDBOX_UNAVAILABLE_ERROR: "error",
+    sandbox_contract.SANDBOX_UNAVAILABLE_RAM: "ram",
+    sandbox_contract.SANDBOX_UNAVAILABLE_HARD: "hard",
+}
+
+
+def _kali_failure_text(phase) -> str:
+    """The `error` of a job that failed for its sandbox: a governor sentence for
+    ram/hard, else the contract's fixed text for its code."""
+    message = phase.message or ""
+    if phase.error_code in ("ram", "hard") and any(p.fullmatch(message) for p in _GOVERNOR_SENTENCES):
+        return message
+    return _KALI_FAILURE_TEXT.get(phase.error_code, sandbox_contract.SANDBOX_UNAVAILABLE_ERROR)
 
 
 # A job id reaches a filesystem path, so traversal in it must not. uuid4().hex
@@ -5695,6 +6148,15 @@ def _kali_job_view(state: dict, cursor: int, project_id: str, job_id: str) -> di
     # indistinguishable from a scan that ran clean and found nothing.
     if state.get("error"):
         view["error"] = str(state["error"])
+    # The sandbox's part comes from the agent's own job map, never from `state`, which
+    # a poisoned meta file in the workspace can fill.
+    phase = sandbox_router.job_phase(job_id)
+    if phase is not None:
+        if phase.phase == "starting" and view["status"] == "running":
+            view["status"] = sandbox_contract.KALI_EXEC_STATUS_STARTING
+        elif phase.phase == "failed" and phase.error_code and view["status"] == "failed":
+            view["error_code"] = phase.error_code
+            view["error"] = _kali_failure_text(phase)
     if view["status"] == "cancelled":
         # Honest wording. reg.cancel() cancels the asyncio task awaiting the MCP
         # call; kali_shell is a blocking subprocess.run in the SANDBOX process,
@@ -5705,6 +6167,17 @@ def _kali_job_view(state: dict, cursor: int, project_id: str, job_id: str) -> di
             "the target until its own timeout; output after this point is not collected."
         )
     return view
+
+
+def _kali_job_of_another(job_id: str, user_id: Optional[str]) -> bool:
+    """A caller who names a person (`user_id`) reaches only that person's commands: a
+    job the agent recorded for someone else is the same 404 as one that does not exist.
+    Without a name, or for a job the agent recorded for no one (shared mode without a
+    person, a job from before a restart), the project and job id decide as before."""
+    if user_id is None:
+        return False
+    owner = sandbox_router.job_sandbox_user(job_id)
+    return bool(owner) and owner != user_id
 
 
 # Master key only. require_internal_auth_only also accepts SCANNER_API_KEY, which
@@ -5741,14 +6214,55 @@ async def kali_exec(body: KaliExecRequest):
     if not orchestrator or not getattr(orchestrator, "tool_executor", None):
         return JSONResponse(status_code=503, content={"error": "the sandbox is not available"})
 
+    # Per-user mode runs the command in the token owner's own sandbox, so a request
+    # that names nobody has nowhere to run (the mode is asked afresh: a remembered
+    # `shared` may be stale).
+    person = body.user_id or ""
+    if person and not sandbox_contract.valid_user_id(person):
+        return JSONResponse(status_code=400, content={
+            "error": "user_id is not a valid user id", "code": sandbox_contract.ERR_INVALID_USER_ID})
+    if not person and await sandbox_router.ask_mode() == sandbox_contract.MODE_PER_USER:
+        return JSONResponse(status_code=400, content={
+            "error": "user_id is required", "code": sandbox_contract.ERR_INVALID_USER_ID})
+    with sandbox_router.for_person(person):
+        # Advisory: a cold sandbox answers `starting` at once instead of holding the
+        # caller through its start (shared mode is always running).
+        cold = bool(person) and not await sandbox_router.is_running(person)
+
     # Verbatim. `kali_shell` hands it to `bash -c`, so quoting it would break
     # every pipeline the caller is now entitled to write.
     safe_command = body.command
 
     async def runner(name, args, append_log):
-        result = await orchestrator.tool_executor.execute(
-            name, dict(args, output_mode="inline"), "informational", skip_phase_check=True
-        )
+        # Runs in the job's task, spawned inside for_person(person): the sandbox is the
+        # person's own view, on an `exec` lease held for the whole job.
+        job_id = job_runner.current_job_id()
+        if job_id:
+            sandbox_router.note_job(job_id, person)
+            if sandbox_router.current_mode() == sandbox_contract.MODE_PER_USER:
+                sandbox_router.set_job_phase(job_id, "starting")
+        try:
+            handle = await sandbox_router.acquire(person, project_id=body.project_id, kind="exec")
+        except sandbox_router.SandboxUnavailable as exc:
+            if job_id:
+                sandbox_router.job_failed(job_id, exc)
+            return {"success": False, "output": None,
+                    "error": _kali_failure_text(sandbox_router.job_phase(job_id)) if job_id
+                    else sandbox_router.unavailable_message(exc)}
+        if job_id:
+            sandbox_router.set_job_phase(job_id, "running")
+        with tools.bound_sandbox(handle, "exec") as bound:
+            try:
+                result = await orchestrator.tool_executor.execute(
+                    name, dict(args, output_mode="inline"), "informational", skip_phase_check=True
+                )
+            finally:
+                await sandbox_router.release(bound.handle)
+        reason = _EXECUTOR_SANDBOX_REASON.get(result.get("error")) if not result.get("success") else None
+        if reason and job_id:
+            sandbox_router.job_failed(job_id, sandbox_router.SandboxUnavailable(reason))
+            return {"success": False, "output": None,
+                    "error": _kali_failure_text(sandbox_router.job_phase(job_id))}
         output = result.get("output")
         if output:
             await append_log(str(output))
@@ -5768,16 +6282,26 @@ async def kali_exec(body: KaliExecRequest):
         }
 
     reg = job_runner.get_registry()
-    spawned = await reg.spawn(
-        body.project_id, "kali_shell", {"command": safe_command}, runner,
-        label=safe_command.split()[0][:40] if safe_command.split() else "kali_shell",
-    )
+    # The job's task inherits the person bound here (job_runner creates it in spawn).
+    with sandbox_router.for_person(person):
+        spawned = await reg.spawn(
+            body.project_id, "kali_shell", {"command": safe_command}, runner,
+            label=safe_command.split()[0][:40] if safe_command.split() else "kali_shell",
+        )
     if isinstance(spawned, dict) and spawned.get("error"):
         return JSONResponse(status_code=429, content={"error": spawned["error"]})
 
     job_id = spawned["job_id"]
-    wait = max(0.0, min(float(body.wait_seconds or 0), KALI_EXEC_MAX_WAIT))
-    state = await reg.wait(body.project_id, job_id, timeout_sec=wait)
+    if cold:
+        # The answer below is read now, maybe before the job's task first ran: record
+        # `starting` unless the runner already recorded a phase, never moving one back.
+        if sandbox_router.job_phase(job_id) is None:
+            sandbox_router.note_job(job_id, person)
+            sandbox_router.set_job_phase(job_id, "starting")
+        state = reg.status(body.project_id, job_id)
+    else:
+        wait = max(0.0, min(float(body.wait_seconds or 0), KALI_EXEC_MAX_WAIT))
+        state = await reg.wait(body.project_id, job_id, timeout_sec=wait)
 
     view = _kali_job_view(state, 0, body.project_id, job_id)
     view["command"] = safe_command
@@ -5789,9 +6313,10 @@ async def kali_exec_status(
     job_id: str,
     project_id: str = Query(...),
     cursor: int = Query(0, ge=0),
+    user_id: Annotated[Optional[str], Query()] = None,
 ):
     """Poll a running command and read its output forward from `cursor`."""
-    if not _KALI_JOB_ID_RE.match(job_id or ""):
+    if not _KALI_JOB_ID_RE.match(job_id or "") or _kali_job_of_another(job_id, user_id):
         return JSONResponse(status_code=404, content={"error": "no such command"})
     reg = job_runner.get_registry()
     # status() keys on (project_id, job_id) and reads a per-project directory,
@@ -5803,9 +6328,10 @@ async def kali_exec_status(
 
 
 @app.post("/kali/exec/{job_id}/cancel", tags=["Kali"], dependencies=[Depends(require_master_internal_auth)])
-async def kali_exec_cancel(job_id: str, project_id: str = Query(...)):
+async def kali_exec_cancel(job_id: str, project_id: str = Query(...),
+                           user_id: Annotated[Optional[str], Query()] = None):
     """Stop a running command. An agent that can start one must be able to."""
-    if not _KALI_JOB_ID_RE.match(job_id or ""):
+    if not _KALI_JOB_ID_RE.match(job_id or "") or _kali_job_of_another(job_id, user_id):
         return JSONResponse(status_code=404, content={"error": "no such command"})
     reg = job_runner.get_registry()
     state = reg.status(project_id, job_id)
@@ -5848,6 +6374,76 @@ def _terminal_run_credential(claims: dict) -> tuple:
         return "", None
 
 
+#: What the browser sends while a cold sandbox starts is kept for the shell (the init and
+#: the size come first), bounded in bytes: a frame may be 16 MiB.
+_TERMINAL_PENDING_MAX_BYTES = 64 * 1024
+#: The close past that bound: "message too big".
+_TERMINAL_CLOSE_TOO_MUCH = 1009
+
+
+class _TerminalInputOverflow(Exception):
+    """The browser sent more than the start buffer holds."""
+_TERMINAL_UNAVAILABLE_REASON = {"no_user": "refused"}
+
+
+def _terminal_status_frame(state: str, exc: Optional["sandbox_router.SandboxUnavailable"] = None) -> str:
+    """The proxy's own `sandbox_status` text frame (B.13). The only text frames the
+    browser gets from this socket: the sandbox's are forwarded as bytes."""
+    frame = {"type": sandbox_contract.SANDBOX_STATUS, "state": state}
+    if exc is not None:
+        frame["reason"] = _TERMINAL_UNAVAILABLE_REASON.get(exc.reason, exc.reason)
+        if exc.reason in ("ram", "hard") and exc.limit:
+            frame["limit"] = exc.limit
+    return json.dumps(frame)
+
+
+async def _terminal_sandbox(websocket: WebSocket, person: str, project_id: str, pending: list):
+    """The person's sandbox handle for the terminal, on a `terminal` lease; None when the
+    browser left while it started. Raises SandboxUnavailable.
+
+    A cold sandbox: one `starting` frame, then the start, while the browser's frames are
+    kept (in order, bounded) for the shell."""
+    handle = await sandbox_router.acquire(person, project_id=project_id, kind="terminal", wait=False)
+    if handle.state != "starting":
+        return handle
+    await websocket.send_text(_terminal_status_frame("starting"))
+    start = asyncio.create_task(
+        sandbox_router.acquire(person, project_id=project_id, kind="terminal"))
+    started = None
+    held = 0
+    try:
+        while not start.done():
+            frame = asyncio.create_task(websocket.receive())
+            await asyncio.wait({start, frame}, return_when=asyncio.FIRST_COMPLETED)
+            if not frame.done():
+                frame.cancel()
+                await asyncio.gather(frame, return_exceptions=True)
+                continue
+            message = frame.result()
+            if message.get("type") == "websocket.disconnect":
+                return None
+            text, data = message.get("text"), message.get("bytes")
+            held += len(text.encode("utf-8")) if text is not None else len(data or b"")
+            if held > _TERMINAL_PENDING_MAX_BYTES:
+                raise _TerminalInputOverflow()
+            pending.append(message)
+        started = start.result()
+        return started
+    finally:
+        if not start.done():
+            start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        elif started is None and not start.cancelled() and start.exception() is None:
+            # The browser left as the start ended: nobody will release this lease.
+            await sandbox_router.release(start.result())
+
+
+def _websocket_gone(websocket: WebSocket) -> bool:
+    from starlette.websockets import WebSocketState
+
+    return websocket.client_state != WebSocketState.CONNECTED
+
+
 @app.websocket("/ws/kali-terminal")
 async def kali_terminal_proxy(websocket: WebSocket):
     """
@@ -5861,10 +6457,18 @@ async def kali_terminal_proxy(websocket: WebSocket):
     the terminal) and a same-origin request. An unset AGENT_WS_TICKET_SECRET
     fails CLOSED (mirrors S2). Identity is taken from the verified claims, never
     from the browser's self-asserted frame, and forwarded to the upstream, which
-    admits only this proxy: it presents the MCP_AUTH_TOKEN bearer (NF-04). The
+    admits only this proxy: it presents the sandbox's bearer (NF-04). The
     upgrade also carries a graph run credential bound to that user and project,
     which the shell's redagraph presents to /graph/exec (HD-19); it is honoured
     only while this socket stays registered.
+
+    Per-user Kali sandboxes (group 1, B.12): the shell runs in the sandbox of the
+    ticket's `sub` (the person), in their `act_as` view when the ticket carries `act`,
+    on a `terminal` lease held for the socket's life; never the tenant's sandbox. A
+    cold sandbox gets a `sandbox_status` `starting` frame; one that cannot serve gets
+    an `unavailable` frame and the close 1013 (could not start) or 1008 (refused).
+    Status frames come only before the shell's first output, and they are the only
+    text frames: the sandbox's own are forwarded as bytes.
     """
     from ws_ticket import authorize_ws
 
@@ -5888,27 +6492,53 @@ async def kali_terminal_proxy(websocket: WebSocket):
         "project_id": str(claims["pid"]),
         "session_id": str(claims["sid"]),
     })
-    _sep = "&" if urlparse(_KALI_TERMINAL_WS_URL).query else "?"
-    upstream_url = f"{_KALI_TERMINAL_WS_URL}{_sep}{_tenant}"
-    # Unset: no header, and the terminal server refuses the upgrade (it fails closed).
-    # The run credential rides only on an authenticated upgrade, in a header: a query
-    # parameter would land in access logs.
-    _mcp_token = os.environ.get("MCP_AUTH_TOKEN", "")
-    upstream_headers = {}
-    _run_id = None
-    if _mcp_token:
-        upstream_headers["Authorization"] = f"Bearer {_mcp_token}"
-        _run_credential, _run_id = _terminal_run_credential(claims)
-        if _run_credential:
-            upstream_headers["X-Redamon-Run"] = _run_credential
 
     await websocket.accept()
-    # Registered before the upstream dial, so the shell never holds a credential
-    # this socket does not yet keep alive; its `finally` removal ends it.
-    PROXIED_SOCKETS.add(websocket, "kali-terminal", claims, run=_run_id)
+    # Registered before the sandbox start and the upstream dial, so a revocation closes
+    # this socket meanwhile, and the shell never holds a credential this socket does not
+    # yet keep alive; its `finally` removal ends it.
+    PROXIED_SOCKETS.add(websocket, "kali-terminal", claims, run=None)
 
     close_code, close_reason = 1000, ""
+    handle = None
+    pending: list = []
     try:
+        try:
+            with sandbox_router.for_person(str(claims["sub"]), acting=bool(claims.get("act"))):
+                handle = await _terminal_sandbox(websocket, str(claims["sub"]), str(claims["pid"]), pending)
+        except _TerminalInputOverflow:
+            close_code, close_reason = _TERMINAL_CLOSE_TOO_MUCH, "Too much input while the sandbox starts"
+            return
+        except sandbox_router.SandboxUnavailable as exc:
+            await websocket.send_text(_terminal_status_frame("unavailable", exc))
+            if _TERMINAL_UNAVAILABLE_REASON.get(exc.reason, exc.reason) == "refused":
+                close_code, close_reason = sandbox_contract.TERMINAL_CLOSE_REFUSED, "Kali sandbox not available"
+            else:
+                close_code, close_reason = sandbox_contract.TERMINAL_CLOSE_UNAVAILABLE, "Kali sandbox could not start"
+            return
+        if handle is None or _websocket_gone(websocket):
+            return
+
+        upstream_headers = {}
+        _run_id = None
+        if handle.mode == sandbox_contract.MODE_PER_USER:
+            upstream_url = f"{sandbox_router.url_for(handle, 'terminal')}?{_tenant}"
+            upstream_headers.update(sandbox_router.headers_for(handle))
+        else:
+            _sep = "&" if urlparse(_KALI_TERMINAL_WS_URL).query else "?"
+            upstream_url = f"{_KALI_TERMINAL_WS_URL}{_sep}{_tenant}"
+            # Unset: no header, and the terminal server refuses the upgrade (it fails closed).
+            _mcp_token = os.environ.get("MCP_AUTH_TOKEN", "")
+            if _mcp_token:
+                upstream_headers["Authorization"] = f"Bearer {_mcp_token}"
+        # The run credential rides only on an authenticated upgrade, in a header: a query
+        # parameter would land in access logs.
+        if upstream_headers:
+            _run_credential, _run_id = _terminal_run_credential(claims)
+            if _run_credential:
+                upstream_headers["X-Redamon-Run"] = _run_credential
+                PROXIED_SOCKETS.add(websocket, "kali-terminal", claims, run=_run_id)
+
         async with websockets.connect(
             upstream_url,
             additional_headers=upstream_headers,
@@ -5916,6 +6546,12 @@ async def kali_terminal_proxy(websocket: WebSocket):
             ping_timeout=60,
             max_size=2**20,
         ) as kali_ws:
+
+            for message in pending:
+                if "text" in message and message["text"] is not None:
+                    await kali_ws.send(message["text"])
+                elif message.get("bytes") is not None:
+                    await kali_ws.send(message["bytes"])
 
             async def browser_to_kali():
                 try:
@@ -5933,10 +6569,10 @@ async def kali_terminal_proxy(websocket: WebSocket):
             async def kali_to_browser():
                 try:
                     async for message in kali_ws:
-                        if isinstance(message, bytes):
-                            await websocket.send_bytes(message)
-                        else:
-                            await websocket.send_text(message)
+                        # Bytes, whatever the sandbox sent: a text frame is the proxy's own.
+                        if isinstance(message, str):
+                            message = message.encode("utf-8")
+                        await websocket.send_bytes(message)
                 except Exception as e:
                     logger.debug("Kali→Browser stream ended: %s", e)
 
@@ -5959,6 +6595,8 @@ async def kali_terminal_proxy(websocket: WebSocket):
         close_reason = f"Kali sandbox terminal unavailable ({type(e).__name__})"
     finally:
         PROXIED_SOCKETS.remove(websocket)
+        if handle is not None:
+            await sandbox_router.release(handle)
         try:
             await websocket.close(code=close_code, reason=close_reason)
         except Exception:

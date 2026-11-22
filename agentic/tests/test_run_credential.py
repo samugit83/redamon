@@ -250,7 +250,7 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
         with mock.patch.object(self.api.websockets, "connect", connect):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket(**ticket)}") as ws:
                 ws.send_text("hello")
-                self.assertEqual(ws.receive_text(), "hello")
+                self.assertEqual(ws.receive_bytes(), b"hello")
         return connect.call_args
 
     def test_the_proxy_hands_a_graph_credential_bound_to_the_tickets_user_and_project(self):
@@ -299,7 +299,7 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
                 mock.patch.object(self.api, "_graph_exec_respond", side_effect=respond):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket(sub='uT', pid='pT')}") as ws:
                 ws.send_text("hello")
-                self.assertEqual(ws.receive_text(), "hello")
+                self.assertEqual(ws.receive_bytes(), b"hello")
                 token = connect.call_args.kwargs["additional_headers"]["X-Redamon-Run"]
                 run = mc.verify_run_credential(token, "graph")["run"]
                 [entry] = [e for e in self.api.PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT")]
@@ -323,7 +323,7 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
                 mock.patch.object(self.api.websockets, "connect", connect):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket(sub='uN', pid='pN')}") as ws:
                 ws.send_text("hello")
-                self.assertEqual(ws.receive_text(), "hello")
+                self.assertEqual(ws.receive_bytes(), b"hello")
                 [entry] = self.api.PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uN")
                 self.assertIsNone(entry.run)
 

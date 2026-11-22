@@ -573,7 +573,7 @@ class Route(unittest.TestCase):
         with mock.patch.object(self.api.websockets, "connect", connect):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket('kali-terminal')}") as ws:
                 ws.send_text("hello")
-                self.assertEqual(ws.receive_text(), "hello")  # the proxy is bridging: it registered first
+                self.assertEqual(ws.receive_bytes(), b"hello")  # the proxy is bridging: it registered first
                 [entry] = PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT")
                 self.assertEqual((entry.pid, entry.sid), ("pT", "sT"))
         # The sandbox is dialled with the agent's bearer and the verified identity.

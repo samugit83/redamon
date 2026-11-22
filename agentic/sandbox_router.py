@@ -508,6 +508,13 @@ async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool,
                         detail=_status_detail(status, code))
 
 
+async def ask_mode() -> str:
+    """The mode, asked afresh of the gateway, for a route that must decide whether a
+    request without a person can be served (B.12): the last answer, or the default
+    before any, only on an outage; per-user for any other answer without a mode."""
+    return await _mode_without_person()
+
+
 async def _mode_without_person() -> str:
     """The mode, for a call that names no person and so cannot ``ensure``: asked afresh
     from the gateway's list (which carries it), never a remembered ``shared`` that a
@@ -950,6 +957,29 @@ async def running_sandboxes() -> List[SandboxHandle]:
     return handles
 
 
+async def lease_listed(handle: SandboxHandle, kind: str) -> Optional[SandboxHandle]:
+    """A short lease of ``kind`` on exactly this listed instance (from
+    ``running_sandboxes``), with no ``ensure``: a drive of a listed sandbox never starts
+    or moves one. None when the instance takes no new lease (draining, gone, refused)
+    or the gateway does not answer; the caller then goes on without one. Not renewed;
+    end it with ``release``."""
+    if kind not in contract.LEASE_KINDS:
+        raise ValueError("invalid_lease_kind")
+    if handle.mode != contract.MODE_PER_USER:
+        return None
+    leased = SandboxHandle(
+        user_id=handle.user_id, view=handle.view, instance=handle.instance, host=handle.host,
+        token=handle.token, tunnel_token=handle.tunnel_token, ports=handle.ports,
+        reverse_port=handle.reverse_port, mode=handle.mode, kind=kind, state=handle.state,
+        lease_id=str(uuid.uuid4()))
+    outcome, data = await _lease_call(handle.user_id, handle.instance, leased.lease_id, kind)
+    if outcome != "ok":
+        return None
+    leased._apply_lease(data)
+    _register(leased)
+    return leased
+
+
 # =============================================================================
 # Per-instance clients, URLs, headers
 # =============================================================================
@@ -1201,10 +1231,14 @@ def _reset(mode: Optional[str] = None) -> None:
     _jobs.clear()
 
 
-async def _shutdown() -> None:
-    """Cancel every renewal and wait for it to end."""
+async def shutdown() -> None:
+    """Cancel every lease renewal and wait for it to end (the agent's shutdown). The
+    leases are not released: they expire by themselves within LEASE_TTL_S."""
     tasks = [t for t in list(_renewals) if not t.done()]
     for task in tasks:
         task.cancel()
     if tasks:
         await asyncio.wait(tasks, timeout=contract.GATEWAY_TIMEOUT_S)
+
+
+_shutdown = shutdown
