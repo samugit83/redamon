@@ -80,6 +80,13 @@ CORE_SERVICES = {
 CORE_NAMES = ("postgres", "neo4j", "webapp", "redamon-postgres", "redamon-neo4j", "redamon-webapp")
 MAX_COMMAND = 2000  # kali_exec's own limit (webapp/src/lib/mcp/kaliTools.ts)
 EXEC_WAIT_S = 60  # the agent caps one inline wait at 60 s
+# LV-D22's background sleeps: more than a sandbox's pids limit (sandbox_contract.PIDS_LIMIT, 4096),
+# so the load fills its pids cgroup.
+FORK_LOAD = 5000
+LOAD_SHARE = 0.9
+FORK_SLEEP_S = 120
+KALI_SHELL_TIMEOUT_S = 300  # kali_shell's `bash -c` timeout (mcp/servers/network_recon_server.py)
+PROC, CGROUP_FS = "/proc", "/sys/fs/cgroup"  # this host's view of a container's cgroup v2 (pids_of)
 CHECK_IDS = ("LV-T5a", "LV-T5b", "LV-I9", "LV-I10", "LV-I11", "LV-S5", "LV-T7",
              "LV-E3", "LV-D24", "LV-D22", "LV-D16", "LV-S7", "LV-E4")
 
@@ -359,6 +366,45 @@ def identity(container):
     return ((info or {}).get("Name") or "").lstrip("/"), (info or {}).get("Id") or ""
 
 
+COUNT_RE = re.compile(r"^[0-9]{1,9}$")
+
+
+def pids_of(container):
+    """(tasks in the container's pids cgroup, or None when unreadable; its pids limit, 0 for none),
+    read from the host and never by an exec into the container: under a fork load its cgroup is
+    full and `docker exec` cannot start a process there (M-b's re-run read a started load as "did
+    not start"). The daemon's count first, else this host's cgroup v2 file, found from the
+    container's init PID and taken only when its path names the container's id (a remote daemon's
+    PID means nothing on this host)."""
+    info = inspect(container) if container else None
+    cid = (info or {}).get("Id") or ""
+    if not cid:
+        return None, 0
+    limit = (info.get("HostConfig") or {}).get("PidsLimit")
+    limit = limit if isinstance(limit, int) and limit > 0 else 0
+    rc, out, _ = docker("stats", "--no-stream", "--format", "{{.PIDs}}", cid)
+    if rc == 0 and COUNT_RE.match(out.strip()):
+        return int(out.strip()), limit
+    pid = (info.get("State") or {}).get("Pid")
+    if not (isinstance(pid, int) and pid > 0):
+        return None, limit
+    try:
+        with open(f"{PROC}/{pid}/cgroup") as f:
+            paths = [line.strip()[3:] for line in f if line.startswith("0::")]
+        if len(paths) != 1 or cid not in paths[0] or ".." in paths[0].split("/"):
+            return None, limit
+        with open(f"{CGROUP_FS}{paths[0]}/pids.current") as f:
+            text = f.read().strip()
+    except (OSError, ValueError):
+        return None, limit
+    return (int(text) if COUNT_RE.match(text) else None), limit
+
+
+def load_need(limit):
+    """The pids count that shows LV-D22's load: LOAD_SHARE of the limit, or of the load when that is less."""
+    return int(LOAD_SHARE * (min(limit, FORK_LOAD) if limit else FORK_LOAD))
+
+
 # ---- the real entry point: MCP kali_exec ---------------------------------------------
 
 class Exec:
@@ -518,6 +564,7 @@ class Harness:
         self.toggle = CaptureToggle(base)
         self.mode = "unknown"
         self.workspace = workspace_host()
+        self.fork_loaded, self.fork_started = "", 0.0  # the container LV-D22 loaded, until the load is ended
 
     # -- helpers --
 
@@ -580,9 +627,9 @@ class Harness:
         except (urllib.error.URLError, OSError):
             return 0
 
-    def stop_sandbox(self, person):
+    def stop_sandbox(self, person, container=""):
         """Stop the person's sandbox through the orchestrator; '' when it is gone, else why not."""
-        old = person.container
+        old = container or person.container
         status = self.orchestrator("POST", f"/sandboxes/{person.user_id}/stop", {"reason": "operator"})
         if status != 200:
             return f"the orchestrator's stop for {person.name} answered {status or 'nothing'}"
@@ -592,6 +639,57 @@ class Harness:
                 return f"{person.name}'s container {old} still runs 90 s after the stop"
             time.sleep(2)
         return ""
+
+    def load_short(self, container, until=0.0):
+        """'' once the host counts LV-D22's load in `container` (pids_of, load_need), polled until
+        `until`; else why not. An unreadable count is never the load."""
+        while True:
+            count, limit = pids_of(container)
+            need = load_need(limit)
+            if count is not None and count >= need:
+                return ""
+            if time.time() >= until:
+                return (f"{count} tasks in its pids cgroup, under {need}" if count is not None else
+                        "its pids count cannot be read from the host (docker stats, cgroup v2)")
+            time.sleep(1)
+
+    def end_fork_load(self):
+        """End LV-D22's load without an exec into the loaded container: the orchestrator's stop of
+        A's sandbox, or a restart of the shared one. '' once it is gone, else why not."""
+        if self.fork_loaded == SHARED:
+            rc, _, err = docker("restart", SHARED, timeout=180)
+            why = "" if rc == 0 else f"docker restart {SHARED}: {one_line(err, 60)}"
+        else:
+            why = self.stop_sandbox(self.A, self.fork_loaded)
+        if not why:
+            self.fork_loaded = ""
+        return why
+
+    def drain_fork_load(self):
+        """Before the clean-up execs into containers: end a load LV-D22 left (an error or a signal
+        came first, or its own stop failed). The load does not run out while the container runs:
+        its PID 1 (run_servers.py, no init) never reaps the orphaned sleeps, whose zombies keep
+        their pids slots. So the stop (or restart) is retried every 20 s until it works, the
+        container is gone or its count falls under the mark; it gives up kali_shell's `bash -c`
+        timeout plus the sleeps' time after the load was sent."""
+        why = self.end_fork_load()
+        if not why:
+            return
+        loaded = self.fork_loaded
+        print(f"WARNING: LV-D22's load in {loaded} was not ended ({why}): retrying every 20 s")
+        until, retry_at = self.fork_started + KALI_SHELL_TIMEOUT_S + FORK_SLEEP_S + 10, time.time() + 20
+        while time.time() < until:
+            count, limit = pids_of(loaded)
+            if not is_running(loaded) or (count is not None and count < load_need(limit)):
+                return
+            if time.time() >= retry_at:
+                if not self.end_fork_load():
+                    return
+                retry_at = time.time() + 20
+            time.sleep(5)
+        action = (f"docker restart {SHARED}" if loaded == SHARED else
+                  f"POST /sandboxes/{self.A.user_id}/stop on the orchestrator")
+        print(f"WARNING: {loaded} still holds LV-D22's load ({action} ends it): the clean-up below may not reach it")
 
     def tcp_targets(self, ips, ports=(8013, 4040)):
         return [f"{ip}:{port}" for ip in ips for port in ports]
@@ -1096,22 +1194,30 @@ class Harness:
             if err:
                 d22.errors.append(err)
                 return
-        A.kali("for i in $(seq 5000); do sleep 120 >/dev/null 2>&1 & done; echo G1FORK; exit 0", wait=5, poll=False)
-        time.sleep(5)
-        rc, out, _ = docker("exec", A.container, "pgrep", "-c", "-x", "sleep", timeout=30)
-        if rc != 0 or int((out.strip() or "0").split()[0]) < 1000:
-            d22.errors.append(f"control: A's fork load did not start ({out.strip() or 'no count'} sleeps)")
+        # Recorded before the load is sent: from here on the clean-up ends it without an exec into A.
+        self.fork_loaded, self.fork_started = A.container, time.time()
+        A.kali(f"for i in $(seq {FORK_LOAD}); do sleep {FORK_SLEEP_S} >/dev/null 2>&1 & done; echo G1FORK; exit 0",
+               wait=5, poll=False)
+        self.fork_started = time.time()  # the drain's bound also covers the MCP call's own time
+        # Counted from the host, never by an exec into A: none can start once the load fills A's pids cgroup.
+        short = self.load_short(A.container, until=time.time() + 30)
+        if short:
+            d22.errors.append(f"control: A's fork load did not start ({short})")
         started = time.time()
         b = B.kali("echo G1OK ok; exit 0", wait=20, budget=20)
         took = time.time() - started
         if not (b.has("G1OK") and took <= 20):
             d22.breaches.append(f"B's echo did not answer within 20 s under A's fork load ({b.why()}, {took:.0f} s)")
+        if not short:
+            short = self.load_short(A.container)
+            if short:
+                d22.errors.append(f"control: A's fork load did not hold while B answered ({short})")
         if A.container == SHARED:
             d22.errors.append("A's sandbox cannot be stopped on its own: there is no per-user sandbox")
-            rc, _, err = docker("restart", SHARED, timeout=180)
-            d22.notes.append(f"restarted {SHARED} ({'ok' if rc == 0 else one_line(err, 60)})")
+            why = self.end_fork_load()
+            d22.notes.append(f"restarted {SHARED} ({why or 'ok'})")
             return
-        why = self.stop_sandbox(A)
+        why = self.end_fork_load()
         if why:
             d22.breaches.append(f"stopping A's sandbox does not clear the load: {why}")
         else:
@@ -1189,6 +1295,8 @@ class Harness:
         except Exception as err:
             print(f"WARNING: block_private was not put back to {self.toggle.original}: {one_line(err, 120)}; "
                   "the next run or the seed puts it back (recorded in the state file)")
+        if self.fork_loaded:
+            self.drain_fork_load()
         for container, cmd in reversed(self.cleanups):
             if container and is_running(container):
                 sh_in(container, cmd + "; true")
