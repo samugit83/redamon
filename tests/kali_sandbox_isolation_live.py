@@ -165,23 +165,50 @@ if a[0]=='purge':
             call('DELETE','/non-msf-sessions/'+i[4:]);print('G1SESSDEL',i)
 """
 
-# HTTP through the capture proxy: `G1PXUP 1|0` (A reaches the proxy's port), then per URL
-# `G1PX <url> <status|noanswer> <bearer challenge> <egress refusal> <marker>`. `noanswer`:
-# the proxy took the request but no answer came (an upstream it cannot route to hangs).
+# HTTP through the capture proxy: `G1PXUP 1|0` (A reaches the proxy's port), then per URL and
+# probe kind `G1PX <url><kind> <status|noanswer> <bearer challenge> <egress refusal> <marker>`.
+# Kinds (PROXY_PROBE_KINDS): an honest request; the same with `Host: 1.1.1.1` (mitmproxy dials
+# the URL whatever the Host header says); a CONNECT to the URL's address, then `Host: 1.1.1.1`;
+# a POST announcing 6 MB (over stream_large_bodies, so mitmproxy dials before the request hook;
+# the refusal may come while the body is still being sent, so the answer is read either way).
+# `noanswer`: the proxy took the request but no answer came (an upstream it cannot route to hangs).
 VIA_PROXY = r"""
-import socket,sys,urllib.request,urllib.error
+import http.client,socket,sys,urllib.request,urllib.error
 px,mk=sys.argv[1],bytes.fromhex(sys.argv[2])
-h,_,p=px.rpartition(':')
-try:socket.create_connection((h.split('//')[-1],int(p)),3).close();print('G1PXUP 1')
+h,_,p=px.rpartition(':');h=h.split('//')[-1];p=int(p)
+try:socket.create_connection((h,p),3).close();print('G1PXUP 1')
 except OSError:print('G1PXUP 0')
 o=urllib.request.build_opener(urllib.request.ProxyHandler({'http':px}))
+def out(k,c,hd,b):print('G1PX',k,c,int('Bearer' in (hd.get('WWW-Authenticate') or '')),int(b'egress guard' in b),int(mk in b))
 for u in sys.argv[3:]:
+    for k,hh in (('',{}),('#host',{'Host':'1.1.1.1'})):
+        try:
+            r=o.open(urllib.request.Request(u,headers=hh),timeout=8);c,hd,b=r.status,r.headers,r.read(4096)
+        except urllib.error.HTTPError as x:c,hd,b=x.code,x.headers,x.read(4096)
+        except Exception:print('G1PX',u+k,'noanswer',0,0,0);continue
+        out(u+k,c,hd,b)
+    th,_,tp=u.split('/')[2].rpartition(':')
     try:
-        r=o.open(u,timeout=8);c,hd,b=r.status,r.headers,r.read(4096)
-    except urllib.error.HTTPError as x:c,hd,b=x.code,x.headers,x.read(4096)
-    except Exception:print('G1PX',u,'noanswer',0,0,0);continue
-    print('G1PX',u,c,int('Bearer' in (hd.get('WWW-Authenticate') or '')),int(b'egress guard' in b),int(mk in b))
+        q=http.client.HTTPConnection(h,p,timeout=8);q.set_tunnel(th,int(tp))
+        q.request('GET','/',headers={'Host':'1.1.1.1'});r=q.getresponse();out(u+'#connect',r.status,r.headers,r.read(4096))
+    except Exception:print('G1PX',u+'#connect','noanswer',0,0,0)
+    try:
+        s=socket.create_connection((h,p),8);s.settimeout(8);b=b''
+        s.sendall(('POST %s HTTP/1.1\r\nHost: %s:%s\r\nContent-Length: 6000000\r\nConnection: close\r\n\r\n'%(u,th,tp)).encode())
+        try:s.sendall(b'x'*65536)
+        except OSError:pass
+        try:
+            while len(b)<8192:
+                d=s.recv(4096)
+                if not d:break
+                b+=d
+        except OSError:pass
+        s.close();l=b.split(b'\r\n',1)[0].split()
+        print('G1PX',u+'#large',l[1].decode() if len(l)>1 else 'noanswer',int(b'Bearer' in b),int(b'egress guard' in b),int(mk in b))
+    except Exception:print('G1PX',u+'#large','noanswer',0,0,0)
 """
+PROXY_PROBE_KINDS = {"": "", "#host": " with Host: 1.1.1.1", "#connect": " by CONNECT with Host: 1.1.1.1",
+                     "#large": " with a 6 MB body (streamed upstream before the request hook)"}
 
 
 RUN_ID_RE = re.compile(r"^n[0-9a-f]{8}$")
@@ -978,11 +1005,12 @@ class Harness:
                 except Exception as err:
                     print(f"WARNING: block_private was not put back to {self.toggle.original}: "
                           f"{one_line(err, 120)}; the next run or the seed puts it back (recorded in the state file)")
-        e3.notes.append("A reaches neither B's 8013 nor 4040 (direct, routed via the agent, via the proxy); "
-                        "A's session manager lists none of B's sessions")
+        e3.notes.append("A reaches neither B's 8013 nor 4040 (direct, routed via the agent, via the proxy, "
+                        "also with a spoofed Host and through CONNECT); A's session manager lists none of B's sessions")
 
     def proxy_probes(self, A, e3, targets, marker):
         urls = [f"http://{t}/" for t in targets]
+        keys = {u + kind for u in urls for kind in PROXY_PROBE_KINDS}
         for block_private in (True, False):
             try:
                 self.toggle.set(block_private)
@@ -992,18 +1020,32 @@ class Harness:
             r = A.kali(remote_py(VIA_PROXY, f"http://{PROXY}:{PROXY_PORT}", hexs(marker), *urls)
                        + "; echo G1END; exit 0")
             rows = {row[0]: row[1:] for row in r.rows("G1PX") if len(row) == 5}
-            if not r.has("G1END") or len(rows) != len(urls):
+            if not r.has("G1END") or set(rows) != keys:
                 e3.errors.append(f"A's requests through the capture proxy did not run ({r.why()})")
                 continue
             answered = [code for code, *_ in rows.values() if code != "noanswer"]
             if r.rows("G1PXUP") != [["1"]] or not answered:
                 e3.errors.append(f"control: the capture proxy answered none of A's requests (block_private={block_private})")
-            for url, (code, bearer, egress, mark) in rows.items():
+            for key, (code, bearer, egress, mark) in rows.items():
+                url, sep, kind = key.partition("#")
+                what = f"B's {url[7:-1]}{PROXY_PROBE_KINDS[sep + kind]} through the capture proxy"
+                if kind == "large":
+                    # A streamed body is already upstream when the proxy answers 502, and a
+                    # target that reads the whole body before answering gives no answer at
+                    # all: only the guard's own refusal counts as refused, and no answer
+                    # means the probe proved nothing.
+                    if egress == "1":
+                        continue
+                    if code == "noanswer":
+                        e3.errors.append(f"A's request to {what} got no answer, so it did not run "
+                                         f"(block_private={block_private})")
+                    else:
+                        e3.breaches.append(f"A reaches {what} (block_private={block_private}, answer {code})")
+                    continue
                 # Reached: an answer that is neither the egress guard's refusal nor the
                 # proxy's own upstream failure (a 401 bearer challenge, the 4040 marker page).
                 if code != "noanswer" and not (egress == "1" or code in ("502", "503", "504")):
-                    e3.breaches.append(f"A reaches B's {url[7:-1]} through the capture proxy "
-                                       f"(block_private={block_private}, answer {code})")
+                    e3.breaches.append(f"A reaches {what} (block_private={block_private}, answer {code})")
 
     def d24(self):
         A, B = self.A, self.B
