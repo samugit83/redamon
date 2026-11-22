@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response
 from sse_starlette.sse import EventSourceResponse
 
 import sandbox_contract as sc
+import sandbox_templates
 from auth import is_orchestrator_request_authorized
 from sandbox_manager import SandboxError, SandboxManager
 from recon_settings.engagement import derive_roe_enabled
@@ -877,6 +878,7 @@ async def lifespan(app: FastAPI):
     own_project = await asyncio.to_thread(_own_compose_project, container_manager.client)
     sandbox_manager = _build_sandbox_manager(container_manager, own_project)
     _wire_sandbox_manager(container_manager, sandbox_manager)
+    templates = asyncio.create_task(sandbox_templates.refresh_loop(sandbox_manager))
     sandboxes = asyncio.create_task(
         _run_sandboxes(sandbox_manager, await _adopt_sandboxes(sandbox_manager)))
     reaper = asyncio.create_task(_ai_attack_reaper())
@@ -892,8 +894,9 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down Recon Orchestrator...")
     # Sandboxes keep running: the next start adopts them. A stop already under
-    # way is given a moment to finish.
+    # way is given a moment to finish, and a templates refresh finishes on its own.
     sandboxes.cancel()
+    templates.cancel()
     try:
         await asyncio.wait_for(sandbox_manager.join_background(), 5)
     except Exception:  # noqa: BLE001 - shutting down

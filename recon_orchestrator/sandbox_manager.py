@@ -44,6 +44,7 @@ from docker.errors import APIError, ImageNotFound, NotFound
 
 import resource_governor as rg
 import sandbox_contract as sc
+import sandbox_templates
 from container_manager import BROKER_OWNED_LABEL, join_host_path
 
 logger = logging.getLogger(__name__)
@@ -650,6 +651,7 @@ class SandboxManager:
         if image is None:
             logger.error(f"[sandbox] cannot start key={inst.key}: {IMAGE_MISSING_DETAIL}")
             raise SandboxStartError(sc.ERR_IMAGE_MISSING, IMAGE_MISSING_DETAIL)
+        await asyncio.to_thread(sandbox_templates.ensure_templates_ready, self.client, self.owner)
         async with self._alloc_lock:
             await asyncio.to_thread(self._network_sync, inst.user_id, inst.view)
             inst.pool_port = await self._allocate_port()
