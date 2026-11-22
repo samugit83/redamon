@@ -180,6 +180,8 @@ describe('useAgentWebSocket connection truth', () => {
       expect(FakeSocket.instances).toHaveLength(1)
 
       act(() => { vi.advanceTimersByTime(30_000) })   // 90s without a pong
+      expect(sock.closed).toBe(true)
+      act(() => { vi.advanceTimersByTime(config.reconnectInterval) })   // through the reconnect backoff
       expect(FakeSocket.instances).toHaveLength(2)
     } finally {
       vi.useRealTimers()
@@ -368,5 +370,350 @@ describe('useAgentWebSocket says why it is not connected', () => {
     act(() => { sent = [result.current.sendApproval('approve')] })
     expect(sent).toEqual([true])
     expect(sentTypes(FakeSocket.instances[0])).toEqual(['init', 'approval'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The ticket mint between a socket's open and its init. A mint can get no
+// answer at all, whatever the cause (Chromium aborts every request in flight
+// with net::ERR_NETWORK_CHANGED when a host address appears or goes away, so on
+// a Docker host a container on a bridge network starting or stopping can do
+// it); and a mint can answer after its socket was replaced.
+// ---------------------------------------------------------------------------
+
+const JSON_HEADERS = { 'Content-Type': 'application/json' }
+const ticketFor = (id: string) => new Response(JSON.stringify({ ticket: `tkt-${id}` }), { status: 200, headers: JSON_HEADERS })
+const inits = (sock: FakeSocket) => sock.sent.map(s => JSON.parse(s)).filter(m => m.type === 'init').map(m => m.payload)
+const mintedSession = (init: unknown) => JSON.parse(String((init as RequestInit).body)).sessionId as string
+
+/** A fetch that holds every mint until the test answers or fails it, in call order. */
+function holdMints() {
+  const mints: { sessionId: string; answer: (res: Response) => void; fail: (err: unknown) => void }[] = []
+  vi.stubGlobal('fetch', vi.fn((_url: unknown, init: unknown) => new Promise<Response>((resolve, reject) => {
+    mints.push({ sessionId: mintedSession(init), answer: resolve, fail: reject })
+  })))
+  return mints
+}
+
+describe('useAgentWebSocket ticket mint with no answer', () => {
+  afterEach(() => { cleanup() })
+
+  test.each([
+    ['the browser aborted it (TypeError: Failed to fetch)', new TypeError('Failed to fetch')],
+    ['it was cancelled (AbortError)', new DOMException('The operation was aborted.', 'AbortError')],
+    ['it timed out (TimeoutError)', new DOMException('The operation timed out.', 'TimeoutError')],
+  ])('a mint that got no answer because %s is retried on a new socket, and the drawer connects', async (_why, failure) => {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      if (calls === 1) throw failure
+      return ticketFor('s1')
+    }))
+    const { result } = renderHook(() => useAgentWebSocket(config))
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    const first = FakeSocket.instances[0]
+    await act(async () => { first.onopen?.() })
+
+    await waitFor(() => expect(result.current.reconnectAttempt).toBe(1))
+    expect(first.closed).toBe(true)
+    expect(first.sent).toHaveLength(0)
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+    const second = FakeSocket.instances[1]
+    await act(async () => { second.onopen?.() })
+    await waitFor(() => expect(inits(second)).toHaveLength(1))
+    expect(inits(second)[0]).toMatchObject({ session_id: 's1', ticket: 'tkt-s1' })
+
+    act(() => deliver(second, 'connected'))
+    expect(result.current.status).toBe(ConnectionStatus.CONNECTED)
+    expect(result.current.error).toBeNull()
+    expect(result.current.reconnectAttempt).toBe(0)
+  })
+
+  test('mints that never get an answer stop at the attempt cap and name the mint', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    const { result } = renderHook(() => useAgentWebSocket({ ...config, maxReconnectAttempts: 2 }))
+    for (let n = 1; n <= 3; n++) {
+      await waitFor(() => expect(FakeSocket.instances).toHaveLength(n))
+      await act(async () => { FakeSocket.instances[n - 1].onopen?.() })
+    }
+    await waitFor(() => expect(result.current.status).toBe(ConnectionStatus.FAILED))
+    expect(result.current.error?.message).toBe(
+      'Max reconnection attempts reached (last ticket mint: no answer from the webapp, network_error) · ws://agent.test/ws/agent',
+    )
+    await new Promise(r => setTimeout(r, 60))
+    expect(FakeSocket.instances).toHaveLength(3)
+    expect(FakeSocket.instances.every(s => s.sent.length === 0)).toBe(true)
+  })
+
+  test.each([
+    [404, { error: 'Not found' }, 'Could not get a ticket for the agent connection: Not found (HTTP 404)'],
+    [503, { error: 'This use of the project owner\'s credentials could not be recorded, so no connection was opened. Try again.', code: 'spend_not_recorded' },
+      'Could not get a ticket for the agent connection: This use of the project owner\'s credentials could not be recorded, so no connection was opened. Try again. (spend_not_recorded · HTTP 503)'],
+  ])('a mint the server refused (%i) is never retried: FAILED with its reason', async (status, body, text) => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status, headers: JSON_HEADERS }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useAgentWebSocket(config))
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    await act(async () => { FakeSocket.instances[0].onopen?.() })
+
+    await waitFor(() => expect(result.current.status).toBe(ConnectionStatus.FAILED))
+    expect(result.current.error?.message).toBe(text)
+    await new Promise(r => setTimeout(r, 60))
+    expect(FakeSocket.instances).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(result.current.reconnectAttempt).toBe(0)
+  })
+})
+
+describe('useAgentWebSocket a mint that answers after its socket was replaced', () => {
+  afterEach(() => { cleanup() })
+
+  test('a slow mint of the old session answering after "Start new session" sends nothing: the new session\'s init is the only one', async () => {
+    const mints = holdMints()
+    const { result, rerender } = renderHook(
+      (p: { sessionId: string }) => useAgentWebSocket({ ...config, ...p }),
+      { initialProps: { sessionId: 's1' } },
+    )
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    const old = FakeSocket.instances[0]
+    await act(async () => { old.onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(1))
+
+    rerender({ sessionId: 's2' })
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+    const next = FakeSocket.instances[1]
+    await act(async () => { next.onopen?.() })
+    await waitFor(() => expect(mints.map(m => m.sessionId)).toEqual(['s1', 's2']))
+
+    await act(async () => { mints[1].answer(ticketFor('s2')) })
+    await waitFor(() => expect(inits(next)).toHaveLength(1))
+    act(() => deliver(next, 'connected', { session_id: 's2' }))
+
+    await act(async () => { mints[0].answer(ticketFor('s1')) })
+    await new Promise(r => setTimeout(r, 30))
+
+    expect(inits(next)).toEqual([expect.objectContaining({ session_id: 's2', ticket: 'tkt-s2' })])
+    expect(inits(old)).toEqual([])
+    expect(result.current.status).toBe(ConnectionStatus.CONNECTED)
+  })
+
+  test('the old session\'s mint answering first, before the new socket\'s own, sends nothing either', async () => {
+    const mints = holdMints()
+    const { rerender } = renderHook(
+      (p: { sessionId: string }) => useAgentWebSocket({ ...config, ...p }),
+      { initialProps: { sessionId: 's1' } },
+    )
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    await act(async () => { FakeSocket.instances[0].onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(1))
+
+    rerender({ sessionId: 's2' })
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+    const next = FakeSocket.instances[1]
+    await act(async () => { next.onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(2))
+
+    await act(async () => { mints[0].answer(ticketFor('s1')) })
+    await new Promise(r => setTimeout(r, 30))
+    expect(inits(next)).toEqual([])
+
+    await act(async () => { mints[1].answer(ticketFor('s2')) })
+    await waitFor(() => expect(inits(next)).toHaveLength(1))
+    expect(inits(next)[0]).toMatchObject({ session_id: 's2', ticket: 'tkt-s2' })
+  })
+
+  test('a mint of a socket that dropped and was replaced sends no second init on the new socket', async () => {
+    const mints = holdMints()
+    renderHook(() => useAgentWebSocket(config))
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    const first = FakeSocket.instances[0]
+    await act(async () => { first.onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(1))
+
+    act(() => { first.fireClose(1006) })
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+    const second = FakeSocket.instances[1]
+    await act(async () => { second.onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(2))
+    await act(async () => { mints[1].answer(ticketFor('second')) })
+    await waitFor(() => expect(inits(second)).toHaveLength(1))
+
+    await act(async () => { mints[0].answer(ticketFor('first')) })
+    await new Promise(r => setTimeout(r, 30))
+    expect(inits(second)).toEqual([expect.objectContaining({ ticket: 'tkt-second' })])
+  })
+
+  test('the old session\'s mint failing with no answer leaves the new socket alone: no retry, no failure', async () => {
+    const mints = holdMints()
+    const { result, rerender } = renderHook(
+      (p: { sessionId: string }) => useAgentWebSocket({ ...config, ...p }),
+      { initialProps: { sessionId: 's1' } },
+    )
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    await act(async () => { FakeSocket.instances[0].onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(1))
+
+    rerender({ sessionId: 's2' })
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+    const next = FakeSocket.instances[1]
+    await act(async () => { next.onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(2))
+
+    await act(async () => { mints[0].fail(new TypeError('Failed to fetch')) })
+    await new Promise(r => setTimeout(r, 60))
+    expect(next.closed).toBe(false)
+    expect(FakeSocket.instances).toHaveLength(2)
+    expect(result.current.reconnectAttempt).toBe(0)
+    expect(result.current.status).toBe(ConnectionStatus.CONNECTING)
+
+    await act(async () => { mints[1].answer(ticketFor('s2')) })
+    await waitFor(() => expect(inits(next)).toHaveLength(1))
+    act(() => deliver(next, 'connected'))
+    expect(result.current.status).toBe(ConnectionStatus.CONNECTED)
+  })
+})
+
+describe('useAgentWebSocket a mint whose answer is not a ticket', () => {
+  afterEach(() => { cleanup() })
+
+  test('a 200 whose body was lost after the headers is retried, never a ticketless init with the update hint', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls += 1
+      if (calls === 1) return { ok: true, status: 200, json: async () => { throw new TypeError('network error') } } as unknown as Response
+      return ticketFor('s1')
+    }))
+    const { result } = renderHook(() => useAgentWebSocket(config))
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    const first = FakeSocket.instances[0]
+    await act(async () => { first.onopen?.() })
+
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+    expect(first.sent).toHaveLength(0)
+    const second = FakeSocket.instances[1]
+    await act(async () => { second.onopen?.() })
+    await waitFor(() => expect(inits(second)).toHaveLength(1))
+    expect(inits(second)[0]).toMatchObject({ ticket: 'tkt-s1' })
+    act(() => deliver(second, 'connected'))
+    expect(result.current.status).toBe(ConnectionStatus.CONNECTED)
+  })
+
+  test('a 2xx answer that is not JSON stops with its code: no init, no retry', async () => {
+    const fetchMock = vi.fn(async () => new Response('<html>Sign in to the network</html>', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useAgentWebSocket(config))
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    await act(async () => { FakeSocket.instances[0].onopen?.() })
+
+    await waitFor(() => expect(result.current.status).toBe(ConnectionStatus.FAILED))
+    expect(result.current.error?.message).toBe('Could not get a ticket for the agent connection (invalid_json · HTTP 200)')
+    expect(FakeSocket.instances[0].sent).toHaveLength(0)
+    await new Promise(r => setTimeout(r, 60))
+    expect(FakeSocket.instances).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useAgentWebSocket after unmount', () => {
+  afterEach(() => { cleanup() })
+
+  test('a mint answering after unmount sends nothing, even on a socket that still reads OPEN', async () => {
+    const mints = holdMints()
+    const { unmount } = renderHook(() => useAgentWebSocket(config))
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    const sock = FakeSocket.instances[0]
+    await act(async () => { sock.onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(1))
+
+    unmount()
+    await act(async () => { mints[0].answer(ticketFor('s1')) })
+    await new Promise(r => setTimeout(r, 30))
+    expect(sock.sent).toEqual([])
+    expect(FakeSocket.instances).toHaveLength(1)
+  })
+
+  test('a mint with no answer after unmount, on the last attempt, reports nothing', async () => {
+    const mints = holdMints()
+    const onError = vi.fn()
+    const { unmount } = renderHook(() => useAgentWebSocket({ ...config, maxReconnectAttempts: 0, onError }))
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    await act(async () => { FakeSocket.instances[0].onopen?.() })
+    await waitFor(() => expect(mints).toHaveLength(1))
+
+    unmount()
+    await act(async () => { mints[0].fail(new TypeError('Failed to fetch')) })
+    await new Promise(r => setTimeout(r, 60))
+    expect(onError).not.toHaveBeenCalled()
+    expect(FakeSocket.instances).toHaveLength(1)
+  })
+})
+
+describe('useAgentWebSocket attempt cap', () => {
+  afterEach(() => { cleanup(); vi.useRealTimers() })
+
+  test('a socket that connected on the last allowed attempt is still retried when it drops later', async () => {
+    const { result } = renderHook(() => useAgentWebSocket({ ...config, maxReconnectAttempts: 1 }))
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    act(() => { FakeSocket.instances[0].fireClose(1006) })
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+    await openAndConnect(FakeSocket.instances[1])
+    expect(result.current.reconnectAttempt).toBe(0)
+
+    act(() => { FakeSocket.instances[1].fireClose(1006) })
+    expect(result.current.status).toBe(ConnectionStatus.RECONNECTING)
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(3))
+  })
+
+  /** Connect the first socket with fake timers on, its mint answering at once. */
+  async function connectedUnderFakeTimers(sock: FakeSocket) {
+    await act(async () => { sock.onopen?.(); await vi.advanceTimersByTimeAsync(1) })
+    act(() => deliver(sock, 'connected'))
+  }
+
+  test('pong timeouts count as attempts: with mints that never answer, a tab does not keep minting', async () => {
+    vi.useFakeTimers()
+    let mints = 0
+    vi.stubGlobal('fetch', vi.fn(() => {
+      mints += 1
+      return mints === 1 ? Promise.resolve(ticketFor('s1')) : new Promise<Response>(() => {})
+    }))
+    const { result } = renderHook(() => useAgentWebSocket(config))
+    const first = FakeSocket.instances[0]
+    await connectedUnderFakeTimers(first)
+    expect(result.current.status).toBe(ConnectionStatus.CONNECTED)
+
+    for (let t = 0; t < 20; t++) {   // 10 minutes, never a PONG
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      const last = FakeSocket.instances.at(-1)!
+      if (last !== first && last.onopen) await act(async () => { last.onopen?.(); last.onopen = null; await vi.advanceTimersByTimeAsync(1) })
+    }
+    expect(first.closed).toBe(true)
+    expect(FakeSocket.instances).toHaveLength(2)
+    expect(mints).toBe(2)
+    expect(result.current.reconnectAttempt).toBe(1)
+  })
+
+  test('a pong timeout with no attempt left fails and names the pings', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useAgentWebSocket({ ...config, maxReconnectAttempts: 0 }))
+    await connectedUnderFakeTimers(FakeSocket.instances[0])
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
+    expect(result.current.status).toBe(ConnectionStatus.FAILED)
+    expect(result.current.error?.message).toBe('Max reconnection attempts reached (last no answer to pings for 75 s) · ws://agent.test/ws/agent')
+    expect(FakeSocket.instances).toHaveLength(1)
+  })
+
+  test('a socket that connected on the last allowed attempt is still replaced at its pong timeout', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useAgentWebSocket({ ...config, maxReconnectAttempts: 1 }))
+    act(() => { FakeSocket.instances[0].fireClose(1006) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(config.reconnectInterval) })
+    expect(FakeSocket.instances).toHaveLength(2)
+    await connectedUnderFakeTimers(FakeSocket.instances[1])
+    expect(result.current.reconnectAttempt).toBe(0)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000 + config.reconnectInterval) })
+    expect(result.current.status).not.toBe(ConnectionStatus.FAILED)
+    expect(FakeSocket.instances).toHaveLength(3)
   })
 })

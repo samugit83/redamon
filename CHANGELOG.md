@@ -26,6 +26,10 @@ Security fixes for what an attacker with no account can do from the network: rew
 - The recon orchestrator change is picked up by its restart during `update` (its source is mounted, no rebuild).
 - The docker-broker image is rebuilt by `update` (its source is copied into the image). A client of the broker socket that omits `Upgrade: tcp` on an attach, sends a body on a call other than a create, or opens a second attach or wait on one container is now refused; the Docker CLI does none of these.
 
+### Fixed
+
+- **The AI drawer no longer stays on "Connecting to agent..." after a network blip, and a new chat no longer falls back to the previous one.** The ticket request the chat socket makes before it connects could get no answer at all (Chromium drops every request in flight when a network address appears or goes away, which on a Docker host happens whenever a container on a Docker bridge network starts or stops, a person's own Kali sandbox included), and the drawer then waited for a reload; it is now retried like a dropped connection, with the same wait and attempt limit, while a ticket the webapp refuses still stops and says why. A ticket that answered after "Start new session" no longer sends the previous session's start message on the new socket, which made the agent bind the new chat to the old session.
+
 ## [7.9.0] - 2026-11-19
 
 AI Navigator, a read-only chat about RedAmon and your project's data; Tradecraft 2.0, each account's library of knowledge sites that the agent reads during an engagement; and security fixes for the graph's tenant filters and for Tradecraft. Tradecraft 2.0 replaces 1.x at the agent's first start: read *What changes for you* and *Upgrade* first.
