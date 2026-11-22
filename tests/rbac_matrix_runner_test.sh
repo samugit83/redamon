@@ -36,6 +36,13 @@
 #   - governance:on|off the same for RBAC_GOVERNANCE_ENABLED (step 6.13), which
 #     reads off while the permissions switch is off (flags.ts: governance requires
 #     permissions, not sharing) and reads no policy;
+#   - sandbox:shared|per_user (group 1, the M-b red: four p2 rows written for the
+#     shared tunnel failed in per-user mode) runs a row only in that Kali sandbox mode,
+#     read once from the orchestrator inside the webapp container, and not when no
+#     selected row needs it or a switch tag already skips it; a mode it cannot read
+#     fails the rows; the runner's own mode read runs in node against a fake
+#     orchestrator (skipped without node or python3); the committed p2 rows pass
+#     each mode's hand-checked answer (S17's route code) and fail the other's;
 #   - the committed rows of the S3 red (the terminal ticket's level refusal, the
 #     overseeing admin's delete and its sharing:off 404 twin) pass the hand-checked
 #     answers and fail the answer of each regression;
@@ -110,6 +117,12 @@ printf '%s\n' \
   $'y-wswitch-capped\t5.14\tanon\tGET\t/api/y/wswitch-capped\t-\t200\tsharing:on sharingwrite:off sharingwriteswitch:on' \
   $'y-wswitch-only\t5.14\tanon\tGET\t/api/y/wswitch-only\t-\t200\tsharingwriteswitch:on' \
   > "$T/tests/fixtures/rbac_matrix/y.tsv"
+printf '%s\n' \
+  $'m-plain\tg1\tanon\tGET\t/api/m/plain\t-\t200\treq:I9' \
+  $'m-shared\tg1\tanon\tGET\t/api/m/shared\t-\t200\treq:I9 sandbox:shared' \
+  $'m-per-user\tg1\tanon\tGET\t/api/m/per-user\t-\t200\tsandbox:per_user' \
+  $'m-id-off-per-user\tg1\tanon\tGET\t/api/m/id-off-per-user\t-\t200\tidentity:off sandbox:per_user' \
+  > "$T/tests/fixtures/rbac_matrix/m.tsv"
 
 # docker: the webapp's switches come from FAKE_* through the runner's own in-container
 # command (run here by sh), the seed prints the keys the runner requires, every call is logged.
@@ -144,9 +157,21 @@ case "$*" in
       RBAC_SHARING_ENABLED="${FAKE_SHARING-}" RBAC_SHARING_WRITE_ENABLED="${FAKE_SHARING_WRITE-}" \
       RBAC_GOVERNANCE_ENABLED="${FAKE_GOVERNANCE-}" RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
   *" node "*)
-    if grep -q SEED; then
+    script="$(cat)"
+    if grep -q SEED <<<"$script"; then
       printf 'PA_ID=pa\nPB_ID=pb\nPSHARED_ID=ps\nPA_TMP1_ID=pt1\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
       printf 'VIEWER_ID=vw\nVIEWER_EMAIL=rbac-viewer@e2e.local\nVIEWER_TMP_ID=vt\nVIEWER_TMP_EMAIL=rbac-viewer-tmp@e2e.local\n'
+    elif grep -q /sandboxes/mode <<<"$script"; then
+      # The orchestrator's sandbox mode: FAKE_SANDBOX_MODE (FAIL makes the exec fail), or, with
+      # REAL_NODE set, the runner's own script against the fake orchestrator at FAKE_ORCH_URL.
+      echo "mode-read" >> "$STUB_LOG"
+      if [ -n "${REAL_NODE:-}" ]; then
+        printf '%s\n' "$script" | env -i PATH="$PATH" RECON_ORCHESTRATOR_URL="$FAKE_ORCH_URL" \
+          ORCHESTRATOR_API_KEY=rbac-fake-orchestrator-key "$REAL_NODE" --input-type=module -
+      else
+        [ "${FAKE_SANDBOX_MODE-shared}" = FAIL ] && exit 1
+        printf '%s\n' "${FAKE_SANDBOX_MODE-shared}"
+      fi
     fi ;;
   *) echo "unexpected docker call" >&2; exit 1 ;;
 esac
@@ -182,6 +207,7 @@ run() {
     FAKE_IDENTITY="$1" FAKE_PERMISSIONS="$2" FAKE_CACHE_MS="${5:-5000}" FAKE_SHARING="${6:-}" RBAC_MATRIX_ROWS="${3:-}" \
     FAKE_POLICY="${7-on}" FAKE_SHARING_WRITE="${8:-}" FAKE_WRITE_POLICY="${9-on}" FAKE_GOVERNANCE="${10:-}" \
     REAL_PG="${REAL_PG:-}" REAL_DOCKER="${REAL_DOCKER:-}" \
+    FAKE_SANDBOX_MODE="${FAKE_SANDBOX_MODE-shared}" REAL_NODE="${REAL_NODE:-}" FAKE_ORCH_URL="${FAKE_ORCH_URL:-}" \
     bash "$T/tests/rbac_matrix_live.sh" "${4:-t}" 2>&1)"; RC=$?
   LOG="$(cat "$W/calls.log")"
 }
@@ -191,6 +217,7 @@ requests() { grep '^request ' <<<"$LOG" | sed 's/^request //' | tr '\n' ' '; }
 reads()    { grep -c '^switches-read$' <<<"$LOG"; }
 policy_reads() { grep -c '^policy-read$' <<<"$LOG"; }
 write_policy_reads() { grep -c '^write-policy-read$' <<<"$LOG"; }
+mode_reads() { grep -c '^mode-read$' <<<"$LOG"; }
 
 # =============================================================================
 section "identity on, permissions on"
@@ -816,6 +843,142 @@ else
     "needs Docker and the local postgres:16-alpine image (the stack's own); never pulled here"
 fi
 
+section "the Kali sandbox mode (group 1): sandbox:shared|per_user follows the orchestrator's mode"
+FAKE_SANDBOX_MODE=shared run true true '' m
+eq "shared: the untagged and shared rows run, the per-user row skips" \
+  "$(verdict m-plain) $(verdict m-shared) $(verdict m-per-user)" "PASS PASS SKIP"
+has "the skip names the mode" "(sandbox mode shared)" "$(line m-per-user)"
+eq "the skipped row never reaches the webapp" "$(requests)" "api/m/plain api/m/shared "
+eq "the mode is read once" "$(mode_reads)" "1"
+FAKE_SANDBOX_MODE=per_user run true true '' m
+eq "per_user: the per-user row runs, the shared row skips" \
+  "$(verdict m-plain) $(verdict m-shared) $(verdict m-per-user)" "PASS SKIP PASS"
+has "the skip names the mode" "(sandbox mode per_user)" "$(line m-shared)"
+eq "a switch tag that skips first: identity:off skips with identity on" "$(verdict m-id-off-per-user)" "SKIP"
+has "on the identity switch" "(identity switch on)" "$(line m-id-off-per-user)"
+FAKE_SANDBOX_MODE=per_user run true true '^m-(plain|id-off-per-user)$' m
+eq "no selected row needs the mode (the tagged one skips on its switch): not read" "$(mode_reads)" "0"
+for unread in FAIL garbage ''; do
+  FAKE_SANDBOX_MODE="$unread" run true true '' m
+  eq "mode '${unread:-<empty>}': both tagged rows fail, the untagged one runs" \
+    "$(verdict m-plain) $(verdict m-shared) $(verdict m-per-user)" "PASS FAIL FAIL"
+  has "named as an unread mode" "could not read the orchestrator's Kali sandbox mode" "$(line m-shared)"
+  eq "and the run fails" "$RC" "1"
+done
+
+section "p2.tsv as committed: the tunnel rows of each Kali sandbox mode (the M-b red, S17's answers)"
+# The answers of S17's route code (webapp/src/app/api/users/[id]/settings/route.ts and
+# webapp/src/app/api/admin/instance-settings/route.ts), identity switch on. Each row passes its
+# own mode's answer, fails the other mode's, and skips in the other mode: before this change the
+# four shared rows carried no mode tag and failed in per-user mode (M-b: 941 passed, 4 failed).
+cp "$REPO_ROOT/tests/fixtures/rbac_matrix/p2.tsv" "$T/tests/fixtures/rbac_matrix/"
+MOVED='The tunnel and TrafficMind settings are instance settings: change them in the Tunneling section or the TrafficMind settings, not in your own settings.'
+OWN='Turning on a tunnel from your own Kali sandbox, or changing its settings, takes the Tunnels permission. Turning your tunnel off does not.'
+ADMIN_ONLY='The tunnel is shared by the whole instance: only an administrator, or the member who configured it, can change it.'
+printf '{"error":"%s","code":"moved_to_instance_settings","fields":["chiselServerUrl"]}' "$MOVED" > "$W/body.moved_chisel"
+printf '{"error":"%s","code":"moved_to_instance_settings","fields":["tunnelsEnabled"]}' "$MOVED" > "$W/body.moved_enable"
+printf '{"error":"%s","code":"tunnels_admin_only","fields":["chiselServerUrl"]}' "$OWN" > "$W/body.own_chisel"
+printf '{"error":"%s","code":"tunnels_admin_only","fields":["tunnelsEnabled"]}' "$OWN" > "$W/body.own_enable"
+printf '{"error":"%s","code":"tunnels_admin_only","fields":["chiselServerUrl"]}' "$ADMIN_ONLY" > "$W/body.admin_only_chisel"
+printf '{"error":"%s","code":"tunnels_admin_only","fields":["tunnelsEnabled"]}' "$ADMIN_ONLY" > "$W/body.admin_only_enable"
+printf '%s' '{"error":"GitHub Enterprise Host must be a hostname such as ghe.example.com (no scheme, port or path)"}' > "$W/body.ghe"
+printf '%s' '{"tunnelsEnabled":false,"chiselServerUrl":"","rotationConfigs":{},"canManageTunnels":false,"sharedSettingsAt":"instance"}' > "$W/body.hint_shared"
+printf '%s' '{"tunnelsEnabled":false,"chiselServerUrl":"","rotationConfigs":{},"canManageTunnels":true,"tunnelScope":"own_sandbox","sharedSettingsAt":"instance"}' > "$W/body.hint_per_user"
+printf '%s' '{"error":"Tunnels are per person: each person turns on their own, with their own credentials, in Global Settings, and it runs in their own Kali sandbox. The instance tunnel is not used.","code":"tunnels_per_person","fields":["chiselServerUrl"]}' > "$W/body.per_person"
+printf '%s' '{"error":"Only Root can change the instance security policy.","code":"root_only"}' > "$W/body.root_only"
+mode_row() { # row-id status body mode -> OUT
+  FAKE_BODY="$W/body.$3" FAKE_STATUS="$2" FAKE_SANDBOX_MODE="$4"; export FAKE_BODY FAKE_STATUS FAKE_SANDBOX_MODE
+  run true true "^$1\$" p2 5000
+  unset FAKE_BODY FAKE_STATUS FAKE_SANDBOX_MODE
+}
+while read -r shared_row per_user_row s_code s_body p_code p_body; do
+  mode_row "$shared_row" "$s_code" "$s_body" shared
+  eq "shared: $shared_row passes the shared answer" "$(verdict "$shared_row")" "PASS"
+  mode_row "$shared_row" "$p_code" "$p_body" shared
+  eq "the M-b red: the per-user answer fails $shared_row" "$(verdict "$shared_row")" "FAIL"
+  mode_row "$shared_row" "$p_code" "$p_body" per_user
+  eq "per_user: $shared_row skips" "$(verdict "$shared_row")" "SKIP"
+  mode_row "$per_user_row" "$p_code" "$p_body" per_user
+  eq "per_user: $per_user_row passes the per-user answer" "$(verdict "$per_user_row")" "PASS"
+  mode_row "$per_user_row" "$s_code" "$s_body" per_user
+  eq "mutation: the shared answer fails $per_user_row" "$(verdict "$per_user_row")" "FAIL"
+  mode_row "$per_user_row" "$s_code" "$s_body" shared
+  eq "shared: $per_user_row skips" "$(verdict "$per_user_row")" "SKIP"
+done <<'PAIRS'
+p2-instance-moved-tunnel-change-member p2-g1-own-tunnel-change-member 409 moved_chisel 403 own_chisel
+p2-instance-moved-tunnel-enable-member p2-g1-own-tunnel-enable-member 409 moved_enable 403 own_enable
+p2-instance-moved-tunnel-change-admin p2-g1-own-tunnel-change-admin 409 moved_chisel 400 ghe
+p2-instance-moved-hint-admin p2-g1-own-tunnel-hint-admin 200 hint_shared 200 hint_per_user
+PAIRS
+mode_row p2-g1-own-tunnel-change-member 403 admin_only_chisel per_user
+eq "mutation: the instance tunnel's refusal (not the own sandbox's) fails the member's change row" \
+  "$(verdict p2-g1-own-tunnel-change-member)" "FAIL"
+mode_row p2-g1-own-tunnel-enable-member 403 admin_only_enable per_user
+eq "mutation: the same for the member's enable row" "$(verdict p2-g1-own-tunnel-enable-member)" "FAIL"
+mode_row p2-g1-instance-tunnel-per-person-admin 409 per_person per_user
+eq "per_user: the instance tunnel group refuses a change, 409 tunnels_per_person" \
+  "$(verdict p2-g1-instance-tunnel-per-person-admin)" "PASS"
+mode_row p2-g1-instance-tunnel-per-person-admin 403 root_only per_user
+eq "mutation: the change passing the tunnel group (stopped later at Root's policy) fails the row" \
+  "$(verdict p2-g1-instance-tunnel-per-person-admin)" "FAIL"
+mode_row p2-g1-instance-tunnel-per-person-admin 409 per_person shared
+eq "shared: the instance per-person row skips" "$(verdict p2-g1-instance-tunnel-per-person-admin)" "SKIP"
+eq "the instance row's body would stop at Root's policy in shared mode (never the stored minimum)" \
+  "$(awk -F'\t' '$1 == "p2-g1-instance-tunnel-per-person-admin" {print $6}' "$REPO_ROOT/tests/fixtures/rbac_matrix/p2.tsv")" \
+  '{"chiselServerUrl":"http://127.0.0.1:9","passwordMinLength":71}'
+
+section "the runner's own mode read against a fake orchestrator (node in place of the webapp container)"
+REAL_NODE="$(command -v node 2>/dev/null || true)"
+if [ -n "$REAL_NODE" ] && command -v python3 >/dev/null 2>&1; then
+  cat > "$W/orch.py" <<'PY'
+import http.server, sys
+answer, log = sys.argv[1], sys.argv[2]
+class Orchestrator(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        status, body = open(answer).read().split("\n", 1)
+        with open(log, "a") as f:
+            f.write(f"{self.path} {self.headers.get('X-Orchestrator-Key', '-')}\n")
+        self.send_response(int(status))
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body.encode())
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(("127.0.0.1", 0), Orchestrator)
+print(server.server_port, flush=True)
+server.serve_forever()
+PY
+  python3 -I "$W/orch.py" "$W/orch.answer" "$W/orch.log" > "$W/orch.port" 2>/dev/null &
+  ORCH_PID=$!
+  trap 'kill "$ORCH_PID" 2>/dev/null; rm -rf "$W"; [ -z "$PG" ] || docker rm -f -v "$PG" >/dev/null 2>&1' EXIT
+  for _ in $(seq 1 50); do [ -s "$W/orch.port" ] && break; sleep 0.1; done
+  export REAL_NODE FAKE_ORCH_URL="http://127.0.0.1:$(head -1 "$W/orch.port")"
+  # orch_case <status> <body> <want m-shared m-per-user> [what]
+  orch_case() {
+    printf '%s\n%s' "$1" "$2" > "$W/orch.answer"
+    : > "$W/orch.log"
+    run true true '^m-(shared|per-user)$' m
+    eq "orchestrator $1 ${4:-$2}" "$(verdict m-shared) $(verdict m-per-user)" "$3"
+  }
+  orch_case 200 '{"mode":"per_user"}' "SKIP PASS"
+  eq "asked GET /sandboxes/mode with the webapp's orchestrator key" "$(cat "$W/orch.log")" "/sandboxes/mode rbac-fake-orchestrator-key"
+  orch_case 200 '{"mode":"shared"}' "PASS SKIP"
+  orch_case 404 '{"detail":"Not Found"}' "PASS SKIP" "(no sandbox routes: only the shared container)"
+  orch_case 404 '{"detail":{"code":"unknown_instance"}}' "FAIL FAIL" "(a 404 naming a code is not a missing route)"
+  orch_case 404 '{"code":"unknown_instance"}' "FAIL FAIL" "(a bare code too)"
+  orch_case 503 '{"detail":"starting"}' "FAIL FAIL"
+  orch_case 401 '{"detail":"Unauthorized"}' "FAIL FAIL"
+  orch_case 200 '{"mode":"PER_USER"}' "FAIL FAIL" "(a mode outside the contract)"
+  orch_case 200 'not json' "FAIL FAIL"
+  orch_case 200 '["per_user"]' "FAIL FAIL"
+  FAKE_ORCH_URL="http://127.0.0.1:1" orch_case 200 '{"mode":"shared"}' "FAIL FAIL" "(unreachable)"
+  kill "$ORCH_PID" 2>/dev/null
+  unset REAL_NODE FAKE_ORCH_URL
+else
+  printf '  skip %s (%s)\n' "the runner's mode read against a fake orchestrator" "needs node and python3"
+  unset REAL_NODE
+fi
+
 section "the runner documents the tag"
 HEADER="$(sed -n '1,/^set -uo pipefail/p' "$RUNNER")"
 has "permissions:on | permissions:off in the row format" "permissions:on | permissions:off" "$HEADER"
@@ -831,6 +994,8 @@ has "sharingwriteswitch:on | sharingwriteswitch:off in the row format" "sharingw
 has "and the two refusals it splits" "\`write_sharing_off\` with the switch off and \`above_max_level\`" "$HEADER"
 has "governance:on | governance:off in the row format" "governance:on | governance:off" "$HEADER"
 has "and its switch" "RBAC_GOVERNANCE_ENABLED" "$HEADER"
+has "sandbox:shared | sandbox:per_user in the row format" "sandbox:shared | sandbox:per_user" "$HEADER"
+has "and where the mode is read" "GET /sandboxes/mode" "$HEADER"
 
 echo
 echo "-----------------------------------------"

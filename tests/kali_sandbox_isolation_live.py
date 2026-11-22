@@ -26,7 +26,9 @@ runs only with G1_ALLOW_FORK_TEST=1; in shared mode it then restarts `redamon-ka
 Clean-up: the capture proxy's `block_private` toggle is put back right after LV-E3's
 proxy probes; every probe file, process, route and session marker in a `finally`,
 after a failure, Ctrl-C, SIGTERM, SIGHUP or SIGQUIT too, with signals ignored while it
-runs. The run's id and the toggle's original value are recorded in the state file
+runs. The /opt/output plants are removed from the output folders themselves: a person's
+folder outlives the sandbox that wrote to it, and LV-T5b and LV-D22 stop A's. The run's
+id and the toggle's original value are recorded in the state file
 first, so the next start (or the seed, for the toggle) undoes what a killed run left,
 a trojaned nuclei included.
 
@@ -60,6 +62,10 @@ SHARED = "redamon-kali"
 AGENT = "redamon-agent"
 PROXY = "redamon-capture-proxy"
 PROXY_PORT = 8888
+ORCHESTRATOR = "redamon-recon-orchestrator"
+# The orchestrator's mount of mcp/output: a per-user sandbox's /opt/output is its person's
+# `users/<sandbox key>` under it (B.3), the shared container's is the root itself.
+OUTPUT_ROOT = "/app/mcp-output"
 CORE_NETWORK = "redamon-network"
 SANDBOX_NET_PREFIX = "redamon-sbx-"
 SUBNET_POOL = ipaddress.ip_network("10.214.0.0/16")
@@ -186,6 +192,29 @@ NUCLEI_REPAIR = (
 # through a gateway is one an interrupted LV-E3, LV-S7 or LV-E4 added.
 ROUTE_REPAIR = ("ip -4 route show | awk '$1 != \"default\" && $2 == \"via\" {print $1, $3}' | "
                 "while read net gw; do ip route del \"$net\" via \"$gw\"; done; true")
+# `<root> <rel>...`: removes a run's /opt/output plants under the output root, run as root by the
+# orchestrator (or on the host), never through a link: every folder is opened without following
+# one, and a plant is unlinked only when it is a file or a link itself, never what a link names.
+# Sandboxes write these folders (the shared one all of mcp/output), so a `users/<key>` swapped for
+# a link must not turn the clean-up into a delete elsewhere. Prints `G1RMLEFT <rel> <why>` for
+# each plant it leaves (a folder, a link on the way), then G1RMDONE.
+UNLINK_PLANTS = r"""
+import os,stat,sys
+D=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+for rel in sys.argv[2:]:
+    *dirs,leaf=rel.split('/');fds=[]
+    try:
+        fds.append(os.open(sys.argv[1],D))
+        for d in dirs:fds.append(os.open(d,D,dir_fd=fds[-1]))
+        m=os.lstat(leaf,dir_fd=fds[-1]).st_mode
+        if stat.S_ISREG(m) or stat.S_ISLNK(m):os.unlink(leaf,dir_fd=fds[-1])
+        else:print('G1RMLEFT',rel,'not-a-file')
+    except FileNotFoundError:pass
+    except OSError as e:print('G1RMLEFT',rel,(e.strerror or type(e).__name__).replace(' ','-'))
+    finally:
+        for f in fds:os.close(f)
+print('G1RMDONE')
+"""
 
 
 def kill_cmd(n, d):
@@ -267,6 +296,9 @@ def network_subnet(name):
     return None
 
 
+PIDNS_RE = re.compile(r"^pid:\[[0-9]+\]$")
+
+
 def pidns(container):
     rc, out, _ = docker("exec", container, "readlink", "/proc/self/ns/pid")
     return out.strip() if rc == 0 else ""
@@ -306,6 +338,27 @@ def workspace_host():
     return os.path.join(ROOT, "agentic", "agent-workspace")
 
 
+def output_host():
+    """The host folder the orchestrator mounts as the output root (the stack's, whichever checkout runs this)."""
+    for mount in (inspect(ORCHESTRATOR) or {}).get("Mounts") or []:
+        if mount.get("Destination") == OUTPUT_ROOT and mount.get("Source"):
+            return mount["Source"]
+    return os.path.join(ROOT, "mcp", "output")
+
+
+def own_key(user_id):
+    """sandbox_key(user_id, "own") (B.2): names the person's sandbox network and output folder."""
+    return hashlib.sha256(user_id.encode()).hexdigest()[:16]
+
+
+def identity(container):
+    """A container's name and id. What tells a restarted sandbox from the stopped one: never
+    its PID namespace's number, which the kernel reuses once freed (M-b saw three successive
+    sandboxes of one person all at the same pid:[...])."""
+    info = inspect(container) if container else None
+    return ((info or {}).get("Name") or "").lstrip("/"), (info or {}).get("Id") or ""
+
+
 # ---- the real entry point: MCP kali_exec ---------------------------------------------
 
 class Exec:
@@ -317,6 +370,11 @@ class Exec:
 
     def has(self, tag):
         return bool(self.rows(tag))
+
+    def ns(self):
+        """The PID namespace the command printed (`G1NS pid:[n]`), or '' when it printed none."""
+        row = (self.rows("G1NS") or [[]])[0]
+        return row[0] if row and PIDNS_RE.match(row[0]) else ""
 
     def why(self):
         return one_line(self.err or self.status or "no output", 120)
@@ -475,15 +533,25 @@ class Harness:
 
     def resolve(self, person, project=None):
         r = person.kali("echo G1NS $(readlink /proc/self/ns/pid); exit 0", project=project)
-        ns = (r.rows("G1NS") or [[""]])[0][:1]
-        ns = ns[0] if ns else ""
+        ns = r.ns()
         if not ns:
             return "", "", f"{person.name}'s command did not run ({r.why()})"
+        name = self.locate(person, ns)
+        if name:
+            return name, ns, ""
+        return "", ns, f"{person.name}'s command ran in no container labelled for {person.name}, nor in {SHARED}"
+
+    def locate(self, person, ns):
+        """The running container of the person's (or the shared one) in PID namespace `ns`, or ''.
+        Only running containers are compared: two live namespaces never share a number. A
+        container whose namespace cannot be read matches nothing, nor does an empty `ns`."""
+        if not PIDNS_RE.match(ns or ""):
+            return ""
         for name in self.candidates(person):
             if pidns(name) == ns:
                 self.containers.add(name)
-                return name, ns, ""
-        return "", ns, f"{person.name}'s command ran in no container labelled for {person.name}, nor in {SHARED}"
+                return name
+        return ""
 
     def ws_exists(self, rel):
         """Whether the agent's workspace holds `rel` (None: unknown). Read on the host when its
@@ -948,10 +1016,26 @@ class Harness:
         t5b = self.checks["LV-T5b"]
         trojan, orig = f"g1-trojan-{N}", f"/root/go/bin/.g1-nuclei-orig-{N}"
         restore = f"[ -e {orig} ] && mv -f {orig} {NUCLEI}"
+        # The restore and the stop must reach the container the trojan lands in: A's as it is now
+        # (an earlier check may have outlived the one the precondition found), then the one A's
+        # command really ran in. Whatever still escapes them, the clean-up's nuclei repair finds.
+        if not is_running(A.container):
+            A.container, A.pidns, err = self.resolve(A)
+            if err:
+                t5b.errors.append(err)
+                return
         self.cleanups.append((A.container, restore))
-        a = A.kali(f"mv {NUCLEI} {orig} && printf '#!/bin/sh\\necho {trojan}\\n' > {NUCLEI} && chmod 755 {NUCLEI} "
+        a = A.kali(f"echo G1NS $(readlink /proc/self/ns/pid); "
+                   f"mv {NUCLEI} {orig} && printf '#!/bin/sh\\necho {trojan}\\n' > {NUCLEI} && chmod 755 {NUCLEI} "
                    "&& echo G1TROJAN placed; nuclei -version 2>&1 | head -3 | sed 's/^/G1NV /'; exit 0")
+        planted = self.locate(A, a.ns())
+        if planted and planted != A.container:
+            self.cleanups.append((planted, restore))
         try:
+            if not planted:
+                t5b.errors.append(f"A's trojan nuclei went to no running container labelled for {A.name} ({a.why()})")
+                return
+            A.container, A.pidns = planted, a.ns()
             if not (a.has("G1TROJAN") and trojan in a.out):
                 t5b.errors.append(f"control: A's trojan nuclei was not placed or does not run ({a.why()})")
                 return
@@ -966,7 +1050,10 @@ class Harness:
         if A.container == SHARED:
             t5b.errors.append("A's sandbox cannot be stopped on its own: there is no per-user sandbox")
             return
-        old_ns = A.pidns
+        old = identity(A.container)
+        if not all(old):
+            t5b.errors.append(f"cannot read A's container {A.container} before the stop")
+            return
         why = self.stop_sandbox(A)
         if why:
             t5b.errors.append(why)
@@ -978,13 +1065,22 @@ class Harness:
             return
         if trojan in a2.out:
             t5b.breaches.append("A's restarted sandbox still runs the trojan nuclei")
-        new_ns = (a2.rows("G1NS") or [[""]])[0][:1]
-        if not new_ns or new_ns[0] == old_ns:
-            t5b.errors.append("control: A's command after the stop ran in the stopped container")
+        # The container that ran it: its namespace among the running ones, then that container's
+        # name and id against the stopped one's (the old namespace number may be the new one's).
+        ns = a2.ns()
+        name = self.locate(A, ns)
+        new = identity(name)
+        if not ns:
+            t5b.errors.append(f"control: A's command after the stop printed no PID namespace ({a2.why()})")
+        elif not all(new):
+            t5b.errors.append(f"control: A's command after the stop ran in no running container labelled for {A.name}")
+        elif name == SHARED:
+            t5b.breaches.append(f"A's command after the stop ran in the shared {SHARED}")
+        elif new[0] == old[0] or new[1] == old[1]:
+            t5b.errors.append(f"control: A's command after the stop ran in the stopped container {old[0]}")
         else:
-            A.container, A.pidns, err = self.resolve(A)
-            if err:
-                t5b.errors.append(err)
+            A.container, A.pidns = name, ns
+            t5b.notes.append(f"A's sandbox restarted as a new container ({old[0]} -> {name})")
         t5b.notes.append("B never runs A's trojan nuclei, and A's next sandbox starts clean")
 
     def d22(self):
@@ -993,6 +1089,13 @@ class Harness:
         if os.environ.get("G1_ALLOW_FORK_TEST") != "1":
             d22.skipped = "opt-in: G1_ALLOW_FORK_TEST=1 (in shared mode it wedges, then restarts, redamon-kali)"
             return
+        # LV-T5b stopped A's sandbox: when it could not tell which container A's next command
+        # ran in, find A's container again rather than load one that is gone.
+        if not is_running(A.container):
+            A.container, A.pidns, err = self.resolve(A)
+            if err:
+                d22.errors.append(err)
+                return
         A.kali("for i in $(seq 5000); do sleep 120 >/dev/null 2>&1 & done; echo G1FORK; exit 0", wait=5, poll=False)
         time.sleep(5)
         rc, out, _ = docker("exec", A.container, "pgrep", "-c", "-x", "sleep", timeout=30)
@@ -1060,12 +1163,8 @@ class Harness:
             except Exception as err:
                 print(f"WARNING: block_private is still not back to {pending}: {one_line(err, 120)}")
         containers = self.planted_containers()
+        self.put_nuclei_back(containers)
         for name in containers:
-            _, out, _ = sh_in(name, NUCLEI_REPAIR)
-            if "G1REPAIRED" in out:
-                print(f"== repaired: {name}'s nuclei put back (left by an interrupted run) ==")
-            if "G1TROJANLEFT" in out:
-                print(f"WARNING: {name}'s nuclei is a harness trojan and no original is left: recreate {name}")
             if name != SHARED:
                 sh_in(name, ROUTE_REPAIR)
         prev = self.state.get("active_run")
@@ -1077,6 +1176,7 @@ class Harness:
             if is_running(AGENT):
                 sh_in(AGENT, f"rm -f /workspace/*/g1-probe-{prev['n']} /workspace/*/g1-bprobe-{prev['n']} "
                              f"/workspace/.staging/g1-probe-{prev['n']}; true")
+            self.remove_output_plants(prev["n"])
             print(f"== repaired: cleaned up after interrupted run {prev['n']} ==")
         seed.update_state(active_run=None)
 
@@ -1092,14 +1192,52 @@ class Harness:
         for container, cmd in reversed(self.cleanups):
             if container and is_running(container):
                 sh_in(container, cmd + "; true")
+        self.put_nuclei_back(self.planted_containers())
         for container in sorted(self.containers | {self.A.container, self.B.container} - {""}):
             if is_running(container):
                 sh_in(container, kill_cmd(self.n, self.d))
                 sh_in(container, remove_cmd(self.n))
                 purge_sessions(container, self.n)
+        self.remove_output_plants(self.n)
         if self.agent_cleanup and is_running(AGENT):
             sh_in(AGENT, "; ".join(self.agent_cleanup) + "; true")
         seed.update_state(active_run=None)
+
+    def remove_output_plants(self, n):
+        """Remove run `n`'s /opt/output plants (remove_cmd's) from the output folders themselves,
+        whether or not a container of the run still runs: the output root (the shared container's)
+        and each person's own folder (`users/<own key>`, which every sandbox of theirs mounts).
+        Through the orchestrator's mount, as root (the plants are root's), else on the host,
+        never following a link (UNLINK_PLANTS)."""
+        rels = [os.path.join(folder, f"g1-{side}-{n}")
+                for folder in ("", *(f"users/{own_key(p.user_id)}" for p in (self.A, self.B)))
+                for side in ("a", "b")]
+        script = UNLINK_PLANTS.strip()
+        out, where = "", f"{OUTPUT_ROOT} in {ORCHESTRATOR}"
+        if is_running(ORCHESTRATOR):
+            _, out, _ = docker("exec", ORCHESTRATOR, "python3", "-I", "-c", script, OUTPUT_ROOT, *rels)
+        if "G1RMDONE" not in out:
+            where = output_host()
+            try:
+                out = subprocess.run([sys.executable, "-I", "-c", script, where, *rels],
+                                     capture_output=True, text=True, timeout=60).stdout
+            except (OSError, subprocess.TimeoutExpired):
+                out = ""
+        left = [" ".join(row) for row in Exec(True, out).rows("G1RMLEFT")]
+        if "G1RMDONE" not in out:
+            print(f"WARNING: could not remove g1-a-{n} and g1-b-{n} from the output folders under {where}: "
+                  "remove them by hand")
+        elif left:
+            print(f"WARNING: left under {where}: {', '.join(left)}: remove them by hand")
+
+    def put_nuclei_back(self, containers):
+        """Put the real nuclei back wherever a harness trojan is left (LV-T5b keeps the ELF aside)."""
+        for name in containers:
+            _, out, _ = sh_in(name, NUCLEI_REPAIR)
+            if "G1REPAIRED" in out:
+                print(f"== repaired: {name}'s nuclei put back from the copy LV-T5b kept aside ==")
+            if "G1TROJANLEFT" in out:
+                print(f"WARNING: {name}'s nuclei is a harness trojan and no original is left: recreate {name}")
 
     def report(self):
         passed = failed = skipped = 0
@@ -1137,8 +1275,7 @@ def lab(args):
     if not state:
         print(f"FAIL lab: no state file at {seed.state_path()}: run tests/kali_sandbox_seed_live.py first")
         return 1
-    key = hashlib.sha256(state[args.person]["id"].encode()).hexdigest()[:16]
-    net = SANDBOX_NET_PREFIX + key
+    net = SANDBOX_NET_PREFIX + own_key(state[args.person]["id"])
     if docker("network", "inspect", net)[0] != 0:
         print(f"FAIL lab: {net} does not exist: {args.person}'s sandbox is not running")
         return 1
