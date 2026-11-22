@@ -1,0 +1,121 @@
+[
+  {
+    "note": "Scope guardrail: allow the placeholder project.",
+    "match": "for a penetration testing scan:",
+    "repeat": true,
+    "content": { "allowed": true, "reason": "Scripted stub: placeholder project, local lab only." }
+  },
+  {
+    "note": "Intent router: start informational; metasploit_console needs the exploitation phase, approved by the person.",
+    "match": "You are classifying a penetration testing request",
+    "repeat": true,
+    "content": {
+      "required_phase": "informational",
+      "attack_path_type": "cve_exploit",
+      "confidence": 0.9,
+      "reasoning": "Scripted stub: start in the informational phase."
+    }
+  },
+  {
+    "note": "Run A (the shared project), think 1: ask for the exploitation phase.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: a shell session needs the exploitation phase.",
+      "reasoning": "Scripted turn A1 of per-user-sandbox-sessions.json.",
+      "action": "transition_phase",
+      "phase_transition": {
+        "to_phase": "exploitation",
+        "reason": "Scripted stub run: open a shell session on the local lab.",
+        "planned_actions": ["Connect a bind-shell handler to the lab."],
+        "risks": ["None: a throwaway local lab container."]
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run A, think 2: a bind-shell handler to the lab's listener (the lab runs `nc -lk -p 5555 -e /bin/sh`). `handler -H` sets RHOST for a bind payload. The session opens while the console is held for this chat, so it is linked to it.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: connect to the lab's bind shell.",
+      "reasoning": "Scripted turn A2 of per-user-sandbox-sessions.json.",
+      "action": "use_tool",
+      "tool_name": "metasploit_console",
+      "tool_args": { "command": "handler -p generic/shell_bind_tcp -H {{LAB_IP}} -P 5555" },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run A, think 3: list the sessions (a session that opened after the handler call returned is reported and linked here).",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: check that the session opened.",
+      "reasoning": "Scripted turn A3 of per-user-sandbox-sessions.json.",
+      "action": "use_tool",
+      "tool_name": "metasploit_console",
+      "tool_args": { "command": "sessions -l" },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run A, think 4: end the run, leaving the session open.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the session is open.",
+      "reasoning": "Scripted turn A4 of per-user-sandbox-sessions.json.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run A finished with a shell session open.",
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run B (the person's own project), think 1: ask for the exploitation phase.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: a second shell session, in another project.",
+      "reasoning": "Scripted turn B1 of per-user-sandbox-sessions.json.",
+      "action": "transition_phase",
+      "phase_transition": {
+        "to_phase": "exploitation",
+        "reason": "Scripted stub run: open a second shell session on the local lab.",
+        "planned_actions": ["Connect a bind-shell handler to the lab."],
+        "risks": ["None: a throwaway local lab container."]
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run B, think 2: the same bind-shell handler.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: connect to the lab's bind shell again.",
+      "reasoning": "Scripted turn B2 of per-user-sandbox-sessions.json.",
+      "action": "use_tool",
+      "tool_name": "metasploit_console",
+      "tool_args": { "command": "handler -p generic/shell_bind_tcp -H {{LAB_IP}} -P 5555" },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run B, think 3: list the sessions.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: check that the session opened.",
+      "reasoning": "Scripted turn B3 of per-user-sandbox-sessions.json.",
+      "action": "use_tool",
+      "tool_name": "metasploit_console",
+      "tool_args": { "command": "sessions -l" },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run B, think 4: end the run, leaving the session open.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the second session is open.",
+      "reasoning": "Scripted turn B4 of per-user-sandbox-sessions.json.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run B finished with a shell session open.",
+      "updated_todo_list": []
+    }
+  }
+]

@@ -1,0 +1,65 @@
+[
+  {
+    "note": "Scope guardrail: allow the placeholder project.",
+    "match": "for a penetration testing scan:",
+    "repeat": true,
+    "content": { "allowed": true, "reason": "Scripted stub: placeholder project, local lab only." }
+  },
+  {
+    "note": "Intent router: informational, where kali_shell is allowed.",
+    "match": "You are classifying a penetration testing request",
+    "repeat": true,
+    "content": {
+      "required_phase": "informational",
+      "attack_path_type": "cve_exploit",
+      "confidence": 0.9,
+      "reasoning": "Scripted stub: start in the informational phase."
+    }
+  },
+  {
+    "note": "Run 1, think 1: a kali_shell call whose sandbox the governor refuses (the tool result is 'sandbox unavailable: not enough memory').",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: leave a marker in the sandbox.",
+      "reasoning": "Scripted turn 1 of per-user-sandbox-memory.json.",
+      "action": "use_tool",
+      "tool_name": "kali_shell",
+      "tool_args": { "command": "echo G1E2E-{{NONCE}} > /tmp/g1e2e-{{NONCE}} && echo G1E2E-OUT-{{NONCE}}" },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run 1, think 2: the sandbox was refused; end the run so the person can Retry.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the sandbox could not start.",
+      "reasoning": "Scripted turn 2 of per-user-sandbox-memory.json.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run 1 ended: no sandbox.",
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run 2 (the modal's Retry re-sends the same query), think 1: the same call, now admitted.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: try again.",
+      "reasoning": "Scripted turn 3 of per-user-sandbox-memory.json.",
+      "action": "use_tool",
+      "tool_name": "kali_shell",
+      "tool_args": { "command": "echo G1E2E-{{NONCE}}-retry > /tmp/g1e2e-{{NONCE}}-retry && echo G1E2E-RETRY-{{NONCE}}" },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run 2, think 2: end the run.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the marker is written.",
+      "reasoning": "Scripted turn 4 of per-user-sandbox-memory.json.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run 2 finished.",
+      "updated_todo_list": []
+    }
+  }
+]

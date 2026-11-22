@@ -54,3 +54,39 @@ is reachable.
   They run on synthetic accounts and resources written straight into the database by
   `webapp/scripts/e2e-tradecraft-seed.mjs` (removed by `e2e-tradecraft-cleanup.mjs`): no agent
   and no site is reached. Each file's header has its command.
+
+## Per-user Kali sandboxes
+
+`tests/perUserSandbox.spec.ts` (fixtures in `tests/perUserSandboxFixtures.ts`) clicks through
+the app as two members and the admin and checks that every Kali path still works from the UI
+and runs in the person's own sandbox: first use and the drawer's starting line, an engagement
+with a plan wave, a Fireteam and the Traffic tab, a shared project, shell sessions across
+people, the terminal (also under act-as), access loss, the everyday screens and the emergency
+stop (group A); the idle stop (B); the "Not enough memory" modal (C); per-person tunnels (D).
+Each test finds where its command ran from the marker it left in a container's `/tmp`
+(`docker exec ... test -e`, read only); those checks are soft and say `ISOLATION`.
+
+Always run it through the wrapper, which takes the shared heavy lock, starts the running
+stack's `recon-orchestrator` with each group's variables in its own shell (never `.env`),
+replaying every other input the orchestrator was created with, and puts it back as it was on
+exit, even after a failure or a signal. Before its first change it writes the originals to
+`.git/redamon-g1-e2e-orchestrator.env` (0600, secrets as hashes), so a run killed outright is
+put back by the next one. It fails before doing anything when Docker, `npx`, `curl`, the
+orchestrator, the agent or the webapp is missing (`G1_E2E_ALLOW_SKIP=1` skips instead):
+
+```bash
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A-D, per-user mode
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --dry-run    # what each group would recreate
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --shared     # group A in shared mode ("fails before")
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --check-lock # take the lock as a run would, then exit
+```
+
+It needs the stack up, Docker, `python3` and `node`, and the accounts of
+`tests/kali_sandbox_seed_live.py` (`g1-alice@e2e.local`, `g1-bob@e2e.local`, projects `g1-PA`,
+`g1-PB`, `g1-PS`), which the spec seeds again itself; `G1_STATE` names the seed's state file. The
+model is `scripts/stub-llm-server.mjs` with the `scripts/stub-llm-scripts/per-user-sandbox-*.json`
+scripts, registered as each owner's provider for the run. The lab is a throwaway busybox
+container on the compose pentest network, joined to a person's sandbox network when a test
+needs it; group D's tunnel edge is a local chisel server. A caller already holding the lock
+(`flock LOCK bash ...`, or a descriptor it passes down) is recognised; `G1_E2E_LOCK_HELD=1` asks
+for that and fails when it is not so. The wait for the lock is bounded by `G1_E2E_LOCK_WAIT_S`.
