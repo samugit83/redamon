@@ -49,6 +49,7 @@ Stdlib only (asyncio + json) so it runs in a tiny image with no dependencies.
 """
 import asyncio
 import collections
+import ipaddress
 import json
 import os
 import re
@@ -194,6 +195,19 @@ ALLOWED_RW_VOLUMES = set(_csv_env("DOCKER_BROKER_ALLOWED_RW_VOLUMES")) | {"nucle
 # TruffleHog verifier's (trufflehog_bridge.VERIFY_NETWORK).
 ALLOWED_NETWORKS = set(_csv_env("DOCKER_BROKER_ALLOWED_NETWORKS")) | {
     "redamon-supply-chain-net", "redamon-trufflehog-net"}
+
+# The per-user Kali sandboxes' networks, as recon_orchestrator/sandbox_contract.py
+# names, labels and addresses them (network_name, LABEL_SANDBOX, SUBNET_POOL;
+# test_sandbox_networks.py pins the three). A tool container must never join
+# one: from there it reaches the sandbox's listeners and can spoof the agent's
+# link to it. And no network create may take the pool's addresses, or the
+# sandboxes would find no subnet.
+SANDBOX_NETWORK_PREFIX = "redamon-sbx-"
+SANDBOX_LABEL = "redamon.sandbox"
+SANDBOX_SUBNET_POOL = ipaddress.ip_network("10.214.0.0/16")
+ALLOWED_NETWORKS = {n for n in ALLOWED_NETWORKS if not n.startswith(SANDBOX_NETWORK_PREFIX)}
+# The network modes that name no network of their own.
+_BUILTIN_NETWORKS = frozenset({"", "default", "bridge", "host", "none"})
 
 # T1/T2: host paths a tool container may bind READ-WRITE. Every other allowed
 # host path (the repository subdirectories) may be bound only :ro. Legit
@@ -532,6 +546,8 @@ def validate_create(body: dict) -> tuple[bool, str]:
         value = hc.get(name)
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             return False, f"HostConfig.{name} is not an integer"
+    if not isinstance(hc.get("NetworkMode"), (str, type(None))):
+        return False, "HostConfig.NetworkMode is not a string"
     stop_timeout = body.get("StopTimeout")
     if stop_timeout is not None and (isinstance(stop_timeout, bool) or not isinstance(stop_timeout, int)):
         return False, "StopTimeout is not an integer"
@@ -1196,7 +1212,94 @@ def validate_network_create(body) -> tuple[bool, str]:
     ipam = body.get("IPAM") or {}
     if str(ipam.get("Driver") or "default") != "default" or ipam.get("Options"):
         return False, f"network IPAM options denied for {name!r}"
+    if name.startswith(SANDBOX_NETWORK_PREFIX):
+        return False, f"network {name!r} is a sandbox network"
+    # No tool labels a network (the CLI sends none); a `redamon.sandbox` label
+    # would make a tool network one every tool container is refused on.
+    if body.get("Labels"):
+        return False, f"network labels denied for {name!r}"
+    for config in ipam.get("Config") or []:
+        aux = config.get("AuxiliaryAddresses") or {}
+        if not isinstance(aux, dict):
+            return False, "IPAM.Config.AuxiliaryAddresses is not a JSON object"
+        for value in [config.get(f) for f in ("Subnet", "IPRange", "Gateway")] + list(aux.values()):
+            if value not in (None, "") and _in_sandbox_pool(value):
+                return False, f"network address {value!r} is not one outside the sandbox subnet pool"
     return True, "ok"
+
+
+_IPV4_MAPPED = ipaddress.ip_network("::ffff:0:0/96")
+
+
+def _in_sandbox_pool(value) -> bool:
+    """Does an address or a subnet overlap the sandbox pool? One that does not
+    parse counts as inside: the broker must not read it otherwise than the
+    daemon. An IPv4-mapped IPv6 one is read as the IPv4 range it maps (the
+    daemon stores `::ffff:10.214.255.224/124` as 10.214.255.224/28), one that
+    covers the whole mapped space counts as inside; any other IPv6 one never
+    is (the pool is IPv4 only)."""
+    try:
+        net = ipaddress.ip_network(str(value).strip(), strict=False)
+    except ValueError:
+        return True
+    if net.version == 6:
+        if not net.overlaps(_IPV4_MAPPED):
+            return False
+        if net.prefixlen <= _IPV4_MAPPED.prefixlen:
+            return True
+        net = ipaddress.ip_network((int(net.network_address) & 0xFFFFFFFF, net.prefixlen - 96))
+    return net.overlaps(SANDBOX_SUBNET_POOL)
+
+
+def _is_sandbox_network(doc: dict) -> bool:
+    """A network inspect: by its name, its label or an address in the pool."""
+    if str(doc.get("Name") or "").startswith(SANDBOX_NETWORK_PREFIX):
+        return True
+    if SANDBOX_LABEL in (doc.get("Labels") or {}):
+        return True
+    return any(isinstance(c, dict) and c.get("Subnet") and _in_sandbox_pool(c["Subnet"])
+               for c in ((doc.get("IPAM") or {}).get("Config") or []))
+
+
+_NETWORK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+# A tool names one network (`--network X` makes one EndpointsConfig entry);
+# each entry costs the broker up to two inspects, so a create names few.
+MAX_ENDPOINTS = 4
+
+
+async def sandbox_network_refusal(cfg: dict):
+    """Why a create may not reach the networks it names, or None: every network
+    its NetworkMode, its EndpointsConfig names and their NetworkID name, other
+    than the built-in ones, must be one the daemon resolves (a name, an id or an
+    id prefix, as it would) to a network that is not a sandbox's. A name with the
+    sandbox prefix is refused before that: the container could be made before
+    its sandbox network exists, and join it at its start."""
+    hc = cfg.get("HostConfig") or {}
+    endpoints = ((cfg.get("NetworkingConfig") or {}).get("EndpointsConfig")) or {}
+    if len(endpoints) > MAX_ENDPOINTS:
+        return f"a create names {len(endpoints)} networks, more than {MAX_ENDPOINTS}"
+    refs = [hc.get("NetworkMode") or ""]
+    for name, settings in endpoints.items():
+        refs += [name, (settings or {}).get("NetworkID") or ""]
+    if not all(isinstance(ref, str) for ref in refs):
+        return "a network reference is not a string"
+    for ref in dict.fromkeys(refs):
+        if ref in _BUILTIN_NETWORKS or ref.startswith("container:"):
+            continue
+        if not _NETWORK_REF.fullmatch(ref):
+            return f"network reference {ref!r} is not a network name or id"
+        if ref.startswith(SANDBOX_NETWORK_PREFIX):
+            return f"network {ref!r} is a sandbox network"
+        status, doc = await _upstream_get_json(f"/networks/{ref}", INSPECT_TIMEOUT)
+        if status != 200 or not isinstance(doc, dict):
+            return f"network {ref!r} is not one the daemon knows"
+        if _is_sandbox_network(doc):
+            return f"network {ref!r} is a sandbox network, or has an address in the sandbox subnet pool"
+        # The daemon keeps the reference as given and resolves it again at the
+        # start: an id prefix could then name another network, a sandbox's.
+        if ref not in (doc.get("Name"), doc.get("Id")):
+            return f"network reference {ref!r} is neither the network's name nor its full id"
+    return None
 
 
 def _name_allowed(kind: str, m) -> tuple[bool, str]:
@@ -1978,6 +2081,9 @@ async def handle_client(client_reader, client_writer):
                 await _refuse_body("create", e)
                 return
             ok, reason = _checked(validate_create, cfg)
+            if ok:
+                reason = await sandbox_network_refusal(cfg)
+                ok = reason is None
             if not ok:
                 await _refuse(reason, f" (image={cfg.get('Image')!r})" if isinstance(cfg, dict) else "",
                               pool=_validator_pool(reason))

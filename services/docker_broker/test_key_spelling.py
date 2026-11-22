@@ -318,9 +318,11 @@ def test_case_variants_inside_a_free_map_are_forwarded_as_distinct_keys(raw):
 
 @pytest.mark.parametrize("target,raw", [
     (VOLUME, '{"Driver":"local","Name":"nuclei-templates","Labels":{"A":"1","a":"2"}}'),
-    (NETWORK, '{"Name":"redamon-trufflehog-net","Driver":"bridge","Labels":{"A":"1","a":"2"}}'),
-], ids=["volume", "network"])
+], ids=["volume"])
 def test_case_variants_in_volume_and_network_labels_are_forwarded(target, raw):
+    # A network create takes no labels at all since SBK round 10 (no tool sets
+    # one; a `redamon.sandbox` label would shadow a sandbox network): see
+    # test_sandbox_networks.py. A volume's labels stay distinct keys.
     resp, daemon = _send("POST", target, _raw(raw))
     assert status_of(resp) == 200, resp[:300]
     [sent] = [r for r in daemon.received if r["path"] == target]

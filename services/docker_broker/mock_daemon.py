@@ -8,6 +8,7 @@ created, by id and by `?name=`, so the broker's ownership check finds the
 `redamon.broker-owned` label it stamped, exactly as on a real daemon.
 """
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -104,6 +105,13 @@ class Daemon:
             return 201, {"Id": cid, "Warnings": []}
         if method == "POST" and re.search(r"/attach$", path):
             return 101, None
+        network = re.match(r"^/(?:v[\d.]+/)?networks/([^/]+)$", path)
+        if method == "GET" and network:
+            # Any network the tests name exists, as the daemon answers: by its
+            # name, with a full id (the broker checks the reference is one of them).
+            name = network.group(1)
+            return 200, {"Name": name, "Id": hashlib.sha256(name.encode()).hexdigest(), "Labels": {},
+                         "IPAM": {"Config": []}}
         return 200, {}
 
     def got(self, method, path):
