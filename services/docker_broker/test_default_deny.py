@@ -25,7 +25,9 @@ OWNED_LABELS = {broker._OWNER_LABEL: "1"}
 
 
 def _daemon():
-    return Daemon({OWNED: dict(OWNED_LABELS)})
+    # A `docker run --rm` tool container: the daemon removes it on exit, so a
+    # wait for its removal ends (the broker refuses one that could not).
+    return Daemon({OWNED: dict(OWNED_LABELS)}, auto_remove={OWNED})
 
 
 @pytest.fixture(autouse=True)

@@ -16,6 +16,7 @@ that the daemon never received the smuggled request.
 """
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -112,8 +113,8 @@ class GoLikeDaemon:
                     continue
                 inspect = re.match(r"^/(?:v[\d.]+/)?containers/([^/]+)/json$", path)
                 if method == "GET" and inspect:
-                    name = inspect.group(1)
-                    full = self.ids.get(name, name)
+                    name = self.name_of(inspect.group(1))
+                    full = self.full_id(name)
                     labels = self.labels.get(name, self.labels.get(full))
                     if labels is None:
                         self._answer(writer, 404, {"message": "No such container"}, close)
@@ -138,8 +139,20 @@ class GoLikeDaemon:
         writer.write(f"HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\n"
                      f"{'Connection: close' + chr(13) + chr(10) if close else ''}\r\n".encode() + data)
 
+    def full_id(self, name):
+        """A container's full id; one the test did not give is derived from its name."""
+        return self.ids.get(name) or hashlib.sha256(name.encode()).hexdigest()
+
+    def name_of(self, ref):
+        """The name (or alias) a reference stands for: the broker forwards by full id."""
+        if ref in self.labels or ref in self.ids:
+            return ref
+        return next((n for n in list(self.labels) if self.full_id(n) == ref), ref)
+
     def got(self, method, path):
-        return any(r["method"] == method and r["path"] == path for r in self.received)
+        m = re.match(r"^(/(?:v[\d.]+/)?containers/)([^/]+)(.*)$", path)
+        paths = {path, m.group(1) + self.full_id(m.group(2)) + m.group(3)} if m else {path}
+        return any(r["method"] == method and r["path"] in paths for r in self.received)
 
 
 async def _exchange(daemon, raw, after_upgrade=None):
@@ -305,7 +318,7 @@ def test_an_upgraded_attach_still_streams_both_ways():
     assert stream == b"hello from stdin\n"
     [attach] = [r for r in daemon.received if r["path"].endswith("/attach")]
     assert attach["headers"]["upgrade"] == "tcp" and attach["headers"]["connection"] == "Upgrade"
-    assert urllib.parse.urlsplit("x://h" + attach["path"]).path == f"{V}/containers/{OWNED}/attach"
+    assert urllib.parse.urlsplit("x://h" + attach["path"]).path == f"{V}/containers/{daemon.full_id(OWNED)}/attach"
 
 
 # ---------------------------------------------------------------------------

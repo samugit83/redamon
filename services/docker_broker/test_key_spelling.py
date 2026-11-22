@@ -351,7 +351,7 @@ def test_a_lone_case_variant_is_forwarded_under_the_api_spelling():
 
 def test_a_renamed_field_is_checked_under_the_api_spelling():
     resp = _assert_refused("POST", CREATE, {"Image": "alpine", "HostConfig": {"cAPaDD": ["SYS_ADMIN"]}})
-    assert b"capability not allowed: SYS_ADMIN" in resp
+    assert b"capability not allowed: 'SYS_ADMIN'" in resp
 
 
 def test_a_lone_case_variant_in_a_volume_or_network_create_is_renamed():
@@ -401,11 +401,12 @@ def test_no_new_privileges_is_allowed(opt):
 # Body size and shape
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("target", [CREATE, VOLUME, NETWORK])
-def test_a_body_over_the_json_cap_is_refused_before_it_is_read(target):
+@pytest.mark.parametrize("target,kind", [(CREATE, "create"), (VOLUME, "volume-create"), (NETWORK, "network-create")])
+def test_a_body_over_the_json_cap_is_refused_before_it_is_read(target, kind):
     # The cap is checked on the Content-Length, before a byte of the body is read or parsed.
+    cap = getattr(broker, "body_max", lambda _kind: broker.JSON_BODY_MAX)(kind)
     raw = (f"POST {target} HTTP/1.1\r\nHost: docker\r\nContent-Type: application/json\r\n"
-           f"Content-Length: {broker.JSON_BODY_MAX + 1}\r\n\r\n").encode() + b"{}"
+           f"Content-Length: {cap + 1}\r\n\r\n").encode() + b"{}"
     [resp], daemon = run_through_broker([raw])
     assert status_of(resp) == 403, resp[:300]
     assert b"request body over" in resp
@@ -421,7 +422,10 @@ def test_a_large_body_under_the_cap_is_still_allowed():
 
 
 def test_the_json_cap_is_far_above_what_the_cli_sends():
-    assert broker.JSON_BODY_MAX >= 100 * len(CLI_RICH)
+    # 64 KiB: about 20 times the CLI's richest create body (35 times the
+    # largest a recon tool sends), and no more, as every byte is buffered.
+    assert broker.JSON_BODY_MAX >= 16 * len(CLI_RICH)
+    assert broker.JSON_BODY_MAX <= 64 * 1024
 
 
 @pytest.mark.parametrize("raw", ["[]", '"alpine"', "null", "1"])
@@ -517,9 +521,9 @@ def test_the_cli_body_still_gets_the_pids_cap_and_the_default_swap(monkeypatch):
 
 
 @pytest.mark.parametrize("body", [
-    {"Image": "x" * 500_000},
-    {"Image": "alpine", "HostConfig": {"Binds": ["/etc" + "/x" * 250_000 + ":/e"]}},
-    {"Image": "alpine", "HostConfig": {"\u017f" * 60_000: 1}},     # 360 KB escaped, under the body cap
+    {"Image": "x" * 60_000},
+    {"Image": "alpine", "HostConfig": {"Binds": ["/etc" + "/x" * 30_000 + ":/e"]}},
+    {"Image": "alpine", "HostConfig": {"\u017f" * 10_000: 1}},     # 60 KB escaped, under the body cap
 ], ids=["image", "bind", "key-path"])
 def test_a_refusal_echoes_at_most_a_few_hundred_characters(body, capsys):
     resp = _assert_refused("POST", CREATE, body)

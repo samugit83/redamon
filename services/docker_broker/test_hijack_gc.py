@@ -50,7 +50,8 @@ async def _attach_through_broker(tmp: str) -> tuple:
         head = await _read_head(reader)
         line = head.split(b"\r\n", 1)[0].decode("latin1")
         if line.startswith("GET ") and f"/containers/{CID}/json" in line:
-            body = json.dumps({"Config": {"Labels": {broker._OWNER_LABEL: "1"}}}).encode()
+            body = json.dumps({"Id": CID.ljust(64, "0"), "Config": {"Labels": {broker._OWNER_LABEL: "1"}},
+                               "State": {"Status": "created"}}).encode()
             writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                          b"Content-Length: " + str(len(body)).encode() + b"\r\n"
                          b"Connection: close\r\n\r\n" + body)
