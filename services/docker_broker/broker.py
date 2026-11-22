@@ -26,26 +26,33 @@ recon/partial-recon containers are put behind the broker.
 
 DESIGN (deliberately simple to stay correct)
 ---------------------------------------------
-One Docker API request per client connection (we inject `Connection: close` on
-the forwarded request so the upstream closes after each response and the docker
-client just reconnects for the next call — eliminating keep-alive request
-smuggling). For each connection:
-  * parse the request line + headers (+ body via Content-Length),
+One Docker API request per client connection. The daemon gets a head the broker
+writes itself (the checked request line, a few allowlisted headers and
+`Connection: close`, so the upstream closes after each response and the docker
+client just reconnects for the next call), never the client's bytes. For each
+connection:
+  * parse the request line + headers, refusing any head the daemon could read
+    differently (bare CR/LF, control bytes, folded or repeated headers,
+    Transfer-Encoding), then the body via Content-Length,
   * match it against `_ROUTES`; no match -> 403,
-  * if it is an attach (`/containers/<id>/attach`) -> forward the headers then
-    blind-pipe BYTES bidirectionally until close (handles streamed
-    stdin/stdout, e.g. hakrawler's piped stdin and live tool output),
+  * if it is an attach (`/containers/<id>/attach`) -> forward the upgrade and,
+    once the daemon answers 101, pipe BYTES bidirectionally until close
+    (handles streamed stdin/stdout, e.g. hakrawler's piped stdin and live tool
+    output); any other answer is relayed and the connection closed,
   * if it carries a body the broker checks (container, volume or network
-    create) -> validate it; reject with 403 or forward + relay the response,
+    create) -> validate it; reject with 403 or forward the body as validated
+    (re-serialized) + relay the response,
   * otherwise -> forward and relay the (possibly streamed/chunked) response.
 
 Stdlib only (asyncio + json) so it runs in a tiny image with no dependencies.
 """
 import asyncio
+import collections
 import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 
 # --------------------------------------------------------------------------
@@ -197,6 +204,10 @@ ALLOWED_RW_PREFIXES = _sane_prefixes(_DEFAULT_RW_PREFIXES + _csv_env("DOCKER_BRO
 # (SYS_ADMIN, SYS_PTRACE, ALL, ...) is denied.
 ALLOWED_CAPS = {"NET_RAW", "NET_ADMIN", "CAP_NET_RAW", "CAP_NET_ADMIN"}
 
+# The only security option a tool container may carry, in the spellings the
+# daemon accepts for it.
+_ALLOWED_SECURITY_OPTS = frozenset({"no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"})
+
 # E1: marker label injected into every broker-created container so operate-on-
 # existing verbs can be gated to broker-owned targets only. Without this, the
 # create-time allowlist is irrelevant to a hijack of a trusted infra container
@@ -334,13 +345,183 @@ def _bind_is_readonly(opts: str) -> bool:
     return "ro" in [o.strip() for o in opts.split(",") if o.strip()]
 
 
+# --------------------------------------------------------------------------
+# Reading a body the way the daemon does. The daemon decodes JSON with Go's
+# encoding/json: a key matches a struct field whatever its ASCII case (and
+# U+017F long s matches "s", the Kelvin sign U+212A "k"), and every key naming
+# one field is applied in turn, objects merged and the last scalar or list
+# winning; map keys (Labels, Tmpfs, ...) stay exact. The checks below read
+# exact keys, so `"privileged": true`, a second "labels" or a repeated
+# "DriverOpts" reached the daemon unchecked (each reproduced on Engine 29.10).
+# So parse_body refuses a key repeated exactly in one object, and
+# _canonical_keys, in every struct the broker checks, renames a lone ASCII case
+# variant of a field to the API's spelling (docker-py writes
+# "CPURealtimePeriod"; the forwarded body is re-serialized, so the checks and
+# the daemon read the same key), and refuses two spellings of one field or any
+# non-ASCII key.
+# --------------------------------------------------------------------------
+# Create, volume and network bodies the Docker CLI sends are a few KiB (3.3 KiB
+# for a `docker create` with forty options); a larger one is refused before it
+# is parsed, which keeps the parse off the event loop's critical path.
+JSON_BODY_MAX = 512 * 1024
+
+
+def _refuse_repeated_keys(pairs):
+    obj = dict(pairs)
+    if len(obj) != len(pairs):
+        seen = set()
+        for key, _ in pairs:
+            if key in seen:
+                raise ValueError(f"repeated key {key!r}")
+            seen.add(key)
+    return obj
+
+
+def parse_body(raw: bytes):
+    """A request body as JSON; ValueError when it does not parse or an object
+    repeats a key (the daemon applies each, Python keeps one)."""
+    return json.loads(raw, object_pairs_hook=_refuse_repeated_keys)
+
+
+def _struct(scalars: str = "", **nested) -> dict:
+    return {**dict.fromkeys(scalars.split()), **nested}
+
+
+# The JSON field names of every object the broker forwards, spelt as the Docker
+# Engine API spells them (checked against the bodies Docker CLI 29.10 sends).
+# A field maps to what its value holds: None (a scalar, a list of scalars or a
+# map with free keys), another struct's name, or ("list"|"map", what each item
+# holds). A field missing here is only forwarded unchecked, as any unknown key.
+_LIST, _MAP = "list", "map"
+_API_FIELDS = {
+    "ContainerCreate": _struct(
+        "Hostname Domainname User AttachStdin AttachStdout AttachStderr ExposedPorts Tty "
+        "OpenStdin StdinOnce Env Cmd ArgsEscaped Image Volumes WorkingDir Entrypoint "
+        "NetworkDisabled MacAddress OnBuild Labels StopSignal StopTimeout Shell",
+        Healthcheck="HealthConfig", HostConfig="HostConfig", NetworkingConfig="NetworkingConfig"),
+    "HealthConfig": _struct("Test Interval Timeout StartPeriod StartInterval Retries"),
+    "HostConfig": _struct(
+        "Binds ContainerIDFile NetworkMode AutoRemove VolumeDriver VolumesFrom ConsoleSize "
+        "Annotations CapAdd CapDrop CgroupnsMode Dns DnsOptions DnsSearch ExtraHosts GroupAdd "
+        "IpcMode Cgroup Links OomScoreAdj PidMode Privileged PublishAllPorts ReadonlyRootfs "
+        "SecurityOpt StorageOpt Tmpfs UTSMode UsernsMode ShmSize Sysctls Runtime Isolation "
+        "CpuShares Memory NanoCpus CgroupParent BlkioWeight CpuPeriod CpuQuota "
+        "CpuRealtimePeriod CpuRealtimeRuntime CpusetCpus CpusetMems DeviceCgroupRules "
+        "KernelMemory KernelMemoryTCP MemoryReservation MemorySwap MemorySwappiness "
+        "OomKillDisable PidsLimit CpuCount CpuPercent IOMaximumIOps IOMaximumBandwidth "
+        "MaskedPaths ReadonlyPaths Init",
+        LogConfig="LogConfig", RestartPolicy="RestartPolicy",
+        PortBindings=(_MAP, (_LIST, "PortBinding")),
+        BlkioWeightDevice=(_LIST, "WeightDevice"),
+        BlkioDeviceReadBps=(_LIST, "ThrottleDevice"), BlkioDeviceWriteBps=(_LIST, "ThrottleDevice"),
+        BlkioDeviceReadIOps=(_LIST, "ThrottleDevice"), BlkioDeviceWriteIOps=(_LIST, "ThrottleDevice"),
+        Devices=(_LIST, "DeviceMapping"), DeviceRequests=(_LIST, "DeviceRequest"),
+        Ulimits=(_LIST, "Ulimit"), Mounts=(_LIST, "Mount")),
+    "LogConfig": _struct("Type Config"),
+    "RestartPolicy": _struct("Name MaximumRetryCount"),
+    "PortBinding": _struct("HostIp HostPort"),
+    "WeightDevice": _struct("Path Weight"),
+    "ThrottleDevice": _struct("Path Rate"),
+    "DeviceMapping": _struct("PathOnHost PathInContainer CgroupPermissions"),
+    "DeviceRequest": _struct("Driver Count DeviceIDs Capabilities Options"),
+    "Ulimit": _struct("Name Hard Soft"),
+    "Mount": _struct("Type Source Target ReadOnly Consistency ClusterOptions",
+                     BindOptions="BindOptions", VolumeOptions="VolumeOptions",
+                     ImageOptions="ImageOptions", TmpfsOptions="TmpfsOptions"),
+    "BindOptions": _struct("Propagation NonRecursive CreateMountpoint ReadOnlyNonRecursive "
+                           "ReadOnlyForceRecursive"),
+    "VolumeOptions": _struct("NoCopy Labels Subpath", DriverConfig="Driver"),
+    "Driver": _struct("Name Options"),
+    "ImageOptions": _struct("Subpath"),
+    "TmpfsOptions": _struct("SizeBytes Mode Options"),
+    "NetworkingConfig": _struct(EndpointsConfig=(_MAP, "EndpointSettings")),
+    "EndpointSettings": _struct(
+        "Links Aliases DriverOpts GwPriority NetworkID EndpointID Gateway IPAddress IPPrefixLen "
+        "IPv6Gateway GlobalIPv6Address GlobalIPv6PrefixLen MacAddress DNSNames",
+        IPAMConfig="EndpointIPAMConfig"),
+    "EndpointIPAMConfig": _struct("IPv4Address IPv6Address LinkLocalIPs"),
+    "VolumeCreate": _struct("Name Driver DriverOpts Labels ClusterVolumeSpec"),
+    "NetworkCreate": _struct("Name CheckDuplicate Driver Scope EnableIPv4 EnableIPv6 Internal "
+                             "Attachable Ingress ConfigOnly Options Labels",
+                             IPAM="IPAM", ConfigFrom="ConfigReference"),
+    "IPAM": _struct("Driver Options", Config=(_LIST, "IPAMConfig")),
+    "IPAMConfig": _struct("Subnet IPRange Gateway AuxiliaryAddresses"),
+    "ConfigReference": _struct("Network"),
+}
+_FOLDED_FIELDS = {kind: {f.upper(): f for f in fields} for kind, fields in _API_FIELDS.items()}
+# Engines whose create wrapper still embeds HostConfig read its fields from the
+# top level too, where no check here looks: they are refused there.
+_TOP_LEVEL_HOST_FIELDS = {f.upper(): f for f in _API_FIELDS["HostConfig"]}
+
+
+def _canonical_keys(value, kind, where: str = ""):
+    """Give every struct below `value` the API's spelling of its fields, in
+    place; the reason to refuse the body, or None. Docker's field names are
+    ASCII, so a non-ASCII key in a struct can only be a look-alike of one."""
+    if kind is None or value is None:
+        return None
+    if isinstance(kind, tuple):
+        shape, item = kind
+        if shape == _LIST and isinstance(value, list):
+            entries = ((f"[{i}]", v) for i, v in enumerate(value))
+        elif shape == _MAP and isinstance(value, dict):
+            entries = ((f"[{k!r}]", v) for k, v in value.items())
+        else:
+            return f"{where} is not a JSON {'array' if shape == _LIST else 'object'}"
+        for suffix, v in entries:
+            found = _canonical_keys(v, item, where + suffix)
+            if found:
+                return found
+        return None
+    if not isinstance(value, dict):
+        return f"{where or 'the body'} is not a JSON object"
+    fields, folded = _API_FIELDS[kind], _FOLDED_FIELDS[kind]
+    spelt = {}
+    for key in value:
+        path = f"{where}.{key}" if where else key
+        if not key.isascii():
+            return f"key {path!r} is not ASCII, as every Docker API field is"
+        if kind == "ContainerCreate" and key.upper() in _TOP_LEVEL_HOST_FIELDS:
+            return f"key {path!r} names HostConfig.{_TOP_LEVEL_HOST_FIELDS[key.upper()]} at the top level"
+        field = key if key in fields else folded.get(key.upper())
+        if field is None:
+            continue
+        if field in spelt:
+            return (f"keys {spelt[field]!r} and {key!r} in {where or 'the body'} "
+                    f"both name the Docker API field {field!r}")
+        spelt[field] = key
+    if any(field != key for field, key in spelt.items()):
+        renamed = {key: field for field, key in spelt.items()}
+        items = list(value.items())
+        value.clear()
+        value.update((renamed.get(k, k), v) for k, v in items)
+    for field in spelt:
+        found = _canonical_keys(value[field], fields[field], f"{where}.{field}" if where else field)
+        if found:
+            return found
+    return None
+
+
 def validate_create(body: dict) -> tuple[bool, str]:
     """Return (allowed, reason) for a POST /containers/create body."""
+    if not isinstance(body, dict):
+        return False, "create body is not a JSON object"
+    refused = _canonical_keys(body, "ContainerCreate")
+    if refused:
+        return False, refused
     image = body.get("Image", "")
-    if not _image_allowed(image):
+    if not isinstance(image, str) or not _image_allowed(image):
         return False, f"image not on allowlist: {image!r}"
 
     hc = body.get("HostConfig") or {}
+    # The fields read below as lists or numbers, of the type the daemon reads.
+    for name in ("Binds", "CapAdd", "SecurityOpt"):
+        if not isinstance(hc.get(name), (list, type(None))):
+            return False, f"HostConfig.{name} is not a JSON array"
+    for name in ("Memory", "MemorySwap", "PidsLimit"):
+        value = hc.get(name)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            return False, f"HostConfig.{name} is not an integer"
 
     if hc.get("Privileged"):
         return False, "Privileged=true denied"
@@ -349,6 +530,11 @@ def validate_create(body: dict) -> tuple[bool, str]:
             return False, f"capability not allowed: {cap}"
     if hc.get("Devices"):
         return False, "device passthrough denied"
+    # A device cgroup rule lets the container make and open device nodes (with
+    # the default MKNOD, `b *:* rwm` reads the host's raw disks); a device
+    # request hands it host devices such as GPUs. No tool asks for either.
+    if hc.get("DeviceCgroupRules") or hc.get("DeviceRequests"):
+        return False, "device cgroup rules and device requests denied"
     for ns in ("PidMode", "IpcMode", "UsernsMode", "CgroupnsMode"):
         v = str(hc.get(ns, ""))
         # host -> shares the host namespace; container:<x> -> joins another
@@ -368,11 +554,12 @@ def validate_create(body: dict) -> tuple[bool, str]:
     for sensitive in ("MaskedPaths", "ReadonlyPaths"):
         if hc.get(sensitive) is not None:
             return False, f"{sensitive} override denied"
-    # docker.sock or sensitive security_opt
+    # Any other security option (an inline seccomp profile, an AppArmor profile
+    # that is itself unconfined, an SELinux label, systempaths=unconfined) can
+    # widen what the container may do, whatever its wording. No tool sends one.
     for so in hc.get("SecurityOpt") or []:
-        # allow seccomp/apparmor profiles; deny explicit unconfined which widens escape surface
-        if "unconfined" in str(so):
-            return False, f"SecurityOpt {so} denied"
+        if not isinstance(so, str) or so not in _ALLOWED_SECURITY_OPTS:
+            return False, f"SecurityOpt {so!r} denied"
 
     # A volume plugin, or the local driver's options, can make a named volume
     # a bind of any host path; the tools use plain local volumes only.
@@ -486,25 +673,32 @@ BROKER_TOOL_MEM = _parse_size(os.environ.get("BROKER_TOOL_MEM_BYTES", ""), _defa
 BROKER_TOOL_PIDS = max(0, _parse_int(os.environ.get("BROKER_TOOL_PIDS", "0"), 0))  # 0 = don't set
 # Phase 7: sibling tool containers had NO count cap, so a runaway scan (or many
 # concurrent scans) could spawn unbounded containers the memory governor never
-# sees. A generous backstop; 0 disables it. A create is denied once this many
-# broker-owned containers are already running.
+# sees. A generous backstop; 0 disables it. A create, or a start of an exited
+# container, is denied once this many broker-owned containers are not exited.
 BROKER_MAX_CONTAINERS = max(0, _parse_int(os.environ.get("BROKER_MAX_CONTAINERS", "0"), 0))
 
 
 def inject_limits(cfg: dict) -> dict:
     """Add HostConfig.Memory (and optionally PidsLimit) if absent or larger than
-    our cap — respect a lower explicit value. Mutates and returns cfg."""
+    our cap — respect a lower explicit value. Zero or a negative value means
+    unlimited to the daemon (PidsLimit -1, Memory -1), so it gets the cap too.
+    Mutates and returns cfg."""
     hc = cfg.get("HostConfig")
     if not isinstance(hc, dict):
         hc = {}
         cfg["HostConfig"] = hc
     if BROKER_TOOL_MEM > 0:
         cur = hc.get("Memory") or 0
-        if cur == 0 or cur > BROKER_TOOL_MEM:
+        if cur <= 0 or cur > BROKER_TOOL_MEM:
             hc["Memory"] = BROKER_TOOL_MEM
+        # MemorySwap is memory + swap: -1 is unlimited swap, and 0 lets the
+        # daemon give twice Memory, so nothing may ask for more than that.
+        swap = hc.get("MemorySwap") or 0
+        if swap < 0 or swap > 2 * hc["Memory"]:
+            hc["MemorySwap"] = 2 * hc["Memory"]
     if BROKER_TOOL_PIDS > 0:
         cur = hc.get("PidsLimit") or 0
-        if cur == 0 or cur > BROKER_TOOL_PIDS:
+        if cur <= 0 or cur > BROKER_TOOL_PIDS:
             hc["PidsLimit"] = BROKER_TOOL_PIDS
     return cfg
 
@@ -580,9 +774,9 @@ def _dechunk(body: bytes) -> bytes:
     return out
 
 
-async def _upstream_inspect_labels(cid: str):
-    """Fetch a container's labels via an upstream GET /containers/{id}/json.
-    Returns the labels dict, or None if the container is absent / unparseable.
+async def _upstream_inspect(cid: str):
+    """Fetch a container's inspect document via an upstream GET
+    /containers/{id}/json, or None if the container is absent / unparseable.
     Reuses the same UPSTREAM_SOCK connection pattern as the forward path."""
     r = w = None
     try:
@@ -615,22 +809,31 @@ async def _upstream_inspect_labels(cid: str):
         info = json.loads(body or b"{}")
     except Exception:
         return None
-    labels = (info.get("Config") or {}).get("Labels") or {}
-    return labels if isinstance(labels, dict) else {}
+    return info if isinstance(info, dict) else None
 
 
-async def _is_broker_owned(cid: str) -> bool:
-    labels = await _upstream_inspect_labels(cid)
-    return bool(labels) and labels.get(_OWNER_LABEL) == "1"
+async def _owned_container(cid: str):
+    """The inspect document of a container the broker created, or None."""
+    info = await _upstream_inspect(cid)
+    config = (info or {}).get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    if isinstance(labels, dict) and labels.get(_OWNER_LABEL) == "1":
+        return info
+    return None
 
 
-async def _count_broker_owned_running() -> int:
-    """Count currently-running broker-owned containers via an upstream
+# Every state but exited and dead: a created container (never started) can be
+# attached to, waited on and started like a running one, so it counts.
+_LIVE_STATES = ("created", "restarting", "running", "paused")
+
+
+async def _count_broker_owned_live() -> int:
+    """Count the broker-owned containers not yet exited via an upstream
     GET /containers/json filtered by the ownership label (Phase 7 count cap).
     Returns -1 if the count cannot be determined, so the caller can fail OPEN
     (never block a legitimate spawn on a transient upstream hiccup)."""
     from urllib.parse import quote
-    filt = quote(json.dumps({"label": [f"{_OWNER_LABEL}=1"], "status": ["running"]}))
+    filt = quote(json.dumps({"label": [f"{_OWNER_LABEL}=1"], "status": list(_LIVE_STATES)}))
     r = w = None
     try:
         r, w = await asyncio.open_unix_connection(UPSTREAM_SOCK)
@@ -662,11 +865,11 @@ async def _count_broker_owned_running() -> int:
         return -1
 
 
-def _rewrite_list_filters(head: bytes, path: str) -> bytes:
+def _owned_list_target(target: str) -> str:
     """E1: force the broker-owned label filter onto GET /containers/json so the
     listing can only ever return broker-created containers (narrows, never
-    widens, whatever the client asked for). Rewrites the request-line target."""
-    base, _, query = path.partition("?")
+    widens, whatever the client asked for). Returns the rewritten target."""
+    base, _, query = target.partition("?")
     params = urllib.parse.parse_qs(query, keep_blank_values=True)
     filters = {}
     if "filters" in params:
@@ -687,24 +890,30 @@ def _rewrite_list_filters(head: bytes, path: str) -> bytes:
     filters["label"] = labels
     params["filters"] = [json.dumps(filters)]
     new_query = urllib.parse.urlencode(params, doseq=True)
-    new_target = base + ("?" + new_query if new_query else "")
-    head_text = head.decode("latin1")
-    nl = head_text.find("\r\n")
-    request_line = head_text[:nl] if nl >= 0 else head_text
-    rest = head_text[nl:] if nl >= 0 else ""
-    toks = request_line.split(" ")
-    if len(toks) >= 2:
-        toks[1] = new_target
-    return (" ".join(toks) + rest).encode("latin1")
+    return base + ("?" + new_query if new_query else "")
+
+
+# The query parameters `docker pull` sends. The daemon decodes parameter names
+# as well as values and reads the FIRST of a repeated one; with an empty
+# fromImage it imports the request body (or the URL in fromSrc) as repo:tag,
+# which could replace a tool image every scan runs.
+_PULL_PARAMS = frozenset({"fromImage", "tag", "platform"})
 
 
 def validate_pull(path: str) -> tuple[bool, str]:
     """Validate docker pull (POST /images/create?fromImage=...&tag=...)."""
     q = path.split("?", 1)[1] if "?" in path else ""
-    params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
+    pairs = urllib.parse.parse_qsl(q, keep_blank_values=True)
+    names = [name for name, _ in pairs]
+    if len(set(names)) != len(names):
+        return False, f"repeated pull parameter in {sorted(names)}"
+    if set(names) - _PULL_PARAMS:
+        return False, f"pull parameter(s) {sorted(set(names) - _PULL_PARAMS)} denied"
+    params = dict(pairs)
     from_image = params.get("fromImage", "")
+    if not from_image:
+        return False, "pull without fromImage denied"
     tag = params.get("tag", "")
-    # URL-decode minimally (handle %2F etc. is rare for these)
     image = f"{from_image}:{tag}" if tag else from_image
     if _image_allowed(image) or _image_allowed(from_image):
         return True, "ok"
@@ -717,8 +926,11 @@ def validate_volume_create(body) -> tuple[bool, str]:
     name the tools may then mount read-write."""
     if not isinstance(body, dict):
         return False, "unparseable volume create body"
+    refused = _canonical_keys(body, "VolumeCreate")
+    if refused:
+        return False, refused
     name = body.get("Name")
-    if name not in ALLOWED_RW_VOLUMES:
+    if not isinstance(name, str) or name not in ALLOWED_RW_VOLUMES:
         return False, f"creating volume {name!r} denied"
     if str(body.get("Driver") or "local") != "local":
         return False, f"volume driver {body.get('Driver')!r} denied"
@@ -731,8 +943,11 @@ def validate_network_create(body) -> tuple[bool, str]:
     """POST /networks/create: only a tool network, as a plain local bridge."""
     if not isinstance(body, dict):
         return False, "unparseable network create body"
+    refused = _canonical_keys(body, "NetworkCreate")
+    if refused:
+        return False, refused
     name = body.get("Name")
-    if name not in ALLOWED_NETWORKS:
+    if not isinstance(name, str) or name not in ALLOWED_NETWORKS:
         return False, f"creating network {name!r} denied"
     if str(body.get("Driver") or "bridge") != "bridge":
         return False, f"network driver {body.get('Driver')!r} denied"
@@ -757,30 +972,193 @@ def _name_allowed(kind: str, m) -> tuple[bool, str]:
     return name in ALLOWED_NETWORKS, f"network {name!r} is not a tool network"
 
 
+def _checked(validate, body) -> tuple[bool, str]:
+    """A validator's verdict; a value of a shape it does not expect is a
+    refusal (the daemon would refuse it too), never a dropped connection."""
+    try:
+        return validate(body)
+    except Exception as e:  # noqa: BLE001 - refused, never forwarded
+        return False, f"unexpected value in the body ({type(e).__name__})"
+
+
 # --------------------------------------------------------------------------
-# HTTP plumbing
+# HTTP plumbing. The daemon's Go HTTP server ends a line at a bare LF, so a
+# head the broker splits on CRLF can hold more requests for the daemon than for
+# the broker (each one unchecked). A head is therefore refused unless every
+# line ends in CRLF and reads the same to both, and what reaches the daemon is
+# a head the broker writes itself: the request line it checked and the few
+# headers the Docker CLI needs (recorded from CLI 29.10 for every allowed call).
 # --------------------------------------------------------------------------
-async def _read_headers(reader: asyncio.StreamReader) -> tuple[bytes, str, dict]:
-    """Read request line + headers. Returns (raw_head_bytes, request_line, headers)."""
-    head = b""
-    while b"\r\n\r\n" not in head:
-        chunk = await reader.read(1)
-        if not chunk:
-            break
-        head += chunk
-        if len(head) > 1024 * 1024:
-            raise ValueError("header too large")
-    if not head:
-        return b"", "", {}
-    head_text = head.split(b"\r\n\r\n", 1)[0].decode("latin1")
-    lines = head_text.split("\r\n")
-    request_line = lines[0] if lines else ""
+# The Docker CLI's heads are under 1 KiB; a registry credential in
+# X-Registry-Auth the size of an ECR token makes one of 4 KiB, a deliberately
+# oversized one (8 KiB password + 8 KiB identity token) 22 KiB. 32 KiB keeps
+# MAX_PENDING_HEADS half-sent heads within 128 MiB of the broker's memory.
+HEAD_MAX = 32 * 1024
+# Generous: a recon container paused mid-request still finishes; floods are
+# stopped by the budgets below, not by these.
+HEAD_TIMEOUT = 60       # seconds for a whole request head
+BODY_TIMEOUT = 60       # seconds for a whole request body
+# The daemon answers an attach at once; a long bound only so that a daemon
+# that never does cannot hold the connection for good (logged when it trips).
+ATTACH_ANSWER_TIMEOUT = 600
+# Budgets, sized from the open-file limit at startup (raise_nofile_limit).
+# Connections still sending their head, or their body (up to JSON_BODY_MAX
+# buffered each): when full, the one waiting longest is closed, so a flood
+# cannot keep a real request out (a real one is never the oldest). Attach
+# streams and long calls (a wait, logs): one of each per container (the CLI
+# opens exactly one attach and one wait per `docker run`), and a global budget
+# beyond which they are refused.
+MAX_PENDING_HEADS = 4096
+MAX_PENDING_BODIES = 64
+MAX_ATTACH_STREAMS = 1024
+MAX_LONG_CALLS = 1024
+_PENDING_HEADS: "collections.OrderedDict[asyncio.StreamWriter, None]" = collections.OrderedDict()
+_PENDING_BODIES: "collections.OrderedDict[asyncio.StreamWriter, None]" = collections.OrderedDict()
+_ATTACH_STREAMS: set = set()
+_LONG_CALLS: set = set()
+_LIVE_CALLS: dict = {}  # (call, full container id) -> the handler task holding it
+_REQUEST_LINE = re.compile(rb"([!#$%&'*+.^_`|~0-9A-Za-z-]+) ([\x21-\x7e]+) HTTP/1\.[01]")
+_HEADER_NAME = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+_HEADER_VALUE = re.compile(rb"[\t\x20-\x7e\x80-\xff]*")
+_BARE_CR_OR_LF = re.compile(rb"\r(?!\n)|(?<!\r)\n")
+_FORWARDED_HEADERS = ("Host", "User-Agent", "Content-Type", "X-Registry-Auth")
+# The calls whose body the broker parses, checks and re-serializes; every other
+# call is forwarded without a body (the CLI sends none).
+_JSON_BODY_KINDS = ("create", "volume-create", "network-create")
+
+
+class BadHead(ValueError):
+    """A request head the daemon could read differently from the broker, or
+    one that does not arrive whole, small and in time."""
+
+
+async def _read_head(reader: asyncio.StreamReader):
+    """The request head up to its blank line (excluded), or None when the
+    client closed without sending anything. One readuntil (linear, bounded by
+    the server's `limit`), not a byte at a time."""
+    try:
+        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), HEAD_TIMEOUT)
+    except asyncio.LimitOverrunError:
+        raise BadHead(f"request head over {HEAD_MAX} bytes") from None
+    except asyncio.IncompleteReadError as e:
+        if not e.partial:
+            return None
+        raise BadHead("connection closed inside the request head") from None
+    except asyncio.TimeoutError:
+        raise BadHead(f"request head not complete within {HEAD_TIMEOUT} s") from None
+    if len(head) > HEAD_MAX:
+        raise BadHead(f"request head over {HEAD_MAX} bytes")
+    return head[:-4]
+
+
+def _admit(pending, limit: int, writer, what: str) -> None:
+    while len(pending) >= limit:
+        oldest, _ = pending.popitem(last=False)
+        oldest.transport.abort()
+        _log_limited(("evict", what), f"{limit} connections were sending their {what}: "
+                                      f"closed the one waiting longest")
+    pending[writer] = None
+
+
+def _clip(text: str, limit: int = 300) -> str:
+    """A refusal echoes client values (an image, a key path): never more than
+    `limit` characters of them."""
+    return text if len(text) <= limit else f"{text[:limit]}... ({len(text)} characters)"
+
+
+_LOG_INTERVAL = 10.0
+_log_marks: dict = {}
+
+
+def _log_limited(key, msg: str, burst: int = 1) -> None:
+    """At most `burst` lines per `key` every _LOG_INTERVAL seconds, the next
+    one naming how many were held back: a flood must not become a flood of log
+    lines (the broker's log has no rotation of its own)."""
+    now = time.monotonic()
+    start, shown, held = _log_marks.get(key, (None, 0, 0))
+    if start is None or now - start >= _LOG_INTERVAL:
+        _log(msg + (f" (and {held} more like it)" if held else ""))
+        _log_marks[key] = (now, 1, 0)
+    elif shown < burst:
+        _log(msg)
+        _log_marks[key] = (start, shown + 1, held)
+    else:
+        _log_marks[key] = (start, shown, held + 1)
+
+
+def _loop_exception(loop, context) -> None:
+    """The event loop's own errors (accept() out of file descriptors among
+    them) as one rate-limited line, not a traceback per occurrence."""
+    message = context.get("message", "event loop error")
+    exc = context.get("exception")
+    _log_limited(("loop", message), f"loop: {message}" + (f": {exc!r}" if exc else ""))
+
+
+def raise_nofile_limit() -> int:
+    """Raise the soft open-file limit to the hard one (the broker container
+    starts at 1024 of 524288, and at 1024 a flood of idle connections made
+    accept() fail) and size the connection budgets from it. Returns it."""
+    global MAX_PENDING_HEADS, MAX_ATTACH_STREAMS, MAX_LONG_CALLS
+    soft = 1024
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = hard if hard != resource.RLIM_INFINITY else max(soft, 1048576)
+        if target > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            soft = target
+    except (ImportError, ValueError, OSError):
+        pass
+    # An eighth each: attach streams and long calls hold two descriptors, and
+    # every other request needs some.
+    MAX_PENDING_HEADS = max(16, min(4096, soft // 8))
+    MAX_ATTACH_STREAMS = MAX_LONG_CALLS = max(16, min(1024, soft // 8))
+    return soft
+
+
+def parse_head(head: bytes) -> tuple[str, str, dict]:
+    """(method, target, headers by lower-case name) of a request head, or
+    BadHead: a bare CR or LF, a NUL or other control byte, a folded or
+    malformed header line, a header given twice, a Transfer-Encoding, or a
+    Content-Length that is not plain digits."""
+    if _BARE_CR_OR_LF.search(head):
+        raise BadHead("a bare CR or LF in the request head")
+    lines = head.split(b"\r\n")
+    m = _REQUEST_LINE.fullmatch(lines[0])
+    if not m:
+        raise BadHead(f"malformed request line ({len(lines[0])} bytes)")
     headers = {}
     for line in lines[1:]:
-        if ":" in line:
-            k, v = line.split(":", 1)
-            headers[k.strip().lower()] = v.strip()
-    return head, request_line, headers
+        if line[:1] in (b" ", b"\t"):
+            raise BadHead("a folded header line")
+        name, colon, value = line.partition(b":")
+        if not colon or not _HEADER_NAME.fullmatch(name):
+            raise BadHead(f"malformed header line ({len(line)} bytes)")
+        value = value.strip(b" \t")
+        if not _HEADER_VALUE.fullmatch(value):
+            raise BadHead(f"control character in header {name.decode()!r}")
+        key = name.decode("ascii").lower()
+        if key in headers:
+            raise BadHead(f"header {name.decode()!r} given twice")
+        headers[key] = value.decode("latin1")
+    if "transfer-encoding" in headers:
+        raise BadHead("Transfer-Encoding is not accepted; send a Content-Length")
+    if not re.fullmatch(r"[0-9]{1,18}", headers.get("content-length", "0")):
+        raise BadHead("Content-Length is not 1 to 18 digits")
+    return m.group(1).decode("ascii"), m.group(2).decode("ascii"), headers
+
+
+def _upstream_head(method: str, target: str, headers: dict, body_len: int, attach: bool = False) -> bytes:
+    """The head the daemon gets: the checked request line and the allowlisted
+    headers, never the client's bytes."""
+    lines = [f"{method} {target} HTTP/1.1"]
+    if "host" not in headers:
+        lines.append("Host: docker")
+    lines += [f"{name}: {headers[name.lower()]}" for name in _FORWARDED_HEADERS if name.lower() in headers]
+    lines += ["Connection: Upgrade", "Upgrade: tcp"] if attach else ["Connection: close"]
+    if body_len or method in ("POST", "PUT"):
+        lines.append(f"Content-Length: {body_len}")
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("latin1")
 
 
 def _deny(reason: str) -> bytes:
@@ -810,6 +1188,64 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
             pass
 
 
+async def _attach(client_reader, client_writer, up_reader, up_writer, label: str):
+    """Relay an attach. The client's bytes reach the daemon only once it has
+    answered 101 and taken the connection over: before that (an API version too
+    old, a bad query), the daemon would read them as the next request."""
+    try:
+        answer = await asyncio.wait_for(up_reader.readuntil(b"\r\n\r\n"), ATTACH_ANSWER_TIMEOUT)
+    except asyncio.TimeoutError:
+        _log(_clip(f"DROP {label}: the daemon did not answer the attach within {ATTACH_ANSWER_TIMEOUT} s"))
+        return
+    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError) as e:
+        _log(_clip(f"DROP {label}: the daemon closed or garbled its answer to the attach ({type(e).__name__})"))
+        return
+    client_writer.write(answer)
+    await client_writer.drain()
+    status = answer.split(b" ", 2)[1:2]
+    if status == [b"101"]:
+        await asyncio.gather(_pipe(client_reader, up_writer), _pipe(up_reader, client_writer))
+        return
+    length = re.search(rb"(?im)^content-length:[ \t]*([0-9]+)[ \t]*\r$", answer)
+    try:
+        if length:
+            client_writer.write(await asyncio.wait_for(up_reader.readexactly(int(length.group(1))), 30))
+        else:
+            up_writer.write_eof()   # the daemon closes once its answer is out
+            await asyncio.wait_for(_pipe(up_reader, client_writer), 30)
+        await client_writer.drain()
+    except (asyncio.IncompleteReadError, asyncio.TimeoutError):
+        pass
+
+
+async def _until_client_leaves(reader) -> None:
+    try:
+        while await reader.read(65536):
+            pass
+    except (ConnectionError, OSError):
+        pass
+
+
+async def _relay(up_reader, client_reader, client_writer) -> None:
+    """Relay the daemon's answer until it ends or the client hangs up. A wait
+    for a container that never exits gets no byte from the daemon, so a caller
+    that left would otherwise hold both connections for good."""
+    relay = asyncio.ensure_future(_pipe(up_reader, client_writer))
+    gone = asyncio.ensure_future(_until_client_leaves(client_reader))
+    try:
+        await asyncio.wait({relay, gone}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (relay, gone):
+            task.cancel()
+        await asyncio.gather(relay, gone, return_exceptions=True)
+
+
+# Refusals logged per kind of call in each _LOG_INTERVAL before the rest are
+# only counted: enough for an operator to see every refused tool call, not
+# enough for a flood to fill the disk.
+DENY_BURST = 20
+
+
 # Strong references to every running handler. The event loop holds tasks only
 # weakly and a StreamReaderProtocol holds its reader only by weakref, so once a
 # client half-closes an attach stream (`docker run` does it right after the 101,
@@ -828,21 +1264,34 @@ async def handle_client(client_reader, client_writer):
     up_writer = None
     me = asyncio.current_task()
     _IN_FLIGHT.add(me)
-    try:
-        head, request_line, headers = await _read_headers(client_reader)
-        if not request_line:
-            return
-        parts = request_line.split(" ")
-        method = parts[0] if parts else ""
-        path = parts[1] if len(parts) > 1 else ""
-        path_only = _normalize_path(path)  # canonical form for route matching
+    method = path_only = "-"
+    kind = live_key = None
 
-        async def _refuse(reason: str, log_extra: str = ""):
-            # One log line per refusal, naming the call: what a refused tool
-            # (or an attacker) asked for is what the operator needs to see.
-            _log(f"DENY {method} {path_only}: {reason}{log_extra}")
+    async def _refuse(reason: str, log_extra: str = "", limited=None):
+        # One log line per refusal, naming the call: what a refused tool
+        # (or an attacker) asked for is what the operator needs to see. Echoed
+        # values are clipped; heads no tool sends get one line per interval,
+        # other refusals DENY_BURST per kind of call.
+        reason = _clip(reason)
+        line = f"DENY {_clip(method, 20)} {_clip(path_only, 200)}: {reason}{_clip(log_extra, 200)}"
+        _log_limited(limited or ("deny", kind), line, burst=1 if limited else DENY_BURST)
+        if not client_writer.is_closing():
             client_writer.write(_deny(reason))
             await client_writer.drain()
+
+    try:
+        _admit(_PENDING_HEADS, MAX_PENDING_HEADS, client_writer, "request head")
+        try:
+            head = await _read_head(client_reader)
+            if head is None:
+                return
+            method, target, headers = parse_head(head)
+        except BadHead as e:
+            await _refuse(f"malformed request head: {e}", limited="head")
+            return
+        finally:
+            _PENDING_HEADS.pop(client_writer, None)
+        path_only = _normalize_path(target)  # canonical form for route matching
 
         kind, route = match_route(method, path_only)
         if kind is None:
@@ -855,115 +1304,150 @@ async def handle_client(client_reader, client_writer):
         # holds the master keys; the broker's own Docker socket is host root).
         if kind in ("owned", "attach"):
             cid = route.group(1)
-            if not await _is_broker_owned(cid):
+            info = await _owned_container(cid)
+            if info is None:
                 await _refuse(f"container {cid!r} was not created by the broker")
                 return
+            container_id = info.get("Id") or cid
+            # attach, or the verb after the name (start, wait, logs...); a DELETE
+            # path ends with the name itself.
+            call = "attach" if kind == "attach" else "remove" if method == "DELETE" \
+                else path_only.rsplit("/", 1)[-1]
+            # A start of an exited container raises the live count the create
+            # cap reads, so it is capped too (a created one is already counted).
+            if call == "start" and BROKER_MAX_CONTAINERS > 0 \
+                    and (info.get("State") or {}).get("Status") in ("exited", "dead"):
+                live = await _count_broker_owned_live()
+                if live >= BROKER_MAX_CONTAINERS:
+                    await _refuse(f"broker container count cap reached ({live}/{BROKER_MAX_CONTAINERS})")
+                    return
+            if call in ("attach", "wait", "logs"):
+                if (call, container_id) in _LIVE_CALLS:
+                    await _refuse(f"container {cid!r} already has an open {call}")
+                    return
+                if call != "attach":
+                    if len(_LONG_CALLS) >= MAX_LONG_CALLS:
+                        await _refuse(f"{MAX_LONG_CALLS} long calls (wait, logs) are already open")
+                        return
+                    _LONG_CALLS.add(me)
+                live_key = (call, container_id)
+                _LIVE_CALLS[live_key] = me
         elif kind in ("image", "volume", "network"):
             ok, reason = _name_allowed(kind, route)
             if not ok:
                 await _refuse(reason)
                 return
 
-        # ---- attach: forward headers, then raw bidirectional pipe ----
+        clen = int(headers.get("content-length", "0"))
+        if clen and kind not in _JSON_BODY_KINDS:
+            await _refuse("this call carries no request body")
+            return
+        if clen > JSON_BODY_MAX:
+            await _refuse(f"request body over {JSON_BODY_MAX} bytes")
+            return
+
+        # ---- attach: upgrade, then raw bidirectional pipe ----
         if kind == "attach":
-            up_reader, up_writer = await asyncio.open_unix_connection(UPSTREAM_SOCK)
-            up_writer.write(head)
-            await up_writer.drain()
-            await asyncio.gather(_pipe(client_reader, up_writer), _pipe(up_reader, client_writer))
+            if headers.get("upgrade", "").lower() != "tcp":
+                await _refuse("an attach must ask for Upgrade: tcp")
+                return
+            if len(_ATTACH_STREAMS) >= MAX_ATTACH_STREAMS:
+                await _refuse(f"{MAX_ATTACH_STREAMS} attach streams are already open")
+                return
+            _ATTACH_STREAMS.add(me)
+            try:
+                up_reader, up_writer = await asyncio.open_unix_connection(UPSTREAM_SOCK)
+                up_writer.write(_upstream_head(method, target, headers, 0, attach=True))
+                await up_writer.drain()
+                await _attach(client_reader, client_writer, up_reader, up_writer, f"{method} {path_only}")
+            finally:
+                _ATTACH_STREAMS.discard(me)
             return
 
         # ---- E1: scope container listing to broker-owned so the pivot cannot
         # even enumerate infra containers. Force a label filter onto the query. ----
         if kind == "list":
-            head = _rewrite_list_filters(head, path)
+            target = _owned_list_target(target)
 
-        # ---- read body (Content-Length) for validation/forwarding ----
         body = b""
-        body_modified = False   # set when we rewrite the create body (Part 4d)
-        clen = int(headers.get("content-length", "0") or "0")
-        if clen > 8 * 1024 * 1024:  # create configs are tiny; cap to avoid a memory DoS
-            await _refuse("request body too large")
-            return
-        while len(body) < clen:
-            chunk = await client_reader.read(clen - len(body))
-            if not chunk:
-                break
-            body += chunk
+        if clen:
+            _admit(_PENDING_BODIES, MAX_PENDING_BODIES, client_writer, "request body")
+            try:
+                body = await asyncio.wait_for(client_reader.readexactly(clen), BODY_TIMEOUT)
+            except asyncio.IncompleteReadError:
+                return  # the client went away (or was closed) before its body was whole
+            except asyncio.TimeoutError:
+                await _refuse(f"request body not complete within {BODY_TIMEOUT} s", limited="body")
+                return
+            finally:
+                _PENDING_BODIES.pop(client_writer, None)
 
         # ---- validate POST /containers/create (deny = no upstream contact) ----
         if kind == "create":
             try:
-                cfg = json.loads(body or b"{}")
-            except Exception as e:
-                await _refuse(f"unparseable create body: {e}")
+                cfg = parse_body(body or b"{}")
+            except Exception as e:  # noqa: BLE001 - refused, never forwarded
+                await _refuse(f"create body refused: {e}")
                 return
-            ok, reason = validate_create(cfg)
+            ok, reason = _checked(validate_create, cfg)
             if not ok:
-                await _refuse(reason, f" (image={cfg.get('Image')!r})")
+                await _refuse(reason, f" (image={cfg.get('Image')!r})" if isinstance(cfg, dict) else "")
                 return
             # Phase 7: sibling-container count cap. Fail OPEN on an unknown count so
             # a transient upstream hiccup never blocks a legitimate spawn.
             if BROKER_MAX_CONTAINERS > 0:
-                running = await _count_broker_owned_running()
-                if running >= BROKER_MAX_CONTAINERS:
-                    await _refuse(f"broker container count cap reached ({running}/{BROKER_MAX_CONTAINERS})")
+                live = await _count_broker_owned_live()
+                if live >= BROKER_MAX_CONTAINERS:
+                    await _refuse(f"broker container count cap reached ({live}/{BROKER_MAX_CONTAINERS})")
                     return
             # Memory governor (Part 4d): inject the hard mem cap; E1: stamp the
-            # broker-owned marker label; then re-serialize the body (Content-Length
-            # is corrected in the head rebuild below).
+            # broker-owned marker label; then re-serialize the body.
             inject_limits(cfg)
             mark_owned(cfg)
             stamp_run_labels(cfg, headers.get(RUN_HEADER))
             body = json.dumps(cfg).encode("utf-8")
-            body_modified = True
             _log(f"ALLOW create image={cfg.get('Image')!r} mem={cfg.get('HostConfig', {}).get('Memory')} "
                  f"run={cfg['Labels'].get('redamon.run_id', '-')}")
 
         # ---- validate docker pull (deny = no upstream contact) ----
         if kind == "pull":
-            ok, reason = validate_pull(path)
+            ok, reason = validate_pull(target)
             if not ok:
                 await _refuse(reason)
                 return
 
         if kind in ("volume-create", "network-create"):
             try:
-                spec = json.loads(body or b"null")
-            except Exception:
-                spec = None
+                spec = parse_body(body or b"null")
+            except Exception as e:  # noqa: BLE001 - refused, never forwarded
+                await _refuse(f"{kind} body refused: {e}")
+                return
             validate = validate_volume_create if kind == "volume-create" else validate_network_create
-            ok, reason = validate(spec)
+            ok, reason = _checked(validate, spec)
             if not ok:
                 await _refuse(reason)
                 return
+            # Forward what was checked, not the client's bytes.
+            body = json.dumps(spec).encode("utf-8")
 
-        # ---- allowed: NOW connect upstream and forward ----
-        # rebuild head with Connection: close to avoid keep-alive request smuggling.
-        # If we rewrote the body (Part 4d), also drop the stale Content-Length and
-        # set the correct one — a mismatch would hang or corrupt the upstream call.
-        head_text = head.split(b"\r\n\r\n", 1)[0].decode("latin1")
-        head_lines = [ln for ln in head_text.split("\r\n")
-                      if not ln.lower().startswith("connection:")
-                      and not (body_modified and (ln.lower().startswith("content-length:")
-                                                  or ln.lower().startswith("transfer-encoding:")))]
-        head_lines.append("Connection: close")
-        if body_modified:
-            # We send a concrete Content-Length, so any prior Transfer-Encoding
-            # (dropped above) must not coexist with it.
-            head_lines.append(f"Content-Length: {len(body)}")
-        new_head = ("\r\n".join(head_lines) + "\r\n\r\n").encode("latin1")
+        # ---- allowed: NOW connect upstream and forward; Connection: close
+        # makes the daemon answer this one request only. ----
         up_reader, up_writer = await asyncio.open_unix_connection(UPSTREAM_SOCK)
-        up_writer.write(new_head + body)
+        up_writer.write(_upstream_head(method, target, headers, len(body)) + body)
         await up_writer.drain()
 
-        # relay response (possibly chunked/streamed) until upstream closes
-        await _pipe(up_reader, client_writer)
+        # relay response (possibly chunked/streamed) until upstream closes or
+        # the client hangs up
+        await _relay(up_reader, client_reader, client_writer)
     except (ConnectionResetError, BrokenPipeError):
         pass
     except Exception as e:
-        _log(f"error: {e}")
+        _log_limited(("error", type(e).__name__), _clip(f"error: {e!r}"))
     finally:
         _IN_FLIGHT.discard(me)
+        _LONG_CALLS.discard(me)
+        if live_key is not None and _LIVE_CALLS.get(live_key) is me:
+            del _LIVE_CALLS[live_key]
         for w in (client_writer, up_writer):
             if w is not None:
                 try:
@@ -981,12 +1465,20 @@ async def main():
     if os.path.exists(LISTEN_SOCK):
         os.unlink(LISTEN_SOCK)
 
-    server = await asyncio.start_unix_server(handle_client, path=LISTEN_SOCK)
+    nofile = raise_nofile_limit()
+    asyncio.get_running_loop().set_exception_handler(_loop_exception)
+    # `limit` bounds the request head readuntil buffers (_read_head).
+    # backlog: a burst of connections must not make a tool's connect() fail
+    # with EAGAIN before the loop accepts it (the kernel caps it at somaxconn).
+    server = await asyncio.start_unix_server(handle_client, path=LISTEN_SOCK, limit=HEAD_MAX, backlog=1024)
     try:
         os.chmod(LISTEN_SOCK, 0o660)
     except Exception:
         pass
     _log(f"listening on {LISTEN_SOCK} -> upstream {UPSTREAM_SOCK}")
+    _log(f"open files {nofile}; at most {MAX_PENDING_HEADS} connections sending a head ({HEAD_TIMEOUT} s), "
+         f"{MAX_PENDING_BODIES} sending a body ({BODY_TIMEOUT} s), {MAX_ATTACH_STREAMS} attach streams, "
+         f"{MAX_LONG_CALLS} long calls")
     _log(f"allowed images: {sorted(ALLOWED_IMAGES)}")
     _log(f"allowed bind prefixes: {ALLOWED_BIND_PREFIXES}; volumes: {sorted(ALLOWED_VOLUMES)} "
          f"(writable: {sorted(ALLOWED_RW_VOLUMES)}); networks: {sorted(ALLOWED_NETWORKS)}")

@@ -248,8 +248,12 @@ def _qualified(image: str) -> tuple:
     return name, tag
 
 
-def _req(method, target, body=None):
-    return request_bytes(method, target, body, headers=(RUN_HEADER,))
+def _req(method, target, body=None, headers=()):
+    return request_bytes(method, target, body, headers=(RUN_HEADER, *headers))
+
+
+# What Docker CLI 29.10 adds to an attach (recorded); the broker requires the upgrade.
+ATTACH_HEADERS = ("Connection: Upgrade", "Upgrade: tcp")
 
 
 def cli_requests(argv: list) -> list:
@@ -263,10 +267,11 @@ def cli_requests(argv: list) -> list:
         target = f"{API}/containers/create" + ("?" + urllib.parse.urlencode(query) if query else "")
         attach = "stderr=1&stdin=1&stdout=1&stream=1" if o["stdin"] else "stderr=1&stdout=1&stream=1"
         cond = "removed" if o["rm"] else "next-exit"
-        def then(suffix):
-            return lambda r: created_id(r[2]) and _req("POST", f"{API}/containers/{created_id(r[2])}/{suffix}")
+        def then(suffix, headers=()):
+            return lambda r: created_id(r[2]) and _req("POST", f"{API}/containers/{created_id(r[2])}/{suffix}",
+                                                       headers=headers)
         return [ping, ping, _req("POST", target, create_body(o)),
-                then(f"attach?{attach}"), then(f"wait?condition={cond}"), then("start")]
+                then(f"attach?{attach}", ATTACH_HEADERS), then(f"wait?condition={cond}"), then("start")]
     if sub == "kill":
         # The container exists because the same run created it through the broker.
         name = args[-1]
