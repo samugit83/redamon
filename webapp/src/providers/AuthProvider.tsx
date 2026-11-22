@@ -2,6 +2,7 @@
 
 import { useContext, useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
+import { readRetryingNoAnswer } from '@/lib/noAnswerRetry'
 import type { PermissionId } from '@/lib/authz/permissions'
 import type { RbacFlags } from '@/lib/authz/flags'
 import type { SharingInForce } from '@/lib/authz/sharingPolicy'
@@ -82,7 +83,8 @@ export interface AuthContextValue {
   flags: Readonly<RbacFlags> | null
   /**
    * Why the session could not be read when the cause was not "signed out": a
-   * 5xx (database down) or no answer. Null for a 401, which is a plain sign-out.
+   * 5xx (database down) or no answer after the retries (lib/noAnswerRetry). Null
+   * for a 401, which is a plain sign-out.
    */
   sessionError: ApiError | null
   login: (email: string, password: string) => Promise<{ error?: string }>
@@ -106,15 +108,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const [sessionError, setSessionError] = useState<ApiError | null>(null)
   const hydrated = useRef(false)
+  const mounted = useRef(false)
 
-  // Hydrate session once on mount
+  // Hydrate session once on mount. A read that gets no answer is tried again (bounded) while the
+  // page keeps loading; only then does it become the session error. An unmount stops the tries;
+  // StrictMode's remount finds the read already started and lets it go on.
   useEffect(() => {
-    if (hydrated.current) return
+    mounted.current = true
+    const unmount = () => { mounted.current = false }
+    if (hydrated.current) return unmount
     hydrated.current = true
 
-    fetch('/api/auth/me')
-      .then(async res => {
-        if (res.ok) return res.json()
+    readRetryingNoAnswer<AuthUser>('/api/auth/me', undefined, { keepTrying: () => mounted.current })
+      .then(async ({ res, body }) => {
+        if (res.ok) return body
         if (res.status >= 500) setSessionError(await readApiError(res, 'Could not read your session'))
         // The middleware checks only the cookie's signature, so a revoked, disabled or
         // deleted account still loads pages while every API answers 401: go to sign-in
@@ -135,6 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .catch(err => setSessionError(toApiError(err, 'Could not read your session')))
       .finally(() => setIsLoading(false))
+    return unmount
   }, [])
 
   const refresh = useCallback(async () => {
