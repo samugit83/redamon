@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, type APIRequestContext, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
-import { newSession, sessionIds } from './aitlDriver'
+import { sessionIds } from './aitlDriver'
 import { envValue } from './uiLogin'
 
 /**
@@ -53,6 +53,20 @@ export interface SeedState {
 export const ACCEPT_OVERLAYS = () => {
   localStorage.setItem('redamon-v2-onboarding', JSON.stringify({ version: '2026-03-28-v2', acceptedAt: new Date().toISOString() }))
   localStorage.setItem('redamon-github-star-dismissed', '1')
+}
+
+/**
+ * Every page starts with no conversation remembered for any project. The drawer reopens a project's
+ * last conversation when the project loads (sessionMemory.ts, restoreForProject in
+ * useConversationRestoration.ts) after a conversation list read; landing after openChat's "Start new
+ * session", it moved the drawer to the old conversation, once before the send and once between the
+ * send and Allow (M-b, test 8).
+ */
+export const FORGET_OPEN_CONVERSATIONS = () => {
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const key = localStorage.key(i)
+    if (key?.startsWith('redamon-current-session-')) localStorage.removeItem(key)
+  }
 }
 
 export function nonce(): string {
@@ -214,6 +228,36 @@ export function removeMarkers(prefix: string): void {
   }
 }
 
+// Run inside a Kali container with its own session-manager bearer (read from PID 1, never leaving
+// the container): deletes the non-Metasploit sessions whose command holds argv[1].
+const PURGE_LISTENERS = `
+import json, sys, urllib.request
+env = dict(kv.split(b'=', 1) for kv in open('/proc/1/environ', 'rb').read().split(b'\\0') if b'=' in kv)
+token = env.get(b'MCP_AUTH_TOKEN', b'').decode()
+def call(method, path):
+    req = urllib.request.Request('http://127.0.0.1:8013' + path, method=method, headers={'Authorization': 'Bearer ' + token})
+    return json.loads(urllib.request.urlopen(req, timeout=30).read() or b'null')
+for row in call('GET', '/sessions').get('non_msf_sessions') or []:
+    sid = str(row.get('id', ''))
+    if sys.argv[1] in str(row.get('command', '')) and sid.startswith('raw-') and sid[4:].isdigit():
+        call('DELETE', '/non-msf-sessions/' + sid[4:])
+`
+
+/**
+ * Removes the listeners a run registered (the agent records a kali_shell `nc -l` or socat command as a
+ * non-Metasploit session, execute_tool_node.py) from every Kali container, matched by `marker` in
+ * their command: a registered listener holds its sandbox for hours. Answers where it failed.
+ */
+export function removeListeners(marker: string): string[] {
+  if (!/^g1e2e-[a-z0-9-]+$/.test(marker)) throw new Error(`not a marker: ${marker}`)
+  const failed: string[] = []
+  for (const name of kaliCandidates()) {
+    const r = spawnSync('docker', ['exec', '-i', name, 'python3', '-', marker], { input: PURGE_LISTENERS, encoding: 'utf8', timeout: 60_000 })
+    if (r.status !== 0) failed.push(`${name}: ${(r.stderr || String(r.error ?? r.status)).trim().split('\n').pop()?.slice(0, 200)}`)
+  }
+  return failed
+}
+
 /** The project ids a container mounts under /workspace. */
 export function mountedProjects(container: string): string[] {
   const mounts = JSON.parse(docker(['inspect', '-f', '{{json .Mounts}}', container]) || '[]') as { Destination: string }[]
@@ -234,6 +278,9 @@ function pentestNetwork(): string {
   return nets.find(n => n.endsWith('pentest-net')) ?? 'redamon_pentest-net'
 }
 
+/** The lab's bind shell (`nc -lk -e /bin/sh`): what a Metasploit bind handler connects to. */
+export const LAB_SHELL_PORT = 5555
+
 export interface Lab {
   name: string
   /** Its address on the compose pentest network: what capture-routed tools aim at (the proxy refuses 10.214.0.0/16). */
@@ -253,7 +300,7 @@ export function startLab(n: string): Lab {
     'echo "g1e2e-page-$G1_NONCE" > "/www/g1e2e-$G1_NONCE.html"',
     'echo "g1e2e-member-$G1_NONCE" > "/www/member-$G1_NONCE.html"',
     'httpd -p 8080 -h /www',
-    'exec nc -lk -p 5555 -e /bin/sh',
+    `exec nc -lk -p ${LAB_SHELL_PORT} -e /bin/sh`,
   ].join(' && ')
   docker(['run', '-d', '--rm', '--name', name, '--label', 'g1e2e=1', '--network', pentestNetwork(),
     '-e', `G1_NONCE=${n}`, LAB_IMAGE, 'sh', '-c', script])
@@ -336,6 +383,7 @@ export function seedAndRead(): SeedState {
 export async function signIn(browser: Browser, baseURL: string, email: string, password: string): Promise<BrowserContext> {
   const context = await browser.newContext({ baseURL })
   await context.addInitScript(ACCEPT_OVERLAYS)
+  await context.addInitScript(FORGET_OPEN_CONVERSATIONS)
   const res = await context.request.post('/api/auth/login', {
     data: { email, password },
     headers: { Origin: new URL(baseURL).origin },
@@ -562,8 +610,20 @@ export async function wasSeen(page: Page, text: string): Promise<boolean> {
   return page.evaluate((t) => Boolean((window as unknown as { __g1Seen?: Set<string> }).__g1Seen?.has(t)), text)
 }
 
-/** /graph on the project with a fresh chat open (the pattern of agentInTheLoop.spec.ts). */
-export async function openChat(page: Page, projectId: string): Promise<void> {
+/** Where the page keeps the chat session id the drawer works in (hooks/useSession.ts). */
+const SESSION_KEY = 'redamon-session-id'
+
+/** The chat session the drawer is on now ('' before the page has one). */
+export async function drawerSession(page: Page): Promise<string> {
+  return page.evaluate((key) => sessionStorage.getItem(key) ?? '', SESSION_KEY)
+}
+
+/**
+ * /graph on the project with a new chat session started explicitly ("Start new session", the pattern
+ * of agentInTheLoop.spec.ts), once the drawer has settled on it: connected, and on the same session
+ * for two seconds (the project's load can start one more). Answers the session id.
+ */
+export async function openChat(page: Page, projectId: string): Promise<string> {
   await page.goto(`/graph?project=${projectId}`)
   await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--drawer-bottom') !== '')
   const fresh = page.getByRole('button', { name: 'Start new session' })
@@ -573,28 +633,61 @@ export async function openChat(page: Page, projectId: string): Promise<void> {
     await page.waitForTimeout(500)
     await expect(fresh).toBeVisible()
   }).toPass({ timeout: 60_000 })
+  const previous = await drawerSession(page)
   await fresh.click()
-  await expect(page.getByPlaceholder(PROMPT)).toBeEnabled({ timeout: 30_000 })
+  const prompt = page.getByPlaceholder(PROMPT)
+  let session = ''
+  await expect(async () => {
+    session = await drawerSession(page)
+    expect(session, 'the drawer started a new session').not.toBe('')
+    expect(session, 'the drawer started a new session').not.toBe(previous)
+    await expect(prompt).toBeEnabled({ timeout: 1_000 })
+    await page.waitForTimeout(2_000)
+    expect(await drawerSession(page), 'the drawer stayed on its new session').toBe(session)
+    await expect(prompt).toBeEnabled({ timeout: 1_000 })
+  }, 'the drawer settled on a new, connected chat session').toPass({ timeout: 60_000 })
+  return session
 }
 
-/** Sends `text` and answers the chat session it starts (its id). */
+/**
+ * Sends `text` in the drawer's own session, which must be new to the project, and answers that
+ * session id once the conversation the drawer writes under it exists and the drawer is still on it.
+ */
 export async function send(page: Page, api: APIRequestContext, projectId: string, text: string): Promise<string> {
-  const before = await sessionIds(api, projectId)
+  const session = await drawerSession(page)
+  if (!session) throw new Error('the drawer has no chat session: open it with openChat() first')
+  expect(await sessionIds(api, projectId), 'the drawer is on a session of its own, not a conversation the project already has')
+    .not.toContain(session)
   await page.getByPlaceholder(PROMPT).fill(text)
   await page.getByRole('button', { name: 'Send message' }).click()
-  return newSession(api, projectId, before)
+  await expect.poll(async () => (await sessionIds(api, projectId)).includes(session),
+    { message: `the message started the conversation of the drawer's session ${session}`, timeout: 30_000 }).toBe(true)
+  expect(await drawerSession(page), 'the drawer stayed on the conversation it sent to').toBe(session)
+  return session
 }
+
+// A Fireteam member's confirmation (its Allow) renders only inside the member's card, which starts
+// collapsed (FireteamMemberCard.tsx): the header button of a member waiting for one, with no body.
+const COLLAPSED_WAITING_MEMBER = 'xpath=//div[contains(@class, "FireteamMemberCard-module__")]'
+  + '/button[.//span[normalize-space()="needs_confirmation"] and not(following-sibling::div)]'
 
 /**
  * Approves every tool confirmation ("Allow") and phase change ("Approve") the run raises, until it has
  * ended: no spinner (the drawer's Stop button), no approval waiting, and the conversation not running,
- * for three seconds in a row. Returns how many of each it pressed.
+ * for three seconds in a row. A Fireteam member waiting for a confirmation has its card opened first.
+ * Every press happens in the run's own session: a drawer that moved to another one fails the run.
+ * Returns how many of each it pressed.
  */
 export async function driveRun(page: Page, api: APIRequestContext, projectId: string, sessionId: string,
                                timeoutMs = 300_000): Promise<{ allowed: number; approved: number }> {
   const allow = page.getByRole('button', { name: 'Allow', exact: true })
   const approve = page.getByRole('button', { name: 'Approve', exact: true })
   const stop = page.getByRole('button', { name: 'Stop agent' })
+  const waitingMember = page.locator(COLLAPSED_WAITING_MEMBER)
+  const onRunSession = async () => {
+    const now = await drawerSession(page)
+    if (now !== sessionId) throw new Error(`the drawer moved from the run's session ${sessionId} to ${now || 'none'}`)
+  }
   let allowed = 0
   let approved = 0
   let quietSince = 0
@@ -603,12 +696,19 @@ export async function driveRun(page: Page, api: APIRequestContext, projectId: st
   const startBy = Date.now() + 60_000
   const until = Date.now() + timeoutMs
   while (Date.now() < until) {
-    if (await allow.first().isVisible()) {
+    if (await waitingMember.count()) {
+      await onRunSession()
+      await waitingMember.first().click({ timeout: 10_000 })
+      started = true
+      quietSince = 0
+    } else if (await allow.first().isVisible()) {
+      await onRunSession()
       await allow.first().click()
       allowed += 1
       started = true
       quietSince = 0
     } else if (await approve.first().isVisible()) {
+      await onRunSession()
       await approve.first().click()
       approved += 1
       started = true
@@ -663,12 +763,97 @@ export async function deleteConversation(api: APIRequestContext, baseURL: string
   }
 }
 
+// --- Shell sessions ------------------------------------------------------------------
+
+export interface SessionRow { id: number; sandbox?: string; chat_session_id?: string }
+export interface ListenerRow { id: string; sandbox?: string; chat_session_id?: string; command?: string }
+export interface SessionList {
+  sessions: SessionRow[]
+  jobs: SessionRow[]
+  non_msf_sessions: ListenerRow[]
+  /** Sandboxes the agent could not ask: their rows are missing from this answer. */
+  unavailable_count?: number
+}
+
+/** The person's shell sessions, jobs and listeners as the Reverse Shell tab reads them (-1 sandboxes left out on a failure). */
+export async function sessionsOf(api: APIRequestContext): Promise<SessionList> {
+  const res = await api.get('/api/agent/sessions')
+  if (!res.ok()) return { sessions: [], jobs: [], non_msf_sessions: [], unavailable_count: -1 }
+  const body = await res.json() as Partial<SessionList>
+  return { sessions: body.sessions ?? [], jobs: body.jobs ?? [], non_msf_sessions: body.non_msf_sessions ?? [], unavailable_count: body.unavailable_count }
+}
+
+/** The first answer that left no sandbox out and `holds`: a missing sandbox hides every row of it. */
+export async function completeSessionsOf(api: APIRequestContext, holds: (list: SessionList) => boolean,
+                                         what: string): Promise<SessionList> {
+  let list: SessionList = { sessions: [], jobs: [], non_msf_sessions: [] }
+  await expect.poll(async () => {
+    list = await sessionsOf(api)
+    return (list.unavailable_count ?? 0) === 0 && holds(list)
+  }, { message: `the session list is complete and ${what}`, timeout: 60_000 }).toBe(true)
+  return list
+}
+
+/** A session's card in the Reverse Shell tab (SessionCard.tsx keys it by instance and number). */
+export function sessionCard(page: Page, row: { id: number; sandbox?: string }): Locator {
+  return page.locator(`[data-session-key="${row.sandbox ?? ''}:${row.id}"]`)
+}
+
+/**
+ * E3 for Metasploit sessions, as the viewer of `page` and `api`: the viewer's Reverse Shell tab
+ * (open on `page`) lists their own session `own` and not `hidden`, a session someone else opened on a
+ * private project; the viewer's complete session list holds no row of `hidden`'s chat; and no drive
+ * of `hidden`'s number reaches it, through its instance (404), no instance, or the viewer's own
+ * instance. `hidden.shellPid` is what `$$` prints in `hidden`'s shell, so an answer from it is told
+ * from one of the viewer's own session with the same number.
+ */
+export async function expectSessionOutOfReach(page: Page, api: APIRequestContext, baseURL: string,
+                                              hidden: SessionRow & { chat: string; shellPid: string },
+                                              own: SessionRow, n: string): Promise<void> {
+  await expect(sessionCard(page, own), 'the viewer\'s Sessions panel lists their own session').toBeVisible({ timeout: 60_000 })
+  await expect(sessionCard(page, hidden), 'ISOLATION (E3): another person\'s session on their private project is not listed').toHaveCount(0)
+  const list = await completeSessionsOf(api, l => l.sessions.some(s => s.id === own.id && s.sandbox === own.sandbox),
+    'holds the viewer\'s own session')
+  expect.soft([...list.sessions, ...list.jobs, ...list.non_msf_sessions].filter(r => r.chat_session_id === hidden.chat),
+    'ISOLATION (E3): no row of the other person\'s private chat in the viewer\'s session list').toEqual([])
+  const reached = `G1B-${hidden.shellPid}-${n}`
+  const drive = (query: string) => api.post(`/api/agent/sessions/${hidden.id}/interact${query}`,
+    json(baseURL, { command: `echo G1B-$$-${n}` }))
+  const viaItsInstance = await drive(`?sandbox=${encodeURIComponent(hidden.sandbox ?? '')}`)
+  const viaNone = await drive('')
+  const viaOwn = await drive(`?sandbox=${encodeURIComponent(own.sandbox ?? '')}`)
+  expect(viaItsInstance.status(), 'ISOLATION (E3): driving the other person\'s session through its instance answers 404').toBe(404)
+  for (const [how, res] of [['its instance', viaItsInstance], ['no instance', viaNone], ['the viewer\'s own instance', viaOwn]] as const) {
+    expect(await res.text(), `ISOLATION (E3): a drive through ${how} never reaches the other person's session`).not.toContain(reached)
+  }
+}
+
 // --- Admin helpers ---------------------------------------------------------------------
 
 /** Operations' per-person stop (S16): forces the next use to be a cold start. Per-user mode only. */
 export async function stopPersonSandbox(admin: APIRequestContext, baseURL: string, userId: string): Promise<void> {
   const res = await admin.post('/api/admin/operations/sandboxes/stop', json(baseURL, { userId }))
   expect(res.status(), 'the Operations stop of a person\'s Kali sandbox').toBe(200)
+}
+
+/**
+ * Opens the chat on `projectId` until the drawer's warm-up has started the person's own sandbox, and
+ * answers it once healthy (null when none came within `timeoutMs`, or in shared mode). A warm-up within
+ * 30 s of the person's last one is coalesced away (WARM_UP_COOLDOWN_MS, webapp/src/lib/sandbox/
+ * lifecycle.ts) and the open socket mints no new ticket, so right after a stop one opening may start
+ * nothing: each opening mints a ticket again, the first one past the cool-down starts the sandbox.
+ */
+export async function openChatUntilSandbox(page: Page, userId: string, projectId: string,
+                                           timeoutMs = 180_000): Promise<SandboxContainer | null> {
+  const until = Date.now() + timeoutMs
+  for (;;) {
+    await openChat(page, projectId)
+    if (MODE === 'shared') return null
+    const looked = Date.now() + 10_000
+    while (!sandboxContainers({ user: userId, view: 'own' }).length && Date.now() < looked) await sleep(1_000)
+    if (sandboxContainers({ user: userId, view: 'own' }).length) return sandboxOf(userId, 'own', Math.max(until - Date.now(), 120_000))
+    if (Date.now() > until) return null
+  }
 }
 
 export function sleep(ms: number): Promise<void> {

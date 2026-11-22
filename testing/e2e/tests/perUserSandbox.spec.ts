@@ -3,13 +3,15 @@ import {
   MODAL_RAM_TITLE, MODAL_RETRY_LABEL, SHARE_KEYS_LENT_TEXT,
 } from '../../../webapp/src/lib/sandbox/contract'
 import {
-  MODE, adminCredentials, connectLab, containersHolding, chiselEdgeLog, deleteConversation,
-  deleteStubProvider, driveRun, ensureStubProvider, goneWithin, json, listedFolders, meId, mountedProjects,
-  noSandboxWithin, nonce, openChat, recordTransientTexts, removeMarkers, restoreProjects, sandboxContainers,
-  sandboxOf, seedAndRead, send, setProject, signIn, sleep, stackMissing, startChiselEdge, startLab, startStub,
-  stopChiselEdge, stopLab, stopPersonSandbox, toolCards, toolOutput, wasSeen, processRunning, recordGrant,
-  recordedGrant, restoreGrants, forgetGrant,
-  type ChiselEdge, type Lab, type Override, type SandboxContainer, type SeedState, type Stub,
+  LAB_SHELL_PORT, MODE, adminCredentials, completeSessionsOf, connectLab, containersHolding, chiselEdgeLog,
+  deleteConversation, deleteStubProvider, driveRun, ensureStubProvider, expectSessionOutOfReach, goneWithin, json,
+  listedFolders, meId, mountedProjects, noSandboxWithin, nonce, openChat, openChatUntilSandbox, recordTransientTexts,
+  removeListeners, removeMarkers, restoreProjects, sandboxContainers, sandboxOf, seedAndRead, send, sessionCard,
+  sessionsOf, setProject, signIn, sleep, stackMissing, startChiselEdge, startLab, startStub, stopChiselEdge, stopLab,
+  stopPersonSandbox, toolCards, toolOutput, wasSeen, processRunning, recordGrant, recordedGrant, restoreGrants,
+  forgetGrant,
+  type ChiselEdge, type Lab, type ListenerRow, type Override, type SandboxContainer, type SeedState, type SessionList,
+  type SessionRow, type Stub,
 } from './perUserSandboxFixtures'
 
 /**
@@ -164,13 +166,9 @@ async function meterTitle(page: Page): Promise<string> {
   return (await page.locator('[title*="available for a new scan"]').first().getAttribute('title')) ?? ''
 }
 
-async function sessionsOf(api: APIRequestContext) {
-  const res = await api.get('/api/agent/sessions')
-  if (!res.ok()) return { sessions: [], jobs: [] }
-  return await res.json() as {
-    sessions: { id: number; sandbox?: string; chat_session_id?: string }[]
-    jobs: { id: number; sandbox?: string; chat_session_id?: string }[]
-  }
+/** The Reverse Shell tab's list of sessions and listeners (ActiveSessions.tsx). */
+function sessionList(page: Page) {
+  return page.locator('xpath=//div[contains(@class, "ActiveSessions-module__") and contains(concat(@class, " "), "__sidebar ")]')
 }
 
 function drivePath(kind: 'sessions' | 'jobs', row: { id: number; sandbox?: string }): string {
@@ -327,65 +325,150 @@ test.describe('Group A (defaults)', () => {
     }
   })
 
-  test('4. sessions across people: Alice drives Bob\'s session on the shared project and never sees his own project\'s', async () => {
-    test.setTimeout(900_000)
+  test('4. sessions across people: Alice drives Bob\'s session on the shared project, and neither lists nor drives the other\'s private ones', async () => {
+    test.setTimeout(1_200_000)
     const n = nonce()
     const page = await newPage(bob)
     const owner = await newPage(alice)
     let stub: Stub | null = null
     let lab: Lab | null = null
     const sessions: string[] = []
+    let aliceChat = ''
+    // In the command of Bob's own project's listener (its /tmp marker): how the UI shows that session.
+    const listener = `g1e2e-${n}-own`
     try {
       lab = startLab(n)
+      // A Metasploit session needs a payload port on the project, or the agent stops to ask the person
+      // for one (is_session_config_complete, think_node.py): the lab is a bind shell, so a bind port.
+      for (const project of [state.projects.PA, state.projects.PS]) {
+        await setProject({ key: 'alice', api: alice.request }, BASE, project, { agentBindPortOnTarget: LAB_SHELL_PORT })
+      }
+      // Each person's handler reaches the lab on their own sandbox's network.
+      await openChat(owner, state.projects.PA)
+      const aliceBox = await ownSandbox(state.alice.id, 'Alice')
+      const aliceLabIp = aliceBox ? connectLab(lab, state.alice.id) : lab.proxyIp
       await openChat(page, state.projects.PS)
       const box = await ownSandbox(state.bob.id, 'Bob')
       const labIp = box ? connectLab(lab, state.bob.id) : lab.proxyIp
-      stub = await startStub('sessions', { NONCE: n, LAB_IP: labIp }, stubPort)
+      stub = await startStub('sessions', { NONCE: n, LAB_IP: labIp, ALICE_LAB_IP: aliceLabIp }, stubPort)
+
+      // Alice's own Metasploit session on her private g1-PA: her sandbox's console, which no earlier
+      // test used, serves only her projects (in shared mode the one console refuses Bob's run next).
+      aliceChat = await send(owner, alice.request, state.projects.PA, `g1 e2e session on Alice's private project ${n}`)
+      expect((await driveRun(owner, alice.request, state.projects.PA, aliceChat, 420_000)).approved).toBe(1)
 
       const onShared = await send(page, bob.request, state.projects.PS, `g1 e2e session on the shared project ${n}`)
       sessions.push(onShared)
       expect((await driveRun(page, bob.request, state.projects.PS, onShared, 420_000)).approved).toBe(1)
+      // His own project's session is a netcat listener, not a second Metasploit session: one msfconsole
+      // per sandbox serves one project at a time (GHSA-w454), so g1-PS holds it now. The Sessions list
+      // attributes and filters listeners by their chat exactly as it does Metasploit sessions.
       await openChat(page, state.projects.PB)
-      const onOwn = await send(page, bob.request, state.projects.PB, `g1 e2e session on Bob's project ${n}`)
+      const onOwn = await send(page, bob.request, state.projects.PB, `g1 e2e listener on Bob's project ${n}`)
       sessions.push(onOwn)
-      expect((await driveRun(page, bob.request, state.projects.PB, onOwn, 420_000)).approved).toBe(1)
+      expect((await driveRun(page, bob.request, state.projects.PB, onOwn, 420_000)).allowed, 'Bob confirmed the listener once').toBe(1)
+      expect(await toolOutput(page, listener), 'the listener started').toContain(`G1E2E-LISTEN-${n}`)
 
-      // Bob holds every one of his sessions: the rows tell which chat opened which.
-      let shared: { id: number; sandbox?: string } | undefined
-      let own: { id: number; sandbox?: string } | undefined
+      // Bob holds both: the rows tell which chat opened which.
+      let shared: SessionRow | undefined
+      let own: ListenerRow | undefined
       await expect(async () => {
         const list = await sessionsOf(bob.request)
         shared = list.sessions.find(s => s.chat_session_id === onShared)
-        own = list.sessions.find(s => s.chat_session_id === onOwn)
-        expect(shared && own).toBeTruthy()
-      }, 'both of Bob\'s runs opened a shell session').toPass({ timeout: 90_000 })
+        own = list.non_msf_sessions.find(s => s.chat_session_id === onOwn)
+        expect(shared, 'the Metasploit session of g1-PS').toBeTruthy()
+        expect(own, 'the listener of g1-PB').toBeTruthy()
+      }, 'both of Bob\'s runs opened a session').toPass({ timeout: 90_000 })
       expect.soft(shared!.sandbox, 'ISOLATION (E3): the shared project\'s session lives in Bob\'s own sandbox')
         .toBe(box?.instance ?? '<Bob\'s own instance>')
+      expect.soft(own!.sandbox, 'ISOLATION (E3): his own project\'s listener lives in his own sandbox')
+        .toBe(box?.instance ?? '<Bob\'s own instance>')
+      ranOnlyIn(`/tmp/${listener}`, box, 'Bob\'s own sandbox')
+      const mine = (await completeSessionsOf(alice.request, l => l.sessions.some(s => s.chat_session_id === aliceChat),
+        'holds Alice\'s session on her private project')).sessions.find(s => s.chat_session_id === aliceChat)!
+      expect.soft(mine.sandbox, 'ISOLATION (E3): Alice\'s private project\'s session lives in her own sandbox')
+        .toBe(aliceBox?.instance ?? '<Alice\'s own instance>')
+      // What `$$` prints in her session's shell: the lab runs one shell per session, so it tells an answer
+      // of hers from one of Bob's session with the same number (every console numbers from 1).
+      let shellPid = ''
+      await expect(async () => {
+        const res = await alice.request.post(`/api/agent/sessions/${mine.id}/interact?sandbox=${encodeURIComponent(mine.sandbox ?? '')}`,
+          json(BASE, { command: `echo G1A-$$-${n}` }))
+        shellPid = new RegExp(`G1A-(\\d+)-${n}`).exec(await res.text())?.[1] ?? ''
+        expect(shellPid, 'Alice drives her own session').not.toBe('')
+      }).toPass({ timeout: 90_000 })
+
+      // The control: Bob's own panel shows the listener, so a panel without it is a filtered one.
+      await page.goto(`/graph?project=${state.projects.PB}`)
+      await page.getByRole('tab', { name: /Reverse Shell/ }).click()
+      await expect(sessionList(page).getByText(listener).first(), 'Bob\'s Sessions panel lists his own project\'s listener')
+        .toBeVisible({ timeout: 60_000 })
+      // E3 for Metasploit sessions: Bob neither lists nor drives Alice's private one.
+      await expectSessionOutOfReach(page, bob.request, BASE, { ...mine, chat: aliceChat, shellPid }, shared!, n)
 
       await owner.goto(`/graph?project=${state.projects.PS}`)
       await owner.getByRole('tab', { name: /Reverse Shell/ }).click()
-      const card = owner.locator(`[data-session-key="${shared!.sandbox ?? ''}:${shared!.id}"]`)
+      const card = sessionCard(owner, shared!)
       await expect(card, 'Alice\'s Sessions panel lists Bob\'s session on the shared project').toBeVisible({ timeout: 60_000 })
-      await expect(owner.locator(`[data-session-key="${own!.sandbox ?? ''}:${own!.id}"]`),
+      await expect(sessionCard(owner, mine), 'Alice\'s Sessions panel lists her own private session').toBeVisible({ timeout: 60_000 })
+      await expect(owner.getByText(listener),
         'ISOLATION (E3): Bob\'s session on his own project is not listed for Alice').toHaveCount(0)
+      const seen = await completeSessionsOf(alice.request, l => l.sessions.some(s => s.chat_session_id === onShared),
+        'holds Bob\'s session on the shared project')
+      expect.soft([...seen.sessions, ...seen.jobs, ...seen.non_msf_sessions].filter(r => r.chat_session_id === onOwn),
+        'ISOLATION (E3): no row of Bob\'s own project in Alice\'s session list').toEqual([])
 
-      await card.click()
-      await owner.getByPlaceholder('Type a command...').fill(`echo ALICE-$((6*7))-${n}`)
-      await owner.getByPlaceholder('Type a command...').press('Enter')
-      await expect(owner.getByText(`ALICE-42-${n}`).first(), 'Alice\'s command reached the session and answered').toBeVisible({ timeout: 60_000 })
-    } finally {
-      const list = await sessionsOf(bob.request).catch(() => ({ sessions: [], jobs: [] }))
-      for (const row of list.sessions.filter(s => s.chat_session_id && sessions.includes(s.chat_session_id))) {
-        await bob.request.post(drivePath('sessions', row), { headers: { Origin: new URL(BASE).origin } })
+      // The list is polled every 3 s; a poll that misses Bob's sandbox (its session manager answers one
+      // request at a time, and her command holds it) empties the panel for a moment, and the terminal is
+      // drawn again without its output. Alice types the command again until its answer is on screen.
+      const term = owner.getByPlaceholder('Type a command...')
+      const answer = owner.getByText(`ALICE-42-${n}`).first()
+      const answers: string[] = []
+      owner.on('response', r => {
+        if (r.url().includes(`/api/agent/sessions/${shared!.id}/interact`)) {
+          void r.text().then(t => answers.push(`${r.status()} ${t.slice(0, 160)}`), () => answers.push(`${r.status()}`))
+        }
+      })
+      let attempts = 0
+      try {
+        await expect(async () => {
+          attempts += 1
+          if (!(await owner.getByText(`Session #${shared!.id} - `).first().isVisible())) await card.click({ timeout: 10_000 })
+          await term.fill(`echo ALICE-$((6*7))-${n}`, { timeout: 10_000 })
+          await term.press('Enter')
+          await expect(answer).toBeVisible({ timeout: 30_000 })
+        }).toPass({ timeout: 180_000 })
+      } catch (err) {
+        throw new Error(`Alice's command reached the session and its answer stayed on screen: not in ${attempts} attempt(s); `
+          + `her browser's interact answers: ${answers.join(' | ') || 'none'}\n${String(err)}`)
       }
-      for (const row of list.jobs.filter(j => j.chat_session_id && sessions.includes(j.chat_session_id))) {
-        await bob.request.post(drivePath('jobs', row), { headers: { Origin: new URL(BASE).origin } })
+      if (attempts > 1) console.log(`test 4: Alice's answer stayed on screen at attempt ${attempts}; interact answers: ${answers.join(' | ')}`)
+    } finally {
+      // Each person ends the sessions this run's chats opened, in their own list.
+      for (const [api, chats] of [[bob.request, sessions], [alice.request, aliceChat ? [aliceChat] : []]] as const) {
+        const list = await sessionsOf(api).catch((): SessionList => ({ sessions: [], jobs: [], non_msf_sessions: [] }))
+        for (const row of list.sessions.filter(s => s.chat_session_id && chats.includes(s.chat_session_id))) {
+          await api.post(drivePath('sessions', row), { headers: { Origin: new URL(BASE).origin } })
+        }
+        for (const row of list.jobs.filter(j => j.chat_session_id && chats.includes(j.chat_session_id))) {
+          await api.post(drivePath('jobs', row), { headers: { Origin: new URL(BASE).origin } })
+        }
+      }
+      let left: string[]
+      try {
+        left = removeListeners(listener)
+      } catch (err) {
+        left = [String(err).slice(0, 200)]
       }
       await page.close()
       await owner.close()
       await stub?.stop()
       stopLab(lab)
       for (const s of sessions) await deleteConversation(bob.request, BASE, s)
+      if (aliceChat) await deleteConversation(alice.request, BASE, aliceChat)
+      expect.soft(left, 'test 4 removed the listener it registered').toEqual([])
+      expect.soft(await restoreProjects(apis(), BASE, { fields: ['agentBindPortOnTarget'] }), 'the bind ports of g1-PA and g1-PS were put back').toEqual([])
+      removeMarkers(`g1e2e-${n}`)
     }
   })
 
@@ -685,8 +768,7 @@ test.describe('Group D (tunnel)', () => {
     const edgeSessions = () => new Set(chiselEdgeLog(edge!).match(/session#\d+/g) ?? []).size
     try {
       // Alice's own sandbox runs, so "no tunnel in it" is checked against a live container.
-      await openChat(other, state.projects.PA)
-      const aliceBox = await sandboxOf(state.alice.id, 'own')
+      const aliceBox = await openChatUntilSandbox(other, state.alice.id, state.projects.PA)
       expect(aliceBox, 'Alice\'s sandbox runs').not.toBeNull()
 
       // The Tunnels permission for Bob (the seed's member set has none), recorded first so a killed run
@@ -708,8 +790,7 @@ test.describe('Group D (tunnel)', () => {
       expect(grant.status(), 'the admin grants Bob the Tunnels permission').toBe(200)
       granted = true
 
-      await openChat(page, state.projects.PB)
-      expect(await sandboxOf(state.bob.id, 'own'), 'Bob\'s sandbox runs').not.toBeNull()
+      expect(await openChatUntilSandbox(page, state.bob.id, state.projects.PB), 'Bob\'s sandbox runs').not.toBeNull()
       edge = startChiselEdge(n, state.bob.id)
 
       await page.goto('/settings?tab=keys')
@@ -733,8 +814,8 @@ test.describe('Group D (tunnel)', () => {
       const sessionsBefore = edgeSessions()
       await stopPersonSandbox(admin.request, BASE, state.bob.id)
       expect(await noSandboxWithin(state.bob.id, 'own', 90_000)).toBe(true)
-      await openChat(page, state.projects.PB)
-      const restarted = await sandboxOf(state.bob.id, 'own')
+      // The /graph load above warmed Bob's sandbox up seconds ago: the first opening may fall in the cool-down.
+      const restarted = await openChatUntilSandbox(page, state.bob.id, state.projects.PB)
       expect(restarted, 'Bob\'s sandbox started again').not.toBeNull()
       await expect.poll(async () => ((await (await bob.request.get(`/api/users/${state.bob.id}/settings`)).json()) as { tunnelsEnabled?: boolean }).tunnelsEnabled,
         { message: 'a restarted sandbox turns Bob\'s tunnel setting off (I19)', timeout: 60_000 }).toBe(false)

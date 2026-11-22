@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Browser, type Page } from '@playwright/test'
 import { cleanupRbac, loginAs, seedRbac, type RbacSeed } from './rbacUsers'
 
 /**
@@ -21,11 +21,19 @@ import { cleanupRbac, loginAs, seedRbac, type RbacSeed } from './rbacUsers'
  * tunnels stay disabled, so the save pushes only the stop config the sandbox already
  * runs; the spec skips when a live tunnel is up, which that push would take down. The
  * URL is cleared again before the spec ends.
+ *
+ * With per-user Kali sandboxes (group 1, S17) every person's tunnel is their own and runs in their
+ * own sandbox: a member without the Tunnels permission sees their own tunnel's state and the
+ * per-person hint instead of "managed by an administrator". The member test reads the mode the
+ * orchestrator names (an admin's sandbox status) and expects the screen of that mode. The other two
+ * tests still assume the shared tunnel.
  */
 
 const REPO = join(__dirname, '..', '..', '..')
 const URL_PLACEHOLDER = 'e.g. http://your-vps.com:9090'
 const MANAGED_TEXT = 'The tunnel is managed by an administrator.'
+// TunnelStatusReadOnly.tsx, per person, for someone without the Tunnels permission.
+const OWN_TUNNEL_TEXT = 'Your own tunnel, in your own Kali sandbox. Turning one on needs the Tunnels permission; turning yours off does not.'
 const FAKE_CHISEL = 'http://127.0.0.1:9'
 
 let seed: RbacSeed
@@ -92,13 +100,45 @@ test('a legacy holder still changes the tunnel in the UI', async ({ page }) => {
   await expect.poll(chiselUrl).toBe('')
 })
 
-test('a member without the grant sees the status and who manages it, and cannot read the credentials', async ({ page }) => {
+/** The Kali sandbox mode the orchestrator names, from an admin's own sandbox status (group 1, S16). */
+async function sandboxMode(browser: Browser): Promise<'shared' | 'per_user'> {
+  const context = await browser.newContext()
+  try {
+    const admin = await context.newPage()
+    await loginAs(admin, 'ADMIN_A')
+    const res = await admin.request.get('/api/agent/sandbox/status')
+    expect(res.status(), 'an admin reads the Kali sandbox mode').toBe(200)
+    const mode = ((await res.json()) as { mode?: string }).mode
+    if (mode !== 'shared' && mode !== 'per_user') throw new Error(`the orchestrator named no sandbox mode (${String(mode)})`)
+    return mode
+  } finally {
+    await context.close()
+  }
+}
+
+test('a member without the grant sees the status and who manages it, and cannot read the credentials', async ({ page, browser }) => {
+  const mode = await sandboxMode(browser)
   await loginAs(page, 'MEMBER_B')
+  const hint = await (await page.request.get(`/api/users/${seed.MEMBER_B_ID}/settings`)).json() as {
+    tunnelScope?: string; tunnelsEnabled?: boolean
+  }
+  expect(hint.tunnelScope === 'own_sandbox', `the member's settings follow the orchestrator's ${mode} mode`).toBe(mode === 'per_user')
   await page.goto('/settings?tab=keys')
-  await expect(page.getByText(MANAGED_TEXT)).toBeVisible()
-  await expect(page.getByText(/^(On \(.+\)|Off|Status unavailable)$/)).toBeVisible()
+  if (mode === 'per_user') {
+    await expect(page.getByText(OWN_TUNNEL_TEXT)).toBeVisible()
+    await expect(page.getByText(MANAGED_TEXT)).toHaveCount(0)
+  } else {
+    await expect(page.getByText(MANAGED_TEXT)).toBeVisible()
+  }
+  const status = page.getByText(/^(On \(.+\)|Off|Status unavailable)$/)
+  await expect(status).toBeVisible()
   await expect(page.getByPlaceholder(URL_PLACEHOLDER)).toHaveCount(0)
   await expect(page.getByLabel('Enable tunnels')).toHaveCount(0)
+  // Per person the one control is turning one's own tunnel off, offered only while a tunnel runs or
+  // the stored setting reads on.
+  if (mode === 'per_user' && hint.tunnelsEnabled !== true && !(await status.innerText()).startsWith('On')) {
+    await expect(page.getByRole('button', { name: 'Turn my tunnel off' })).toHaveCount(0)
+  }
   expect((await page.request.get('/api/global/tunnel-config')).status()).toBe(404)
 })
 
