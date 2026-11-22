@@ -25,6 +25,14 @@ if _AGENTIC_DIR not in sys.path:
 
 class MsfOwnerStamp(unittest.TestCase):
     def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The shared sandbox's path: shared mode is named, since the default is
+        # per_user and no gateway answers here.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
         import agent_context
         self.ctx = agent_context
         self.tokens = [

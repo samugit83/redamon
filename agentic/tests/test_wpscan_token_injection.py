@@ -21,6 +21,15 @@ if _AGENTIC_DIR not in sys.path:
 
 
 class WpscanToken(unittest.TestCase):
+    def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The shared sandbox's path: shared mode is named, since the default is
+        # per_user and no gateway answers here.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
     def _executor(self, token="rbac-wpscan-token"):
         from tools import PhaseAwareToolExecutor
         ex = PhaseAwareToolExecutor(mcp_manager=mock.MagicMock(), graph_tool=None)

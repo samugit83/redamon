@@ -729,34 +729,29 @@ class TestLeases(RouterTest):
 # =============================================================================
 
 class TestModeNoAnswerYet(RouterTest):
+    """No answer yet: the default is per_user, so an outage fails closed, never the
+    shared sandbox (an outage after a shared answer is TestSharedMode)."""
     mode = None
 
-    async def test_gateway_unreachable_uses_default_mode(self):
+    async def test_gateway_unreachable_fails_closed(self):
         self.gateway.raises = _connect_refused
-        if contract.DEFAULT_MODE == contract.MODE_SHARED:
-            handle = await router.acquire("bob", project_id="p1", kind="run")
-            self.assertEqual(handle.mode, contract.MODE_SHARED)
-            self.assertEqual(handle.instance, contract.SHARED_INSTANCE)
-        else:
-            with self.assertRaises(SandboxUnavailable) as ctx:
-                await router.acquire("bob", project_id="p1", kind="run")
-            self.assertEqual(ctx.exception.reason, "error")
+        with self.assertRaises(SandboxUnavailable) as ctx:
+            await router.acquire("bob", project_id="p1", kind="run")
+        self.assertEqual(ctx.exception.reason, "error")
+        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
 
-    async def test_gateway_outage_before_any_answer_uses_default_mode(self):
+    async def test_gateway_outage_before_any_answer_fails_closed(self):
         self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b: (503, {"code": "orchestrator_unavailable"})
-        if contract.DEFAULT_MODE == contract.MODE_SHARED:
-            handle = await router.acquire("bob", project_id="p1", kind="run")
-            self.assertEqual(handle.mode, contract.MODE_SHARED)
-        else:
-            with self.assertRaises(SandboxUnavailable) as ctx:
-                await router.acquire("bob", project_id="p1", kind="run")
-            self.assertEqual(ctx.exception.reason, "error")
+        with self.assertRaises(SandboxUnavailable) as ctx:
+            await router.acquire("bob", project_id="p1", kind="run")
+        self.assertEqual(ctx.exception.reason, "error")
+        self.assertEqual([p for _m, p, _b, _h in self.gateway.requests], [contract.INTERNAL_ROUTE_ENSURE])
 
     async def test_no_internal_key_reads_as_unreachable(self):
         with mock.patch.dict(router.INTERNAL_HEADERS, {"X-Internal-Key": ""}):
-            if contract.DEFAULT_MODE == contract.MODE_SHARED:
-                handle = await router.acquire("bob", project_id="p1", kind="run")
-                self.assertEqual(handle.mode, contract.MODE_SHARED)
+            with self.assertRaises(SandboxUnavailable) as ctx:
+                await router.acquire("bob", project_id="p1", kind="run")
+        self.assertEqual(ctx.exception.reason, "error")
         self.assertEqual(self.gateway.requests, [], "no call without the key")
 
     async def test_no_person_asks_the_mode_first(self):

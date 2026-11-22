@@ -31,7 +31,37 @@ def _fake_settings(values: dict):
     return _get
 
 
-class AskBranchGuidanceTests(unittest.TestCase):
+class _SharedMode(unittest.TestCase):
+    """The shared sandbox's guidance: shared mode is named, since the default is
+    per_user and no gateway answers here."""
+
+    def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
+
+class DefaultModeGuidanceTests(unittest.TestCase):
+    """No mode answered yet is the default, per_user: the sandbox publishes no port,
+    so the ASK branch never steers the agent to the host's LAN IP."""
+
+    def test_the_default_offers_no_direct_reverse_shell(self):
+        import sandbox_router
+
+        sandbox_router._reset()
+        self.addCleanup(sandbox_router._reset)
+        with patch.object(utils, "get_setting", _fake_settings({})), \
+             patch.dict(os.environ, {"HOST_LAN_IP": "192.168.1.50"}, clear=False):
+            out = utils.get_session_config_prompt()
+        self.assertIn("PAYLOAD DIRECTION NOT CONFIGURED", out)
+        self.assertIn("YOUR KALI SANDBOX PUBLISHES NO PORT", out)
+        self.assertNotIn("192.168.1.50", out)
+        self.assertNotIn("host machine's LAN IP", out)
+
+
+class AskBranchGuidanceTests(_SharedMode):
     """All-empty settings -> ASK branch must steer the agent to the host LAN IP.
 
     HOST_LAN_IP is cleared so these assert the no-detection fallback deterministically
@@ -68,7 +98,7 @@ class AskBranchGuidanceTests(unittest.TestCase):
         self.assertIn("host-LAN-IP:LPORT", out)
 
 
-class DetectedHostIpSuggestionTests(unittest.TestCase):
+class DetectedHostIpSuggestionTests(_SharedMode):
     """HOST_LAN_IP (issue #180): the ask-branch suggests the host's LAN IP, but
     only when no tunnel is configured."""
 
@@ -107,7 +137,7 @@ class DetectedHostIpSuggestionTests(unittest.TestCase):
         self.assertNotIn("192.168.1.50", out)
 
 
-class ModeRegressionTests(unittest.TestCase):
+class ModeRegressionTests(_SharedMode):
     """Configured reverse/bind modes are unaffected by the new guidance."""
 
     def _render(self, values):

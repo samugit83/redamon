@@ -69,6 +69,14 @@ import output_offload  # noqa: E402
 
 class ExecutorWiringTestBase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The shared sandbox's path: shared mode is named, since the default is
+        # per_user and no gateway answers here.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
         self.tmp = tempfile.mkdtemp(prefix="redamon-exec-")
         # Point all workspace modules at the temp root.
         self._orig_ws = workspace_fs.WORKSPACE_ROOT

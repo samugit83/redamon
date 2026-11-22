@@ -81,6 +81,15 @@ def _executor(*mcp_tools):
     return ex
 
 
+class _SharedMode(unittest.IsolatedAsyncioTestCase):
+    """The shared sandbox's MCP tools: shared mode is named, since the default is
+    per_user and no gateway answers here."""
+
+    def setUp(self):
+        tools.sandbox_router._reset(mode=tools.sandbox_contract.MODE_SHARED)
+        self.addCleanup(tools.sandbox_router._reset)
+
+
 class DeadlineTable(unittest.TestCase):
     def test_execute_code_deadline_is_its_server_limit_plus_margin(self):
         # kali runs C/C++ as 60s compile + 120s run; the agent waits 60s more.
@@ -115,7 +124,7 @@ class DeadlineTable(unittest.TestCase):
             self.assertEqual(tool_deadline_seconds("user_custom_mcp_tool"), 0.0)
 
 
-class DeadlineEnforcement(unittest.IsolatedAsyncioTestCase):
+class DeadlineEnforcement(_SharedMode):
     async def test_lost_answer_returns_a_failure_instead_of_hanging(self):
         tool = _NeverAnswers("execute_code")
         ex = _executor(tool)
@@ -200,7 +209,7 @@ class DeadlineEnforcement(unittest.IsolatedAsyncioTestCase):
         self.assertIn("gave no answer", result["error"])
 
 
-class ToolNodeSurfacesTheDeadline(unittest.IsolatedAsyncioTestCase):
+class ToolNodeSurfacesTheDeadline(_SharedMode):
     """End-to-end through execute_tool_node: the step gets a terminal verdict,
     so the next think turn can emit tool_complete and the card stops running."""
 

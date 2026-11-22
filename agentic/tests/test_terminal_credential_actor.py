@@ -121,6 +121,14 @@ except Exception:  # pragma: no cover - only outside the agent image
 @unittest.skipUnless(_HAVE_APP, "agent deps unavailable (run in-container)")
 class TheTerminalNamesWhoOpenedIt(unittest.TestCase):
     def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The shared sandbox's path: shared mode is named, since the default is
+        # per_user and no gateway answers here.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
         self._e = _env()
         self._e.start()
         self.addCleanup(self._e.stop)

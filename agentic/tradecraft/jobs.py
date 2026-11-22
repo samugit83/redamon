@@ -82,11 +82,14 @@ def error_code_of(exc: BaseException) -> str:
 BROWSER_TOOL = "execute_playwright"
 
 
-def _orchestrator_mcp_manager() -> Any:
+def _orchestrator() -> Any:
     # api.py imports this module's router, so the running app is looked up at call time;
     # outside the agent process (a test, a script) there is none.
-    agent_api = sys.modules.get("api")
-    return getattr(getattr(agent_api, "orchestrator", None), "_mcp_manager", None)
+    return getattr(sys.modules.get("api"), "orchestrator", None)
+
+
+def _orchestrator_mcp_manager() -> Any:
+    return getattr(_orchestrator(), "_mcp_manager", None)
 
 
 def _agent_mcp_manager() -> Any:
@@ -127,6 +130,22 @@ class _SandboxBrowserTool:
 
 
 async def _shared_browser_tool() -> Any:
+    """The agent's own manager's browser. A manager loaded before any mode was answered, or
+    reloaded in per-user mode, holds no system server: the executor's shared loader connects
+    them first, as its shared call path does."""
+    tool = await _manager_browser_tool()
+    if tool is None:
+        loader = getattr(getattr(_orchestrator(), "tool_executor", None), "shared_system_loader", None)
+        if loader is not None:
+            try:
+                await loader()
+            except Exception as exc:  # noqa: BLE001 - the render reports the browser missing
+                logger.warning(f"[tradecraft] loading the shared system servers failed: {type(exc).__name__}")
+            tool = await _manager_browser_tool()
+    return tool
+
+
+async def _manager_browser_tool() -> Any:
     manager = _orchestrator_mcp_manager()
     tools = await manager.get_tools() if manager is not None else []
     return next((t for t in tools or [] if getattr(t, "name", "") == BROWSER_TOOL), None)

@@ -273,12 +273,20 @@ class TheTunnelStatusInSharedMode(_Base):
     mode = contract.MODE_SHARED
 
     def test_shared_mode_answers_as_before_without_a_key(self):
+        router._reset(mode=contract.MODE_SHARED)
         with mock.patch.object(utils, "_query_ngrok_tunnel", return_value={"host": "0.tcp.ngrok.io", "port": 1}), \
                 mock.patch.object(utils, "_query_chisel_tunnel", return_value=None):
             resp = self.client.get("/tunnel-status")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"ngrok": {"active": True, "host": "0.tcp.ngrok.io", "port": 1},
                                        "chisel": {"active": False}})
+
+    def test_before_any_answer_the_key_is_checked_first(self):
+        # The default mode is per_user, so a caller without the key is refused before
+        # the gateway is asked, even when the orchestrator would answer shared.
+        resp = self.client.get("/tunnel-status")
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(self.fleet.gateway_requests, [])
 
 
 # =============================================================================

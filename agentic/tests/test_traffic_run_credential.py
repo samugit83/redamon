@@ -165,6 +165,15 @@ class TrafficRoutes(_Base):
 
 # --- the agent mints one for every proxy_brain call ------------------------------
 class ProxyBrainGetsACredential(unittest.TestCase):
+    def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The shared sandbox's path: shared mode is named, since the default is
+        # per_user and no gateway answers here.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
     def _executor(self):
         from tools import PhaseAwareToolExecutor
         ex = PhaseAwareToolExecutor(mcp_manager=mock.MagicMock(), graph_tool=None)

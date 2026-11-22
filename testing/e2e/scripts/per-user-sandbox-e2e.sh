@@ -46,8 +46,9 @@ LOCK_WAIT="${G1_E2E_LOCK_WAIT_S:-10800}"
 # Every variable a group may set. A group leaves the others at the values the
 # orchestrator had when the run started.
 MANAGED=(KALI_SANDBOX_MODE KALI_SANDBOX_IDLE_MINUTES OS_HEADROOM_MEM SERVICE_BASELINE_MEM)
-# Until S19 flips DEFAULT_MODE, per-user mode is asked for explicitly; S20 removes the switch.
-PER_USER_MODE="${G1_E2E_PER_USER_MODE:-per_user}"
+# The per-user groups leave KALI_SANDBOX_MODE empty, as a default stack runs it, so the stack's
+# contract default decides (it must be per_user); G1_E2E_PER_USER_MODE=per_user names it instead.
+PER_USER_MODE="${G1_E2E_PER_USER_MODE-}"
 # Names whose values never reach the originals file (compared by hash instead).
 SECRET_NAME='(_KEY|_TOKEN|_SECRET|_PASSWORD|_PASS|DATABASE_URL)$'
 
@@ -409,6 +410,17 @@ fi
 
 declare -A TITLE=([A]="Group A" [B]="Group B" [C]="Group C" [D]="Group D")
 
+# The mode the groups run in, read as the orchestrator reads the value they set.
+if [[ $SHARED -eq 1 ]]; then
+    GROUPS_MODE=shared
+else
+    GROUPS_MODE="$(effective_mode "$PER_USER_MODE")"
+    if [[ "$GROUPS_MODE" != per_user ]]; then
+        echo "FAIL: the per-user groups would run in '$GROUPS_MODE' mode (KALI_SANDBOX_MODE='$PER_USER_MODE'; the stack's contract default is '$(contract_default_mode)')" >&2
+        exit 1
+    fi
+fi
+
 if [[ $DRY -eq 1 ]]; then
     problem="$(readiness_problem)"
     echo "readiness: ${problem:-ok}"
@@ -712,7 +724,7 @@ for g in "${GROUP_LIST[@]}"; do
             exit 1
         fi
     fi
-    echo "== ${TITLE[$g]} (mode: $([[ $SHARED -eq 1 ]] && echo shared || echo "$PER_USER_MODE")) =="
+    echo "== ${TITLE[$g]} (mode: $GROUPS_MODE) =="
     if run_group "$g"; then
         echo "== ${TITLE[$g]}: PASS =="
     else

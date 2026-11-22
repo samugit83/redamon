@@ -14,11 +14,10 @@ the agent and the capture proxy are attached. Removing the container at every st
 wipes everything a shell wrote outside the project folders and the person's output
 folder.
 
-> **Status.** Per-user sandboxes are being built behind a switch,
-> `KALI_SANDBOX_MODE`, whose default is `shared`: every Kali call still goes to the
-> shared `redamon-kali` container. The parts below land one by one and are
-> inert until the default flips to `per_user`; after that the switch and the
-> shared container are removed.
+> **Status.** Per-user sandboxes are the default. A temporary switch,
+> `KALI_SANDBOX_MODE`, still lets an operator send every Kali call back to the
+> shared `redamon-kali` container (`shared`, section 19); that container keeps
+> running, idle, until the switch and the shared container are removed.
 
 ## Table of Contents
 
@@ -118,14 +117,17 @@ one per view, two during a rolling replacement.
 | Name | Value |
 | :--- | :---- |
 | `KALI_SANDBOX_MODE` | `shared` or `per_user`; read by the orchestrator only |
-| Default | `shared` until the default flips; then `per_user` |
-| Parsing | the value, trimmed and lower-cased, when it is one of the two modes; anything else is the default |
+| Default | `per_user` |
+| Parsing | the value, trimmed and lower-cased, when it is one of the two modes; anything else (unset and empty included) is the default |
 
 The agent learns the mode from each `ensure` answer and remembers the last one. It
 falls back to its own copy of the default only while the webapp gateway cannot be
-reached and no answer has arrived since the agent started. Once it has seen
-`per_user`, an unreachable gateway is an error (`SandboxUnavailable("error")`),
-never a call to the shared container.
+reached and no answer has arrived since the agent started; that default is
+`per_user`, so such an outage is an error (`SandboxUnavailable("error")`), as is
+any outage once it has seen `per_user`. Kali work goes to the shared container only
+after the orchestrator answered `shared`; in per-user mode the agent still reaches
+the shared container's session manager for its listed sessions (`?sandbox=shared`,
+section 13), and the webapp pushes it the empty tunnel configuration at the flip.
 
 The switch is temporary: once per-user mode is the default and has been verified,
 the shared code paths, the switch and the shared container are removed.
@@ -477,7 +479,7 @@ code.
 | `KALI_SANDBOX_IDLE_MINUTES` | 20 | minutes without use before an idle sandbox stops; an integer of at least 1, anything else is 20 |
 | `KALI_SANDBOX_MAX_CONCURRENT` | unset: no count limit | the most running sandboxes; `0` blocks every new sandbox; anything but an integer of at least 0 is no limit |
 | `KALI_SANDBOX_PORT_POOL` | unset: no pool | `[bind-ip:]first-last`: each sandbox gets one host port from the range for direct reverse shells, bound on `127.0.0.1` unless an address is given; a malformed value is no pool, and is logged |
-| `KALI_SANDBOX_MODE` | `shared` | the temporary switch (section 3) |
+| `KALI_SANDBOX_MODE` | `per_user` | the temporary switch (section 3); `shared` sends every Kali call to the shared container |
 
 Not variables: the image, the lease timings, the 8-hour and 1-hour figures, the
 template refresh period, the subnet range and the per-sandbox limits. The envelope
@@ -534,11 +536,13 @@ takes a few seconds; the first Metasploit call in a fresh sandbox waits another
 
 ## 19. Roll-back
 
-- While the default is `shared`, nothing a user sees changes; any part can be
-  reverted on its own.
-- After the default flips, set `KALI_SANDBOX_MODE=shared` for the orchestrator to
-  go back to the shared container; per-user instances still running stop as they
-  go idle.
+- While the switch exists, `KALI_SANDBOX_MODE=shared` goes back to the shared
+  container; per-user instances still running stop as they go idle. Locally, add it
+  to `.env` and run `./redamon.sh up` (it recreates the orchestrator with the new
+  value; a restart does not read `.env` again). On a single-host deploy, add it to
+  the application `.env` on the server and run `./deploy.sh update`: a plain
+  `./redamon.sh up` there leaves out the deploy's compose overlay and publishes the
+  stack's ports on every interface.
 - After the shared container is removed, roll back by reverting that removal and
   the switch removal, then `./redamon.sh update`.
 

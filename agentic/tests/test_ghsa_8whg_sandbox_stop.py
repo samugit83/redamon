@@ -240,6 +240,12 @@ class StopReachesTheSandbox(unittest.TestCase):
 
 class StopRequest(unittest.TestCase):
 
+    def setUp(self):
+        # A run that used no per-user sandbox is stopped in the shared one only in
+        # shared mode; no gateway answers here and the default is per_user.
+        sandbox_runs.sandbox_router._reset(mode=sandbox_runs.contract.MODE_SHARED)
+        self.addCleanup(sandbox_runs.sandbox_router._reset)
+
     def _run(self, transport, env=None):
         import httpx
 

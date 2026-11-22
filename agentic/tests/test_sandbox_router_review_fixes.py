@@ -298,15 +298,22 @@ class TestOneModeRuleNoAnswerYet(RouterTest):
             await router.acquire("bob", project_id="p1", kind="run")
         self.assertEqual(ctx.exception.reason, "error", "an outage after a per-user refusal went shared")
 
+    # The default is per_user, so an outage before any answer fails closed: never a
+    # handle on the shared container, which no answer named.
+
     async def test_an_answer_outside_the_contract_takes_the_default_before_any_answer(self):
         self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b: (404, {})
-        handle = await router.acquire("bob", project_id="p1", kind="run")
-        self.assertEqual(handle.mode, contract.DEFAULT_MODE)
+        with self.assertRaises(SandboxUnavailable) as ctx:
+            await router.acquire("bob", project_id="p1", kind="run")
+        self.assertEqual(ctx.exception.reason, "error")
+        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
 
     async def test_a_real_outage_keeps_the_default(self):
         self.gateway.raises = _connect_refused
-        handle = await router.acquire("bob", project_id="p1", kind="run")
-        self.assertEqual(handle.mode, contract.DEFAULT_MODE)
+        with self.assertRaises(SandboxUnavailable) as ctx:
+            await router.acquire("bob", project_id="p1", kind="run")
+        self.assertEqual(ctx.exception.reason, "error")
+        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
 
 
 # =============================================================================

@@ -170,6 +170,14 @@ class _Loading(_FreshGuard):
     """A real orchestrator reload over a fake MCP client and the real tool executor."""
 
     def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The shared sandbox's path: shared mode is named, since the default is
+        # per_user and no gateway answers here.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
         super().setUp()
         from mcp_registry import MCPServer
         system = [MCPServer(id="nmap", name="nmap", transport="sse", url="http://kali.test/sse")]

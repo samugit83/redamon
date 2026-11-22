@@ -318,8 +318,8 @@ def test_ts_check_refuses_an_expression_or_a_hidden_constant():
     # A literal that continues on the next line is another value at run time.
     for bad in (
         _edit(text, start, "export const START_TIMEOUT_S = 300\n  * 2"),
-        _edit(text, r"^export const DEFAULT_MODE = 'shared'$",
-              "export const DEFAULT_MODE = 'shared'\n  .replace('shared', 'per_user')"),
+        _edit(text, r"^export const DEFAULT_MODE = 'per_user'$",
+              "export const DEFAULT_MODE = 'per_user'\n  .replace('per_user', 'shared')"),
         _edit(text, start, "export const START_TIMEOUT_S = 300 as const satisfies number"),
         _edit(text, start, "export const START_TIMEOUT_S: number = 300"),
         _edit(text, start, "export let START_TIMEOUT_S = 300"),
@@ -755,6 +755,14 @@ def test_lease_kinds_and_states():
         assert status in (400, 403, 404, 409, 503, 504), code
 
 
-def test_default_mode_is_shared():
-    # S19 flips the default to per_user and changes this expectation.
-    assert c.DEFAULT_MODE == "shared"
+def test_default_mode_is_per_user():
+    # compose passes an unset KALI_SANDBOX_MODE as "": that, and any value outside
+    # MODES, must give per-user sandboxes; the shared container only when named.
+    assert c.DEFAULT_MODE == "per_user"
+    assert agent_copy.DEFAULT_MODE == "per_user"
+    with open(TS_PATH, encoding="utf-8") as f:
+        assert _ts_constants(f.read())["DEFAULT_MODE"] == "per_user"
+    for raw in (None, "", "  ", "per-user", "SHARED_"):
+        assert c.mode_from_env(raw) == "per_user", raw
+        assert agent_copy.mode_from_env(raw) == "per_user", raw
+    assert c.mode_from_env(" Shared ") == "shared"

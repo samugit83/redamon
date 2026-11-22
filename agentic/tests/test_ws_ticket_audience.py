@@ -160,6 +160,14 @@ class ProxiedEndpointsCheckTheirAudience(unittest.TestCase):
         cls.client = TestClient(api_module.app)
 
     def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The shared sandbox's path: shared mode is named, since the default is
+        # per_user and no gateway answers here.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
         self._env = mock.patch.dict(os.environ, {"AGENT_WS_TICKET_SECRET": SECRET})
         self._env.start()
 

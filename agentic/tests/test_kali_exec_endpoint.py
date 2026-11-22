@@ -108,6 +108,13 @@ class _FakeRegistry:
 
 class _Base(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # These tests pin the shared sandbox's wiring. No gateway answers here and the
+        # default mode is per_user, so the shared mode is named as the last answer.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = self._tmp.name

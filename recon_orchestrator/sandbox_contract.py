@@ -38,7 +38,7 @@ MODE_ENV = "KALI_SANDBOX_MODE"
 MODE_SHARED = "shared"
 MODE_PER_USER = "per_user"
 MODES = (MODE_SHARED, MODE_PER_USER)
-DEFAULT_MODE = MODE_SHARED
+DEFAULT_MODE = MODE_PER_USER
 
 
 def mode_from_env(value: Optional[str]) -> str:

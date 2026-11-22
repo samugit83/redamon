@@ -84,6 +84,13 @@ class LostMcpAnswer(unittest.IsolatedAsyncioTestCase):
         cls._ping_patch.stop()
 
     async def asyncSetUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The fake server stands in for the shared sandbox (no person is bound). No
+        # gateway answers and the default mode is per_user, so shared mode is named.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
         self.mgr = MCPToolsManager({
             "network_recon": {
                 "url": f"http://127.0.0.1:{self.port}/sse",

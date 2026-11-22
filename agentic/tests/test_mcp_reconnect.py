@@ -463,6 +463,15 @@ class RegisterMcpToolsTests(unittest.TestCase):
 class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
     """End-to-end behaviour of the execute() retry-after-reconnect path."""
 
+    def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The executor's MCP tools here are the shared sandbox's (no person is bound).
+        # No gateway answers and the default mode is per_user, so shared mode is named.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
     def _make_mcp_tool(self, name, ainvoke):
         t = MagicMock()
         t.name = name

@@ -447,6 +447,67 @@ def test_shared_mode_uses_the_agents_own_manager(agent_process):
     assert r.tools == [], "no per-user client in shared mode"
 
 
+class UnloadedManager(AgentManager):
+    """The agent's manager after a boot or a toolset reload in per-user mode: no system
+    server until the orchestrator's shared loader connects them."""
+
+    def __init__(self):
+        super().__init__()
+        self.loaded = False
+
+    async def get_tools(self, *a, **k):
+        self.asked += 1
+        return [Tool("kali_shell", "shared"), self.tool] if self.loaded else []
+
+
+def _unloaded_agent(monkeypatch, load):
+    manager = UnloadedManager()
+    fake_api = types.ModuleType("api")
+    fake_api.orchestrator = types.SimpleNamespace(
+        _mcp_manager=manager, tool_executor=types.SimpleNamespace(shared_system_loader=load))
+    monkeypatch.setitem(sys.modules, "api", fake_api)
+    return manager
+
+
+def test_shared_mode_loads_the_system_servers_the_manager_lacks(monkeypatch):
+    """A roll-back to shared: the gateway answers shared to a manager that holds no system
+    server (boot before any answer, or a reload in per-user mode). The loader runs once."""
+    loads = []
+
+    async def load():
+        loads.append(manager)
+        manager.loaded = True
+
+    manager = _unloaded_agent(monkeypatch, load)
+    r = Router(mode=contract.MODE_SHARED)
+
+    async def go():
+        with jobs.sandbox_person("alice"):
+            return [await browse("print(3)"), await browse("print(4)")]
+
+    with r.installed():
+        assert run(go()) == [("rendered for shared", ""), ("rendered for shared", "")]
+    assert loads == [manager]
+    assert manager.tool.calls == [{"script": "print(3)"}, {"script": "print(4)"}]
+    assert r.tools == []
+
+
+def test_shared_mode_after_a_failed_load_has_no_browser(monkeypatch):
+    async def load():
+        raise RuntimeError("toolset busy")
+
+    manager = _unloaded_agent(monkeypatch, load)
+    r = Router(mode=contract.MODE_SHARED)
+
+    async def go():
+        with jobs.sandbox_person("alice"):
+            return await browse()
+
+    with r.installed():
+        assert run(go()) == ("", "browser_error")
+    assert manager.tool.calls == []
+
+
 def test_outside_the_agent_process_there_is_no_browser(monkeypatch):
     monkeypatch.delitem(sys.modules, "api", raising=False)
     assert jobs._agent_mcp_manager() is None

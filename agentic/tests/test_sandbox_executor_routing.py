@@ -24,6 +24,7 @@ import importlib
 import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -39,6 +40,7 @@ for _p in (str(_AGENTIC_DIR), str(_TESTS_DIR)):
 import httpx  # noqa: E402
 
 import job_runner  # noqa: E402
+import output_offload  # noqa: E402
 import project_settings  # noqa: E402
 import sandbox_contract as contract  # noqa: E402
 import sandbox_router as router  # noqa: E402
@@ -482,6 +484,65 @@ class TestRefusalsAndFailures(Routing):
 
 
 # =============================================================================
+# A sandbox call's deadline and output offload (_call_in_sandbox, _tool_success)
+# =============================================================================
+
+class _HugeAnswer:
+    def __init__(self, name):
+        self.name = name
+
+    async def ainvoke(self, args):
+        return "X" * 100_000
+
+
+class TestTheSandboxCallIsBounded(Routing):
+    """The per-user path keeps the shared path's tool deadline and output offload."""
+
+    async def test_a_lost_answer_ends_in_a_failure_without_a_reconnect(self):
+        async def alice():
+            await self.call("execute_code", {"code": "print(1)"})
+            client = self.clients.of("alice")
+            client.gate = asyncio.Event()  # never set: the answer is lost
+            with mock.patch.dict(tools.TOOL_DEADLINES_S, {"execute_code": 0.3}):
+                result = await asyncio.wait_for(self.call("execute_code", {"code": "print(2)"}), 5)
+            return client, result
+
+        client, result = await self.run_as("alice", alice)
+        self.assertFalse(result["success"])
+        self.assertIsNone(result["output"])
+        self.assertIn("gave no answer", result["error"])
+        self.assertEqual((client.cancelled, client.reconnects), (1, 0))
+        self.assertEqual(self.shared.calls, [])
+
+    async def _nuclei(self, args):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(output_offload, "WORKSPACE_ROOT", Path(tmp)):
+            async def alice():
+                await self.call("kali_shell")
+                self.clients.of("alice").tools["execute_nuclei"] = _HugeAnswer("execute_nuclei")
+                return await self.call("execute_nuclei", args)
+
+            result = await self.run_as("alice", alice)
+            outputs = Path(tmp) / "p1" / "tool-outputs"
+            sizes = [f.stat().st_size for f in outputs.iterdir()] if outputs.is_dir() else []
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.shared.calls, [])
+        return result["output"], sizes
+
+    async def test_a_huge_answer_is_offloaded_to_the_runs_project(self):
+        output, sizes = await self._nuclei({"target": "example.com"})
+        self.assertIn("[Output offloaded:", output)
+        self.assertLess(len(output), 10_000)
+        self.assertEqual(sizes, [100_000])
+
+    async def test_inline_keeps_the_whole_answer(self):
+        output, sizes = await self._nuclei({"target": "example.com", "output_mode": "inline"})
+        self.assertNotIn("[Output offloaded:", output)
+        self.assertEqual(len(output), 100_000)
+        self.assertEqual(sizes, [])
+
+
+# =============================================================================
 # A call that outlives its run (review F1)
 # =============================================================================
 
@@ -862,7 +923,13 @@ class SharedManager:
         ids = sorted(self.configs)
         self.loads.append(ids)
         self.generation += 1
-        return self.generation, [LoadedTool(n, i) for i in ids for n in self.TOOLS.get(i, [])]
+        return self.generation, self.loaded_tools()
+
+    def loaded_tools(self):
+        return [LoadedTool(n, i) for i in sorted(self.configs) for n in self.TOOLS.get(i, [])]
+
+    async def get_tools(self, *a, **k):
+        return self.loaded_tools()
 
     async def disconnect(self):
         self.disconnects += 1
@@ -942,6 +1009,22 @@ class TestSharedManagerHoldsNoSystemServer(Routing):
         result = await self.run_as("bob", bob)
         self.assertEqual(result, {"success": True, "output": "ok from network_recon", "error": None})
         self.assertEqual(self.orch._mcp_manager.loads[-1], ["network_recon", "srv-a"])
+
+    async def test_a_shared_answer_loads_them_for_tradecraft_s_browser(self):
+        """A roll-back to shared after a per-user load: Tradecraft's browser, before any
+        chat call, loads the system servers through the same loader."""
+        from tradecraft import jobs, net
+
+        await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
+        self.orch._mcp_manager.TOOLS = {**SharedManager.TOOLS,
+                                        "network_recon": ["kali_shell", "execute_playwright"]}
+        self.gateway.mode = contract.MODE_SHARED
+        with mock.patch.dict(sys.modules, {"api": SimpleNamespace(orchestrator=self.orch)}):
+            with jobs.sandbox_person("bob"):
+                rendered = await net.GuardedFetcher(jobs._agent_mcp_manager()).run_browser_script("print(1)")
+        self.assertEqual(rendered, ("ok from network_recon", ""))
+        self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"], ["network_recon", "srv-a"]])
+        self.assertEqual(self.clients.by_key, {}, "no per-user client in shared mode")
 
 
 # =============================================================================

@@ -77,6 +77,14 @@ class _Case(unittest.TestCase):
     token = TOKEN
 
     def setUp(self):
+        import sandbox_contract
+        import sandbox_router
+
+        # The shared sandbox's path: shared mode is named, since the default is
+        # per_user and no gateway answers here.
+        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        self.addCleanup(sandbox_router._reset)
+
         _RecordingClient.calls = []
         _RecordingClient.status = 200
         _RecordingClient.body = None

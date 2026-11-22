@@ -15,7 +15,7 @@ export const CONTRACT_VERSION = 1
 // The switch. The orchestrator reads KALI_SANDBOX_MODE; the webapp only relays the
 // mode the orchestrator answers.
 export const MODES = ['shared', 'per_user'] as const
-export const DEFAULT_MODE = 'shared'
+export const DEFAULT_MODE = 'per_user'
 
 // `act_as` is the separate sandbox an admin acting as a person works in.
 export const VIEWS = ['own', 'act_as'] as const
