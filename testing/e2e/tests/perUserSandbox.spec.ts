@@ -9,9 +9,9 @@ import {
   removeListeners, removeMarkers, restoreProjects, sandboxContainers, sandboxOf, seedAndRead, send, sessionCard,
   sessionsOf, setProject, signIn, sleep, stackMissing, startChiselEdge, startLab, startStub, stopChiselEdge, stopLab,
   stopPersonSandbox, toolCards, toolOutput, wasSeen, processRunning, recordGrant, recordedGrant, restoreGrants,
-  forgetGrant,
-  type ChiselEdge, type Lab, type ListenerRow, type Override, type SandboxContainer, type SeedState, type SessionList,
-  type SessionRow, type Stub,
+  forgetGrant, readLedger, sandboxFits, tail, watchContainerLog,
+  type ChiselEdge, type Lab, type ListenerRow, type LogWatch, type Override, type SandboxContainer, type SeedState,
+  type SessionList, type SessionRow, type Stub,
 } from './perUserSandboxFixtures'
 
 /**
@@ -45,7 +45,16 @@ const BASE = process.env.REDAMON_BASE_URL || 'http://localhost:3000'
 const DRAWER_STARTING = 'Starting your Kali sandbox…'
 const TERMINAL_STARTING = 'Starting sandbox…'
 const PROJECT_NAMES = { PA: 'g1-PA', PB: 'g1-PB', PS: 'g1-PS' }
-const SLOW_NAABU = { naabuCustomPorts: '1-65535', naabuRateLimit: 50, naabuRunTimeout: 600 }
+// The scan that fills the governor in tests 7 and 9: every port of the lab at 50/s, cut at 600 s, so it
+// lasts until the test stops it. The typed lab address joins the scan root's address list, which Naabu
+// scans only when the root itself is in scope (subdomainList '.', port_scan.extract_targets_from_recon):
+// without it the run found "No targets" and completed in ~10 s (M-b re-run, test 9). The root in scope
+// would also hand Naabu the placeholder name, resolved by the host's resolvers; an RoE address
+// exclusion (a documentation address, RFC 5737) makes Naabu take addresses only, so no name is sent.
+const SLOW_NAABU = {
+  naabuCustomPorts: '1-65535', naabuRateLimit: 50, naabuRunTimeout: 600, subdomainList: ['.'],
+  roeExcludedHosts: ['192.0.2.1'],
+}
 
 // A trace records typed values: the fixture accounts' passwords would land in test-results/.
 test.use({ trace: 'off' })
@@ -78,6 +87,8 @@ test.beforeAll(async ({ browser, playwright }) => {
   bob = await signIn(browser, BASE, state.bob.email, state.bob.password)
   for (const c of [admin, alice, bob]) await recordTransientTexts(c, [DRAWER_STARTING, TERMINAL_STARTING])
   adminId = await meId(admin.request)
+  // A killed run's filler scan may still write g1-PA, and its settings cannot be put back until it ends.
+  await endPartialRuns(alice.request, state.projects.PA)
   const leftovers = await restoreProjects(apis(), BASE)
   if (leftovers.length) throw new Error(`an earlier run's project settings could not be put back: ${leftovers.join('; ')}`)
 
@@ -137,10 +148,12 @@ async function newPage(c: BrowserContext): Promise<Page> {
   return c.newPage()
 }
 
-async function partialRuns(api: APIRequestContext, projectId: string): Promise<{ run_id: string; status: string }[]> {
+interface PartialRun { run_id: string; status: string; error?: string | null }
+
+async function partialRuns(api: APIRequestContext, projectId: string): Promise<PartialRun[]> {
   const res = await api.get(`/api/recon/${projectId}/partial/all`)
   if (!res.ok()) return []
-  return ((await res.json()) as { runs?: { run_id: string; status: string }[] }).runs ?? []
+  return ((await res.json()) as { runs?: PartialRun[] }).runs ?? []
 }
 
 const live = <T extends { status: string }>(runs: T[]) => runs.filter(r => r.status === 'running' || r.status === 'starting')
@@ -148,6 +161,24 @@ const live = <T extends { status: string }>(runs: T[]) => runs.filter(r => r.sta
 async function stopPartialRuns(api: APIRequestContext, projectId: string) {
   for (const run of live(await partialRuns(api, projectId))) {
     await api.post(`/api/recon/${projectId}/partial/${run.run_id}/stop`, { headers: { Origin: new URL(BASE).origin } })
+  }
+}
+
+/**
+ * Stops the project's partial runs and waits (bounded, never throwing: it runs in clean-ups) until none
+ * is starting, running or stopping: until then the project's scope cannot be put back (the projects
+ * PUT answers 409 while a scan writes, graphWriters.describeScanWriters).
+ */
+async function endPartialRuns(api: APIRequestContext, projectId: string, timeoutMs = 120_000) {
+  try {
+    await stopPartialRuns(api, projectId)
+    const until = Date.now() + timeoutMs
+    while (Date.now() < until) {
+      if (!(await partialRuns(api, projectId)).some(r => ['starting', 'running', 'stopping'].includes(r.status))) return
+      await sleep(2_000)
+    }
+  } catch {
+    // A scan still writing shows as the restore's 409 right after this.
   }
 }
 
@@ -620,7 +651,7 @@ test.describe('Group A (defaults)', () => {
       if (box && after) expect.soft(after.name, 'ISOLATION: the next message started a new sandbox').not.toBe(box.name)
       ranOnlyIn(`/tmp/g1e2e-${n}`, after, 'Alice\'s own sandbox')
     } finally {
-      await stopPartialRuns(alice.request, state.projects.PA)
+      await endPartialRuns(alice.request, state.projects.PA)
       await page.close()
       await stub?.stop()
       stopLab(lab)
@@ -695,6 +726,7 @@ test.describe('Group C (memory)', () => {
     const page = await newPage(bob)
     let stub: Stub | null = null
     let lab: Lab | null = null
+    let scanLog: LogWatch | null = null
     let session = ''
     try {
       for (const id of [state.alice.id, state.bob.id, adminId]) {
@@ -711,24 +743,55 @@ test.describe('Group C (memory)', () => {
       await openChat(ownerPage, state.projects.PA)
       expect(await sandboxOf(state.alice.id, 'own'), 'Alice\'s sandbox (the first one) was admitted').not.toBeNull()
       await startNaabuFromUi(ownerPage, state.projects.PA, lab.proxyIp)
-      await expect.poll(async () => live(await partialRuns(alice.request, state.projects.PA)).length,
-        { message: 'the scan was admitted', timeout: 120_000 }).toBeGreaterThan(0)
+      let filler = ''
+      await expect.poll(async () => (filler = live(await partialRuns(alice.request, state.projects.PA))[0]?.run_id ?? ''),
+        { message: 'the scan was admitted', timeout: 120_000 }).not.toBe('')
+      scanLog = watchContainerLog(['redamon.run_kind=partial_recon', `redamon.run_id=${filler}`])
+      const log = scanLog
+      await expect.poll(() => /\[Naabu\] Found \d+ hostnames/.test(log.text()),
+        { message: `SETUP, not a product check: the scan ${filler} logged its targets`, timeout: 60_000 }).toBe(true)
+      expect(log.text(), 'SETUP, not a product check: the scan was handed addresses only, no name')
+        .toMatch(/\[Naabu\] Found 0 hostnames/)
+      // The refusals below are the governor's only while the scan holds its reservation: a scan that has
+      // ended makes them a setup failure, never a pass or a product failure.
+      const pressure = async (when: string) => {
+        const run = (await partialRuns(alice.request, state.projects.PA)).find(r => r.run_id === filler)
+        const why = !run || live([run]).length === 0
+          ? `the scan ${filler} is ${run ? `${run.status}${run.error ? ` (${run.error})` : ''}` : 'no longer listed'}`
+          : sandboxFits(await readLedger(alice.request))
+        if (why) {
+          throw new Error(`SETUP, not a product check: ${when}, the memory pressure was gone: ${why}. `
+            + `The scan's container ${log.container() || '(never seen)'} logged:\n${tail(log.text()) || '(nothing)'}`)
+        }
+      }
 
       const modal = page.getByRole('dialog').filter({ hasText: MODAL_RAM_TITLE })
+      await pressure('before Bob\'s warm-up')
       await openChat(page, state.projects.PB)
       await sleep(10_000)
+      await pressure('through Bob\'s warm-up')
       await expect(modal, 'a refused warm-up shows nothing').toHaveCount(0)
       expect(sandboxContainers({ user: state.bob.id }), 'Bob\'s warm-up was refused').toEqual([])
 
       stub = await startStub('memory', { NONCE: n }, stubPort)
+      await pressure('before Bob\'s message')
       session = await send(page, bob.request, state.projects.PB, `g1 e2e not enough memory ${n}`)
       await driveRun(page, bob.request, state.projects.PB, session)
-      await expect(modal, `the drawer shows "${MODAL_RAM_TITLE}"`).toBeVisible({ timeout: 60_000 })
+      try {
+        await expect(modal, `the drawer shows "${MODAL_RAM_TITLE}"`).toBeVisible({ timeout: 60_000 })
+      } catch (err) {
+        await pressure('through Bob\'s run')
+        throw err
+      }
       await expect(modal, 'with the governor\'s figures').toContainText(/\d+(\.\d+)? GB of \d+(\.\d+)? GB/)
 
       await stopPartialRuns(alice.request, state.projects.PA)
       await expect.poll(async () => live(await partialRuns(alice.request, state.projects.PA)).length,
         { message: 'the scan stopped', timeout: 120_000 }).toBe(0)
+      // The stop path keeps the scan's reservation; the governor's reaper releases it at its next pass
+      // (AI_ATTACK_REAP_INTERVAL, 30 s), and until then Bob's sandbox is refused again.
+      await expect.poll(async () => sandboxFits(await readLedger(alice.request)) !== null,
+        { message: 'the governor released the stopped scan\'s reservation', timeout: 120_000 }).toBe(true)
       await modal.getByRole('button', { name: MODAL_RETRY_LABEL }).click()
       await expect(toolCards(page, `g1e2e-${n}-retry`).first(), 'Retry re-sent the message').toBeVisible({ timeout: 60_000 })
       await driveRun(page, bob.request, state.projects.PB, session)
@@ -737,7 +800,8 @@ test.describe('Group C (memory)', () => {
       expect(box, 'Bob\'s sandbox started after the scan stopped').not.toBeNull()
       ranOnlyIn(`/tmp/g1e2e-${n}-retry`, box, 'Bob\'s own sandbox')
     } finally {
-      await stopPartialRuns(alice.request, state.projects.PA)
+      await scanLog?.stop()
+      await endPartialRuns(alice.request, state.projects.PA)
       await ownerPage.close()
       await page.close()
       await stub?.stop()

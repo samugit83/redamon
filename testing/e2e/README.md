@@ -90,3 +90,30 @@ container on the compose pentest network, joined to a person's sandbox network w
 needs it; group D's tunnel edge is a local chisel server. A caller already holding the lock
 (`flock LOCK bash ...`, or a descriptor it passes down) is recognised; `G1_E2E_LOCK_HELD=1` asks
 for that and fails when it is not so. The wait for the lock is bounded by `G1_E2E_LOCK_WAIT_S`.
+Playwright gets none of the wrapper's descriptors, so nothing it starts can keep the lock held.
+
+Each run keeps every group's Playwright output in its own folder,
+`testing/e2e/test-results-g1e2e/<UTC time>-<pid>/group-<G>/` (ignored by git; `G1_E2E_RESULTS_DIR`
+moves it), since Playwright empties its output folder at every start. When the drawer does not
+settle on a connected session, the failure lists what the page did (agent sockets, the type of each
+frame, ticket mints and their answers, failed API reads by path, console errors) and a screenshot
+is saved there. Chromium on the docker host aborts every request in flight when a host interface
+gains an address, as a new container's does: the spec waits after starting each of its own labs
+and edges until the host side has settled, so they are never that trigger, and nothing else is
+waited for. A failure that starts `PRODUCT, not the test:` names a known defect, not the spec: the
+drawer (`useAgentWebSocket.ts`: a ticket mint that fails in the browser, or a stale mint binding
+the new socket to the old session) or the page's one read of its session or project after such
+an abort (`AuthProvider.tsx`, `ProjectProvider.tsx`). On exit, and at the start of the run after a killed one, the wrapper removes the
+`g1e2e`-labelled labs, edges and networks a test left; a run that started from shared mode also
+stops the per-user sandboxes it started (this stack's only; those there before stay) before it puts
+the orchestrator back, fails when one is left, and removes the nuclei templates volume if it made
+it. Playwright holds no lock descriptor, so the run records its process group beside the originals
+file and the next run first stops a killed run's Playwright that still runs.
+
+Test 9 fills the memory pool with a Naabu partial recon of the lab (every port at 50/s, `g1-PA`'s
+root put in scope so the typed address is scanned, and an RoE exclusion of a documentation address
+so Naabu is handed addresses only, never the placeholder name; all restored after, and the scan's
+log must show no name). Its refusals count only while
+that scan holds its reservation in the governor's ledger (`/api/system/stats`), checked before and
+after Bob's warm-up and around his message; when it does not, the test fails with `SETUP` and the
+scan's log, never as a pass or as a product failure.

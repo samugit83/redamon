@@ -30,6 +30,11 @@
 #
 # The spec reads the seed state of tests/kali_sandbox_seed_live.py (G1_STATE, or
 # ${TMPDIR:-/tmp}/g1-live-state.json) and seeds it again itself (idempotent).
+#
+# Each run keeps every group's Playwright results (failure messages, attached
+# screenshots) in its own folder, G1_E2E_RESULTS_DIR/<UTC time>-<pid>/group-<G>
+# (default testing/e2e/test-results-g1e2e, ignored by git): Playwright empties its
+# output folder at every start, so one folder per group would lose the earlier ones.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +51,7 @@ PER_USER_MODE="${G1_E2E_PER_USER_MODE:-per_user}"
 # Names whose values never reach the originals file (compared by hash instead).
 SECRET_NAME='(_KEY|_TOKEN|_SECRET|_PASSWORD|_PASS|DATABASE_URL)$'
 
-usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
 
 GROUPS_ARG="A,B,C,D"
 SHARED=0
@@ -103,6 +108,9 @@ else
     not_ready "$ORCH does not exist, so the stack's lock file is unknown (set REDAMON_HEAVY_LOCK)"
 fi
 ORIG_FILE="${G1_E2E_ORIGINALS:-$(dirname "$LOCK")/redamon-g1-e2e-orchestrator.env}"
+# A run's Playwright process group and its leader's start time: Playwright holds no lock descriptor, so
+# after a killed wrapper it would run on unlocked beside the next run, which stops it first.
+PW_FILE="${ORIG_FILE%.env}.playwright"
 
 # --- the lock ------------------------------------------------------------------
 LOCK_STATE=""
@@ -118,8 +126,10 @@ held_descriptor() {
         fd="${entry##*/}"
         [[ "$fd" =~ ^[0-9]+$ && "$fd" -gt 2 ]] || continue
         [[ "$(lock_id "$entry")" == "$want" ]] || continue
-        # Succeeds at once when this open file already holds the lock (the caller's).
-        if flock -n "$fd" 2>/dev/null; then echo "$fd"; return 0; fi
+        # The kernel lists a flock in the fdinfo of every descriptor of the open file that holds it.
+        # Trying `flock -n` instead would take the lock through a descriptor the caller merely
+        # opened, and it would stay held by the caller after this script.
+        if grep -q '^lock:.*FLOCK' "/proc/$$/fdinfo/$fd" 2>/dev/null; then echo "$fd"; return 0; fi
     done
     return 1
 }
@@ -253,6 +263,8 @@ persist_originals() {
             else echo "E $key=${ORIG_ENV[$key]}"; fi
         done
         for key in "${!ORIG_LIM[@]}"; do echo "L $key=${ORIG_LIM[$key]}"; done
+        echo "T TEMPLATES_BEFORE=$TEMPLATES_BEFORE"
+        echo "P SANDBOXES_BEFORE=$SANDBOXES_BEFORE"
       } > "$tmp" )
     chmod 600 "$tmp"
     mv -f "$tmp" "$ORIG_FILE"
@@ -261,11 +273,14 @@ persist_originals() {
 load_originals() {
     local kind rest
     ORIG_ENV=(); ORIG_HASH=(); ORIG_LIM=()
+    TEMPLATES_BEFORE=""; TEMPLATES_KNOWN=0; SANDBOXES_BEFORE=""; SANDBOXES_KNOWN=0
     while IFS=' ' read -r kind rest; do
         case "$kind" in
             E) ORIG_ENV["${rest%%=*}"]="${rest#*=}" ;;
             S) ORIG_HASH["${rest%%=*}"]="${rest#*=}" ;;
             L) ORIG_LIM["${rest%%=*}"]="${rest#*=}" ;;
+            T) TEMPLATES_BEFORE="${rest#*=}"; TEMPLATES_KNOWN=1 ;;
+            P) SANDBOXES_BEFORE="${rest#*=}"; SANDBOXES_KNOWN=1 ;;
         esac
     done < "$ORIG_FILE"
 }
@@ -398,6 +413,7 @@ if [[ $DRY -eq 1 ]]; then
     problem="$(readiness_problem)"
     echo "readiness: ${problem:-ok}"
     [[ -f "$ORIG_FILE" ]] && echo "an earlier run left $ORIG_FILE: a run puts the orchestrator back from it first"
+    [[ -f "$PW_FILE" ]] && echo "an earlier run left $PW_FILE: a run first stops that Playwright if it still runs"
     snapshot_originals
     echo "replayed inputs: $(service_inputs | wc -l) (limits: cpus $(awk -v n="${ORIG_LIM[NanoCpus]}" 'BEGIN { printf "%g", n / 1e9 }'), memory ${ORIG_LIM[Memory]}, pids ${ORIG_LIM[PidsLimit]}, port ${ORIG_LIM[Port]:-none})"
     for g in "${GROUP_LIST[@]}"; do
@@ -417,32 +433,214 @@ problem="$(readiness_problem)"
 take_lock
 echo "lock: $LOCK_STATE"
 
-# A run killed after a recreate left its originals: put them back first.
+# What a per-user orchestrator leaves behind when the run started from shared mode. In shared mode no
+# one uses a per-user sandbox: the orchestrator adopts it and stops it only once it is idle, holding its
+# memory until then; and the nuclei templates volume is made on the first sandbox start. Only this
+# stack's count (its compose project owns them, sandbox_manager.LABEL_OWNER), and only what the run
+# made: the sandboxes and volumes there before are recorded, in the originals file too, for the next
+# start after a killed run (a file that lacks a record stops or removes nothing of that kind).
+OWNER_LABEL="redamon.sandbox.owner=$STACK_PROJECT"
+ORIG_SHARED=0
+TEMPLATES_BEFORE=""
+TEMPLATES_KNOWN=0
+SANDBOXES_BEFORE=""
+SANDBOXES_KNOWN=0
+
+originals_mode() {
+    ORIG_SHARED=0
+    [[ "$(effective_mode "${ORIG_ENV[KALI_SANDBOX_MODE]-}")" == shared ]] && ORIG_SHARED=1
+    return 0
+}
+
+# This stack's per-user sandboxes, one "name user" per line.
+stack_sandboxes() {
+    docker ps -a --filter label=redamon.sandbox=1 --filter label=redamon.sandbox.user --filter "label=$OWNER_LABEL" \
+        --format '{{.Names}} {{.Label "redamon.sandbox.user"}}'
+}
+
+stack_templates() {
+    docker volume ls -q --filter label=redamon.sandbox.role=templates --filter "label=$OWNER_LABEL"
+}
+
+# The run's sandboxes ("name user" lines): this stack's, less those there before.
+new_sandboxes() {
+    local list name user
+    list="$(stack_sandboxes)" || return 1
+    while read -r name user; do
+        [[ -n "$name" && " $SANDBOXES_BEFORE " != *" $name "* ]] && echo "$name $user"
+    done <<< "$list"
+    return 0
+}
+
+# Stops the run's per-user sandboxes, person by person, through the running per-user orchestrator (the
+# key goes to curl on stdin, never on a command line). A person who also had a sandbox before the run is
+# not stopped (the stop takes all of their views) and the sweep names the new one. Only for a run that
+# started from shared mode: in per-user mode the sandboxes running are people's own and stay.
+stop_run_sandboxes() {
+    local list name user code users="" kept="" bad=0
+    [[ $ORIG_SHARED -eq 1 && $SANDBOXES_KNOWN -eq 1 ]] || return 0
+    is_running "$ORCH" || return 0
+    snapshot
+    [[ "$(effective_mode "${SNAP_ENV[KALI_SANDBOX_MODE]-}")" == per_user ]] || return 0
+    if ! list="$(stack_sandboxes)"; then
+        echo "FAIL: stopping the run's per-user sandboxes: they cannot be listed" >&2
+        return 1
+    fi
+    while read -r name user; do
+        [[ -n "$name" && " $SANDBOXES_BEFORE " == *" $name "* ]] && kept+=" $user "
+    done <<< "$list"
+    while read -r name user; do
+        [[ -n "$name" && " $SANDBOXES_BEFORE " != *" $name "* ]] || continue
+        [[ " $users " == *" $user "* || "$kept" == *" $user "* ]] || users+=" $user"
+    done <<< "$list"
+    for user in $users; do
+        if [[ ! "$user" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+            echo "FAIL: stopping the run's per-user sandboxes: an owner label is not a user id" >&2
+            bad=1
+            continue
+        fi
+        code="$(printf 'header = "X-Orchestrator-Key: %s"\n' "${SNAP_ENV[ORCHESTRATOR_API_KEY]-}" \
+            | curl -s -m 300 -o /dev/null -w '%{http_code}' -K - -H 'Content-Type: application/json' \
+                -d '{"reason":"operator"}' "http://127.0.0.1:${SNAP_LIM[Port]:-8010}/sandboxes/$user/stop" || true)"
+        if [[ "$code" == 200 ]]; then
+            echo "stopped one person's per-user sandboxes the run started, before shared mode comes back"
+        else
+            echo "FAIL: stopping one person's per-user sandboxes the run started answered HTTP ${code:-none}" >&2
+            bad=1
+        fi
+    done
+    return "$bad"
+}
+
+# After the switch back to shared mode: no sandbox the run started may be left, and a templates volume
+# the run made goes (best effort: a refresher still using it keeps it, and says so).
+sweep_after_shared() {
+    local left vols vol
+    [[ $ORIG_SHARED -eq 1 ]] || return 0
+    if [[ $SANDBOXES_KNOWN -eq 1 ]]; then
+        if ! left="$(new_sandboxes)"; then
+            echo "FAIL: the per-user sandboxes cannot be listed after the run" >&2
+            return 1
+        fi
+        if [[ -n "$left" ]]; then
+            echo "FAIL: per-user sandboxes left after the run: $(cut -d' ' -f1 <<< "$left" | tr '\n' ' ')" >&2
+            return 1
+        fi
+    fi
+    if [[ $TEMPLATES_KNOWN -eq 1 && -z "${TEMPLATES_BEFORE// /}" ]]; then
+        if ! vols="$(stack_templates)"; then
+            echo "FAIL: the templates volumes cannot be listed after the run" >&2
+            return 1
+        fi
+        for vol in $vols; do
+            if docker volume rm "$vol" >/dev/null 2>&1; then
+                echo "removed the templates volume $vol (absent before the run)"
+            else
+                echo "the templates volume $vol, absent before the run, is still in use: left" >&2
+            fi
+        done
+    fi
+    return 0
+}
+
+# The labs, chisel edges and their networks of a test that timed out or was killed (its finally never
+# ran); the spec labels every one g1e2e=1.
+sweep_test_leftovers() {
+    local id
+    for id in $(docker ps -aq --filter label=g1e2e=1); do
+        docker rm -f "$id" >/dev/null 2>&1 && echo "removed a test container left behind ($id)"
+    done
+    for id in $(docker network ls -q --filter label=g1e2e=1); do
+        docker network rm "$id" >/dev/null 2>&1 && echo "removed a test network left behind ($id)"
+    done
+    return 0
+}
+
+# The start time of process $1 (field 22 of /proc/<pid>/stat), nothing when it is gone.
+proc_start() {
+    local stat f
+    stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 0
+    read -r -a f <<< "${stat##*) }"
+    echo "${f[19]-}"
+}
+
+# Stops the process group $1 (Playwright, its browsers and stub servers) and waits until it is gone.
+# INT first: Playwright then runs the spec's afterAll hooks, which put the settings back.
+stop_group() {
+    local _
+    kill -INT -- "-$1" 2>/dev/null || true
+    for _ in $(seq 1 60); do kill -0 -- "-$1" 2>/dev/null || return 0; sleep 0.5; done
+    kill -TERM -- "-$1" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 -- "-$1" 2>/dev/null || return 0; sleep 0.5; done
+    kill -KILL -- "-$1" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 -- "-$1" 2>/dev/null || return 0; sleep 0.5; done
+    return 1
+}
+
+# The Playwright group a killed run recorded, while it still runs: its leader with the recorded start
+# time, or what is left of the group once the leader is gone (a group id is not reused while a member
+# lives). A leader with another start time is a reused pid, never signalled.
+orphan_group() {
+    local pgid start now
+    [[ -f "$PW_FILE" ]] || return 1
+    read -r pgid start < "$PW_FILE" || return 1
+    [[ "$pgid" =~ ^[0-9]+$ ]] || return 1
+    now="$(proc_start "$pgid")"
+    [[ -z "$now" || "$now" == "$start" ]] || return 1
+    kill -0 -- "-$pgid" 2>/dev/null || return 1
+    echo "$pgid"
+}
+
+# Playwright holds no lock descriptor, so a killed run's runs on unlocked: stop it before anything else.
+if PW_ORPHAN="$(orphan_group)"; then
+    echo "a killed run's Playwright (process group $PW_ORPHAN) still runs: stopping it first"
+    if ! stop_group "$PW_ORPHAN"; then
+        echo "FAIL: it did not stop; nothing else was done" >&2
+        exit 1
+    fi
+fi
+rm -f "$PW_FILE"
+
+# Under the lock no spec runs, so a g1e2e container now is a killed run's.
+sweep_test_leftovers
+
+# A run killed after a recreate left its originals: put them back first, with what that run left.
 if [[ -f "$ORIG_FILE" ]]; then
     echo "an earlier run left $ORIG_FILE: putting $ORCH back first"
+    LEFT_RC=0
     load_originals
+    originals_mode
+    stop_run_sandboxes || LEFT_RC=1
     set_target
     if ! recreate || ! compare_running; then
         echo "FAIL: $ORCH could not be put back from $ORIG_FILE (kept); fix it by hand before the next run" >&2
         exit 1
     fi
     rm -f "$ORIG_FILE"
+    sweep_after_shared || LEFT_RC=1
+    if [[ $LEFT_RC -ne 0 ]]; then
+        echo "FAIL: what the earlier run left is not all cleaned up (above); fix it by hand before the next run" >&2
+        exit 1
+    fi
 fi
 
 # Read under the lock: these are the values the trap puts back.
 snapshot_originals
+originals_mode
+TEMPLATES_BEFORE="$(stack_templates | tr '\n' ' ')"
+SANDBOXES_BEFORE="$(stack_sandboxes | cut -d' ' -f1 | tr '\n' ' ')"
+TEMPLATES_KNOWN=1
+SANDBOXES_KNOWN=1
 CHANGED=0
 PW_PID=""
 
 stop_playwright() {
     [[ -n "$PW_PID" ]] || return 0
-    local _
-    # INT first: Playwright then runs the spec's afterAll hooks, which put the settings back.
-    kill -INT -- "-$PW_PID" 2>/dev/null || true
-    for _ in $(seq 1 60); do kill -0 "$PW_PID" 2>/dev/null || break; sleep 0.5; done
-    kill -TERM -- "-$PW_PID" 2>/dev/null || true
-    for _ in $(seq 1 20); do kill -0 "$PW_PID" 2>/dev/null || break; sleep 0.5; done
-    kill -KILL -- "-$PW_PID" 2>/dev/null || true
+    if stop_group "$PW_PID"; then
+        rm -f "$PW_FILE"
+    else
+        echo "FAIL: Playwright (process group $PW_PID) did not stop; the next run stops it first" >&2
+    fi
     PW_PID=""
 }
 
@@ -452,10 +650,13 @@ restore() {
     trap '' INT TERM HUP
     trap - EXIT
     stop_playwright
+    sweep_test_leftovers
     if [[ $CHANGED -eq 1 ]]; then
+        stop_run_sandboxes || rc=1
         set_target
         if recreate && compare_running; then
             rm -f "$ORIG_FILE"
+            sweep_after_shared || rc=1
         else
             echo "FAIL: $ORCH differs from what it was before this run (the originals stay in $ORIG_FILE; the next run puts them back)" >&2
             rc=1
@@ -466,6 +667,21 @@ restore() {
 trap restore EXIT
 trap 'exit 130' INT TERM HUP
 
+RESULTS="${G1_E2E_RESULTS_DIR:-$E2E/test-results-g1e2e}/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir -p "$RESULTS"
+echo "results of this run: $RESULTS"
+
+# Descriptors 3 and up are closed for Playwright: one holding the heavy lock (ours, or the caller's)
+# would keep it held by any browser or helper outliving this script.
+close_inherited_fds() {
+    local entry fd
+    for entry in "/proc/$BASHPID/fd/"*; do
+        fd="${entry##*/}"
+        [[ "$fd" =~ ^[0-9]+$ && "$fd" -gt 2 ]] && eval "exec $fd>&-"
+    done
+    return 0
+}
+
 # Playwright runs in its own process group in the background, so a signal reaches the trap at once
 # and the trap can stop the whole group (browsers and stub servers included). A shell started in the
 # background starts its children with SIGINT ignored; env --default-signal gives Playwright it back,
@@ -473,11 +689,14 @@ trap 'exit 130' INT TERM HUP
 run_group() {
     local mode rc=0
     mode="$([[ $SHARED -eq 1 ]] && echo shared || echo per_user)"
-    ( cd "$E2E" && export G1_E2E_REQUIRE_LIVE=1 G1_E2E_MODE="$mode" \
-        && exec setsid env --default-signal=INT,QUIT npx playwright test perUserSandbox --grep "${TITLE[$1]} \\(" "${EXTRA[@]}" ) &
+    ( close_inherited_fds && cd "$E2E" && export G1_E2E_REQUIRE_LIVE=1 G1_E2E_MODE="$mode" \
+        && exec setsid env --default-signal=INT,QUIT npx playwright test perUserSandbox --grep "${TITLE[$1]} \\(" \
+            --output "$RESULTS/group-$1" "${EXTRA[@]}" ) &
     PW_PID=$!
+    echo "$PW_PID $(proc_start "$PW_PID")" > "$PW_FILE"
     wait "$PW_PID" || rc=$?
     PW_PID=""
+    rm -f "$PW_FILE"
     return "$rc"
 }
 

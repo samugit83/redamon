@@ -1,9 +1,12 @@
-import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { execFile, execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, type APIRequestContext, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
+import {
+  expect, test, type APIRequestContext, type Browser, type BrowserContext, type ConsoleMessage, type Locator, type Page,
+  type Request, type Response, type WebSocket,
+} from '@playwright/test'
 import { sessionIds } from './aitlDriver'
 import { envValue } from './uiLogin'
 
@@ -197,6 +200,48 @@ export async function noSandboxWithin(userId: string, view: View, timeoutMs: num
   }
 }
 
+export interface LogWatch {
+  /** The last copy of the container's log (empty before the container was seen). */
+  text: () => string
+  /** The container's id, once seen. */
+  container: () => string
+  stop: () => Promise<void>
+}
+
+/**
+ * Copies the log of the container carrying every label of `labels` (`name=value`) every two seconds
+ * while it exists, so a container that ends and is removed (a partial recon's) still leaves its log
+ * for a failure message. Each Docker call ends by itself (`docker logs` without -f).
+ */
+export function watchContainerLog(labels: string[]): LogWatch {
+  for (const label of labels) {
+    if (!/^[a-z0-9_.-]+=[A-Za-z0-9_.:-]+$/.test(label)) throw new Error(`not a label filter: ${label}`)
+  }
+  const run = (args: string[]) => new Promise<string>(resolve => {
+    execFile('docker', args, { encoding: 'utf8', timeout: 30_000, maxBuffer: 8 << 20 },
+      (err, stdout, stderr) => resolve(err ? '' : `${stdout}${stderr}`))
+  })
+  let id = ''
+  let text = ''
+  let stopped = false
+  const loop = (async () => {
+    while (!stopped) {
+      if (!id) id = (await run(['ps', '-aq', '--no-trunc', ...labels.flatMap(l => ['--filter', `label=${l}`])])).trim().split('\n')[0] ?? ''
+      if (id) {
+        const copy = await run(['logs', '--tail', '400', id])
+        if (copy) text = copy
+      }
+      await sleep(2_000)
+    }
+  })()
+  return { text: () => text, container: () => id, stop: async () => { stopped = true; await loop } }
+}
+
+/** The last `lines` lines of `text`, for a failure message. */
+export function tail(text: string, lines = 40): string {
+  return text.split('\n').filter(Boolean).slice(-lines).join('\n')
+}
+
 /** Whether the container `name` is gone (stopped and removed) within the time. */
 export async function goneWithin(name: string, timeoutMs: number): Promise<boolean> {
   const until = Date.now() + timeoutMs
@@ -289,6 +334,41 @@ export interface Lab {
 }
 
 /**
+ * Waits (at most 5 s) until the host side of every interface of the container `name`, and the bridge of
+ * each of `networks`, has its IPv6 link-local address, out of duplicate detection. Chromium on the
+ * docker host aborts every request in flight when a host interface gains an address, which a new
+ * container's veth does 1-2 s after it comes up: a page loaded then loses its first reads (r14: the
+ * lab came up, the page's session read was aborted, "No User"). The spec's own labs and edges must not
+ * be that trigger. Never throws; a host without IPv6 just waits the 5 s.
+ */
+function settleHostLinks(name: string, networks: string[] = []): void {
+  const want = new Set<string>()
+  const links = spawnSync('docker', ['exec', name, 'sh', '-c',
+    'for i in /sys/class/net/*; do [ "${i##*/}" = lo ] || cat "$i/iflink"; done'], { encoding: 'utf8', timeout: 30_000 })
+  for (const line of (links.stdout ?? '').split('\n')) if (/^\d+$/.test(line.trim())) want.add(`index ${Number(line.trim())}`)
+  for (const network of networks) {
+    const id = spawnSync('docker', ['network', 'inspect', '-f', '{{.Id}}', network], { encoding: 'utf8', timeout: 30_000 })
+    if (id.stdout?.trim()) want.add(`device br-${id.stdout.trim().slice(0, 12)}`)
+  }
+  const until = Date.now() + 5_000
+  while (want.size && Date.now() < until) {
+    let table = ''
+    try { table = readFileSync('/proc/net/if_inet6', 'utf8') } catch { return }
+    const settled = new Set<string>()
+    for (const row of table.split('\n')) {
+      // address, ifindex, prefix length, scope (20: link), flags (40: tentative), device; hex
+      const [, index, , scope, flags, device] = row.trim().split(/\s+/)
+      if (scope === '20' && (parseInt(flags, 16) & 0x40) === 0) {
+        settled.add(`index ${parseInt(index, 16)}`)
+        settled.add(`device ${device}`)
+      }
+    }
+    if ([...want].every(w => settled.has(w))) return
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+  }
+}
+
+/**
  * A throwaway lab: busybox serving two pages on 8080 and a shell bound on 5555 (`nc -lk -e`), on the
  * compose pentest network, where the capture proxy and the shared sandbox reach it.
  */
@@ -304,6 +384,7 @@ export function startLab(n: string): Lab {
   ].join(' && ')
   docker(['run', '-d', '--rm', '--name', name, '--label', 'g1e2e=1', '--network', pentestNetwork(),
     '-e', `G1_NONCE=${n}`, LAB_IMAGE, 'sh', '-c', script])
+  settleHostLinks(name)
   return { name, proxyIp: ipOn(name, pentestNetwork()), nonce: n }
 }
 
@@ -315,7 +396,10 @@ export function connectLab(lab: Lab, userId: string, view: View = 'own'): string
   if (MODE === 'shared') return lab.proxyIp
   const network = sandboxNetwork(userId, view)
   const nets = Object.keys(JSON.parse(docker(['inspect', '-f', '{{json .NetworkSettings.Networks}}', lab.name])) as object)
-  if (!nets.includes(network)) docker(['network', 'connect', network, lab.name])
+  if (!nets.includes(network)) {
+    docker(['network', 'connect', network, lab.name])
+    settleHostLinks(lab.name)
+  }
   return ipOn(lab.name, network)
 }
 
@@ -337,6 +421,7 @@ export function startChiselEdge(n: string, userId: string): ChiselEdge {
     '--entrypoint', '/usr/local/bin/chisel', KALI_IMAGE, 'server', '--port', '9090', '--reverse'])
   const sbx = sandboxNetwork(userId, 'own')
   docker(['network', 'connect', sbx, name])
+  settleHostLinks(name, [network])
   return { name, network, url: `http://${ipOn(name, sbx)}:9090` }
 }
 
@@ -619,35 +704,209 @@ export async function drawerSession(page: Page): Promise<string> {
 }
 
 /**
+ * The graph toolbar's target, which it renders only once the page's project has loaded (GraphToolbar.tsx
+ * `targetLabel`, from the same project state as the page's projectId).
+ */
+const LOADED_PROJECT = '[class*="GraphToolbar-module__"][class*="__targetDomain"]'
+
+const isTicketMint = (url: string) => new URL(url).pathname.endsWith('/api/agent/ws-ticket')
+
+/**
+ * What the page did on its way to a chat socket, with the time of each step: the agent sockets opened
+ * and closed and the type of every frame (never a payload: the init frame carries the ticket), the
+ * ticket mints and their answers (a refusal's code and reason, never a ticket), console errors.
+ */
+export interface DrawerWatch {
+  events: string[]
+  mark: (what: string) => void
+  /** Ticket mints asked and not yet answered or failed. */
+  pendingMints: () => number
+  /** The session id of the last init frame the page sent on an agent socket ('' before one). */
+  lastInit: () => string
+  stop: () => void
+}
+
+export function watchDrawer(page: Page): DrawerWatch {
+  const t0 = Date.now()
+  const events: string[] = []
+  const add = (what: string) => {
+    // A failing terminal or CypherFix socket's console line carries its URL, ticket included.
+    events.push(`+${((Date.now() - t0) / 1000).toFixed(2)}s ${what.replace(/(ticket=)[^&\s"']+/gi, '$1…')}`)
+    if (events.length > 80) events.splice(0, events.length - 80)
+  }
+  const parse = (frame: string | Buffer): { type?: unknown; payload?: { session_id?: unknown } } | null => {
+    try { return JSON.parse(String(frame)) } catch { return null }
+  }
+  add(`watching from ${new Date(t0).toISOString()}`)
+  let sockets = 0
+  // A request can answer and still fail afterwards (its body cut by the same network change): a set,
+  // not a counter, so it is counted once.
+  const pending = new Set<Request>()
+  let lastInit = ''
+  const onSocket = (ws: WebSocket) => {
+    if (!ws.url().includes('/ws/agent')) return
+    const n = ++sockets
+    add(`ws${n} opening`)
+    ws.on('framesent', f => {
+      const frame = parse(f.payload)
+      const type = frame ? String(frame.type ?? '?') : 'non-JSON'
+      if (type === 'init') lastInit = String(frame?.payload?.session_id ?? '')
+      add(`ws${n} sent ${type}${type === 'init' ? ` for ${lastInit}` : ''}`)
+    })
+    ws.on('framereceived', f => add(`ws${n} got ${String(parse(f.payload)?.type ?? 'non-JSON')}`))
+    ws.on('socketerror', e => add(`ws${n} error ${String(e).slice(0, 120)}`))
+    ws.on('close', () => add(`ws${n} closed`))
+  }
+  const onRequest = (r: Request) => { if (isTicketMint(r.url())) { pending.add(r); add('mint asked') } }
+  const onFailed = (r: Request) => {
+    if (isTicketMint(r.url())) {
+      pending.delete(r)
+      add(`mint failed: ${r.failure()?.errorText ?? '?'}`)
+      return
+    }
+    // Path only: a query can carry a ticket.
+    const path = new URL(r.url()).pathname
+    if (path.startsWith('/api/')) add(`request failed: ${r.method()} ${path}: ${r.failure()?.errorText ?? '?'}`)
+  }
+  const onResponse = (r: Response) => {
+    if (!isTicketMint(r.url())) return
+    pending.delete(r.request())
+    if (r.ok()) { add(`mint ${r.status()}`); return }
+    void r.json().then(
+      (b: { code?: string; error?: string }) => add(`mint ${r.status()} ${b?.code ?? ''} ${String(b?.error ?? '').slice(0, 120)}`),
+      () => add(`mint ${r.status()}`))
+  }
+  const onConsole = (m: ConsoleMessage) => {
+    if (m.type() === 'error' || m.type() === 'warning') add(`console ${m.type()}: ${m.text().slice(0, 160)}`)
+  }
+  page.on('websocket', onSocket)
+  page.on('request', onRequest)
+  page.on('requestfailed', onFailed)
+  page.on('response', onResponse)
+  page.on('console', onConsole)
+  return {
+    events,
+    mark: add,
+    pendingMints: () => pending.size,
+    lastInit: () => lastInit,
+    stop: () => {
+      page.off('websocket', onSocket)
+      page.off('request', onRequest)
+      page.off('requestfailed', onFailed)
+      page.off('response', onResponse)
+      page.off('console', onConsole)
+    },
+  }
+}
+
+let shots = 0
+
+/** The drawer's state as the person sees it, for a failure message; a screenshot goes to the test's results. */
+async function drawerEvidence(page: Page, watch: DrawerWatch): Promise<string> {
+  const parts: string[] = []
+  try {
+    parts.push(`project loaded: ${(await page.locator(LOADED_PROJECT).count()) > 0}`)
+    parts.push(`drawer open: ${await page.getByRole('button', { name: 'Start new session' }).isVisible()}`)
+    parts.push(`text boxes: ${JSON.stringify(await page.locator('textarea').evaluateAll(els => els.map(e => (e as HTMLTextAreaElement).placeholder)))}`)
+    parts.push(`drawer session: ${(await drawerSession(page)) || 'none'}`)
+    parts.push(`alerts: ${JSON.stringify((await page.getByRole('alert').allInnerTexts()).map(t => t.slice(0, 200)))}`)
+    const shot = test.info().outputPath(`drawer-${++shots}.png`)
+    await page.screenshot({ path: shot })
+    parts.push(`screenshot: ${shot}`)
+  } catch (err) {
+    parts.push(`evidence incomplete: ${String(err).slice(0, 200)}`)
+  }
+  parts.push(`steps:\n  ${watch.events.join('\n  ') || 'none'}`)
+  return parts.join('; ')
+}
+
+/**
  * /graph on the project with a new chat session started explicitly ("Start new session", the pattern
  * of agentInTheLoop.spec.ts), once the drawer has settled on it: connected, and on the same session
- * for two seconds (the project's load can start one more). Answers the session id.
+ * for two seconds. Answers the session id.
+ *
+ * The drawer is opened only once the page has loaded its project: a fresh page's project goes from
+ * none to this one when its fetch answers, and the page closes the drawer on every project change
+ * (graph/page.tsx), so a drawer opened before that was closed under the test, once after "Start new
+ * session" (M-b re-run, test 8: no prompt for 60 s).
  */
 export async function openChat(page: Page, projectId: string): Promise<string> {
-  await page.goto(`/graph?project=${projectId}`)
-  await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--drawer-bottom') !== '')
-  const fresh = page.getByRole('button', { name: 'Start new session' })
-  await expect(async () => {
-    if (!(await fresh.isVisible())) await page.getByRole('button', { name: 'Toggle AI Agent' }).click()
-    await expect(fresh).toBeVisible({ timeout: 3_000 })
-    await page.waitForTimeout(500)
-    await expect(fresh).toBeVisible()
-  }).toPass({ timeout: 60_000 })
-  const previous = await drawerSession(page)
-  await fresh.click()
-  const prompt = page.getByPlaceholder(PROMPT)
-  let session = ''
-  await expect(async () => {
-    session = await drawerSession(page)
-    expect(session, 'the drawer started a new session').not.toBe('')
-    expect(session, 'the drawer started a new session').not.toBe(previous)
-    await expect(prompt).toBeEnabled({ timeout: 1_000 })
-    await page.waitForTimeout(2_000)
-    expect(await drawerSession(page), 'the drawer stayed on its new session').toBe(session)
-    await expect(prompt).toBeEnabled({ timeout: 1_000 })
-  }, 'the drawer settled on a new, connected chat session').toPass({ timeout: 60_000 })
-  return session
+  const watch = watchDrawer(page)
+  try {
+    await page.goto(`/graph?project=${projectId}`)
+    await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--drawer-bottom') !== '')
+    await expect(page.locator(LOADED_PROJECT).first(), 'the page loaded its project').toBeAttached({ timeout: 60_000 })
+    watch.mark('project loaded')
+    const fresh = page.getByRole('button', { name: 'Start new session' })
+    await expect(async () => {
+      if (!(await fresh.isVisible())) {
+        watch.mark('drawer toggled')
+        await page.getByRole('button', { name: 'Toggle AI Agent' }).click()
+      }
+      await expect(fresh).toBeVisible({ timeout: 3_000 })
+      await page.waitForTimeout(500)
+      await expect(fresh).toBeVisible()
+    }).toPass({ timeout: 60_000 })
+    const previous = await drawerSession(page)
+    watch.mark(`new session asked (was ${previous || 'none'})`)
+    await fresh.click()
+    const prompt = page.getByPlaceholder(PROMPT)
+    let session = ''
+    await expect(async () => {
+      session = await drawerSession(page)
+      expect(session, 'the drawer started a new session').not.toBe('')
+      expect(session, 'the drawer started a new session').not.toBe(previous)
+      await expect(prompt).toBeEnabled({ timeout: 1_000 })
+      await page.waitForTimeout(2_000)
+      expect(await drawerSession(page), 'the drawer stayed on its new session').toBe(session)
+      await expect(prompt).toBeEnabled({ timeout: 1_000 })
+    }, 'the drawer settled on a new, connected chat session').toPass({ timeout: 60_000 })
+    // The socket is the session of the last init it was sent, so a mint still out could rebind it.
+    await expect.poll(() => watch.pendingMints(), { message: 'every ticket mint of the page answered', timeout: 60_000 }).toBe(0)
+    expect(watch.lastInit(), STALE_INIT).toBe(session)
+    return session
+  } catch (err) {
+    const asked = watch.events.findIndex(e => e.includes('new session asked'))
+    // Named only when the drawer is still not connected: the replaced socket's failed mint is harmless.
+    const mintLost = asked >= 0 && watch.events.slice(asked).some(e => e.includes(' mint failed: '))
+      && (await page.getByPlaceholder(PROMPT).count().catch(() => 0)) === 0
+    const lostReads = watch.events.some(e => e.endsWith(' project loaded')) ? [] : [...new Set(watch.events.flatMap(e => {
+      const read = / request failed: GET \/api\/(auth\/me|projects\/[^/: ]+): /.exec(e)?.[1]
+      return read ? [read === 'auth/me' ? 'its session (GET /api/auth/me)' : 'its project (GET /api/projects/<id>)'] : []
+    }))]
+    throw new Error(`${err instanceof Error ? err.message : String(err)}`
+      + (mintLost ? `\n${MINT_LOST}` : '')
+      + (lostReads.length ? `\n${PAGE_LOST} The read that failed: ${lostReads.join(', ')}.` : '')
+      + `\nthe drawer then: ${await drawerEvidence(page, watch)}`)
+  } finally {
+    watch.stop()
+  }
 }
+
+/**
+ * A ticket mint that fails in the browser (no answer: Chromium aborts every request in flight with
+ * net::ERR_NETWORK_CHANGED when a network appears or goes on its host, as a sandbox's does) leaves the
+ * drawer FAILED for good: useAgentWebSocket.sendInit mints once per socket and reconnects only on a
+ * closed socket. Named in openChat's failure so it is not read as a test fault.
+ */
+const MINT_LOST = 'PRODUCT, not the test: a ticket mint failed in the browser after "Start new session", and the '
+  + 'drawer does not mint again after a failed mint (useAgentWebSocket.ts sendInit), so it stays "Connecting to agent...".'
+
+/**
+ * The same browser abort on a page's first reads: the session (AuthProvider.tsx) and the project
+ * (ProjectProvider.tsx) are read once per page load and never again after a request that failed.
+ */
+const PAGE_LOST = 'PRODUCT, not the test: a page reads its session and its project once per load; a read that '
+  + 'failed in the browser (a network change aborts every request in flight) is never made again (AuthProvider.tsx, '
+  + 'ProjectProvider.tsx), so the page stays without its user or project until a reload.'
+
+/**
+ * The mint of a socket the drawer has replaced (at "Start new session") still sends its init, with
+ * the old session id, on the new socket when it answers (useAgentWebSocket.sendInit checks only a
+ * failed mint against the current socket); answering last, it binds the socket to the old session.
+ */
+const STALE_INIT = 'PRODUCT, not the test: the drawer\'s socket is bound to its own session (the last init it sent '
+  + 'names it); a slower mint of the replaced socket sent the old session\'s init on the new socket (useAgentWebSocket.ts sendInit)'
 
 /**
  * Sends `text` in the drawer's own session, which must be new to the project, and answers that
@@ -826,6 +1085,46 @@ export async function expectSessionOutOfReach(page: Page, api: APIRequestContext
   for (const [how, res] of [['its instance', viaItsInstance], ['no instance', viaNone], ['the viewer\'s own instance', viaOwn]] as const) {
     expect(await res.text(), `ISOLATION (E3): a drive through ${how} never reaches the other person's session`).not.toContain(reached)
   }
+}
+
+// --- The memory governor ------------------------------------------------------------------
+
+/** The governor's ledger, in bytes, as the system meter reads it (GET /api/system/stats, admission_ledger.snapshot). */
+export interface Ledger {
+  scanPool: number
+  committed: number
+  activeScans: number
+  sandboxCommitted: number
+  sandboxEnvelope: number
+}
+
+export async function readLedger(api: APIRequestContext): Promise<Ledger> {
+  const res = await api.get('/api/system/stats')
+  expect(res.status(), 'the governor\'s ledger (/api/system/stats)').toBe(200)
+  const mem = ((await res.json()) as { mem?: Record<string, unknown> }).mem ?? {}
+  const num = (k: string) => {
+    const v = mem[k]
+    if (typeof v !== 'number') throw new Error(`/api/system/stats has no number mem.${k}`)
+    return v
+  }
+  return {
+    scanPool: num('scan_pool'), committed: num('committed'), activeScans: num('active_scans'),
+    sandboxCommitted: num('sandbox_committed'), sandboxEnvelope: num('sandbox_envelope'),
+  }
+}
+
+/**
+ * Why another person's sandbox would be admitted now, or null when the governor must refuse it on
+ * budget: a scan is reserved, a sandbox too (the first one is exempt), and one more sandbox envelope
+ * exceeds the pool (admission_ledger._admit_sandbox).
+ */
+export function sandboxFits(l: Ledger): string | null {
+  if (l.activeScans < 1) return 'the ledger holds no scan reservation'
+  if (l.sandboxCommitted <= 0) return 'the ledger holds no sandbox reservation'
+  if (l.committed + l.sandboxEnvelope <= l.scanPool) {
+    return `one more sandbox fits the pool (${l.committed} + ${l.sandboxEnvelope} <= ${l.scanPool} bytes)`
+  }
+  return null
 }
 
 // --- Admin helpers ---------------------------------------------------------------------
