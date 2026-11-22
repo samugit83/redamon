@@ -30,6 +30,9 @@ export function whispererErrorText(status: number, data: unknown): string {
   return parts.length ? `${text} (${parts.join(' · ')})` : text
 }
 
+/** A contended command's answer came back cut short (`still_running`): the session manager answers before the agent gives up. */
+const STILL_RUNNING_TEXT = 'The command is still running in the session; its remaining output will not be shown'
+
 interface TerminalLine {
   text: string
   type: 'command' | 'output' | 'error' | 'system'
@@ -43,6 +46,10 @@ interface SessionTerminalProps {
   agentBusy: boolean
   projectId: string
   onInteract: (sessionId: number, command: string) => Promise<SessionInteractResult>
+  /** A complete list no longer holds this session: the output stays, no more commands. */
+  ended?: boolean
+  /** Its kill is pending: no more commands until it is killed or comes back. */
+  killing?: boolean
 }
 
 export const SessionTerminal = memo(function SessionTerminal({
@@ -52,6 +59,8 @@ export const SessionTerminal = memo(function SessionTerminal({
   agentBusy,
   projectId,
   onInteract,
+  ended = false,
+  killing = false,
 }: SessionTerminalProps) {
   const [lines, setLines] = useState<TerminalLine[]>([])
   const [input, setInput] = useState('')
@@ -67,6 +76,7 @@ export const SessionTerminal = memo(function SessionTerminal({
   const prevSessionRef = useRef<string | number | null>(null)
   const { ensureFeatureModel, fetchWithFeatureModel } = useFeatureModelGate()
   const openRow = sessionKey ?? sessionId
+  const closed = ended || killing
 
   // Clear terminal when session changes
   useEffect(() => {
@@ -95,7 +105,7 @@ export const SessionTerminal = memo(function SessionTerminal({
   }, [sessionId, openRow])
 
   const handleSend = useCallback(async () => {
-    if (!input.trim() || !sessionId || isSending) return
+    if (!input.trim() || !sessionId || isSending || closed) return
 
     const command = input.trim()
     setInput('')
@@ -115,13 +125,16 @@ export const SessionTerminal = memo(function SessionTerminal({
 
     if (result.busy) {
       setLines(prev => [...prev, { text: result.message || 'Agent is busy, try again shortly', type: 'error' }])
-    } else if (result.output) {
-      setLines(prev => [...prev, { text: result.output!, type: 'output' }])
+    } else {
+      if (result.output) setLines(prev => [...prev, { text: result.output!, type: 'output' }])
+      if ((result as { still_running?: unknown }).still_running === true) {
+        setLines(prev => [...prev, { text: STILL_RUNNING_TEXT, type: 'system' }])
+      }
     }
 
     setIsSending(false)
     inputRef.current?.focus()
-  }, [input, sessionId, isSending, onInteract])
+  }, [input, sessionId, isSending, closed, onInteract])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -214,7 +227,19 @@ export const SessionTerminal = memo(function SessionTerminal({
         </div>
       </div>
 
-      {agentBusy && (
+      {killing ? (
+        <div className={styles.endedBanner} role="status">
+          <Loader2 size={12} />
+          Killing…
+        </div>
+      ) : ended && (
+        <div className={styles.endedBanner} role="status">
+          <Terminal size={12} />
+          Session ended
+        </div>
+      )}
+
+      {agentBusy && !closed && (
         <div className={styles.busyBanner}>
           <AlertTriangle size={12} />
           Agent is executing a command - interaction may be delayed
@@ -281,14 +306,14 @@ export const SessionTerminal = memo(function SessionTerminal({
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Type a command..."
-          disabled={isSending}
+          disabled={isSending || closed}
           autoComplete="off"
           spellCheck={false}
         />
         <button
           className={styles.sendBtn}
           onClick={handleSend}
-          disabled={!input.trim() || isSending}
+          disabled={!input.trim() || isSending || closed}
           title="Send command"
         >
           <Send size={13} />

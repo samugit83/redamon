@@ -24,6 +24,8 @@ const mockEffectiveUser = vi.fn()
 const mockLoadPrincipal = vi.fn()
 const mockConversations = vi.fn()
 const mockWriteAudit = vi.fn()
+// The drive's `attempted` row (written before forwarding, in auditedTransaction); mockWriteAudit gets the outcome row.
+const mockWriteAuditTx = vi.fn()
 const mockAgentFetch = vi.fn()
 
 vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
@@ -36,10 +38,12 @@ vi.mock('@/lib/authz/principal', () => ({
 }))
 vi.mock('@/lib/audit', () => ({
   writeAudit: (...a: unknown[]) => mockWriteAudit(...a),
+  writeAuditTx: (...a: unknown[]) => mockWriteAuditTx(...a),
 }))
 vi.mock('@/lib/prisma', () => ({
   default: {
     conversation: { findMany: (...a: unknown[]) => mockConversations(...a) },
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({}),
     auditLog: { findFirst: vi.fn(async () => null) },
   },
 }))
@@ -101,6 +105,7 @@ beforeEach(() => {
     { sessionId: 'chat-bob', projectId: 'project-bob', userId: 'bob', project: { userId: 'bob' } },
   ])
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
+  mockWriteAuditTx.mockReset().mockResolvedValue(undefined)
   mockAgentFetch.mockReset().mockImplementation(async (path: string) => (
     path === '/sessions' ? json(AGENT_LIST) : json({ busy: false, output: 'uid=0(root) alice-target' })
   ))

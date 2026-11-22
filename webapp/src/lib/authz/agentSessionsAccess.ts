@@ -41,7 +41,7 @@ import prisma from '@/lib/prisma'
 import { getEffectiveUser, requireSession } from '@/lib/session'
 import { SHARED_INSTANCE, VIEWS, type SandboxView } from '@/lib/sandbox/contract'
 import { sandboxProjectsFor } from '@/lib/sandbox/gateway'
-import { validInstance, validUserId } from '@/lib/sandbox/orchestratorClient'
+import { orchestratorList, validInstance, validUserId } from '@/lib/sandbox/orchestratorClient'
 import { PERMISSIONS } from './permissions'
 import { loadPrincipal, type Principal } from './principal'
 import { meetsLevel, projectAccess } from './projectAccess'
@@ -59,7 +59,10 @@ export interface VisibleSessions {
   agent_busy?: unknown
   /** How many sandboxes the agent could not ask (per-user mode): their sessions are missing. */
   unavailable_count?: number
-  /** Their instance ids, only for holders of every session. */
+  /**
+   * Their instance ids: all of them for holders of every session; for anyone else only those that
+   * could hold a row this viewer may see (`unavailableForViewer`), whose last rows the browser keeps.
+   */
   unavailable?: string[]
 }
 
@@ -269,9 +272,116 @@ export async function visibleSessions(payload: unknown, viewer: SessionsViewer):
   if (unavailable) {
     out.unavailable_count = unavailable.length
     // Another person's instance id names a sandbox the viewer has no business with.
-    if (viewer.all.allowed) out.unavailable = unavailable
+    out.unavailable = viewer.all.allowed ? unavailable : await unavailableForViewer(unavailable, viewer)
   }
   return out
+}
+
+/**
+ * Of the instances that did not answer, those that could hold a row `viewer` may see (S16b): the
+ * browser keeps a silent sandbox's last rows only for the instances named to it. A per-user row counts
+ * for its chat's project only when that project is in the sandbox person's mount list for its view
+ * (`chatAttribution`), so an instance can hold such a row only when it is the viewer's own, or its
+ * mount list holds a project whose sessions the viewer may see (her own, or shared with her at the
+ * sessions level, as `visibleSessions` judges a row). `shared` names no person. No other instance id
+ * is sent (S16 F3); when the running sandboxes cannot be read, only `shared` is named.
+ */
+async function unavailableForViewer(instances: string[], viewer: SessionsViewer): Promise<string[]> {
+  const named = new Set<string>(instances.filter((i) => i === SHARED_INSTANCE))
+  const perUser = instances.filter((i) => i !== SHARED_INSTANCE)
+  if (perUser.length > 0) {
+    let running = new Map<string, RunningSandbox[]>()
+    try {
+      running = await runningByInstance()
+    } catch {
+      running = new Map()
+    }
+    for (const instance of perUser) {
+      for (const sandbox of running.get(instance) ?? []) {
+        if (await holdsViewerRows(viewer, sandbox)) {
+          named.add(instance)
+          break
+        }
+      }
+    }
+  }
+  return instances.filter((i) => named.has(i))
+}
+
+/**
+ * While a sandbox stays silent every viewer's poll asks the naming, so its reads are kept: the
+ * running list process-wide for NAMING_RUNNING_TTL_MS, each verdict for NAMING_VERDICT_TTL_MS.
+ */
+export const NAMING_RUNNING_TTL_MS = 5_000
+/**
+ * A share withdrawn may therefore still name its sandbox's instance to the viewer for up to this
+ * long: acceptable only because naming keeps rows the viewer was already sent (the browser adds
+ * none) and every drive is authorized again, fresh, by the drive routes.
+ */
+export const NAMING_VERDICT_TTL_MS = 10_000
+const VERDICTS_MAX = 2_000
+
+interface RunningSandbox {
+  userId: string
+  view: SandboxView
+}
+
+let runningRead: { at: number; map: Promise<Map<string, RunningSandbox[]>> } | null = null
+const verdicts = new Map<string, { at: number; verdict: Promise<boolean> }>()
+
+export function resetUnavailableNamingForTests(): void {
+  runningRead = null
+  verdicts.clear()
+}
+
+/**
+ * The running sandboxes by instance (ids are unique per person only, so an instance may name more
+ * than one), from the orchestrator's list alone. Only person and view are kept: the list's hosts and
+ * tokens are dropped here. A failed read is not kept.
+ */
+function runningByInstance(): Promise<Map<string, RunningSandbox[]>> {
+  const now = Date.now()
+  if (runningRead && now - runningRead.at < NAMING_RUNNING_TTL_MS) return runningRead.map
+  const map = orchestratorList().then((list) => {
+    const out = new Map<string, RunningSandbox[]>()
+    for (const s of list.sandboxes) {
+      if (!validInstance(s.instance) || !validUserId(s.user_id) || !(VIEWS as readonly unknown[]).includes(s.view)) continue
+      out.set(s.instance, [...(out.get(s.instance) ?? []), { userId: s.user_id, view: s.view }])
+    }
+    return out
+  })
+  const read = { at: now, map }
+  runningRead = read
+  map.catch(() => {
+    if (runningRead === read) runningRead = null
+  })
+  return map
+}
+
+/** Whether `sandbox` could hold a row the viewer may see; one verdict per viewer, person and view, kept a while. */
+function holdsViewerRows(viewer: SessionsViewer, sandbox: RunningSandbox): Promise<boolean> {
+  const key = `${viewer.principal.id}>${viewer.effectiveUserId}|${sandbox.view}:${sandbox.userId}`
+  const now = Date.now()
+  const kept = verdicts.get(key)
+  if (kept && now - kept.at < NAMING_VERDICT_TTL_MS) return kept.verdict
+  if (verdicts.size >= VERDICTS_MAX) {
+    for (const [k, v] of verdicts) if (now - v.at >= NAMING_VERDICT_TTL_MS) verdicts.delete(k)
+    if (verdicts.size >= VERDICTS_MAX) verdicts.clear()
+  }
+  // A failed read names nothing: the browser then keeps nothing of that sandbox.
+  const verdict = judgeViewerRows(viewer, sandbox).catch(() => false)
+  verdicts.set(key, { at: now, verdict })
+  return verdict
+}
+
+async function judgeViewerRows(viewer: SessionsViewer, { userId, view }: RunningSandbox): Promise<boolean> {
+  if (userId === viewer.effectiveUserId) return true
+  const mounted = await sandboxProjectsFor(userId, { actingAs: view === 'act_as' })
+  if (mounted.length === 0) return false
+  const projects = await prisma.project.findMany({ where: { id: { in: mounted } }, select: { id: true, userId: true } })
+  const reached = projects.map((p) => ({ projectId: p.id, ownerId: p.userId, authorId: null }))
+  if (reached.some((p) => p.ownerId === viewer.effectiveUserId)) return true
+  return (await sharedShellProjects(viewer, reached)).size > 0
 }
 
 /**

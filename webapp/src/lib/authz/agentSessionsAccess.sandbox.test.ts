@@ -18,8 +18,9 @@
  * counts for its chat's project only when the agent's own tags (`sandbox_user`, `sandbox_view`, added
  * from the sandbox handle after the row) name the person who wrote that chat AND the project is one
  * that person's sandbox mounts for that view; otherwise the row is unattributed, as an untagged one.
- * Those tags never reach the browser. Rows whose id is not the session manager's shape are dropped,
- * and the instances that did not answer are a count, named only to holders of every session.
+ * Those tags never reach the browser. Rows whose id is not the session manager's shape are dropped.
+ * The instances that did not answer are a count for everyone; their ids go to holders of every
+ * session, and to anyone else only for the silent instances that could hold that viewer's rows (S16b).
  *
  * The session, the account read, Prisma, the agent, the sandbox mode and the mount lists are doubles;
  * the access rule, sharedToolAccess and the routes are real; projectAccess() answers Alice's share.
@@ -34,9 +35,13 @@ const mockEffectiveUser = vi.fn()
 const mockLoadPrincipal = vi.fn()
 const mockConversations = vi.fn()
 const mockWriteAudit = vi.fn()
+// The drive's `attempted` row (written before forwarding, in auditedTransaction); mockWriteAudit gets the outcome row.
+const mockWriteAuditTx = vi.fn()
 const mockAgentFetch = vi.fn()
 const mockMode = vi.fn()
 const mockMounts = vi.fn()
+const mockRunning = vi.fn()
+const mockProjects = vi.fn()
 
 vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
 vi.mock('@/lib/session', () => ({
@@ -48,10 +53,13 @@ vi.mock('@/lib/authz/principal', () => ({
 }))
 vi.mock('@/lib/audit', () => ({
   writeAudit: (...a: unknown[]) => mockWriteAudit(...a),
+  writeAuditTx: (...a: unknown[]) => mockWriteAuditTx(...a),
 }))
 vi.mock('@/lib/prisma', () => ({
   default: {
     conversation: { findMany: (...a: unknown[]) => mockConversations(...a) },
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({}),
+    project: { findMany: (...a: unknown[]) => mockProjects(...a) },
     auditLog: { findFirst: vi.fn(async () => null) },
   },
 }))
@@ -63,6 +71,11 @@ vi.mock('@/lib/sandbox/gateway', () => ({
   sandboxMode: (...a: unknown[]) => mockMode(...a),
   sandboxProjectsFor: (...a: unknown[]) => mockMounts(...a),
 }))
+vi.mock('@/lib/sandbox/orchestratorClient', async (orig) => ({
+  ...(await orig<typeof import('@/lib/sandbox/orchestratorClient')>()),
+  orchestratorList: (...a: unknown[]) => mockRunning(...a),
+  orchestratorStatus: vi.fn(async () => { throw new Error('the naming must not read a status') }),
+}))
 vi.mock('./projectAccess', async (orig) => {
   const actual = await orig<typeof import('./projectAccess')>()
   return { ...actual, projectAccess: vi.fn(actual.projectAccess) }
@@ -72,7 +85,10 @@ vi.mock('./visibleProjects', async (orig) => {
   return { ...actual, visibleProjects: vi.fn(actual.visibleProjects) }
 })
 
-import { authorizeSessionTarget, resolveSessionsViewer, visibleSessions, type SessionsViewer } from './agentSessionsAccess'
+import {
+  authorizeSessionTarget, resolveSessionsViewer, visibleSessions, resetUnavailableNamingForTests,
+  NAMING_RUNNING_TTL_MS, NAMING_VERDICT_TTL_MS, type SessionsViewer,
+} from './agentSessionsAccess'
 import { setFlagsForTests } from './flags'
 import { resetSharedToolsForTests } from './sharedTools'
 import { projectAccess, type ProjectAccess } from './projectAccess'
@@ -140,6 +156,19 @@ function perUserList(): Record<string, unknown> {
 /** What each person's sandbox mounts (sandboxProjectsFor), per view; Alice's share of p-shared is in force. */
 let mounts: Record<string, string[]>
 
+/** The running sandboxes (the gateway's listSandboxes: person, view, instance; never a token or host). */
+const RUNNING = [
+  { user_id: 'alice', view: 'own', instance: 'aaaaa1', state: 'running' },
+  { user_id: 'alice', view: 'act_as', instance: 'eeeee1', state: 'running' },
+  { user_id: 'bob', view: 'own', instance: 'bbbbb1', state: 'running' },
+  { user_id: 'bob', view: 'own', instance: 'bbbbb2', state: 'draining' },
+  { user_id: 'carol', view: 'own', instance: 'ccccc1', state: 'running' },
+]
+const PROJECTS = [
+  { id: 'p-alice', userId: 'alice' }, { id: 'p-bob', userId: 'bob' },
+  { id: 'p-shared', userId: 'bob' }, { id: 'p-carol', userId: 'carol' },
+]
+
 
 /** The agent's shared-mode answer (one console, untagged rows), as before group 1. */
 function sharedList(): Record<string, unknown> {
@@ -184,11 +213,16 @@ beforeEach(() => {
   mockConversations.mockReset().mockImplementation(async (args: { where: { sessionId: { in: string[] } } }) =>
     CONVERSATIONS.filter(c => args.where.sessionId.in.includes(c.sessionId)))
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
+  mockWriteAuditTx.mockReset().mockResolvedValue(undefined)
   mockAgentFetch.mockReset()
   mockMode.mockReset().mockResolvedValue('per_user')
   mounts = { 'alice:own': ['p-alice', 'p-shared'], 'alice:act_as': ['p-alice'], 'bob:own': ['p-bob', 'p-shared'], 'bob:act_as': ['p-bob', 'p-shared'] }
   mockMounts.mockReset().mockImplementation(async (userId: string, opts: { actingAs?: boolean } = {}) =>
     mounts[`${userId}:${opts.actingAs ? 'act_as' : 'own'}`] ?? [])
+  mockRunning.mockReset().mockResolvedValue({ mode: 'per_user', sandboxes: RUNNING })
+  resetUnavailableNamingForTests()
+  mockProjects.mockReset().mockImplementation(async (args: { where: { id: { in: string[] } } }) =>
+    PROJECTS.filter(p => args.where.id.in.includes(p.id)))
   list = perUserList
   resetSharedToolsForTests()
   setFlagsForTests({})
@@ -221,17 +255,137 @@ describe('the list across sandboxes (WI-S16-1)', () => {
     expect(pairs(out.sessions)).toEqual(['bbbbb1:1', 'bbbbb1:2', 'bbbbb2:1'])
   })
 
-  test('the unavailable instances: a count for everyone, the ids only for holders of every session; once each', async () => {
+  test('the unavailable instances: a count for everyone, every id only for holders of every session; once each', async () => {
+    // Changed by design (S16b review 3a): a member is now named the silent instances that could hold
+    // her rows; Carol's ccccc1 and an instance no sandbox runs are not among them.
     const odd = { ...perUserList(), unavailable: ['ccccc1', 'ccccc1', 'shared', '../etc', 'CCCCC1', 7, null, 'ddddd1'] }
     const member = await visibleSessions(odd, await viewerFor(principal('alice')))
     expect(member.unavailable_count).toBe(3)
-    expect(member).not.toHaveProperty('unavailable')
+    expect(member.unavailable).toEqual(['shared'])
     const admin = await visibleSessions(odd, await viewerFor(principal('admin-a', 'admin')))
     expect(admin.unavailable_count).toBe(3)
     expect(admin.unavailable).toEqual(['ccccc1', 'shared', 'ddddd1'])
     const none = await visibleSessions(sharedList(), await viewerFor(principal('alice')))
     expect(none).not.toHaveProperty('unavailable')
     expect(none).not.toHaveProperty('unavailable_count')
+  })
+})
+
+describe('the silent instances named to a viewer (S16b review 3a)', () => {
+  // The browser keeps a busy sandbox's last rows only for the instances named to it, so each viewer is
+  // named the silent instances that could hold a row she may see: her own sandboxes, and those whose
+  // person's mount list (for that view) holds a project whose sessions she may see. Never another id.
+  const silent = (...ids: string[]) => ({ ...perUserList(), unavailable: ids })
+  const ALL = ['aaaaa1', 'eeeee1', 'bbbbb1', 'bbbbb2', 'ccccc1', 'shared']
+
+  test("Alice: her own instances, Bob's (they mount p-shared, which he shares with her at W+X), never Carol's", async () => {
+    const out = await visibleSessions(silent(...ALL), await viewerFor(principal('alice')))
+    expect(out.unavailable).toEqual(['aaaaa1', 'eeeee1', 'bbbbb1', 'bbbbb2', 'shared'])
+    expect(out.unavailable_count).toBe(6)
+  })
+
+  test("M-b test 4: Alice drives Bob's session on p-shared and Bob's sandbox is the busy one: it is named to her", async () => {
+    const out = await visibleSessions(silent('bbbbb1'), await viewerFor(principal('alice')))
+    expect(out.unavailable).toEqual(['bbbbb1'])
+  })
+
+  test("Bob: his own, and Alice's own sandbox (it mounts his p-shared), not her act_as one (p-alice only)", async () => {
+    const out = await visibleSessions(silent(...ALL), await viewerFor(principal('bob')))
+    expect(out.unavailable).toEqual(['aaaaa1', 'bbbbb1', 'bbbbb2', 'shared'])
+    expect(mockMounts).toHaveBeenCalledWith('alice', { actingAs: true })
+  })
+
+  test('Carol: only her own', async () => {
+    const out = await visibleSessions(silent(...ALL), await viewerFor(principal('carol')))
+    expect(out.unavailable).toEqual(['ccccc1', 'shared'])
+  })
+
+  test("a share Bob withdrew: his instances are no longer named to Alice", async () => {
+    policy.mockImplementation(async () => null)
+    const out = await visibleSessions(silent('bbbbb1', 'aaaaa1'), await viewerFor(principal('alice')))
+    expect(out.unavailable).toEqual(['aaaaa1'])
+  })
+
+  test('the running sandboxes cannot be read: only `shared` is named (the browser then keeps nothing)', async () => {
+    mockRunning.mockRejectedValue(new Error('orchestrator down'))
+    const out = await visibleSessions(silent('aaaaa1', 'shared'), await viewerFor(principal('alice')))
+    expect(out.unavailable).toEqual(['shared'])
+    expect(out.unavailable_count).toBe(2)
+  })
+
+  test('a malformed row of the running list counts for nobody; a failed mount read names nothing', async () => {
+    mockRunning.mockResolvedValue({ mode: 'per_user', sandboxes: [
+      { user_id: '../alice', view: 'own', instance: 'fffff1' }, { user_id: 'bob', view: 'root', instance: 'fffff2' },
+      { user_id: 'bob', view: 'own', instance: 'fffff3' },
+    ] })
+    mockMounts.mockRejectedValue(new Error('db down'))
+    const out = await visibleSessions(silent('fffff1', 'fffff2', 'fffff3'), await viewerFor(principal('alice')))
+    expect(out.unavailable).toEqual([])
+  })
+
+  test('holders of every session still get every id, and nothing is read for them', async () => {
+    const out = await visibleSessions(silent(...ALL), await viewerFor(principal('admin-a', 'admin')))
+    expect(out.unavailable).toEqual(ALL)
+    expect(mockRunning).not.toHaveBeenCalled()
+  })
+
+  test('nothing silent: nothing is read', async () => {
+    await visibleSessions(silent(), await viewerFor(principal('alice')))
+    expect(mockRunning).not.toHaveBeenCalled()
+  })
+})
+
+describe('the naming is cheap while a sandbox stays silent (S16b review round 3)', () => {
+  // A hung or deliberately silent sandbox must not turn every viewer's poll into orchestrator and
+  // database reads: the running list is read alone (no status reads) and kept process-wide for
+  // NAMING_RUNNING_TTL_MS; each verdict (viewer, person, view) for NAMING_VERDICT_TTL_MS.
+  const silent = (...ids: string[]) => ({ ...perUserList(), unavailable: ids })
+  let now: number
+  let clock: ReturnType<typeof vi.spyOn>
+  beforeEach(() => {
+    now = 5_000_000
+    clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+  })
+  afterEach(() => { clock.mockRestore() })
+
+  test('polls within the TTL read the running list once, with no status read, for every viewer', async () => {
+    const alice = await viewerFor(principal('alice'))
+    const bob = await viewerFor(principal('bob'))
+    for (let i = 0; i < 3; i++) {
+      await visibleSessions(silent('bbbbb1'), alice)
+      await visibleSessions(silent('aaaaa1'), bob)
+      now += 1_000
+    }
+    expect(mockRunning).toHaveBeenCalledTimes(1)
+    now += NAMING_RUNNING_TTL_MS
+    await visibleSessions(silent('bbbbb1'), alice)
+    expect(mockRunning).toHaveBeenCalledTimes(2)
+  })
+
+  test("a verdict is reused for at most NAMING_VERDICT_TTL_MS: a share withdrawn stops naming Bob's instance by then", async () => {
+    const alice = await viewerFor(principal('alice'))
+    expect((await visibleSessions(silent('bbbbb1'), alice)).unavailable).toEqual(['bbbbb1'])
+    policy.mockImplementation(async () => null)
+    now += NAMING_VERDICT_TTL_MS - 1
+    // Still named: the cost of the memo, bounded; naming only keeps rows already sent, every drive is re-authorized.
+    expect((await visibleSessions(silent('bbbbb1'), alice)).unavailable).toEqual(['bbbbb1'])
+    expect(mockMounts).toHaveBeenCalledTimes(1)
+    now += 2
+    expect((await visibleSessions(silent('bbbbb1'), alice)).unavailable).toEqual([])
+    expect(NAMING_VERDICT_TTL_MS).toBeLessThanOrEqual(10_000)
+  })
+
+  test("a verdict is the viewer's own: Alice's does not name Bob's instance to Carol", async () => {
+    expect((await visibleSessions(silent('bbbbb1'), await viewerFor(principal('alice')))).unavailable).toEqual(['bbbbb1'])
+    expect((await visibleSessions(silent('bbbbb1'), await viewerFor(principal('carol')))).unavailable).toEqual([])
+  })
+
+  test('a failed running-list read is not kept: the next poll reads again', async () => {
+    mockRunning.mockRejectedValueOnce(new Error('orchestrator down'))
+    const alice = await viewerFor(principal('alice'))
+    expect((await visibleSessions(silent('aaaaa1'), alice)).unavailable).toEqual([])
+    expect((await visibleSessions(silent('aaaaa1'), alice)).unavailable).toEqual(['aaaaa1'])
+    expect(mockRunning).toHaveBeenCalledTimes(2)
   })
 })
 

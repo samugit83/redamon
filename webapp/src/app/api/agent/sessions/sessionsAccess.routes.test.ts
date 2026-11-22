@@ -21,6 +21,8 @@ const mockEffectiveUser = vi.fn()
 const mockLoadPrincipal = vi.fn()
 const mockConversations = vi.fn()
 const mockWriteAudit = vi.fn()
+// The drive's `attempted` row (written before forwarding, in auditedTransaction); mockWriteAudit gets the outcome row.
+const mockWriteAuditTx = vi.fn()
 const mockAgentFetch = vi.fn()
 
 vi.mock('@/lib/authz/guards', () => import('@/lib/authz/__testing__/routeGuardDoubles').then(m => m.overSessionEffectiveUser()))
@@ -33,10 +35,12 @@ vi.mock('@/lib/authz/principal', () => ({
 }))
 vi.mock('@/lib/audit', () => ({
   writeAudit: (...a: unknown[]) => mockWriteAudit(...a),
+  writeAuditTx: (...a: unknown[]) => mockWriteAuditTx(...a),
 }))
 vi.mock('@/lib/prisma', () => ({
   default: {
     conversation: { findMany: (...a: unknown[]) => mockConversations(...a) },
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({}),
     auditLog: { findFirst: vi.fn(async () => null) },
   },
 }))
@@ -103,6 +107,7 @@ beforeEach(() => {
     { sessionId: 'chat-b', projectId: 'project-b', project: { userId: 'member-b' } },
   ])
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
+  mockWriteAuditTx.mockReset().mockResolvedValue(undefined)
   mockAgentFetch.mockReset()
   resetSharedToolsForTests()
   setFlagsForTests({})
@@ -213,13 +218,16 @@ describe('POST /api/agent/sessions/[id]/interact', () => {
     expect(mockAgentFetch).not.toHaveBeenCalled()
   })
 
-  test('a busy console is answered, and audited only when the command ran', async () => {
+  test('a busy console is answered; the attempt is audited and its outcome is busy', async () => {
+    // Changed by design (S16b): every forwarded drive has an `attempted` row written before it is
+    // sent, and an outcome row; before, a busy answer wrote none.
     signedIn(principal('member-a'))
     agent({ busy: true, message: 'Agent is executing a command, try again shortly' })
     const res = await interact(post({ command: 'id' }), params('1'))
     expect(res.status).toBe(200)
     expect((await res.json()).busy).toBe(true)
-    expect(auditRows()).toEqual([])
+    expect(mockWriteAuditTx.mock.calls.map(c => c[1].after.outcome)).toEqual(['attempted'])
+    expect(auditRows().map(r => r.after.outcome)).toEqual(['busy'])
   })
 })
 

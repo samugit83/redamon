@@ -47,6 +47,17 @@
   flex-shrink: 0;
 }
 
+.endedBanner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border-default);
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
 .outputArea {
   flex: 1;
   overflow-y: auto;

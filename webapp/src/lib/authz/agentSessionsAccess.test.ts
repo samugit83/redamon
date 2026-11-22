@@ -33,10 +33,12 @@ vi.mock('@/lib/authz/principal', () => ({
 }))
 vi.mock('@/lib/audit', () => ({
   writeAudit: (...a: unknown[]) => mockWriteAudit(...a),
+  writeAuditTx: (_tx: unknown, entry: unknown) => mockWriteAudit(entry),
 }))
 vi.mock('@/lib/prisma', () => ({
   default: {
     conversation: { findMany: (...a: unknown[]) => mockConversations(...a) },
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({}),
     auditLog: { findFirst: (...a: unknown[]) => mockCutoff(...a) },
   },
 }))
@@ -361,12 +363,13 @@ describe('a project shared with the viewer (step 5.10)', () => {
     answering(toProjectB('write', { exploit: true }))
     const v = await viewerFor(principal('member-a'))
     const target = await authorizeSessionTarget(agentList(), v, 'session', '2')
-    const { auditDrive } = await import('@/app/api/agent/sessions/sessionDrive')
-    // Group 1 (TD-11): an untagged row is the shared container's, named `shared:<number>`.
-    await auditDrive('agent.session_kill', 'session', '2', null, v, target!)
+    const { beginDriveAudit } = await import('@/app/api/agent/sessions/sessionDrive')
+    // Group 1 (TD-11): an untagged row is the shared container's, named `shared:<number>`. The row is
+    // written before the drive is forwarded (S16b), so it carries `outcome: 'attempted'`.
+    await beginDriveAudit('agent.session_kill', 'session', '2', null, v, target!)
     expect(mockWriteAudit).toHaveBeenCalledWith(expect.objectContaining({
       action: 'agent.session_kill', actorId: 'member-a', targetId: 'shared:2',
-      after: { projectId: 'project-b', via: 'share', sandbox: 'shared' },
+      after: expect.objectContaining({ projectId: 'project-b', via: 'share', sandbox: 'shared', outcome: 'attempted' }),
     }))
   })
 })

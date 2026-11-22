@@ -40,6 +40,8 @@ vi.mock('@/lib/prisma', () => ({
       findMany: vi.fn(async () => [{ sessionId: 's1', projectId: 'p1', project: { userId: 'u1' } }]),
       delete: vi.fn(async () => ({})),
     },
+    // A drive's audit row is written in a transaction before it is forwarded (S16b).
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({ auditLog: { create: async () => ({}) } }),
   },
 }))
 vi.mock('../graph/neo4j', () => ({

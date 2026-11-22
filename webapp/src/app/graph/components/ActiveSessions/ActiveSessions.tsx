@@ -6,7 +6,7 @@ import type { MsfSession, MsfJob, NonMsfSession, SessionInteractResult } from '@
 import { useToast } from '@/components/ui'
 import { errorMessage } from '@/lib/apiError'
 import { partialAnswerLine } from '@/lib/sandbox/contract'
-import { sessionRowKey, useSessionsAccess, type SessionRef } from '@/hooks/useActiveSessions'
+import { noAnswerInTime, sessionRowKey, useSessionsAccess, type SessionRef, type ShownRow } from '@/hooks/useActiveSessions'
 import { ForbiddenNotice } from '@/components/auth/ForbiddenNotice'
 import { SessionCard, NonMsfCard, JobCard } from './SessionCard'
 import { SessionTerminal } from './SessionTerminal'
@@ -14,9 +14,10 @@ import { stopWarningText, useSandboxStopWarning } from './useSandboxStopWarning'
 import styles from './ActiveSessions.module.css'
 
 interface ActiveSessionsProps {
-  sessions: MsfSession[]
-  jobs: MsfJob[]
-  nonMsfSessions: NonMsfSession[]
+  /** A row kept from an earlier answer (its sandbox did not answer the last read) carries `staleSince`. */
+  sessions: ShownRow<MsfSession>[]
+  jobs: ShownRow<MsfJob>[]
+  nonMsfSessions: ShownRow<NonMsfSession>[]
   agentBusy: boolean
   isLoading: boolean
   projectId: string
@@ -46,29 +47,43 @@ export const ActiveSessions = memo(function ActiveSessions({
   unavailable = 0,
 }: ActiveSessionsProps) {
   const [selected, setSelected] = useState<SessionRef | null>(null)
+  // The rows whose kill is pending: the hook hides a row as its kill starts, so it is not "ended" yet.
+  const [killing, setKilling] = useState<ReadonlySet<string>>(() => new Set())
   const toast = useToast()
   const refused = useSessionsAccess() === 'refused'
   const stopAt = useSandboxStopWarning(!refused)
 
   const selectedKey = selected ? sessionRowKey(selected) : null
   const selectedSession = selectedKey === null ? undefined : sessions.find(s => sessionRowKey(s) === selectedKey)
+  const selectedKilling = selectedKey !== null && killing.has(selectedKey)
+  // A complete answer (no sandbox left out, no error) that no longer lists the selected row: it ended.
+  const selectedEnded = selected !== null && selectedSession === undefined && unavailable === 0 && !error && !selectedKilling
   const totalSessions = sessions.length + nonMsfSessions.length
 
   const handleKill = useCallback(async (target: SessionRef) => {
+    const key = sessionRowKey(target)
+    setKilling(prev => new Set(prev).add(key))
     try {
       await onKillSession(target)
     } catch (err) {
-      toast.error(errorMessage(err, `Failed to kill session ${target.id}`), 'Session not killed')
+      // No answer in time: the kill may still have happened, so it is not "not killed".
+      toast.error(errorMessage(err, `Failed to kill session ${target.id}`), noAnswerInTime(err) ? 'Kill not confirmed' : 'Session not killed')
       return
+    } finally {
+      setKilling(prev => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
     }
-    setSelected(current => (current && sessionRowKey(current) === sessionRowKey(target) ? null : current))
+    setSelected(current => (current && sessionRowKey(current) === key ? null : current))
   }, [onKillSession, toast])
 
   const handleKillJob = useCallback(async (target: SessionRef) => {
     try {
       await onKillJob(target)
     } catch (err) {
-      toast.error(errorMessage(err, `Failed to kill job ${target.id}`), 'Job not stopped')
+      toast.error(errorMessage(err, `Failed to kill job ${target.id}`), noAnswerInTime(err) ? 'Stop not confirmed' : 'Job not stopped')
     }
   }, [onKillJob, toast])
 
@@ -113,8 +128,14 @@ export const ActiveSessions = memo(function ActiveSessions({
     </>
   )
 
+  const nothingListed = totalSessions === 0 && jobs.length === 0
+  // The terminal holds its output in its own state, so while a row is selected it stays mounted, even
+  // when a read lists nothing (a busy sandbox left out, a failed read): the empty states below would
+  // unmount it and lose the answer of a command in flight.
+  const showEmpty = nothingListed && selected === null
+
   // An unreachable agent is not "no sessions": say what failed instead.
-  if (totalSessions === 0 && jobs.length === 0 && error) {
+  if (showEmpty && error) {
     return (
       <div className={styles.emptyState} role="alert">
         <AlertCircle size={40} className={styles.emptyIcon} />
@@ -125,7 +146,7 @@ export const ActiveSessions = memo(function ActiveSessions({
   }
 
   // Empty state - no sessions at all
-  if (totalSessions === 0 && jobs.length === 0) {
+  if (showEmpty) {
     return (
       <div className={styles.emptyState}>
         {notices}
@@ -160,6 +181,15 @@ export const ActiveSessions = memo(function ActiveSessions({
         )}
 
         <div className={styles.sidebarBody}>
+          {nothingListed && (
+            <div className={styles.nothingListed}>
+              <span>No sessions listed.</span>
+              <button type="button" className={styles.closeTerminal} onClick={() => setSelected(null)}>
+                Close terminal
+              </button>
+            </div>
+          )}
+
           {/* Metasploit sessions */}
           {sessions.length > 0 && (
             <>
@@ -220,6 +250,8 @@ export const ActiveSessions = memo(function ActiveSessions({
           agentBusy={agentBusy}
           projectId={projectId}
           onInteract={interactSelected}
+          ended={selectedEnded}
+          killing={selectedKilling}
         />
       </div>
     </div>

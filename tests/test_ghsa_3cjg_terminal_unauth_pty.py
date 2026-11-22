@@ -203,6 +203,9 @@ def listener_report(source: str, filename: str, started: bool):
             ws_serve_names |= {a.asname or a.name for a in node.names if a.name == "serve"}
 
     classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    # A server class of the module's own (a bounded ThreadingHTTPServer) listens like its base.
+    local_http_servers = {name for name, cls in classes.items()
+                          if any(_dotted(b).split(".")[-1] in _HTTP_SERVERS for b in cls.bases)}
     in_main = set()
     for node in tree.body:
         if _is_main_guard(node):
@@ -242,7 +245,7 @@ def listener_report(source: str, filename: str, started: bool):
                 gate = kwargs.get("process_request")
                 if gate is None or (isinstance(gate, ast.Constant) and gate.value is None):
                     problems.append(f"{where}: websockets.serve without process_request")
-            elif name.split(".")[-1] in _HTTP_SERVERS:
+            elif name.split(".")[-1] in _HTTP_SERVERS or name in local_http_servers:
                 found.add((filename, "HTTPServer"))
                 handler = node.args[1] if len(node.args) > 1 else kwargs.get("RequestHandlerClass")
                 if not (isinstance(handler, ast.Name) and gated_handler(handler.id)):
@@ -315,6 +318,17 @@ class TheGuardCatchesTheVulnerableShapes(unittest.TestCase):
             "class Plain(BaseHTTPRequestHandler):\n"
             "    def do_GET(self): pass\n"
             "HTTPServer(('0.0.0.0', 1), Plain)\n"
+        )
+        self.assertTrue(self._problems(source))
+
+    def test_an_ungated_handler_behind_a_server_class_of_the_module_is_flagged(self):
+        source = (
+            "from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler\n"
+            "class Plain(BaseHTTPRequestHandler):\n"
+            "    def do_GET(self): pass\n"
+            "class Bounded(ThreadingHTTPServer):\n"
+            "    daemon_threads = True\n"
+            "Bounded(('0.0.0.0', 1), Plain)\n"
         )
         self.assertTrue(self._problems(source))
 

@@ -23,6 +23,7 @@ vi.mock('@/lib/access', () => ({
 vi.mock('@/lib/prisma', () => ({
   default: {
     userSettings: { findUnique: vi.fn(async () => ({ githubAccessToken: '' })) },
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({}),
     // The session and job routes read the account (HD-01): u1 holds every session.
     user: {
       findUnique: vi.fn(async () => ({
@@ -36,7 +37,7 @@ vi.mock('@/lib/prisma', () => ({
     },
   },
 }))
-vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => {}) }))
+vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => {}), writeAuditTx: vi.fn(async () => {}) }))
 vi.mock('@/lib/session', () => ({
   getSession: vi.fn(async () => ({ userId: 'u1', role: 'user' })),
   getEffectiveUser: vi.fn(async () => ({ userId: 'u1' })),

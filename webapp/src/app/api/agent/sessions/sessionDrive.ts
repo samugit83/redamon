@@ -1,6 +1,7 @@
 /**
  * The shared part of the routes that drive a Metasploit session or job (interact, kill):
- * look the target up in the caller's view of the agent's list, and audit the drive.
+ * look the target up in the caller's view of the agent's list, audit the drive before it is
+ * forwarded, and record its outcome.
  *
  * A target is the pair (sandbox instance, number) (group 1, TD-11): every per-user sandbox numbers
  * its sessions from 1, so the route takes `?sandbox=<instance>`, the pair is looked up whole and
@@ -11,9 +12,13 @@
  *
  * Server-side only.
  */
+import { randomUUID } from 'node:crypto'
 import { NextResponse, type NextRequest } from 'next/server'
-import { writeAudit } from '@/lib/audit'
+import prisma from '@/lib/prisma'
+import { writeAudit, writeAuditTx, type AuditEntry } from '@/lib/audit'
+import { auditedTransaction } from '@/lib/auditForward'
 import { actorFields, auditActorOf } from '@/lib/auditActor'
+import type { AgentFetchOptions } from '@/lib/agentFetch'
 import {
   authorizeSessionTarget,
   isSandboxInstance,
@@ -73,35 +78,88 @@ export function drivePath(kind: DriveKind, id: string, action: 'interact' | 'kil
   return sandbox === null ? path : `${path}?sandbox=${encodeURIComponent(sandbox)}`
 }
 
+export type DriveAction = 'agent.session_interact' | 'agent.session_kill' | 'agent.job_kill'
+
 /**
- * One audit row per drive that reached the console, naming the session as `<instance>:<number>` and,
- * for a per-user sandbox, whose sandbox it runs in (`sandboxUser`). Never the command text.
+ * What became of a forwarded drive. `no_answer`: the agent did not answer in time or could not be
+ * reached, so the drive may still have run (the session manager runs a command that waited for the
+ * console even when the agent has stopped waiting, unless it sees the agent hang up first).
  */
-export async function auditDrive(
-  action: 'agent.session_interact' | 'agent.session_kill' | 'agent.job_kill',
+export type DriveOutcome = 'ran' | 'busy' | 'no_answer' | 'failed'
+
+export interface DriveAudit {
+  entry: AuditEntry
+  /** Ties the outcome row to its attempt. */
+  driveId: string
+}
+
+function withOutcome(audit: DriveAudit, outcome: DriveOutcome | 'attempted', status?: number): AuditEntry {
+  const after = audit.entry.after as Record<string, unknown>
+  return { ...audit.entry, after: { ...after, outcome, driveId: audit.driveId, ...(status ? { status } : {}) } }
+}
+
+/**
+ * The drive's `attempted` row, written before anything is forwarded and in `auditedTransaction`: a
+ * row that cannot be written throws, the route answers 500, and nothing reaches the agent. The row
+ * cannot wait for the answer: the drive may run with none. It names the session as
+ * `<instance>:<number>` and, for a per-user sandbox, whose sandbox it runs in (`sandboxUser`). Never
+ * the command text.
+ */
+export async function beginDriveAudit(
+  action: DriveAction,
   kind: DriveKind,
   id: string,
   sandbox: string | null,
   viewer: SessionsViewer,
   target: SessionTarget,
-): Promise<void> {
+): Promise<DriveAudit> {
   const actor = auditActorOf(viewer.principal, viewer.effectiveUserId)
   const actingAs = actor.onBehalfOfUserId ? { actingAsUserId: actor.onBehalfOfUserId } : {}
   const instance = sandbox ?? SHARED_INSTANCE
-  await writeAudit({
-    ...actorFields(actor),
-    action,
-    targetType: kind === 'session' ? 'msf_session' : 'msf_job',
-    targetId: `${instance}:${id}`,
-    after: {
-      projectId: target.projectId, via: target.via, sandbox: instance,
-      ...(target.sandboxUser ? { sandboxUser: target.sandboxUser } : {}), ...actingAs,
+  const audit: DriveAudit = {
+    entry: {
+      ...actorFields(actor),
+      action,
+      targetType: kind === 'session' ? 'msf_session' : 'msf_job',
+      targetId: `${instance}:${id}`,
+      after: {
+        projectId: target.projectId, via: target.via, sandbox: instance,
+        ...(target.sandboxUser ? { sandboxUser: target.sandboxUser } : {}), ...actingAs,
+      },
+      source: 'ui',
     },
-    source: 'ui',
-  })
+    driveId: randomUUID(),
+  }
+  await auditedTransaction(prisma, (tx) => writeAuditTx(tx, withOutcome(audit, 'attempted')))
+  return audit
 }
 
 /** The console ran the drive (it answers `busy: true` when the agent holds it). */
 export function driveRan(body: unknown): boolean {
   return !!body && typeof body === 'object' && (body as { busy?: unknown }).busy !== true
+}
+
+/**
+ * Forwards an audited drive to the agent and records its outcome as a second row with the same
+ * `driveId` (best effort: the attempt is already recorded). Answers what the route answers.
+ */
+export async function forwardAuditedDrive(
+  audit: DriveAudit,
+  path: string,
+  init: RequestInit,
+  failed: string,
+  opts?: AgentFetchOptions,
+): Promise<NextResponse> {
+  const call = await callAgent(path, init, failed, opts)
+  if (!call.ok) {
+    await writeAudit(withOutcome(audit, 'no_answer', call.response.status))
+    return call.response
+  }
+  if (!call.res.ok) {
+    await writeAudit(withOutcome(audit, call.res.status === 504 ? 'no_answer' : 'failed', call.res.status))
+    return agentErrorResponse(call.res, failed)
+  }
+  const answer = await call.res.json()
+  await writeAudit(withOutcome(audit, driveRan(answer) ? 'ran' : 'busy'))
+  return NextResponse.json(answer)
 }

@@ -3,7 +3,7 @@
 import { memo, useState, useCallback } from 'react'
 import { Monitor, Globe, MessageSquare, Skull, Square, Loader2 } from 'lucide-react'
 import type { MsfSession, MsfJob, NonMsfSession } from '@/lib/websocket-types'
-import { sessionRowKey } from '@/hooks/useActiveSessions'
+import { sessionRowKey, type ShownRow } from '@/hooks/useActiveSessions'
 import styles from './SessionCard.module.css'
 
 /** The Kali sandbox instance a row runs in, when the agent named one (per-user sandboxes). */
@@ -12,10 +12,20 @@ function SandboxTag({ sandbox }: { sandbox?: string }) {
   return <span className={styles.sandboxTag} title="Kali sandbox instance">{sandbox}</span>
 }
 
+/** A row kept from an earlier read because its sandbox did not answer the last one. */
+function StaleTag({ row }: { row: { staleSince?: number } }) {
+  if (row.staleSince === undefined) return null
+  return (
+    <span className={styles.staleTag} title="Its Kali sandbox did not answer the last read: shown as last listed">
+      not refreshed
+    </span>
+  )
+}
+
 // ── Session card ──
 
 interface SessionCardProps {
-  session: MsfSession
+  session: ShownRow<MsfSession>
   isSelected: boolean
   onSelect: () => void
   onKill: () => void
@@ -45,6 +55,7 @@ export const SessionCard = memo(function SessionCard({
       <div className={styles.cardHeader}>
         <span className={styles.sessionId}>#{session.id}</span>
         <SandboxTag sandbox={session.sandbox} />
+        <StaleTag row={session} />
         <span className={`${styles.typeBadge} ${isMeterpreter ? styles.meterpreter : styles.shell}`}>
           {isMeterpreter ? 'meterpreter' : 'shell'}
         </span>
@@ -91,7 +102,7 @@ export const SessionCard = memo(function SessionCard({
 // ── Non-MSF session card ──
 
 interface NonMsfCardProps {
-  session: NonMsfSession
+  session: ShownRow<NonMsfSession>
   isSelected: boolean
   onSelect: () => void
 }
@@ -109,6 +120,7 @@ export const NonMsfCard = memo(function NonMsfCard({
       <div className={styles.cardHeader}>
         <span className={styles.sessionId}>{session.id}</span>
         <SandboxTag sandbox={session.sandbox} />
+        <StaleTag row={session} />
         <span className={`${styles.typeBadge} ${styles.listener}`}>
           {session.tool || session.type}
         </span>
@@ -128,7 +140,7 @@ export const NonMsfCard = memo(function NonMsfCard({
 // ── Job card ──
 
 interface JobCardProps {
-  job: MsfJob
+  job: ShownRow<MsfJob>
   onKill: () => void
 }
 
@@ -145,6 +157,7 @@ export const JobCard = memo(function JobCard({ job, onKill }: JobCardProps) {
       <div className={styles.jobInfo}>
         <span className={styles.jobName}>{job.name}</span>
         <SandboxTag sandbox={job.sandbox} />
+        <StaleTag row={job} />
         {job.port > 0 && (
           <span className={styles.jobMeta}>:{job.port}</span>
         )}
