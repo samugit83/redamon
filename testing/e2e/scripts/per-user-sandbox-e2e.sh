@@ -3,7 +3,7 @@
 # testing/e2e/tests/perUserSandbox.spec.ts one group at a time, each against the
 # orchestrator setting it needs.
 #
-#   bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A, B, C, D
+#   bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A, B, C, D, E
 #   bash testing/e2e/scripts/per-user-sandbox-e2e.sh --groups A,D
 #   bash testing/e2e/scripts/per-user-sandbox-e2e.sh --list       # list the tests; touches nothing
 #   bash testing/e2e/scripts/per-user-sandbox-e2e.sh --dry-run    # say, per group, what would be recreated
@@ -17,7 +17,8 @@
 # limits, port), so shell-only values survive. Before the first recreate the
 # originals go to a 0600 file beside the lock (secret values as SHA-256 only);
 # the exit trap puts them back and compares, and a run killed before that
-# puts them back at the start of the next one. It stops and removes no sandbox and
+# puts them back at the start of the next one. Group E's port pool is G1_E2E_PORT_POOL
+# (default 40180-40181, on loopback). It stops and removes no sandbox and
 # no templates volume: the sandboxes a run starts are its test persons' own and
 # stop when idle, as anyone's.
 #
@@ -48,13 +49,13 @@ BASE_URL="${REDAMON_BASE_URL:-http://localhost:3000}"
 LOCK_WAIT="${G1_E2E_LOCK_WAIT_S:-10800}"
 # Every variable a group may set. A group leaves the others at the values the
 # orchestrator had when the run started.
-MANAGED=(KALI_SANDBOX_IDLE_MINUTES OS_HEADROOM_MEM SERVICE_BASELINE_MEM)
+MANAGED=(KALI_SANDBOX_IDLE_MINUTES OS_HEADROOM_MEM SERVICE_BASELINE_MEM KALI_SANDBOX_PORT_POOL KALI_SANDBOX_PORT_HOLD_HOURS)
 # Names whose values never reach the originals file (compared by hash instead).
 SECRET_NAME='(_KEY|_TOKEN|_SECRET|_PASSWORD|_PASS|DATABASE_URL)$'
 
 usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 
-GROUPS_ARG="A,B,C,D"
+GROUPS_ARG="A,B,C,D,E"
 LIST=0
 DRY=0
 CHECK_LOCK=0
@@ -87,7 +88,7 @@ fi
 
 IFS=',' read -r -a GROUP_LIST <<< "${GROUPS_ARG^^}"
 for g in "${GROUP_LIST[@]}"; do
-    [[ "$g" =~ ^[ABCD]$ ]] || { echo "unknown group: $g (A, B, C or D)" >&2; exit 2; }
+    [[ "$g" =~ ^[ABCDE]$ ]] || { echo "unknown group: $g (A, B, C, D or E)" >&2; exit 2; }
 done
 
 command -v docker >/dev/null || not_ready "docker is not installed"
@@ -363,6 +364,9 @@ group_env() {
     case "$1" in
         B) want[KALI_SANDBOX_IDLE_MINUTES]=1 ;;
         C) for pair in $C_POOL; do want[${pair%%=*}]="${pair#*=}"; done ;;
+        # Two reverse-shell ports on loopback (nothing dials them: the test reads who holds which)
+        # and no hold, so the run leaves no port reserved for its people.
+        E) want[KALI_SANDBOX_PORT_POOL]="${G1_E2E_PORT_POOL:-40180-40181}"; want[KALI_SANDBOX_PORT_HOLD_HOURS]=0 ;;
     esac
     for v in "${MANAGED[@]}"; do echo "$v=${want[$v]}"; done
 }
@@ -382,7 +386,7 @@ if [[ ",${GROUP_LIST[*]}," == *C* ]]; then
     C_POOL="$(group_c_pool)" || exit 1
 fi
 
-declare -A TITLE=([A]="Group A" [B]="Group B" [C]="Group C" [D]="Group D")
+declare -A TITLE=([A]="Group A" [B]="Group B" [C]="Group C" [D]="Group D" [E]="Group E")
 
 if [[ $DRY -eq 1 ]]; then
     problem="$(readiness_problem)"

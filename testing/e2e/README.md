@@ -62,7 +62,9 @@ the app as two members and the admin and checks that every Kali path still works
 and runs in the person's own sandbox: first use and the drawer's starting line, an engagement
 with a plan wave, a Fireteam and the Traffic tab, a shared project, shell sessions across
 people, the terminal (also under act-as), access loss, the everyday screens and the emergency
-stop (group A); the idle stop (B); the "Not enough memory" modal (C); per-person tunnels (D).
+stop (group A); the idle stop (B); the "Not enough memory" modal (C); per-person tunnels (D);
+each person's reverse-shell port in the Sessions panel, the terminal, the status route and
+Operations, and a member stopping her own handler job (E, a pool of two ports and no hold).
 Each test finds where its command ran from the marker it left in a container's `/tmp`
 (`docker exec ... test -e`, read only); those checks are soft and say `ISOLATION`.
 
@@ -75,7 +77,7 @@ put back by the next one. It fails before doing anything when Docker, `npx`, `cu
 orchestrator, the agent or the webapp is missing (`G1_E2E_ALLOW_SKIP=1` skips instead):
 
 ```bash
-bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A-D
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A-E
 bash testing/e2e/scripts/per-user-sandbox-e2e.sh --groups A,D # some groups only
 bash testing/e2e/scripts/per-user-sandbox-e2e.sh --list       # list the tests; touches nothing
 bash testing/e2e/scripts/per-user-sandbox-e2e.sh --dry-run    # what each group would recreate
@@ -86,6 +88,13 @@ It stops and removes no sandbox and no nuclei templates volume: the sandboxes a 
 are its test persons' own and stop when idle, as anyone's. Test 4 stops Bob's and Alice's
 at its end, since a Metasploit handler's background job carries no chat id and the agent's
 hold watcher would otherwise keep that sandbox for 8 hours.
+
+Group E runs with no hold (`KALI_SANDBOX_PORT_HOLD_HOURS=0`), so it reserves no pool port. The
+agent-driven half of the reverse-port proof, `bash tests/kali_reverse_ports_live.sh` (E1-E9, E11,
+E12 through Agent in the Loop; see that script), does use 24-hour holds: a completed run removes
+them in its last phase, but an aborted one leaves its pool ports reserved for the test persons
+for up to 24 hours, or until the next completed run removes them. They block only those ports
+(`FU_P7_POOL_BASE`, default 40190-40193) and only while a pool that contains them is configured.
 
 It needs the stack up, Docker, `python3` and `node`, and the accounts of
 `tests/kali_sandbox_seed_live.py` (`g1-alice@e2e.local`, `g1-bob@e2e.local`, projects `g1-PA`,

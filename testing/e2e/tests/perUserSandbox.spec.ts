@@ -2,10 +2,11 @@ import { test, expect, type APIRequestContext, type BrowserContext, type Page } 
 import {
   MODAL_RAM_TITLE, MODAL_RETRY_LABEL, SHARE_KEYS_LENT_TEXT,
 } from '../../../webapp/src/lib/sandbox/contract'
+import { REVERSE_PORT_ASSIGNED_TEXT, REVERSE_PORT_POOL_FULL_TEXT } from '../../../webapp/src/lib/sandbox/reversePort'
 import {
   LAB_SHELL_PORT, adminCredentials, completeSessionsOf, connectLab, containersHolding, chiselEdgeLog,
   deleteConversation, deleteStubProvider, driveRun, ensureStubProvider, expectSessionOutOfReach, goneWithin, json,
-  listedFolders, meId, mountedProjects, noSandboxWithin, nonce, openChat, openChatUntilSandbox, recordTransientTexts,
+  listedFolders, meId, mountedProjects, noSandboxWithin, nonce, openChat, openChatUntilSandbox, publishedPorts, recordTransientTexts,
   redactRequestErrors, redactSecrets, removeListeners, removeMarkers, restoreProjects, sandboxContainers, sandboxOf, seedAndRead, send, sessionCard,
   sessionsOf, setProject, signIn, sleep, stackMissing, startChiselEdge, startLab, startStub, stopChiselEdge, stopLab,
   stopPersonSandbox, toolCards, toolOutput, wasSeen, processRunning, recordGrant, recordedGrant, restoreGrants,
@@ -32,6 +33,7 @@ import {
  *   Group B (idle)      test 8, KALI_SANDBOX_IDLE_MINUTES=1
  *   Group C (memory)    test 9, the pool lowered with SERVICE_BASELINE_MEM and OS_HEADROOM_MEM
  *   Group D (tunnel)    test 10
+ *   Group E (ports)     test 11, a reverse-shell port pool of two (KALI_SANDBOX_PORT_POOL) and no hold
  * Run: bash testing/e2e/scripts/per-user-sandbox-e2e.sh (never alone: groups B and C need the settings it sets).
  *
  * Needs the stack up, Docker, python3 (the seed) and node (the stub). Skips with the reason when one
@@ -935,6 +937,135 @@ test.describe('Group D (tunnel)', () => {
       await other.close()
       stopChiselEdge(edge)
       expect.soft(failed, 'test 10 put back Bob\'s tunnel settings, project, provider and permissions').toEqual([])
+    }
+  })
+})
+
+/** Polls until the person has no sandbox of either view (the Operations stop ends both). */
+async function noSandboxOfPerson(userId: string, timeoutMs = 90_000): Promise<boolean> {
+  const until = Date.now() + timeoutMs
+  while (sandboxContainers({ user: userId }).length) {
+    if (Date.now() > until) return false
+    await sleep(2_000)
+  }
+  return true
+}
+
+/** The person's own running sandbox as GET /api/agent/sandbox/status answers it (FU-24). */
+async function statusPort(api: APIRequestContext): Promise<{ port: number | null; state: string | null }> {
+  const res = await api.get('/api/agent/sandbox/status')
+  expect(res.status(), 'GET /api/agent/sandbox/status').toBe(200)
+  const rows = ((await res.json()) as { instances?: { state?: string; reverse_port?: number | null; reverse_port_state?: string | null }[] }).instances ?? []
+  const row = rows.find(r => r.state === 'running') ?? rows[0] ?? {}
+  return { port: row.reverse_port ?? null, state: row.reverse_port_state ?? null }
+}
+
+test.describe('Group E (ports)', () => {
+  test('11. reverse-shell ports: each person reads their own port in the Sessions panel, the terminal, the status route and Operations, and a member stops her own handler job', async () => {
+    test.setTimeout(900_000)
+    const n = nonce()
+    const page = await newPage(alice)
+    const bobPage = await newPage(bob)
+    const adminPage = await newPage(admin)
+    let stub: Stub | null = null
+    let session = ''
+    let project = ''
+    let aliceBox: SandboxContainer | null = null
+    try {
+      // The wrapper gives this group a pool of two ports and no hold. Fresh starts in a known order
+      // decide who gets which: Alice the first port, the admin the second, and Bob none (pool full).
+      for (const id of [state.alice.id, adminId, state.bob.id]) {
+        if (sandboxContainers({ user: id }).length) await stopPersonSandbox(admin.request, BASE, id)
+        expect(await noSandboxOfPerson(id), 'no earlier sandbox holds a pool port').toBe(true)
+      }
+
+      aliceBox = await openChatUntilSandbox(page, state.alice.id, state.projects.PA)
+      expect(aliceBox, 'Alice\'s sandbox runs').not.toBeNull()
+      const alicePub = publishedPorts(aliceBox!.name)
+      expect(alicePub.length, 'Alice\'s sandbox publishes exactly one port (her pool port)').toBe(1)
+      const alicePort = alicePub[0].hostPort
+      expect(alicePub[0].containerPort, 'published at the same number inside the sandbox').toBe(alicePort)
+      expect(await statusPort(alice.request), 'the status route names her port').toEqual({ port: alicePort, state: 'assigned' })
+      await page.goto(`/graph?project=${state.projects.PA}`)
+      await page.getByRole('tab', { name: /Reverse Shell/ }).click()
+      await expect(page.locator('[data-testid="sessions-reverse-port"]'), 'Alice\'s Sessions panel shows her port')
+        .toContainText(REVERSE_PORT_ASSIGNED_TEXT.replace('{port}', String(alicePort)), { timeout: 60_000 })
+
+      const created = await admin.request.post('/api/projects', json(BASE, {
+        name: `g1e2e-ports-${n}`, targetDomain: 'g1-ports.invalid', targetGuardrailEnabled: false,
+      }))
+      expect(created.ok(), 'the admin\'s throwaway project').toBeTruthy()
+      project = ((await created.json()) as { id: string }).id
+      await adminPage.goto(`/graph?project=${project}`)
+      await adminPage.getByRole('tab', { name: 'RedAmon Terminal' }).click()
+      await terminalRun(adminPage, `echo END-$((6*7))-${n}`, `END-42-${n}`, 300_000)
+      const adminBox = await sandboxOf(adminId, 'own')
+      expect(adminBox, 'the admin\'s sandbox runs').not.toBeNull()
+      const adminPub = publishedPorts(adminBox!.name)
+      expect(adminPub.length, 'the admin\'s sandbox publishes one port of its own').toBe(1)
+      const adminPort = adminPub[0].hostPort
+      expect(adminPort, 'a port apart from Alice\'s').not.toBe(alicePort)
+      const assigned = REVERSE_PORT_ASSIGNED_TEXT.replace('{port}', String(adminPort))
+      await expect(adminPage.locator('[data-testid="kali-reverse-port"]'), 'the terminal\'s banner shows the admin\'s port')
+        .toContainText(assigned, { timeout: 60_000 })
+      // The login message (redamon-motd.sh) prints the same line in the shell itself.
+      await expect.poll(() => terminalText(adminPage), { message: 'the terminal\'s login message names the port', timeout: 30_000 })
+        .toContain(assigned)
+
+      const bobBox = await openChatUntilSandbox(bobPage, state.bob.id, state.projects.PB)
+      expect(bobBox, 'Bob\'s sandbox runs').not.toBeNull()
+      expect(publishedPorts(bobBox!.name), 'Bob\'s sandbox publishes nothing: the pool is full').toEqual([])
+      expect(await statusPort(bob.request), 'his status route says why').toEqual({ port: 4444, state: 'pool_full' })
+      await bobPage.goto(`/graph?project=${state.projects.PB}`)
+      await bobPage.getByRole('tab', { name: /Reverse Shell/ }).click()
+      await expect(bobPage.locator('[data-testid="sessions-reverse-port"]'), 'Bob\'s Sessions panel says the pool is full')
+        .toContainText(REVERSE_PORT_POOL_FULL_TEXT, { timeout: 60_000 })
+
+      await adminPage.goto('/admin/operations')
+      const opsPort = (who: RegExp) => adminPage.locator('tr').filter({ hasText: who })
+        .filter({ has: adminPage.locator('[data-testid="ops-sandbox-port"]') }).first().locator('[data-testid="ops-sandbox-port"]')
+      await expect.soft(opsPort(/G1 Alice|g1-alice@/), 'Operations lists Alice\'s port').toHaveText(String(alicePort), { timeout: 60_000 })
+      await expect.soft(opsPort(/G1 Bob|g1-bob@/), 'Operations says Bob has none because the pool is full').toHaveText('none (pool full)')
+
+      // D-D: a member sees and stops the handler job of her own sandbox. A Metasploit step of a CVE run
+      // with a pool port but no LHOST makes the agent ask the person for one (is_session_config_complete):
+      // the pool's own address stands in, as nothing dials the handler.
+      await setProject({ key: 'alice', api: alice.request }, BASE, state.projects.PA, { agentLhost: '127.0.0.1' })
+      stub = await startStub('handler', { NONCE: n, PORT: String(alicePort) }, stubPort)
+      await openChat(page, state.projects.PA)
+      session = await send(page, alice.request, state.projects.PA, `g1 e2e handler on the pool port ${n}`)
+      const { allowed, approved } = await driveRun(page, alice.request, state.projects.PA, session, 420_000)
+      expect(approved, 'the move to exploitation was approved once').toBe(1)
+      expect(allowed, 'metasploit_console was confirmed').toBeGreaterThanOrEqual(1)
+      let job: SessionRow | undefined
+      await expect(async () => {
+        job = (await sessionsOf(alice.request)).jobs.find(j => j.sandbox === aliceBox!.instance)
+        expect(job, 'Alice lists the handler job of her own sandbox').toBeTruthy()
+      }).toPass({ timeout: 90_000 })
+      const bobSees = (await sessionsOf(bob.request)).jobs.filter(j => j.sandbox === aliceBox!.instance)
+      expect.soft(bobSees, 'ISOLATION (D-D): Bob lists none of Alice\'s jobs').toEqual([])
+      await page.goto(`/graph?project=${state.projects.PA}`)
+      await page.getByRole('tab', { name: /Reverse Shell/ }).click()
+      const card = page.locator(`[data-session-key="${aliceBox!.instance}:${job!.id}"]`)
+      await expect(card, 'the job\'s card is in her Reverse Shell tab').toBeVisible({ timeout: 60_000 })
+      await expect(card, 'on her pool port').toContainText(`:${alicePort}`)
+      await card.getByTitle('Stop job').click()
+      await expect(card, 'the stopped job leaves the list').toHaveCount(0, { timeout: 60_000 })
+      await expect.poll(async () => (await sessionsOf(alice.request)).jobs.filter(j => j.sandbox === aliceBox!.instance).length,
+        { message: 'her sandbox runs no job any more', timeout: 60_000 }).toBe(0)
+    } finally {
+      if (aliceBox) {
+        const left = await sessionsOf(alice.request).catch((): SessionList => ({ sessions: [], jobs: [], non_msf_sessions: [] }))
+        for (const row of left.jobs.filter(j => j.sandbox === aliceBox!.instance)) {
+          await alice.request.post(`/api/agent/jobs/${row.id}/kill?sandbox=${encodeURIComponent(row.sandbox ?? '')}`,
+            { headers: { Origin: new URL(BASE).origin } })
+        }
+      }
+      for (const p of [page, bobPage, adminPage]) await p.close()
+      await stub?.stop()
+      if (session) await deleteConversation(alice.request, BASE, session)
+      if (project) await admin.request.delete(`/api/projects/${project}`, { headers: { Origin: new URL(BASE).origin } })
+      expect.soft(await restoreProjects(apis(), BASE, { fields: ['agentLhost'] }), 'g1-PA\'s LHOST was put back').toEqual([])
     }
   })
 })

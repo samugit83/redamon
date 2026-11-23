@@ -294,6 +294,18 @@ export function removeListeners(marker: string): string[] {
   return failed
 }
 
+export interface Published { containerPort: number; hostIp: string; hostPort: number }
+
+/** What `docker port` says the container publishes (a per-user sandbox: its pool port, or nothing). */
+export function publishedPorts(container: string): Published[] {
+  const rows: Published[] = []
+  for (const line of docker(['port', container]).split('\n')) {
+    const m = /^(\d+)\/tcp -> \[?([0-9a-fA-F.:]+?)\]?:(\d+)$/.exec(line.trim())
+    if (m) rows.push({ containerPort: Number(m[1]), hostIp: m[2], hostPort: Number(m[3]) })
+  }
+  return rows
+}
+
 /** The project ids a container mounts under /workspace. */
 export function mountedProjects(container: string): string[] {
   const mounts = JSON.parse(docker(['inspect', '-f', '{{json .Mounts}}', container]) || '[]') as { Destination: string }[]
