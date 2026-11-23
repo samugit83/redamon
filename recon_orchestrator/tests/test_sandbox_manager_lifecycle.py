@@ -239,7 +239,10 @@ class FakeContainers:
                 "CpuShares": kw.get("cpu_shares"), "Dns": list(kw.get("dns") or []),
                 "RestartPolicy": dict(kw.get("restart_policy") or {}),
                 "PortBindings": {k: [{"HostIp": ip, "HostPort": str(p)}] for k, (ip, p) in ports.items()} or None,
-                "Sysctls": None, "Init": kw.get("init")},
+                "Sysctls": None, "Init": kw.get("init"),
+                # The daemon fills in its default driver, with no options, when none is asked.
+                "LogConfig": ({"Type": kw["log_config"]["Type"], "Config": dict(kw["log_config"]["Config"])}
+                              if kw.get("log_config") else {"Type": self.d.log_driver, "Config": {}})},
             "State": {"Status": "created", "Health": {"Status": "starting"}},
             "NetworkSettings": {"Networks": {}}}
         c = FakeContainer(self.d, cid, name, attrs)
@@ -405,6 +408,7 @@ class FakeDocker:
         self.fail_remove = False
         self.fail_network_remove = False
         self.cgroup_version = "2"
+        self.log_driver = "json-file"
         self.host_to_local = {}
         self._next = 0
         self.containers = FakeContainers(self)
@@ -420,7 +424,8 @@ class FakeDocker:
         return {"Version": "29.10.0", "ApiVersion": self.api.api_version}
 
     def info(self):
-        return {"CgroupVersion": self.cgroup_version, "DefaultRuntime": "runc"}
+        return {"CgroupVersion": self.cgroup_version, "DefaultRuntime": "runc",
+                "LoggingDriver": self.log_driver}
 
     def local_of(self, host_path):
         for host, local in self.host_to_local.items():
@@ -1239,15 +1244,17 @@ async def test_stop_project_stops_every_instance_mounting_it(world):
         await world.mgr.stop_project("../projS", "project_deleted")
 
 
-async def test_created_folders_are_0777_under_umask_022(world):
+async def test_created_folders_modes_under_umask_022(world):
     old = os.umask(0o022)
     try:
         await world.mgr.ensure(ALICE, ["projA"])
     finally:
         os.umask(old)
-    for path in (world.ws("projA"), world.out("users", sc.sandbox_key(ALICE, "own"))):
-        assert stat.S_IMODE(os.lstat(path).st_mode) == 0o777, path
-    # Only the orchestrator adds a person's folder to users/.
+    # The agent (not root) and the sandbox write the project folder.
+    assert stat.S_IMODE(os.lstat(world.ws("projA")).st_mode) == 0o777
+    # Only the sandbox (root inside) writes the person's output folder (G-40d), and
+    # only the orchestrator adds a person's folder to users/.
+    assert stat.S_IMODE(os.lstat(world.out("users", sc.sandbox_key(ALICE, "own"))).st_mode) == 0o755
     assert stat.S_IMODE(os.lstat(world.out("users")).st_mode) == 0o755
 
 

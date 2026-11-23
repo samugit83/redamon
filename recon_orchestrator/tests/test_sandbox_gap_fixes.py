@@ -10,11 +10,15 @@ handled.
   at all, although theirs was alive.
 - G-22: adoption removed an instance whose environment lacked a fixed variable a
   newer release added (a new server port), cutting its live sessions at the update.
+- G-40c: a sandbox's container log was never capped.
+- G-40d: a person's output folder was made world-writable.
 
 Driven like the lifecycle tests: the in-memory FakeDocker and the `world` fixture of
 test_sandbox_manager_lifecycle.py, a real ReservationLedger, a fake clock.
 """
 import logging
+import os
+import stat
 import uuid
 
 import pytest
@@ -232,3 +236,59 @@ async def test_a_missing_fixed_variable_never_excuses_a_bad_token(world):
                                     if not e.startswith(key + "=") and not e.startswith(sc.ENV_MCP_AUTH_TOKEN + "=")]
     result = await world.mgr.adopt()
     assert result["adopted"] == 0 and result["removed"] == 2
+
+
+# --- G-40c the container log is capped ----------------------------------------------
+
+async def test_the_container_log_rotates_under_the_daemons_driver(world):
+    await world.mgr.ensure(ALICE, ["projA"])
+    log = world.created(ALICE)[0].attrs["HostConfig"]["LogConfig"]
+    assert log == {"Type": "json-file", "Config": {"max-size": sm.LOG_MAX_SIZE, "max-file": sm.LOG_MAX_FILES}}
+    world.d.log_driver = "local"
+    await world.mgr.ensure(BOB, ["projB"])
+    assert world.created(BOB)[0].attrs["HostConfig"]["LogConfig"]["Type"] == "local"
+
+
+async def test_a_driver_that_does_not_rotate_is_left_as_the_operator_set_it(world):
+    world.d.log_driver = "journald"
+    await world.mgr.ensure(ALICE, ["projA"])
+    assert "log_config" not in world.created(ALICE)[0].created_kwargs
+
+
+@pytest.mark.parametrize("log", [{"Type": "json-file", "Config": {}}, None])
+async def test_adoption_drains_a_sandbox_started_without_the_log_cap(world, log):
+    a, _ = await adopt_world(world)
+    for c in world.created():
+        c.attrs["HostConfig"]["LogConfig"] = log
+    result = await world.mgr.adopt()
+    assert result == {"adopted": 2, "removed": 0, "networks_removed": 0}
+    assert {i.state for i in world.mgr.instances()} == {"draining"}
+    again = await world.mgr.ensure(ALICE, ["projA"])
+    assert again["instance"] != a["instance"]
+
+
+async def test_adoption_under_a_driver_that_does_not_rotate_keeps_the_sandbox_current(world):
+    world.d.log_driver = "journald"
+    a, _ = await adopt_world(world)
+    await world.mgr.adopt()
+    assert {i.state for i in world.mgr.instances()} == {"running"}
+    assert (await world.mgr.ensure(ALICE, ["projA"]))["instance"] == a["instance"]
+
+
+# --- G-40d the output folder is not world-writable ---------------------------------
+
+async def test_an_existing_world_writable_output_folder_is_narrowed(world):
+    key = sc.sandbox_key(ALICE, sc.VIEW_OWN)
+    os.makedirs(world.out("users", key))
+    os.chmod(world.out("users", key), 0o777)
+    os.chmod(world.out("users"), 0o755)
+    await world.mgr.ensure(ALICE, ["projA"])
+    assert stat.S_IMODE(os.lstat(world.out("users", key)).st_mode) == sm.OUTPUT_LEAF_MODE == 0o755
+
+
+async def test_an_existing_project_folder_keeps_its_world_writable_mode(world):
+    """The agent (not root) writes the workspace project folder."""
+    os.mkdir(world.ws("projA"))
+    os.chmod(world.ws("projA"), 0o777)
+    await world.mgr.ensure(ALICE, ["projA"])
+    assert stat.S_IMODE(os.lstat(world.ws("projA")).st_mode) == 0o777

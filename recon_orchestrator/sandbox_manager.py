@@ -185,6 +185,18 @@ START_STUCK_GRACE_S = 60
 CRASH_REASON = "crashed"
 CRASHED_HEALTH = ("exited", "dead", "gone")
 
+# A sandbox's container log, under a log driver that rotates: a root shell that
+# writes to PID 1's stdout grows it, on the host's disk, for as long as it runs.
+# A daemon whose default driver is another one (journald, syslog, a shipper) keeps it.
+ROTATING_LOG_DRIVERS = ("json-file", "local")
+LOG_MAX_SIZE = "10m"
+LOG_MAX_FILES = "3"
+
+# The workspace project folder is written by the agent (not root) and the sandbox,
+# so it is 0777; a person's output folder only by their sandbox (root inside).
+WORKSPACE_LEAF_MODE = 0o777
+OUTPUT_LEAF_MODE = 0o755
+
 # Turns off the tunnels of a replaced instance (tunnel_manager.py on its own
 # loopback, an empty config). The token reaches it through the exec's
 # environment, never its command line; proxies are bypassed. The person is root
@@ -766,13 +778,14 @@ class SandboxManager:
                                              inst.view, inst.projects, custom)
         servers = await asyncio.to_thread(self._servers_hash_sync)
         inst.servers = servers
+        log_config = self._log_config(await asyncio.to_thread(self._daemon_facts_sync))
         for attempt in range(2):
             inst.reverse_port = inst.pool_port or sc.DEFAULT_REVERSE_PORT
             env = sc.container_env(inst.user_id, inst.view, inst.instance,
                                    reverse_port=inst.pool_port)
             inst.token = env[sc.ENV_MCP_AUTH_TOKEN]
             inst.tunnel_token = env[sc.ENV_TUNNEL_AUTH_TOKEN]
-            kwargs = self._container_kwargs(inst, env, servers, custom)
+            kwargs = self._container_kwargs(inst, env, servers, custom, log_config)
             try:
                 inst.container_id, inst.image_id = await asyncio.to_thread(self._create_start_sync, kwargs)
                 break
@@ -797,7 +810,18 @@ class SandboxManager:
             logger.error(f"[sandbox] refusing key={inst.key} instance={inst.instance}: {problem}; removing it")
             raise SandboxStartError(sc.ERR_START_FAILED, "a mount of the sandbox is not the folder that was checked")
 
-    def _container_kwargs(self, inst: Instance, env: dict, servers: str, custom: bool) -> dict:
+    @staticmethod
+    def _log_config(daemon: Mapping) -> Optional[dict]:
+        """The rotation every sandbox's container log gets, under the daemon's own
+        default driver when it is one that rotates; None leaves another driver as
+        the operator set it."""
+        driver = daemon.get("log_driver") or ""
+        if driver not in ROTATING_LOG_DRIVERS:
+            return None
+        return {"type": driver, "config": {"max-size": LOG_MAX_SIZE, "max-file": LOG_MAX_FILES}}
+
+    def _container_kwargs(self, inst: Instance, env: dict, servers: str, custom: bool,
+                          log_config: Optional[dict] = None) -> dict:
         labels = dict(COMPOSE_LABEL_OVERRIDES)
         labels.update(sc.container_labels(inst.user_id, inst.view, inst.instance, inst.projects,
                                           created=inst.created, port=inst.pool_port, servers=servers))
@@ -823,6 +847,8 @@ class SandboxManager:
         pool = self._pool()
         if inst.pool_port is not None and pool is not None:
             kwargs["ports"] = sc.published_ports(inst.pool_port, pool.bind_ip)
+        if log_config is not None:
+            kwargs["log_config"] = docker.types.LogConfig(**log_config)
         return kwargs
 
     def _mounts(self, inst: Instance, custom: bool) -> list:
@@ -1954,27 +1980,31 @@ class SandboxManager:
 
     def _bind_chains(self, user_id: str, view: str, projects, custom: bool) -> list:
         """(target inside the sandbox, local base, components, make it when
-        missing) of every bind. The custom templates copy is made by the copy."""
+        missing, the mode of a folder it makes) of every bind. The custom
+        templates copy is made by the copy."""
         output = self.local_bases[sc.MOUNT_OUTPUT]
-        chains = [(f"{sc.WORKSPACE_ROOT}/{p}", self.local_bases[sc.MOUNT_WORKSPACE], (p,), True)
-                  for p in projects]
-        chains.append((sc.OUTPUT_TARGET, output, tuple(sc.output_rel(user_id, view).split("/")), True))
-        chains += [(target, self.local_bases[kind], (), False) for target, kind in
+        chains = [(f"{sc.WORKSPACE_ROOT}/{p}", self.local_bases[sc.MOUNT_WORKSPACE], (p,), True,
+                   WORKSPACE_LEAF_MODE) for p in projects]
+        chains.append((sc.OUTPUT_TARGET, output, tuple(sc.output_rel(user_id, view).split("/")), True,
+                       OUTPUT_LEAF_MODE))
+        chains += [(target, self.local_bases[kind], (), False, None) for target, kind in
                    ((sc.SERVERS_TARGET, sc.MOUNT_SERVERS), (sc.GRAPH_DB_TARGET, sc.MOUNT_GRAPH_DB))]
         if custom:
             chains.append((sc.CUSTOM_TEMPLATES_TARGET, output,
-                           tuple(sc.custom_templates_rel(user_id, view).split("/")), False))
+                           tuple(sc.custom_templates_rel(user_id, view).split("/")), False, None))
         return chains
 
     @staticmethod
-    def _open_folder(base, parts, create: bool, leaf_mode: int = 0o777) -> int:
+    def _open_folder(base, parts, create: bool, leaf_mode: int = WORKSPACE_LEAF_MODE,
+                     tighten: bool = False) -> int:
         """A descriptor of ``base/parts...`` (``base`` a path, or a folder
         descriptor), opened one component at a time, never following a link,
         making a missing component when ``create``: the last one ``leaf_mode``
         (0777 by default: the agent and the sandbox both write it), one above it
         0755 (only the orchestrator adds to ``users/``), set through the descriptor
-        so the umask cannot narrow them. A link or a non-folder anywhere raises
-        ``_UnsafeFolder``."""
+        so the umask cannot narrow them. ``tighten`` also narrows an existing last
+        folder of the orchestrator's own to ``leaf_mode`` (one an older release made
+        0777). A link or a non-folder anywhere raises ``_UnsafeFolder``."""
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         try:
             fd = os.dup(base) if isinstance(base, int) else os.open(base, flags)
@@ -1997,17 +2027,24 @@ class SandboxManager:
                 fd = child
                 if made:
                     os.fchmod(fd, leaf_mode if index == len(parts) - 1 else 0o755)
-            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISDIR(st.st_mode):
                 raise _UnsafeFolder(base)
+            if (tighten and parts and st.st_uid == os.geteuid()
+                    and stat.S_IMODE(st.st_mode) & ~leaf_mode):
+                os.fchmod(fd, stat.S_IMODE(st.st_mode) & leaf_mode)
         except BaseException:
             os.close(fd)
             raise
         return fd
 
     @classmethod
-    def _walk(cls, base: str, parts, create: bool) -> tuple:
-        """``_open_folder``, returning the final folder's (dev, inode)."""
-        fd = cls._open_folder(base, parts, create)
+    def _walk(cls, base: str, parts, create: bool, leaf_mode: Optional[int] = None) -> tuple:
+        """``_open_folder``, returning the final folder's (dev, inode). A
+        ``leaf_mode`` other than the workspace's also narrows an existing folder."""
+        mode = WORKSPACE_LEAF_MODE if leaf_mode is None else leaf_mode
+        fd = cls._open_folder(base, parts, create, leaf_mode=mode,
+                              tighten=mode != WORKSPACE_LEAF_MODE)
         try:
             st = os.fstat(fd)
             return st.st_dev, st.st_ino
@@ -2019,9 +2056,9 @@ class SandboxManager:
         source that is (or passes through) a symlink, or is not a folder. A link
         planted where a folder belongs would have Docker mount its target."""
         out = {}
-        for target, base, parts, create in self._bind_chains(user_id, view, projects, custom):
+        for target, base, parts, create, mode in self._bind_chains(user_id, view, projects, custom):
             try:
-                out[target] = self._walk(base, parts, create=create)
+                out[target] = self._walk(base, parts, create=create, leaf_mode=mode)
             except _UnsafeFolder:
                 logger.error(f"[sandbox] refusing to start key={sc.sandbox_key(user_id, view)}: a mount "
                              f"source is missing, a symlink or not a folder")
@@ -2301,15 +2338,16 @@ class SandboxManager:
             return None
 
     def _daemon_facts_sync(self) -> dict:
-        """The engine defaults a container gets for the two host-config fields whose
-        default is not empty: the cgroup namespace (``host`` on cgroup v1) and the
-        runtime."""
+        """The engine defaults a container gets for the host-config fields whose
+        default is not empty: the cgroup namespace (``host`` on cgroup v1), the
+        runtime and the log driver."""
         try:
             info = self.client.info() or {}
         except Exception:  # noqa: BLE001 - the strict defaults apply
             info = {}
         return {"cgroup_v1": str(info.get("CgroupVersion") or "") == "1",
-                "runtime": str(info.get("DefaultRuntime") or "runc")}
+                "runtime": str(info.get("DefaultRuntime") or "runc"),
+                "log_driver": str(info.get("LoggingDriver") or "")}
 
     @staticmethod
     def _same_lineage(old, current) -> bool:
@@ -2389,8 +2427,10 @@ class SandboxManager:
             probe.created = float(labels.get(sc.LABEL_CREATED) or 0)
         except ValueError:
             return refused("invalid created label")
+        log_config = self._log_config(daemon)
         try:
-            plans = [self._container_kwargs(probe, env, labels.get(sc.LABEL_SERVERS) or "", custom)
+            plans = [self._container_kwargs(probe, env, labels.get(sc.LABEL_SERVERS) or "", custom,
+                                            log_config)
                      for custom in (True, False)]
         except (SandboxError, ValueError):
             return refused("its plan cannot be rebuilt")
@@ -2431,6 +2471,13 @@ class SandboxManager:
         if hc.get("Init") is not expected["init"]:
             # Started before the spec had an init: its zombies stay until it stops.
             drain = drain or "no init process"
+        if log_config is not None:
+            got_log = hc.get("LogConfig") or {}
+            if got_log.get("Type") != log_config["type"] or \
+                    dict(got_log.get("Config") or {}) != log_config["config"]:
+                # Started before its log was capped, or under another rotation: the
+                # log keeps growing until it stops.
+                drain = drain or "no log cap"
         memory = int(hc.get("Memory") or 0)
         if memory <= 0 or int(hc.get("MemorySwap") or 0) != memory:
             return refused("limits differ")
