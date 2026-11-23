@@ -2159,7 +2159,9 @@ class ContainerManager:
             name=self.CAPTURE_PROXY_NAME,
             detach=True,
             command=["mitmdump", "--quiet", "--set", "confdir=/ca",
-                     "--set", "connection_strategy=lazy",  # so the IP pin applies (§20.5)
+                     # lazy: nothing is dialed for a request the guard refuses; the
+                     # IP pin itself is set in server_connect on every dial (§20.5).
+                     "--set", "connection_strategy=lazy",
                      "--set", "stream_large_bodies=5m",
                      # The egress guard runs on HTTP requests only: after a CONNECT, a
                      # stream that is not HTTP would be relayed raw to any address, a

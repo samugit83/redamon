@@ -504,11 +504,11 @@ flowchart TB
 
     Orchestrator["<b>AGENT ORCHESTRATOR</b><br/><br/>Root Agent State Machine (14 nodes)<br/>AsyncPostgresSaver Checkpointer<br/>StreamingCallback · Confirmation Registry<br/>Fireteam Fan-Out (asyncio.gather over N members)"]
 
-    Tools["<b>TOOL LAYER</b><br/><br/>PhaseAwareToolExecutor<br/>MCPToolsManager · Neo4jToolManager"]
+    Tools["<b>TOOL LAYER</b><br/><br/>PhaseAwareToolExecutor · sandbox_router<br/>MCPToolsManager (one per sandbox) · Neo4jToolManager"]
 
-    MCP["<b>MCP SERVERS</b>, inside Kali Sandbox<br/><br/>network_recon :8000  (curl · naabu · kali_shell · execute_code)<br/>nuclei :8002<br/>metasploit :8003<br/>nmap :8004"]
+    MCP["<b>MCP SERVERS</b>, inside the person's own Kali sandbox<br/><br/>network_recon :8000  (curl · naabu · kali_shell · execute_code)<br/>nuclei :8002<br/>metasploit :8003<br/>nmap :8004<br/>playwright :8005"]
 
-    Data["<b>DATA LAYER</b><br/><br/>Neo4j (Recon Graph + EvoGraph)<br/>PostgreSQL (Sessions + Checkpoints + ChatMessages)<br/>Kali Sandbox Container"]
+    Data["<b>DATA LAYER</b><br/><br/>Neo4j (Recon Graph + EvoGraph)<br/>PostgreSQL (Sessions + Checkpoints + ChatMessages)<br/>Kali sandboxes (one per person, started on demand)"]
 
     Frontend <==>|"WebSocket JSON<br/>(events ↑ · commands ↓)"| Backend
     Backend ==> Orchestrator
@@ -664,11 +664,11 @@ The advantage is that an engagement's full operational envelope lives in **one p
 
 ### MCP Tool Integration (Phase-Based Tool Access)
 
-The agent's tools are not Python functions that ship inside the agent container, they are exposed by **separate Docker containers** speaking the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), a JSON-RPC standard for plugging tools into language-model agents. Five MCP servers run inside a single Kali Linux sandbox: `network_recon` (curl, naabu, kali_shell, code execution), `nuclei` (CVE templates), `metasploit` (the full msfconsole), `nmap` (deep scanning + NSE) and `playwright` (browser automation). The agent's `MCPToolsManager` maintains streaming HTTP connections to each, with retry-with-backoff to handle container startup races.
+The agent's tools are not Python functions that ship inside the agent container, they are exposed by **separate Docker containers** speaking the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), a JSON-RPC standard for plugging tools into language-model agents. Five MCP servers run inside a Kali Linux sandbox: `network_recon` (curl, naabu, kali_shell, code execution), `nuclei` (CVE templates), `metasploit` (the full msfconsole), `nmap` (deep scanning + NSE) and `playwright` (browser automation). Each person who uses these tools gets their own sandbox, started by the recon orchestrator on first need and stopped when unused ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)). The agent sends every call to the sandbox of the person doing the work, never the project owner's (`agentic/sandbox_router.py`), and keeps one `MCPToolsManager` per sandbox, connected with that sandbox's own bearer token.
 
 Tools are gated by **phase**. The `TOOL_PHASE_MAP` setting (database-driven) declares which tools are allowed in `informational`, `exploitation`, and `post_exploitation`. The `PhaseAwareToolExecutor` enforces this at the executor level, even if the LLM tries to call a tool in the wrong phase, the call is rejected before it reaches the MCP server. A separate `tool_registry.py` is the *single source of truth* for tool metadata (names, purposes, argument hints, dangerous flag), and the prompt builder generates the tools-available section dynamically from this registry so the LLM never sees a tool that isn't actually allowed in the current phase.
 
-The advantage of this architecture is **isolation and substitutability**. The agent container is small and stateless; the tools live in a hardened Kali sandbox with their own filesystem, their own packages, and their own crash domain. A misbehaving tool cannot crash the agent. Adding a new tool means writing a new MCP server (or extending an existing one) and updating one registry entry, the orchestrator code is untouched. Full details: [Tool Execution & MCP Integration chapter](#tool-execution--mcp-integration).
+The advantage of this architecture is **isolation and substitutability**. The agent container is small and stateless; the tools live in a Kali sandbox with its own filesystem, its own packages, and its own crash domain, one per person. A misbehaving tool cannot crash the agent, and one person's shell cannot see another person's files or processes. Adding a new tool means writing a new MCP server (or extending an existing one) and updating one registry entry, the orchestrator code is untouched. Full details: [Tool Execution & MCP Integration chapter](#tool-execution--mcp-integration).
 
 ### Wave Execution (Parallel Tool Plans)
 
@@ -996,7 +996,7 @@ Seven of those parts load only with recon's route exposure scan. `access_control
 
 ## Tool Execution & MCP Integration
 
-This chapter explains *how the agent runs commands against the target*, and why that mechanism is more elaborate than a simple "the agent shells out to nmap." Two design choices shape the entire layer. First, **tools live outside the agent container**: the agent itself ships only a thin client that speaks the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), a JSON-RPC standard for plugging tools into language-model agents. The actual tool implementations (curl, naabu, nuclei, metasploit, nmap, hydra, playwright, etc.) run inside a separate Kali Linux sandbox container as five FastMCP servers. Adding a new tool means writing a new MCP method, not modifying the agent. Second, **tools are gated by phase**: the `TOOL_PHASE_MAP` setting (database-driven, project-level) declares which tools are allowed in `informational`, `exploitation`, and `post_exploitation`, and the `PhaseAwareToolExecutor` enforces this at the executor level, even if the LLM tries to call a tool in the wrong phase, the call is rejected before it reaches the MCP server.
+This chapter explains *how the agent runs commands against the target*, and why that mechanism is more elaborate than a simple "the agent shells out to nmap." Two design choices shape the entire layer. First, **tools live outside the agent container**: the agent itself ships only a thin client that speaks the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), a JSON-RPC standard for plugging tools into language-model agents. The actual tool implementations (curl, naabu, nuclei, metasploit, nmap, hydra, playwright, etc.) run as five FastMCP servers inside a separate Kali Linux sandbox container, one per person, which the recon orchestrator starts on first need ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)). Adding a new tool means writing a new MCP method, not modifying the agent. Second, **tools are gated by phase**: the `TOOL_PHASE_MAP` setting (database-driven, project-level) declares which tools are allowed in `informational`, `exploitation`, and `post_exploitation`, and the `PhaseAwareToolExecutor` enforces this at the executor level, even if the LLM tries to call a tool in the wrong phase, the call is rejected before it reaches the MCP server.
 
 The combination delivers three properties that matter operationally: **isolation** (a misbehaving tool cannot crash the agent or affect other tenants), **substitutability** (a tool can be swapped or upgraded without touching agent code), and **safety** (the agent cannot accidentally escalate by reaching for a tool that does not belong in the current phase). The `tool_registry.py` module is the single source of truth for tool metadata, names, purposes, argument hints, dangerous flags, and the prompt builder generates the available-tools section dynamically from this registry, so the LLM never even sees a tool it isn't allowed to use right now.
 
@@ -1053,14 +1053,17 @@ flowchart TB
 sequenceDiagram
     participant O as Orchestrator
     participant TE as ToolExecutor
-    participant MCP as MCPToolsManager
+    participant R as sandbox_router
+    participant MCP as MCPToolsManager (this sandbox's)
     participant S as MCP Server
-    participant K as Kali Container
+    participant K as Person's Kali sandbox
 
     O->>TE: execute("naabu", {target: "192.168.1.1"}, "informational")
     TE->>TE: Validate phase allows tool (via TOOL_PHASE_MAP)
     TE->>TE: set_tenant_context(user_id, project_id)
-    TE->>MCP: call_tool("naabu", args)
+    TE->>R: acquire(person) — the run's lease, taken on its first Kali call
+    R-->>TE: handle (instance, host, token)
+    TE->>MCP: call_tool("naabu", args) on the handle's client
     MCP->>S: HTTP POST /tools/naabu
     S->>K: Execute naabu command
     K-->>S: Port scan results
@@ -1071,13 +1074,13 @@ sequenceDiagram
 
 ### MCP Connection Retry Logic
 
-The `MCPToolsManager.get_tools()` method includes retry logic with exponential backoff to handle MCP server startup races:
+A person's sandbox is started on demand, so the agent connects to its five servers only when the first Kali call of a run, job, terminal or MCP command needs them. The router asks the orchestrator for the sandbox through the webapp, waits until it is healthy, and only then builds that sandbox's `MCPToolsManager` (`client_for` in `agentic/sandbox_router.py`), whose `get_tools()` still retries with a growing wait in case a server is slow to accept:
 
 ```
-Attempt 1 → fail → wait 10s → Attempt 2 → fail → wait 20s → ... → Attempt 5 → fail → continue without MCP tools
+Attempt 1 → fail → wait 2s → Attempt 2 → fail → wait 4s → Attempt 3 → fail → the sandbox counts as gone
 ```
 
-This prevents the agent from crash-looping when the Kali sandbox container takes longer to start than the agent.
+A run that uses no Kali tool starts no sandbox. When a sandbox is gone (stopped, replaced, or its servers never answered), the executor takes a fresh sandbox once and sends the call again; a second failure ends the call with "sandbox stopped during the call" rather than looping (`_execute_routed` in `agentic/tools.py`).
 
 ### Neo4j Query Flow (Text-to-Cypher)
 
@@ -1150,6 +1153,8 @@ flowchart TB
     style PROC fill:#5a5a5a,color:#fff
     style C10 fill:#5a5a5a,color:#fff
 ```
+
+The process lives in the person's own sandbox: each person has their own msfconsole and their own sessions, which end when that sandbox stops (after 8 hours without use while sessions hold it).
 
 ---
 
@@ -1322,7 +1327,7 @@ sequenceDiagram
 
 A standalone tool's `tool_complete` carries the LLM's analysis, so it only fires after the next think turn. `tool_finished` is sent as soon as the tool itself returns; the card then freezes at the tool's real duration and reads "Analyzing output" instead of "Running" through that turn. Every root tool event (`tool_start`, `tool_output_chunk`, `tool_finished`, `tool_complete`) carries the step's `step_id`, and the frontend pairs cards by it: pairing by tool name let one lost `tool_complete` swallow the next same-name tool's completion.
 
-Each tool call is also bounded by a wall-clock deadline (`TOOL_DEADLINES_S` in [`agentic/tools.py`](../../agentic/tools.py): the tool's own server-side limit plus a margin). The MCP SSE transport cannot provide that bound itself: kali-sandbox sends a keep-alive every 15s, which resets the client's `sse_read_timeout`, so a lost answer used to be awaited forever.
+Each tool call is also bounded by a wall-clock deadline (`TOOL_DEADLINES_S` in [`agentic/tools.py`](../../agentic/tools.py): the tool's own server-side limit plus a margin). The MCP SSE transport cannot provide that bound itself: the sandbox's MCP servers send a keep-alive every 15s, which resets the client's `sse_read_timeout`, so a lost answer used to be awaited forever.
 
 **Reconnects.** Events sent while the browser's socket is down are not replayed; they exist only in the `ChatMessage` table. Every `connected` payload therefore carries `agent_running`, the server's live answer to "is this session's run still going?". On each (re)connect the drawer re-reads the conversation, reconciles it with what is on screen, and takes the spinner state from that flag; when the run is over, cards still marked running are closed as finished or interrupted. A run releases its task registration before draining its persist queue, so a page reconnecting during that drain is told the run is over. The socket stays open while a run is active even with the drawer closed, and Stop / guidance clicked while it is down wait in an outbox until the next `connected`.
 
@@ -1482,7 +1487,7 @@ In **plan mode**, only the dangerous tools within the wave are surfaced for conf
 
 #### Tool Mutex Groups (Wave & Fireteam Concurrency Safety)
 
-Some tools have **singleton state inside the Kali sandbox** and cannot run concurrently, even from different agents in the same fireteam wave or different steps in the same `plan_tools` wave. These are declared in `TOOL_MUTEX_GROUPS` in [agentic/project_settings.py](../../agentic/project_settings.py):
+Some tools have **singleton state inside the Kali sandbox** and cannot run concurrently, even from different agents in the same fireteam wave or different steps in the same `plan_tools` wave: a run's waves and Fireteam members all use the one sandbox of the person running it. These are declared in `TOOL_MUTEX_GROUPS` in [agentic/project_settings.py](../../agentic/project_settings.py):
 
 ```python
 TOOL_MUTEX_GROUPS = {
@@ -2749,7 +2754,7 @@ The frontend renders each wave as a single grouped `PlanWaveCard` in the AgentTi
 
 ### Tool Mutex Groups (Concurrency Safety)
 
-Some tools have **singleton state inside the Kali sandbox** and cannot run concurrently, even from different steps in the same wave (or from different fireteam members in the same fan-out). These are declared in `TOOL_MUTEX_GROUPS` in [`agentic/project_settings.py`](../../agentic/project_settings.py):
+Some tools have **singleton state inside the Kali sandbox** and cannot run concurrently, even from different steps in the same wave (or from different fireteam members in the same fan-out), which all run in the sandbox of the person running the chat. These are declared in `TOOL_MUTEX_GROUPS` in [`agentic/project_settings.py`](../../agentic/project_settings.py):
 
 ```python
 TOOL_MUTEX_GROUPS = {
@@ -4228,6 +4233,17 @@ flowchart TB
     MEMORY --> RESUME
 ```
 
+### Kali Sandbox Isolation (per person)
+
+The Kali tools run in one sandbox container per person, not one for the installation ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md) has the full design):
+
+- **Routed by person, never by tenant.** The person is the run's actor (`current_run_actor`, `agentic/decision_check.py`), the owner of the MCP token, the terminal ticket's `sub`, or whoever started the triage run or Tradecraft job (`sandbox_user()` in `agentic/sandbox_router.py`). The tenant (the project's owner) still decides whose graph, traffic and keys the call touches. Work that carries no person is refused, never sent to some other sandbox.
+- **What a sandbox can see.** It mounts only the project folders its person may run the agent on: their own projects, plus the projects shared with them whose toggles include "Use AI agent" or "Exploitation & shells" (computed by the webapp from `webapp/src/lib/authz/`). It never mounts the workspace root or `.staging`. Its output folder is the person's own `mcp/output/users/<key>`.
+- **Its own tokens, network and limits.** Each container gets two random tokens of its own, a private network (`redamon-sbx-<key>` in `10.214.0.0/16`) shared only with the agent and the capture proxy, and its own memory, process and CPU limits; the memory governor admits it like a scan.
+- **Act-as.** An admin acting as a member works in that member's separate `act_as` sandbox, which mounts only the member's own projects.
+- **Lifetime.** A sandbox stops after 20 minutes without use, or 8 hours when only live sessions or a tunnel hold it; losing access to a project stops every sandbox that mounts it. A stop removes the container, so `/tmp` and anything installed at run time are gone.
+- **Lent keys.** The project owner's WPScan, URLScan and ProjectDiscovery keys reach only the sandbox of the person running the agent on that project, where that person can read them while their runs use them; the share dialog says so.
+
 ### Internal-Endpoint Authentication (STRIDE D3)
 
 The agent's billed-LLM REST endpoints - `/llm/ffuf-extensions`, `/llm/nuclei-tags`, `/llm/waf-classify`, `/llm/nuclei-fp-filter`, `/llm/takeover-classify`, `/guardrail/check-target`, `/roe/parse`, `/skill-metadata/generate`, `/models`, `/llm-provider/test` - and the native Jev endpoints (TypeSafe or OpenRouter) - `/jev/ffuf-extensions`, `/jev/nuclei-tags`, `/jev/waf-classify`, `/jev/takeover-classify`, `/jev/ffuf-base-paths`, `/jev/page-type`, `/jev/tool-health`, `/jev/crawl-seed-order`, `/jev/serialized-classify`, `/jev/route-privacy-rank`, `/jev/route-exposure-assess` - are gated by `agentic/llm_guard.py` (a FastAPI dependency). The `/jev/*` endpoints share the same per-user budget, and additionally bind the project to its owner before loading the exact owner-owned configuration selected by `Project.jevProviderId` (`agentic/jev_client.py`). There is no first-provider fallback:
@@ -4524,7 +4540,7 @@ A provider's HTTP 429 is classified by `llm_builder.provider_error_kind`, from t
 
 Other transient errors (connection, timeout, 5xx, also read from the error's status) keep 3 attempts with 1 s and 2 s waits. An Agent in the Loop error is never retried (`no_retry`). The SDKs' own quick retries (OpenAI 2, Anthropic 5) run inside each attempt.
 
-While a call waits, the drawer replaces its loading word with a countdown ("Provider rate limit: retrying the summary in 16 s"). It is a `rate_limit_wait` WebSocket frame, sent and never saved; the orchestrator installs the listener (`agent_context.current_llm_wait_listener`) around the graph. When a call gives up, its error carries `provider_error_kind` and `rate_limit_waited_s` next to the class and status (`provider_error_details`), and the drawer says what to do for each kind. A summary that still fails does not fail the run: the report node writes a fixed fallback with the step counts and the cause.
+While a call waits, the drawer replaces its loading word with a countdown ("Provider rate limit: retrying the summary in 16 s"). It is a `rate_limit_wait` WebSocket frame, sent and never saved; the orchestrator installs the listener (`agent_context.current_llm_wait_listener`) around the graph. The drawer's other frame of that kind is `sandbox_status` (the run's Kali sandbox is `starting`, `ready` or `unavailable`, with the reason and, for a memory refusal, the governor's figures behind the "Not enough memory" dialog): `deliver_sandbox_status` in `agentic/websocket_api.py` sends it only for the run's own lease, to that person's socket of the same session, project and view. When a call gives up, its error carries `provider_error_kind` and `rate_limit_waited_s` next to the class and status (`provider_error_details`), and the drawer says what to do for each kind. A summary that still fails does not fail the run: the report node writes a fixed fallback with the step counts and the cause.
 
 ---
 
@@ -4700,7 +4716,7 @@ flowchart LR
 | `REQUIRE_TOOL_CONFIRMATION` | `true` | Require user confirmation before executing dangerous tools (nmap, nuclei, metasploit, hydra, kali_shell, etc.) |
 | `ACTIVATE_POST_EXPL_PHASE` | `true` | Enable post-exploitation phase |
 | `POST_EXPL_PHASE_TYPE` | `"statefull"` | `"stateless"` or `"statefull"` session mode |
-| `LHOST` | `""` | Attacker IP for reverse payloads: the **host machine's LAN IP** the target can reach (not the sandbox container's `172.x`); empty = bind mode |
+| `LHOST` | `""` | Attacker IP for reverse payloads: an address the target can reach (never the sandbox container's own private address). A person's sandbox publishes no port unless the operator set `KALI_SANDBOX_PORT_POOL`, so a reverse shell needs that person's tunnel or their sandbox's pool port; empty = bind mode |
 | `LPORT` | `null` | Attacker port for reverse payloads |
 | `BIND_PORT_ON_TARGET` | `4444` | Port opened on target for bind payloads |
 | `PAYLOAD_USE_HTTPS` | `false` | Use HTTPS for staged payloads |
@@ -4763,7 +4779,7 @@ flowchart LR
 | `DOS_MAX_ATTEMPTS` | `3` | Max different vectors to try |
 | `DOS_CONCURRENT_CONNECTIONS` | `1000` | Connections for app-layer DoS (slowloris, etc.) |
 | `DOS_ASSESSMENT_ONLY` | `false` | True = only check vulnerability, don't attack |
-| `KALI_INSTALL_ENABLED` | `false` | Allow `apt install` inside the Kali sandbox |
+| `KALI_INSTALL_ENABLED` | `false` | Allow `apt install` inside the Kali sandbox (a package lasts until that sandbox stops) |
 | `KALI_INSTALL_ALLOWED_PACKAGES` | `""` | Allowlist for Kali apt installs |
 | `KALI_INSTALL_FORBIDDEN_PACKAGES` | `""` | Denylist for Kali apt installs |
 | `SHODAN_ENABLED` | `true` | Enable Shodan integration in recon tools |
@@ -4842,10 +4858,8 @@ flowchart LR
 | `NEO4J_PASSWORD` | Yes | Neo4j password |
 | `PROJECT_ID` | For DB settings | Project ID to fetch settings for |
 | `WEBAPP_API_URL` | For DB settings | Webapp base URL (e.g., `http://localhost:3000`) |
-| `MCP_NETWORK_RECON_URL` | No | Network recon MCP server URL (default: `http://host.docker.internal:8000/sse`) |
-| `MCP_NMAP_URL` | No | Nmap MCP server URL (default: `http://host.docker.internal:8004/sse`) |
-| `MCP_METASPLOIT_URL` | No | Metasploit MCP server URL (default: `http://host.docker.internal:8003/sse`) |
-| `MCP_NUCLEI_URL` | No | Nuclei MCP server URL (default: `http://host.docker.internal:8002/sse`) |
+
+No variable names a Kali MCP server: the agent gets each person's sandbox address and token from the orchestrator through the webapp, and builds that sandbox's five servers from `_SYSTEM_SERVERS` in `agentic/tools.py` (`_build_system_mcp_servers(host, token)`, ports from the sandbox contract).
 
 ---
 

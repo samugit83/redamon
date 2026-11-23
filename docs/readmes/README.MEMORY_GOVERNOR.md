@@ -260,7 +260,7 @@ flowchart TD
     G0 -->|yes| OK[admit]
     G0 -->|no| G1{key already committed?}
     G1 -->|yes| OK
-    G1 -->|no| G2{count ≥ RECON_MAX_CONCURRENT_GLOBAL?}
+    G1 -->|no| G2{scan count ≥ RECON_MAX_CONCURRENT_GLOBAL?}
     G2 -->|yes| RJH[reject: limitType hard]
     G2 -->|no| G3{/proc unreadable?}
     G3 -->|yes| OK
@@ -279,9 +279,10 @@ flowchart TD
 
 Notes:
 
-- **First-scan exemption.** The pool check is skipped when `committed == 0`, so the *sole*
-  scan is never denied on budget grounds (which would brick small hosts); the physical
-  `available` check still guards it.
+- **First-scan exemption.** The pool check is skipped while no scan is committed, so the
+  *sole* scan is never denied on budget grounds (which would brick small hosts), whatever
+  Kali sandboxes hold; the physical `available` check still guards it. Every committed byte,
+  scans' and sandboxes' alike, counts against the one pool once a scan is committed.
 - **Typed rejections.** A rejection returns `AdmissionError` carrying `{limitType: "hard"|"ram",
   settingName, current, ceiling, detail}`, which the orchestrator maps to an HTTP 409 with
   that structured body, the webapp turns it into a tailored modal.
@@ -299,6 +300,32 @@ request-scoped (taken before the spawn, released in a `finally`) and its key is 
 `_active_scan_keys` meanwhile, or the 30 s reaper would free a live job's bytes. A refusal
 returns the same typed 409 a refused scan does, and the agent tool renders it as an
 explicitly **retryable** condition, never as "the package is clean".
+
+**Per-user Kali sandboxes are a second class in the same ledger.** Each instance the
+orchestrator starts for a person ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)) books
+`kali_sandbox:<user id>:<instance>` with the sandbox envelope (the pool tier,
+[§9.1](#91-the-proportional-allocator), says where its memory comes from). It meets the
+scans' memory checks against the same pool, with a class of its own:
+
+- the first sandbox is never refused on budget grounds while no other sandbox is committed
+  (live memory still guards it), as the first scan is not;
+- `KALI_SANDBOX_MAX_CONCURRENT` (unset: no count) caps committed sandboxes, with the governor
+  off too; `RECON_MAX_CONCURRENT_GLOBAL` and the per-user scan cap ignore sandboxes, and a
+  sandbox takes none of its person's scan slots;
+- with the governor off, or `/proc` unreadable, a sandbox is admitted (only the count applies);
+- a refusal is the same typed 409 (`resource: "kali_sandbox"`, code `sandbox_ram` or
+  `sandbox_hard`), which the terminal and the chat drawer show as "Not enough memory" or
+  "Sandbox limit reached", and MCP `kali_exec` reports as `errorCode` `ram` or `hard`;
+- the reservation is released at the sandbox's stop; the 30 s reaper keeps every live
+  instance's key (`ContainerManager.extra_reservation_keys`, wired to
+  `SandboxManager.reservation_keys()`), and an orchestrator restart re-accounts every adopted
+  instance (`ledger.account`).
+
+A person holds at most two instances per view, each reserved: the current one and, during a
+rolling replacement, one draining. Each sandbox also runs with a CPU weight of 256 against
+Docker's default 1024, so a busy sandbox yields to the services under contention. Many
+people's sandboxes together are bounded only by memory admission and
+`KALI_SANDBOX_MAX_CONCURRENT`; set it on a shared host.
 
 Per-scan envelopes come from `RECON_JOB_ENVELOPE_MEM` (env override, applies to every type)
 or from `scan_job_envelope_bytes[scan_type]` in the merged profile, which is **per scan type**
@@ -712,14 +739,18 @@ uses safe built-in fallbacks when it is absent.
 ## 11. The UI (Part 5)
 
 - **`GET /system/stats`** on the orchestrator returns `{ mem: {host_total, available,
-  os_headroom, service_baseline, scan_pool, committed, active_scans, remaining_for_new,
-  pressure}, cpu: {percent, cores}, governor_enabled }`. The webapp proxies it at
+  os_headroom, service_baseline, scan_pool, committed, active_scans, active_sandboxes,
+  sandbox_committed, sandbox_envelope, remaining_for_new, pressure}, cpu: {percent, cores},
+  disk, governor_enabled }`. `committed` holds both classes; `active_scans` counts scans only,
+  `active_sandboxes` the Kali sandboxes, with their reserved bytes in `sandbox_committed`. The webapp proxies it at
   `/api/system/stats` (5 s poll, shared by all consumers).
 - **Bottom-bar htop meter** (footer, bottom-right): `RAM ▓▓▓ 64% · 11.3 GB free` and
   `CPU ▓▓ 12%`. The number shown is physical free RAM (`available`), consistent with the bar
-  %. The governor's separate `remaining_for_new` (free RAM minus what running scans reserved)
-  is in the tooltip, clearly labeled, the two are different metrics and were a common source
-  of confusion.
+  %. The governor's separate `remaining_for_new` (the room for a new scan: the pool left once
+  every reservation, scans' and Kali sandboxes', is taken off, or the whole pool while no scan
+  holds one, and never more than free RAM above the OS headroom) is in the tooltip with what
+  the scans and the sandboxes reserve, clearly labeled; the two are different metrics and were
+  a common source of confusion.
 - **Red `[RESOURCE-CAP]` log lines** in the recon-logs drawer (substring match on the marker).
 - **Limit modal** on a refused scan: the orchestrator's structured 409 (`limitType`) is
   surfaced by the recon-start handler as a tailored `hard` ("raise setting X") vs `ram`
@@ -766,6 +797,7 @@ All are optional; defaults live in code (empty/unset → default). Documented in
 | `RECON_JOB_ENVELOPE_MEM` | measured, else per scan type (§4.3) | expected peak RAM of one recon job (container + siblings), the unit the pool is divided into. Setting it applies ONE figure to every scan type, overriding the per-type table. `0`/invalid is ignored. |
 | `RECON_MAX_CONCURRENT_GLOBAL` | unset -> **no count cap** (STRIDE D3) | hard count cap on globally-concurrent scans across all projects. `0` blocks all new scans. **The code returns `None` (no cap) when the var is unset** - there is no built-in "20"; `docker-compose.yml` supplies `30` as the shipped default, and the scan-queue dispatcher applies its own `JOB_QUEUE_MAX_CONCURRENT` ceiling (default 4) regardless. |
 | `RECON_MAX_CONCURRENT_PER_USER` | `10` (STRIDE D3) | hard count cap on concurrent scans per user, so per-project limits cannot multiply across many projects. |
+| `KALI_SANDBOX_MAX_CONCURRENT` | unset -> no count cap | hard count of committed per-user Kali sandboxes, applied with the governor off too; `0` blocks every new sandbox, anything but one to nine digits is no cap (logged). Advised on a multi-user host. |
 
 ### Agent caps
 
@@ -918,8 +950,8 @@ bash tests/redamon_mem_calibrate.sh baseline
 Common questions:
 
 - *"Bottom bar says 64% but only 5.9 GB left, bug?"* No. The bar is physical RAM used; the
-  5.9 GB (tooltip) is `remaining_for_new` = free RAM minus what running scans **reserved**.
-  Different metrics.
+  5.9 GB (tooltip) is `remaining_for_new`, the room for a new scan once what running scans
+  and Kali sandboxes **reserved** is taken off. Different metrics.
 - *"7th scan refused."* Expected, admission caps concurrent scans at
   `floor(scan_pool / envelope)` (~6 on a 32 GB host); the rest are refused with a `ram` modal
   until a running scan finishes and its reservation is reconciled free.

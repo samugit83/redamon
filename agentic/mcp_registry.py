@@ -219,8 +219,8 @@ def sandbox_address_refusal(srv: MCPServer) -> Optional[ValidationError]:
 
     It resolves no name (the load runs on the event loop). A name, a redirect or a
     rebinding answer is refused where it matters, when the connection is opened
-    (user_server_http_client). Loading the user's servers asks it; the draft test route
-    (/mcp/test, agentic/api.py) does not yet and is to call it too."""
+    (user_server_http_client). Loading the user's servers asks it, and so does the draft
+    test route (/mcp/test, agentic/api.py) before it connects."""
     import ipaddress
     from urllib.parse import urlsplit
 

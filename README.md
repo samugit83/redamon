@@ -147,9 +147,9 @@ That's it. No Node.js, Python, or security tools needed on your host.
 | **RAM** | 7 GB | 10 GB (16 GB recommended) |
 | **Disk** | 80 GB free | 110 GB free |
 
-> **RAM is checked at start.** `./redamon.sh` refuses to start when the memory Docker can use does not cover the minimum of every service the profile runs (the memory allocator's per-service floors, see [README.MEMORY_GOVERNOR.md](docs/readmes/README.MEMORY_GOVERNOR.md)). With the default reserves that is about 6.5 GB for the core stack and about 9.6 GB with OpenVAS. `REDAMON_SKIP_RAM_GATE=1` skips the check.
+> **RAM is checked at start.** `./redamon.sh` refuses to start when the memory Docker can use does not cover the minimum of every service the profile runs (the memory allocator's per-service floors, see [README.MEMORY_GOVERNOR.md](docs/readmes/README.MEMORY_GOVERNOR.md)). With the default reserves that is about 6.1 GB for the core stack and about 9.4 GB with OpenVAS, including room in the scan pool for one Kali sandbox. `REDAMON_SKIP_RAM_GATE=1` skips the check.
 
-> **Without OpenVAS** runs 9 containers: webapp, postgres, neo4j, agent, kali-sandbox, recon-orchestrator, docker-broker (a filtering Docker-socket proxy that the recon orchestrator's spawned scan containers go through, so they can only launch the known tool images), and the plugin platform's plugin-runner and plugin-gateway.
+> **Without OpenVAS** runs 8 containers: webapp, postgres, neo4j, agent, recon-orchestrator, docker-broker (a filtering Docker-socket proxy that the recon orchestrator's spawned scan containers go through, so they can only launch the known tool images), and the plugin platform's plugin-runner and plugin-gateway. The Kali tools run in one sandbox container per person, which the recon orchestrator starts on first need and stops after 20 idle minutes, each admitted by the memory governor with a 1 GiB envelope ([README.KALI_SANDBOX.md](docs/readmes/README.KALI_SANDBOX.md)).
 > **With OpenVAS** adds 4 more runtime containers (gvmd, ospd-openvas, gvm-postgres, gvm-redis) plus ~8 one-shot data-init containers for vulnerability feeds (~170K+ NVTs). First launch takes ~30 minutes for GVM feed synchronization.
 > Dynamic recon and scan containers are spawned on-demand during operations and require additional resources.
 
@@ -233,7 +233,7 @@ Open **http://localhost:3000/settings** (gear icon in the header) to configure e
 
 - **LLM Providers** -- add API keys for OpenAI, Anthropic, OpenRouter, AWS Bedrock, or any OpenAI-compatible endpoint (Ollama, vLLM, Groq, etc.). Each provider can be tested before saving. The model selector in project settings **dynamically fetches** available models from configured providers.
 - **API Keys** -- Tavily, Shodan, SerpAPI, NVD, Vulners, URLScan, and threat intelligence keys (Censys, FOFA, OTX, Netlas, VirusTotal, ZoomEye, CriminalIP) to enable extended agent capabilities (web search, OSINT, CVE lookups, passive threat intel). **Uncover multi-engine search** keys (Quake, Hunter, PublicWWW, HunterHow, Google, Onyphe, Driftnet) expand target discovery across 13 search engines -- shared keys (Shodan, Censys, FOFA, etc.) are automatically reused. Supports **key rotation** -- configure multiple keys per tool with automatic round-robin rotation to avoid rate limits.
-- **Tunneling** -- configure ngrok or chisel for reverse shell tunneling. Changes apply immediately without container restarts.
+- **Tunneling** -- configure your own ngrok or chisel tunnel for reverse shells. It runs in your own Kali sandbox, so turning it on or changing it takes the Tunnels permission (`platform:tunnels`); turning it off does not. Changes apply without a container restart, and a sandbox that restarts comes back with the tunnel off.
 
 All settings are stored per-user in the database. See the **[AI Model Providers](https://github.com/samugit83/redamon/wiki/AI-Model-Providers)** wiki page for detailed setup instructions.
 
@@ -264,15 +264,15 @@ All lifecycle management is handled by a single script:
 | **`./redamon.sh update`** | **Pull latest version, smart-rebuild only changed services (preserves your install-time GVM/KB choice), and apply a changed `.env` to the running services** |
 | `./redamon.sh up` | Start services (auto-detects GVM and KB mode from install) |
 | `./redamon.sh up dev` | Start in dev mode with hot-reload (auto-detects GVM and KB mode) |
-| `./redamon.sh down` | Stop services (preserves data) |
-| `./redamon.sh status` | Show running services, version, GVM mode, KB state, plugin platform state (and why it cannot run on this host, when it cannot) |
-| `./redamon.sh clean` | Remove containers + images, keep data |
+| `./redamon.sh down` | Stop services and remove this stack's Kali sandboxes (preserves data) |
+| `./redamon.sh status` | Show running services, version, GVM mode, KB state, plugin platform state (and why it cannot run on this host, when it cannot), and this stack's Kali sandboxes |
+| `./redamon.sh clean` | Remove containers (Kali sandboxes included) + images, keep data |
 | `./redamon.sh create-admin` | Create the admin login (or reset it) -- use if no prompt appeared at install |
 | `./redamon.sh reset-password` | Reset an existing user's password from the terminal |
 | `./redamon.sh set-root <email>` | Make that account the instance's Root, or confirm it (break-glass; moving Root signs both accounts out) |
 | `./redamon.sh update --preview` | Pull and build like `update`, print what it changes for the accounts, and restart nothing |
 | `./redamon.sh supply-chain-sync [ecosystems]` | Populate the offline OSV database for the supply-chain feature (default: `npm`; e.g. `npm PyPI Go`) |
-| `./redamon.sh purge` | Remove everything including all data |
+| `./redamon.sh purge` | Remove everything including all data, the Kali sandboxes' networks and their nuclei templates volume |
 
 
 ### Updating to a New Version
@@ -331,10 +331,10 @@ Tool images are built automatically on first run if they don't exist yet. The de
 | `webapp/src/` (frontend code) | Nothing -- Next.js hot-reload handles it in dev mode |
 | `agentic/*.py` (agent Python code) | `docker compose build agent && docker compose up -d agent` (source is baked into the image, so `restart` alone won't pick up `.py` changes) |
 | `recon_orchestrator/*.py` | `docker compose restart recon-orchestrator` |
-| `mcp/servers/*.py` (MCP servers) | `docker compose restart kali-sandbox` |
+| `mcp/servers/*.py` (MCP servers) | Nothing -- each Kali sandbox mounts them read-only; within a minute a running sandbox on older server code is marked for replacement, stops once its current work ends, and the next use starts one on the new code |
 | `agentic/Dockerfile` or `agentic/requirements.txt` | `docker compose build agent && docker compose up -d agent` |
 | `recon_orchestrator/Dockerfile` or its `requirements.txt` | `docker compose build recon-orchestrator && docker compose up -d recon-orchestrator` |
-| `mcp/kali-sandbox/Dockerfile` | `docker compose build kali-sandbox && docker compose up -d kali-sandbox` |
+| `mcp/kali-sandbox/Dockerfile` | `docker compose --profile tools build kali-sandbox` (running sandboxes move to the new image the same way) |
 | `webapp/Dockerfile` or `webapp/package.json` | `docker compose build webapp && docker compose up -d webapp` |
 | `recon/Dockerfile` | `docker compose --profile tools build recon` |
 | `scanners/gvm_scan/Dockerfile` | `docker compose --profile tools build vuln-scanner` |
@@ -688,7 +688,7 @@ A **LangGraph-based autonomous agent** implementing the ReAct pattern. It progre
 | | **job_cancel** | Cancel a running job, status flips to `cancelled`, no-op on terminal jobs | All | -- (in-process) |
 | | **job_list** | List background jobs for the project, filter by `active=true` / `false` / omit for all | All | -- (in-process) |
 
-<sub>All MCP tools run inside a Kali Linux sandbox container. **Workspace FS** and **Background Jobs** tools run **in-process inside the agent container** and operate exclusively on the per-project workspace at `/workspace/<projectId>/` -- path validation rejects every traversal trick (project-id injection, symlink escape, zip-slip, tar-slip). See **[Agent Workspace wiki page](https://github.com/samugit83/redamon/wiki/Agent-Workspace)** for the full reference. Tools marked as dangerous require manual confirmation before execution. Stealth mode restricts active tools to passive-only or single-target operations. **Note:** WPScan is licensed under the [WPScan Public Source License](https://github.com/wpscanteam/wpscan/blob/master/LICENSE) (not MIT). Free for pentesting assessments and personal use; commercial use may require a separate license from [wpscan.com](https://wpscan.com).</sub>
+<sub>All MCP tools run inside the Kali Linux sandbox container of the person running the agent ([README.KALI_SANDBOX.md](docs/readmes/README.KALI_SANDBOX.md)). **Workspace FS** and **Background Jobs** tools run **in-process inside the agent container** and operate exclusively on the per-project workspace at `/workspace/<projectId>/` -- path validation rejects every traversal trick (project-id injection, symlink escape, zip-slip, tar-slip). See **[Agent Workspace wiki page](https://github.com/samugit83/redamon/wiki/Agent-Workspace)** for the full reference. Tools marked as dangerous require manual confirmation before execution. Stealth mode restricts active tools to passive-only or single-target operations. **Note:** WPScan is licensed under the [WPScan Public Source License](https://github.com/wpscanteam/wpscan/blob/master/LICENSE) (not MIT). Free for pentesting assessments and personal use; commercial use may require a separate license from [wpscan.com](https://wpscan.com).</sub>
 
 #### MCP Tool Plugins (extending the agent's tool arsenal)
 
@@ -724,7 +724,7 @@ Pick **Agent in the Loop** as a chat's model and every reasoning step of that ru
 
 > **Watch the demo:** [RedAmon Agent Workspace: AI Runs 4 Parallel Pentests and Writes Its Own Report (YouTube)](https://youtu.be/dkgIk78T7Hw)
 
-Every project gets a persistent `/workspace/<projectId>/` directory that the agent, the kali-sandbox, and you (through the **FileSystem Drawer** in the Red Zone) all see at the same time. Four purpose-built folders are auto-created and protected from rename/delete: `notes/` for the agent's scratch work and draft reports, `tool-outputs/` for auto-offloaded huge outputs, `jobs/` for background-job logs, and `uploads/` for files you drop in for the agent to read. The agent is taught the layout on every think step via a `WORKSPACE_LAYOUT_BLOCK`, and when you drop files into `uploads/` the block surfaces them under a `CHECK THESE NOW` directive so the agent reads them before continuing whatever else it was doing.
+Every project gets a persistent `/workspace/<projectId>/` directory that the agent, the Kali sandbox of every person who may run the agent on the project, and you (through the **FileSystem Drawer** in the Red Zone) all see at the same time. Four purpose-built folders are auto-created and protected from rename/delete: `notes/` for the agent's scratch work and draft reports, `tool-outputs/` for auto-offloaded huge outputs, `jobs/` for background-job logs, and `uploads/` for files you drop in for the agent to read. The agent is taught the layout on every think step via a `WORKSPACE_LAYOUT_BLOCK`, and when you drop files into `uploads/` the block surfaces them under a `CHECK THESE NOW` directive so the agent reads them before continuing whatever else it was doing.
 
 The agent gets **24 filesystem tools** (`fs_read`, `fs_write`, `fs_edit`, `fs_multi_edit`, `fs_undo_edit`, `fs_grep`, `fs_glob`, `fs_find`, `fs_diff`, `fs_symbols`, `fs_archive`, `fs_extract`, and more) plus **5 background-job tools** (`job_spawn`, `job_status`, `job_wait`, `job_cancel`, `job_list`). Long scans like `nuclei` or `hydra` detach as asyncio tasks and stream output to `jobs/<id>.log`, so the agent can `fs_grep` for hits mid-flight without blocking the next reasoning step. Outputs over 20 KB automatically offload to `tool-outputs/<utc-iso>-<tool>.txt` and the LLM receives a head/tail stub plus the file path, so a 5 MB Playwright DOM dump never derails the context window. The drawer surfaces all of this with breadcrumb navigation, drag-and-drop upload, inline preview, SHA-256 properties, per-folder tar.gz download, and a Jobs tab with live status badges and cancel.
 
@@ -774,7 +774,7 @@ RedAmon's built-in, engagement-scoped **proxy history**: a credential-free man-i
 
 Capture is **off by default** and gated at two levels (a global master switch that runs the proxy, plus a per-project routing toggle). Eight recon tools and eight agent HTTP tools (`execute_curl`, `execute_httpx`, `execute_playwright`, `execute_nuclei`, `execute_katana`, `execute_ffuf`, `execute_arjun`, `execute_wpscan`) are routed, so both the pipeline's and the agent's own crawl/fuzz/scan traffic is captured, searchable, and replayable. The proxy holds no secrets, an SSRF egress guard with a DNS-rebinding IP pin keeps it from pivoting into internal infrastructure, sensitive headers are redacted, and passive signals (reflected params, missing security headers, cookie-flag issues) are computed for free on every response. A **TrafficMind** view in the top navigation exposes the corpus as a paginated, filterable, proxy-style table with a request/response detail drawer, CSV/JSON export, and reference-counted body cleanup.
 
-The agent works the corpus through a single code-native tool, **`proxy_brain`**: it writes Python against a pre-imported `redamon` SDK and composes the attack itself (loops, conditionals, crypto, oracles) rather than picking from a fixed menu. The SDK's read calls (`search`, `get`, `sitemap`, `params`, `grep`, `diff`, `to_curl`, `query`) run in any phase; its active calls (`replay`, `batch`, `fuzz`) send live traffic and are gated to the exploitation phases, as is `browser(id)`, which drives a real Chromium to confirm bugs that only surface after JavaScript runs (DOM-based XSS, SPA-only routes, JS-minted CSRF). `proxy_brain` runs in the Kali sandbox but holds no database credential: it reaches the corpus only through the agent's `/traffic/exec` (read), `/traffic/replay` (active) and `/traffic/browser` (browser) endpoints, tenant-scoped by a signed tag the sandbox cannot forge, host-pinned to the origin on every send, budget-capped, stealth-restricted, and re-captured. The agent reads its own on-demand cookbook with `redamon.manual()`. See [`docs/readmes/README.TRAFFIC.md`](docs/readmes/README.TRAFFIC.md) for the architecture.
+The agent works the corpus through a single code-native tool, **`proxy_brain`**: it writes Python against a pre-imported `redamon` SDK and composes the attack itself (loops, conditionals, crypto, oracles) rather than picking from a fixed menu. The SDK's read calls (`search`, `get`, `sitemap`, `params`, `grep`, `diff`, `to_curl`, `query`) run in any phase; its active calls (`replay`, `batch`, `fuzz`) send live traffic and are gated to the exploitation phases, as is `browser(id)`, which drives a real Chromium to confirm bugs that only surface after JavaScript runs (DOM-based XSS, SPA-only routes, JS-minted CSRF). `proxy_brain` runs in the Kali sandbox of the person running the agent but holds no database credential: it reaches the corpus only through the agent's `/traffic/exec` (read), `/traffic/replay` (active) and `/traffic/browser` (browser) endpoints, tenant-scoped by a signed tag the sandbox cannot forge, host-pinned to the origin on every send, budget-capped, stealth-restricted, and re-captured. The agent reads its own on-demand cookbook with `redamon.manual()`. See [`docs/readmes/README.TRAFFIC.md`](docs/readmes/README.TRAFFIC.md) for the architecture.
 
 > **[Wiki: TrafficMind](https://github.com/samugit83/redamon/wiki/TrafficMind)** | **[Technical: README.TRAFFIC.md](docs/readmes/README.TRAFFIC.md)**
 
@@ -786,7 +786,7 @@ Unified view of active sessions: meterpreter, reverse/bind shells, and listeners
 
 ### RedAmon Terminal
 
-Full interactive **PTY shell access** to the Kali sandbox container directly from the graph page via **xterm.js**. Access all pre-installed pentesting tools (Metasploit, Nmap, Nuclei, Hydra, sqlmap) without leaving the browser. Features dark terminal theme, connection status indicator, auto-reconnect with exponential backoff, fullscreen mode, and browser-side keepalive.
+Full interactive **PTY shell access** to your own Kali sandbox container (started on first use) directly from the graph page via **xterm.js**. Access all pre-installed pentesting tools (Metasploit, Nmap, Nuclei, Hydra, sqlmap) without leaving the browser. Features dark terminal theme, connection status indicator, auto-reconnect with exponential backoff, fullscreen mode, and browser-side keepalive.
 
 > **[Wiki: Red Zone (RedAmon Terminal)](https://github.com/samugit83/redamon/wiki/Red-Zone#redamon-terminal)**
 
@@ -1010,6 +1010,7 @@ flowchart TB
 | **Docker Socket Broker** | Filtering reverse-proxy for the Docker socket: spawned scan containers reach the daemon through it, so they can only create the known tool images (allowlisted, no host mounts / privileged / arbitrary images) | n/a |
 | **Graph Database** | Neo4j attack surface mapping with multi-tenant support | [README.GRAPH_DB.md](docs/readmes/README.GRAPH_DB.md) · [GRAPH.SCHEMA.md](docs/readmes/GRAPH.SCHEMA.md) |
 | **MCP Tool Servers** | Security tools via Model Context Protocol (Kali sandbox) | [README.MCP.md](docs/readmes/README.MCP.md) |
+| **Kali Sandboxes** | One Kali container per person, started by the recon orchestrator on first need and stopped when unused: it mounts only the projects that person may run the agent on, on its own network with its own tokens | [README.KALI_SANDBOX.md](docs/readmes/README.KALI_SANDBOX.md) |
 | **AI Agent Orchestrator** | LangGraph-based autonomous agent with ReAct pattern | [README.AGENTIC_SYSTEM.md](docs/readmes/README.AGENTIC_SYSTEM.md) |
 | **CypherFix Agents** | Automated triage + code fix + GitHub PR | [README.CYPHERFIX_AGENTS.md](docs/readmes/README.CYPHERFIX_AGENTS.md) |
 | **Web Application** | Next.js dashboard for visualization and AI interaction | [README.WEBAPP.md](docs/readmes/README.WEBAPP.md) |

@@ -65,7 +65,7 @@ become authoritative. Nothing a target ever touched is trusted to name a tenant.
 
 | Component | Container | Network | Holds secret? | Source |
 |---|---|---|---|---|
-| Capture proxy | `redamon-capture-proxy` | `pentest-net` only | No | [`scanners/capture_proxy/capture_addon.py`](../../scanners/capture_proxy/capture_addon.py) |
+| Capture proxy | `redamon-capture-proxy` | `pentest-net`, plus every live per-user Kali sandbox network | No | [`scanners/capture_proxy/capture_addon.py`](../../scanners/capture_proxy/capture_addon.py) |
 | Ingest worker | `redamon-traffic-ingest` | `redamon` only | Yes (scoped DB role) | [`scanners/capture_proxy/ingest_worker.py`](../../scanners/capture_proxy/ingest_worker.py) |
 | Tag primitive | (library, 3 copies) | n/a | key held by minters only | [`scanners/capture_proxy/redamon_ctx.py`](../../scanners/capture_proxy/redamon_ctx.py) |
 | Egress guard | (library, in proxy) | n/a | No | [`scanners/capture_proxy/egress.py`](../../scanners/capture_proxy/egress.py) |
@@ -82,7 +82,8 @@ target-facing network with no credentials; the ingest worker is put on the
 internal network with a scoped role. They share only code.
 
 **Base image:** `python:3.12-slim` (Debian slim). Only two pip installs:
-`mitmproxy~=11.1` (the interception engine, used by the proxy role) and
+`mitmproxy==11.1.3` (the interception engine, used by the proxy role, pinned
+exactly because the addon relies on its internals) and
 `psycopg[binary]~=3.2` (Postgres driver, used only by the ingest role and unusable
 in the proxy since it has no route to Postgres and no credential). Everything else
 is Python stdlib.
@@ -99,8 +100,8 @@ is Python stdlib.
 
 ```mermaid
 flowchart LR
-    subgraph untrusted["pentest-net (untrusted, no secrets)"]
-        TOOL["offensive tool<br/>(katana, nuclei, curl,<br/>httpx, playwright...)"]
+    subgraph untrusted["pentest-net + each person's sandbox network (untrusted, no secrets)"]
+        TOOL["offensive tool<br/>(katana, nuclei, curl,<br/>httpx, playwright...)<br/>in recon or a Kali sandbox"]
         PROXY["redamon-capture-proxy<br/>mitmdump + addon"]
         TARGET["target host<br/>(attacker-controlled)"]
     end
@@ -179,7 +180,7 @@ Valid `source` values are exactly `{"recon", "agent"}`.
 ```mermaid
 sequenceDiagram
     participant Recon as recon container
-    participant Agent as agent / kali-sandbox
+    participant Agent as agent / the person's Kali sandbox
     participant Proxy as capture-proxy
     participant Ingest as traffic-ingest
 
@@ -253,7 +254,7 @@ query_graph, and so on) goes direct with no tag, by design.
 **Inherent blind spot.** `kali_shell` (arbitrary `bash -c`), `execute_code`
 (arbitrary interpreters), and `metasploit_console` HTTP modules run
 attacker-defined commands, so no per-tool flag can force them through the proxy.
-Closing this needs container-level transparent egress on the kali-sandbox plus a
+Closing this needs container-level transparent egress on the Kali sandboxes plus a
 default-identity tag, tracked as future hardening. Recon-side Python probes
 (`security_checks`, cache-scan/WCVS, GraphQL, JS/AI-surface fetchers) and the
 `ai_attack_surface_scan` container are likewise not yet routed, and so is
@@ -293,18 +294,33 @@ the wiki page **Authenticated-Session-Recording**.
 
 ## 5. Stage 2: The capture proxy
 
-`mitmdump -s capture_addon.py`, on `pentest-net` only, so it structurally cannot
-reach Postgres, Neo4j, the agent, or the webapp. It runs with
-`connection_strategy=lazy` (so the upstream connection is deferred until after the
-request hook, which is what makes the IP pin below effective) and
-`stream_large_bodies=5m` (bounds memory on huge responses).
+`mitmdump -s capture_addon.py`, on `pentest-net` and on every live per-user Kali
+sandbox network, never on `redamon-network`, so it has no route to Postgres,
+Neo4j or the webapp. On a sandbox network it shares a bridge with the agent, but
+the agent's address there is inside `10.214.0.0/16`, which the proxy always
+refuses (below). The orchestrator attaches it to a sandbox network only when it
+is the proxy the orchestrator starts: `net.ipv4.ip_forward=0` in its sysctls, that
+pool in its `CAPTURE_BLOCKED_IPS`, the current id of the `CAPTURE_PROXY_IMAGE`
+image (default `redamon-capture-proxy:latest`), no entrypoint override, `mitmdump`
+as its command and exactly one `--set rawtcp=false`; a proxy that fails any of
+these is left off every sandbox network, with one warning in the orchestrator's
+log (recreate it through the capture toggle). With `ip_forward=0` it forwards no
+packet between networks, and it joins with gateway priority `-1000`, so its
+default route stays on `pentest-net` (`_guests_sync` and `_proxy_build_problem` in
+`recon_orchestrator/sandbox_manager.py`, `start_capture_proxy` in
+`container_manager.py`). A sandbox's tools reach it as
+`redamon-capture-proxy:8888` on their own network (`mcp/servers/capture_routing.py`).
+
+It runs with `connection_strategy=lazy` (no upstream dial for a request the guard
+refuses), `stream_large_bodies=5m` (bounds memory on huge responses) and
+`rawtcp=false` (a stream after a `CONNECT` that is not HTTP is never relayed raw).
 
 ```mermaid
 flowchart TD
-    START["request arrives"] --> LIFT["lift X-Redamon-Ctx onto flow metadata<br/>DELETE the header"]
-    LIFT --> GUARD{"egress guard:<br/>resolve host,<br/>any internal IP?"}
-    GUARD -->|"blocked or error"| B403["synthesize 403<br/>emit blocked=true record<br/>do NOT forward"]
-    GUARD -->|allowed| PIN["pin server_conn.address<br/>to the vetted IP"]
+    START["request head arrives"] --> LIFT["requestheaders: lift X-Redamon-Ctx onto flow metadata,<br/>DELETE the header; refuse a hard-guardrail name<br/>(Host headers, :authority, SNI)"]
+    LIFT --> GUARD{"request: egress guard on the<br/>REAL target (request.host):<br/>resolve, any refused IP?"}
+    GUARD -->|"blocked or error"| B403["403 (or kill a request whose body may stream)<br/>emit blocked=true record<br/>do NOT forward"]
+    GUARD -->|allowed| PIN["server_connect: same guard on the dial,<br/>pin it to the checked IP"]
     PIN --> FWD["forward to target<br/>(Host + SNI unchanged)"]
     FWD --> RESP["response returns"]
     RESP --> BUILD["assemble record<br/>inline vs offload bodies<br/>compute passive signals"]
@@ -316,10 +332,17 @@ flowchart TD
 
 ### Request hook
 
-1. **Strip the tag.** `headers.pop("X-Redamon-Ctx")` lifts the tag onto flow
-   metadata and deletes the header so it never reaches the target
-   ([`capture_addon.py`](../../scanners/capture_proxy/capture_addon.py), `RedamonCapture.request`).
-2. **Egress guard** ([`egress.py`](../../scanners/capture_proxy/egress.py)). A new proxy is a
+1. **Strip the tag and check the names.** At `requestheaders`, before a body over
+   `stream_large_bodies` can go upstream, `headers.pop("X-Redamon-Ctx")` lifts the
+   tag onto flow metadata and deletes the header so it never reaches the target
+   ([`capture_addon.py`](../../scanners/capture_proxy/capture_addon.py), `RedamonCapture.requestheaders`).
+   The names a client gives (every `Host` header, HTTP/2 `:authority`, TLS SNI)
+   are checked against the hard guardrail by name only, with no lookup; any other
+   name there (vhost probing, Host-header injection) is the tester's business, and
+   the request is recorded under its real target.
+2. **Egress guard** ([`egress.py`](../../scanners/capture_proxy/egress.py)), at the
+   `request` hook, on the request's REAL target: `request.host`, the address
+   mitmproxy dials, never the `Host` header. A new proxy is a
    new egress path, so it must not become an SSRF pivot into RedAmon's internal
    network. The guard resolves the hostname and refuses if *any* resolved A/AAAA
    address is internal: RFC1918, loopback, link-local, CGNAT `100.64.0.0/10`,
@@ -340,19 +363,47 @@ flowchart TD
    is still caught by `block_loopback`). Two safety invariants hold regardless of
    the toggles: (a) the explicit `extra_blocked` IP denylist (`CAPTURE_BLOCKED_IPS`,
    RedAmon's own service IPs) is **never** policy-gated, so unblocking private
-   targets cannot pivot into RedAmon itself; and (b) `check_egress` returns
+   targets cannot pivot into RedAmon itself, and it always holds the per-user
+   sandbox pool `10.214.0.0/16` (compose and `start_capture_proxy` both add it), so
+   the proxy never carries one person's request to another person's sandbox. A
+   lab container an operator connects to a sandbox network has an address in that
+   pool there, so capture-routed traffic to the lab must use the lab's
+   `redamon_pentest-net` address (with `block_private` relaxed); and (b) `check_egress` returns
    `allowed=True` only with a concrete pinned IP, so an empty / unresolvable host
    is never forwarded even if its toggle is off (the toggle only relabels the
    refusal). The `fail_closed_on_error` toggle governs the guard-internal-error
    path: on (default) an error blocks; off makes it fail-open (forward without
    vetting); exposed for completeness, but dangerous.
-3. **IP pin.** On allow it sets `flow.server_conn.address` to the exact vetted IP,
-   so mitmproxy does not re-resolve and land on a rebound internal address between
-   the guard check and the connection (a DNS-rebinding TOCTOU). Only the
-   connection address is pinned, not `request.host`, so the Host header and TLS
-   SNI keep the original hostname and vhosts / HTTPS still work.
-4. **Blocked requests** get a synthetic `403` and a `blocked=true` spool record.
+
+   A name's lookup runs off the event loop, in the guard's own threads, with a time
+   limit (the resolver's own give-up time from `/etc/resolv.conf` plus 5 s), a few
+   at a time per network the client came in on (at most 8 at once each; on
+   `pentest-net`, where every host-net recon run arrives from the gateway, per run
+   instead, never refused for capacity), so one client's names that never answer
+   cannot stall another's. An IP address needs no lookup. A check refused for
+   capacity, time or an unknown client network is recorded as
+   `egress:lookup-capacity`, `egress:lookup-timeout` or `egress:unknown-network`.
+3. **Every dial checked and pinned.** `server_connect`, the only place mitmproxy
+   dials from, runs the same guard on every upstream connection (HTTP, TLS,
+   WebSocket, `CONNECT` tunnels and the DNS layer a `CONNECT` to `:53`/`:5353`
+   selects, which never reach the request hook) and pins the dial to the checked
+   IP, so mitmproxy does not re-resolve and land on a rebound internal address
+   between the check and the connection (a DNS-rebinding TOCTOU). Only the dial
+   is pinned, so the Host header and TLS SNI keep the original hostname and
+   vhosts / HTTPS still work. The dial goes to the first resolved address only.
+   A guard error fails closed unless the "fail closed" toggle is off, and then
+   only that check is skipped. The `error` hook records an HTTP request whose
+   dial was refused.
+4. **Blocked requests** get a synthetic `403` and a `blocked=true` spool record;
+   a request whose body may already be streaming is killed instead (no answer).
    The attempt is still recorded, for the scope audit.
+5. **Bounded buffers.** Every HTTP/1 receive buffer is capped at 256 KiB (a
+   request head over it gets 431, a response head a 502), and a client
+   connection stops being read while the request bytes queued behind its waiting
+   streams pass 1 MiB (read again under 256 KiB), so one client or target cannot
+   grow the proxy every sandbox shares. `mitmproxy==11.1.3` is pinned exactly:
+   the head bound and the closing of refused connections that the version leaves
+   open (`client_disconnected`) depend on its internals.
 
 ### Response hook
 
@@ -654,7 +705,9 @@ Boundary-by-boundary:
 3. **Ingest is the trust boundary.** Tenant identity becomes authoritative only
    after HMAC verification, and even ingest can only INSERT one table.
 4. **Egress guard + IP pin** stop the proxy from being an SSRF pivot or a
-   DNS-rebinding hole into the internal network.
+   DNS-rebinding hole into the internal network: the real target of every request
+   and every dial is checked, the dial pinned, and the sandbox pool always
+   refused, so the proxy on every sandbox network never links two of them.
 5. **Attacker-controlled bodies stay inert.** The UI renders bodies as text, and
    the agent tools never build raw SQL from body content (see section 13).
 6. **Least-privilege containers.** Non-root, read-only rootfs, dropped caps,
@@ -706,8 +759,11 @@ containers reach it; the ingest worker gets the scoped `TRAFFIC_INGEST_DATABASE_
 plus both verification keys. The settings write is best-effort (wrapped in
 try/catch) so a save never fails just because the orchestrator is down.
 
-Exact networks: the proxy joins `redamon_pentest-net` only
-(`_CAPTURE_PROXY_NETWORK`), the ingest worker joins `redamon-network` only
+Exact networks: the proxy starts on `redamon_pentest-net`
+(`_CAPTURE_PROXY_NETWORK`), and the sandbox manager attaches it to every live
+per-user Kali sandbox network, at start and again after the proxy is recreated
+(`attach_capture_proxy_everywhere` in `recon_orchestrator/sandbox_manager.py`);
+the ingest worker joins `redamon-network` only
 (`_CAPTURE_INGEST_NETWORK`,
 [`container_manager.py`](../../recon_orchestrator/container_manager.py)).
 
@@ -878,15 +934,17 @@ security design.
 
 #### Which container runs the SDK, and who it talks to
 
-The SDK runs inside **`redamon-kali`** (the kali sandbox), the least-trusted box,
-because that is where attacker-facing traffic and LLM-written code execute. From
-there it talks to two other containers: the **`redamon-agent`** for every decision
-and every piece of data, and the **`redamon-capture-proxy`** whenever it actually
-sends live traffic to a target.
+The SDK runs inside the **Kali sandbox of the person whose run called it**
+(`redamon-kali-<key>-<instance>`), the least-trusted box, because that is where
+attacker-facing traffic and LLM-written code execute. From there it talks to two
+other containers on that sandbox's own network: the **`redamon-agent`** (as
+`http://agent:8080`, its alias there) for every decision and every piece of data,
+and the **`redamon-capture-proxy`** whenever it actually sends live traffic to a
+target.
 
 ```mermaid
 flowchart LR
-    subgraph kali["redamon-kali (kali-sandbox) — least trusted"]
+    subgraph kali["the person's Kali sandbox — least trusted"]
       PB["proxy_brain tool<br/>runs the agent's Python"] --> RS["redamon SDK<br/>(pre-imported)"]
     end
     subgraph agentc["redamon-agent — trusted brain"]
@@ -908,7 +966,8 @@ project, 15 minutes; `agentic/machine_credential.py`). The routes refuse it unle
 user and project equal the tag's, and its run equals the tag's session when the tag names
 one (the tag carries the run's phase, which another run's credential must not borrow). The box is deliberately **not** given
 `INTERNAL_API_KEY`, the scanner key or any database URL, so a foothold there cannot
-forge a tenant or read the store directly.
+forge a tenant or read the store directly. Only that person's own runs execute in
+the box, so the credentials a shell there can read in `/proc` are that person's.
 
 #### Two hops: the agent triggers, then the code calls back
 
@@ -931,7 +990,7 @@ there fetching files; the worker asks, and the clerk checks the badge first.
 ```mermaid
 sequenceDiagram
     participant A as redamon-agent (brain)
-    participant K as redamon-kali (SDK runs here)
+    participant K as person's Kali sandbox (SDK runs here)
     participant T as target
     A->>K: HOP 1 — run this Python + your REDAMON_CTX tag
     Note over K: the code executes INSIDE kali

@@ -2,7 +2,7 @@
 
 MCP (Model Context Protocol) servers for agentic penetration testing. These servers expose security tools to AI agents via the MCP protocol, enabling autonomous vulnerability discovery and exploitation.
 
-This document describes the **five system MCP servers** that ship inside the kali-sandbox container (`network_recon`, `nmap`, `nuclei`, `metasploit`, `playwright`) and back the agent's built-in pentest toolset.
+This document describes the **five system MCP servers** that ship inside the Kali sandbox image (`network_recon`, `nmap`, `nuclei`, `metasploit`, `playwright`) and back the agent's built-in pentest toolset. The image is `redamon-kali-sandbox:latest`, built from `mcp/kali-sandbox/Dockerfile`; the recon orchestrator starts one container from it per person on first need and stops it when unused, so every person's servers run in their own sandbox ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)).
 
 > **The opposite direction** — letting an *external* agent connect INTO RedAmon
 > and drive recon as one user — is a separate feature, **MCP Server**.
@@ -72,13 +72,13 @@ mcp/requirements.txt              ──COPY──>      /tmp/requirements.txt
 
 ### Environment Variables
 
-These variables are set in `docker-compose.yml` and passed to the container:
+The recon orchestrator sets the transport, host and port variables in every sandbox it starts (`CONTAINER_ENV_FIXED` in `recon_orchestrator/sandbox_contract.py`), and the token per sandbox; the `MSF_*` timings are the servers' own defaults (`mcp/servers/run_servers.py`):
 
 | Variable | Value | Description |
 |----------|-------|-------------|
 | `MCP_TRANSPORT` | `sse` | Transport mode: `stdio` (direct) or `sse` (network) |
-| `MCP_HOST` | `0.0.0.0` | Bind address **inside the container** (so the agent can reach the servers over the internal `redamon` bridge). The *host* port publish is loopback-only — see the security note below. |
-| `MCP_AUTH_TOKEN` | *(generated)* | Bearer token required on every MCP SSE request. Auto-generated into `.env` by `redamon.sh`; the agent sends it, the servers validate it. Empty/unset ⇒ servers **fail closed** (reject with 401/1008); a wrapper-build error no longer falls back to unauthenticated serving. |
+| `MCP_HOST` | `0.0.0.0` | Bind address **inside the container**, so the agent reaches the servers over the person's sandbox network. A sandbox publishes none of these ports on the host — see the security note below. |
+| `MCP_AUTH_TOKEN` | *(random, per sandbox)* | Bearer token required on every MCP SSE request: 32 random bytes the orchestrator draws for each sandbox it starts, handed to the agent through the webapp gateway together with the sandbox's address. Empty/unset ⇒ servers **fail closed** (reject with 401/1008); a wrapper-build error never falls back to unauthenticated serving. |
 | `NETWORK_RECON_PORT` | `8000` | HTTP client + port scanner server |
 | `NUCLEI_PORT` | `8002` | Vulnerability scanner server |
 | `METASPLOIT_PORT` | `8003` | Exploitation framework server |
@@ -95,12 +95,13 @@ These variables are set in `docker-compose.yml` and passed to the container:
 ### Data Flow
 
 ```
-AI Agent (Claude/LangGraph)
+AI Agent (Claude/LangGraph), one client per sandbox
          │
-         │ MCP Protocol (JSON-RPC over SSE)
+         │ MCP Protocol (JSON-RPC over SSE), on the person's sandbox network,
+         │ with that sandbox's own bearer token
          ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                              KALI CONTAINER                                   │
+│               ONE PERSON'S KALI SANDBOX (redamon-kali-<key>-<instance>)        │
 │                                                                               │
 │  ┌──────────────┐ ┌────────────┐ ┌──────────┐ ┌──────────────┐ ┌────────────┐ │
 │  │network_recon │ │nuclei_server│ │nmap_server│ │  msf_server  │ │ playwright │ │
@@ -143,8 +144,11 @@ AI Agent (Claude/LangGraph)
 
 ### 1. Build and Start Container
 
+In RedAmon nothing here is needed: the recon orchestrator starts each person's sandbox from the image. The steps below use the standalone `mcp/docker-compose.yml`, which runs one container from the same Dockerfile for working on the servers alone: `redamon-kali-standalone` (never `redamon-kali`, the name `redamon.sh` removes), every port published on `127.0.0.1` only, `./servers` mounted read-only (an edit on the host is what the servers read), an output folder of its own under `mcp/output` (never a person's sandbox output folder), and `NET_ADMIN`/`NET_RAW` without `SYS_PTRACE`. The servers refuse every call without a bearer, so export `MCP_AUTH_TOKEN` in the shell first; the file passes it through.
+
 ```bash
 cd mcp
+export MCP_AUTH_TOKEN="$(openssl rand -hex 32)"   # any secret of your choice
 docker-compose up -d --build
 ```
 #### only start after build
@@ -170,20 +174,22 @@ curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://127.0.0.1:8000/sse
 
 ### 3. Connect AI Agent
 
-> **Host ports are loopback-only + token-authenticated (since 5.3.1).** The MCP
-> servers are published on `127.0.0.1` (not the LAN) and every SSE request must
-> carry `Authorization: Bearer $MCP_AUTH_TOKEN`. The agent connects to them over
-> the internal Docker network (`http://kali-sandbox:PORT/sse`) with the token
-> attached automatically — the `localhost` URLs below are for **local debugging
-> only**. See the [Security Notice](#security-notice).
+> **In RedAmon a sandbox publishes no MCP port, and every request needs its
+> token.** The agent connects to a person's servers over that person's sandbox
+> network (`http://redamon-kali-<key>-<instance>:PORT/sse`, a name that resolves
+> only there) with that sandbox's token, which it receives from the orchestrator
+> through the webapp. The `localhost` URLs below belong to the standalone
+> compose file, for **local debugging only**; to look inside a running sandbox
+> instead, find it with `docker ps --filter label=redamon.sandbox=1` and use
+> `docker exec`. See the [Security Notice](#security-notice).
 
-The MCP servers are available (on the host, loopback + bearer token) at:
+With the standalone compose file, the MCP servers are available on the host (loopback only, with the `MCP_AUTH_TOKEN` you exported) at:
 - **network_recon**: `http://127.0.0.1:8000/sse` (HTTP requests + port scanning)
 - **nuclei**: `http://127.0.0.1:8002/sse` (vulnerability scanning)
 - **metasploit**: `http://127.0.0.1:8003/sse` (exploitation)
 - **nmap**: `http://127.0.0.1:8004/sse` (service detection, OS fingerprinting, NSE scripts)
 - **playwright**: `http://127.0.0.1:8005/sse` (browser automation, JS-rendered content)
-- **metasploit progress**: `http://127.0.0.1:8013/progress` (live progress; loopback-only, no token)
+- **metasploit progress**: `http://127.0.0.1:8013/progress` (live progress; the same bearer, checked on every request)
 
 ## Available Tools
 
@@ -239,9 +245,9 @@ execute_nuclei("-u http://10.0.0.5 -t /opt/nuclei-templates/http/misconfiguratio
 
 **Custom Templates:**
 
-The `mcp/nuclei-templates/` directory is mounted read-only at `/opt/nuclei-templates/` inside the kali-sandbox container. At startup, the nuclei server scans this directory and dynamically appends all available template paths (with id, severity, name) to the `execute_nuclei` tool description, so the agent automatically knows what custom templates are available.
+The `mcp/nuclei-templates/` directory is mounted read-only at `/opt/nuclei-templates/` inside every sandbox (left out when the folder is empty at the sandbox's start). At startup, the nuclei server scans this directory and dynamically appends all available template paths (with id, severity, name) to the `execute_nuclei` tool description, so the agent automatically knows what custom templates are available.
 
-Templates can be uploaded, viewed, and deleted from the webapp UI (Project Settings → Nuclei → Template Options) via the `/api/nuclei-templates` REST API. Uploaded templates are global (shared across all projects) and immediately visible to the agent after a kali-sandbox restart.
+Templates can be uploaded, viewed, and deleted from the webapp UI (Project Settings → Nuclei → Template Options) via the `/api/nuclei-templates` REST API. Uploaded templates are global (shared across all projects and visible in every person's sandbox). The tool description lists the templates present when the sandbox started, so the agent learns of a new upload at that sandbox's next start (it stops after 20 idle minutes). The public nuclei templates live in the read-only volume `redamon-kali-nuclei-templates` (`/root/nuclei-templates`), refreshed daily by the orchestrator.
 
 ### Nmap Server (Port 8004)
 
@@ -370,7 +376,7 @@ Long-running operations (like Hydra brute force attacks or Metasploit exploits) 
 
 ### Progress Endpoint
 
-**URL:** `http://localhost:8013/progress`
+**URL:** `http://localhost:8013/progress` with the standalone compose file (in RedAmon, the agent reads it on the person's sandbox network); every request needs `Authorization: Bearer <MCP_AUTH_TOKEN>`.
 
 **Response:**
 ```json
@@ -395,10 +401,10 @@ Long-running operations (like Hydra brute force attacks or Metasploit exploits) 
 
 ```bash
 # Start a long-running command via MCP, then in another terminal:
-curl http://localhost:8013/progress | jq .
+curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8013/progress | jq .
 
 # Watch progress live:
-watch -n 2 'curl -s http://localhost:8013/progress | jq .'
+watch -n 2 'curl -s -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8013/progress | jq .'
 ```
 
 ### Timing Configuration
@@ -471,20 +477,24 @@ The MCP servers grant powerful capabilities (including `kali_shell` command
 execution as root inside the sandbox), so their exposure is locked down by
 default:
 
-- **Loopback-only host publish.** The MCP servers (`8000/8002/8003/8004/8005`),
-  progress streams (`8013/8014`), tunnel-manager (`8015`) and ngrok API (`4040`)
-  are published on `127.0.0.1` — never on the LAN. The agent reaches them over
-  the internal `redamon` Docker bridge, so no functionality depends on host
-  reachability. (`4444`, the reverse-shell catcher, is intentionally left
-  routable so a real target can connect back in direct/no-tunnel mode.)
+- **Nothing published, one network per person.** A person's sandbox publishes
+  no MCP server (`8000/8002/8003/8004/8005`), progress stream (`8013/8014`),
+  tunnel manager (`8015`), terminal (`8016`) or ngrok API (`4040`). It sits on
+  its own network (`redamon-sbx-<key>`, a `/28` of `10.214.0.0/16`), where the
+  only other members are the agent and the capture proxy, so no functionality
+  depends on host reachability. The reverse-shell listener (`MSF_REVERSE_PORT`,
+  `4444` inside the container) is reached from outside only through the
+  person's tunnel, or, when an operator sets `KALI_SANDBOX_PORT_POOL`, through
+  the pool port the orchestrator gives that sandbox (the listener then uses the
+  same number inside; bound on `127.0.0.1` unless the variable names another
+  address).
 - **Bearer-token auth.** Every MCP SSE request must carry
-  `Authorization: Bearer $MCP_AUTH_TOKEN`. `redamon.sh` generates the token into
-  `.env`; the agent sends it automatically. If the token is unset (e.g. a manual
-  `docker compose up` without running `redamon.sh`), the servers **fail closed**
-  and reject every request (a token-less request gets 401/1008), and a
-  wrapper-build error no longer degrades to serving unauthenticated; the
-  loopback bind is defense-in-depth on top of the mandatory bearer. To run the
-  stack at all, set `MCP_AUTH_TOKEN` in `.env` (or just run `redamon.sh`).
+  `Authorization: Bearer <token>`, the sandbox's own random `MCP_AUTH_TOKEN`
+  (the tunnel manager checks a second, separate one). The agent receives both
+  with the sandbox's address and sends them automatically. If the token is
+  unset, the servers **fail closed** and reject every request (a token-less
+  request gets 401/1008), and a wrapper-build error never degrades to serving
+  unauthenticated.
 
 This closes the unauthenticated-RCE surface tracked as STRIDE **S10 / E1 / I9**
 in the maintainers' threat model; the public control catalog is
@@ -492,9 +502,15 @@ in the maintainers' threat model; the public control catalog is
 
 ## Troubleshooting
 
+In RedAmon, run the commands below in the person's sandbox: find it with
+`docker ps --filter label=redamon.sandbox=1` (its `redamon.sandbox.user` label
+names the person) and replace `docker-compose exec kali-sandbox` with
+`docker exec <container>`. With the standalone compose file they work as written.
+
 ### Metasploit Slow to Start
 
-First run initializes the database. Subsequent starts are faster.
+The first Metasploit call in a freshly started sandbox waits about 15-18 s while
+`msfconsole` loads; later calls in the same sandbox reuse the console.
 
 ```bash
 # Check Metasploit status
@@ -503,7 +519,12 @@ docker-compose exec kali-sandbox msfdb status
 
 ### Nuclei Templates Missing
 
-Templates are auto-downloaded on first run. Force update:
+A sandbox reads the public templates from the read-only volume
+`redamon-kali-nuclei-templates`, which the recon orchestrator fills on first need
+and refreshes when it starts (if the volume is a day old) and then daily; a failed
+refresh is retried after an hour. A sandbox cannot update them itself
+(`nuclei -update-templates` there changes nothing). With the standalone compose
+file, force an update:
 
 ```bash
 docker-compose exec kali-sandbox nuclei -update-templates
@@ -511,7 +532,7 @@ docker-compose exec kali-sandbox nuclei -update-templates
 
 ### Permission Denied for Scanning
 
-Ensure container has required capabilities:
+Ensure container has required capabilities (`NET_ADMIN`, `NET_RAW`):
 
 ```bash
 docker-compose exec kali-sandbox capsh --print
@@ -519,7 +540,10 @@ docker-compose exec kali-sandbox capsh --print
 
 ### Progress Endpoint Not Working
 
-If `curl http://localhost:8013/progress` returns "Connection refused":
+A sandbox publishes no progress port: the agent reads it on the sandbox's own
+network with the sandbox's token. With the standalone compose file, if
+`curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8013/progress`
+returns "Connection refused" (a missing or wrong bearer is a 401, not a refusal):
 
 1. **Check port mapping**: Port changes require container recreation, not just restart:
    ```bash
@@ -547,5 +571,5 @@ If legacy Metasploit SSH brute force runs forever without returning:
 2. Verify `MSF_RUN_QUIET_PERIOD` is appropriate for your wordlist size
 3. Check progress endpoint to see if output is still being generated:
    ```bash
-   watch -n 5 'curl -s http://localhost:8013/progress | jq .line_count'
+   watch -n 5 'curl -s -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8013/progress | jq .line_count'
    ```

@@ -12,8 +12,8 @@ provide (RedAmon is designed local-only): nginx + TLS + firewall + host hardenin
 
 **The security promise: one public origin over HTTPS.** From the internet only the webapp
 UI (443, plus 80 for the ACME challenge and an HTTP->HTTPS redirect) is reachable. The agent
-API, the outbound Kali MCP servers, databases, orchestrator, and the reverse-shell catcher
-stay bound to loopback. nginx proxies the webapp and (same-origin) exactly the four agent
+API, databases, orchestrator and the optional reverse-shell port pool stay bound to loopback,
+and the per-person Kali sandboxes publish nothing else. nginx proxies the webapp and (same-origin) exactly the four agent
 WebSocket paths; nothing else on the agent is exposed.
 
 **One exception, off by default: the INBOUND MCP server.** With
@@ -152,13 +152,16 @@ flag it manages. Control KB with `ENABLE_KB` only.
 | `REDAMON_BUILD_PARALLEL` | Cap concurrent image builds. Blank -> redamon.sh auto-sizes. |
 | `DOCKER_DNS` | e.g. `8.8.8.8,8.8.4.4` merged into `/etc/docker/daemon.json` if container DNS breaks. |
 | `DOCKER_BUILD_CACHE_MAX_GB` | Cap the BuildKit build cache (GB) via `daemon.json` auto-GC. Blank -> Docker's default. `install`/`update` already drop the cache each build orphans, so this is a second-line ceiling for cache the daemon accumulates outside RedAmon's builds; set e.g. `30` on a shared or long-lived host. |
-| `<SERVICE>_CPUS` | Per-service CPU limit (`NEO4J_CPUS`, `KALI_CPUS`, `AGENT_CPUS`, ...). Auto-capped at `init` to `min(compose default, host nproc)` so `up` never fails on a box with fewer CPUs than compose's generous defaults (neo4j 8 / kali 10 / agent 8). Set one to pin it; blank -> auto. |
+| `<SERVICE>_CPUS` | Per-service CPU limit (`NEO4J_CPUS`, `AGENT_CPUS`, ...). Auto-capped at `init` to `min(compose default, host nproc)` so `up` never fails on a box with fewer CPUs than compose's generous defaults (neo4j 8 / agent 8). Set one to pin it; blank -> auto. `KALI_CPUS` (like `KALI_MEM` and `KALI_PIDS`) is ignored: the orchestrator sizes each Kali sandbox itself (half the host's CPUs, 1 to 4; 4096 processes; its 1 GiB memory envelope). |
 
 ### Engagement knobs
 | Key | Purpose |
 |---|---|
-| `REVSHELL_TARGET_CIDRS` | Scopes the ufw 4444 rule to your RoE targets. 4444 is loopback-bound by default; see the Security posture section for how to actually catch reverse shells (tunnel, or republish + DOCKER-USER rule). |
-| `TUNNELS_ENABLED` | Keep `false` on an internet-exposed host. |
+| `REVSHELL_TARGET_CIDRS` | Scopes the ufw rules `revshell-open` adds for the reverse-shell port pool to your RoE targets. See the Security posture section for how to catch reverse shells (a person's own tunnel, or the pool). |
+| `KALI_SANDBOX_PORT_POOL` | `first-last` (or `127.0.0.1:first-last`), e.g. `4500-4509`: one host port per running Kali sandbox for direct reverse shells, bound on loopback. The deploy refuses any other bind address, a range starting below 1024 or holding more than 100 ports, and a range over any port the host already serves (the loopback-only services, SSH/HTTP/HTTPS and every port the shipped compose files publish). Required by `revshell-open`. Blank -> no pool, no sandbox port published. |
+| `KALI_SANDBOX_MAX_CONCURRENT` | The most Kali sandboxes running at once (one per person and view). Advised on a multi-user server; blank -> only the memory governor limits them. |
+| `KALI_SANDBOX_IDLE_MINUTES` | Minutes without use before a Kali sandbox stops (default 20). |
+| `TUNNELS_ENABLED` | Unused: written to the server `.env`, read by nothing. Tunnels are per person, in each person's own Kali sandbox, behind the `platform:tunnels` permission. |
 
 ### First admin (required for init)
 | Key | Purpose |
@@ -257,9 +260,9 @@ The agent WebSocket URL is **baked into the webapp image at build time**
 | `./deploy.sh harden` | Re-apply host hardening + nginx/TLS only (idempotent), no rebuild. | no |
 | `./deploy.sh ssl-renew` | Renew (certbot) or re-install (provided) the cert + reload nginx. | no |
 | `./deploy.sh down` | Stop the stack, keep volumes/images. | no |
-| `./deploy.sh logs [service]` | Tail `docker compose logs -f` for a service (default `agent`). | no |
-| `./deploy.sh revshell-open` | Per-engagement: expose `4444` to `REVSHELL_TARGET_CIDRS` via a host socat forwarder (fails closed on reboot). | no |
-| `./deploy.sh revshell-close` | Tear the `4444` forwarder down and remove its ufw rules. | no |
+| `./deploy.sh logs [service]` | Tail `docker compose logs -f` for a service (default `agent`). A person's Kali sandbox is not a compose service: on the host, find it with `docker ps --filter label=redamon.sandbox=1` and read it with `docker logs <container>`. | no |
+| `./deploy.sh revshell-open` | Per-engagement: expose every port of `KALI_SANDBOX_PORT_POOL` to `REVSHELL_TARGET_CIDRS` via one host socat forwarder per port (fails closed on reboot). Refuses without a pool. | no |
+| `./deploy.sh revshell-close` | Tear every forwarder down (also the single `4444` one of a host opened before per-user sandboxes) and remove their ufw rules. | no |
 
 Connection fields can be overridden positionally, e.g.
 `./deploy.sh init 1.2.3.4 ~/.ssh/redamon.pem ubuntu`. Use `--env NAME` to select
@@ -398,19 +401,28 @@ Putting it on a public IP invalidates that, so the deploy closes the gap:
   the deploy only verifies.
 - `ip_allowlist` (default `GATE_MODE`) is strongly recommended given the powerful
   agent WS surface + root PTY - defense-in-depth on top of the app-layer ws-ticket and login.
-- **Reverse shell (4444)** is bound to loopback by the prod overlay and closed at the
-  firewall. To catch a *direct* reverse shell during an engagement, set
-  `REVSHELL_TARGET_CIDRS` to your RoE target scope and run `./deploy.sh revshell-open`; run
-  `./deploy.sh revshell-close` the moment you are done. How it works: `revshell-open` starts a
-  transient `socat` forwarder on the host's public IP (`<public-ip>:4444 -> 127.0.0.1:4444`)
-  and opens `4444` in ufw to your target CIDRs only. Because `socat` is a **host** listener
-  (not a Docker-published port), ufw's source scoping actually applies - a plain ufw rule on
-  a Docker-published port would be bypassed by Docker's own iptables chains. A host **reboot
-  drops the forwarder**, so 4444 fails closed. The msf handler on 4444 is unauthenticated, so
-  it is exposed only to `REVSHELL_TARGET_CIDRS`, never the world; set your payload's LHOST to
-  the host's public IP and start the msf handler in RedAmon. (Alternative: a tunnel
-  ngrok/chisel to `127.0.0.1:4444` with `TUNNELS_ENABLED=true`; never run a world-open 4444
-  and a tunnel at once.)
+- **Reverse shells.** Each person's Kali tools run in their own sandbox on a private Docker
+  network, and no sandbox port is published by default, so a target cannot connect back to
+  it. Two ways to catch a *direct* reverse shell during an engagement:
+  - **A person's own tunnel** (Global Settings -> Tunneling, ngrok or chisel, behind the
+    Tunnels permission `platform:tunnels`): it runs inside that person's sandbox and forwards
+    to that sandbox's port 4444, the listener's port when no pool is set (with a pool the
+    listener moves to the pool port, which the tunnel does not forward); every restart of the
+    sandbox turns it off.
+  - **The port pool.** Set `KALI_SANDBOX_PORT_POOL` (e.g. `4500-4509`) and apply it with
+    `./deploy.sh update`: each running sandbox gets one port of the range for its listener,
+    bound on `127.0.0.1`. Set `REVSHELL_TARGET_CIDRS` to your RoE target scope and run
+    `./deploy.sh revshell-open`; run `./deploy.sh revshell-close` the moment you are done.
+    `revshell-open` starts one transient `socat` forwarder per pool port on the host's public
+    IP (`<public-ip>:<port> -> 127.0.0.1:<port>`) and opens the range in ufw to your target
+    CIDRs only. Because `socat` is a **host** listener (not a Docker-published port), ufw's
+    source scoping actually applies - a plain ufw rule on a Docker-published port would be
+    bypassed by Docker's own iptables chains. A host **reboot drops the forwarders**, so the
+    pool fails closed. Each person's LPORT is their own sandbox's pool port, which the agent
+    names when it suggests LHOST/LPORT; LHOST is the host's public IP. The msf handlers are
+    unauthenticated, so they are exposed only to `REVSHELL_TARGET_CIDRS`, never the world.
+
+  Never run a world-open pool and a tunnel at once.
 - **The AI attack-surface judge (Ollama, `11434`)** has no authentication of its own. The
   orchestrator starts it only while an AI attack-surface scan runs and publishes it on
   `127.0.0.1` only: the scan's host-network containers reach it at `localhost:11434`, nothing
@@ -428,7 +440,7 @@ Putting it on a public IP invalidates that, so the deploy closes the gap:
 Security Group / GCP firewall / Azure NSG) is the reliable outer boundary** — Docker's own
 iptables chains can bypass `ufw`, so the cloud firewall is what still protects you if a
 loopback re-bind is ever wrong (e.g. a stray `docker compose up` that republishes
-`3000`/`8090`/`4444` on `0.0.0.0`). Open **only**:
+`3000`/`8090` on `0.0.0.0`). Open **only**:
 
 | Port | Source | Purpose |
 |---|---|---|
@@ -437,9 +449,11 @@ loopback re-bind is ever wrong (e.g. a stray `docker compose up` that republishe
 | **22/tcp** | your IP only | SSH management |
 
 **Open nothing else.** In particular do **not** open `8090` (agent), `3000` (webapp),
-`5432`/`7687`/`7474` (PostgreSQL/Neo4j), `8000-8016`/`4444`/`8015` (Kali MCP / progress /
-tunnel manager / PTY / reverse-shell), or `11434` (the AI attack-surface judge, Ollama) — all
-are loopback-bound and reached only through nginx on `443`, or not at all from outside the host. Opening `8090` would expose the agent's unauthenticated WebSockets (including the
+`5432`/`7687`/`7474` (PostgreSQL/Neo4j), the `KALI_SANDBOX_PORT_POOL` range (reverse-shell
+listeners, opened to your targets only by `revshell-open`), or `11434` (the AI attack-surface
+judge, Ollama) — all are loopback-bound and reached only through nginx on `443`, or not at all
+from outside the host. The Kali sandboxes' MCP, progress, tunnel-manager and PTY ports are not
+published at all. Opening `8090` would expose the agent's unauthenticated WebSockets (including the
 anonymous **root PTY** `/ws/kali-terminal`) and its REST surface directly, bypassing nginx and
 its session gate. The browser reaches the agent's WebSockets at `wss://<domain>/ws/…` on `443`
 (nginx → `127.0.0.1:8090`), so `8090` never needs to be publicly reachable.
@@ -460,8 +474,10 @@ its session gate. The browser reaches the agent's WebSockets at `wss://<domain>/
 3. Watch: teardown -> host bootstrap -> hardening -> clone + overlay -> `redamon.sh install`
    (30-60 min build) -> secrets gate -> admin bootstrap -> nginx + TLS -> verify.
 4. Verification asserts loopback binds (3000/8090 on 127.0.0.1 only), datastores, the
-   orchestrator, the 4444 catcher and the Ollama judge (11434, while an AI attack-surface scan
-   runs) never off-loopback, container health, an admin exists, and
+   orchestrator, 4444 (kept in the list so a leftover publish is caught), every port of
+   `KALI_SANDBOX_PORT_POOL` and the Ollama judge (11434, while an AI attack-surface scan runs)
+   never off-loopback, container health (it lists the running Kali sandboxes and fails while
+   a shared `redamon-kali` container still runs), an admin exists, and
    `https://<domain>/api/health` -> 200.
 5. Log in at `https://<domain>/`.
 
@@ -553,7 +569,7 @@ recreates them empty and off). Take a database backup before upgrading to keep t
   (10-20 min after first boot).
 - **Never run raw `docker compose up` on the host.** The loopback re-binds hold only while
   the prod overlay is active (`COMPOSE_FILE`). A bare `docker compose up` reloads the base
-  file and republishes 3000/8090/4444 on 0.0.0.0 and starts the profile-less GVM stack.
+  file and republishes 3000/8090 on 0.0.0.0 and starts the profile-less GVM stack.
   Always go through `redamon.sh` (which the deploy points at the overlay). `redamon.sh up dev`
   is likewise forbidden here (it hardcodes its own compose files and defeats the overlay).
 - **Locked out over SSH**: if you deployed over a password, `ENABLE_SSH_HARDENING` will not
@@ -578,12 +594,14 @@ application `.env`.
 | `APP_DIR` | `COMPOSE_PROJECT_NAME` (do not change between init/update) |
 | `ADMIN_*` | first-admin creation on init |
 | `NVD_API_KEY`, `KB_EMBEDDING_*`, `TUNNELS_ENABLED`, `OSV_DB_*` | appended to the server `.env` |
+| `KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_MAX_CONCURRENT`, `KALI_SANDBOX_IDLE_MINUTES` | appended to the server `.env` only when set (the orchestrator reads them) |
 
 Intentionally hands-off (redamon.sh owns these; the deploy only verifies): `AUTH_SECRET`,
 `INTERNAL_API_KEY`, `SCANNER_API_KEY`, `ORCHESTRATOR_API_KEY`, `MCP_AUTH_TOKEN`,
 `AGENT_WS_TICKET_SECRET`, `TUNNEL_AUTH_TOKEN`, `PLUGIN_RUNNER_KEY`,
 `PLUGIN_CALL_TOKEN_SECRET`, `POSTGRES_PASSWORD`, `NEO4J_PASSWORD`, and `SKIP_KB` (derived
-from the `.kbase-enabled` flag).
+from the `.kbase-enabled` flag). `MCP_AUTH_TOKEN` and `TUNNEL_AUTH_TOKEN` are still generated
+and checked, but nothing reads them: every Kali sandbox gets its own random pair.
 
 `REDAMON_SECRET_HMAC_KEY` is redamon.sh's too, but the secrets gate does not check it. It
 keys the HMAC of a secret urlscan saw written in a URL, so the same secret is recognised

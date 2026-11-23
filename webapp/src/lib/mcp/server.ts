@@ -1736,6 +1736,9 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
       description:
         'Run a shell command in RedAmon\'s Kali sandbox. This is `bash -c` with the sandbox\'s ' +
         'full toolset - the SAME access RedAmon\'s own in-app agent has.\n\n' +
+        'It runs in the token owner\'s own Kali sandbox, which holds every project the owner ' +
+        'may use with the agent (their own, and those shared with them for Use AI agent or ' +
+        'Exploitation & shells), whatever projects this token is limited to.\n\n' +
         'Pipelines, redirection, command substitution, chained commands and shell syntax all ' +
         'work: `subfinder -d target -silent | httpx -silent -sc | tee /tmp/live.txt` is one ' +
         'call. Every program in kali_toolbox is available. Call kali_toolbox first to see what ' +

@@ -91,6 +91,8 @@ export default function SharedProjectsField({ idPrefix, include, allowlist, disa
             Off, the token reaches only your own projects. On, it can also read the projects other
             people shared with you, at the access they gave you: read tools only, never a change,
             a scan or a question that spends their model key. Turning it on asks for your password.
+            Sandbox commands (kali_exec) run in your own Kali sandbox, which holds every project
+            you may use with the agent, shared ones included, whatever you choose here.
           </span>
         </span>
       </label>

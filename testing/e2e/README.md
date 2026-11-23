@@ -75,11 +75,17 @@ put back by the next one. It fails before doing anything when Docker, `npx`, `cu
 orchestrator, the agent or the webapp is missing (`G1_E2E_ALLOW_SKIP=1` skips instead):
 
 ```bash
-bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A-D, per-user mode
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A-D
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --groups A,D # some groups only
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --list       # list the tests; touches nothing
 bash testing/e2e/scripts/per-user-sandbox-e2e.sh --dry-run    # what each group would recreate
-bash testing/e2e/scripts/per-user-sandbox-e2e.sh --shared     # group A in shared mode ("fails before")
 bash testing/e2e/scripts/per-user-sandbox-e2e.sh --check-lock # take the lock as a run would, then exit
 ```
+
+It stops and removes no sandbox and no nuclei templates volume: the sandboxes a run starts
+are its test persons' own and stop when idle, as anyone's. Test 4 stops Bob's and Alice's
+at its end, since a Metasploit handler's background job carries no chat id and the agent's
+hold watcher would otherwise keep that sandbox for 8 hours.
 
 It needs the stack up, Docker, `python3` and `node`, and the accounts of
 `tests/kali_sandbox_seed_live.py` (`g1-alice@e2e.local`, `g1-bob@e2e.local`, projects `g1-PA`,
@@ -104,11 +110,17 @@ waited for. A failure that starts `PRODUCT, not the test:` names a known defect,
 drawer (`useAgentWebSocket.ts`: a ticket mint that fails in the browser, or a stale mint binding
 the new socket to the old session) or the page's one read of its session or project after such
 an abort (`AuthProvider.tsx`, `ProjectProvider.tsx`). On exit, and at the start of the run after a killed one, the wrapper removes the
-`g1e2e`-labelled labs, edges and networks a test left; a run that started from shared mode also
-stops the per-user sandboxes it started (this stack's only; those there before stay) before it puts
-the orchestrator back, fails when one is left, and removes the nuclei templates volume if it made
-it. Playwright holds no lock descriptor, so the run records its process group beside the originals
-file and the next run first stops a killed run's Playwright that still runs.
+`g1e2e`-labelled labs, edges and networks a test left. Playwright runs under `setpriv
+--pdeathsig TERM` where `setpriv` offers it, so it ends with a wrapper killed outright; it holds
+no lock descriptor, so the run also records its process group beside the originals file and
+the next run first stops a killed run's Playwright that still runs.
+
+A failed API call of Playwright prints its call log, the account's session cookie included.
+The fixtures redact it (`redactSecrets` in `tests/perUserSandboxFixtures.ts`: cookie,
+Authorization and key headers, token values) in what the `list` reporter of
+`playwright.config.ts`, or `-- --reporter=line`, prints. The `html` and `blob` reporters may
+still keep the raw call log in their report, so do not pass them on a machine whose results
+others read.
 
 Test 9 fills the memory pool with a Naabu partial recon of the lab (every port at 50/s, `g1-PA`'s
 root put in scope so the typed address is scanned, and an RoE exclusion of a documentation address

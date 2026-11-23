@@ -121,6 +121,44 @@ reason. Exiting 0 there would report a guard as green while it checked nothing.
 Smoke/live shell suites are named `*_smoke.sh` / `*_live.sh` and are deliberately
 not matched.
 
+### Per-user Kali sandboxes
+
+The per-user sandboxes ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)) are tested at
+four levels:
+
+- **The contract.** `tests/test_sandbox_contract.py` (root-agent section) fails when the two
+  Python copies of the contract differ by a byte, when a TypeScript constant differs from the
+  Python value, or when a pure rule (mount plan, keys, environment, subnet pick, parsers)
+  stops keeping persons apart.
+- **Each side, in the gate.** The orchestrator's manager, leases, routes, templates and
+  admission (`recon_orchestrator/tests/test_sandbox_*.py`), the agent's router and routes
+  (`agentic/tests/test_sandbox_*.py` and the routing tests beside them), the webapp's gateway
+  and lifecycle hooks (`webapp/src/lib/sandbox/*.test.ts`) and its internal routes. Four shell
+  suites pin what compose and `redamon.sh` must keep: `tests/kali_sandbox_removed_test.sh` (no
+  shared Kali container: `kali-sandbox` is build-only, no compose file publishes 4444 or hands
+  the agent a Kali address or token, the update map rebuilds the image as a tool image,
+  `_retire_shared_kali` and the daily Metasploit refresh run only where they should, the
+  previous release's deploy overlay still renders), `tests/kali_sandbox_guests_test.sh` (the
+  agent and the capture proxy forward nothing, the proxy refuses `10.214.0.0/16`),
+  `tests/kali_sandbox_no_required_env_test.sh` (no `KALI_SANDBOX_*` variable is ever required)
+  and `tests/kali_sandbox_cleanup_test.sh` (`down`, `clean` and `purge` remove the
+  sandboxes by label, `status` lists them).
+- **The live isolation harness**, never in the gate: `python3 tests/kali_sandbox_seed_live.py`
+  seeds two synthetic persons (`g1-alice@e2e.local`, `g1-bob@e2e.local`) and their projects,
+  then `bash tests/kali_sandbox_isolation_live.sh` runs one check per threat (LV-T5a ...
+  LV-E4) through MCP `kali_exec`, each asserting that nothing one person plants is visible to,
+  reachable from or writable by the other (`G1_ALLOW_FORK_TEST=1` adds the fork-load check
+  LV-D22). It takes 3-6 minutes.
+- **The UI end-to-end spec**: `bash testing/e2e/scripts/per-user-sandbox-e2e.sh` drives
+  `testing/e2e/tests/perUserSandbox.spec.ts` against the stack with the scripted stub model
+  ([testing/e2e/README.md](../../testing/e2e/README.md)), one group at a time, recreating the
+  orchestrator with each group's variables in the shell only and putting the originals back. It
+  stops and removes no sandbox and no templates volume: the sandboxes a run starts are its test
+  persons' own and stop when idle. A failed API call's error is printed with cookies, keys and
+  tokens redacted (`redactSecrets` in `testing/e2e/tests/perUserSandboxFixtures.ts`), which holds
+  for the `list` reporter the config sets and for `line`; Playwright's HTML and blob reporters
+  keep the raw call log of a failed step, so do not pass them to this spec.
+
 ### The plugin platform
 
 The plugin platform ([README.PLUGINS.md](README.PLUGINS.md)) is tested at every level:
@@ -250,6 +288,8 @@ real form (`seedRbac`, `loginAs`, `cleanupRbac`); `rbacUsers.spec.ts` shows the 
 
 `sharingwriteswitch:on` / `sharingwriteswitch:off` follow `RBAC_SHARING_WRITE_ENABLED` alone (it reads off while the sharing switch is off) and never read the policy. Write sharing not in force refuses a write grant or change 409 for two reasons: `write_sharing_off` with the switch off, `above_max_level` with it on and Root's policy at Read. So `p4.tsv`'s `p4-share-grant-write` / `p4-share-update-write` are `sharingwrite:off sharingwriteswitch:off`, and their `-capped` twins `sharingwrite:off sharingwriteswitch:on`. The `sharingwrite:on` twins (`-on`) act on `viewer_tmp` only and put it back (to Read before the 4.4 revoke, no share after its leave): the runner seeds once per run, so a row that left the seeded `viewer` at Read + Write failed every later Read-viewer row of the run (the S5 red, 27 rows). `tests/rbac_matrix_runner_test.sh` fails any row that can run with write sharing in force and raises a share other than `viewer_tmp`'s, or leaves `viewer_tmp`'s raised.
 
+No row depends on a Kali sandbox mode: every sandbox is per person, so a row carrying a `sandbox:` tag is a LINT error (exit 2, nothing run). `p2.tsv`'s `p2-g1-*` rows check each person's own tunnel and the instance tunnel's read-only "off"; its `p2-tunnel-sync-*` rows check that the removed tunnel-sync route stays gone (401 at the middleware without a session, 404 with one).
+
 `tests/rbac_user_audit_live.sh` uses the same fixtures to check the audit of user
 administration: `rbac-admin-a` creates, edits, promotes, demotes, resets and deletes a throwaway
 `rbac-audit-*@e2e.local` account, and `audit_log` must hold exactly those six rows, in order,
@@ -269,20 +309,24 @@ the project. Its trap removes every fixture, the archive row included. It also n
 upgrade is refused a `kali-terminal` ticket and still gets a chat ticket, a member given the
 `kali_terminal` legacy grant by SQL gets one (audited `agent.terminal_opened`), and, inside the
 agent container (`tests/rbac_kali_terminal_live_ws.py`, fed on stdin with the tickets), a chat
-ticket does not open the terminal, the sandbox's `:8016` refuses an upgrade without the agent's
-bearer, the shell runs as the ticket's user and project whatever the init frame says, and
-`POST /ws/close` ends the open terminal with close 4403. It also needs the `agent` and
-`kali-sandbox` containers.
+ticket does not open the terminal, the holder's own Kali sandbox's `:8016` refuses an upgrade
+without that instance's bearer, the shell runs as the ticket's user and project whatever the init
+frame says, and `POST /ws/close` ends the open terminal with close 4403. It also needs the `agent`
+container; the holder's sandbox is found by its labels, started with the holder's own project when
+none runs, and removed with its output folders by the clean-up.
 
 `tests/ghsa_w454_msf_lease_live.sh` checks GHSA-w454-6hwp-fm58 against a real `msfconsole`
-without touching the stack's own. It feeds `tests/ghsa_w454_msf_lease_live.py` to the running
-`kali-sandbox`, which starts a second Metasploit server from the mounted `mcp/servers` on
+without touching the sandbox's own. Each person has their own console, shared by the projects
+that person may use, so the per-project lease is checked inside one person's sandbox: g1-alice's,
+of the group-1 seed (`python3 tests/kali_sandbox_seed_live.py` first), found by its labels and
+started with her own projects when none runs (and then stopped at the end). It feeds
+`tests/ghsa_w454_msf_lease_live.py` to that sandbox, which starts a second Metasploit server from the mounted `mcp/servers` on
 loopback ports 18003/18013 with a 20-second idle window, and opens a loopback reverse shell as
 one project's session. Another project's `sessions -l`, `sessions -c "id" -i <id>`, `irb`,
 `sessions -K`, `jobs -K` and `msf_restart` must be refused, and its forged session link
 answered 409. The owner's session must survive and still answer `id`. Once the owner ends it
 and goes idle, the other project gets a restarted console. It takes 3 to 6 minutes and needs
-only the `kali-sandbox` container. Pointed at the code before the fix
+docker, python3 and the running recon orchestrator, which starts the sandbox. Pointed at the code before the fix
 (`MSF_SERVER_DIR=<dir>` passed to the Python file), those refusal checks fail, which is the
 advisory reproduced.
 
@@ -315,13 +359,13 @@ which would decide the stack's real members' grants. It needs the same container
 
 `tests/rbac_nuclei_templates_live.sh` checks template ownership over HTTP: a member's upload cannot be overwritten, seen, deleted or selected by another member (nor reached through a free-form path), a scan's settings read drops it even when written behind the save's back, an admin overwrites and promotes it, and a deleted member's templates pass to the deleting admin. Its templates live under `rbac-e2e/` in the shared templates folder; the trap removes them.
 
-`tests/rbac_run_credential_live.sh` checks the sandbox side: no Kali process holds `SCANNER_API_KEY`, the agent's `/graph/exec`, `/text-to-cypher` and `/traffic/exec` refuse the bare scanner key and take a run credential (an expired one, another audience's, one whose terminal has closed and a traffic one of another run are refused with their codes), and `redagraph` answers in a legacy holder's terminal (`tests/rbac_run_credential_live_ws.py`, inside the agent container). It needs the `agent` and `kali-sandbox` containers.
+`tests/rbac_run_credential_live.sh` checks the sandbox side: in the holder's own Kali sandbox no process holds `SCANNER_API_KEY` and PID 1's only key or token names are its instance's two inbound tokens and its sandbox key, the agent's `/graph/exec`, `/text-to-cypher` and `/traffic/exec` refuse the bare scanner key and take a run credential (an expired one, another audience's, one whose terminal has closed and a traffic one of another run are refused with their codes), and `redagraph` answers in a legacy holder's terminal (`tests/rbac_run_credential_live_ws.py`, inside the agent container). It needs the `agent` container; the holder's sandbox is found by its labels, started with the holder's own project when none runs, and removed with its output folders by the clean-up.
 
 `tests/rbac_job_credential_live.sh` checks the scan side: the bare scanner key reads no settings or project and ingests nothing, the key with a job credential reads only that tenant and project, the agent's `/llm/*` and `/jev/*` refuse a body naming someone else, the orchestrator refuses a start without a credential or with a forged one, and a real one-phase partial recon (Shodan, on the reserved name `rbac.test`) runs with a container that holds the credential and no `INTERNAL_API_KEY` (`tests/rbac_job_credential_live_checks.py`, inside the agent container). It needs the agent and the orchestrator.
 
 `tests/rbac_set_root_live.sh` runs the host Root commands on a disposable instance (`tests/rbac_upgrade_live.sh serve several_admins`, never the running stack: since step 2.5 every real stack has a real Root, and moving it would sign that account out). It sources `redamon.sh` and runs its own `cmd_set_root` and `_confirm_root` through a `docker` shim that sends `docker compose exec webapp` to the instance's webapp and refuses every other compose call: `set-root` moves Root to a seeded `rbac-step27-a@e2e.local` admin and on to `rbac-step27-b`, each move signing out the new Root and the one it replaced and revoking the new Root's MCP tokens; `check-root.mjs` reports it, a repeat changes nothing, and `_confirm_root` (the switch on in a scratch `.env`) keeps an unconfirmed Root without `ADMIN_EMAIL` and confirms it, signing nobody out, when `ADMIN_EMAIL` names it. The instance runs with the caller's `RBAC_IDENTITY_ENABLED` (default off); it SKIPs when `redamon-webapp:latest` has no `set-root.mjs` or port 3901 is taken. The same scripts are proved on Postgres in the gate by `tests/rbac_scripts_db_test.sh`, in a throwaway schema built from the checkout's `schema.prisma`.
 
-`tests/rbac_instance_settings_live.sh` checks the instance settings (step 2.4) on a disposable instance: it starts `tests/rbac_upgrade_live.sh serve tunnel_rows` with `RBAC_IDENTITY_ENABLED=true` (its own Postgres and webapp on 127.0.0.1:3901, never the running stack), then checks that the boot backfill copied the tunnel and capture rows in force, that the readers answer the instance row, that an admin's TrafficMind and tunnel changes through `/api/admin/instance-settings` reach the proxy config and are mirrored into their source user rows (the 7.7.x reading), that the user settings PUT refuses a real change with 409, that the `tunnels` legacy holder changes the tunnel but not the capture policy, that the audit names no credential and that the tunnel sync refuses a call without the sandbox's bearer. It needs a `redamon-webapp:latest` with the step and SKIPs otherwise.
+`tests/rbac_instance_settings_live.sh` checks the instance settings (step 2.4) on a disposable instance: it starts `tests/rbac_upgrade_live.sh serve tunnel_rows` with `RBAC_IDENTITY_ENABLED=true` (its own Postgres and webapp on 127.0.0.1:3901, never the running stack), then checks that the boot backfill copied the tunnel and capture rows in force, that the readers answer the instance row, that an admin's TrafficMind change through `/api/admin/instance-settings` reaches the proxy config and is mirrored into its source user row (the 7.7.x reading), that tunnels are per person (the instance tunnel's "off" is taken but never mirrored into the source row and never pushed anywhere; a credential change there is refused, 409 `tunnels_per_person`), that the user settings PUT refuses a real change with 409, that the `tunnels` legacy holder passes the instance tunnel's gate but changes neither its credentials nor the capture policy, that the audit names no credential and that the removed tunnel-sync route is gone (a signed-in admin's POST finds no route, an anonymous one is refused). It needs a `redamon-webapp:latest` with the step and SKIPs otherwise.
 
 `tests/rbac_root_live.sh` checks the Root (step 2.5) on the same disposable instance, scenario `several_admins`, with `RBAC_IDENTITY_ENABLED=true` and then off. Switch on: the boot chose the oldest admin with a password, automatic and unconfirmed, with one `system.rbac_root_assigned` row; `/api/auth/me` gives each account its type and every admin the unconfirmed Root (the header banner's data); another admin's demote, edit, disable, password reset, sign-out, act-as and delete of Root each answer 403 `root_protected`, change nothing and are audited; Root's own deletion is the 400 every account gets and its own demotion is refused; `set-root` in the instance's webapp confirms it without signing anyone out, and the admins' answer then reads confirmed. Switch off: the Root is still chosen, but `/api/auth/me` and the routes answer as after Phase 1 and nothing is refused. It needs a `redamon-webapp:latest` with the step and SKIPs otherwise.
 

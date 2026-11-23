@@ -33,7 +33,7 @@ of RedAmon.
 
 | Layer | Name | What it is | Where it runs | Writes graph nodes? |
 |---|---|---|---|---|
-| **L3** | Agent tools | On-demand tools the AI agent calls mid-engagement | `kali-sandbox` (OSV) + `recon-orchestrator` -> analyzer (GuardDog) | No - returns text to the agent |
+| **L3** | Agent tools | On-demand tools the AI agent calls mid-engagement | the person's Kali sandbox (OSV) + `recon-orchestrator` -> analyzer (GuardDog) | No - returns text to the agent |
 | **L1** | Supply-Chain Scan | Standalone audit of an uploaded SBOM / lockfile | `redamon-supply-chain-PID` (spawned) | Yes - `Package`, `MalPackageFinding` |
 | **L2** | Supply-Chain Recon | Black-box harvest of a live target's served packages | `redamon-recon-PID` (recon GROUP 5.5) | Yes - `Package`, `MalPackageFinding` |
 
@@ -86,7 +86,7 @@ flowchart TB
     end
 
     subgraph L3Z[L3 agent tools]
-      KALI[kali-sandbox - execute_osv_scanner only]
+      KALI[person's Kali sandbox - execute_osv_scanner only]
     end
 
     UI -->|start scan / upload SBOM| ORCH
@@ -168,7 +168,7 @@ scan-spawn path**, TTL-guarded:
 | Full recon (`start_recon`) | Yes - the L2 module runs in GROUP 5.5 |
 | Partial recon | Only for `tool_id == SupplyChainRecon` |
 | L1 Supply-Chain scan (`start_supply_chain`) | Yes |
-| L3 agent tools | No - `execute_osv_scanner` runs in `kali-sandbox`, deliberately off the orchestrator network, so it rides the L1/L2 refreshes. `execute_guarddog` is behavioural and does not read the OSV DB at all. |
+| L3 agent tools | No - `execute_osv_scanner` runs in the person's Kali sandbox (the OSV volume mounted read-only at `/osv-db`), deliberately off the orchestrator network, so it rides the L1/L2 refreshes. `execute_guarddog` is behavioural and does not read the OSV DB at all. |
 
 Semantics:
 
@@ -468,7 +468,7 @@ They run in **two different lanes**, split by trust, not by convenience:
 ```mermaid
 sequenceDiagram
     participant AG as AI Agent
-    participant KALI as kali-sandbox (MCP)
+    participant KALI as person's Kali sandbox (MCP)
     participant WEB as webapp (internal passthrough)
     participant ORCH as recon-orchestrator (holds Docker socket)
     participant OSVDB as redamon-osv-db (ro)
@@ -800,7 +800,7 @@ flowchart TB
       RECON[redamon-recon-PID - CLEAN]
       AN[redamon-supply-chain-analyzer - DIRTY, isolated net]
     end
-    KALI[kali-sandbox - L3 MCP tools]
+    KALI[person's Kali sandbox - L3 MCP tools]
 
     WEBAPP -->|writes SBOM| UPL
     WEBAPP -->|start/stop/status/logs| ORCH
@@ -822,11 +822,11 @@ flowchart TB
 | `redamon-supply-chain-PID` (L1) | CLEAN | spawned per scan, auto-removed | Yes | ro | host (reach Neo4j at `localhost:7687`) |
 | `redamon-recon-PID` (L2) | CLEAN | spawned per recon scan | Yes | ro (mounted at spawn) | host |
 | `redamon-supply-chain-analyzer` | DIRTY | `docker run` per GuardDog call (L2 deep analysis, and L3 `execute_guarddog`) | **No** | ro | registry egress required; `cap_drop=ALL`, read-only rootfs, non-root uid 1001, pid/mem caps |
-| `kali-sandbox` (L3) | tool | long-lived | no (uses scoped tokens) | ro | internal |
+| `redamon-kali-<key>-<instance>` (L3, one per person) | tool | started on first need, stopped when idle | no (its own random tokens) | ro (`/osv-db`) | the person's own sandbox network |
 
 Build-time: the two supply-chain images build under `--profile tools`
 (`redamon-supply-chain`, `redamon-supply-chain-analyzer`); `osv-scanner` is baked
-into `recon` and `kali-sandbox`; `supply_chain_common` is **mounted** (hot-reload,
+into the `recon` and Kali sandbox images; `supply_chain_common` is **mounted** (hot-reload,
 no rebuild) into recon / scan / analyzer at spawn.
 
 ---
@@ -944,7 +944,7 @@ only an OSV `MAL-` id is.
 - **GuardDog in L1** (`scanners/supply_chain_scan/deep_analysis.py`): the scan container now does
   get the **broker** socket and `DOCKER_HOST`, the same narrow privilege recon already
   had, so it can dispatch to the dirty analyzer without a raw Docker socket.
-- **GuardDog from L3 in practice**: it no longer runs from `kali-sandbox` at all. The
+- **GuardDog from L3 in practice**: it never runs in a Kali sandbox. The
   agent calls the orchestrator (`POST /supply-chain/guarddog`), which holds the Docker
   socket, so the least-trusted target-facing worker never touches Docker. See the
   trust-boundary section of [README.TM.SYSTEM_OVERVIEW.md](README.TM.SYSTEM_OVERVIEW.md).

@@ -1211,7 +1211,7 @@ for p in \$(seq "\$FIRST" "\$LAST"); do
 done
 if [ "\$failed" -eq 0 ]; then
   success "pool ports \${UFW_PORT} OPEN on \${PRIMARY_IP} (scoped to \${REVSHELL_TARGET_CIDRS}) -> 127.0.0.1 (each person's Kali sandbox)"
-  info "Each person's LPORT is their own sandbox's pool port, shown in their Sessions panel; LHOST is this host's public IP."
+  info "Each person's LPORT is their own sandbox's pool port, which the agent names in its LHOST/LPORT hint; LHOST is this host's public IP."
   warn "Run './deploy.sh revshell-close' when the engagement ends. A reboot also auto-closes it."
 else
   run_sudo journalctl -u 'redamon-revshell-*' -n 20 --no-pager 2>/dev/null || true; exit 1

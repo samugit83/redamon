@@ -50,7 +50,8 @@ workflow, that is a Community Chat Skill (different flow).
   endpoint auto-discovers by globbing the directory. Drop the file and it is live
   on the next call. (This is the exception to "agentic/ changes need a rebuild" -
   that applies to baked Python, not the mounted skills dirs.) A skill that needs a
-  NEW kali CLI is not rebuild-free: rebuild kali-sandbox AND agent.
+  NEW kali CLI is not rebuild-free: rebuild the Kali image (`docker compose --profile tools
+  build kali-sandbox`; running sandboxes move to it once their work ends) AND the agent.
 - **NEVER write a description that overlaps a built-in skill.** Imported skills
   compete with built-ins in the Intent Router; a generic or overlapping opening
   paragraph means the classifier never selects it. Make the first paragraph and

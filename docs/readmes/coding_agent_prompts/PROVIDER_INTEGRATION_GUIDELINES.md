@@ -2,7 +2,7 @@
 
 > Audience: an AI coding agent (or a human engineer) preparing a PR that adds a **brand-new LLM provider** to RedAmon end-to-end.
 >
-> Read this entire document before you touch a single file. The integration is **cross-stack** (Next.js + React + Prisma + FastAPI + LangChain + the recon pipeline + the kali-sandbox/redagraph/MCP layer + the CypherFix orchestrators). Skipping any one section will produce a half-wired provider that appears in the dropdown but silently fails on certain features.
+> Read this entire document before you touch a single file. The integration is **cross-stack** (Next.js + React + Prisma + FastAPI + LangChain + the recon pipeline + the Kali sandbox/redagraph/MCP layer + the CypherFix orchestrators). Skipping any one section will produce a half-wired provider that appears in the dropdown but silently fails on certain features.
 
 ---
 

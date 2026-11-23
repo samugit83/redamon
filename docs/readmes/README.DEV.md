@@ -194,7 +194,8 @@ settings fetch.
 |---------|--------|---------|
 | **`redamon`** (`redamon-network`) | bridge (default) | Inter-service communication for webapp, agent, worker, databases |
 | **`orchestrator-net`** (`redamon-orchestrator-net`) | bridge | **Isolation network** for the privileged recon-orchestrator. Shared only with the webapp (multi-homed) and the on-demand Ollama judge, so a compromised worker cannot reach the orchestration API. |
-| **`pentest-net`** | 172.28.0.0/16 | Isolated scanning network — Kali sandbox, MCP tools, and target containers (guinea pigs) |
+| **`pentest-net`** (`<project>_pentest-net`) | 172.28.0.0/16 | Isolated scanning network — the capture proxy and target containers (guinea pigs). No default compose service sits on it, so `redamon.sh` creates it as compose would (`_ensure_pentest_net`, in install, up, up dev and update) and purge removes it |
+| **`redamon-sbx-<key>`** | one `/28` of `10.214.0.0/16` each | One per person and view, created and removed at run time by the recon orchestrator (`recon_orchestrator/sandbox_manager.py`): that person's Kali sandbox instances, the agent (alias `agent`) and the capture proxy, both attached with packet forwarding off. Not internal: the tools need NAT egress. A lab is connected to it by hand with `docker network connect` ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)) |
 | **`codefix-net`** (`redamon-codefix-net`) | bridge, auto subnet | CodeFix build sandboxes only: NAT egress so builds can fetch dependencies, and no RedAmon service on it. The orchestrator creates it on demand |
 | **`plugins-net`** (`redamon-plugins-net`) | bridge, `internal` | Plugin platform only: the plugin runner and the plugin-gateway proxy. No route out |
 | **`plugins-edge`** (`redamon-plugins-edge`) | bridge, `internal` | Plugin platform only: the plugin-gateway proxy and the webapp, which joins it through `docker-compose.plugins.yml` |
@@ -202,9 +203,10 @@ settings fetch.
 > **Worker isolation.** The `recon-orchestrator` holds the Docker socket and is
 > the privileged component. It is **not** on `redamon`; it sits alone on
 > `orchestrator-net` with only the webapp and the Ollama judge, and its host port
-> is bound to `127.0.0.1`. The `kali-sandbox` worker therefore has no path to it
-> (DNS `NXDOMAIN` + the gateway back-door is closed). The worker is not given the
-> `INTERNAL_API_KEY`, so a compromised worker holds no master credential. The
+> is bound to `127.0.0.1`. A Kali sandbox, which sits only on its own
+> `redamon-sbx-<key>` network, therefore has no path to it (DNS `NXDOMAIN` + the
+> gateway back-door is closed). A sandbox is not given the `INTERNAL_API_KEY` or any
+> other service key, so a compromised sandbox holds no master credential. The
 > recon containers the orchestrator spawns receive a filtering broker socket
 > (not the raw Docker socket), so they can only create the known tool images and
 > cannot mount the host filesystem or run privileged.
@@ -229,7 +231,7 @@ Every service in `docker-compose.yml`; host ports are the defaults of their `${.
 | `kb-refresh` | redamon-kb-refresh | — | Opt-in knowledge-base refresher on the agent image (profile: kb-refresh) |
 | `recon-orchestrator` | redamon-recon-orchestrator | 8010 (127.0.0.1) | Spawns the recon, GVM, GitHub-hunt, TruffleHog, supply-chain and AI-surface containers via Docker SDK |
 | `docker-broker` | redamon-docker-broker | internal | Filtering Docker socket proxy the spawned recon containers get instead of the raw socket |
-| `kali-sandbox` | redamon-kali | 8000, 8002–8005 (127.0.0.1) | The five MCP tool servers (network-recon, nuclei, metasploit, nmap, playwright; `SERVERS` in `mcp/servers/run_servers.py`); also the progress streams (8013, 8014), ngrok API (4040) and tunnel manager (8015) on 127.0.0.1, the terminal (8016) on the Docker network only, and 4444 open for direct reverse shells |
+| `kali-sandbox` | (profile: tools; image `redamon-kali-sandbox:latest`) | — | The Kali image, built, never started by compose. The recon orchestrator starts one container from it per person and view, `redamon-kali-<key>-<instance>`, on that person's own network: the five MCP tool servers (network-recon, nuclei, metasploit, nmap, playwright; `SERVERS` in `mcp/servers/run_servers.py`) on 8000 and 8002–8005, the progress streams (8013, 8014), the tunnel manager (8015), the terminal (8016), ngrok's API (4040, loopback) and the reverse-shell listener. None is published, except one port per sandbox from `KALI_SANDBOX_PORT_POOL` when set ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)) |
 | `postgres` | redamon-postgres | 5432 (127.0.0.1) | PostgreSQL database |
 | `neo4j` | redamon-neo4j | 7474, 7687 (127.0.0.1) | Neo4j graph database |
 | `gvmd` | redamon-gvm-gvmd | internal | GVM daemon (vulnerability scanner) |
@@ -514,7 +516,7 @@ The agent is an autonomous AI pentester built on **LangGraph** implementing the 
 
 The orchestrator is built as a LangGraph graph with these nodes:
 
-- **`initialize_node`** — Sets up the LLM, loads project settings, establishes MCP connections to the Kali sandbox.
+- **`initialize_node`** — Sets up the LLM and loads project settings. The Kali MCP servers are reached only when a tool first needs them, in the sandbox of the run's person.
 - **`think_node`** — LLM reasoning step. Outputs either a tool call, a multi-step plan, or a text response.
 - **`execute_tool_node`** — Runs the selected tool and records the result. Supports parallel execution of independent tools via `asyncio.gather()`.
 - **`execute_plan_node`** — Executes a multi-step plan the LLM has produced.
@@ -537,7 +539,7 @@ Phase transitions happen automatically — the agent classifies its own actions 
 
 **Tool execution:**
 
-- **MCP tools** — Security tools (Network Recon, Nuclei, Metasploit, Nmap, Playwright) run in the `kali-sandbox` container and are accessed via the MCP protocol through `langchain-mcp-adapters`. Each server has its own URL in the agent's environment (`MCP_NETWORK_RECON_URL` is `http://kali-sandbox:8000/sse`, and so on for `MCP_NUCLEI_URL`, `MCP_METASPLOIT_URL`, `MCP_NMAP_URL`, `MCP_PLAYWRIGHT_URL`).
+- **MCP tools** — Security tools (Network Recon, Nuclei, Metasploit, Nmap, Playwright) run in the Kali sandbox of the person the run belongs to (the run's actor, never the project's owner) and are accessed via the MCP protocol through `langchain-mcp-adapters`. `agentic/sandbox_router.py` asks the webapp gateway for that person's sandbox (the orchestrator starts it on first need), takes a lease for the run, and keeps one MCP client per sandbox instance with that instance's own address and bearer token. See [README.KALI_SANDBOX.md](README.KALI_SANDBOX.md).
 - **Native tools** — Neo4j Cypher queries (text-to-Cypher via LLM), Tavily web search, Shodan API, and Google Dork are implemented directly in Python within `tools.py`.
 
 **WebSocket streaming:**
@@ -677,7 +679,7 @@ All REST endpoints live in `webapp/src/app/api/`. The main route groups:
 | Agent | `http://agent:8080` |
 | Recon Orchestrator | `http://recon-orchestrator:8010` (reachable **only from the webapp** — on `orchestrator-net`, not `redamon`) |
 | Webapp | `http://webapp:3000` (the orchestrator reaches it via its own `WEBAPP_API_URL` for RoE/guardrail pre-flight) |
-| Kali Sandbox (MCP) | `http://kali-sandbox:8000/sse` (requires `Authorization: Bearer $MCP_AUTH_TOKEN`) |
+| Kali Sandbox (MCP) | `http://redamon-kali-<key>-<instance>:8000/sse` and the other server ports, one container per person, resolvable only on that person's `redamon-sbx-<key>` network; each instance checks its own random bearer token. The agent gets both from the webapp gateway |
 | Neo4j | `bolt://neo4j:7687` |
 | PostgreSQL | `postgresql://redamon:<POSTGRES_PASSWORD>@postgres:5432/redamon` (password from `.env`, generated on fresh install) |
 | Plugin runner | `http://plugin-gateway:7072` (`PLUGIN_RUNNER_URL`: the supervisor, through the proxy, over `plugins-edge`) |
@@ -764,7 +766,7 @@ cp docker-compose.dev.yml docker-compose.override.yml
 docker compose --profile tools build
 
 # Start core services (without GVM):
-docker compose up -d postgres neo4j recon-orchestrator kali-sandbox agent webapp
+docker compose up -d postgres neo4j recon-orchestrator agent webapp
 
 # Or start all services (with GVM):
 docker compose up -d
@@ -799,9 +801,9 @@ This is the most important table for day-to-day development. It tells you exactl
 | `recon_orchestrator/**/*.py` | `docker compose restart recon-orchestrator` | The source is mounted (`./recon_orchestrator:/app`) but uvicorn runs without `--reload` (`recon_orchestrator/Dockerfile`), so the process keeps the old code until it restarts; `update` restarts it |
 | `recon/**/*.py` | **Nothing** for the next scan; `docker compose restart recon-orchestrator` for `recon/project_settings.py` or `recon/settings_registry.py` | Each scan container gets the host's `recon/` bind-mounted; the orchestrator imports those two files for `/defaults`. `update` also rebuilds the recon image, whose baked copy runs where the orchestrator cannot resolve the host path (Docker Desktop / WSL2) |
 | `recon_settings/**` | `python3 recon_settings/build.py`, then rebuild the agent and the webapp, `docker compose --profile tools build recon ai-attack-surface`, and `docker compose restart recon-orchestrator` | `build.py` rewrites the generated copies (one under `webapp/`). The agent bakes `recon_settings/` and refuses every RoE upload with a 503 once its registry digest differs; the recon image bakes a fallback copy; the ai-attack-surface image bakes the only copy its target loader reads (the IP-mode hostname rule), since its spawn mounts no `recon_settings/` (`scanners/ai_attack_surface_scan/Dockerfile`); the orchestrator loads its read-only mount at start. `update` does all of it |
-| `mcp/servers/**/*.py` | `docker compose restart kali-sandbox` | Mounted over the baked copy (`./mcp/servers:/opt/mcp_servers`); the servers load their modules at startup |
-| `mcp/kali-sandbox/**`, `mcp/requirements.txt` | `docker compose build kali-sandbox && docker compose up -d kali-sandbox` | Baked into the kali image (pip constraints, the adkc helpers, the motd, the entrypoint); `update` rebuilds it |
-| `graph_db/**/*.py` | `docker compose build agent && docker compose up -d agent`, `docker compose restart recon-orchestrator`, and `docker compose restart kali-sandbox` for `resource_governor.py` | The agent image bakes its own copy: every agent graph read and the Mute Rules preview and apply run from it. The orchestrator imports `Neo4jClient` from its read-only mount, and kali's terminal server imports `graph_db.resource_governor` from its mount. Scan containers get `graph_db` bind-mounted. `update` rebuilds the agent, restarts the orchestrator and rebuilds the recon, vuln-scanner and github-secret-hunter images (their baked copy is the fallback), but does not restart kali |
+| `mcp/servers/**/*.py` | **Nothing** | Every Kali sandbox mounts them read-only at `/opt/mcp_servers` and its servers load their modules at startup. The orchestrator fingerprints the folder (the `redamon.sandbox.servers` label): at its next idle check (every 60 s) a running sandbox on older server code is marked draining, stops once its leases end, and the next use starts a new instance on the new code |
+| `mcp/kali-sandbox/**`, `mcp/requirements.txt` | `docker compose --profile tools build kali-sandbox` | Baked into the kali image `redamon-kali-sandbox:latest` (pip constraints, the adkc helpers, the motd, the entrypoint); a running sandbox on an older image id drains onto the new one the same way. `update` rebuilds it |
+| `graph_db/**/*.py` | `docker compose build agent && docker compose up -d agent` and `docker compose restart recon-orchestrator` | The agent image bakes its own copy: every agent graph read and the Mute Rules preview and apply run from it. The orchestrator imports `Neo4jClient` from its read-only mount, and kali's terminal server imports `graph_db.resource_governor` from each sandbox's read-only `/opt/graph_db` mount when the sandbox starts, so a running sandbox loads a change at its next start (after it stops idle, or a Stop in the admin Operations view). Scan containers get `graph_db` bind-mounted. `update` rebuilds the agent, restarts the orchestrator and rebuilds the recon, vuln-scanner and github-secret-hunter images (their baked copy is the fallback) |
 | `graph_db/node_filters/catalog.yaml` | `python3 graph_db/node_filters/build.py`, then rebuild the agent | The Mute Rules catalog is compiled into `graph_db/node_filters/catalog.json` (the engine) and `webapp/src/lib/nodeFilters/catalog.json` (the page). Editing the YAML alone changes nothing, and the unit gate's `build.py --check` fails on a stale copy |
 | `services/knowledge_base/**` | `docker compose build agent && docker compose up -d agent` (only `docker compose restart agent` for `kb_config.yaml`) | The package is COPY-baked into the agent image; `kb_config.yaml` is mounted over it. A running `kb-refresh` (same image) is not recreated by `update`: `docker compose --profile kb-refresh up -d kb-refresh` |
 | `services/docker_broker/**` | `docker compose build docker-broker && docker compose up -d docker-broker` | `broker.py` is baked into the image; `update` rebuilds it |
@@ -835,7 +837,9 @@ docker compose logs --tail=200 agent            # Last 200 lines
 # ─── Shell Access ────────────────────────────────────────────────────────
 docker compose exec agent bash                  # Shell into agent container
 docker compose exec webapp sh                   # Shell into webapp (Alpine, no bash)
-docker compose exec kali-sandbox bash           # Shell into Kali sandbox
+docker ps --filter label=redamon.sandbox=1 \
+  --format '{{.Names}}  {{.Label "redamon.sandbox.user"}}'  # Kali sandboxes and their person
+docker exec -it redamon-kali-<key>-<instance> bash  # Shell into one person's Kali sandbox
 docker compose exec postgres psql -U redamon    # PostgreSQL interactive shell
 
 # ─── Rebuild ─────────────────────────────────────────────────────────────
@@ -861,7 +865,6 @@ docker compose exec postgres psql -U redamon -c "SELECT * FROM \"Project\" LIMIT
 # ─── Service Management ─────────────────────────────────────────────────
 docker compose ps                               # Check all container statuses
 docker compose build agent && docker compose up -d agent  # Rebuild agent (code baked into image)
-docker compose restart kali-sandbox              # Restart kali-sandbox (code volume-mounted)
 docker compose down && docker compose up -d     # Full restart (preserves data)
 docker compose down -v && docker compose up -d  # DANGER: deletes ALL data (volumes)
 
@@ -1122,7 +1125,7 @@ ps aux | grep uvicorn
 |---------|-------|-----|
 | Container keeps restarting | Missing Python package or import error | Check logs: `docker compose logs agent --tail=50`, then fix the import and rebuild if needed |
 | WebSocket connection refused | Agent not ready yet | Wait a few seconds; check logs for "Uvicorn running" |
-| Tool execution timeout | MCP server (Kali sandbox) not responding | `docker compose restart kali-sandbox`, then `docker compose restart agent` |
+| Tool execution timeout | MCP server in the person's Kali sandbox not responding | Find it with `docker ps --filter label=redamon.sandbox.user=<user-id>` and read `docker logs <container>`; stop it in the admin **Operations** view (Kali sandboxes, **Stop**), and the next Kali call starts a new one |
 | "Settings fetch failed" | Webapp not reachable from agent | Ensure webapp is running: `docker compose ps webapp` |
 | LLM API error (401/429) | Invalid or rate-limited API key | Check/update API key in webapp `/settings` |
 
@@ -1198,8 +1201,10 @@ You do not write a `.env` by hand: `./redamon.sh install` creates it with the ge
 These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if needed. The table is a selection, the variables a developer meets first. [`.env.example`](../../.env.example) holds the optional knobs an operator tunes, each with its comment (the memory governor and resource caps, the KB embedding API, the RBAC switches, the inbound MCP server, Agent in the Loop, the plugin platform and more), and names the generated secrets in its header; `tests/test_env_example_keys.py` checks that each key it sets is forwarded by a compose file or read by `redamon.sh`. It is not the full list: the compose files (`docker-compose.yml`, `docker-compose.dev.yml`, `docker-compose.plugins.yml`) read over a hundred more `${VAR}` names, among them every variable in the table below, internal defaults, per-service caps and lab hooks. Each of those has its fallback in the compose file, which is where to look one up, except `POSTGRES_PASSWORD` and `NEO4J_PASSWORD`, which have none and which `redamon.sh` generates.
 
 > **Secrets are auto-generated on install (since 5.3.1).** `redamon.sh` writes
-> strong random values for `POSTGRES_PASSWORD`, `NEO4J_PASSWORD` and
-> `MCP_AUTH_TOKEN` into `.env` on a **fresh** install (and warns, without
+> strong random values for `POSTGRES_PASSWORD`, `NEO4J_PASSWORD`,
+> `MCP_AUTH_TOKEN` and `TUNNEL_AUTH_TOKEN` into `.env` on a **fresh** install (the
+> last two are read by nothing, since every Kali sandbox gets its own random pair; they
+> stay because the single-host deploy's secrets gate checks them) (and warns, without
 > changing anything, if an existing DB volume is still on the old default). The
 > `${VAR:-default}` fallbacks below are only used when the variable is left
 > unset — they are **not** the value a normal install runs with.
@@ -1213,7 +1218,7 @@ These use Docker Compose's `${VAR:-default}` syntax. Override them in `.env` if 
 | `POSTGRES_PASSWORD` | *(required, no fallback; Postgres refuses to start if unset)* | PostgreSQL password, **auto-generated on fresh install** |
 | `POSTGRES_DB` | `redamon` | PostgreSQL database name |
 | `NEO4J_PASSWORD` | *(required, no fallback; Neo4j refuses to start if unset)* | Neo4j password, **auto-generated on fresh install** |
-| `MCP_AUTH_TOKEN` | *(required; empty ⇒ MCP servers fail closed / reject)* | Bearer token the agent presents to the Kali MCP servers, **auto-generated on fresh install** |
+| `MCP_AUTH_TOKEN` | *(empty)* | **Auto-generated on fresh install** and read by nothing (the agent's compose environment blanks it): each Kali sandbox has its own random bearer token, which the agent gets from the webapp gateway. Kept for the single-host deploy's secrets gate |
 | `POSTGRES_PORT` | `5432` | Host port for PostgreSQL (bound to `127.0.0.1`) |
 | `NEO4J_HTTP_PORT` | `7474` | Host port for Neo4j Browser UI (bound to `127.0.0.1`) |
 | `NEO4J_BOLT_PORT` | `7687` | Host port for Neo4j Bolt protocol (bound to `127.0.0.1`) |
@@ -1236,7 +1241,7 @@ After turning `RBAC_PERMISSIONS_ENABLED` on or off, also run `docker compose res
 | `RBAC_SHARING_WRITE_ENABLED` | `true` (written by `redamon.sh`) | Read + Write sharing and its toggles, consent, transfer, the deletion wizard, conversation sharing | `RBAC_SHARING_ENABLED` |
 | `RBAC_GOVERNANCE_ENABLED` | `true` (written by `redamon.sh`) | The IAM console, quotas, per-plugin allowlists, device sessions, instance providers | `RBAC_PERMISSIONS_ENABLED` |
 
-`RBAC_IDENTITY_ENABLED` turns on Root, account status, invites and reset links, forced password changes, the password policy, email step-up, the session lifetimes and the instance settings (the tunnel and TrafficMind as one row). Its data is ready before it is turned on: the boot backfills `backfill-rbac-instance-settings.mjs` (copies the tunnel and capture values in force from the account rows, again at every boot while the switch is off) and `backfill-rbac-root.mjs` (picks an unconfirmed Root among the admins with a password) run whatever the switch, after `db push` in both startup lists, never fatal. Four things also run whatever the switch: the session-version comparison (only the host commands raise the version while it is off), the tunnel sync's `TUNNEL_AUTH_TOKEN` bearer, the enable route, and the same-origin JSON check of the identity routes. `./redamon.sh update` confirms Root only with it on in `.env`; `./redamon.sh set-root <email>` works either way. Turning it off again is the roll-back: the account rows are the truth again, and an account disabled meanwhile stays disabled until an admin enables it (the enable route works with the switch off) or a host reset re-enables it.
+`RBAC_IDENTITY_ENABLED` turns on Root, account status, invites and reset links, forced password changes, the password policy, email step-up, the session lifetimes and the instance settings (the tunnel and TrafficMind as one row). Its data is ready before it is turned on: the boot backfills `backfill-rbac-instance-settings.mjs` (copies the tunnel and capture values in force from the account rows, again at every boot while the switch is off) and `backfill-rbac-root.mjs` (picks an unconfirmed Root among the admins with a password) run whatever the switch, after `db push` in both startup lists, never fatal. Three things also run whatever the switch: the session-version comparison (only the host commands raise the version while it is off), the enable route, and the same-origin JSON check of the identity routes. `./redamon.sh update` confirms Root only with it on in `.env`; `./redamon.sh set-root <email>` works either way. Turning it off again is the roll-back: the account rows are the truth again, and an account disabled meanwhile stays disabled until an admin enables it (the enable route works with the switch off) or a host reset re-enables it.
 
 `RBAC_PERMISSIONS_ENABLED` turns on the stored permissions: the member permission sets, the overrides and the admin profiles count, the management routes (`/api/admin/permission-sets`, `/api/admin/admin-profiles`, `/api/users/[id]/permissions`) answer instead of 404, the Users page offers **Permissions**, invites and creates accept `sets`, MCP tokens are capped by their owner's permissions, and act-as follows the impersonation rules (reason, duration, password, banner, never-list). With it off every account resolves to its account type's default, which is exactly the behaviour before the switch, so the route checks (every route asks `can()` whatever the switch) answer as before: the live matrix's `baseline p1 p2` files give the same results with it on and off while every member is on *Default member*. Its one boot step, `backfill-rbac-legacy-overrides.mjs` (after `backfill-rbac-root.mjs` in both startup lists), runs only with it on: it turns the legacy grants an admin kept into 90-day overrides and lets the undecided ones lapse, once, under the legacy-grant lock. Turning it off is the roll-back: the rows stay and are ignored, and the legacy grants count again.
 
@@ -1347,6 +1352,7 @@ All deep-dive documentation lives in the `docs/readmes/` folder alongside this f
 | Document | What it covers |
 |----------|----------------|
 | [README.MCP.md](README.MCP.md) | The five MCP tool servers in the Kali sandbox (Network Recon, Nuclei, Metasploit, Nmap, Playwright) |
+| [README.KALI_SANDBOX.md](README.KALI_SANDBOX.md) | The per-person Kali sandboxes: contract, mounts, network, memory admission, lifecycle, leases, the orchestrator, gateway and agent routes |
 | [README.MCP.SERVER.md](README.MCP.SERVER.md) | RedAmon as an inbound MCP server: external agents connecting with a personal access token |
 | [README.WEBAPP.md](README.WEBAPP.md) | Webapp architecture, component tree, page structure |
 | [README.GRAPH_DB.md](README.GRAPH_DB.md) | Neo4j graph utilities |

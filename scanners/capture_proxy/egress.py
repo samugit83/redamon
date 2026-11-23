@@ -3,8 +3,9 @@ Capture-proxy egress guard (plan §15.3, §20.5).
 
 A new proxy is a new egress path, so it must not become an SSRF pivot into
 RedAmon's internal network or a hard-guardrail bypass. This module is the pure,
-testable core of that guard; the mitmdump addon calls it in the `request` hook
-and blocks anything it refuses.
+testable core of that guard; the mitmdump addon calls it for every request (the
+`request` hook) and again for every upstream dial (`server_connect`, which also
+covers CONNECT tunnels and the DNS layer), and blocks anything it refuses.
 
 Two layers:
   1. Internal denylist on the RESOLVED IP (not just the hostname) — RFC1918,

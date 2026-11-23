@@ -8,10 +8,11 @@ Integrate **[TOOL_NAME]** into the RedAmon agentic system.
 
 - **Python import safety**: The `agent` container has source code baked into the Docker image. Adding a new Python `import` that isn't already installed in the container image will **crash-loop** the agent. Before importing any package, verify it exists in `agentic/requirements.txt` or the `agentic/Dockerfile`. If it's missing, add it and rebuild: `docker compose build agent`.
 - **Don't break existing tools**: Adding a new tool must NOT modify the behavior, arguments, or output format of any existing tool. If you change a shared file (e.g., `tools.py`, `project_settings.py`), verify that all existing tools still work after your changes.
-- **Container rebuild rules**: MCP server code in `mcp/servers/` is volume-mounted and **hot-reloads** -- changes are live immediately. But agent Python code in `agentic/` is baked into the Docker image -- you MUST run `docker compose build agent && docker compose up -d agent` after any change there. Frontend changes require `docker compose build webapp`.
+- **Container rebuild rules**: MCP server code in `mcp/servers/` is mounted read-only into every person's Kali sandbox, and the recon orchestrator notices a change within a minute: each running sandbox drains, and its next use starts a fresh one on the new code (sandboxes that are not running pick it up when they start). But agent Python code in `agentic/` is baked into the Docker image -- you MUST run `docker compose build agent && docker compose up -d agent` after any change there. Frontend changes require `docker compose build webapp`.
+- **Kali work is routed per person.** The agent sends every Kali tool call to the sandbox of the person doing the work, through the executor's single chokepoint (`_execute_routed` in `agentic/tools.py`, over `agentic/sandbox_router.py`); a tool never names a fixed sandbox address. See [README.KALI_SANDBOX.md](../README.KALI_SANDBOX.md).
 - **Build/restart quick reference**:
-  - Changed `mcp/kali-sandbox/Dockerfile` → `docker compose build kali-sandbox && docker compose up -d kali-sandbox`
-  - Changed `mcp/servers/*.py` → `docker compose restart kali-sandbox`
+  - Changed `mcp/kali-sandbox/Dockerfile` → `docker compose --profile tools build kali-sandbox` (running sandboxes drain onto the new image by themselves)
+  - Changed `mcp/servers/*.py` → nothing to restart (running sandboxes drain onto the new code)
   - Changed `agentic/*.py` → `docker compose build agent && docker compose up -d agent`
   - Changed `webapp/prisma/schema.prisma` → `docker compose exec webapp npx prisma db push`
   - Changed `webapp/src/**` → `docker compose build webapp && docker compose up -d webapp`
@@ -62,7 +63,7 @@ The tool works well via `kali_shell` / `execute_code`. No dedicated MCP tool or 
 **What to change:**
 1. `mcp/kali-sandbox/Dockerfile` — Install tool if not already present
 2. `agentic/prompts/tool_registry.py` — Update `kali_shell` entry's `description` field to mention the new tool in the CLI tools list
-3. Rebuild kali-sandbox: `docker compose build kali-sandbox`
+3. Rebuild the Kali image: `docker compose --profile tools build kali-sandbox` (running sandboxes drain onto it)
 
 > **This is not only the in-app agent's catalogue any more.** The INBOUND MCP
 > server's `kali_toolbox` tool serves `TOOL_REGISTRY["kali_shell"]["description"]`
@@ -70,7 +71,7 @@ The tool works well via `kali_shell` / `execute_code`. No dedicated MCP tool or 
 > way an external agent runs anything at all. A binary you install but leave out of
 > that description does not exist as far as every MCP client is concerned. Nothing
 > tests this, so step 2 is the whole safeguard. Rebuild the **agent** as well as
-> kali-sandbox, since the registry is baked into the agent image.
+> the Kali image, since the registry is baked into the agent image.
 
 **Examples:** searchsploit, john, smbclient, sqlmap
 
@@ -112,8 +113,8 @@ Create a new MCP server file with its own port, process, and optionally a progre
 **What to change (full list in Phase 2 checklist):**
 1. `mcp/servers/[tool]_server.py` — New server file (follow `nmap_server.py` for simple, `metasploit_server.py` for stateful)
 2. `mcp/servers/run_servers.py` — Register in `SERVERS` dict with port
-3. `agentic/tools.py` — Add an `MCPServer` entry for the server to `_build_system_mcp_servers()` (its URL from `MCP_[TOOL]_URL`, with the shared `auth=_mcp_auth` bearer)
-4. Both `docker-compose.yml` files — Add `MCP_[TOOL]_URL` env var + expose port on kali-sandbox
+3. `agentic/tools.py` — Add a row for the server to `_SYSTEM_SERVERS` (id, name, description, read timeout). `_build_system_mcp_servers(host, token)` builds every row for one sandbox: `http://<sandbox>:<PORTS[id]>/sse` with that sandbox's bearer (called by `server_configs_for` in `agentic/sandbox_router.py`)
+4. The sandbox contract: in the two Python copies (`recon_orchestrator/sandbox_contract.py` and `agentic/sandbox_contract.py`, which `tests/test_sandbox_contract.py` keeps byte-identical), the port under the server's id in `PORTS`, in `CONTAINER_ENV_FIXED` when the server reads its port from the environment, and in `HEALTH_PROBE_PORTS` when a sandbox is not ready without it (then also in the test's pin of `HEALTH_PROBE_PORTS`, `test_healthcheck_probes_every_server_port`); and the id in the `SandboxPorts` interface of `webapp/src/lib/sandbox/contract.ts`, which no test compares with `PORTS`. No compose port: a sandbox publishes none
 5. Everything from Type B (registry, settings, frontend, `SYSTEM_MCP_TOOL_NAMES`, etc.)
 
 **Already-taken ports:** 8000 (network_recon), 8002 (nuclei), 8003 (metasploit), 8004 (nmap), 8005 (playwright), 8013 (msf progress), 8014 (hydra progress), 8015 (tunnel manager), 8016 (terminal). Next available: **8006**.
@@ -124,7 +125,7 @@ Create a new MCP server file with its own port, process, and optionally a progre
 
 **Type D: API/HTTP-Based Tool (for external services)**
 
-A Python wrapper around an external API. It runs inside the `agent` container, not `kali-sandbox`. The tool is **always registered**: it reads the key of the run it serves at call time (the project owner's key from Global Settings), and a run without a key gets a "not configured" answer instead of a call.
+A Python wrapper around an external API. It runs inside the `agent` container, not in a Kali sandbox. The tool is **always registered**: it reads the key of the run it serves at call time (the project owner's key from Global Settings), and a run without a key gets a "not configured" answer instead of a call.
 
 **When to use:**
 - Tool is an external API service (like Shodan, Tavily, SerpAPI)
@@ -222,7 +223,7 @@ The tool is always registered, and every call reads the key of the run it serves
 
 The tool **always works** without the key, but the key enriches results (e.g., vulnerability database access). The key is silently passed beside the args at execution time, and the sandbox hands it to that one child process through its environment (or a private per-call file), never its command line, which `ps` shows to every process in the shared sandbox and on the host -- the LLM never sees the key.
 
-**When to use:** The tool is a CLI binary in kali-sandbox (Type B/C MCP tool) that optionally accepts an API key (as a flag, an environment variable or a config file) but functions without it.
+**When to use:** The tool is a CLI binary in the Kali sandbox image (Type B/C MCP tool) that optionally accepts an API key (as a flag, an environment variable or a config file) but functions without it.
 
 **How it works:**
 1. Tool is always registered (MCP auto-discovery) -- availability does NOT depend on the key
@@ -291,8 +292,8 @@ Long-running tools (>60s typical) benefit from progress streaming. If needed, **
 2. `agentic/orchestrator_helpers/nodes/execute_plan_node.py` (`_execute_single_step()`) — **same duplicated logic** for parallel plan execution
 
 Both files need a new long-running detection check with the progress URL. Also:
-3. Create an HTTP progress endpoint in the MCP server (follow Hydra pattern in `network_recon_server.py`)
-4. Add `MCP_[TOOL]_PROGRESS_URL` env var in docker-compose files
+3. Create an HTTP progress endpoint in the MCP server (follow Hydra pattern in `network_recon_server.py`); it must check the sandbox's bearer like the others
+4. Give its port a name in the sandbox contract's `PORTS` (the two byte-identical Python copies; add the name to `SandboxPorts` in `webapp/src/lib/sandbox/contract.ts` too) and pass that name as `progress_port` to `execute_with_progress()` in both nodes, as `"hydra"` and `"sessions"` are: the address is the run's own sandbox (`kali_base_for_run` in `agentic/tools.py`)
 
 #### Step 8 — Check if tool manages sessions or listeners
 
@@ -329,9 +330,9 @@ The exact set of files depends on the integration type chosen in Phase 1.
 
 - [ ] **Type C**: Create `mcp/servers/[tool]_server.py`. Read `nmap_server.py` for simple tools or `metasploit_server.py` for stateful tools. Then:
   - Register in `mcp/servers/run_servers.py` `SERVERS` dict with module name and port (next available: 8006; 8000 and 8002-8005 are taken)
-  - Add an `MCPServer` entry to `_build_system_mcp_servers()` in `agentic/tools.py` — read the existing entries for the exact format (URL from `MCP_[TOOL]_URL`, timeouts, `auth=_mcp_auth`)
-  - Add `MCP_[TOOL]_URL` env var to **BOTH** `docker-compose.yml` (root: `http://kali-sandbox:PORT/sse`) and `agentic/docker-compose.yml` (`http://host.docker.internal:PORT/sse`)
-  - Expose port on kali-sandbox in root `docker-compose.yml`
+  - Add a row to `_SYSTEM_SERVERS` in `agentic/tools.py` — read the existing rows for the exact format (id, name, description, read timeout). `_build_system_mcp_servers(host, token)` builds it for each person's sandbox with that sandbox's address and bearer
+  - Add the port under the server's id to `PORTS` in the two Python contract copies (`recon_orchestrator/sandbox_contract.py`, `agentic/sandbox_contract.py`; `tests/test_sandbox_contract.py` fails until they are byte-identical), plus `CONTAINER_ENV_FIXED` if the server reads its port from the environment and `HEALTH_PROBE_PORTS` if a sandbox is not ready without it (and that tuple's pin in `test_healthcheck_probes_every_server_port`); add the id to `SandboxPorts` in `webapp/src/lib/sandbox/contract.ts` by hand, since no test compares it with `PORTS`
+  - Publish nothing: a sandbox has no host port, and the agent reaches it on the person's sandbox network
 
 #### API-Based Tool (Type D only)
 
@@ -357,7 +358,7 @@ For MCP tools that accept an optional API key (tool works without it, key enrich
 
 #### Kali Sandbox (if tool binary is not already installed)
 
-- [ ] **`mcp/kali-sandbox/Dockerfile`** — Install the tool. Read existing installation patterns in the Dockerfile (apt, pip, go install, wget binary). Rebuild: `docker compose build kali-sandbox`
+- [ ] **`mcp/kali-sandbox/Dockerfile`** — Install the tool. Read existing installation patterns in the Dockerfile (apt, pip, go install, wget binary). Rebuild: `docker compose --profile tools build kali-sandbox`
 
 #### Frontend: Tool Matrix (ALL types except A)
 
@@ -404,7 +405,7 @@ Replace `TOOL_NAME` with the tool name (e.g. `execute_httpx`) and `PHASE1`, `PHA
 - [ ] **MCP server** — Add progress tracking (read Hydra pattern in `network_recon_server.py`: thread-safe state, background subprocess, HTTP progress endpoint)
 - [ ] **`agentic/orchestrator_helpers/nodes/execute_tool_node.py`** (`execute_tool_node()`) — Add long-running detection and progress execution branch (read the existing `is_long_running_msf` / `is_long_running_hydra` checks as reference)
 - [ ] **`agentic/orchestrator_helpers/nodes/execute_plan_node.py`** (`_execute_single_step()`) — **DUPLICATE the same logic** (this file has copy-pasted tool execution for parallel plan mode)
-- [ ] **docker-compose files** — Add `MCP_[TOOL]_PROGRESS_URL` env var to agent service in both files
+- [ ] **Sandbox contract** — Name the progress port in `PORTS` (both Python copies, and `SandboxPorts` in `contract.ts`) and pass the name as `progress_port` to `execute_with_progress()` in both nodes; no compose file and no environment variable
 
 #### Session/Listener Registration (if tool creates reverse shells or listeners)
 
@@ -448,11 +449,11 @@ If the tool is the PRIMARY tool for a new built-in attack skill (like Hydra is f
 
 ### Phase 3: Verification
 
-1. **Build containers**: `docker compose build kali-sandbox` and/or `docker compose build webapp`
+1. **Build images**: `docker compose --profile tools build kali-sandbox` and/or `docker compose build webapp`
 2. **Push schema**: `docker compose exec webapp npx prisma db push`
-3. **Rebuild & restart services**: `docker compose build agent && docker compose up -d agent kali-sandbox` (agent code is baked into image -- rebuild is mandatory)
+3. **Rebuild & restart services**: `docker compose build agent && docker compose up -d agent` (agent code is baked into image -- rebuild is mandatory). Running Kali sandboxes drain onto the new image or server code by themselves; the next Kali call starts a fresh one
 4. **Check Tool Matrix**: Project settings > AI Agent > Tool Matrix — new tool should appear with phase checkboxes
-5. **Check MCP server**: `docker compose logs kali-sandbox` — tool's server should start without errors
+5. **Check MCP server**: after a first Kali call, find your sandbox with `docker ps --filter label=redamon.sandbox=1` (its `redamon.sandbox.user` label names you) and read `docker logs <container>` — the tool's server should start without errors
 6. **Test execution**: In agent chat, ask it to use the tool. Verify: correct phase availability, confirmation dialog if dangerous, output returned and truncated to `TOOL_OUTPUT_MAX_CHARS`
 7. **Test phase restrictions**: Use tool in a disabled phase — agent should refuse
 8. **Test RoE blocking** (if applicable): Enable RoE with the tool's category forbidden — verify blocked
@@ -467,7 +468,8 @@ If the tool is the PRIMARY tool for a new built-in attack skill (like Hydra is f
 |------|---------|---------------|
 | `agentic/prompts/tool_registry.py` | **TOOL_REGISTRY** — single source of truth for tool metadata and LLM descriptions | All types except A |
 | `agentic/project_settings.py` | **TOOL_PHASE_MAP**, **DANGEROUS_TOOLS**, default settings, `fetch_agent_settings()` | All types except A |
-| `agentic/tools.py` | **MCPToolsManager**, `_build_system_mcp_servers()` (system MCP server URLs), `SYSTEM_MCP_TOOL_NAMES`, **PhaseAwareToolExecutor** (dispatch + phase enforcement), API tool managers, the per-run key lookup (`run_user_settings`, `run_key_rotator`, `_SEARCH_KEY_FIELDS`), optional key injection | Types B/C (`SYSTEM_MCP_TOOL_NAMES`), Type C (server entry), Type D (manager + `_SEARCH_KEY_FIELDS` + dispatch), Type B/C with optional API key (elif branch) |
+| `agentic/sandbox_router.py` | Routes each Kali call to the sandbox of the person doing the work: `acquire`/`release` (leases), `client_for` (that sandbox's MCPToolsManager), `server_configs_for`, `url_for`/`headers_for` | Read only |
+| `agentic/tools.py` | **MCPToolsManager**, `_SYSTEM_SERVERS` (the system MCP servers' ids and timeouts) and `_build_system_mcp_servers(host, token)` (built per sandbox), `SYSTEM_MCP_TOOL_NAMES` (also what routes a call to a sandbox), `_execute_routed` (the chokepoint every system tool call goes through), **PhaseAwareToolExecutor** (dispatch + phase enforcement), API tool managers, the per-run key lookup (`run_user_settings`, `run_key_rotator`, `_SEARCH_KEY_FIELDS`), optional key injection | Types B/C (`SYSTEM_MCP_TOOL_NAMES`), Type C (server entry), Type D (manager + `_SEARCH_KEY_FIELDS` + dispatch), Type B/C with optional API key (elif branch) |
 | `agentic/orchestrator.py` | Orchestrator -- `_setup_tools()` builds the tool managers once, with no key; `_apply_project_settings()` binds the run's settings and writes no credential | Type D (manager construction in `_setup_tools()`) |
 | `agentic/prompts/base.py` | Dynamic prompt builders — **auto-reads TOOL_REGISTRY, no change needed** | Never |
 | `agentic/orchestrator_helpers/nodes/execute_tool_node.py` | Tool execution — progress streaming, session detection | If long-running or session-creating |
@@ -498,8 +500,7 @@ If the tool is the PRIMARY tool for a new built-in attack skill (like Hydra is f
 | `webapp/src/lib/rotationTools.ts` | `ROTATION_TOOLS` — the single Key Rotation tool list (page, settings PUT, template) | If the key supports rotation |
 | `webapp/src/lib/apiKeysTemplate.ts` | Bulk import/export JSON template — `ALLOWED_KEY_FIELDS`, `ALLOWED_TUNNEL_FIELDS` allowlists (rotation tools come from `rotationTools.ts`) | If tool needs API keys |
 | `webapp/src/lib/apiKeysTemplate.test.ts` | 82 unit tests for template generation and validation — field counts, round-trips, injection tests | If tool needs API keys (update counts) |
-| `docker-compose.yml` | Root compose — agent env vars, kali-sandbox ports | Type C |
-| `agentic/docker-compose.yml` | Dev compose — agent env vars | Type C |
+| `recon_orchestrator/sandbox_contract.py` (+ `agentic/sandbox_contract.py`, `webapp/src/lib/sandbox/contract.ts`) | Sandbox contract — `PORTS`, `CONTAINER_ENV_FIXED`, `HEALTH_PROBE_PORTS` of every person's sandbox | Type C |
 | `agentic/api.py` | Agent `/defaults` endpoint | If tool has configurable settings |
 
 #### Tool Execution Flow
@@ -531,9 +532,9 @@ Execution trace updated → Think Node loops back
 
 #### MCP Auto-Discovery (key insight for Types B/C)
 
-For Type B, adding a new `@mcp.tool()` to an existing server means it gets **auto-discovered** by `MCPToolsManager.get_tools()` — no dispatch change in `tools.py`. The tool name in `_tools_cache` matches the Python function name. This is why Type B requires fewer files than Type D.
+For Type B, adding a new `@mcp.tool()` to an existing server means it gets **auto-discovered** by `MCPToolsManager.get_tools()` — no dispatch change in `tools.py`. Each person's sandbox has its own manager (`client_for` in `agentic/sandbox_router.py`), and the executor finds the tool by name in that sandbox's list. The tool name matches the Python function name. This is why Type B requires fewer files than Type D.
 
-The one `tools.py` edit it still needs is its name in `SYSTEM_MCP_TOOL_NAMES`. Once a user MCP server is loaded, `register_mcp_tools()` keeps only the tools a user manifest declares plus that set, so a system tool missing from it is dropped ("Skipped registering ... not declared in any manifest") while the prompt still offers it, and every call answers "Tool not found". `agentic/tests/test_system_mcp_tool_coverage.py` fails on the gap.
+The one `tools.py` edit it still needs is its name in `SYSTEM_MCP_TOOL_NAMES`, and it carries more weight than it looks: that set is what makes the executor route a call to the person's sandbox at all (`routed = tool_name in SYSTEM_MCP_TOOL_NAMES` in `PhaseAwareToolExecutor.execute()`); a system tool left out never reaches a sandbox and answers "Tool not found". It also matters once a user MCP server is loaded: `register_mcp_tools()` keeps only the tools a user manifest declares plus that set, so a system tool missing from it is dropped ("Skipped registering ... not declared in any manifest") while the prompt still offers it, and every call answers "Tool not found". `agentic/tests/test_system_mcp_tool_coverage.py` fails on the gap.
 
 #### Naming Conventions
 
@@ -548,8 +549,8 @@ The one `tools.py` edit it still needs is its name in `SYSTEM_MCP_TOOL_NAMES`. O
 | Prisma setting field | camelCase | `niktoTimeout` |
 | Python setting key | SCREAMING_SNAKE_CASE | `'NIKTO_TIMEOUT'` |
 | DB column name | snake_case via `@map()` | `nikto_timeout` |
-| MCP URL env var | `MCP_[TOOL]_URL` | `MCP_NIKTO_URL` |
-| Progress URL env var | `MCP_[TOOL]_PROGRESS_URL` | `MCP_NIKTO_PROGRESS_URL` |
+| Server row id and contract port name | `_SYSTEM_SERVERS` id = `PORTS` key | `"nikto"` |
+| Progress port name | a `PORTS` key, passed as `progress_port` | `"nikto_progress"` |
 
 ---
 

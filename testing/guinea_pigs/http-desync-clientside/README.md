@@ -35,7 +35,9 @@ Flag: `REDAMON_HRS{client_side_desync_browser_conn_reuse}`
 ```bash
 docker compose up -d --build
 # manual: open http://localhost:9100/attack -> it ends up on /admin (the flag)
-# automated (needs Playwright + Chromium; run inside kali-sandbox):
+# automated (needs Playwright + Chromium; run inside your Kali sandbox, found with
+# `docker ps --filter label=redamon.sandbox=1`, with cs-guinea-server connected to its
+# network: ../README.md#reaching-a-lab-from-a-kali-sandbox):
 docker cp tests/verify_clientside.py <kali>:/tmp/ && \
   docker exec <kali> python3 /tmp/verify_clientside.py http://cs-guinea-server:5000
 ```
