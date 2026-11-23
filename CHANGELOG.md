@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **IAM → Instance shows only what is set there, in the app's standard field layout.** Each panel lists its settings one per row in a bordered container (label and hint on the left, the value on the right), at the same text sizes and with the same inputs, checkboxes and radios as Global Settings; Audit retention, AI Navigator and the instance LLM providers' form were the worst offenders. The Tunnel, TrafficMind and egress policy, Plugins and Platform tools used elsewhere panels are gone: tunnels are each person's own (Global Settings), TrafficMind is set on its own page, and the other platform tools are used where they live. Those platform permissions no longer open the Instance section; `instance:settings`, `instance:quotas` and `platform:nuclei_templates` do.
+- **TrafficMind: Settings opens the settings dialog in place, and the top bar can switch the current project's capture.** With the IAM console on, Settings no longer sends you to the Instance page. Beside *Traffic capture for &lt;project&gt;: Enabled / Disabled*, whoever holds `platform:traffic_capture` gets **Enable** / **Disable**, which makes the same change as that project's switch in the dialog's per-project routing.
+
 ## [7.10.0] - 2026-11-21
 
 Security fixes for what an attacker with no account can do from the network: rewrite or fill the AI attack-surface judge, lock any account out of signing in, and exhaust the webapp's memory with large request bodies.

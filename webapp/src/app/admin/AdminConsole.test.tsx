@@ -166,7 +166,8 @@ describe('denied state', () => {
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('instance:settings')
     expect(alert).toHaveTextContent('instance:quotas')
-    expect(alert).toHaveTextContent('platform:tunnels')
+    expect(alert).toHaveTextContent('platform:nuclei_templates')
+    expect(alert).not.toHaveTextContent('platform:tunnels')
   })
 
   test("Admin profiles is the confirmed Root's: Full admin is refused", () => {

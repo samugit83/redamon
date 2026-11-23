@@ -1,18 +1,19 @@
 /**
  * The Instance page's logic (step 6.7, GV-08): the panels each profile sees, the security policy's
- * bounds against the route's own parser, the form diff the Save sends, and where each platform tool
- * without a panel lives.
+ * bounds against the route's own parser, and the form diff the Save sends. The platform tools with
+ * nothing to set here (TrafficMind, tunnels, plugins, the terminal and shells, the agent's MCP
+ * servers, emergency stop, Operations) have no panel, and none of them opens the section.
  *
  * Run: npx vitest run --no-file-parallelism src/app/admin/instance/instanceView.test.ts
  */
 import { describe, test, expect } from 'vitest'
 import { BUILTIN_ADMIN_PROFILES } from '@/lib/authz/builtinSets'
-import { PERMISSION_IDS, type PermissionId } from '@/lib/authz/permissions'
+import type { PermissionId } from '@/lib/authz/permissions'
 import { DEFAULT_EXPIRY_DAYS_BOUNDS } from '@/lib/authz/sharingPolicy'
 import { SECURITY_POLICY_FIELDS, parseSecurityPolicyPatch } from '@/lib/instanceSecurityPolicy'
 import { CONSOLE_SECTIONS } from '../consoleSections'
 import {
-  BOOLEAN_FIELDS, INTEGER_FIELDS, otherPlatformTools, policyDraftErrors, policyDraftOf, policyPatch, visiblePanels,
+  BOOLEAN_FIELDS, INTEGER_FIELDS, policyDraftErrors, policyDraftOf, policyPatch, visiblePanels,
   type InstanceSettingsView,
 } from './instanceView'
 import { EXPIRY_DAYS_BOUNDS } from './SharingPolicyPanel'
@@ -25,6 +26,11 @@ const holding = (held: readonly PermissionId[]) => (p: PermissionId) => held.inc
 const ADMIN_SETTINGS: InstanceSettingsView = {
   securityPolicy: { passwordMinLength: 12 }, canManageSecurityPolicy: false, canManageTunnels: true, canManageCapture: true,
 }
+
+const PLATFORM_USED_ELSEWHERE = [
+  'platform:plugins', 'platform:traffic_capture', 'platform:tunnels', 'platform:agent_mcp', 'platform:emergency_stop',
+  'platform:shell_sessions', 'platform:kali_terminal', 'platform:operations',
+] as const
 
 describe('the security policy fields', () => {
   test('the page edits every field of the route except the public base URL, which has its own panel', () => {
@@ -64,9 +70,9 @@ describe('the security policy fields', () => {
 })
 
 describe('the panels each profile sees', () => {
-  test('Full admin: the Root-only panels to read, quotas, tunnel, TrafficMind, Nuclei, Plugins, and Operations named', () => {
+  test('Full admin: the Root-only panels to read, quotas and Nuclei; no tunnel, TrafficMind, Plugins or tools list', () => {
     const panels = visiblePanels({ holds: holding(profile('full-admin')), settings: ADMIN_SETTINGS, sharingPolicyShown: true })
-    expect(panels).toEqual(['security', 'public-url', 'sharing', 'default-set', 'quotas', 'tunnels', 'traffic', 'nuclei', 'plugins', 'other-tools'])
+    expect(panels).toEqual(['security', 'public-url', 'sharing', 'default-set', 'quotas', 'nuclei'])
   })
 
   // Step 6.11: the instance LLM providers are Root's alone (instance:settings is rootOnly).
@@ -87,38 +93,20 @@ describe('the panels each profile sees', () => {
       .toEqual(['security', 'public-url', 'default-set'])
   })
 
-  test('a member holding platform:tunnels as an override: only the tunnel (the route gives no policy to a member)', () => {
-    const settings: InstanceSettingsView = { canManageTunnels: true, canManageCapture: false }
-    expect(visiblePanels({ holds: holding(['platform:tunnels']), settings, sharingPolicyShown: false })).toEqual(['tunnels'])
+  test.each(PLATFORM_USED_ELSEWHERE)('a member holding %s alone: no panel, whatever the route answers', (permission) => {
+    const holds = holding([permission])
+    expect(visiblePanels({ holds, settings: null, sharingPolicyShown: false })).toEqual([])
+    expect(visiblePanels({ holds, settings: { canManageTunnels: true, canManageCapture: true }, sharingPolicyShown: false })).toEqual([])
   })
 
-  test.each(['platform:kali_terminal', 'platform:shell_sessions'] as const)(
-    'a member keeping %s from before the upgrade: the route refuses the settings, the page says where the tool is',
-    (permission) => {
-      const holds = holding([permission])
-      expect(visiblePanels({ holds, settings: null, sharingPolicyShown: false })).toEqual(['other-tools'])
-      expect(otherPlatformTools(holds).map((t) => t.permission)).toEqual([permission])
-    },
-  )
-
-  test('every permission that opens the Instance section has a panel or a line here', () => {
+  test('every permission that opens the Instance section has a panel here', () => {
     const instance = CONSOLE_SECTIONS.find((s) => s.id === 'instance')!
     const empty: PermissionId[] = []
     for (const p of instance.anyOf) {
-      const settings: InstanceSettingsView | null = p === 'instance:settings'
-        ? ADMIN_SETTINGS
-        : p === 'platform:tunnels' ? { canManageTunnels: true } : p === 'platform:traffic_capture' ? { canManageCapture: true } : null
+      const settings: InstanceSettingsView | null = p === 'instance:settings' ? ADMIN_SETTINGS : null
       if (visiblePanels({ holds: holding([p]), settings, sharingPolicyShown: false }).length === 0) empty.push(p)
     }
     expect(empty).toEqual([])
-  })
-
-  test('the lines name real permissions and link inside the app', () => {
-    const lines = otherPlatformTools(() => true)
-    for (const t of lines) {
-      expect(PERMISSION_IDS).toContain(t.permission)
-      expect(t.href.startsWith('/')).toBe(true)
-    }
   })
 })
 
@@ -138,7 +126,7 @@ describe('the audit retention panel (step 6.6)', () => {
   test('not without it (RBAC_GOVERNANCE_ENABLED off), nor for a member', () => {
     expect(visiblePanels({ holds: holding(profile('full-admin')), settings: ADMIN_SETTINGS, sharingPolicyShown: false })).not.toContain('retention')
     const member: InstanceSettingsView = { canManageTunnels: true, canManageCapture: false, auditRetention: RETENTION }
-    expect(visiblePanels({ holds: holding(['platform:tunnels']), settings: member, sharingPolicyShown: false })).toEqual(['tunnels'])
+    expect(visiblePanels({ holds: holding(['platform:nuclei_templates']), settings: member, sharingPolicyShown: false })).toEqual(['nuclei'])
   })
 
   test('the panel bound is the retention module bound, and its floor check refuses what the route refuses', () => {

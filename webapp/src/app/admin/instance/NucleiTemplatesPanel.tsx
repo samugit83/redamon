@@ -111,12 +111,12 @@ export function NucleiTemplatesPanel() {
       </div>
     )
   } else if (view.templates.length === 0) {
-    body = <p className={styles.state}>No custom template yet. Templates are uploaded from a project&apos;s Nuclei settings.</p>
+    body = <p className={styles.note}>No custom template yet. Templates are uploaded from a project&apos;s Nuclei settings.</p>
   } else {
     body = (
       <div className={styles.tableWrap}>
         <table className={styles.table}>
-          <caption className={styles.note} style={{ textAlign: 'left', captionSide: 'top' }}>{view.templates.length} template(s)</caption>
+          <caption className={styles.note}>{view.templates.length} template(s)</caption>
           <thead>
             <tr><th scope="col">Template</th><th scope="col">Severity</th><th scope="col">Owner</th><th scope="col">Actions</th></tr>
           </thead>

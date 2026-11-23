@@ -1,23 +1,21 @@
-import type { PermissionId } from '@/lib/authz/permissions'
 import type { Holds } from '../consoleSections'
 
 /**
  * The Instance page's logic (step 6.7, GV-08, UI-04), kept apart from the screens so it is tested
  * alone: which panels a person sees, the security policy's fields with the bounds the route
  * enforces (lib/instanceSecurityPolicy.ts; that module is not imported here so its rules reach the
- * browser only as this copy, pinned against it by instanceView.test.ts), and where each platform
- * tool without a panel here lives.
+ * browser only as this copy, pinned against it by instanceView.test.ts).
  *
  * The page only hides; each write goes to the route that decides it: the security policy, the
- * public base URL, the sharing policy, the audit retention, the tunnel and the TrafficMind settings to
+ * public base URL, the sharing policy, the audit retention and the quotas to
  * /api/admin/instance-settings, the default member set to /api/admin/permission-sets/[id], the
- * Nuclei templates to /api/nuclei-templates.
+ * Nuclei templates to /api/nuclei-templates. The TrafficMind settings are edited on the TrafficMind
+ * page itself, tunnels are each person's own (Global Settings), and the other platform tools are
+ * used where they live.
  */
 
 /** GET /api/admin/instance-settings as the page reads it; every group is absent for whoever does not hold it. */
 export interface InstanceSettingsView {
-  canManageTunnels?: boolean
-  canManageCapture?: boolean
   securityPolicy?: Record<string, unknown>
   canManageSecurityPolicy?: boolean
   canManageSharingPolicy?: boolean
@@ -128,8 +126,7 @@ export function baseUrlOf(policy: Record<string, unknown> | undefined): string {
 }
 
 export type PanelId =
-  | 'security' | 'public-url' | 'sharing' | 'retention' | 'navigator' | 'default-set' | 'llm-providers' | 'quotas' | 'tunnels' | 'traffic'
-  | 'nuclei' | 'plugins' | 'other-tools'
+  | 'security' | 'public-url' | 'sharing' | 'retention' | 'navigator' | 'default-set' | 'llm-providers' | 'quotas' | 'nuclei'
 
 export interface PanelInput {
   holds: Holds
@@ -153,40 +150,6 @@ export function visiblePanels({ holds, settings, sharingPolicyShown }: PanelInpu
   // Root's alone: instance:settings is held only by the confirmed Root (rootOnly).
   if (holds('instance:settings')) panels.push('llm-providers')
   if (holds('instance:quotas')) panels.push('quotas')
-  if (settings?.canManageTunnels === true) panels.push('tunnels')
-  if (settings?.canManageCapture === true) panels.push('traffic')
   if (holds('platform:nuclei_templates')) panels.push('nuclei')
-  if (holds('platform:plugins')) panels.push('plugins')
-  if (otherPlatformTools(holds).length) panels.push('other-tools')
   return panels
-}
-
-export interface PlatformToolLine {
-  permission: PermissionId
-  where: string
-  href: string
-  linkLabel: string
-}
-
-/**
- * The platform permissions that open this page but are used elsewhere: the page says where, so
- * whoever holds only one of them (a member keeping `platform:kali_terminal` or
- * `platform:shell_sessions` as an override, for example from before the upgrade) learns why the
- * console showed them Instance and where the tool is.
- */
-const ELSEWHERE: readonly PlatformToolLine[] = [
-  { permission: 'platform:kali_terminal', where: "The raw Kali terminal is the RedAmon Terminal tab of a project's graph page.",
-    href: '/projects', linkLabel: 'Open your projects' },
-  { permission: 'platform:shell_sessions', where: "Every Metasploit and shell session on the instance is in the Reverse Shell tab of a project's graph page.",
-    href: '/projects', linkLabel: 'Open your projects' },
-  { permission: 'platform:emergency_stop', where: "Emergency Pause All on a project's graph page stops every user's running agent runs.",
-    href: '/projects', linkLabel: 'Open your projects' },
-  { permission: 'platform:agent_mcp', where: "The agent's MCP servers are reloaded and the system MCP servers managed in Global Settings, MCP Tool Plugins.",
-    href: '/settings?tab=mcp', linkLabel: 'Open MCP Tool Plugins' },
-  { permission: 'platform:operations', where: "Every user's running and queued scans, agent runs and triage runs are in the console's Operations section.",
-    href: '/admin/operations', linkLabel: 'Open Operations' },
-]
-
-export function otherPlatformTools(holds: Holds): PlatformToolLine[] {
-  return ELSEWHERE.filter((t) => holds(t.permission))
 }

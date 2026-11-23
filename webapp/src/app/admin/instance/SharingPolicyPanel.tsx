@@ -6,7 +6,7 @@ import { StepUpModal } from '@/components/auth/StepUpModal'
 import type { SharingPolicy } from '@/lib/authz/sharingPolicy'
 import type { InstanceSettingsView } from './instanceView'
 import { putInstanceSettings } from './instanceSettingsClient'
-import { CheckField, FieldRow, Panel, RootOnlyNote } from './Panel'
+import { CheckField, FieldRow, Panel, RootOnlyNote, Rows } from './Panel'
 import styles from './instance.module.css'
 
 /**
@@ -112,18 +112,18 @@ export function SharingPolicyPanel({ settings, unconfirmedRoot, onSaved }: {
 
   return (
     <Panel id="sharing" title="Sharing policy" lead={lead}>
-      <form onSubmit={submit} noValidate className={styles.page} style={{ gap: 'var(--space-3)' }}>
-        {BOOLEANS.map((k) => (
-          <CheckField
-            key={k}
-            id={`sharing-${k}`}
-            label={LABELS[k].label}
-            hint={LABELS[k].hint}
-            checked={draft[k]}
-            onChange={(checked) => setDraft((d) => (d ? { ...d, [k]: checked } : d))}
-          />
-        ))}
-        <div className={styles.fields}>
+      <form onSubmit={submit} noValidate className={styles.page}>
+        <Rows>
+          {BOOLEANS.map((k) => (
+            <CheckField
+              key={k}
+              id={`sharing-${k}`}
+              label={LABELS[k].label}
+              hint={LABELS[k].hint}
+              checked={draft[k]}
+              onChange={(checked) => setDraft((d) => (d ? { ...d, [k]: checked } : d))}
+            />
+          ))}
           <FieldRow id="sharing-maxLevel" label="Highest level a share may have" hint="The highest level a member may grant.">
             <select
               id="sharing-maxLevel"
@@ -153,7 +153,7 @@ export function SharingPolicyPanel({ settings, unconfirmedRoot, onSaved }: {
               onChange={(e) => setDraft((d) => (d ? { ...d, defaultExpiryDays: e.target.value } : d))}
             />
           </FieldRow>
-        </div>
+        </Rows>
         <div className={styles.actions}>
           <button type="submit" className="primaryButton" disabled={!dirty || !!problem}>Save the sharing policy</button>
           {dirty && <button type="button" className="secondaryButton" onClick={() => setDraft(saved)}>Revert</button>}

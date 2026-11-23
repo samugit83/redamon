@@ -33,10 +33,7 @@
  * to Prisma untouched, with this switch off or on (the test at the end; lib/auditForward.test.ts).
  *
  * Step 6.7 adds the Instance page (/admin/instance), which sits under /admin and so does not exist with
- * the switch off. The instance tunnel group no longer reads the switch: every person runs their own
- * tunnel from their own Kali sandbox (group 1), so components/settings/InstanceTunnelSection.tsx shows
- * the same per-person notice, no controls and no link, with the switch off or on (the test at the
- * end, and InstanceTunnelSection.test.tsx).
+ * the switch off.
  *
  * Step 6.3 adds the permission sets and admin profiles pages (/admin/permission-sets,
  * /admin/admin-profiles). They sit under /admin, so with the switch off they do not exist and read
@@ -92,9 +89,8 @@
  * exist. The members' memory meter (/api/system/stats), their scan activity (/api/system/jobs) and the
  * emergency stop (/api/agent/emergency-stop-all) read no switch and stay as they were.
  *
- * The traffic page links its Settings to the Instance page's TrafficMind panel with the switch on (UI-04,
- * after 6.7). Off, the button opens the TrafficMind dialog in place, as before (app/traffic/page.tsx, a
- * reader in GOVERNANCE_READERS; app/traffic/page.test.tsx).
+ * The traffic page's Settings opens the TrafficMind dialog in place with the switch off or on: the
+ * Instance page has no TrafficMind panel, so app/traffic/page.tsx reads no switch (app/traffic/page.test.tsx).
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
@@ -215,7 +211,6 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/api/users/[id]/sessions/route.ts',
       'src/app/plugins/[pluginId]/[[...screen]]/page.tsx',
       'src/app/settings/users/layout.tsx',
-      'src/app/traffic/page.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/components/settings/InstanceLlmProviders.tsx',
@@ -312,24 +307,6 @@ describe('audit forwarding is its own setting (step 6.12): AUDIT_FORWARD, defaul
     expect(forwarded()).toBe(1)
     info.mockRestore()
     vi.doUnmock('@/lib/prisma')
-  })
-})
-
-describe('RBAC_GOVERNANCE_ENABLED off (step 6.7): the instance tunnel group is the same as with it on', () => {
-  test('whoever may change the tunnel gets the per-person notice, no controls and no link to the Instance page', async () => {
-    const { ToastProvider } = await import('@/components/ui/Toast/Toast')
-    const { InstanceTunnelSection } = await import('@/components/settings/InstanceTunnelSection')
-    fetchMock.mockImplementation(async () => new Response(JSON.stringify({
-      tunnelsEnabled: false, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', canManageTunnels: true,
-    })))
-    for (const flags of [FLAGS_ON, { ...FLAGS_ON, governance: false, sharing: true }]) {
-      render(createElement(AuthContext.Provider, { value: fakeAuth(flags, ['platform:tunnels']) },
-        createElement(ToastProvider, null, createElement(InstanceTunnelSection))))
-      expect(await screen.findByText(/Tunnels are per person/)).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Save tunnel settings' })).toBeNull()
-      expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
-      cleanup()
-    }
   })
 })
 

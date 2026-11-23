@@ -33,12 +33,18 @@ describe('the sections', () => {
     for (const s of CONSOLE_SECTIONS) expect(s.description).toMatch(/\.$/)
   })
 
-  test('every permission named is in the registry; Instance opens with instance:settings, instance:quotas or any platform:*', () => {
+  test('every permission named is in the registry; Instance opens only with a permission that has a panel there', () => {
     for (const s of CONSOLE_SECTIONS) for (const p of s.anyOf) expect(PERMISSION_IDS).toContain(p)
     const instance = CONSOLE_SECTIONS.find((s) => s.id === 'instance')!
-    const platform = PERMISSION_IDS.filter((p) => p.startsWith('platform:'))
-    expect(platform.length).toBeGreaterThan(0)
-    expect([...instance.anyOf].sort()).toEqual(['instance:quotas', 'instance:settings', ...platform].sort())
+    expect([...instance.anyOf].sort()).toEqual(['instance:quotas', 'instance:settings', 'platform:nuclei_templates'])
+  })
+
+  test('a platform permission used where its tool lives opens no section', () => {
+    for (const p of ['platform:plugins', 'platform:traffic_capture', 'platform:tunnels', 'platform:agent_mcp',
+      'platform:emergency_stop', 'platform:shell_sessions', 'platform:kali_terminal'] as const) {
+      expect(labels([p])).toEqual([])
+      expect(holdsConsolePermission(holding(p))).toBe(false)
+    }
   })
 
   test('the console permissions are the union of the sections, each once', () => {
@@ -69,7 +75,7 @@ describe('nav shows only permitted sections', () => {
     expect(labels(profile('platform-operator'))).toEqual(['Operations', 'Instance'])
   })
 
-  test("Full admin: everything but Root's Admin profiles; Instance through instance:quotas and platform:*", () => {
+  test("Full admin: everything but Root's Admin profiles; Instance through instance:quotas", () => {
     expect(labels(profile('full-admin'))).toEqual(['Users', 'Permission sets', 'Projects', 'Operations', 'Audit', 'Instance'])
   })
 
@@ -82,8 +88,8 @@ describe('nav shows only permitted sections', () => {
     expect(labels(['admin_profiles:manage'])).toEqual(['Admin profiles'])
     expect(labels(['audit:read'])).toEqual(['Audit'])
     expect(labels(['instance:quotas'])).toEqual(['Instance'])
-    expect(labels(['platform:tunnels'])).toEqual(['Instance'])
-    expect(labels(['platform:operations'])).toEqual(['Operations', 'Instance'])
+    expect(labels(['platform:nuclei_templates'])).toEqual(['Instance'])
+    expect(labels(['platform:operations'])).toEqual(['Operations'])
   })
 })
 

@@ -5,8 +5,7 @@ import { useToast, Toggle } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import type { InstanceSettingsView } from './instanceView'
 import { putInstanceSettings } from './instanceSettingsClient'
-import { Panel, RootOnlyNote } from './Panel'
-import styles from './instance.module.css'
+import { Panel, RootOnlyNote, Rows, ValueRow } from './Panel'
 
 interface DocsHealth {
   wiki: { present: boolean; pages: number; sections: number; updated_at?: number | null } | null
@@ -42,28 +41,36 @@ export function NavigatorInstancePanel({ settings, unconfirmedRoot, onSaved, can
     return () => { gone = true }
   }, [canReadHealth])
 
-  const docs = health === null ? 'Checking the documentation…'
+  const docs = health === null ? 'Checking…'
     : health === 'error' ? "Couldn't check the documentation: the agent did not answer."
       : health.agentOutdated ? 'The agent is older than the web app: rebuild it with ./redamon.sh update.'
         : health.wiki?.present
-          ? `Documentation: ${health.wiki.pages} pages${health.wiki.updated_at ? `, updated ${new Date(health.wiki.updated_at * 1000).toLocaleDateString(undefined, { dateStyle: 'medium' })}` : ''}.`
-          : 'Documentation not installed: run ./redamon.sh update (or git submodule update --init redamon.wiki).'
+          ? `${health.wiki.pages} pages${health.wiki.updated_at ? `, updated ${new Date(health.wiki.updated_at * 1000).toLocaleDateString(undefined, { dateStyle: 'medium' })}` : ''}.`
+          : 'Not installed: run ./redamon.sh update (or git submodule update --init redamon.wiki).'
 
   return (
     <Panel id="navigator" title="AI Navigator"
       lead="The read-only chat that answers questions about RedAmon and each project's data, on each person's own model. Off hides it for everyone and ends every answer being written.">
-      <div className={styles.actions}>
-        <Toggle
-          checked={enabled}
-          disabled={!canEdit}
-          onChange={(v: boolean) => setAsking(v)}
-          aria-label="AI Navigator"
-          labelOff="Off"
-          labelOn="On"
-        />
-      </div>
+      <Rows>
+        <ValueRow
+          label="AI Navigator for everyone"
+          hint={canEdit ? 'Switching it asks for your password.' : undefined}
+        >
+          <Toggle
+            checked={enabled}
+            disabled={!canEdit}
+            onChange={(v: boolean) => setAsking(v)}
+            aria-label="AI Navigator"
+          />
+          <span>{enabled ? 'On' : 'Off'}</span>
+        </ValueRow>
+        {canReadHealth && (
+          <ValueRow label="Documentation" hint="Where the answers about RedAmon come from.">
+            <span role="status" data-testid="navigator-docs-status">{docs}</span>
+          </ValueRow>
+        )}
+      </Rows>
       {!canEdit && <RootOnlyNote unconfirmedRoot={unconfirmedRoot} />}
-      {canReadHealth && <p className={styles.note} role="status" data-testid="navigator-docs-status">{docs}</p>}
       <StepUpModal
         isOpen={asking !== null}
         title={asking ? 'Turn AI Navigator on' : 'Turn AI Navigator off'}
