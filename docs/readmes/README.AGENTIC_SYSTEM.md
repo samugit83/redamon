@@ -440,7 +440,7 @@ flowchart LR
         T6[Process output_analysis: merge target_info, detect exploit_succeeded]
         T6b[Audit productivity verdict against state delta, downgrade dishonest claims to no_progress]
         T7[Update todo list]
-        T8[Pre-exploitation validation: force ask_user if LHOST/LPORT missing]
+        T8[Pre-exploitation validation: force ask_user if the payload plan misses LHOST or a bind port]
         T9[Unproductive-streak detection: inject warning + same-pattern fingerprint audit when N/K recent steps unproductive]
         T10[Track input/output tokens per turn + cumulative]
     end
@@ -849,13 +849,13 @@ flowchart TB
     THINK[Think Node decides: use metasploit_console] --> CHECK{Statefull mode +<br/>CVE exploit path?}
 
     CHECK -->|No| EXEC[Execute tool normally]
-    CHECK -->|Yes| VALIDATE{LHOST/LPORT<br/>configured?}
+    CHECK -->|Yes| VALIDATE{Payload plan<br/>complete?}
 
     VALIDATE -->|Yes| EXEC
     VALIDATE -->|No| QA_CHECK{Already answered<br/>in qa_history?}
 
     QA_CHECK -->|Yes| EXEC
-    QA_CHECK -->|No| FORCE_ASK[Force ask_user action<br/>Request LHOST/LPORT from user]
+    QA_CHECK -->|No| FORCE_ASK[Force ask_user action<br/>Request LHOST or a bind port]
 
     FORCE_ASK --> PAUSE([Pause for user answer])
     PAUSE --> THINK
@@ -867,7 +867,7 @@ flowchart TB
     style VALIDATE fill:#5a5a5a,color:#fff,stroke:#2d2d2d
 ```
 
-This prevents exploitation failures by ensuring reverse/bind payload parameters are available before the agent attempts to run Metasploit exploits. Hydra brute force attacks bypass this check since they use `execute_hydra` (stateless) and establish sessions separately via `sshpass` or database clients.
+This prevents exploitation failures by ensuring reverse/bind payload parameters are available before the agent attempts to run Metasploit exploits. The check reads the same plan as the "Pre-Configured Payload Settings" block (`payload_plan` in `agentic/utils.py`, `is_session_config_complete` in `agentic/orchestrator_helpers/config.py`), in this order: a tunnel the person's Kali sandbox reports on (reverse through it, nothing to ask); a bind-only project (bind port, no LHOST, no LPORT); the sandbox not known yet (no Kali call has reached it in this message and none is remembered for the person and view; nothing is asked, and the block tells the model to run a preparatory Kali step first); the sandbox's pool port, which is LPORT (only LHOST is asked, when empty); otherwise no reverse path at all (only a bind port is asked, or the person turns a tunnel on). The project's `LPORT` is never used as LPORT. The block also tells the model that the port is shared by all of the person's chats (run `jobs`, reuse a handler), which payloads need a second inbound port and cannot work, and, with a tunnel, to bind the handler on `127.0.0.1:4444`; see [README.KALI_SANDBOX.md](README.KALI_SANDBOX.md) section 17. Hydra brute force attacks bypass this check since they use `execute_hydra` (stateless) and establish sessions separately via `sshpass` or database clients.
 
 ### Credential Detection
 
@@ -1030,9 +1030,7 @@ flowchart TB
     end
 
     subgraph PostTools["Post-Exploitation Tools"]
-        SESS[msf_session_run<br/>Session commands]
-        WAIT[msf_wait_for_session<br/>Session polling]
-        LIST[msf_list_sessions<br/>List active sessions]
+        SESS[metasploit_console<br/>sessions -l / -i / -c]
     end
 
     INFO --> InfoTools
@@ -1130,7 +1128,7 @@ flowchart TB
         C7["set PAYLOAD cmd/unix/reverse_bash"]
         C8["set RHOSTS 192.168.1.100"]
         C9["exploit"]
-        C10["msf_wait_for_session()"]
+        C10["sessions -l"]
     end
 
     C1 --> PROC
@@ -1147,8 +1145,7 @@ flowchart TB
     READER --> QUEUE
     QUEUE --> |Timing-based detection| OUTPUT[Clean Output]
 
-    C10 --> |Separate MCP tool| POLL[Poll for sessions]
-    POLL --> |sessions -l| PROC
+    C10 --> |same console, a later call| PROC
 
     style PROC fill:#5a5a5a,color:#fff
     style C10 fill:#5a5a5a,color:#fff
@@ -3661,7 +3658,7 @@ sequenceDiagram
     MSF-->>A: "Sending stage..." (streamed via progress chunks)
 
     Note over A: Session detected via inline output analysis
-    A->>MSF: msf_wait_for_session(timeout=120)
+    A->>MSF: sessions -l
     MSF-->>A: Session 1 opened
 
     A->>A: Request phase transition to post_exploitation
@@ -4716,9 +4713,9 @@ flowchart LR
 | `REQUIRE_TOOL_CONFIRMATION` | `true` | Require user confirmation before executing dangerous tools (nmap, nuclei, metasploit, hydra, kali_shell, etc.) |
 | `ACTIVATE_POST_EXPL_PHASE` | `true` | Enable post-exploitation phase |
 | `POST_EXPL_PHASE_TYPE` | `"statefull"` | `"stateless"` or `"statefull"` session mode |
-| `LHOST` | `""` | Attacker IP for reverse payloads: an address the target can reach (never the sandbox container's own private address). A person's sandbox publishes no port unless the operator set `KALI_SANDBOX_PORT_POOL`, so a reverse shell needs that person's tunnel or their sandbox's pool port; empty = bind mode |
-| `LPORT` | `null` | Attacker port for reverse payloads |
-| `BIND_PORT_ON_TARGET` | `4444` | Port opened on target for bind payloads |
+| `LHOST` | `""` | Attacker IP for reverse payloads: an address the target can reach (never the sandbox container's own private address). A person's sandbox publishes no port unless the operator set `KALI_SANDBOX_PORT_POOL`, so a reverse shell needs that person's tunnel or their sandbox's pool port; with a tunnel the tunnel's address is used instead |
+| `LPORT` | `null` | Never used as LPORT: with a pool port the agent uses the person's sandbox port, with a tunnel the tunnel's port, and with neither only bind payloads work. Set, it only keeps a project with a bind port from counting as bind-only. Leave it empty |
+| `BIND_PORT_ON_TARGET` | `null` | Port opened on target for bind payloads; with no LHOST and no LPORT it makes the project bind-only. Empty: the agent asks for it when no reverse path exists (no pool port, no tunnel) |
 | `PAYLOAD_USE_HTTPS` | `false` | Use HTTPS for staged payloads |
 | `HYDRA_ENABLED` | `true` | Enable/disable THC Hydra brute force tool |
 | `HYDRA_THREADS` | `16` | Parallel connections per target (-t). SSH max 4, RDP max 1 |

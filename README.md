@@ -233,7 +233,7 @@ Open **http://localhost:3000/settings** (gear icon in the header) to configure e
 
 - **LLM Providers** -- add API keys for OpenAI, Anthropic, OpenRouter, AWS Bedrock, or any OpenAI-compatible endpoint (Ollama, vLLM, Groq, etc.). Each provider can be tested before saving. The model selector in project settings **dynamically fetches** available models from configured providers.
 - **API Keys** -- Tavily, Shodan, SerpAPI, NVD, Vulners, URLScan, and threat intelligence keys (Censys, FOFA, OTX, Netlas, VirusTotal, ZoomEye, CriminalIP) to enable extended agent capabilities (web search, OSINT, CVE lookups, passive threat intel). **Uncover multi-engine search** keys (Quake, Hunter, PublicWWW, HunterHow, Google, Onyphe, Driftnet) expand target discovery across 13 search engines -- shared keys (Shodan, Censys, FOFA, etc.) are automatically reused. Supports **key rotation** -- configure multiple keys per tool with automatic round-robin rotation to avoid rate limits.
-- **Tunneling** -- configure your own ngrok or chisel tunnel for reverse shells. It runs in your own Kali sandbox, so turning it on or changing it takes the Tunnels permission (`platform:tunnels`); turning it off does not. Changes apply without a container restart, and a sandbox that restarts comes back with the tunnel off.
+- **Tunneling** -- configure your own ngrok or chisel tunnel for reverse shells. It runs in your own Kali sandbox, so turning it on or changing it takes the Tunnels permission (`platform:tunnels`); turning it off does not. Changes apply without a container restart, and a sandbox that restarts comes back with the tunnel off. A chat uses it only when the project's Tunnel Provider names it too; it delivers to port 4444 inside your sandbox, and a chisel server serves one person.
 
 All settings are stored per-user in the database. See the **[AI Model Providers](https://github.com/samugit83/redamon/wiki/AI-Model-Providers)** wiki page for detailed setup instructions.
 
@@ -671,7 +671,7 @@ A **LangGraph-based autonomous agent** implementing the ReAct pattern. It progre
 | | **fs_mkdir** | Create directory, idempotent | All | -- (in-process) |
 | | **fs_chmod** | Change permission bits (octal `0o755` or symbolic `+x`) | All | -- (in-process) |
 | | **fs_symlink_create** | Create symlink, refuses endpoints that would escape the workspace | All | -- (in-process) |
-| | **fs_grep** | Ripgrep over workspace with regex, 30s timeout, 1000-match cap, works on in-flight job logs | All | -- (in-process) |
+| | **fs_grep** | Regex search over the workspace (Python `re` syntax, `{a,b}` globs, hidden and binary files skipped) in an isolated child process, 25s per search, 1000 matches per file, works on in-flight job logs | All | -- (in-process) |
 | | **fs_glob** | Glob pattern search sorted newest-first, capped 500 results | All | -- (in-process) |
 | | **fs_find** | Metadata search (name + mtime + size + type filters), 30s walk timeout, 5000-result ceiling | All | -- (in-process) |
 | | **fs_list** | Single-directory listing with type / size / mtime, capped 200 entries | All | -- (in-process) |
@@ -780,7 +780,7 @@ The agent works the corpus through a single code-native tool, **`proxy_brain`**:
 
 ### Reverse Shells
 
-Unified view of active sessions: meterpreter, reverse/bind shells, and listeners. Built-in terminal with a **Command Whisperer** that translates plain English into shell commands.
+Unified view of active sessions: meterpreter, reverse/bind shells, and listeners. Built-in terminal with a **Command Whisperer** that translates plain English into shell commands. The panel shows your reverse-shell port (LPORT): your sandbox's port from the operator's port pool, shared by all of your chats, or none, when a reverse shell needs your tunnel. You see and stop the Metasploit handlers (jobs) of your own sandbox.
 
 > **[Wiki: Reverse Shells](https://github.com/samugit83/redamon/wiki/Reverse-Shells)**
 

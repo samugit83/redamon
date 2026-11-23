@@ -149,10 +149,26 @@ four levels:
   LV-E4) through MCP `kali_exec`, each asserting that nothing one person plants is visible to,
   reachable from or writable by the other (`G1_ALLOW_FORK_TEST=1` adds the fork-load check
   LV-D22). It takes 3-6 minutes.
+- **The live reverse-port scenarios**, never in the gate: `bash tests/kali_reverse_ports_live.sh`
+  (`tests/kali_reverse_ports_live.py`, `tests/kali_reverse_ports_live_lib.py`) runs E1-E9, E11
+  and E12 of the reverse-shell port follow-up through the real agent, with Agent in the Loop as
+  the model, MCP and the orchestrator: the pool port as LPORT, chisel (a second person on the
+  same server reads failed), pool and tunnel together, bind only, a full pool, two chats of one
+  person, a restart, a late callback after a stop (the hold, and its control with no hold),
+  act-as, the job-store link plant and MCP `kali_exec`. Each scenario asserts what the agent or
+  the MCP client was told, what the sandbox published and where the shell landed. It recreates
+  the orchestrator per phase with the pool and hold set in its own process, puts it back at the
+  end, takes the shared heavy lock itself (or runs under `flock -o` from a parent), and takes
+  60-80 minutes; `--only E1,E7`, `--plan` and `--self-test` narrow it. It needs the stack up,
+  Agent in the Loop and the MCP server on, and uses the g1 seed's synthetic accounts and
+  guinea-pig labs only. Exit 0 all pass, 1 a failure, 2 not ready (never a skip).
 - **The UI end-to-end spec**: `bash testing/e2e/scripts/per-user-sandbox-e2e.sh` drives
   `testing/e2e/tests/perUserSandbox.spec.ts` against the stack with the scripted stub model
-  ([testing/e2e/README.md](../../testing/e2e/README.md)), one group at a time, recreating the
-  orchestrator with each group's variables in the shell only and putting the originals back. It
+  ([testing/e2e/README.md](../../testing/e2e/README.md)), one group at a time (A to E by
+  default; group E, the ports, gives each person a port of a two-port pool with no hold and checks
+  the Sessions panel, the terminal, the status route, Operations and a member stopping her own
+  handler job), recreating the orchestrator with each group's variables in the shell only and
+  putting the originals back. It
   stops and removes no sandbox and no templates volume: the sandboxes a run starts are its test
   persons' own and stop when idle. A failed API call's error is printed with cookies, keys and
   tokens redacted (`redactSecrets` in `testing/e2e/tests/perUserSandboxFixtures.ts`), which holds

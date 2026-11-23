@@ -276,7 +276,7 @@ flowchart TB
 | Agent API | http://localhost:8090 | LAN | AI agent WebSocket + REST API |
 | Kali sandbox MCP servers, progress, tunnel manager | `http://redamon-kali-<key>-<instance>:8000-8015` | the person's sandbox network + that sandbox's token (not published) | network recon, nuclei, Metasploit, nmap, Playwright, progress streams, tunnel configuration; the agent is the only caller |
 | RedAmon Terminal | `ws://redamon-kali-<key>-<instance>:8016` | the person's sandbox network + token (not published) | PTY shell in the person's own sandbox (xterm.js; the browser reaches it through the agent's `/ws/kali-terminal` proxy) |
-| Reverse-shell pool (optional) | `KALI_SANDBOX_PORT_POOL` (`[bind-ip:]first-last`) | `127.0.0.1` unless the variable names an address | one host port per sandbox, used as that person's LPORT for direct reverse shells; unset, nothing is published and reverse shells go through the person's tunnel |
+| Reverse-shell pool (optional) | `KALI_SANDBOX_PORT_POOL` (`[bind-ip:]first-last`) | `127.0.0.1` unless the variable names an address | one host port per sandbox, published at the same number inside (`MSF_REVERSE_PORT`) and used as that person's LPORT for direct reverse shells; held for that person for `KALI_SANDBOX_PORT_HOLD_HOURS` (24 by default) after the sandbox stops; unset, nothing is published and reverse shells go through the person's tunnel, which delivers to 4444 inside the sandbox |
 
 The plugin services (`plugin-runner`, `plugin-gateway`) publish no host port; see
 [Plugin Platform](#plugin-platform).

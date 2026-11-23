@@ -315,8 +315,8 @@ an error is FastAPI's `{"detail": {"code": ..., "detail": ...}}` with a contract
 | `POST /sandboxes/{user_id}/leases`, `DELETE /sandboxes/{user_id}/leases/{lease_id}` | Take or renew a 90 s lease on an instance, or release it |
 | `POST /sandboxes/{user_id}/reconcile` | Stop every instance whose projects are no longer allowed (after an access loss) |
 | `POST /sandboxes/{user_id}/stop`, `POST /sandboxes/stop-project`, `POST /sandboxes/stop-all` | Stop a person's sandboxes, every sandbox mounting a project (before its deletion), or all of them (emergency stop) |
-| `GET /sandboxes/{user_id}` | That person's instances: state, stop time and reason, never a token |
-| `GET /sandboxes` | Every live sandbox with its address and token, for the agent's session listings; the admin Operations view gets it from the webapp with tokens and addresses removed |
+| `GET /sandboxes/{user_id}` | That person's instances: state, stop time and reason, reverse-shell port and its state (`assigned`, `no_pool`, `pool_full`), never a token |
+| `GET /sandboxes` | Every live sandbox with its address, token and reverse-shell port, for the agent's session listings and prompts; the admin Operations view gets it from the webapp with tokens and addresses removed |
 
 The routes answer 503 until the manager has adopted the sandboxes already running
 (an orchestrator restart keeps them), and a `/sandboxes/...` path that names no
@@ -325,15 +325,20 @@ memory in its `mem` block (`active_sandboxes`, `sandbox_committed`,
 `sandbox_envelope`, in bytes for the last two); `active_scans` counts scans only.
 
 The sandbox settings (`KALI_SANDBOX_IDLE_MINUTES`, `KALI_SANDBOX_MAX_CONCURRENT`,
-`KALI_SANDBOX_PORT_POOL`) reach the orchestrator only through its compose
-`environment:` block, and so does `TERMINAL_MAX_SESSIONS`, which it copies into
+`KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_PORT_HOLD_HOURS`) reach the orchestrator
+only through its compose `environment:` block, and so does `TERMINAL_MAX_SESSIONS`, which it copies into
 every sandbox. The four mounts the manager needs (`./agentic/agent-workspace` at
 `/app/agent-workspace`, `./mcp/output` at `/app/mcp-output`, `./mcp/servers` at
 `/app/mcp-servers` and `./graph_db` at `/app/graph_db`, both read-only;
 `COMPOSE_MOUNTS` in `recon_orchestrator/sandbox_manager.py`) are in
 `docker-compose.yml`; without any one of them every
 start fails (503 `sandbox_start_failed`) and the orchestrator's log names the
-missing mount (`./redamon.sh up` recreates the service with them).
+missing mount (`./redamon.sh up` recreates the service with them). Besides each
+person's `users/<key>` folder, the output mount holds what the manager keeps for
+itself: the pool port holds (`.sandbox-port-holds.json` and its last good copy,
+which outlive a restart) and each view's copy of its person's custom nuclei
+templates (`templates/<key>`), both gitignored; a sandbox mounts only its own
+view's copy, read-only, and never the holds.
 
 ## Phase Detection
 

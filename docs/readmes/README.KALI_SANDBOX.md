@@ -153,11 +153,16 @@ replacement.
   `update` only after its builds and the answer to its preview, also when there was
   nothing to pull; never with `--preview`, never after a "no" or a stop at the
   update's disk or memory check. Every Metasploit session still open in it ends
-  then: close them first.
+  then: close them first. A bare `docker compose up` does not remove it: compose
+  still knows `kali-sandbox` only as a build-only service of the `tools` profile,
+  so the old container keeps running beside the new sandboxes. Remove it by hand
+  with `docker rm -f redamon-kali`, or start the stack with `./redamon.sh up`.
 - **The pentest network.** The same commands create `<project>_pentest-net`, the
   network the capture proxy and the guinea-pig labs use, when it is missing, with
   the subnet and labels compose gives it (the shared container was the only service
-  compose started on it). `purge` removes it.
+  compose started on it). `purge` removes it. The orchestrator starts the capture
+  proxy on its own stack's `<project>_pentest-net`, the project read from its own
+  compose labels (`redamon` when it cannot read them).
 - **`.env`.** No sandbox variable is required (section 15). `KALI_MEM`, `KALI_PIDS`
   and `KALI_CPUS` in an existing `.env` are ignored: the memory block
   `./redamon.sh` writes no longer holds a Kali share, and the former share goes to
@@ -248,7 +253,7 @@ and joins the relative part with `join_host_path`
 | `output` | `users/<key>` | `/opt/output` | no | `/app/mcp-output` |
 | `servers` | (none) | `/opt/mcp_servers` | yes | `/app/mcp-servers` |
 | `graph_db` | (none) | `/opt/graph_db` | yes | `/app/graph_db` |
-| `custom_templates` | (none) | `/opt/nuclei-templates` | yes | `/app/nuclei-templates`; left out when empty |
+| `output` | `templates/<key>`, the view's copy of the custom nuclei templates its person may use | `/opt/nuclei-templates` | yes | `/app/mcp-output`; left out when the copy is empty |
 | `volume:templates` | `redamon-kali-nuclei-templates` | `/root/nuclei-templates` | yes | named volume |
 | `volume:osv` | the orchestrator's OSV database volume | `/osv-db` | yes | named volume |
 
@@ -258,6 +263,18 @@ Rules:
   (`invalid_project_id`), and so does a bare string in place of a list. The
   workspace root itself and `.staging` can never appear.
 - Nothing else is mounted: no Docker socket, no secret, no other person's folder.
+  The shared folder of uploaded nuclei templates (`mcp/nuclei-templates`, the
+  orchestrator's `/app/nuclei-templates`) is never mounted in a sandbox.
+- **Custom nuclei templates.** At every start the orchestrator empties the view's
+  `templates/<key>` and copies into it exactly the templates the webapp names in the
+  ensure (`custom_templates`, from `webapp/src/lib/sandbox/customTemplates.ts`): the
+  person's own uploads and the instance's (no owner), never another member's; the
+  `act_as` view gets the member's. A name outside the contract's shape
+  (`normalize_template_paths`: plain segments, `.yaml`/`.yml`, at most 8 deep) is
+  dropped; each file is read without following a link anywhere on its path, regular
+  files only, at most 1 MiB each, 2000 files and 64 MiB in all. An ensure with no
+  list copies none. A template uploaded later reaches a sandbox at its next start.
+  Deleting the account removes both views' copies with the output folders.
 - An empty project list is valid: a sandbox with no project folder.
 - The orchestrator creates a missing project or output folder before mounting it,
   so Docker never creates an empty root-owned folder in its place: the folder
@@ -285,7 +302,7 @@ Rules:
 | Hostname | the container's own name. Inside, `kali-sandbox` resolves to `127.0.0.1` (`ExtraHosts` `kali-sandbox:127.0.0.1`), so the tools and prompts that name the sandbox reach it; the agent and the capture proxy, which join every sandbox network, resolve `kali-sandbox` to no sandbox, except one started before this release, which keeps that shared hostname until it drains (section 9) |
 | Init | Docker's init as PID 1: it reaps the processes a shell leaves behind, which the image's own PID 1 does not, so orphans never pile up against the process limit |
 | Fixed environment | `PYTHONUNBUFFERED=1`, `PYTHONPATH=/opt:/opt/mcp_servers`, `OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/osv-db`, `PYTHONDONTWRITEBYTECODE=1`, `MCP_TRANSPORT=sse`, `MCP_HOST=0.0.0.0`, the server ports (`NETWORK_RECON_PORT=8000`, `NUCLEI_PORT=8002`, `METASPLOIT_PORT=8003`, `NMAP_PORT=8004`, `PLAYWRIGHT_PORT=8005`, `MSF_PROGRESS_PORT=8013`, `HYDRA_PROGRESS_PORT=8014`, `TERMINAL_WS_PORT=8016`), `MSF_AUTO_UPDATE=false`, `NUCLEI_AUTO_UPDATE=false`, `REDAMON_AGENT_URL=http://agent:8080`, `WEBAPP_API_URL=` (empty), `REDAMON_SANDBOX_MODE=per_user` |
-| Per-instance environment | `MCP_AUTH_TOKEN` and `TUNNEL_AUTH_TOKEN`, two independent random 32-byte tokens; `REDAMON_SANDBOX_KEY`, the view's key; `MSF_REVERSE_PORT`, the pool port or `4444`; `TERMINAL_MAX_SESSIONS` copied from the orchestrator when it holds a number |
+| Per-instance environment | `MCP_AUTH_TOKEN` and `TUNNEL_AUTH_TOKEN`, two independent random 32-byte tokens; `REDAMON_SANDBOX_KEY`, the view's key; `MSF_REVERSE_PORT`, the pool port or `4444` (section 17); `TERMINAL_MAX_SESSIONS` copied from the orchestrator when it holds a number |
 | Never in the environment | the webapp, agent, scanner and orchestrator keys (`INTERNAL_API_KEY`, `SCANNER_API_KEY`, `AUTH_SECRET`, `ORCHESTRATOR_API_KEY`, ...), any database or Neo4j credential, the instance's ngrok and chisel credentials, and any user id (only the key) |
 | Limits | memory and memory+swap equal the envelope (1 GiB by default); 4096 processes; half the host's CPUs, at least 1 and at most 4, at CPU weight 256, below the 1024 of every service, so under contention the platform's services win over any number of sandboxes |
 | Privileges | `NET_ADMIN`, `NET_RAW`, `seccomp=unconfined`. No `cap_drop` and no `no-new-privileges`: the tools need root's file access and `execve` unchanged (the `orchestrator-container-spawn` skill says why) |
@@ -295,20 +312,22 @@ Rules:
 | Published ports | none, except the pool port when `KALI_SANDBOX_PORT_POOL` is set, bound on `127.0.0.1` unless the variable names another address |
 
 The entrypoint asks the webapp for nothing at boot: a sandbox's tunnels come only
-from the agent's push (section 17). `REDAMON_SANDBOX_MODE=per_user` stays in the
-fixed environment because two servers read it: `mcp/servers/tunnel_manager.py`
-(the ngrok API on the loopback, the instance's MCP token accepted to read or stop
-tunnels) and `mcp/servers/metasploit_server.py` (an empty session list answered
-without starting `msfconsole`).
+from the agent's push (section 17). No server branches on
+`REDAMON_SANDBOX_MODE=per_user` (a sandbox is always one person's): it stays in the
+fixed environment because every sandbox started so far carries it, and adoption
+requires the fixed environment as it is. The tunnel manager keeps the ngrok API on
+the loopback and accepts the instance's MCP token to read or stop tunnels; the
+Metasploit server answers an empty session list without starting `msfconsole`.
 
 Ports inside the container: 8000 network recon, 8002 nuclei, 8003 Metasploit,
 8004 nmap, 8005 Playwright, 8013 Metasploit progress and session manager, 8014
-Hydra progress, 8015 tunnel manager, 8016 terminal, 4040 the ngrok agent API, 4444
-(or the pool port) the reverse-shell listener. Every port but 4040 and the listener
-checks the instance's bearer token. The ngrok agent API checks nothing, so it
-listens on the container's loopback only
+Hydra progress, 8015 tunnel manager, 8016 terminal, 4040 the ngrok agent API, and
+the reverse-shell handlers a person starts: on `MSF_REVERSE_PORT` (the pool port,
+or 4444 without one), or on 4444, where a tunnel delivers (section 17). Every port
+but 4040 and the handlers checks the instance's bearer token. The ngrok agent API
+checks nothing, so it listens on the container's loopback only
 (`mcp/servers/tunnel_manager.py`); the agent reads tunnel state through the tunnel
-manager on 8015. The listener checks nothing either: that is why nothing but the
+manager on 8015. A handler checks nothing either: that is why nothing but the
 agent, the capture proxy and an operator's own lab may sit on a sandbox network.
 
 ## 7. The network
@@ -393,8 +412,10 @@ clock), so a clock change never stops or keeps a sandbox.
 5. A `starting` one: wait for the same start (bounded by the start timeout plus
    30 s).
 6. None: reserve memory (a refusal is 409), create the view's network if needed
-   and attach the agent and the capture proxy to it (section 7), pick a pool port,
-   check and create the folders, create and start the container, read its mounts
+   and attach the agent and the capture proxy to it (section 7), pick a pool port
+   (the one held for this person and view first, section 17), copy the view's
+   custom nuclei templates (section 5), check and create the folders, create and
+   start the container, read its mounts
    back from inside, then wait until the healthcheck reports healthy. A start that
    never becomes healthy is stopped and released (504 `sandbox_start_timeout`); one
    that turns unhealthy or exits is 503 `sandbox_start_failed`.
@@ -408,7 +429,8 @@ it read before.
 
 **Stop**: mark `stopping` (new leases refused), stop with a 10 s grace, remove the
 container (wiping its writable layer), remove the network when the view has no
-instance left, release the reservation, drop the leases. A container that cannot be
+instance left, release the reservation, drop the leases, and hold the instance's
+pool port for its person and view (section 17). A container that cannot be
 removed is killed and disconnected from its network at once, keeps its reservation,
 and its removal is retried at the next idle tick.
 
@@ -442,9 +464,14 @@ user, environment (the fixed values, its key, its reverse port, two well-formed
 tokens), mounts (rebuilt from the plan), hostname and extra hosts, privileges,
 limits, DNS, restart policy, its single network and its published port, with every
 host setting the manager never sets left empty, and no Docker broker label. One on
-an older image, whose pool port no longer fits the pool, started without an init
-process, or with the hostname `kali-sandbox` every sandbox once shared (and no
-extra hosts) is adopted `draining`, and stops as `replaced` once unused; any other
+an older image, whose pool port no longer fits the pool, started without a pool
+port while a pool now has a port free for its person and view (with none free it
+stays current, `pool_full`: a replacement would get no port either and would turn
+the person's tunnel off), started without an init process, with the
+hostname `kali-sandbox` every sandbox once shared (and no extra hosts), or mounting
+the shared folder of every member's custom templates (as every sandbox did before
+the per-view copy, section 5) is adopted `draining`, and stops as `replaced` once
+unused: such a sandbox keeps every member's templates until then. Any other
 hostname or extra-hosts entry is refused. Its view comes from its
 label, its projects from its `/workspace/<id>` mounts, its tokens from its
 environment; its memory is re-accounted, its guests checked, and for one lease
@@ -452,7 +479,9 @@ lifetime (90 s) it is not stopped for holding no lease, while the agent's renewa
 and the hold watcher take theirs again (an orchestrator restart loses every lease).
 Two instances of one view are ordered by their created label and then by Docker's
 own creation time: the newer one is current. Every other labelled container of
-this stack is removed, and every labelled network no adopted instance uses. The
+this stack is removed (its pool port, read from its labels, held for its person and
+view, unless it carries the Docker broker's label), and every labelled network no
+adopted instance uses. The
 templates containers are left to finish; a look-alike carrying the Docker broker's
 label is removed.
 
@@ -508,15 +537,15 @@ adoption at start has succeeded every route answers 503 `sandbox_start_failed`
 
 | Route | Body | Answers |
 | :---- | :--- | :------ |
-| `POST /sandboxes/ensure` | `{user_id, view, projects, need_project, wait, touch}` | 200 `{user_id, view, instance, host, token, tunnel_token, ports, reverse_port, projects, state: "running", fresh, stop_at, stop_reason, warn}`; 202 `{state: "starting", instance, fresh}` when not waiting (a swallowed `touch` failure is 202 `{state: "unavailable", instance: null, fresh: false}`); 409 a refusal (section 8); 400 `invalid_project_id`, `invalid_user_id` or `invalid_view`; 503 `sandbox_image_missing` or `sandbox_start_failed`; 504 `sandbox_start_timeout` |
+| `POST /sandboxes/ensure` | `{user_id, view, projects, need_project, wait, touch, custom_templates}` | 200 `{user_id, view, instance, host, token, tunnel_token, ports, reverse_port, reverse_port_state, projects, state: "running", fresh, stop_at, stop_reason, warn}`; 202 `{state: "starting", instance, fresh}` when not waiting (a swallowed `touch` failure is 202 `{state: "unavailable", instance: null, fresh: false}`); 409 a refusal (section 8); 400 `invalid_project_id`, `invalid_user_id` or `invalid_view`; 503 `sandbox_image_missing` or `sandbox_start_failed`; 504 `sandbox_start_timeout` |
 | `POST /sandboxes/{user_id}/leases` | `{instance, lease_id, kind}` | 200 `{expires_at, state, stop_at, warn}`; 400 `invalid_user_id` or `invalid_sandbox_request`; 404 `unknown_instance`; 409 `sandbox_not_running` or `sandbox_draining` |
 | `DELETE /sandboxes/{user_id}/leases/{lease_id}` | none | 204 |
 | `POST /sandboxes/{user_id}/reconcile` | `{projects, act_as_projects}` | 200 `{stopped}` |
 | `POST /sandboxes/{user_id}/stop` | `{reason}` | 200 `{stopped}` (both views); 400 `invalid_stop_reason` |
 | `POST /sandboxes/stop-project` | `{project_id, reason}` | 200 `{stopped}`; 400 `invalid_project_id` or `invalid_stop_reason` |
 | `POST /sandboxes/stop-all` | `{reason}` | 200 `{stopped}`; 400 `invalid_stop_reason` |
-| `GET /sandboxes/{user_id}` | none | 200 `{instances: [{instance, view, state, projects_hash, created_at, last_used, lease_kinds, stop_at, stop_reason, warn, reverse_port}]}`, never a token |
-| `GET /sandboxes` | none | 200 `{sandboxes: [{user_id, view, instance, host, token, state}]}`: the running and draining instances, for the agent's fan-out through the webapp |
+| `GET /sandboxes/{user_id}` | none | 200 `{instances: [{instance, view, state, projects_hash, created_at, last_used, lease_kinds, stop_at, stop_reason, warn, reverse_port, reverse_port_state}]}`, never a token |
+| `GET /sandboxes` | none | 200 `{sandboxes: [{user_id, view, instance, host, token, state, reverse_port, reverse_port_state}]}`: the running and draining instances, for the agent's fan-out and its prompts through the webapp |
 | any other path under `/sandboxes/` | | 404 `unknown_instance` (the webapp reads a 404 without a code as an orchestrator that has no sandbox routes) |
 
 `ports` names `network_recon` 8000, `nuclei` 8002, `metasploit` 8003, `nmap` 8004,
@@ -529,6 +558,17 @@ the call created the instance: a call that joins a start another call began gets
 instance if nothing changes (the last use plus 8 hours under a hold, else plus the
 idle minutes); `stop_reason` is set only for an instance on its way out (draining or
 stopping); `warn` is the hold cap's warning. Times are epoch seconds.
+
+`custom_templates` lists the custom nuclei templates the person may use, as paths
+relative to the shared templates folder (section 5); absent or `null`, none is
+copied. `reverse_port` is the instance's reverse-shell port, `4444` meaning none.
+`reverse_port_state` says why: `assigned` (a pool port), `no_pool` (no
+`KALI_SANDBOX_PORT_POOL`) or `pool_full` (no port free for this person and view:
+every one in use or held for someone else); `null` while a starting instance has no
+port yet. An answer from an older orchestrator lacks the field, and every reader
+takes a missing or unknown value as unknown, never as an error
+(`reverse_port_state()` in the contract; `ENSURE_RUNNING_OPTIONAL_KEYS`,
+`STATUS_OPTIONAL_KEYS`, `LIST_OPTIONAL_KEYS`).
 
 ## 12. The webapp gateway
 
@@ -556,6 +596,12 @@ orchestrator only enforces the list it is given.
   overtake a start, so an account refused now stops the person's sandboxes, and a
   project no longer allowed is reconciled away and the start retried once on the
   new list.
+- **Custom templates**: every ensure names the custom nuclei templates the
+  sandbox's person may use (`sandboxCustomTemplates` in
+  `webapp/src/lib/sandbox/customTemplates.ts`), by the template routes' own
+  ownership rule: the person's own and the instance's, read from their rows and
+  checked on disk segment by segment without following a link; only a file with no
+  row needs a bounded walk of the folder. A database failure fails the ensure.
 - **An orchestrator out of reach**, or answering outside the contract (an older
   release's `{mode: "shared"}` included), is 503
   `orchestrator_unavailable`. Answers are cut to the contract's keys, and an error
@@ -600,7 +646,7 @@ allowlist of `webapp/src/middleware.ts`), under
 | `POST /api/internal/agent/sandbox/ensure` | `{userId, projectId?, wait?, actingAs?}` | ensure, with the checks above |
 | `POST /api/internal/agent/sandbox/lease` | `{userId, instance, leaseId, kind}` | take or renew a lease, after the account check |
 | `POST /api/internal/agent/sandbox/release` | `{userId, leaseId}` | release a lease (204) |
-| `GET /api/internal/agent/sandbox/list` | none | the running and draining sandboxes, with hosts and tokens |
+| `GET /api/internal/agent/sandbox/list` | none | the running and draining sandboxes, with hosts, tokens and reverse ports |
 
 The user id in these bodies is asserted by the agent, which takes it from a verified
 ticket, token or job; the routes re-check the account but cannot prove whom the
@@ -612,12 +658,24 @@ Browser routes:
 
 - `GET /api/agent/sandbox/status` (permission `agent:sessions`): the signed-in
   effective person's own instances of the view they work in (`act_as` while acting
-  as a member): `state`, `stop_at`, `stop_reason`, `warn`, never a token, host,
-  instance or project hash. The Sessions panel shows from it, in the seventh hour,
-  "Your Kali sandbox stops at HH:MM because it has not been used for 7 hours; use it
-  to keep it running".
+  as a member): `state`, `stop_at`, `stop_reason`, `warn`, `reverse_port` and
+  `reverse_port_state` (each `null` when the orchestrator reported no value the
+  contract allows), never a token, host, instance or project hash. The Sessions
+  panel shows from it, in the seventh hour, "Your Kali sandbox stops at HH:MM
+  because it has not been used for 7 hours; use it to keep it running", and always
+  the person's port ("Your reverse-shell port (LPORT): N", "No reverse-shell port:
+  the port pool is full. Use your tunnel or a bind payload", or "No reverse-shell
+  port: use your tunnel or a bind payload"); the Kali terminal shows the same line
+  once its shell speaks (`webapp/src/lib/sandbox/reversePort.ts`).
 - The admin Operations view lists the running sandboxes (person, view, state,
-  times; no host or token) in a "Kali sandboxes" table, each with a Stop button.
+  reverse port, times; no host or token) in a "Kali sandboxes" table, each with a
+  Stop button. The "Reverse port" cell is the port, "none (pool full)" or "none".
+- **Metasploit jobs** (handlers) belong to no project but to the sandbox they run
+  in: a person sees and stops the jobs of their own sandbox in the view they work in
+  (an admin acting as a member: that member's `act_as` sandbox), as the agent tagged
+  the row (`webapp/src/lib/authz/agentSessionsAccess.ts`), so a forgotten handler
+  no longer keeps their sandbox and its memory for up to 8 hours. Another sandbox's
+  jobs still need `platform:shell_sessions`; a stop is audited (`agent.job_kill`).
 
 ## 13. The agent
 
@@ -645,6 +703,23 @@ acting).
   each person has their own client for the five MCP servers, cached per instance,
   with that instance's bearer token. A call whose sandbox has gone retires every
   handle on that instance, so the next call ensures again.
+- **What the prompts know of the sandbox** (`known_sandbox` in
+  `agentic/sandbox_router.py`): the run's handle when it has one; else the
+  instance last learned for that person and view, from an ensure answer or from the
+  webapp's list, read in the background without starting anything; else "not known
+  yet". It is never another person's or another view's. The payload settings block
+  then says the sandbox is not known yet, and the LHOST/LPORT gate asks nothing,
+  until a Kali call reaches it (section 17).
+- **The restart note.** When a chat run's Kali call lands on a new instance (one
+  started for it, or another one than the chat used before: the old one stopped or
+  was replaced), the model reads one note just before that call's output, outside
+  its untrusted envelope: its Metasploit sessions, jobs and handlers are gone, its
+  tunnels are off until the person turns them on again, and its reverse-shell port
+  is unchanged, now another one, or none. The note travels in its own field
+  (`sandbox_note`) and is shown only by the chat's think nodes: the tool's own
+  `output` and `error` are unchanged, so an MCP `kali_exec` answer stays byte-exact.
+  A job's, an exec's, a failed call's or a refusal's result carries none, and the
+  note waits for the chat's next call.
 - **No fallback**: work with no person fails (`no_user`); a call is never sent to
   another person's sandbox, to the other view of the same person, or anywhere when
   the webapp gateway cannot be reached (`SandboxUnavailable("error")`).
@@ -663,14 +738,22 @@ acting).
   hold is taken on the lease route, never through `ensure`, which would count as use.
 - **Bounded reads** (`agentic/sandbox_http.py`): whoever is root in a sandbox writes
   its answers, so every read of a sandbox's own servers asks for an uncompressed
-  answer, refuses any other encoding, stops at 1 MiB and at a 5 s deadline.
+  answer, refuses any other encoding, stops at 1 MiB and at a 5 s deadline. The five
+  tool servers are dialled with no redirect followed and no compressed answer read
+  (`agentic/mcp_registry.py`): an answer past 64 MiB on the wire
+  (`SYSTEM_ANSWER_MAX_BYTES`) fails the call once, with an error that says so, and the
+  command is not sent again; of an answer read whole the agent keeps 10 Mi
+  characters (`SANDBOX_OUTPUT_MAX_CHARS` in `agentic/tools.py`) and says the rest
+  was cut.
 - **Stopping a run** (`agentic/sandbox_runs.py`): the processes a stopped chat run
   started are killed in each sandbox the run used, each asked with its own bearer;
   a run key is never sent to another person's sandbox. The emergency stop asks every
   running sandbox, each for at most 5 s.
 - **Triage and Tradecraft**: triage's `cve_intel` runs in the sandbox of the person
   who started the triage; Tradecraft's browser tier renders in the sandbox of the
-  person bound to the work. No person, no browser: a page is never rendered in
+  person bound to the work, and an administrator's Check URL or Read now while
+  acting as a member runs in that member's `act_as` sandbox, never in the member's
+  own or the administrator's. No person, no browser: a page is never rendered in
   someone else's sandbox.
 
 Agent routes:
@@ -680,8 +763,8 @@ Agent routes:
 | `POST /kali/exec` | the body carries `user_id` (the MCP token's owner), required (400 `invalid_user_id`, answered before the gateway is asked anything); the job runs in that person's own view on an `exec` lease; when the sandbox is not running, the job is created at once with `status: "starting"` |
 | `GET /kali/exec/{job_id}`, `POST .../cancel` | show `starting` while the job waits for the sandbox, and an `error_code` on a sandbox failure |
 | `GET /sessions` | asks every running and draining sandbox at once (5 s each) and never starts one; every row carries `sandbox: <instance>` and the agent's own `sandbox_user` and `sandbox_view` tags (a sandbox cannot claim another's), rows of another id shape are dropped, at most 500 per list per sandbox, and `unavailable` names the sandboxes that did not answer; 503 `sandbox_list_unavailable` when the list itself cannot be read |
-| `POST /sessions/{id}/interact`, `/sessions/{id}/kill`, `/jobs/{id}/kill`, `/session-chat-map`, `/non-msf-sessions` | take `?sandbox=<instance>` (required: 400 `sandbox_required`), optionally `?sandbox_user=` and `?sandbox_view=`; a malformed value (`shared` included) is 400 `invalid_sandbox`, an instance no running sandbox has is 404 `unknown_instance`, two matches are 409 `sandbox_ambiguous`. An interaction holds a short `interact` lease on that instance; a drive never starts a sandbox |
-| `GET /tunnel-status` | requires the master key and `?user_id=` (400 `invalid_user_id`); answers `{ngrok, chisel}`, each `{active, host, port}`, for that person's current `own` instance, inactive when none runs (502 `tunnel_status_unavailable` when its tunnel manager does not answer), and never starts one |
+| `POST /sessions/{id}/interact`, `/sessions/{id}/kill`, `/jobs/{id}/kill`, `/session-chat-map`, `/non-msf-sessions` | take `?sandbox=<instance>` (required: 400 `sandbox_required`), optionally `?sandbox_user=` and `?sandbox_view=`, which the webapp's session and job drives send whenever the agent tagged the row they authorized (`drivePath` in `webapp/src/app/api/agent/sessions/sessionDrive.ts`), so the drive reaches that person's sandbox or none even if the sandboxes changed since the list was read; a malformed value (`shared` included) is 400 `invalid_sandbox`, an instance no running sandbox has is 404 `unknown_instance`, two matches are 409 `sandbox_ambiguous`. An interaction holds a short `interact` lease on that instance; a drive never starts a sandbox |
+| `GET /tunnel-status` | requires the master key and `?user_id=` (400 `invalid_user_id`); answers `{ngrok, chisel}`, each `{active, status, host, port}`, for that person's current `own` instance: `active` that its process runs, `status` the tunnel manager's (section 17; a reason cut to 160 printable characters), `host` and `port` only while it is `on` (a manager too old to send `status` answers `{active, host, port}` as before); `{active: false, status: "off"}` when none runs (502 `tunnel_status_unavailable` when its tunnel manager does not answer), and never starts one |
 | `WS /ws/kali-terminal` | routes to the ticket's `sub` (the `act_as` view when the ticket carries `act`) on a `terminal` lease; on a cold start it sends a `starting` frame and keeps what the browser sends (at most 64 KiB, else close 1009) for the shell; it forwards the sandbox's frames as bytes only, so the only text frames are its own `sandbox_status` frames |
 | `POST /sandboxes/{user_id}/drop` | forget every client and handle of the person, both views; `{ok: true}` |
 | `POST /sandboxes/{user_id}/tunnel` | body `{ngrokAuthtoken, chiselServerUrl, chiselAuth}`. A config that starts a tunnel acquires the person's `own` view (`interact`), posts it with the instance's tunnel token and answers `{ok, ngrok, chisel}` (502 `tunnel_push_failed` when the tunnel manager does not take it or the sandbox gave no tunnel token; a sandbox refusal is 403, 409 or 503 `sandbox_<reason>`); an empty config stops the tunnels of every `own` instance, draining ones included, with no `ensure` and no lease (`{ok, stopped}`, or 502 `tunnel_stop_incomplete` naming the ones that did not confirm) |
@@ -693,6 +776,8 @@ Agent routes:
 | :---- | :---- |
 | Agent WebSocket | event `sandbox_status`, payload `{state: "starting" \| "ready" \| "unavailable", reason?: "ram" \| "hard" \| "error" \| "refused" \| "stopped", detail?, limit?}` (the limit is the governor payload). Sent, never stored. The drawer counts these frames only during a run, clears its status line when a run starts, and a Retry re-sends only once the run is over |
 | Tool result to the model | `sandbox unavailable: not enough memory`; `sandbox unavailable: the instance's sandbox limit is reached`; `sandbox unavailable: the sandbox could not start`; `sandbox unavailable: this person may not use the Kali sandbox on this project`; `sandbox stopped during the call` |
+| Note before a chat's tool output (section 13) | `[Kali sandbox started] This call ran in a new instance of your Kali sandbox, started for it: ...` or `[Kali sandbox restarted] This call ran in a new instance of your Kali sandbox: the one you used before stopped or was replaced, and its Metasploit sessions, jobs and handlers are gone. ...`, then the tunnels sentence (`own` view only) and the reverse-port sentence (`agentic/sandbox_router.py`, `new_instance_note`) |
+| Metasploit output, a handler that could not bind (section 17) | `[REDAMON] Port N is already in use in your Kali sandbox, so this handler did not start.` with who holds it and what to do, or `[REDAMON] Address A is not an address of your Kali sandbox, so this handler did not start ...` (`handler_busy_note` in `mcp/servers/metasploit_server.py`) |
 | Terminal socket | a frame `{"type": "sandbox_status", "state": "starting"}`; on a memory or limit refusal a frame with `state: "unavailable"`, the reason and the limit, then close code 1013; on `refused` the same frame, then close code 1008. The terminal reads status frames only before the shell's first output, and treats 1013 and 1008 as sandbox closes only after an `unavailable` frame |
 | MCP `kali_exec`, `kali_output` | status `starting`; `error_code` one of `ram`, `hard`, `sandbox_error`, `sandbox_refused`, `sandbox_stopped`, each with a note on what the caller can do (`webapp/src/lib/mcp/kaliTools.ts`) |
 | Share dialog, "Use AI agent" and "Exploitation & shells" | "This person's agent runs on this project use your WPScan, URLScan and ProjectDiscovery keys inside a Kali sandbox, where this person can read them while their runs use them." |
@@ -703,7 +788,7 @@ Agent routes:
 
 Every variable is optional, absent from `.env` by default, read by the
 orchestrator only (through its compose `environment:` block), with its default in
-code. A single-host deploy forwards the three `KALI_SANDBOX_*` knobs from the
+code. A single-host deploy forwards the four `KALI_SANDBOX_*` knobs from the
 operator's deploy settings and writes each into the server's `.env` only when it is
 set.
 
@@ -711,7 +796,8 @@ set.
 | :------- | :------ | :----- |
 | `KALI_SANDBOX_IDLE_MINUTES` | 20 | minutes without use before an idle sandbox stops; an integer of at least 1, anything else is 20 |
 | `KALI_SANDBOX_MAX_CONCURRENT` | unset: no count limit | the most running sandboxes; `0` blocks every new sandbox; anything but an integer of at least 0 is no limit. Advised on a server many people share |
-| `KALI_SANDBOX_PORT_POOL` | unset: no pool | `[bind-ip:]first-last`: each sandbox gets one host port from the range for direct reverse shells, bound on `127.0.0.1` unless an address is given. A port the sandbox serves itself (8000, 8002-8005, 8013-8016, 4040), 4444 (so a reverse port of 4444 always means no pool port) or one another sandbox holds is never picked; a port the host already uses is tried once more with another and skipped for 10 minutes; a full pool starts a sandbox without one. A malformed value is no pool, and is logged |
+| `KALI_SANDBOX_PORT_POOL` | unset: no pool | `[bind-ip:]first-last`: each sandbox gets one host port from the range for direct reverse shells, bound on `127.0.0.1` unless an address is given. A port the sandbox serves itself (8000, 8002-8005, 8013-8016, 4040), 4444 (so a reverse port of 4444 always means no pool port), one another sandbox uses or one held for another person (`KALI_SANDBOX_PORT_HOLD_HOURS`) is never picked; a port the host already uses is tried once more with another and skipped for 10 minutes; a pool with no port free for this person and view starts the sandbox without one (`reverse_port_state` `pool_full`, logged as a warning). A malformed value is no pool, and is logged |
+| `KALI_SANDBOX_PORT_HOLD_HOURS` | 24 | hours a stopped or replaced sandbox's pool port stays its person's and view's: nobody else gets it, and their next start gets it back (section 17); `0` frees it at once; anything but an integer of at least 0 is 24. Read at each use, so a change applies to every hold already kept |
 | `TERMINAL_MAX_SESSIONS` | 5 (the terminal server's own) | copied into each sandbox: the most terminal sessions in one person's sandbox |
 
 Not variables: the image, the lease timings, the 8-hour and 1-hour figures, the
@@ -734,6 +820,8 @@ is a resource-profile value. `KALI_MEM`, `KALI_PIDS` and `KALI_CPUS` are ignored
 | A start that never settled, stopped after | 360 (start timeout + 60) |
 | Adoption grace (no stop for holding no lease) | 90 |
 | Templates refresh, retry after a failure | 86 400, 3 600 |
+| Pool port hold after a stop (default, `KALI_SANDBOX_PORT_HOLD_HOURS`) | 86 400 |
+| A pool port the host already uses, skipped for | 600 |
 | Agent's wait on the webapp for `ensure` | 330 (start timeout + 30) |
 | Agent's wait on the webapp, other calls | 10 |
 | Webapp's wait on the orchestrator for a waiting `ensure` | 315 (start timeout + 15) |
@@ -757,9 +845,36 @@ takes a few seconds; the first Metasploit call in a fresh sandbox waits another
   their own view's sandbox. A save that turns a tunnel on starts the sandbox first,
   so that start cannot reset the setting after the push. An empty configuration
   stops the tunnel.
+- A chat run uses a tunnel only when both switches say so: the person's own tunnel
+  is on (Global Settings > Tunneling) and the project's Tunnel Provider (Payload
+  Direction, in the project settings) names it.
 - While acting as another account, a tunnel cannot be turned on or changed (it
   would run in that account's own sandbox, not the `act_as` one); turning it off
-  is allowed. The `act_as` view has no tunnel.
+  is allowed. The `act_as` view has no tunnel, and the agent's payload block says
+  so ("not available": the person's own tunnel reaches only their own sandbox)
+  rather than blaming their tunnel settings.
+- A tunnel lands on port 4444 inside the person's sandbox (ngrok `tcp 4444`,
+  chisel `R:4444:localhost:4444`, `mcp/servers/tunnel_manager.py`), whatever the
+  sandbox's pool port. **chisel is one server per person**: every client asks its
+  server for the same remote port 4444, so a second person's client on the same
+  chisel server is refused, and its status reads `error: remote port 4444 in use on
+  the chisel server (another client holds it; each person needs their own chisel
+  server)`. There is no per-person remote port (an owner decision).
+- **Tunnel status.** The tunnel manager reads each client's own log, since a
+  refused remote port, a wrong credential or an unreachable server leave the
+  process alive and retrying: each tunnel's `status` is `on` (chisel logged
+  "Connected"; ngrok's API names the public endpoint), `connecting`, `error:
+  <reason>` (chisel: the remote port in use, authentication failed, or its own
+  error line; ngrok: its error line and error code, never the authtoken, which its
+  error quotes), or `off` (not running). `active` keeps its old meaning, the
+  process runs. The agent counts a tunnel only while it is `on`; while one is
+  `connecting` or not read yet its block says the values are not known yet and
+  asks nothing, a failed one is named as failed, and one still connecting after
+  45 s "did not come up" and counts as off (`_CONNECTING_LIMIT_S` in
+  `agentic/utils.py`), so a working pool port is used instead. Global Settings > Tunneling
+  shows "On (ngrok)", "Connecting (chisel)", "Failed (chisel): <reason>" or "Off",
+  and the graph toolbar's tunnel badge the same; a manager too old to send
+  `status` is read by `active` alone (`webapp/src/lib/tunnelDisplay.ts`).
 - A freshly started sandbox has no tunnel, and the webapp turns the person's
   `tunnelsEnabled` off at that start, so a tunnel never comes back silently. A
   stored "on" whose sandbox runs no tunnel outlived a start whose reset was lost: it
@@ -768,20 +883,101 @@ takes a few seconds; the first Metasploit call in a fresh sandbox waits another
   off (a detached call inside it, sent again every idle tick while it drains); a
   drain with no replacement yet keeps its tunnel, so sessions that came in through
   it live on.
-- The agent's lookups read the person's own tunnel: its status through
-  `/tunnel-status?user_id=`, and the chisel settings through
-  `/api/global/tunnel-config?userId=`, which answers that person's own row while
-  their tunnel is on and nothing otherwise. The instance-wide tunnel fields of the
+- The agent reads the person's own tunnel from their sandbox only: the tunnel
+  manager's `/tunnel/status`, read in the background with a bound and remembered
+  for the prompts (a prompt never dials a sandbox), which also answers the
+  webapp's `/tunnel-status?user_id=`. chisel counts as on only when the sandbox
+  says so, never from the stored settings. The instance-wide tunnel fields of the
   admin instance settings reach no sandbox.
 - The hold watcher keeps a sandbox with an active tunnel (section 13), for at most
   8 hours without use, when this agent process pushed that tunnel: after an agent
   restart a sandbox held only by its tunnel stops after the idle minutes.
-- The reverse-shell listener inside the container is `MSF_REVERSE_PORT` (the pool
-  port, or 4444). It is reachable from outside only through the person's tunnel, or
-  through the pool port when one is set. The agent's LHOST/LPORT hints follow: with
-  a tunnel, its address; with a pool port, that port as LPORT and the host's
-  address the target can reach as LHOST; with neither, no direct reverse shell
-  (a tunnel or a bind payload).
+- **One reverse-shell port per sandbox.** With `KALI_SANDBOX_PORT_POOL` set, each
+  instance gets one port of the pool, published on the host at that number and
+  reached at the same number inside: `MSF_REVERSE_PORT`. Without one,
+  `MSF_REVERSE_PORT` is `4444`, which nothing but the person's tunnel reaches.
+  Every new `msfconsole` (a start, a restart, the reset for the next project) runs
+  `setg LPORT <port>` when the port is not 4444 (`mcp/servers/metasploit_server.py`),
+  so Metasploit's own defaults (4444; 4433 for `sessions -u`) never stand in for
+  it; a module's own `set LPORT` still wins.
+- **Where a person sees their port**: the Sessions panel and the Kali terminal (the
+  line above it, and the shell's login message, from `$MSF_REVERSE_PORT`), the admin
+  Operations view (section 12), the MCP `kali_exec` description (`$MSF_REVERSE_PORT`
+  inside the sandbox, 4444 meaning none), and the agent's payload settings block.
+- **The port hold.** When an instance that holds a pool port stops for any reason,
+  or is removed at adoption, its port is held for its person and view for
+  `KALI_SANDBOX_PORT_HOLD_HOURS` (24 by default; `0`, no hold): nobody else gets
+  it, and that person's next start in that view gets it back (the most recently
+  held one when several are free). A start that fails before its container
+  publishes the port keeps the hold. So a late callback (a phishing payload opened
+  the next day, an implant, a handler still waiting at the 8-hour stop) never lands
+  in another person's sandbox while the hold lasts. When every free port is held
+  for someone else the sandbox starts without one: `reverse_port_state` is
+  `pool_full`, and the person and the agent are told. The holds outlive an
+  orchestrator restart in `mcp/output/.sandbox-port-holds.json` (gitignored, mode
+  0600, sandbox keys only, never a user id; written atomically and synced, then a
+  last good copy `.sandbox-port-holds.json.prev`). A damaged file falls back to the
+  copy; with both unreadable the orchestrator logs an error and keeps no hold.
+- **The agent's payload plan** (`payload_plan` in `agentic/utils.py`), in this
+  order:
+  1. a tunnel the sandbox reports `on` (ngrok first, then chisel): reverse through
+     it;
+  2. a bind-only project (a bind port on target, no LHOST and no LPORT): bind;
+  3. the sandbox, its port, or an enabled tunnel's state not known yet (or the
+     tunnel still connecting, for at most 45 s): "not known yet", and nothing is
+     asked;
+  4. a pool port: it is LPORT, with the project's LHOST, or the agent asks for
+     LHOST (the host's address the target reaches, never the sandbox's);
+  5. no tunnel and no pool port: bind payloads only, or the person turns a tunnel
+     on.
+
+  The project's LPORT setting is never used as LPORT: without a pool nothing of a
+  sandbox is published, so no other port could be reached. It only keeps step 2
+  from calling a project bind-only. The LHOST/LPORT gate (`is_session_config_complete`
+  in `agentic/orchestrator_helpers/config.py`) asks only what the plan misses: LHOST
+  beside a pool port, a bind port when neither a pool port nor a tunnel exists,
+  nothing while the sandbox is not known. The post-exploitation phase (statefull
+  mode) gets the same block, for `sessions -u` and local exploits, which start a
+  handler of their own.
+- **With a tunnel**, the handler binds `127.0.0.1:4444` (`ReverseListenerBindAddress`,
+  `ReverseListenerBindPort`), where the tunnel delivers. ngrok: LHOST and LPORT are
+  ngrok's public host and port. chisel: LHOST is the chisel server's host and LPORT
+  is 4444, the server's `R:4444`. Because `msfconsole` defaults LPORT to the pool
+  port, the tunnel block sets LPORT explicitly, for `msfvenom` and `sessions -u`
+  too; the pool block clears what a tunnel left (`unsetg ReverseListenerBindAddress
+  ReverseListenerBindPort`).
+- **One port for all of a person's chats.** Every chat and project of the person
+  shares the sandbox, its one `msfconsole` and its one reverse port, and only one
+  handler can listen on a port. The agent runs `jobs` before it starts a handler,
+  reuses one already listening for the payload it needs, and stops only a handler
+  it started. When a handler cannot bind, the Metasploit server appends a note to
+  the output (section 14): which of the person's Metasploit jobs holds the port
+  (its id, `jobs -k <id>`), or which other process (its name and pid, such as an
+  `nc` started with `kali_shell`), and that every chat of the person shares that
+  port. When nothing listens there and the address was a specific one (not
+  `0.0.0.0`, `::` or the loopback, where a tunnel's handler binds), the note says
+  that address is not one of the sandbox's (leave `ReverseListenerBindAddress`
+  unset). The note comes only on a real failure: the final `Rex::BindFailed`, or a
+  failed bind no start follows. A failed bind to LHOST that `msfconsole` follows
+  with a start on `0.0.0.0` is a normal start and gets no note. A new session is linked to the chat whose command started the handler that
+  caught it (in the Sessions panel and the chat's session map), never to another
+  project's; every chat of the person on that project still sees it with
+  `sessions -l`, since they share the one console (an owner decision for a shared
+  handler).
+- **Payloads that need a second inbound port cannot work.** A target reaches one
+  port of the sandbox, the reverse port (the pool port, or 4444 through the
+  tunnel): `web_delivery`, `hta_server`, `office_word_hta`, a CmdStager flavor that
+  makes the target download the payload (`wget`, `curl`, `tftp`, `ftp_http`,
+  `certutil`, `lwprequest`, `psh_invokewebrequest`, `fetch`), the `cmd/*/http*/*`
+  fetch payloads and any module `SRVHOST`/`SRVPORT` never reach it, nor does a
+  `python3 -m http.server` on any other port (8000 is the sandbox's own network
+  recon server). A file server on the reverse port itself is reachable, but holds
+  that port, so no handler of any of the person's chats can bind it until it is
+  stopped. What works on one port: a
+  standalone stageless payload (`msfvenom`), a self-contained document, a
+  Dropper/Staged target whose CmdStager writes the payload through the exploit
+  (`printf`, `echo`, `bourne`; `vbs` on Windows), a Command target with a stageless
+  payload, and, once a session exists, `upload` over it.
 - On a single-host deploy (`tooling/deploy/single-host/deploy.sh`) the pool must be
   bound on `127.0.0.1` (or name no address), start at 1024 or above, hold at most
   100 ports and cover no port the host already serves; any other pool is refused.
@@ -809,6 +1005,10 @@ takes a few seconds; the first Metasploit call in a fresh sandbox waits another
   this stack still running within its deadline is left to finish; any other
   container holding that name is never touched, and the refresh waits. A sandbox
   starts whatever the state of its templates.
+- **Custom nuclei templates** are copied per view at each start (section 5): a
+  running sandbox keeps the copy it started with, and the nuclei server lists the
+  templates it finds at its own start, so an upload or a deletion reaches a sandbox
+  at its next start.
 - **Metasploit modules** ship with the image. Its last layers upgrade the
   `metasploit-framework` package when it is built with the build argument
   `MSF_REFRESH_STAMP`, recorded in the image label `redamon.msf_refresh`;
@@ -834,8 +1034,21 @@ takes a few seconds; the first Metasploit call in a fresh sandbox waits another
   findings on class priors without CVE intel, and Tradecraft renders its pages
   without the browser tier.
 - **The read-only mounts are the same for everybody**: the MCP server code, the
-  graph library, the nuclei templates volume, the OSV database and the custom
-  nuclei templates folder, which holds every member's uploaded templates.
+  graph library, the nuclei templates volume and the OSV database. The custom
+  nuclei templates are a per-view copy (section 5), except in a sandbox started
+  before that copy existed, which keeps every member's templates until it drains.
+- **One reverse port per person.** All of a person's chats and projects share their
+  sandbox's one reverse port and one `msfconsole`, so two exploits that each need
+  their own handler on it cannot run at once; the second reuses the first's
+  handler or waits (section 17).
+- **One inbound port.** Payloads that make the target download from the sandbox
+  (web delivery, an HTA server, `office_word_hta`, downloading stagers) cannot work
+  (section 17).
+- **The hold is finite.** A callback that arrives after `KALI_SANDBOX_PORT_HOLD_HOURS`
+  can land in whichever sandbox has the port by then. Metasploit's
+  `PayloadUUIDTracking` is not used to refuse it: in Metasploit 6.5.7 it covers only
+  the HTTP(S) and SSH handlers, and would drop sessions of `msfvenom`-made payloads.
+- **chisel needs one server per person** (section 17).
 - **Aggregate CPU.** Each sandbox's CPUs and processes are capped and weighted below
   the services, but how many sandboxes run is bounded only by memory admission and
   `KALI_SANDBOX_MAX_CONCURRENT`.
@@ -854,12 +1067,14 @@ takes a few seconds; the first Metasploit call in a fresh sandbox waits another
 | Test | What it checks |
 | :--- | :------------- |
 | `tests/test_sandbox_contract.py` | the three contract copies agree, and the pure rules keep persons apart |
-| `recon_orchestrator/tests/test_sandbox_*.py` | the manager, leases, routes, admission and templates |
-| `agentic/tests/test_sandbox_*.py` | the router, the executor's routing, the agent's routes, the hold watcher |
+| `recon_orchestrator/tests/test_sandbox_*.py` | the manager, leases, routes, admission and templates; `test_sandbox_port_hold.py` the pool port hold and its file, `test_sandbox_custom_templates.py` the per-view template copy |
+| `agentic/tests/test_sandbox_*.py` | the router, the executor's routing, the agent's routes, the hold watcher; `test_sandbox_ports_agent.py` the payload plan, the gate, the known sandbox and the restart note |
+| `mcp/servers/tests/test_metasploit_reverse_port.py`, `mcp/servers/tests/test_kali_motd.py`, `tests/test_tunnel_manager_status.py` | `setg LPORT`, the handler-busy note and the session-to-chat link; the terminal's login message; the tunnel status read from each client's log |
 | `webapp/src/lib/sandbox/*.test.ts`, `webapp/src/app/api/internal/agent/sandbox/sandboxRoutes.test.ts` | the gateway, the lifecycle hooks, the internal routes |
 | `tests/kali_sandbox_guests_test.sh`, `tests/kali_sandbox_no_required_env_test.sh`, `tests/kali_sandbox_cleanup_test.sh`, `tests/kali_sandbox_removed_test.sh` | the guests forward nothing and the proxy refuses the pool; no variable became required; `./redamon.sh` removes and lists the sandboxes; no shared Kali service, address or port is left |
 | `tests/kali_sandbox_isolation_live.sh` (live, after `python3 tests/kali_sandbox_seed_live.py`) | one check per threat between two seeded persons through MCP `kali_exec`, with `docker inspect` and `docker exec` as ground truth |
-| `bash testing/e2e/scripts/per-user-sandbox-e2e.sh` (live, Playwright) | `testing/e2e/tests/perUserSandbox.spec.ts`: everything people do with the Kali tools from the UI, per person |
+| `bash tests/kali_reverse_ports_live.sh` (live, Agent in the Loop) | the reverse-shell ports end to end (E1-E9, E11, E12): what the agent or the MCP client was told, what each sandbox published, where each shell landed (`tests/kali_reverse_ports_live.py`) |
+| `bash testing/e2e/scripts/per-user-sandbox-e2e.sh` (live, Playwright) | `testing/e2e/tests/perUserSandbox.spec.ts`: everything people do with the Kali tools from the UI, per person; group E, the ports (each person's port in the Sessions panel, the terminal, the status route and Operations; a member stops her own job) |
 
 ## 21. Roll-back
 

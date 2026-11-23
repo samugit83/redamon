@@ -161,6 +161,7 @@ flag it manages. Control KB with `ENABLE_KB` only.
 | `KALI_SANDBOX_PORT_POOL` | `first-last` (or `127.0.0.1:first-last`), e.g. `4500-4509`: one host port per running Kali sandbox for direct reverse shells, bound on loopback. The deploy refuses any other bind address, a range starting below 1024 or holding more than 100 ports, and a range over any port the host already serves (the loopback-only services, SSH/HTTP/HTTPS and every port the shipped compose files publish). Required by `revshell-open`. Blank -> no pool: `init`/`update` remove the key from the server `.env`, so no sandbox port is published. |
 | `KALI_SANDBOX_MAX_CONCURRENT` | The most Kali sandboxes running at once (one per person and view), a whole number (`0` blocks every new one; the deploy refuses anything else). Advised on a multi-user server; blank -> `init`/`update` remove the key, and only the memory governor limits them. |
 | `KALI_SANDBOX_IDLE_MINUTES` | Minutes without use before a Kali sandbox stops, a whole number of at least 1 (the deploy refuses anything else). Blank -> `init`/`update` remove the key, and the default, 20, holds. |
+| `KALI_SANDBOX_PORT_HOLD_HOURS` | Hours a stopped or replaced Kali sandbox's pool port goes to nobody else and back to its person (and view) on their next start, so a late callback never lands in another person's sandbox; a whole number, `0` frees it at once (the deploy refuses anything else). Blank -> `init`/`update` remove the key, and the default, 24, holds. |
 | `TUNNELS_ENABLED` | Unused: written to the server `.env`, read by nothing. Tunnels are per person, in each person's own Kali sandbox, behind the `platform:tunnels` permission. |
 
 ### First admin (required for init)
@@ -405,10 +406,11 @@ Putting it on a public IP invalidates that, so the deploy closes the gap:
   network, and no sandbox port is published by default, so a target cannot connect back to
   it. Two ways to catch a *direct* reverse shell during an engagement:
   - **A person's own tunnel** (Global Settings -> Tunneling, ngrok or chisel, behind the
-    Tunnels permission `platform:tunnels`): it runs inside that person's sandbox and forwards
-    to that sandbox's port 4444, the listener's port when no pool is set (with a pool the
-    listener moves to the pool port, which the tunnel does not forward); every restart of the
-    sandbox turns it off.
+    Tunnels permission `platform:tunnels`, and used only when the project's Tunnel Provider
+    names it too): it runs inside that person's sandbox and forwards to port 4444 there,
+    where the agent then binds its handler, pool or not; every restart of the sandbox turns
+    it off. A chisel server serves one person: every client asks it for the same remote
+    port 4444, and a second person's is refused ("remote port 4444 in use").
   - **The port pool.** Set `KALI_SANDBOX_PORT_POOL` (e.g. `4500-4509`) and apply it with
     `./deploy.sh update`: each running sandbox gets one port of the range for its listener,
     bound on `127.0.0.1`. Set `REVSHELL_TARGET_CIDRS` to your RoE target scope and run
@@ -419,7 +421,10 @@ Putting it on a public IP invalidates that, so the deploy closes the gap:
     source scoping actually applies - a plain ufw rule on a Docker-published port would be
     bypassed by Docker's own iptables chains. A host **reboot drops the forwarders**, so the
     pool fails closed. Each person's LPORT is their own sandbox's pool port, which the agent
-    names when it suggests LHOST/LPORT; LHOST is the host's public IP. `init` and `update`
+    uses as LPORT and the Sessions panel and the terminal show; LHOST is the host's public
+    IP. A stopped sandbox's port stays its person's for `KALI_SANDBOX_PORT_HOLD_HOURS` (24
+    by default), and a sandbox that finds no free port starts without one ("the port pool
+    is full"), so size the pool for the people who work at once plus those within the hold. `init` and `update`
     write `HOST_IP` to the server `.env` as `HOST_LAN_IP` when it is an IPv4 address, so the
     agent and the project settings suggest that address (detected on the host, it would be
     the private one behind a cloud's NAT); with a DNS name in `HOST_IP`, give LHOST yourself.
@@ -583,7 +588,9 @@ The first `update` onto per-user Kali sandboxes replaces the shared `redamon-kal
   reserves 1 GiB; without a cap only memory limits them).
 - Shells open in `redamon-kali` end at the `update`, which removes the container once every
   image is built. A Kali build that fails keeps it, and `deploy.sh update` then stops as
-  failed: run it again.
+  failed: run it again. Only `redamon.sh` (which `deploy.sh` drives) removes it: a bare
+  `docker compose up` on the server leaves `redamon-kali` running beside the new
+  sandboxes, so remove it with `docker rm -f redamon-kali` (or rerun `./deploy.sh update`).
 - If an engagement was open, run `./deploy.sh revshell-close` once: it stops the old `4444`
   forwarder and deletes its ufw rules, which carried no tag.
 
@@ -626,7 +633,7 @@ application `.env`.
 | `APP_DIR` | `COMPOSE_PROJECT_NAME` (do not change between init/update) |
 | `ADMIN_*` | first-admin creation on init |
 | `NVD_API_KEY`, `KB_EMBEDDING_*`, `TUNNELS_ENABLED`, `OSV_DB_*` | appended to the server `.env` |
-| `KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_MAX_CONCURRENT`, `KALI_SANDBOX_IDLE_MINUTES` | written to the server `.env` when set, removed from it when blank (the orchestrator reads them) |
+| `KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_MAX_CONCURRENT`, `KALI_SANDBOX_IDLE_MINUTES`, `KALI_SANDBOX_PORT_HOLD_HOURS` | written to the server `.env` when set, removed from it when blank (the orchestrator reads them) |
 | `HOST_IP` (an IPv4 address) | `HOST_LAN_IP` in the server `.env`, the LHOST the agent suggests |
 
 Intentionally hands-off (redamon.sh owns these; the deploy only verifies): `AUTH_SECRET`,
