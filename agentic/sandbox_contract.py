@@ -614,7 +614,7 @@ STATS_SANDBOX_ENVELOPE = "sandbox_envelope"
 STATES = ("starting", "running", "draining", "stopping")
 STOP_REASONS = ("idle", "hold_unused", "access_lost", "account_disabled",
                 "account_deleted", "project_deleted", "last_project_deleted",
-                "emergency", "operator", "replaced", "start_failed")
+                "emergency", "operator", "replaced", "start_failed", "crashed")
 # The only stop that also deletes the person's output folders (both views).
 STOP_REASON_DELETES_OUTPUT = "account_deleted"
 LEASE_KINDS = ("run", "terminal", "exec", "job", "triage", "tradecraft", "interact", "hold")

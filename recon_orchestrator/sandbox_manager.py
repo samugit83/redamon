@@ -177,6 +177,14 @@ ADOPTION_GRACE_S = sc.LEASE_TTL_S
 # check task died) is stopped by the idle loop this long after its timeout.
 START_STUCK_GRACE_S = 60
 
+# A running instance whose container is gone or exited (its main process killed by
+# the memory limit or by a shell, `restart: no`) is stopped under this reason, by
+# the next ensure or idle tick, so it is never handed out again. An unhealthy one
+# is stopped only while no lease holds it: a probe that times out under a person's
+# own heavy load is no crash, and stopping it would end their sessions.
+CRASH_REASON = "crashed"
+CRASHED_HEALTH = ("exited", "dead", "gone")
+
 # Turns off the tunnels of a replaced instance (tunnel_manager.py on its own
 # loopback, an empty config). The token reaches it through the exec's
 # environment, never its command line; proxies are bypassed. The person is root
@@ -575,6 +583,8 @@ class SandboxManager:
             return {"state": "unavailable", "instance": None, "fresh": False}
 
     def _running_answer(self, inst: Instance, fresh: bool) -> dict:
+        """``state`` is ``running`` for a served draining instance too (it serves the
+        call); its ``stop_reason`` says it is on its way out."""
         now = self.clock()
         return {"user_id": inst.user_id, "view": inst.view,
                 "instance": inst.instance, "host": inst.host, "token": inst.token,
@@ -582,7 +592,7 @@ class SandboxManager:
                 "reverse_port": inst.reverse_port, "reverse_port_state": inst.reverse_port_state,
                 "projects": list(inst.projects),
                 "state": "running", "fresh": fresh, "stop_at": self._stop_at(inst, now),
-                "stop_reason": None, "warn": self._warn(inst, now)}
+                "stop_reason": self._shown_stop_reason(inst), "warn": self._warn(inst, now)}
 
     async def _wait_ready(self, inst: Instance) -> None:
         try:
@@ -604,6 +614,9 @@ class SandboxManager:
                     if not set(inst.projects) <= allowed and inst.state != "stopping":
                         await self._stop_locked(inst, "access_lost")
                 cur = self._current(user_id, view)
+                if cur is not None and cur.state == "running" and await self._crashed(cur, self.clock()):
+                    await self._stop_locked(cur, CRASH_REASON)
+                    cur = self._current(user_id, view)
                 replace = cur is not None and need_project is not None and need_project not in cur.projects
                 if cur is not None and not replace:
                     if cur.state == "running":
@@ -617,7 +630,13 @@ class SandboxManager:
                                             "the sandbox was stopped while this start waited; ask again")
                 # A replacement is admitted and made under its own key first: a
                 # refusal or a failed start leaves the current instance current.
-                new = await self._start_locked(user_id, view, projects, templates)
+                try:
+                    new = await self._start_locked(user_id, view, projects, templates)
+                except SandboxRefused:
+                    standby = self._standby(user_id, view, need_project) if cur is None else None
+                    if standby is None:
+                        raise
+                    return standby, False
                 if replace and cur.state in ("starting", "running"):
                     self._mark_draining(cur, "a project it lacks is needed")
                 await self._stop_older_draining(user_id, view)
@@ -629,6 +648,40 @@ class SandboxManager:
                 waiting.discard(pending)
                 if not waiting:
                     del self._pending[user_id]
+
+    def _standby(self, user_id: str, view: str, need_project: Optional[str]) -> Optional[Instance]:
+        """The view's draining instance, served when its replacement is refused for
+        memory or the sandbox count (an update drains every sandbox onto new code
+        while its sessions still hold it): the person keeps working in it instead
+        of being refused while it runs. Never one that lacks the project the work
+        needs (it mounts nothing new). It stays draining, never current; the next
+        ensure tries the replacement again. A lease lifetime of grace lets the
+        caller's new lease in. Under the person's lock."""
+        candidates = [i for i in self._view_instances(user_id, view)
+                      if i.state == "draining" and i.ready.is_set() and i.start_error is None
+                      and (need_project is None or need_project in i.projects)]
+        if not candidates:
+            return None
+        inst = max(candidates, key=lambda i: i.seq)
+        now = self.clock()
+        inst.grace_until = max(inst.grace_until, now + sc.LEASE_TTL_S)
+        inst.last_used = now
+        self._log("served while draining (its replacement was refused)", inst, DRAIN_REASON)
+        return inst
+
+    async def _crashed(self, inst: Instance, now: float) -> bool:
+        """Whether a running or draining instance is no longer usable: its container is
+        gone or exited, or unhealthy with no lease held on it (CRASH_REASON). A health
+        that cannot be read is no crash: the next check reads it again."""
+        try:
+            health = await asyncio.to_thread(self._health_sync, inst.container_id or inst.host)
+        except Exception as e:  # noqa: BLE001 - Docker failing is not the sandbox failing
+            logger.warning(f"[sandbox] the health of key={inst.key} instance={inst.instance} "
+                           f"could not be read: {type(e).__name__}")
+            return False
+        if health in CRASHED_HEALTH:
+            return True
+        return health == "unhealthy" and not self._live_kinds(inst, now)
 
     def _new_instance_id(self, user_id: str) -> str:
         """Instance ids are 24 random bits, unique server-wide: the webapp pairs
@@ -1216,6 +1269,10 @@ class SandboxManager:
                         continue
                     drained += 1
             for inst in self.instances(user_id):
+                if (inst.state in ("running", "draining") and inst.ready.is_set()
+                        and await self._crashed(inst, now)):
+                    stopped += int(await self._stop_locked(inst, CRASH_REASON))
+                    continue
                 reason = self._idle_reason(inst, now)
                 if reason is not None:
                     stopped += int(await self._stop_locked(inst, reason))
@@ -2311,9 +2368,11 @@ class SandboxManager:
             return refused("invalid port label")
         pool_port = int(port_label) if port_label else None
         env = _env_dict(config.get("Env"))
-        problem = self._env_problem(env, _env_dict(image_config.get("Env")), user_id, view, pool_port)
+        problem, env_drift = self._env_problem(env, _env_dict(image_config.get("Env")), user_id, view,
+                                               pool_port)
         if problem:
             return refused(problem)
+        drain = drain or env_drift
         probe = Instance(user_id=user_id, view=view, instance=instance, state="running",
                          projects=projects, host=c.name, key=sc.sandbox_key(user_id, view),
                          network=sc.network_name(user_id, view), created=0.0, last_used=0.0,
@@ -2409,15 +2468,28 @@ class SandboxManager:
 
     @staticmethod
     def _env_problem(env: dict, image_env: dict, user_id: str, view: str,
-                     pool_port: Optional[int]) -> Optional[str]:
+                     pool_port: Optional[int]) -> tuple:
+        """(why it is refused, why it drains) for a candidate's environment. A fixed
+        variable it lacks is an older release's (a release that adds a server port
+        adds one): kept draining, so an update does not cut its sessions. A fixed
+        value that differs, or a variable no release sets, is refused."""
         allowed = (set(sc.CONTAINER_ENV_FIXED) | {sc.ENV_MCP_AUTH_TOKEN, sc.ENV_TUNNEL_AUTH_TOKEN,
                                                   sc.ENV_SANDBOX_KEY, sc.ENV_REVERSE_PORT,
                                                   sc.TERMINAL_MAX_SESSIONS_ENV} | set(image_env))
         if set(env) - allowed:
-            return "unexpected environment variables"
+            return "unexpected environment variables", None
+        drift = None
         for k, v in sc.CONTAINER_ENV_FIXED.items():
-            if env.get(k) != v:
-                return "a fixed environment value changed"
+            if k not in env:
+                drift = "an older release's environment"
+            elif env[k] != v:
+                return "a fixed environment value changed", None
+        problem = SandboxManager._env_identity_problem(env, image_env, user_id, view, pool_port)
+        return problem, (None if problem else drift)
+
+    @staticmethod
+    def _env_identity_problem(env: dict, image_env: dict, user_id: str, view: str,
+                              pool_port: Optional[int]) -> Optional[str]:
         for k, v in image_env.items():
             if k not in sc.CONTAINER_ENV_FIXED and env.get(k) != v:
                 return "an image environment value changed"

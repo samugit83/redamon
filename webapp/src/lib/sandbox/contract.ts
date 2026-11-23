@@ -103,6 +103,7 @@ export const STOP_REASONS = [
   'operator',
   'replaced',
   'start_failed',
+  'crashed',
 ] as const
 
 // The agent WebSocket event (also MessageType.SANDBOX_STATUS in websocket-types.ts).

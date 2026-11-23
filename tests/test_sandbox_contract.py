@@ -813,7 +813,10 @@ def test_lease_kinds_and_states():
                              "interact", "hold")
     assert c.USE_KINDS == tuple(k for k in c.LEASE_KINDS if k != "hold")
     assert c.STATES == ("starting", "running", "draining", "stopping")
-    assert "account_deleted" in c.STOP_REASONS and len(set(c.STOP_REASONS)) == 11
+    assert "account_deleted" in c.STOP_REASONS and len(set(c.STOP_REASONS)) == 12
+    # A running instance whose container died stops under its own reason, never one
+    # that reads as the person's doing (idle) or an operator's (G-13).
+    assert "crashed" in c.STOP_REASONS
     for code, status in c.ERROR_STATUS.items():
         assert status in (400, 403, 404, 409, 503, 504), code
 
