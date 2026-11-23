@@ -19,6 +19,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -42,16 +43,31 @@ def run_child(code: str, timeout: float):
 
 
 def grep_children() -> list[int]:
-    pids = []
+    """The live grep children of THIS process: the gate runs test files side by
+    side in one container, and another file's searches must not be counted."""
+    pids, me = [], os.getpid()
     for pid in os.listdir("/proc"):
         try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                fields = fh.read().rsplit(b")", 1)[1].split()
             with open(f"/proc/{pid}/cmdline", "rb") as fh:
                 argv = fh.read().split(b"\0")
-        except OSError:
+        except (OSError, IndexError):
             continue
-        if b"-I" in argv and b"-S" in argv and b"-c" in argv:
+        state, ppid = fields[0], int(fields[1])
+        if ppid == me and state != b"Z" and b"-I" in argv and b"-S" in argv and b"-c" in argv:
             pids.append(int(pid))
     return pids
+
+
+async def poll(condition, seconds: float) -> bool:
+    """True as soon as condition() holds, False if it never did within `seconds`."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(0.05)
+    return condition()
 
 
 class _Base(unittest.IsolatedAsyncioTestCase):
@@ -94,26 +110,30 @@ class GrepChildIsBounded(_Base):
     async def test_at_most_two_children_run_at_once(self):
         self.redos_file()
         tasks = [asyncio.create_task(workspace_fs.fs_grep("(a+)+$", path="notes")) for _ in range(6)]
-        await asyncio.sleep(1)
-        alive = len(grep_children())
+        most = 0
+        while not all(t.done() for t in tasks):
+            most = max(most, len(grep_children()))
+            await asyncio.sleep(0.05)
         await asyncio.gather(*tasks, return_exceptions=True)
-        self.assertLessEqual(alive, 2, f"{alive} grep children ran at once")
+        self.assertGreater(most, 0, "no search child was ever seen")
+        self.assertLessEqual(most, 2, f"{most} grep children ran at once")
 
     async def test_a_cancelled_search_takes_its_child_with_it(self):
         self.redos_file()
-        before = set(grep_children())
         task = asyncio.create_task(workspace_fs.fs_grep("(a+)+$", path="notes"))
-        await asyncio.sleep(0.8)
+        # Cancel only once the child really runs (under load it can start late).
+        self.assertTrue(await poll(lambda: grep_children() or task.done(), 15), "the child never started")
+        self.assertFalse(task.done(), "the search ended before it could be cancelled")
         task.cancel()  # the chat's per-tool Stop
         try:
             await task
         except asyncio.CancelledError:
             pass
-        await asyncio.sleep(0.5)
-        orphans = [p for p in grep_children() if p not in before]
+        gone = await poll(lambda: not grep_children(), 15)
+        orphans = grep_children()
         for p in orphans:
             os.kill(p, 9)
-        self.assertEqual(orphans, [], "a cancelled fs_grep left its child running")
+        self.assertTrue(gone, f"a cancelled fs_grep left its child running: {orphans}")
 
     async def test_multiline_reads_a_bounded_part_of_each_file(self):
         p = self.root / "big.log"
@@ -177,16 +197,30 @@ class GlobMatcherIsLinear(_Base):
 
 # 3. -------------------------------------------------------------- sparse giants
 class SparseGiantsAreCheap(_Base):
-    async def test_three_lines_of_a_4_gib_sparse_text_head(self):
+    async def test_three_lines_of_a_sparse_giant_with_a_text_head(self):
+        # What proves the bound is how much is DECODED (the costly part, every line
+        # to the 4 GiB scan cap on the old code), not the time a loaded host takes.
         p = self.root / "giant.log"
         with open(p, "wb") as fh:
             fh.write(b"line\n" * 2000)
-            fh.truncate((4 << 30) - 1)
-        t = time.time()
-        out = await workspace_fs.fs_read("giant.log", limit=3)
-        took = time.time() - t
-        self.assertLess(took, 5, f"three lines cost a {took:.1f}s scan")
+            fh.truncate((1 << 30) - 1)
+        decoded = [0]
+        real = workspace_fs.codecs.getincrementaldecoder
+
+        def counting(encoding):
+            base = real(encoding)
+
+            class Counting(base):
+                def decode(self, data, final=False):
+                    decoded[0] += len(data)
+                    return super().decode(data, final)
+
+            return Counting
+
+        with mock.patch.object(workspace_fs.codecs, "getincrementaldecoder", counting):
+            out = await workspace_fs.fs_read("giant.log", limit=3)
         self.assertIn("1\tline", out)
+        self.assertLess(decoded[0], 16 << 20, f"three lines decoded {decoded[0]} bytes of the file")
 
     async def test_fs_archive_of_a_4_gib_sparse_file_is_refused(self):
         (self.root / "d").mkdir()
