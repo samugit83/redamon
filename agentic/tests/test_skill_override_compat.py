@@ -70,11 +70,11 @@ FACTORY_SHA256 = {
     "access_control/tools": "ae1601af67b9721efea54c5710dc87695f630df2c4fb9876b4eae972cba3c852",
     "path_traversal/tools": "4654c31e2edf56c4cd24703d25a2f993f35b7c1b3821256d7903032d40a6b5ff",
     "path_traversal/php_wrappers": "74794daa59a6a4dd45114b3f71efad5b74a67fa15d62ae231a704001502211eb",
-    "path_traversal/oob_workflow": "39bb2d917cb73a7315f963f56e52306d845552bfd0bcd698f9e5578c551d0b47",
+    "path_traversal/oob_workflow": "8b3540fdb1530e5e3defd4169775e67a9ae6a93e517d4c921a6f76af0d1a7728",
     "path_traversal/archive_extraction": "9390cd855453652867ead3e482631115b06d422789ff5768e7f070ec8170b95b",
     "path_traversal/payload_reference": "296e86b8e262e36700d5341432e4c1b2127515bbebeb96e607d0c1f3d03bb75e",
     "rce/tools": "274eef910d4834714c5f251a1631fc2fe0246f6e8b1914139030c269c76ef0d4",
-    "rce/oob_workflow": "54259256a8e444e64fb3114a0c6a49149ce739c4c2ba0b2f559d2bb369e4ee70",
+    "rce/oob_workflow": "d25921a83abec9cb36423d2d2a73bd6df8e8f73b68f419b1295248f3a81c104d",
     "rce/deserialization_workflow": "38576f9059ea113b21681f339077ea9a12403a711b9706a387a52df0cb962c84",
     "rce/payload_reference": "3e28d8119f4e0497bb7872acdcca699d7e875909910ab495b1caee782e8c523a",
 }

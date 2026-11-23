@@ -217,10 +217,10 @@ The goal of Phase 1 is to land in Phase 2 with a small, high-confidence list of 
 
    TLS clues are equally strong: a certificate whose CN/SAN belongs to the provider's default host (e.g. `*.amazonaws.com`, `*.azurewebsites.net`) instead of the subdomain itself usually means the provider is serving you a generic edge response, not the customer's resource.
 
-10. **Stand up the OOB verification listener** so Phase 2 verification can land instantly:
+10. **Stand up the OOB verification listener** so Phase 2 verification can land instantly: Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
    ```bash
-   interactsh-client -v -o /tmp/takeover-oast.log &
-   sleep 3 && grep -E "https?://[a-z0-9.-]+oast\." /tmp/takeover-oast.log | tail -1
+   interactsh-client -v -o /tmp/takeover-oast-RUN.log &
+   sleep 3 && grep -E "https?://[a-z0-9.-]+oast\." /tmp/takeover-oast-RUN.log | tail -1
    ```
    This callback URL is used in Phase 2 to confirm that DNS now resolves the taken-over subdomain to attacker-controlled infrastructure.
 

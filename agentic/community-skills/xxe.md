@@ -75,14 +75,14 @@ When HTTP Traffic Capture is enabled, redamon.sitemap and redamon.query surface 
 
 4. **Enumerate XML-bearing upload surfaces.** If file uploads exist in the recon graph, mark SVG, MathML, DOCX, XLSX, PPTX, ODT, ODS, plist, RSS/Atom feeds, WSDL imports and SAML metadata XML for later phase-2 testing.
 
-5. **Spin up an OOB collector** (used in Phase 2 and Phase 3) so its callback URL is ready before you fire blind payloads. `interactsh-client` prints the registered domain to stdout and writes incoming interactions to the `-o` file, so capture both:
+5. **Spin up an OOB collector** (used in Phase 2 and Phase 3) so its callback URL is ready before you fire blind payloads. `interactsh-client` prints the registered domain to stdout and writes incoming interactions to the `-o` file, so capture both: Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
    ```bash
-   interactsh-client -v -o /tmp/xxe-oast.hits >/tmp/xxe-oast.out 2>&1 &
+   interactsh-client -v -o /tmp/xxe-oast-RUN.hits >/tmp/xxe-oast-RUN.out 2>&1 &
    sleep 5
-   OAST_HOST=$(grep -oE '[a-z0-9]{20,40}\.oast\.[a-z]+' /tmp/xxe-oast.out | head -1)
+   OAST_HOST=$(grep -oE '[a-z0-9]{20,40}\.oast\.[a-z]+' /tmp/xxe-oast-RUN.out | head -1)
    echo "OAST_HOST=$OAST_HOST"
    ```
-   Use `tail -f /tmp/xxe-oast.hits` (or `tail -n 100 /tmp/xxe-oast.out`) later to read the actual DNS/HTTP callbacks.
+   Use `tail -f /tmp/xxe-oast-RUN.hits` (or `tail -n 100 /tmp/xxe-oast-RUN.out`) later to read the actual DNS/HTTP callbacks.
 
 6. **Decide the parser-capability oracle** to use during exploitation: visible reflection in the response, error message length/shape diff, ETag/Content-Length diff, or OOB DNS/HTTP hits.
 
@@ -183,7 +183,7 @@ Trigger payload (DTD-HOST = the block's `LHOST:LPORT`, or your webhook host - NO
 
 Confirm by tailing the OOB log:
 ```bash
-tail -n 50 /tmp/xxe-oast.hits
+tail -n 50 /tmp/xxe-oast-RUN.hits
 ```
 
 For files that contain newlines (and would break query strings), error-based exfiltration via a forced parser failure works too:

@@ -914,8 +914,10 @@ setting `OOB callback`=True.
 
 ### Step 1: Start interactsh-client as a background process
 
+Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
+
 ```
-kali_shell({"command": "interactsh-client -server OOB_PROVIDER -json -v > /tmp/interactsh.log 2>&1 & echo $!"})
+kali_shell({"command": "interactsh-client -server OOB_PROVIDER -json -v > /tmp/interactsh-RUN.log 2>&1 & echo $!"})
 ```
 
 Replace `OOB_PROVIDER` with the configured value from the settings block.
@@ -924,7 +926,7 @@ Replace `OOB_PROVIDER` with the configured value from the settings block.
 ### Step 2: Read the registered callback domain
 
 ```
-kali_shell({"command": "sleep 5 && head -20 /tmp/interactsh.log"})
+kali_shell({"command": "sleep 5 && head -20 /tmp/interactsh-RUN.log"})
 ```
 
 Look for the `.OOB_PROVIDER` domain (e.g. `abc123xyz.oast.fun`). This is your
@@ -992,7 +994,7 @@ the interactsh log, the wrapper resolved -- weak but useful Level 1.
 
 ```
 kali_shell({"command": "kill SAVED_PID 2>/dev/null"})
-kali_shell({"command": "rm -f /tmp/interactsh.log /tmp/payload.php"})
+kali_shell({"command": "rm -f /tmp/interactsh-RUN.log /tmp/payload.php"})
 ```
 """
 

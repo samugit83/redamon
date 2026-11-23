@@ -281,13 +281,14 @@ itself, so you must READ the domain it prints; a random domain will not route
 back.
 
 ### Step 1: start the listener as a background process
+Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
 ```
-kali_shell({{"command": "interactsh-client -server {deser_oob_provider} -json -v > /tmp/oast.log 2>&1 & echo $!"}})
+kali_shell({{"command": "interactsh-client -server {deser_oob_provider} -json -v > /tmp/oast-RUN.log 2>&1 & echo $!"}})
 ```
 
 ### Step 2: read the issued domain (this is REGISTERED_DOMAIN)
 ```
-kali_shell({{"command": "sleep 5 && grep -m1 -oE '[a-z0-9]+\\\\.{deser_oob_provider}' /tmp/oast.log"}})
+kali_shell({{"command": "sleep 5 && grep -m1 -oE '[a-z0-9]+\\\\.{deser_oob_provider}' /tmp/oast-RUN.log"}})
 ```
 
 ### Step 3: deliver ONE oracle, then poll for the hit
@@ -296,7 +297,7 @@ of the domain (`e1.REGISTERED_DOMAIN`, `e2.REGISTERED_DOMAIN`, ...) so a hit nam
 the endpoint that fired. A hit on a domain shared by several deliveries proves only
 that one of them fired; never claim more than one sink from it.
 ```
-kali_shell({{"command": "tail -50 /tmp/oast.log"}})
+kali_shell({{"command": "tail -50 /tmp/oast-RUN.log"}})
 ```
 A DNS or HTTP line for your issued domain, timestamped within the same minute as
 the delivery, is the confirmation that the sink deserialized attacker-controlled

