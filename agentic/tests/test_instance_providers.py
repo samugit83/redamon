@@ -83,7 +83,7 @@ def test_an_anthropic_instance_provider_builds_claude_with_its_key():
 
 def test_an_openai_compatible_instance_provider_uses_its_endpoint():
     from orchestrator_helpers import llm_setup
-    with patch.object(llm_setup, "ChatOpenAI") as chat_openai:
+    with patch.object(llm_setup, "StreamUsageChatOpenAI") as chat_openai:
         llm_setup.setup_llm("instance/inst-3/custom/inst-3", custom_llm_config=INST_COMPAT)
     kwargs = chat_openai.call_args.kwargs
     assert kwargs["base_url"] == "http://llm.example.com/v1"
@@ -389,12 +389,14 @@ def test_scan_container_path_refuses_an_instance_id_the_owner_lost(api_module):
 
 def _cypher_manager(api_module, model, rows):
     """text-to-cypher's (and /graph/nl-query's) builder with the project on `model` and the
-    owner's provider list `rows`: (the manager or the _CypherSetupError, ChatOpenAI mock)."""
+    owner's provider list `rows`: (the manager or the _CypherSetupError, ChatOpenAI mock).
+    openai_compatible rows build StreamUsageChatOpenAI; the same mock stands in for it."""
     import project_settings as ps
     from orchestrator_helpers import llm_setup
     with patch.object(ps, "fetch_agent_settings", return_value={"OPENAI_MODEL": model}), \
             patch("requests.get", return_value=_providers_response(rows)) as get, \
             patch.object(llm_setup, "ChatOpenAI") as chat_openai, \
+            patch.object(llm_setup, "StreamUsageChatOpenAI", chat_openai), \
             patch("langchain_community.graphs.Neo4jGraph", MagicMock()):
         try:
             result = asyncio.run(api_module._build_cypher_manager("owner-1", "p1"))
