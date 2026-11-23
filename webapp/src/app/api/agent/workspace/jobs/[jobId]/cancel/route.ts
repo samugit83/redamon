@@ -21,8 +21,9 @@ export const POST = withRouteErrors(FAILED, async (
     return NextResponse.json({ error: 'jobId required' }, { status: 400 })
   }
 
+  // The viewer: another person's job is the agent's "unknown job" (G-10).
   const call = await callAgent(
-    `/workspace/jobs/${encodeURIComponent(jobId)}/cancel?projectId=${encodeURIComponent(projectId)}`,
+    `/workspace/jobs/${encodeURIComponent(jobId)}/cancel?projectId=${encodeURIComponent(projectId)}&userId=${encodeURIComponent(auth.effective.userId)}`,
     { method: 'POST' },
     FAILED,
   )

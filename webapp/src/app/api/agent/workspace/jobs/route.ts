@@ -15,7 +15,9 @@ export const GET = withRouteErrors(FAILED, async (request: NextRequest) => {
     return NextResponse.json({ error: 'projectId required' }, { status: 400 })
   }
 
-  let url = `/workspace/jobs?projectId=${encodeURIComponent(projectId)}`
+  // The viewer: the agent leaves out another person's jobs (their job_spawn, their MCP kali_exec),
+  // which run in that person's own Kali sandbox (G-10).
+  let url = `/workspace/jobs?projectId=${encodeURIComponent(projectId)}&userId=${encodeURIComponent(auth.effective.userId)}`
   if (active !== null) url += `&active=${encodeURIComponent(active)}`
   const call = await callAgent(url, { cache: 'no-store' }, FAILED)
   if (!call.ok) return call.response
