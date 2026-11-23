@@ -32,7 +32,7 @@ _TLD_PATTERNS = [
     r'(?:^|\.)gob\.[a-z]{2,3}$',        # .gob.mx, .gob.es (Spanish-speaking)
     r'(?:^|\.)gouv\.[a-z]{2,3}$',       # .gouv.fr, .gouv.ci (French-speaking)
     r'(?:^|\.)govt\.[a-z]{2,3}$',       # .govt.nz
-    r'(?:^|\.)go\.[a-z]{2}$',            # .go.jp, .go.kr, .go.id (2-letter ccTLDs only to avoid .go.dev etc.)
+    r'(?:^|\.)go\.(?!id$)[a-z]{2}$',            # .go.jp, .go.kr (exclude .go.id)
     r'(?:^|\.)gv\.[a-z]{2}$',            # .gv.at (Austria) (2-letter ccTLDs only)
     r'(?:^|\.)government\.[a-z]{2,3}$', # rare but exists
 

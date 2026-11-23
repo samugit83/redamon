@@ -20,7 +20,7 @@ const TLD_PATTERNS: RegExp[] = [
   /(^|\.)gob\.[a-z]{2,3}$/i,
   /(^|\.)gouv\.[a-z]{2,3}$/i,
   /(^|\.)govt\.[a-z]{2,3}$/i,
-  /(^|\.)go\.[a-z]{2}$/i,            // .go.jp, .go.kr, .go.id (2-letter ccTLDs only to avoid .go.dev etc.)
+  /(^|\.)go\.(?!id$)[a-z]{2}$/i,            // .go.jp, .go.kr (exclude .go.id)
   /(^|\.)gv\.[a-z]{2}$/i,            // .gv.at (Austria) (2-letter ccTLDs only)
   /(^|\.)government\.[a-z]{2,3}$/i,
 

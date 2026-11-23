@@ -5,6 +5,7 @@
     {"name": "ac.uk", "blocked": true, "why": "bare academic suffix"},
     {"name": "edu.au", "blocked": true, "why": "bare academic suffix"},
     {"name": "go.jp", "blocked": true, "why": "bare government suffix"},
+    {"name": "go.id", "blocked": false, "why": ".go.id (Indonesia) is allowed, only .go.jp/.go.kr style two-letter ccTLDs stay blocked"},
     {"name": "gov.it", "blocked": true, "why": "bare government suffix"},
     {"name": "gouv.fr", "blocked": true, "why": "bare government suffix"},
     {"name": "gob.mx", "blocked": true, "why": "bare government suffix"},

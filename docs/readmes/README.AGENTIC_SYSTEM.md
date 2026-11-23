@@ -3212,7 +3212,7 @@ Blocks government, military, education, and intergovernmental targets regardless
 
 **TLD patterns** (case-insensitive):
 
-- `.gov`, `.gov.<cc>`, `.gob.<cc>` (Spanish), `.gouv.<cc>` (French), `.govt.<cc>`, `.go.<cc>`, `.gv.<cc>`, `.government.<cc>`
+- `.gov`, `.gov.<cc>`, `.gob.<cc>` (Spanish), `.gouv.<cc>` (French), `.govt.<cc>`, `.go.<cc>` except `.go.id`, `.gv.<cc>`, `.government.<cc>`
 - `.mil`, `.mil.<cc>`
 - `.edu`, `.edu.<cc>`, `.ac.<cc>`
 - `.int` (NATO, WHO, EU agencies)
