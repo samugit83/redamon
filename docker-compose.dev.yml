@@ -57,6 +57,15 @@ services:
       - js_recon_uploads:/data/js-recon-uploads
       - js_recon_custom:/data/js-recon-custom
 
+  kali-sandbox:
+    # The base service caps CPUs at ${KALI_CPUS:-10}. redamon.sh clamps that
+    # default to the host's CPU count, but a raw `docker compose -f ... -f
+    # docker-compose.dev.yml up` does NOT go through redamon.sh, so on an
+    # 8-CPU host the unclamped default 10 makes the daemon reject the container
+    # ("range of CPUs is from 0.01 to 8.00"). Dev is interactive, so a small cap
+    # is plenty; this keeps the overlay usable without redamon.sh.
+    cpus: ${KALI_DEV_CPUS:-2}
+
 volumes:
   webapp_node_modules:
   webapp_next_cache:
