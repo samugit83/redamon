@@ -199,6 +199,11 @@ for m in "${SPAWN_MOUNTED[@]}"; do
         "$(grep -cF "{\"bind\": \"$bind\", \"mode\"" "$REPO_ROOT/recon_orchestrator/container_manager.py" | awk '{print ($1 > 0) ? "yes" : "no"}')" "yes"
 done
 
+section "a build context's .dockerignore rebuilds the image it filters"
+# What mcp/.dockerignore leaves out is what COPY servers/ bakes in: old scan output
+# of real targets under mcp/servers/results stays out of the image only after a rebuild.
+assert_eq "mcp/.dockerignore rebuilds the Kali image" "$(effect 'mcp/.dockerignore' | grep -c ' kali-sandbox ')" "1"
+
 section "graph_db/ goes only to the images that bake it"
 tools() {
     local rebuild_tools=()

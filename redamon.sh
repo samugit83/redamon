@@ -4061,7 +4061,9 @@ _map_tool_changes() {
     # mcp/requirements.txt. Nothing to restart: the orchestrator drains every
     # sandbox started on an older image or older mcp/servers code onto a new one
     # (TD-28), so a change elsewhere in mcp/ needs neither a build nor a restart.
-    if echo "$changed_files" | grep -qE "^(mcp/kali-sandbox/|mcp/requirements\.txt$)"; then
+    # mcp/.dockerignore decides what COPY servers/ bakes in (it keeps old scan output
+    # out of the image), so a change to it rebuilds the image too.
+    if echo "$changed_files" | grep -qE "^(mcp/kali-sandbox/|mcp/requirements\.txt$|mcp/\.dockerignore$)"; then
         rebuild_tools+=(kali-sandbox)
     fi
     _map_baked_graph_db "$changed_files"
