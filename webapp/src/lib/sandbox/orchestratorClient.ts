@@ -84,6 +84,13 @@ export const ORCHESTRATOR_ERROR = 'orchestrator_error'
 export const BAD_ANSWER = 'orchestrator_bad_answer'
 /** The orchestrator predates the sandbox routes. */
 export const ROUTES_MISSING = 'sandbox_routes_missing'
+/**
+ * A warm-up (`touch`) the orchestrator declined to start (no memory, the count limit, a failed
+ * start): its answer is 202 `{state: "unavailable", instance: null, fresh: false}`, a decision,
+ * never an outage, so it is not `orchestrator_bad_answer`. Webapp-side only: the agent never asks a
+ * warm-up.
+ */
+export const WARM_UP_REFUSED = 'sandbox_warm_up_refused'
 
 type Json = Record<string, unknown>
 const isObject = (v: unknown): v is Json => v !== null && typeof v === 'object' && !Array.isArray(v)
@@ -145,7 +152,12 @@ function badAnswer(): SandboxError {
   return new SandboxError(502, BAD_ANSWER)
 }
 
-function ensureAnswer(res: Response, body: unknown): EnsureAnswer {
+function warmUpRefused(res: Response, body: unknown): boolean {
+  return res.status === 202 && isObject(body) && body.state === 'unavailable' && body.instance === null && body.fresh === false
+}
+
+function ensureAnswer(res: Response, body: unknown, touch: boolean): EnsureAnswer {
+  if (touch && warmUpRefused(res, body)) throw new SandboxError(409, WARM_UP_REFUSED)
   if (!isObject(body) || !validInstance(body.instance) || typeof body.fresh !== 'boolean') throw badAnswer()
   if (res.status === 202 && body.state === 'starting') return pick(body, ENSURE_STARTING_KEYS) as unknown as EnsureAnswer
   if (res.status !== 200 || body.state !== 'running') throw badAnswer()
@@ -162,7 +174,7 @@ function ensureAnswer(res: Response, body: unknown): EnsureAnswer {
 export async function orchestratorEnsure(req: EnsureRequest): Promise<EnsureAnswer> {
   const waits = req.wait && !req.touch
   const { res, body } = await call(url(ROUTE_ENSURE), post(req), waits ? ORCHESTRATOR_ENSURE_TIMEOUT_S * 1000 : undefined)
-  if (res.status === 200 || res.status === 202) return ensureAnswer(res, body)
+  if (res.status === 200 || res.status === 202) return ensureAnswer(res, body, req.touch === true)
   throw failure(res, body)
 }
 

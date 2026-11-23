@@ -2,9 +2,9 @@
  * The Kali sandbox step of `onAccessReduced` (group 1, S14; OD-G1-g, OD-G1-m, TD-17): a person's
  * sandboxes follow every loss of access once the change has committed. A project reason reconciles
  * the person's instances with their fresh lists (both views: own and act-as); a disabled, deleted or
- * stripped account stops both views, and so does a credentials reset and the first sign-in after it (a
- * possibly compromised account's sandbox starts clean); a sign-out everywhere, a root transfer, a
- * device revoke, a lost terminal grant and the Navigator switch leave the sandbox alone. The lifecycle hooks (lib/sandbox/lifecycle.ts) are a
+ * stripped account stops both views, and so does a credentials reset, the first sign-in after it and a
+ * sign-out everywhere (a possibly compromised account's sandbox starts clean); a promotion, a root
+ * transfer, a device revoke, a lost terminal grant and the Navigator switch leave the sandbox alone. The lifecycle hooks (lib/sandbox/lifecycle.ts) are a
  * double: their own tests cover the gateway calls and the retries.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/revocation.sandbox.test.ts
@@ -42,9 +42,11 @@ import { onAccessReduced, PLANS, type AccessReducedReason, type ProjectReduction
 const PROJECT_REASONS: ProjectReduction[] = ['share_revoked', 'share_left', 'share_expired', 'share_force_revoked', 'share_reduced', 'consent_withdrawn']
 const ACCOUNT_STOPS = [
   ['account_disabled', 'account_disabled'], ['account_deleted', 'account_deleted'], ['capability_removed', 'access_lost'],
-  ['credentials_reset', 'access_lost'], ['reset_link_used', 'access_lost'],
+  ['credentials_reset', 'access_lost'], ['reset_link_used', 'access_lost'], ['sessions_revoked', 'access_lost'],
 ] as const
-const NONE: AccessReducedReason[] = ['navigator_disallowed', 'sessions_revoked', 'root_transferred', 'device_session_revoked', 'terminal_grant_removed']
+// A sign-out everywhere stops (it revokes every MCP token, whose `kali:exec` work must not live on);
+// a promotion only raises the session version.
+const NONE: AccessReducedReason[] = ['navigator_disallowed', 'role_promoted', 'root_transferred', 'device_session_revoked', 'terminal_grant_removed']
 
 const reduce = (reason: AccessReducedReason) => (PROJECT_REASONS.includes(reason as ProjectReduction) || reason === 'navigator_disallowed'
   ? onAccessReduced('P1', 'bob', reason as ProjectReduction)

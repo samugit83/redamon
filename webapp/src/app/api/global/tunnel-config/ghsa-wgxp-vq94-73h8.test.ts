@@ -77,6 +77,12 @@ vi.mock('@/lib/prisma', () => ({
       findUnique: (a: Parameters<typeof settingsFindUnique>[0]) => settingsFindUnique(a),
     },
     instanceSettings: { findUnique: () => instanceFindUnique() },
+    // The route also asks that the person still holds platform:tunnels (G-03): user-a is an admin.
+    user: {
+      findUnique: async (a: { where: { id: string } }) => ({
+        id: a.where.id, email: `${a.where.id}@e2e.local`, role: 'admin', password: 'h', createdAt: new Date(0), legacyGrants: [],
+      }),
+    },
   },
 }))
 

@@ -89,3 +89,15 @@ describe('POST refuses what create_project refuses, in its words', () => {
     }
   })
 })
+
+describe('POST never stores a target inside the Kali sandbox address pool (G-05)', () => {
+  test('an IP-mode project naming 10.214.x.x, or a CIDR over it, is a 400 and nothing is created', async () => {
+    for (const targetIps of [['10.214.0.5'], ['198.51.100.0/24', '10.214.9.0/24']]) {
+      mockProjectCreate.mockClear()
+      const res = await POST(postReq({ name: 'test', ipMode: true, targetIps }))
+      expect(res.status, JSON.stringify(targetIps)).toBe(400)
+      expect(await res.json()).toMatchObject({ code: 'target_in_sandbox_pool' })
+      expect(mockProjectCreate).not.toHaveBeenCalled()
+    }
+  })
+})

@@ -231,6 +231,8 @@ export interface BulkDecisionResult {
   changed: number
   /** Accounts that lost the Kali terminal grant: their open terminals are to be closed. */
   terminalLost: string[]
+  /** Accounts that lost the tunnels grant: a tunnel they still have up is to be turned off. */
+  tunnelsLost: string[]
 }
 
 /**
@@ -250,7 +252,7 @@ export async function decideAllLegacyGrants(
           if (g.state === 'pending') rows.push(await writeDecision(tx, actor, KEEP_ACTION, holder.id, g.grant, true))
         }
       }
-      return { result: { changed: rows.length, terminalLost: [] }, rows, updated: [] as string[] }
+      return { result: { changed: rows.length, terminalLost: [], tunnelsLost: [] }, rows, updated: [] as string[] }
     }
     const users = await tx.user.findMany({
       where: REVIEWED,
@@ -258,6 +260,7 @@ export async function decideAllLegacyGrants(
       orderBy: { id: 'asc' },
     })
     const terminalLost: string[] = []
+    const tunnelsLost: string[] = []
     for (const user of users) {
       const removed = LEGACY_GRANTS.filter(g => user.legacyGrants.includes(g))
       await tx.user.update({
@@ -266,8 +269,9 @@ export async function decideAllLegacyGrants(
       })
       for (const g of removed) rows.push(await writeDecision(tx, actor, REMOVE_ACTION, user.id, g, true))
       if (removed.includes('kali_terminal')) terminalLost.push(user.id)
+      if (removed.includes('tunnels')) tunnelsLost.push(user.id)
     }
-    return { result: { changed: rows.length, terminalLost }, rows, updated: users.map(u => u.id) }
+    return { result: { changed: rows.length, terminalLost, tunnelsLost }, rows, updated: users.map(u => u.id) }
   })
   for (const id of updated) invalidatePrincipal(id)
   logAudit(rows)

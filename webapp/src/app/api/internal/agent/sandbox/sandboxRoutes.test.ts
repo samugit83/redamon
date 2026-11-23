@@ -127,11 +127,21 @@ describe('the master key is the only way in', () => {
 describe('POST ensure', () => {
   test('a valid body is handed to ensureSandbox: the project id as a hint, wait and actingAs as given', async () => {
     expect(await answer(await ensure({ userId: 'bob' }))).toEqual([200, RUNNING])
-    expect(h.ensure).toHaveBeenLastCalledWith('bob', { needProject: null, wait: true, actingAs: false })
+    expect(h.ensure).toHaveBeenLastCalledWith('bob', { needProject: null, checkProject: null, wait: true, actingAs: false })
     await ensure({ userId: 'bob', projectId: 'PC', wait: false, actingAs: true })
-    expect(h.ensure).toHaveBeenLastCalledWith('bob', { needProject: 'PC', wait: false, actingAs: true })
+    expect(h.ensure).toHaveBeenLastCalledWith('bob', { needProject: 'PC', checkProject: null, wait: false, actingAs: true })
     await ensure({ userId: 'bob', projectId: null })
-    expect(h.ensure).toHaveBeenLastCalledWith('bob', { needProject: null, wait: true, actingAs: false })
+    expect(h.ensure).toHaveBeenLastCalledWith('bob', { needProject: null, checkProject: null, wait: true, actingAs: false })
+  })
+
+  test('checkProjectId (triage, G-14) is passed as a project to check, never as one to mount', async () => {
+    await ensure({ userId: 'bob', checkProjectId: 'PC' })
+    expect(h.ensure).toHaveBeenLastCalledWith('bob', { needProject: null, checkProject: 'PC', wait: true, actingAs: false })
+    for (const checkProjectId of ['..', '.staging', 5]) {
+      const [status, json] = await answer(await ensure({ userId: 'bob', checkProjectId }))
+      expect([checkProjectId, status, (json as { code: string }).code]).toEqual([checkProjectId, 400, 'invalid_project_id'])
+    }
+    expect(h.ensure).toHaveBeenCalledTimes(1)
   })
 
   test('a starting answer is a 202, a running one a 200', async () => {

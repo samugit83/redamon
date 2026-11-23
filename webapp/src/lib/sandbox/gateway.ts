@@ -48,7 +48,7 @@ import {
   BAD_ANSWER, ORCHESTRATOR_ERROR, OrchestratorUnreachable, ROUTES_MISSING, SandboxError, isLeaseKind, isStopReason,
   orchestratorEnsure, orchestratorLease, orchestratorList, orchestratorReconcile, orchestratorRelease,
   orchestratorStatus, orchestratorStopAll, orchestratorStopProject, orchestratorStopUser, validInstance, validLeaseId,
-  validProjectId, validUserId,
+  validProjectId, validUserId, WARM_UP_REFUSED,
 } from './orchestratorClient'
 
 /** An ensure (or the agent's list) the orchestrator gave no answer to: the agent fails closed on it. */
@@ -70,12 +70,12 @@ const LOG_EVERY_MS = 60_000
 
 const lastLogged = new Map<string, number>()
 
-/** A warning that repeats with every request (an outage, a refused warm-up): once a minute per key. */
-function warnAtMostEveryMinute(key: string, line: string): void {
+/** A line that repeats with every request (an outage, a refused warm-up): once a minute per key. */
+function warnAtMostEveryMinute(key: string, line: string, log: (line: string) => void = console.warn): void {
   const last = lastLogged.get(key)
   if (last !== undefined && Date.now() - last < LOG_EVERY_MS) return
   lastLogged.set(key, Date.now())
-  console.warn(line)
+  log(line)
 }
 
 function checkUserId(userId: string): void {
@@ -162,6 +162,13 @@ function unavailable(err: unknown): SandboxError {
 export interface EnsureOptions {
   /** The project the agent's work is on: a hint checked against the list, never added to it. */
   needProject?: string | null
+  /**
+   * A project the work must be allowed on without needing it mounted (triage's CVE lookup, which
+   * reads no project folder but spends the owner's key): refused like `needProject` when it is
+   * outside the list, and never sent to the orchestrator, so it never forces a replacement that
+   * drains the running instance and turns the person's tunnels off.
+   */
+  checkProject?: string | null
   /** Wait until the sandbox is healthy (default true). */
   wait?: boolean
   /** The warm-up: start in the background, take no lease, wait for nothing. */
@@ -189,14 +196,15 @@ export async function ensureSandbox(userId: string, opts: EnsureOptions = {}): P
 async function ensureAttempt(userId: string, opts: EnsureOptions, attempt: number): Promise<EnsureAnswer> {
   checkUserId(userId)
   const needProject = opts.needProject ?? null
-  if (needProject !== null && !validProjectId(needProject)) throw new SandboxError(400, ERR_INVALID_PROJECT_ID)
+  const checkProject = opts.checkProject ?? null
+  for (const p of [needProject, checkProject]) if (p !== null && !validProjectId(p)) throw new SandboxError(400, ERR_INVALID_PROJECT_ID)
   const actingAs = opts.actingAs === true
   const touch = opts.touch === true
   const view: SandboxView = actingAs ? 'act_as' : 'own'
 
   if (await sandboxUserRefusal(userId)) throw new SandboxError(403, ERR_USER_REFUSED)
   const projects = await sandboxProjectsFor(userId, { actingAs })
-  if (needProject !== null && !projects.includes(needProject)) throw new SandboxError(403, ERR_PROJECT_REFUSED)
+  for (const p of [needProject, checkProject]) if (p !== null && !projects.includes(p)) throw new SandboxError(403, ERR_PROJECT_REFUSED)
 
   // The person's own and the instance's custom templates (FU-6); the act_as view is the member's too.
   const customTemplates = await sandboxCustomTemplates(userId)
@@ -220,8 +228,9 @@ async function recheckAfterStart(userId: string, opts: EnsureOptions, sent: stri
   const now = await sandboxProjectsFor(userId, { actingAs: opts.actingAs === true })
   if (sent.every((p) => now.includes(p))) return null
   await reconcileOne(userId, null)
-  const needProject = opts.needProject ?? null
-  if (needProject !== null && !now.includes(needProject)) throw new SandboxError(403, ERR_PROJECT_REFUSED)
+  for (const p of [opts.needProject ?? null, opts.checkProject ?? null]) {
+    if (p !== null && !now.includes(p)) throw new SandboxError(403, ERR_PROJECT_REFUSED)
+  }
   if (attempt >= MAX_START_ATTEMPTS) throw new SandboxError(503, ERR_START_FAILED)
   return ensureAttempt(userId, opts, attempt + 1)
 }
@@ -274,6 +283,12 @@ export async function touchSandbox(userId: string, opts: { actingAs?: boolean; a
     await ensureSandbox(userId, { touch: true, actingAs: opts.actingAs === true, actor: opts.actor ?? null })
   } catch (err) {
     const code = failureCode(err)
+    if (code === WARM_UP_REFUSED) {
+      // The orchestrator's own decision (memory, the count limit, a start that failed), logged
+      // there with its reason: not an outage, so it never shares the outage line's minute.
+      warnAtMostEveryMinute(`touch:${code}`, '[sandbox] warm-up refused by the orchestrator', console.info)
+      return
+    }
     warnAtMostEveryMinute(`touch:${code}`, `[sandbox] warm-up not done: ${code}`)
   }
 }
@@ -392,6 +407,16 @@ export async function listSandboxes(): Promise<{ sandboxes: OperationsSandbox[] 
     }
   })
   return { sandboxes }
+}
+
+/**
+ * Who runs which sandbox, from the orchestrator's one list call, hosts and tokens dropped: for the
+ * backstop, which needs only the people and would otherwise spend its deadline on one status call
+ * per person (`listSandboxes`). Throws like `orchestratorList`.
+ */
+export async function listRunningSandboxes(): Promise<{ sandboxes: Array<Pick<OperationsSandbox, 'user_id' | 'view' | 'instance' | 'state'>> }> {
+  const list = await orchestratorList()
+  return { sandboxes: list.sandboxes.map((s) => ({ user_id: s.user_id, view: s.view, instance: s.instance, state: s.state })) }
 }
 
 /** The agent's list (internal route only): every running sandbox WITH its host and token, for its fan-out. */

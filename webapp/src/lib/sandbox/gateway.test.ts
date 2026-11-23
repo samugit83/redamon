@@ -71,7 +71,7 @@ vi.mock('@/lib/prisma', () => ({
 }))
 
 import {
-  assertSandboxUser, ensureSandbox, ensureStatus, leaseSandbox, listSandboxes, agentSandboxList, reconcileSandbox,
+  assertSandboxUser, ensureSandbox, ensureStatus, leaseSandbox, listRunningSandboxes, listSandboxes, agentSandboxList, reconcileSandbox,
   releaseSandboxLease, resetSandboxGatewayForTests, sandboxProjectsFor, sandboxStatus, stopAllSandboxes,
   stopProjectSandboxes, stopSandbox, touchSandbox,
 } from './gateway'
@@ -918,5 +918,74 @@ describe('the id patterns are the contract\'s (agentic/sandbox_contract.py)', ()
     const m = py.match(/^RESERVED_USER_IDS = \(([^)]*)\)$/m)
     expect(m).not.toBeNull()
     expect([...RESERVED_USER_IDS]).toEqual([...m![1].matchAll(/"([^"]+)"/g)].map((x) => x[1]))
+  })
+})
+
+describe('a project checked, never mounted (checkProject: triage\'s CVE lookup, G-14)', () => {
+  test('allowed when it is in the list, and the orchestrator is never asked to mount it', async () => {
+    await ensureSandbox('bob', { checkProject: 'PC' })
+    expect(ensures()).toEqual([expect.objectContaining({ user_id: 'bob', view: 'own', need_project: null })])
+  })
+
+  test('refused like a needed project when it is outside the list (no orchestrator call)', async () => {
+    for (const checkProject of ['PA', 'PE', 'missing']) {
+      const err = await refusal(ensureSandbox('bob', { checkProject }))
+      expect([checkProject, err.status, err.code]).toEqual([checkProject, 403, 'sandbox_project_refused'])
+    }
+    const actAs = await refusal(ensureSandbox('bob', { actingAs: true, checkProject: 'PC' }))
+    expect([actAs.status, actAs.code]).toEqual([403, 'sandbox_project_refused'])
+    expect(ensures()).toEqual([])
+  })
+
+  test('an id the contract refuses is a 400 before any read', async () => {
+    const err = await refusal(ensureSandbox('bob', { checkProject: '../PC' }))
+    expect([err.status, err.code]).toEqual([400, 'invalid_project_id'])
+    expect(ensures()).toEqual([])
+  })
+
+  test('a start whose access changed under it re-checks the checked project too', async () => {
+    on('POST /sandboxes/ensure', (b) => {
+      revoke('PC', 'bob')
+      return [200, running(b as Row, { fresh: true })]
+    })
+    on('POST /sandboxes/bob/reconcile', () => [200, { stopped: 1 }])
+    const err = await refusal(ensureSandbox('bob', { checkProject: 'PC' }))
+    expect([err.status, err.code]).toEqual([403, 'sandbox_project_refused'])
+  })
+})
+
+describe('a refused warm-up is the orchestrator\'s decision, not an outage (G-35)', () => {
+  const REFUSED: [number, unknown] = [202, { state: 'unavailable', instance: null, fresh: false }]
+
+  test('logged once as refused, never as "the orchestrator gave no answer"', async () => {
+    on('POST /sandboxes/ensure', () => REFUSED)
+    await touchSandbox('bob')
+    await touchSandbox('bob')
+    const warned = vi.mocked(console.warn).mock.calls.map((c) => String(c[0]))
+    expect(warned.filter((l) => l.includes('gave no answer') || l.includes('warm-up not done'))).toEqual([])
+    expect(vi.mocked(console.info).mock.calls.map((c) => String(c[0]))
+      .filter((l) => l === '[sandbox] warm-up refused by the orchestrator')).toHaveLength(1)
+  })
+
+  test('the same answer to an ensure that is not a warm-up is still outside the contract (503)', async () => {
+    on('POST /sandboxes/ensure', () => REFUSED)
+    const err = await refusal(ensureSandbox('bob'))
+    expect([err.status, err.code]).toEqual([503, 'orchestrator_unavailable'])
+  })
+})
+
+describe('listRunningSandboxes (the backstop\'s list, G-37)', () => {
+  test('one list call, no status call per person, no token or host', async () => {
+    on('GET /sandboxes', () => [200, { sandboxes: [
+      { user_id: 'bob', view: 'own', instance: INSTANCE, host: 'redamon-kali-x', token: TOKEN, state: 'running' },
+      { user_id: 'carol', view: 'act_as', instance: 'b2c3d4', host: 'redamon-kali-y', token: TOKEN, state: 'draining' },
+    ] }])
+    const list = await listRunningSandboxes()
+    expect(list).toEqual({ sandboxes: [
+      { user_id: 'bob', view: 'own', instance: INSTANCE, state: 'running' },
+      { user_id: 'carol', view: 'act_as', instance: 'b2c3d4', state: 'draining' },
+    ] })
+    expect(h.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /sandboxes'])
+    expect(JSON.stringify(list)).not.toContain(TOKEN)
   })
 })

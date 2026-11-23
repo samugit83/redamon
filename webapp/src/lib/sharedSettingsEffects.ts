@@ -24,7 +24,8 @@ import { orchestratorFetch } from '@/lib/orchestrator'
 import { agentFetch } from '@/lib/agentFetch'
 import { getAuthzIdentity } from '@/lib/session'
 import type { AuditActor } from '@/lib/auditActor'
-import { safeErrorCode, upstreamFailure } from '@/lib/routeErrors'
+import { sharedToolHeldBy } from '@/lib/authz/sharedTools'
+import { logValue, safeErrorCode, upstreamFailure } from '@/lib/routeErrors'
 import { ensureSandbox, sandboxStatus } from '@/lib/sandbox/gateway'
 import { pushSandboxTunnel } from '@/lib/sandbox/agentCalls'
 import { OrchestratorUnreachable, SandboxError } from '@/lib/sandbox/orchestratorClient'
@@ -219,6 +220,34 @@ async function pushPersonTunnel(settings: TunnelSettings, person: TunnelPerson):
     return { warning: off ?? restartedWarning(), tunnelsEnabled: false }
   }
   return { warning: null, tunnelsEnabled: true }
+}
+
+export interface TunnelPermissionOutcome {
+  /** The stored "on" was turned off now. */
+  turnedOff: boolean
+  /** Set when the empty config could not reach the person's sandbox. */
+  warning: SaveWarning | null
+}
+
+/**
+ * A person who no longer holds platform:tunnels keeps no tunnel (G-03; HD-06: the permission guards
+ * an internet-facing listener). Nothing else ends a tunnel that is already up: the agent's chisel
+ * lookup (/api/global/tunnel-config) and the hold watcher go on while the stored flag is on, and a
+ * lost permission is only read when the person next saves. So the flag is stored off and the empty
+ * config pushed to the person's own sandbox. Asked by a demotion, a removed legacy grant and the
+ * sandbox backstop (an expired override, a set or profile change, a switch rolled back). A person
+ * who still holds it, or whose tunnel is off, is left alone.
+ */
+export async function enforceTunnelPermission(userId: string): Promise<TunnelPermissionOutcome> {
+  const row = await prisma.userSettings.findUnique({ where: { userId }, select: { tunnelsEnabled: true } })
+  if (!row?.tunnelsEnabled) return { turnedOff: false, warning: null }
+  if (await sharedToolHeldBy(userId, 'tunnels')) return { turnedOff: false, warning: null }
+  return withPersonTunnelLock(userId, async () => {
+    const changed = await prisma.userSettings.updateMany({ where: { userId, tunnelsEnabled: true }, data: { tunnelsEnabled: false } })
+    if (changed.count === 0) return { turnedOff: false, warning: null }
+    console.info(`[tunnel] turned off for ${logValue(userId, 80)}: platform:tunnels is no longer held`)
+    return { turnedOff: true, warning: await turnPersonTunnelOff(userId) }
+  })
 }
 
 /**

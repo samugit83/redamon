@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { validUserId } from '@/lib/sandbox/orchestratorClient'
+import { sharedToolHeldBy } from '@/lib/authz/sharedTools'
 
 const EMPTY = { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
 
@@ -13,7 +14,9 @@ const EMPTY = { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
 // Every person has their own tunnel in their own Kali sandbox (group 1, OQ-G1-2 A), so the agent
 // names the person and gets that person's own row while their tunnel is on, else empty values.
 // No person, an id that is not one, and the unused instance row answer nothing: one person's
-// chisel host must never become another person's reverse-shell address.
+// chisel host must never become another person's reverse-shell address. A stored "on" whose
+// person no longer holds platform:tunnels answers nothing too (G-03): the flag is turned off only at
+// the next sandbox backstop, and the agent must not reopen the tunnel meanwhile.
 export async function GET(request: NextRequest) {
   if (!isInternalRequest(request)) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -26,6 +29,7 @@ export async function GET(request: NextRequest) {
       select: { tunnelsEnabled: true, ngrokAuthtoken: true, chiselServerUrl: true, chiselAuth: true },
     })
     if (!own?.tunnelsEnabled) return NextResponse.json(EMPTY)
+    if (!(await sharedToolHeldBy(userId, 'tunnels'))) return NextResponse.json(EMPTY)
     const { ngrokAuthtoken, chiselServerUrl, chiselAuth } = own
     return NextResponse.json({ ngrokAuthtoken, chiselServerUrl, chiselAuth })
   } catch (error) {

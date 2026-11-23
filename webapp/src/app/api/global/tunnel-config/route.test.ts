@@ -143,7 +143,8 @@ describe('only the internal key reads the tunnel credentials (HD-05)', () => {
     expect(await res.json()).toEqual({
       ngrokAuthtoken: 'fake-ngrok-token', chiselServerUrl: 'http://vps.example:9090', chiselAuth: 'u:p',
     })
-    expect(userFindUnique).not.toHaveBeenCalled()
+    // The person's permission is read fresh (G-03), and only the person named.
+    expect(userFindUnique.mock.calls.map((c) => c[0].where.id)).toEqual(['only'])
   })
 
   test('internal key with no tunnel configured anywhere answers empty values', async () => {
@@ -197,5 +198,26 @@ describe('one person\'s own tunnel (group 1, OQ-G1-2 A), never the instance\'s o
   test('still the internal key only', async () => {
     expect((await get({}, '?userId=alice')).status).toBe(404)
     expect(settingsFindUnique).not.toHaveBeenCalled()
+  })
+})
+
+describe('a stored "on" whose person lost platform:tunnels answers nothing (G-03)', () => {
+  const EMPTY = { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
+  const internal = { 'x-internal-key': KEY }
+
+  test('a member whose tunnels grant was removed: empty values, though the stored flag is still on', async () => {
+    rows = [row('member', { tunnelsEnabled: true, ngrokAuthtoken: 'member-ngrok', chiselServerUrl: 'http://m.example:9090', chiselAuth: 'm:p' })]
+    userFindUnique.mockImplementationOnce(async (args: { where: { id: string } }) => ({
+      id: args.where.id, email: 'member@e2e.local', role: 'standard', password: 'h', createdAt: new Date('2031-01-01T00:00:00Z'), legacyGrants: [],
+    }))
+    const res = await get(internal, '?userId=member')
+    expect(await res.json()).toEqual(EMPTY)
+    expect(await res.text().catch(() => '')).not.toContain('member-ngrok')
+  })
+
+  test('an account that is gone: empty values', async () => {
+    rows = [row('gone', { tunnelsEnabled: true, ngrokAuthtoken: 'gone-ngrok' })]
+    userFindUnique.mockResolvedValueOnce(null as never)
+    expect(await (await get(internal, '?userId=gone')).json()).toEqual(EMPTY)
   })
 })

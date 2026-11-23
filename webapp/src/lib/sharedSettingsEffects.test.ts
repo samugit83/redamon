@@ -27,7 +27,9 @@ const g = vi.hoisted(() => ({
   instanceUpdateMany: vi.fn(),
   instanceFindUnique: vi.fn(),
   identity: vi.fn(),
+  held: vi.fn(),
 }))
+vi.mock('@/lib/authz/sharedTools', () => ({ sharedToolHeldBy: (...a: unknown[]) => g.held(...a) }))
 // getEffectiveUser (the acted-as member under act-as) and an orchestrator that names per-user
 // mode are what a build that showed the member's tunnel to the acting admin read: the act-as test
 // fails on it, not only on a missing mock.
@@ -67,7 +69,7 @@ vi.mock('@/lib/prisma', () => ({
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import {
-  EMPTY_TUNNEL, pushTunnelConfig, resetTunnelEffectsForTests, tunnelStatusPath, withPersonTunnelLock,
+  EMPTY_TUNNEL, enforceTunnelPermission, pushTunnelConfig, resetTunnelEffectsForTests, tunnelStatusPath, withPersonTunnelLock,
 } from './sharedSettingsEffects'
 import { OrchestratorUnreachable, SandboxError } from '@/lib/sandbox/orchestratorClient'
 import { setFlagsForTests } from '@/lib/authz/flags'
@@ -106,6 +108,7 @@ beforeEach(() => {
   g.instanceUpdateMany.mockResolvedValue({ count: 0 })
   g.instanceFindUnique.mockResolvedValue(null)
   g.identity.mockResolvedValue({ session: { userId: 'member-1' }, principal: { id: 'member-1' }, actingAs: null })
+  g.held.mockResolvedValue(true)
   fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
   vi.stubGlobal('fetch', fetchSpy)
   vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -298,5 +301,52 @@ describe('one person\'s tunnel saves run one at a time in this process (review C
   test('a failed save does not hold the next one', async () => {
     await expect(withPersonTunnelLock('u1', async () => { throw new Error('boom') })).rejects.toThrow('boom')
     expect(await withPersonTunnelLock('u1', async () => 'next')).toBe('next')
+  })
+})
+
+describe('a person who lost platform:tunnels keeps no tunnel (enforceTunnelPermission, G-03)', () => {
+  test('still held: nothing is changed or pushed', async () => {
+    expect(await enforceTunnelPermission('u1')).toEqual({ turnedOff: false, warning: null })
+    expect(g.held).toHaveBeenCalledWith('u1', 'tunnels')
+    expect(g.settingsUpdateMany).not.toHaveBeenCalled()
+    expect(g.pushSandboxTunnel).not.toHaveBeenCalled()
+  })
+
+  test('stored off: the permission is not even read', async () => {
+    g.settingsFindUnique.mockResolvedValue({ tunnelsEnabled: false })
+    expect(await enforceTunnelPermission('u1')).toEqual({ turnedOff: false, warning: null })
+    expect(g.held).not.toHaveBeenCalled()
+    expect(g.pushSandboxTunnel).not.toHaveBeenCalled()
+  })
+
+  test('lost: the stored flag goes off and the empty config reaches the person\'s own sandbox only', async () => {
+    g.held.mockResolvedValue(false)
+    expect(await enforceTunnelPermission('u1')).toEqual({ turnedOff: true, warning: null })
+    expect(g.settingsUpdateMany).toHaveBeenCalledWith({ where: { userId: 'u1', tunnelsEnabled: true }, data: { tunnelsEnabled: false } })
+    expect(agentPushes()).toEqual([['u1', { ...EMPTY_TUNNEL }]])
+    expect(g.ensureSandbox).not.toHaveBeenCalled()
+  })
+
+  test('lost with no own instance running: the flag goes off, nothing is pushed, nothing started', async () => {
+    g.held.mockResolvedValue(false)
+    g.sandboxStatus.mockResolvedValue({ instances: [instance('act_as', 'running')] })
+    expect(await enforceTunnelPermission('u1')).toEqual({ turnedOff: true, warning: null })
+    expect(g.pushSandboxTunnel).not.toHaveBeenCalled()
+    expect(g.ensureSandbox).not.toHaveBeenCalled()
+  })
+
+  test('lost, and the push fails: turned off in the settings, and the failure is returned', async () => {
+    g.held.mockResolvedValue(false)
+    g.pushSandboxTunnel.mockResolvedValue({ ok: false, status: 503, code: 'agent_unavailable' })
+    const out = await enforceTunnelPermission('u1')
+    expect(out.turnedOff).toBe(true)
+    expect(out.warning).toMatchObject({ service: 'agent', code: 'agent_unavailable' })
+  })
+
+  test('another save that turned it off first: nothing more to do', async () => {
+    g.held.mockResolvedValue(false)
+    g.settingsUpdateMany.mockResolvedValue({ count: 0 })
+    expect(await enforceTunnelPermission('u1')).toEqual({ turnedOff: false, warning: null })
+    expect(g.pushSandboxTunnel).not.toHaveBeenCalled()
   })
 })

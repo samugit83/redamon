@@ -196,6 +196,14 @@ describe('validateProjectForm', () => {
     expect(errors.some(e => e.field === 'targetIps')).toBe(true)
   })
 
+  test('rejects a target inside the Kali sandbox address pool, address or CIDR (G-05)', () => {
+    for (const ip of ['10.214.0.4', '10.214.255.254', '10.214.3.0/24']) {
+      const errors = validateProjectForm({ ...baseData, ipMode: true, targetDomain: '', targetIps: ['8.8.8.8', ip] })
+      expect(errors, ip).toEqual([{ field: 'targetIps', message: expect.stringContaining('Kali sandbox network') }])
+    }
+    expect(validateProjectForm({ ...baseData, ipMode: true, targetDomain: '', targetIps: ['10.213.255.0/24', '10.215.0.1'] })).toEqual([])
+  })
+
   test('validates naabu ports', () => {
     const errors = validateProjectForm({ ...baseData, naabuCustomPorts: '80,99999' })
     expect(errors.some(e => e.field === 'naabuCustomPorts')).toBe(true)

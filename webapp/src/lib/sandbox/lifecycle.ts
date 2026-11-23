@@ -23,20 +23,26 @@
  * RBAC_SWEEP_INTERVAL: 300 s by default) checks again every person with a running sandbox, so what
  * no hook saw converges within one sweep period: a sharing-policy change or a switch rolled back at
  * restart (shares read as Read), an override or a share that expired lazily, a capability lost to a
- * role change, a kept retry that a webapp restart forgot.
+ * role change, a kept retry that a webapp restart forgot. It also turns off the tunnel of a person
+ * who no longer holds platform:tunnels, and sends again the `account_deleted` stop of an account
+ * deleted in the last DELETION_RESEND_WINDOW_MS that this process never saw done (a webapp restart
+ * forgets its kept stops, and only that stop removes a deleted person's output folders when nothing
+ * runs). It visits at most BACKSTOP_MAX_PEOPLE people per sweep, starting after the last one it
+ * reached, so a long list is covered over several sweeps rather than the same head each time.
  *
  * The warm-up of the ws-ticket mint is here too, coalesced per person and view: every ticket mint
  * would otherwise start one background `ensure`, with its access reads.
  *
  * Server-side only.
  */
+import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { auditActor } from '@/lib/auditActor'
 import { logValue, safeErrorCode, upstreamFailure } from '@/lib/routeErrors'
 import { ERR_INVALID_PROJECT_ID, ERR_INVALID_USER_ID, ERR_USER_REFUSED, type StopReason } from './contract'
 import {
-  assertSandboxUser, listSandboxes, sandboxProjectsFor, stopAllSandboxes, stopProjectSandboxes, stopSandbox,
-  touchSandbox, type SandboxActor,
+  assertSandboxUser, listRunningSandboxes, sandboxProjectsFor, sandboxStatus, stopAllSandboxes, stopProjectSandboxes,
+  stopSandbox, touchSandbox, type SandboxActor,
 } from './gateway'
 import { OrchestratorUnreachable, SandboxError, orchestratorReconcile, validProjectId, validUserId } from './orchestratorClient'
 import { loadPrincipal } from '@/lib/authz/principal'
@@ -47,6 +53,13 @@ export const LIFECYCLE_DEADLINE_MS = 15_000
 export const WARM_UP_COOLDOWN_MS = 30_000
 /** People the backstop checks per sweep; the rest wait for the next one. */
 export const BACKSTOP_MAX_PEOPLE = 200
+/** How far back the backstop looks for account deletions whose sandbox stop this process may have lost. */
+export const DELETION_RESEND_WINDOW_MS = 7 * 86_400_000
+/** Deletion stops sent again per sweep; the rest wait for the next one. */
+export const DELETION_RESEND_MAX = 50
+/** The audit action of an account deletion (app/api/users/[id]/route.ts). */
+const USER_DELETE_ACTION = 'user.delete'
+const MAX_DELETIONS_REMEMBERED = 10_000
 const RETRY_FIRST_MS = 30_000
 const RETRY_MAX_MS = 600_000
 const MAX_PENDING = 1_000
@@ -63,10 +76,14 @@ export type SandboxHookOutcome =
 /** The stop reasons of an account that can no longer have a sandbox. */
 export type AccountEndReason = Extract<StopReason, 'account_disabled' | 'account_deleted' | 'access_lost'>
 
-/** `again`: a lower-ranked keep was refused while this one was held, so its success must reconcile once more. */
+/**
+ * `again`: a lower-ranked keep was refused while this one was held, so its success must reconcile
+ * once more. `at`: when the account's change happened (epoch ms), which decides what a retried stop
+ * still has to stop.
+ */
 type Pending = (
   | { kind: 'reconcile'; userId: string; actor: SandboxActor }
-  | { kind: 'stop'; userId: string; reason: AccountEndReason; actor: SandboxActor }
+  | { kind: 'stop'; userId: string; reason: AccountEndReason; actor: SandboxActor; at: number }
   | { kind: 'project'; projectId: string; actor: SandboxActor }
 ) & { again?: boolean }
 
@@ -144,6 +161,16 @@ function orchestratorAnswered(): void {
   if (pending.size > 0 && !retrying) scheduleRetry(0)
 }
 
+/**
+ * Whether the person still has an instance that started at or before `at` (epoch ms): one the
+ * change was meant to stop. An instance without a start time counts as one. Throws when the
+ * orchestrator cannot say, so the stop is kept.
+ */
+async function startedBefore(userId: string, at: number): Promise<boolean> {
+  const { instances } = await sandboxStatus(userId)
+  return instances.some((i) => typeof i.created_at !== 'number' || i.created_at * 1000 <= at)
+}
+
 async function runPending(item: Pending): Promise<void> {
   if (item.kind === 'project') {
     const outcome = await stopProjectSandboxes(item.projectId, 'project_deleted', item.actor)
@@ -151,21 +178,28 @@ async function runPending(item: Pending): Promise<void> {
     return
   }
   if (item.kind === 'stop' && item.reason !== 'account_deleted') {
-    // The account may have come back since: stop it only if it is still refused, else reconcile.
+    // The stop was due when the change happened, whatever the account is now: a reset or a revoked
+    // sign-in leaves a sandbox that may hold someone else's work, a capability removal or a disable
+    // one that ran on access now gone. So an instance from before the change stops, even when the
+    // account came back since; one started after it ran on the access then in force and is only
+    // reconciled. An account still refused stops whole (it cannot have started anything since).
+    let refused = false
     try {
       await assertSandboxUser(item.userId)
     } catch (err) {
-      if (err instanceof SandboxError && err.code === ERR_USER_REFUSED) {
-        await stopSandbox(item.userId, item.reason, item.actor)
-        return
-      }
-      throw err
+      if (!(err instanceof SandboxError && err.code === ERR_USER_REFUSED)) throw err
+      refused = true
+    }
+    if (refused || await startedBefore(item.userId, item.at)) {
+      await stopSandbox(item.userId, item.reason, item.actor)
+      return
     }
     await reconcilePerson(item.userId, item.actor)
     return
   }
   if (item.kind === 'stop') {
     await stopSandbox(item.userId, item.reason, item.actor)
+    deletionStopDone(item.userId)
     return
   }
   await reconcilePerson(item.userId, item.actor)
@@ -286,10 +320,11 @@ export function sandboxAccountEnded(userId: string, reason: AccountEndReason, ac
 export async function sandboxAccountsEnded(userIds: readonly string[], reason: AccountEndReason, actor?: SandboxActor): Promise<SandboxHookOutcome> {
   const people = [...new Set(userIds)].filter((id) => validUserId(id))
   if (people.length === 0) return { stopped: 0 }
+  const at = Date.now()
   const done = new Set<string>()
   let late = false
   let who: SandboxActor = null
-  const keepStop = (userId: string, code: string) => keep({ kind: 'stop', userId, reason, actor: who }, code)
+  const keepStop = (userId: string, code: string) => keep({ kind: 'stop', userId, reason, actor: who, at }, code)
   const work = (async (): Promise<SandboxHookOutcome> => {
     who = await actorOf(actor)
     let stopped = 0
@@ -298,6 +333,7 @@ export async function sandboxAccountsEnded(userIds: readonly string[], reason: A
       if (late) break
       try {
         stopped += await stopSandbox(userId, reason, who)
+        if (reason === 'account_deleted') deletionStopDone(userId)
       } catch (err) {
         const code = codeOf(err)
         error ??= code
@@ -377,44 +413,117 @@ async function accountRefusal(userId: string): Promise<AccountEndReason | null> 
   return principal.status === 'disabled' ? 'account_disabled' : 'access_lost'
 }
 
+// ---- the backstop ----
+
+/** The deletions whose `account_deleted` stop this process saw done (or sent again). */
+const deletionStopsDone = new Set<string>()
+/** The last person the previous sweep reached: the next one starts after them. */
+let backstopCursor: string | null = null
+
+function deletionStopDone(userId: string): void {
+  if (deletionStopsDone.size >= MAX_DELETIONS_REMEMBERED) deletionStopsDone.clear()
+  deletionStopsDone.add(userId)
+}
+
+/**
+ * The `account_deleted` stops this process may have lost: accounts deleted in the last
+ * DELETION_RESEND_WINDOW_MS (their `user.delete` audit row, inside the audit retention floor), whose
+ * stop it never saw done and does not keep. Each is sent again only once its account row is gone, so
+ * an account that exists is never sent a stop that removes its output folders. A stop that fails is
+ * kept, as the deletion's own would have been. Throws when the reads fail.
+ */
+async function resendLostDeletionStops(actor: SandboxActor): Promise<number> {
+  const rows = await prisma.auditLog.findMany({
+    where: { action: USER_DELETE_ACTION, createdAt: { gte: new Date(Date.now() - DELETION_RESEND_WINDOW_MS) } },
+    select: { targetId: true },
+    orderBy: { createdAt: 'desc' },
+    take: 1_000,
+  })
+  const candidates = [...new Set(rows.map((r) => r.targetId))]
+    .filter((id): id is string => validUserId(id) && !deletionStopsDone.has(id) && !pending.has(`user:${id}`))
+    .slice(0, DELETION_RESEND_MAX)
+  if (candidates.length === 0) return 0
+  const alive = new Set((await prisma.user.findMany({ where: { id: { in: candidates } }, select: { id: true } })).map((u) => u.id))
+  let stopped = 0
+  for (const userId of candidates) {
+    if (alive.has(userId)) {
+      deletionStopDone(userId)
+      continue
+    }
+    try {
+      stopped += await stopSandbox(userId, 'account_deleted', actor)
+      deletionStopDone(userId)
+    } catch (err) {
+      const code = codeOf(err)
+      console.warn(`[sandbox] lost account_deleted stop not done for ${logValue(userId, 80)}: ${code}`)
+      keep({ kind: 'stop', userId, reason: 'account_deleted', actor, at: Date.now() }, code)
+    }
+  }
+  return stopped
+}
+
+/** The people to visit this sweep: sorted, starting after the last one reached, wrapping round. */
+function backstopPeople(running: Array<{ user_id: string }>): string[] {
+  const all = [...new Set(running.map((s) => s.user_id))].filter((id) => validUserId(id)).sort()
+  const start = backstopCursor === null ? 0 : all.findIndex((id) => id > backstopCursor!)
+  const from = start < 0 ? 0 : start
+  return [...all.slice(from), ...all.slice(0, from)].slice(0, BACKSTOP_MAX_PEOPLE)
+}
+
+/** A tunnel left up by a person who lost platform:tunnels goes off (loaded lazily: settings effects pull the agent client). */
+async function tunnelOffIfNotHeld(userId: string): Promise<boolean> {
+  const { enforceTunnelPermission } = await import('@/lib/sharedSettingsEffects')
+  return (await enforceTunnelPermission(userId)).turnedOff
+}
+
 /**
  * The backstop, run by every RBAC sweep (as the system) and right after a change of Root's sharing
  * policy (with Root as `actor`): each person with a running sandbox (at most BACKSTOP_MAX_PEOPLE, one
- * by one under the deadline) is checked again. An account refused now is stopped with its reason
- * (`account_deleted` also removes its output folders); any other is reconciled with its fresh own and
- * act-as lists. Never throws; the log line carries counts only. A person not
- * reached is checked at the next sweep.
+ * by one under the deadline, from after the last person the previous sweep reached) is checked again.
+ * An account refused now is stopped with its reason (`account_deleted` also removes its output
+ * folders); any other is reconciled with its fresh own and act-as lists, and loses a tunnel it no
+ * longer holds platform:tunnels for. The lost deletion stops are sent first. Never throws; the log
+ * line carries counts only.
  */
 export async function reconcileRunningSandboxes(actor: SandboxActor = null): Promise<SandboxHookOutcome> {
   let late = false
   let visited = 0
   let stopped = 0
   let failed = 0
+  let tunnelsOff = 0
   const work = (async (): Promise<SandboxHookOutcome> => {
-    let running: Awaited<ReturnType<typeof listSandboxes>>
+    let error: string | null = null
     try {
-      running = await listSandboxes()
+      stopped += await resendLostDeletionStops(actor)
+    } catch (err) {
+      failed += 1
+      error = codeOf(err)
+    }
+    let running: Awaited<ReturnType<typeof listRunningSandboxes>>
+    try {
+      running = await listRunningSandboxes()
     } catch (err) {
       const code = codeOf(err)
       console.warn(`[sandbox] backstop not done: ${code}`)
-      return { error: code, stopped: 0 }
+      return { error: code, stopped }
     }
-    const people = [...new Set(running.sandboxes.map((s) => s.user_id))].filter((id) => validUserId(id)).slice(0, BACKSTOP_MAX_PEOPLE)
-    let error: string | null = null
-    for (const userId of people) {
+    for (const userId of backstopPeople(running.sandboxes)) {
       if (late) break
       visited += 1
+      backstopCursor = userId
       try {
         const refused = await accountRefusal(userId)
         stopped += refused ? await stopSandbox(userId, refused, actor) : await reconcilePerson(userId, actor)
+        if (!refused && await tunnelOffIfNotHeld(userId)) tunnelsOff += 1
       } catch (err) {
         failed += 1
         error ??= codeOf(err)
       }
     }
     if (late) return { error: TIMEOUT, stopped }
-    if (failed > 0) console.warn(`[sandbox] backstop people=${visited} stopped=${stopped} failed=${failed}`)
-    else if (stopped > 0) console.info(`[sandbox] backstop people=${visited} stopped=${stopped}`)
+    const counts = `people=${visited} stopped=${stopped}${tunnelsOff ? ` tunnels_off=${tunnelsOff}` : ''}`
+    if (failed > 0) console.warn(`[sandbox] backstop ${counts} failed=${failed}`)
+    else if (stopped > 0 || tunnelsOff > 0) console.info(`[sandbox] backstop ${counts}`)
     return error === null ? { stopped } : { error, stopped }
   })()
   return withDeadline(work, () => {
@@ -469,4 +578,6 @@ export function resetSandboxLifecycleForTests(): void {
   retryDelay = RETRY_FIRST_MS
   retrying = null
   warmUps.clear()
+  deletionStopsDone.clear()
+  backstopCursor = null
 }

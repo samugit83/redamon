@@ -21,6 +21,8 @@ import type { AgentFetchOptions } from '@/lib/agentFetch'
 import {
   authorizeSessionTarget,
   isSandboxInstance,
+  unavailableInstances,
+  visibleSessions,
   type SessionsViewer,
   type SessionTarget,
 } from '@/lib/authz/agentSessionsAccess'
@@ -43,7 +45,12 @@ export function driveSandbox(request: NextRequest): string | NextResponse {
   return NextResponse.json({ error: 'sandbox must name a Kali sandbox instance', code: 'invalid_sandbox' }, { status: 400 })
 }
 
-/** The target, or the route's answer: the agent's failure, or 404 for anything outside the caller's view. */
+/**
+ * The target, or the route's answer: the agent's failure; 503 `sandbox_unavailable` when the named
+ * sandbox did not answer the agent's list and is one the viewer's own list names as silent (the
+ * panel keeps its last rows, so a 404 would say the session is gone); else 404 for anything outside
+ * the caller's view. The 503 names nothing new: the viewer's list already carries that instance.
+ */
 export async function findDriveTarget(
   viewer: SessionsViewer,
   kind: DriveKind,
@@ -54,8 +61,15 @@ export async function findDriveTarget(
   const call = await callAgent('/sessions', { cache: 'no-store' }, failed)
   if (!call.ok) return call.response
   if (!call.res.ok) return agentErrorResponse(call.res, failed)
-  const target = await authorizeSessionTarget(await call.res.json(), viewer, kind, id, sandbox)
+  const payload: unknown = await call.res.json()
+  const target = await authorizeSessionTarget(payload, viewer, kind, id, sandbox)
   if (target) return target
+  if (unavailableInstances(payload)?.includes(sandbox) && (await visibleSessions(payload, viewer)).unavailable?.includes(sandbox)) {
+    return NextResponse.json(
+      { error: 'That Kali sandbox did not answer; try again in a moment', code: 'sandbox_unavailable' },
+      { status: 503 },
+    )
+  }
   return NextResponse.json({ error: 'Not found' }, { status: 404 })
 }
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdmin, type Session, type SessionOptions } from '@/lib/session'
 import { requireSessionPermission } from '@/lib/authz/adminPermission'
-import { withRouteErrors } from '@/lib/routeErrors'
+import { safeErrorCode, withRouteErrors } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { actingAsUserId } from '@/lib/userAudit'
@@ -13,14 +13,34 @@ import {
 import { rbacFlags } from '@/lib/authz/flags'
 import { LEGACY_KEEP_DAYS } from '@/lib/authz/legacyOverrides'
 import { writeLegacyOverrides } from '@/lib/authz/legacyOverrideDecisions'
+import { enforceTunnelPermission } from '@/lib/sharedSettingsEffects'
+
+/** Turns off the tunnels of accounts that lost the grant; how many went off and how many could not be. */
+async function tunnelsOff(userIds: readonly string[]): Promise<{ turnedOff: number; failed: number }> {
+  let turnedOff = 0
+  let failed = 0
+  for (const userId of userIds) {
+    try {
+      const outcome = await enforceTunnelPermission(userId)
+      if (outcome.turnedOff) turnedOff++
+      if (outcome.warning) failed++
+    } catch (err) {
+      failed++
+      console.error(`[rbac] tunnel turn-off after a legacy grant removal failed user=${userId}: ${safeErrorCode(err)}`)
+    }
+  }
+  return { turnedOff, failed }
+}
 
 /**
  * The admin review of the shared tools members kept at the RBAC upgrade (HD-29). GET lists
  * them; POST `{userId, grant, action: 'keep' | 'remove'}` or `{action: 'keep_all' |
  * 'remove_all'}` decides. No request can add a grant. Removing the Kali terminal grant
  * also closes that member's open terminals (the agent's POST /ws/close, scope `access`, so
- * an admin acting as the member keeps theirs); the sessions console and the tunnel need no
- * close, since each request re-reads the grant.
+ * an admin acting as the member keeps theirs); the sessions console needs no close, since each
+ * request re-reads the grant. Removing the tunnels grant turns off a tunnel the member still has
+ * up in their own Kali sandbox (enforceTunnelPermission): it runs there whatever the grant says
+ * until something turns it off.
  *
  * With RBAC_PERMISSIONS_ENABLED on (step 3.15) a grant is kept by an expiring override: each
  * decision first changes the member's overrides through the account permission writer
@@ -93,7 +113,9 @@ export const POST = withRouteErrors('Could not record the legacy access decision
       if ('error' in sockets) failed++
       else closed += sockets.closed
     }
-    return NextResponse.json({ action, changed: result.changed, terminals: { closed, failed } })
+    return NextResponse.json({
+      action, changed: result.changed, terminals: { closed, failed }, tunnels: await tunnelsOff(result.tunnelsLost),
+    })
   }
 
   if (action !== 'keep' && action !== 'remove') {
@@ -112,5 +134,6 @@ export const POST = withRouteErrors('Could not record the legacy access decision
   if (action === 'remove' && result.changed && grant === 'kali_terminal') {
     answer.terminal = (await onAccessReduced(null, userId, 'terminal_grant_removed')).sockets
   }
+  if (action === 'remove' && result.changed && grant === 'tunnels') answer.tunnel = await tunnelsOff([userId])
   return NextResponse.json(answer)
 })

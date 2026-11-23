@@ -1,7 +1,9 @@
 /**
  * POST /api/internal/agent/sandbox/ensure (group 1, B.10): the agent asks for the Kali sandbox of
- * the person it works for, `{userId, projectId?, wait?, actingAs?}`, and gets its address and
- * per-instance tokens (200) or a start in progress (202).
+ * the person it works for, `{userId, projectId?, checkProjectId?, wait?, actingAs?}`, and gets its
+ * address and per-instance tokens (200) or a start in progress (202). `checkProjectId` is refused
+ * like `projectId` when the project is outside the person's list, but never asks the orchestrator
+ * to mount it (triage's CVE lookup: G-14).
  *
  * The master key only (isInternalRequest; the scanner key is refused). The person is the agent's
  * claim, taken from a ticket, token or job it verified; this route cannot check who the agent acts
@@ -27,15 +29,18 @@ export async function POST(request: NextRequest) {
   }
   const body: unknown = await request.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return invalid('invalid_sandbox_request')
-  const { userId, projectId, wait, actingAs } = body as Record<string, unknown>
+  const { userId, projectId, checkProjectId, wait, actingAs } = body as Record<string, unknown>
   if (!validUserId(userId)) return invalid('invalid_user_id')
-  if (projectId !== undefined && projectId !== null && !validProjectId(projectId)) return invalid('invalid_project_id')
+  for (const id of [projectId, checkProjectId]) {
+    if (id !== undefined && id !== null && !validProjectId(id)) return invalid('invalid_project_id')
+  }
   if ((wait !== undefined && typeof wait !== 'boolean') || (actingAs !== undefined && typeof actingAs !== 'boolean')) {
     return invalid('invalid_sandbox_request')
   }
   try {
     const answer = await ensureSandbox(userId, {
       needProject: (projectId as string | null | undefined) ?? null,
+      checkProject: (checkProjectId as string | null | undefined) ?? null,
       wait: wait !== false,
       actingAs: actingAs === true,
     })

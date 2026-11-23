@@ -25,6 +25,10 @@ const h = vi.hoisted(() => ({
   principal: vi.fn(),
   audit: [] as Array<Record<string, unknown>>,
   requestActor: vi.fn(),
+  status: vi.fn(),
+  deletedRows: vi.fn(),
+  aliveUsers: vi.fn(),
+  enforceTunnel: vi.fn(),
 }))
 
 // vitest.setup.ts gives every other test a no-op double of this module.
@@ -37,8 +41,14 @@ vi.mock('./gateway', () => ({
   stopProjectSandboxes: (...a: unknown[]) => h.stopProject(...a),
   touchSandbox: (...a: unknown[]) => h.touch(...a),
   assertSandboxUser: (...a: unknown[]) => h.assertUser(...a),
-  listSandboxes: (...a: unknown[]) => h.list(...a),
+  listRunningSandboxes: (...a: unknown[]) => h.list(...a),
+  sandboxStatus: (...a: unknown[]) => h.status(...a),
 }))
+vi.mock('@/lib/prisma', () => ({ default: {
+  auditLog: { findMany: (...a: unknown[]) => h.deletedRows(...a) },
+  user: { findMany: (...a: unknown[]) => h.aliveUsers(...a) },
+} }))
+vi.mock('@/lib/sharedSettingsEffects', () => ({ enforceTunnelPermission: (...a: unknown[]) => h.enforceTunnel(...a) }))
 vi.mock('@/lib/authz/principal', () => ({ loadPrincipal: (...a: unknown[]) => h.principal(...a) }))
 vi.mock('./orchestratorClient', async (orig) => ({
   ...(await orig<typeof import('./orchestratorClient')>()),
@@ -51,7 +61,7 @@ import { OrchestratorUnreachable, SandboxError } from './orchestratorClient'
 import {
   pendingSandboxStopsForTests, resetSandboxLifecycleForTests, retryPendingSandboxStops, sandboxAccessChanged, sandboxRetryIdleForTests,
   sandboxAccountEnded, sandboxAccountsEnded, sandboxEmergencyStop, sandboxProjectDeleted, warmUpSandbox, reconcileRunningSandboxes,
-  BACKSTOP_MAX_PEOPLE, LIFECYCLE_DEADLINE_MS, WARM_UP_COOLDOWN_MS,
+  BACKSTOP_MAX_PEOPLE, DELETION_RESEND_WINDOW_MS, LIFECYCLE_DEADLINE_MS, WARM_UP_COOLDOWN_MS,
 } from './lifecycle'
 
 const ADMIN = { actorId: 'admin-1', onBehalfOfUserId: null, actorEmail: 'admin-1@example.test' }
@@ -76,7 +86,12 @@ beforeEach(() => {
   h.principal.mockReset().mockImplementation(async (id: string) => ({ id, status: 'active' }))
   h.audit = []
   h.requestActor.mockReset().mockResolvedValue(OWNER)
+  h.status.mockReset().mockResolvedValue({ instances: [] })
+  h.deletedRows.mockReset().mockResolvedValue([])
+  h.aliveUsers.mockReset().mockResolvedValue([])
+  h.enforceTunnel.mockReset().mockResolvedValue({ turnedOff: false, warning: null })
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+  vi.spyOn(console, 'info').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => {
@@ -283,13 +298,41 @@ describe('retries of a stop that failed (TD-17: access lost while the orchestrat
     expect(pendingSandboxStopsForTests()).toEqual([])
   })
 
-  test('a disable retried after the account came back reconciles instead of stopping', async () => {
+  test('a disable retried after the account came back, with only an instance started since, reconciles instead of stopping', async () => {
     h.stopSandbox.mockRejectedValueOnce(unreachable())
     await sandboxAccountEnded('bob', 'account_disabled', ADMIN)
     h.assertUser.mockResolvedValueOnce(undefined)
+    h.status.mockResolvedValueOnce({ instances: [{ instance: 'a00001', view: 'own', state: 'running', created_at: Date.now() / 1000 + 60 }] })
     await retryPendingSandboxStops()
     expect(h.stopSandbox).toHaveBeenCalledTimes(1)
     expect(h.reconcile).toHaveBeenCalledWith('bob', ['P-bob', 'P1'], ['P-bob'])
+  })
+
+  test.each(['account_disabled', 'access_lost'] as const)(
+    'a %s stop retried after the account came back still stops an instance from before the change (a reset, a revoked sign-in)',
+    async (reason) => {
+      h.stopSandbox.mockRejectedValueOnce(unreachable())
+      await sandboxAccountEnded('bob', reason, ADMIN)
+      h.assertUser.mockResolvedValue(undefined)
+      h.status.mockResolvedValueOnce({ instances: [{ instance: 'a00001', view: 'own', state: 'running', created_at: Date.now() / 1000 - 3_600 }] })
+      await retryPendingSandboxStops()
+      expect(h.stopSandbox).toHaveBeenLastCalledWith('bob', reason, ADMIN)
+      expect(h.stopSandbox).toHaveBeenCalledTimes(2)
+      expect(h.reconcile).not.toHaveBeenCalled()
+      expect(pendingSandboxStopsForTests()).toEqual([])
+    },
+  )
+
+  test('an instance without a start time counts as one from before the change; a status that cannot be read keeps the stop', async () => {
+    h.stopSandbox.mockRejectedValueOnce(unreachable())
+    await sandboxAccountEnded('bob', 'access_lost', ADMIN)
+    h.status.mockRejectedValueOnce(unreachable())
+    await retryPendingSandboxStops()
+    expect(pendingSandboxStopsForTests()).toEqual([{ key: 'user:bob', kind: 'stop', reason: 'access_lost' }])
+    h.status.mockResolvedValueOnce({ instances: [{ instance: 'a00001', view: 'own', state: 'running' }] })
+    await retryPendingSandboxStops()
+    expect(h.stopSandbox).toHaveBeenLastCalledWith('bob', 'access_lost', ADMIN)
+    expect(pendingSandboxStopsForTests()).toEqual([])
   })
 
   test('a disable retried while the account is still refused stops', async () => {
@@ -485,5 +528,84 @@ describe('the backstop (every RBAC sweep): every person with a running sandbox i
     await vi.advanceTimersByTimeAsync(LIFECYCLE_DEADLINE_MS + 1)
     expect(await pending).toEqual({ error: 'sandbox_timeout', stopped: 0 })
     expect(h.reconcile).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the backstop visits a long list over several sweeps (G-37)', () => {
+  test('each sweep starts after the last person the previous one reached, wrapping round', async () => {
+    const people = Array.from({ length: BACKSTOP_MAX_PEOPLE + 5 }, (_, i) => `u${String(i).padStart(3, '0')}`)
+    h.list.mockResolvedValue({ sandboxes: people.map((user_id, i) => ({ user_id, view: 'own', instance: `b${String(i).padStart(5, '0')}`, state: 'running' })) })
+    await reconcileRunningSandboxes()
+    const first = h.reconcile.mock.calls.map((c) => c[0])
+    expect(first).toEqual(people.slice(0, BACKSTOP_MAX_PEOPLE))
+    h.reconcile.mockClear()
+    await reconcileRunningSandboxes()
+    const second = h.reconcile.mock.calls.map((c) => c[0])
+    expect(second.slice(0, 5)).toEqual(people.slice(BACKSTOP_MAX_PEOPLE))
+    expect(second).toHaveLength(BACKSTOP_MAX_PEOPLE)
+    expect(second.slice(5)).toEqual(people.slice(0, BACKSTOP_MAX_PEOPLE - 5))
+  })
+})
+
+describe('the backstop sends again a deletion stop this process never saw done (G-36)', () => {
+  test('an account deleted recently whose row is gone gets one account_deleted stop; an account that exists never does', async () => {
+    h.deletedRows.mockResolvedValue([{ targetId: 'gone1' }, { targetId: 'alive1' }, { targetId: 'gone1' }])
+    h.aliveUsers.mockResolvedValue([{ id: 'alive1' }])
+    await reconcileRunningSandboxes()
+    expect(h.stopSandbox.mock.calls).toEqual([['gone1', 'account_deleted', null]])
+    const [query] = h.deletedRows.mock.calls[0] as [{ where: { action: string; createdAt: { gte: Date } } }]
+    expect(query.where.action).toBe('user.delete')
+    expect(Date.now() - query.where.createdAt.gte.getTime()).toBeGreaterThanOrEqual(DELETION_RESEND_WINDOW_MS - 1_000)
+    await reconcileRunningSandboxes()
+    expect(h.stopSandbox).toHaveBeenCalledTimes(1)
+  })
+
+  test('after a restart (nothing remembered) it is sent once more; one done in this process is not', async () => {
+    h.deletedRows.mockResolvedValue([{ targetId: 'gone1' }, { targetId: 'gone2' }])
+    await sandboxAccountEnded('gone2', 'account_deleted', ADMIN)
+    h.stopSandbox.mockClear()
+    await reconcileRunningSandboxes()
+    expect(h.stopSandbox.mock.calls).toEqual([['gone1', 'account_deleted', null]])
+    resetSandboxLifecycleForTests()
+    h.stopSandbox.mockClear()
+    await reconcileRunningSandboxes()
+    expect(h.stopSandbox.mock.calls.map((c) => c[0]).sort()).toEqual(['gone1', 'gone2'])
+  })
+
+  test('a resend that fails is kept for the retry, and not sent again while it is kept', async () => {
+    h.deletedRows.mockResolvedValue([{ targetId: 'gone1' }])
+    h.stopSandbox.mockRejectedValueOnce(unreachable())
+    await reconcileRunningSandboxes()
+    expect(pendingSandboxStopsForTests()).toEqual([{ key: 'user:gone1', kind: 'stop', reason: 'account_deleted' }])
+    h.stopSandbox.mockClear()
+    h.list.mockRejectedValue(unreachable())
+    await reconcileRunningSandboxes()
+    expect(h.stopSandbox).not.toHaveBeenCalled()
+  })
+})
+
+describe('the backstop turns off a tunnel whose person lost platform:tunnels (G-03)', () => {
+  test('asked for every person it reconciles, never for an account it stops; the count is logged', async () => {
+    h.list.mockResolvedValue({ sandboxes: [
+      { user_id: 'bob', view: 'own', instance: 'a00001', state: 'running' },
+      { user_id: 'gone', view: 'own', instance: 'a00002', state: 'running' },
+    ] })
+    h.assertUser.mockImplementation(async (id: string) => { if (id === 'gone') throw new SandboxError(403, 'sandbox_user_refused') })
+    h.principal.mockImplementation(async (id: string) => (id === 'gone' ? null : { id, status: 'active' }))
+    h.enforceTunnel.mockResolvedValue({ turnedOff: true, warning: null })
+    await reconcileRunningSandboxes()
+    expect(h.enforceTunnel.mock.calls).toEqual([['bob']])
+    expect(vi.mocked(console.info).mock.calls.map((c) => String(c[0]))).toContain('[sandbox] backstop people=2 stopped=0 tunnels_off=1')
+  })
+
+  test('a check that fails counts as a failure and the next person goes on', async () => {
+    h.list.mockResolvedValue({ sandboxes: [
+      { user_id: 'bob', view: 'own', instance: 'a00001', state: 'running' },
+      { user_id: 'carol', view: 'own', instance: 'a00002', state: 'running' },
+    ] })
+    h.enforceTunnel.mockRejectedValueOnce(new Error('db down'))
+    const out = await reconcileRunningSandboxes()
+    expect(out).toMatchObject({ error: expect.any(String) })
+    expect(h.enforceTunnel).toHaveBeenCalledTimes(2)
   })
 })

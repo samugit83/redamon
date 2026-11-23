@@ -154,7 +154,8 @@ describe('the former login-only routes read the account first', () => {
     const res = await GET(request('GET', '/api/global/tunnel-config?userId=member', { 'x-internal-key': 'internal-key-login-only' }))
     expect(res.status).toBe(200)
     expect(settingsFindUnique).toHaveBeenCalledTimes(1)
-    expect(userFindUnique).not.toHaveBeenCalled()
+    // No session is read: the only account read is the named person's, for platform:tunnels (G-03).
+    expect(userFindUnique.mock.calls.every(([a]) => a.where.id === 'member')).toBe(true)
   })
 
   test('a wrong internal key on the tunnel config is refused (404, HD-05)', async () => {

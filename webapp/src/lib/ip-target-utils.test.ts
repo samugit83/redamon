@@ -1,5 +1,7 @@
 import { describe, test, expect } from 'vitest'
-import { isPrivateOrLocalIp, classifyIpTargets } from './ip-target-utils'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { isPrivateOrLocalIp, classifyIpTargets, inSandboxAddressPool, sandboxPoolTargets, SANDBOX_ADDRESS_POOL } from './ip-target-utils'
 
 describe('isPrivateOrLocalIp', () => {
   test('detects RFC1918 IPv4 ranges', () => {
@@ -66,5 +68,34 @@ describe('classifyIpTargets', () => {
 
   test('mixed when private and public are combined', () => {
     expect(classifyIpTargets(['192.168.1.1', '8.8.8.8'])).toBe('mixed')
+  })
+})
+
+describe('the Kali sandbox address pool (G-05: recon on the host network reaches every sandbox bridge)', () => {
+  test('equals SUBNET_POOL in both Python contract copies', () => {
+    const repo = path.resolve(__dirname, '../../..')
+    for (const copy of ['agentic/sandbox_contract.py', 'recon_orchestrator/sandbox_contract.py']) {
+      const source = readFileSync(path.join(repo, copy), 'utf8')
+      expect([copy, /^SUBNET_POOL = "([^"]+)"$/m.exec(source)?.[1]]).toEqual([copy, SANDBOX_ADDRESS_POOL])
+    }
+  })
+
+  test('an address inside it, a CIDR that overlaps it from either side, and an IPv4-mapped address are in it', () => {
+    for (const entry of ['10.214.0.0', '10.214.0.4', ' 10.214.255.255 ', '10.214.7.0/24', '10.214.0.0/16', '10.208.0.0/12',
+      '10.0.0.0/8', '0.0.0.0/0', '::ffff:10.214.1.2', '::FFFF:10.214.1.0/120']) {
+      expect([entry, inSandboxAddressPool(entry)]).toEqual([entry, true])
+    }
+  })
+
+  test('neighbours, public and IPv6 addresses, and what does not parse are not', () => {
+    for (const entry of ['10.213.255.255', '10.215.0.0', '10.213.0.0/24', '10.215.0.0/16', '8.8.8.8', '2001:db8::1',
+      'fe80::1', '', 'not-an-ip', '10.214.0.1/33', '10.214.0.1/x', '10.214.0', '10.214.0.256']) {
+      expect([entry, inSandboxAddressPool(entry)]).toEqual([entry, false])
+    }
+  })
+
+  test('sandboxPoolTargets keeps only the entries in it', () => {
+    expect(sandboxPoolTargets(['8.8.8.8', '10.214.2.9', '10.0.0.0/8'])).toEqual(['10.214.2.9', '10.0.0.0/8'])
+    expect(sandboxPoolTargets(null)).toEqual([])
   })
 })

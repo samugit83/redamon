@@ -13,15 +13,16 @@
  *   narrowing that keeps Run scans cancels nothing), and a live triage run they started is stopped;
  * - on the account: a disable keeps what step 2.3 did (runs stopped, every socket closed with scope
  *   `account`, the account's own impersonations ended; its deferred work is skipped while it is
- *   disabled and resumes after an enable); a session-version bump closes every socket (`account`)
- *   and ends the impersonations; a capability removal does the project plan on every project of the
+ *   disabled and resumes after an enable); a session-version bump (a sign-out everywhere, a
+ *   promotion) closes every socket (`account`) and ends the impersonations; a capability removal
+ *   (a demotion too) does the project plan on every project of the
  *   person, sockets with scope `account` because its callers raise the session version too; a
  *   deletion does that too; a device session's revoke and a lost legacy terminal grant close sockets
  *   with the default scope (the terminal ones only for the grant).
  * The person's Kali sandboxes follow last (group 1, lib/sandbox/lifecycle.ts), once the agent has
  * ended the work running in them: a project reason stops their instances that mount a project they
- * may no longer use (both views, own and act-as); a disable, a deletion, a capability removal or a
- * credentials reset (and the sign-in of its link) stops both views.
+ * may no longer use (both views, own and act-as); a disable, a deletion, a capability removal, a
+ * sign-out everywhere or a credentials reset (and the sign-in of its link) stops both views.
  * Scans already running finish (OQ-13). The person's MCP tokens fail on their next call (every MCP
  * tool asks projectAccess() and can() per call); an Agent in the Loop driver's step leases end with
  * the run they belong to; open pages follow the stale-access poll.
@@ -60,7 +61,7 @@ export type ProjectReduction =
 /** What ended or narrowed the account's access everywhere. */
 export type AccountReduction =
   | 'account_disabled' | 'account_deleted' | 'capability_removed'
-  | 'sessions_revoked' | 'credentials_reset' | 'reset_link_used' | 'root_transferred'
+  | 'sessions_revoked' | 'role_promoted' | 'credentials_reset' | 'reset_link_used' | 'root_transferred'
   | 'device_session_revoked' | 'terminal_grant_removed'
 
 export type AccessReducedReason = ProjectReduction | AccountReduction
@@ -133,14 +134,18 @@ export const PLANS: Readonly<Record<AccessReducedReason, Readonly<Plan>>> = Obje
   // The user DELETE ends a deleted admin's impersonations itself, closing what they opened.
   account_deleted: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: true, sandbox: 'stop' },
   capability_removed: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: true, tradecraftJobs: false, sandbox: 'stop' },
-  sessions_revoked: SESSIONS,
+  // A sign-out everywhere also revokes every MCP token: a stolen `kali:exec` token's handler or
+  // process must not live on in the sandbox under its hold, so both views stop, as for a reset.
+  sessions_revoked: { ...SESSIONS, sandbox: 'stop' },
+  // A promotion only raises the session version: nothing was lost, so the sandbox is left alone.
+  role_promoted: { ...SESSIONS, sandbox: 'none' },
   // A reset is the account's recovery: whatever runs in its Kali sandbox may be someone else's, so
   // both views stop and the next use starts clean.
   credentials_reset: { ...SESSIONS, sandbox: 'stop' },
   reset_link_used: { ...SESSIONS, sandbox: 'stop' },
-  root_transferred: SESSIONS,
-  device_session_revoked: { ...SESSIONS, closeScope: 'access', endImpersonations: false },
-  terminal_grant_removed: { ...SESSIONS, closeScope: 'access', kinds: ['kali-terminal'], endImpersonations: false },
+  root_transferred: { ...SESSIONS, sandbox: 'none' },
+  device_session_revoked: { ...SESSIONS, closeScope: 'access', endImpersonations: false, sandbox: 'none' },
+  terminal_grant_removed: { ...SESSIONS, closeScope: 'access', kinds: ['kali-terminal'], endImpersonations: false, sandbox: 'none' },
 })
 
 const AGENT_TIMEOUT_MS = 10_000
@@ -380,6 +385,7 @@ const ACCOUNT_END: Partial<Record<AccessReducedReason, AccountEndReason>> = {
   account_disabled: 'account_disabled',
   account_deleted: 'account_deleted',
   capability_removed: 'access_lost',
+  sessions_revoked: 'access_lost',
   credentials_reset: 'access_lost',
   reset_link_used: 'access_lost',
 }

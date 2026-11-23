@@ -41,6 +41,12 @@ vi.mock('@/lib/prisma', () => ({
 vi.mock('@/lib/session', () => ({ isInternalRequest: () => true }))
 vi.mock('@/lib/recordingConfig', () => ({ activeRecordingBlock: async () => null }))
 vi.mock('@/lib/captureBodies', () => ({ gcOrphanBodies: async () => 0 }))
+// These tests are about which row the credentials come from; the platform:tunnels check the route
+// also makes (G-03) is held here and tested in global/tunnel-config/route.test.ts.
+vi.mock('@/lib/authz/sharedTools', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/authz/sharedTools')>()),
+  sharedToolHeldBy: async () => true,
+}))
 
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { INSTANCE_SETTINGS_ID, instanceSettingsInForce } from './sharedInstanceSettings'

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { sandboxPoolTargets } from '@/lib/ip-target-utils'
+import { sandboxPoolMessage } from '@/lib/validation'
 import { requirePermission } from '@/lib/authz/guards'
 import { internalKeyHeaders } from '@/lib/agentAuth'
 import { Prisma } from '@prisma/client'
@@ -387,6 +389,13 @@ export async function POST(request: NextRequest) {
     }
     if (typeof sanitizedParams.targetIps === 'object' && Array.isArray(sanitizedParams.targetIps)) {
       sanitizedParams.targetIps = (sanitizedParams.targetIps as string[]).map(s => s.trim()).filter(Boolean)
+    }
+    // Recon runs on the host network, which reaches every person's Kali sandbox bridge: a target in
+    // their address pool would scan other people's sandboxes, so it is never stored (recon refuses
+    // it again on its side).
+    const poolTargets = sandboxPoolTargets(Array.isArray(sanitizedParams.targetIps) ? sanitizedParams.targetIps : [])
+    if (poolTargets.length > 0) {
+      return NextResponse.json({ error: sandboxPoolMessage(poolTargets[0]), code: 'target_in_sandbox_pool' }, { status: 400 })
     }
 
     // Judged after the coercion above, so a number an LLM-parsed body sent as
