@@ -179,6 +179,29 @@ class StopForUser(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertTrue(self.tasks["member:p1:s1"].cancelled())
 
+    async def test_include_acting_stops_the_runs_the_presser_started_acting(self):
+        """The presser's own emergency stop under act-as (G-18): the runs they started
+        while acting as someone stop with theirs; the member's own runs do not."""
+        await self._run("admin:p1:s0")
+        await self._run("member:p1:s1", actor_id="admin")
+        await self._run("member:p1:s2")
+        await self._run("member:p2:s3", actor_id="other-admin")
+
+        self.assertEqual(await self.mgr.stop_for_user("admin", include_acting=True), 2)
+        await asyncio.sleep(0)
+        self.assertTrue(self.tasks["admin:p1:s0"].cancelled())
+        self.assertTrue(self.tasks["member:p1:s1"].cancelled())
+        self.assertFalse(self.tasks["member:p1:s2"].done())
+        self.assertFalse(self.tasks["member:p2:s3"].done())
+
+    async def test_include_acting_keeps_the_project_filter(self):
+        await self._run("member:p1:s1", actor_id="admin")
+        await self._run("member:p2:s2", actor_id="admin")
+        self.assertEqual(await self.mgr.stop_for_user("admin", ["p2"], include_acting=True), 1)
+        await asyncio.sleep(0)
+        self.assertFalse(self.tasks["member:p1:s1"].done())
+        self.assertTrue(self.tasks["member:p2:s2"].cancelled())
+
     async def test_a_finished_run_is_neither_counted_nor_told(self):
         await self._run("uA:p1:s1")
         self.tasks["uA:p1:s1"].cancel()
@@ -289,6 +312,16 @@ class Route(unittest.TestCase):
         res = self._post({"user_id": "uA", "project_ids": ["p2"]})
         self.assertEqual(res.json(), {"stopped": 1, "jobs": 0})
         self.assertEqual(self._cancelled(), ["uA:p2:s2"])
+
+    def test_include_acting_reaches_the_runs_started_acting_only_when_asked(self):
+        self.runs["uB:p2:s4"] = _FakeTask()
+        self.mgr.register_task("uB:p2:s4", self.runs["uB:p2:s4"], actor_id="uA")
+        self.assertEqual(self._post({"user_id": "uA", "project_ids": ["p2"]}).json(), {"stopped": 1})
+        self.assertEqual(self._cancelled(), ["uA:p2:s2"])
+        res = self._post({"user_id": "uA", "include_acting": True})
+        self.assertEqual(res.json(), {"stopped": 2})
+        self.assertEqual(self._cancelled(), ["uA:p1:s1", "uA:p2:s2", "uB:p2:s4"])
+        self.assertFalse(self.runs["uB:p1:s3"].cancelled)
 
     def test_unknown_user_is_a_noop(self):
         res = self._post({"user_id": "nobody"})

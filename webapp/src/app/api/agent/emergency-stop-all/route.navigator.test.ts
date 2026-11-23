@@ -7,7 +7,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 
 const h = vi.hoisted(() => ({ session: null as unknown, principal: null as unknown, audits: [] as Array<Record<string, unknown>> }))
-vi.mock('@/lib/session', () => ({ requireSession: async () => h.session }))
+vi.mock('@/lib/session', () => ({ requireSession: async () => h.session, authzIdentityOf: async () => ({ actingAs: null }) }))
 vi.mock('@/lib/authz/principal', () => ({ loadPrincipal: async () => h.principal }))
 vi.mock('@/lib/audit', () => ({ writeAudit: async (e: Record<string, unknown>) => { h.audits.push(e) } }))
 vi.mock('@/lib/prisma', () => ({ default: { auditLog: { findFirst: async () => ({ createdAt: new Date('2026-06-01') }) } } }))

@@ -12,6 +12,7 @@ handled.
   newer release added (a new server port), cutting its live sessions at the update.
 - G-40c: a sandbox's container log was never capped.
 - G-40d: a person's output folder was made world-writable.
+- G-18: a stop could not end one view only.
 
 Driven like the lifecycle tests: the in-memory FakeDocker and the `world` fixture of
 test_sandbox_manager_lifecycle.py, a real ReservationLedger, a fake clock.
@@ -292,3 +293,28 @@ async def test_an_existing_project_folder_keeps_its_world_writable_mode(world):
     os.chmod(world.ws("projA"), 0o777)
     await world.mgr.ensure(ALICE, ["projA"])
     assert stat.S_IMODE(os.lstat(world.ws("projA")).st_mode) == 0o777
+
+
+# --- G-18 a stop of one view -----------------------------------------------------
+
+async def test_a_stop_of_one_view_leaves_the_other(world):
+    own = await world.mgr.ensure(ALICE, ["projA"])
+    await world.mgr.ensure(ALICE, ["projA"], view=sc.VIEW_ACT_AS)
+    assert await world.mgr.stop_user(ALICE, "emergency", view=sc.VIEW_ACT_AS) == 1
+    assert [(i.instance, i.view) for i in world.mgr.instances(ALICE)] == [(own["instance"], sc.VIEW_OWN)]
+    assert await world.mgr.stop_user(ALICE, "emergency") == 1
+    assert world.mgr.instances(ALICE) == []
+
+
+async def test_a_stop_of_one_view_fences_only_that_views_starts(world):
+    await world.mgr.ensure(ALICE, ["projA"])
+    assert await world.mgr.stop_user(ALICE, "operator", view=sc.VIEW_ACT_AS) == 0
+    assert (await world.mgr.ensure(ALICE, ["projA"]))["state"] == "running"
+
+
+@pytest.mark.parametrize("reason,view", [("account_deleted", sc.VIEW_OWN), ("operator", "both")])
+async def test_a_view_stop_is_validated(world, reason, view):
+    await world.mgr.ensure(ALICE, ["projA"])
+    with pytest.raises(sm.SandboxInvalid):
+        await world.mgr.stop_user(ALICE, reason, view=view)
+    assert len(world.mgr.instances(ALICE)) == 1

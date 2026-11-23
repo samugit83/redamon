@@ -648,11 +648,14 @@ class WebSocketManager:
         """
         return await self._emergency_stop(list(self._active_tasks), EMERGENCY_STOP_ALL_MESSAGE)
 
-    async def stop_for_user(self, user_id: str, project_ids: Optional[Iterable[str]] = None) -> int:
+    async def stop_for_user(self, user_id: str, project_ids: Optional[Iterable[str]] = None, *,
+                            include_acting: bool = False) -> int:
         """Emergency stop for one user: stop the runs registered under `user_id`.
 
         A run's key names the ticket's subject, the effective user, so a run an
         admin started acting as the member is the member's and stops here too.
+        `include_acting` also stops the runs `user_id` started while acting as
+        someone else (their key names that person; `run_actor` names `user_id`).
         `project_ids`, when given, limits it to those projects. Returns the number
         of runs that were cancelled; an unknown user stops nothing.
         """
@@ -664,7 +667,8 @@ class WebSocketManager:
         for key in list(self._active_tasks):
             key_user, _, rest = key.partition(":")
             key_project, _, _session = rest.partition(":")
-            if key_user == user_id and (projects is None or key_project in projects):
+            mine = key_user == user_id or (include_acting and self.run_actor(key) == user_id)
+            if mine and (projects is None or key_project in projects):
                 keys.append(key)
         return await self._emergency_stop(keys, EMERGENCY_STOP_OWN_MESSAGE)
 

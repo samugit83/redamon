@@ -378,17 +378,25 @@ export async function sandboxProjectDeleted(projectId: string, actor?: SandboxAc
 }
 
 /**
- * The emergency stop: every sandbox (`all`), or both views of the presser (`own`). Never kept for a
- * retry: a stop-all minutes later would stop sandboxes started after the emergency.
+ * The emergency stop: every sandbox (`all`), or both views of the presser (`own`) and, when the
+ * presser acts as someone, that person's `act_as` view, where the presser's work runs; never that
+ * person's own view. Never kept for a retry: a stop-all minutes later would stop sandboxes started
+ * after the emergency.
  */
 export async function sandboxEmergencyStop(
-  target: { scope: 'all' } | { scope: 'own'; userId: string }, actor: SandboxActor,
+  target: { scope: 'all' } | { scope: 'own'; userId: string; actingFor?: string | null }, actor: SandboxActor,
 ): Promise<SandboxHookOutcome> {
   const work = (async (): Promise<SandboxHookOutcome> => {
     try {
-      const stopped = target.scope === 'all'
-        ? await stopAllSandboxes('emergency', actor)
-        : await stopSandbox(target.userId, 'emergency', actor)
+      let stopped: number
+      if (target.scope === 'all') {
+        stopped = await stopAllSandboxes('emergency', actor)
+      } else {
+        stopped = await stopSandbox(target.userId, 'emergency', actor)
+        if (target.actingFor && target.actingFor !== target.userId) {
+          stopped += await stopSandbox(target.actingFor, 'emergency', actor, 'act_as')
+        }
+      }
       orchestratorAnswered()
       return { stopped }
     } catch (err) {

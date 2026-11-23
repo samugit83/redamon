@@ -956,23 +956,31 @@ class SandboxManager:
                 return 0
             return int(await self._stop_locked(inst, reason))
 
-    async def stop_user(self, user_id: str, reason: str) -> int:
-        """Stop both views of a person. ``account_deleted`` also deletes both views'
-        output folders, found by key, with or without a running instance."""
+    async def stop_user(self, user_id: str, reason: str, view: Optional[str] = None) -> int:
+        """Stop both views of a person, or only ``view`` (an admin's emergency stop
+        while acting as the person ends the act_as view it works in, not the
+        person's own). ``account_deleted`` also deletes both views' output folders,
+        found by key, with or without a running instance, so it takes no view."""
         self._check_reason(reason)
         try:
             sc.check_user_id(user_id)
+            if view is not None:
+                sc.check_view(view)
+                if reason == sc.STOP_REASON_DELETES_OUTPUT:
+                    raise ValueError(sc.ERR_INVALID_VIEW)
         except ValueError as e:
             raise SandboxInvalid(str(e)) from None
         for pending in self._pending.get(user_id, ()):
-            pending.fenced = True
-        return await self._shielded(self._stop_user(user_id, reason))
+            if view is None or pending.view == view:
+                pending.fenced = True
+        return await self._shielded(self._stop_user(user_id, reason, view))
 
-    async def _stop_user(self, user_id: str, reason: str) -> int:
+    async def _stop_user(self, user_id: str, reason: str, view: Optional[str] = None) -> int:
         async with self._user_lock(user_id):
             stopped = 0
             for inst in self.instances(user_id):
-                stopped += int(await self._stop_locked(inst, reason))
+                if view is None or inst.view == view:
+                    stopped += int(await self._stop_locked(inst, reason))
             if reason == sc.STOP_REASON_DELETES_OUTPUT:
                 await asyncio.to_thread(self._delete_outputs_sync, user_id)
             return stopped

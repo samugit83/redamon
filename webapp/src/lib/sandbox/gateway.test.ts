@@ -688,6 +688,12 @@ describe('stops: orchestrator, then the agent\'s client, then one audit row', ()
     })])
   })
 
+  test('stopSandbox of one view names that view only (G-18)', async () => {
+    on('POST /sandboxes/bob/stop', () => [200, { stopped: 1 }])
+    expect(await stopSandbox('bob', 'emergency', ADMIN, 'act_as')).toBe(1)
+    expect(callsTo('POST', '/sandboxes/bob/stop').map((c) => c.body)).toEqual([{ reason: 'emergency', view: 'act_as' }])
+  })
+
   test('nothing stopped: no drop and no row', async () => {
     on('POST /sandboxes/bob/stop', () => [200, { stopped: 0 }])
     expect(await stopSandbox('bob', 'access_lost', null)).toBe(0)

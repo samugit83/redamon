@@ -30,7 +30,8 @@ import {
   ROUTE_ENSURE, ROUTE_LEASE, ROUTE_LEASES, ROUTE_LIST, ROUTE_RECONCILE, ROUTE_STATUS, ROUTE_STOP_ALL,
   ROUTE_STOP_PROJECT, ROUTE_STOP_USER, STATES, STATUS_OPTIONAL_KEYS, STOP_REASONS, VIEWS,
   type EnsureAnswer, type EnsureRequest, type LeaseAnswer, type LeaseKind, type LeaseRequest, type SandboxInstanceStatus,
-  type SandboxLimit, type SandboxListAnswer, type SandboxListEntry, type SandboxStatusAnswer, type StopReason,
+  type SandboxLimit, type SandboxListAnswer, type SandboxListEntry, type SandboxStatusAnswer, type SandboxView,
+  type StopReason,
 } from './contract'
 
 // The contract's id rules (USER_ID_RE, PROJECT_ID_RE, INSTANCE_RE, RESERVED_USER_IDS and the Windows
@@ -211,9 +212,9 @@ export async function orchestratorReconcile(userId: string, projects: string[], 
   return stoppedCount(res, body)
 }
 
-/** POST /sandboxes/{user_id}/stop: both views. */
-export async function orchestratorStopUser(userId: string, reason: StopReason): Promise<number> {
-  const { res, body } = await call(url(ROUTE_STOP_USER, { user_id: userId }), post({ reason }))
+/** POST /sandboxes/{user_id}/stop: both views, or only `view`. */
+export async function orchestratorStopUser(userId: string, reason: StopReason, view?: SandboxView): Promise<number> {
+  const { res, body } = await call(url(ROUTE_STOP_USER, { user_id: userId }), post(view ? { reason, view } : { reason }))
   return stoppedCount(res, body)
 }
 

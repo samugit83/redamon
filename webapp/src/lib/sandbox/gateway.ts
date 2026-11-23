@@ -319,11 +319,14 @@ export async function reconcileSandbox(userIds: readonly string[], actor: Sandbo
   return total
 }
 
-/** Stops both views of the person, then forgets them at the agent; one `sandbox.stopped` row when any stopped. */
-export async function stopSandbox(userId: string, reason: StopReason, actor: SandboxActor): Promise<number> {
+/**
+ * Stops both views of the person (or only `view`), then forgets them at the agent; one
+ * `sandbox.stopped` row when any stopped.
+ */
+export async function stopSandbox(userId: string, reason: StopReason, actor: SandboxActor, view?: SandboxView): Promise<number> {
   checkUserId(userId)
   checkReason(reason)
-  const stopped = await orchestratorStopUser(userId, reason)
+  const stopped = await orchestratorStopUser(userId, reason, view)
   if (stopped > 0) {
     await dropSandboxClient(userId)
     await auditStop(actor, { targetType: 'user', targetId: userId }, reason, stopped)

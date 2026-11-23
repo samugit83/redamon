@@ -74,6 +74,7 @@ from models import (
     SandboxReconcileRequest,
     SandboxStopProjectRequest,
     SandboxStopRequest,
+    SandboxStopUserRequest,
 )
 
 # Configure logging
@@ -1177,9 +1178,9 @@ async def sandbox_reconcile(user_id: str, req: SandboxReconcileRequest):
 
 
 @app.post(sc.ROUTE_STOP_USER)
-async def sandbox_stop_user(user_id: str, req: SandboxStopRequest):
+async def sandbox_stop_user(user_id: str, req: SandboxStopUserRequest):
     mgr = _adopted_sandbox_manager()
-    return {"stopped": await _sandbox_call(mgr.stop_user(user_id, req.reason))}
+    return {"stopped": await _sandbox_call(mgr.stop_user(user_id, req.reason, view=req.view))}
 
 
 # Last of the /sandboxes routes. The webapp reads a 404 without a code as an

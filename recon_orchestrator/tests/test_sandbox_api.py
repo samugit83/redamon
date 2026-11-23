@@ -322,6 +322,22 @@ async def test_stop_user_reconcile_and_stop_all(served, world):
     assert world.created() == []
 
 
+async def test_stop_user_of_one_view(served, world):
+    """An admin's emergency stop while acting as a person ends that person's act_as
+    view, never their own (G-18)."""
+    served(world.mgr)
+    await asgi("POST", "/sandboxes/ensure", ENSURE_BODY)
+    await asgi("POST", "/sandboxes/ensure", dict(ENSURE_BODY, view="act_as", projects=[]))
+    assert await asgi("POST", f"/sandboxes/{ALICE}/stop",
+                      {"reason": "emergency", "view": "act_as"}) == (200, {"stopped": 1})
+    assert [i.view for i in world.mgr.instances(ALICE)] == ["own"]
+    status, answer = await asgi("POST", f"/sandboxes/{ALICE}/stop", {"reason": "emergency", "view": "both"})
+    assert status == 400 and answer["detail"]["code"] == sc.ERR_INVALID_VIEW
+    status, answer = await asgi("POST", f"/sandboxes/{ALICE}/stop", {"reason": "account_deleted", "view": "own"})
+    assert status == 400 and answer["detail"]["code"] == sc.ERR_INVALID_VIEW
+    assert [i.view for i in world.mgr.instances(ALICE)] == ["own"]
+
+
 @pytest.mark.parametrize("path,body", [
     (f"/sandboxes/{ALICE}/stop", {"reason": "because"}),
     ("/sandboxes/stop-all", {"reason": ""}),

@@ -573,8 +573,14 @@ class SandboxReconcileRequest(BaseModel):
 
 
 class SandboxStopRequest(BaseModel):
-    """POST /sandboxes/{user_id}/stop and POST /sandboxes/stop-all"""
+    """POST /sandboxes/stop-all"""
     reason: str
+
+
+class SandboxStopUserRequest(BaseModel):
+    """POST /sandboxes/{user_id}/stop: both views, or only ``view``."""
+    reason: str
+    view: Optional[str] = None
 
 
 class SandboxStopProjectRequest(BaseModel):

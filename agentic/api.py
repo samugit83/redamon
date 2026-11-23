@@ -1660,6 +1660,9 @@ class StopForRequest(BaseModel):
     # None is every project; an empty list is refused, so a caller's bug never
     # reads as either.
     project_ids: Optional[List[Annotated[str, Field(min_length=1)]]] = Field(None, min_length=1)
+    # Also the runs `user_id` started while acting as someone else (keyed by that
+    # person): the presser's own emergency stop. An access change leaves it off.
+    include_acting: bool = False
 
 
 @app.post("/agent-sessions/stop-for", tags=["Sessions"],
@@ -1681,7 +1684,8 @@ async def stop_agent_sessions_for(body: StopForRequest):
         jobs = await _cancel_sandbox_jobs(body.user_id)
     if not ws_manager:
         return JSONResponse(content={"stopped": 0, "jobs": jobs}, status_code=503)
-    stopped = await ws_manager.stop_for_user(body.user_id, body.project_ids)
+    stopped = await ws_manager.stop_for_user(body.user_id, body.project_ids,
+                                             include_acting=body.include_acting)
     logger.warning("[rbac] stop-for user=%s projects=%s stopped=%d jobs=%d", body.user_id,
                    "all" if body.project_ids is None else len(body.project_ids), stopped, jobs)
     return {"stopped": stopped, "jobs": jobs}

@@ -240,6 +240,20 @@ describe('the emergency stop', () => {
     expect(h.stopSandbox).toHaveBeenCalledWith('bob', 'emergency', OWNER)
   })
 
+  test("acting as someone: also that person's act_as view, never their own (G-18)", async () => {
+    h.stopSandbox.mockResolvedValueOnce(1).mockResolvedValueOnce(1)
+    expect(await sandboxEmergencyStop({ scope: 'own', userId: 'admin-1', actingFor: 'bob' }, ADMIN)).toEqual({ stopped: 2 })
+    expect(h.stopSandbox.mock.calls).toEqual([['admin-1', 'emergency', ADMIN], ['bob', 'emergency', ADMIN, 'act_as']])
+  })
+
+  test('acting as nobody, or as oneself: one stop of both views', async () => {
+    for (const actingFor of [null, 'admin-1']) {
+      h.stopSandbox.mockClear()
+      await sandboxEmergencyStop({ scope: 'own', userId: 'admin-1', actingFor }, ADMIN)
+      expect(h.stopSandbox.mock.calls).toEqual([['admin-1', 'emergency', ADMIN]])
+    }
+  })
+
   test('stop-all throwing is returned, and an emergency is never retried later', async () => {
     h.stopAll.mockRejectedValueOnce(unreachable())
     expect(await sandboxEmergencyStop({ scope: 'all' }, ADMIN)).toEqual({ error: 'orchestrator_unreachable', stopped: 0 })
