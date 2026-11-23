@@ -20,6 +20,10 @@
 # This simulates hops 1-3 for real (sourcing deploy.sh's own functions, running
 # its own seed shell code) and asserts hop 4 against docker-compose.yml, so the
 # whole chain is proven without touching a server.
+#
+# The per-user sandbox knobs and HOST_LAN_IP take the same hops through the init and
+# update seed scripts exactly as deploy.sh renders them: a blank knob must leave the
+# server's .env, and a malformed one is refused before anything runs.
 # =============================================================================
 set -uo pipefail
 
@@ -142,6 +146,109 @@ grep -q '^MCP_RATE_QUERY_PER_MIN=' "$T/.env" \
   && bad "a blank knob is NOT seeded" "written as empty" "absent" \
   || ok "a blank knob is NOT seeded (compose default stands)"
 rm -rf "$T"
+
+# ------------------------------------------- the sandbox knobs, hops 1-3 ---
+# The init and update seed scripts as deploy.sh renders them (its own heredocs, with
+# `remote` capturing instead of SSH), run against a server .env with the staged
+# deploy.env built from the same fixture sourced, as the host does.
+echo
+echo "== the sandbox knobs and HOST_LAN_IP reach the server .env, and a blank one leaves it =="
+T="$(mktemp -d)"
+trap 'cleanup_fixture; rm -rf "$T"' EXIT
+# render_seed <cmd_init|cmd_update> <HOST_IP> <fixture text>: $T/<cmd>.seed.sh (from
+# `touch .env` to the step after the seeds), $T/<cmd>.remote.sh and $T/<cmd>.deploy.env.
+render_seed() {
+  printf '%s\n' "$3" > "$DSH_DIR/$FIXTURE"
+  ( cd "$DSH_DIR" && CMD="$1" OUT="$T" bash -c '
+      set -uo pipefail
+      source ./deploy.sh status "'"$2"'" /dev/null ubuntu --env "'"${FIXTURE#.env.}"'" >/dev/null 2>&1 || exit 3
+      f="$(build_deploy_env)" && cp "$f" "$OUT/$CMD.deploy.env" && rm -f "$f"
+      INIT_FORCE=true
+      : > "$OUT/$CMD.remote.sh"
+      remote() { cat >> "$OUT/$CMD.remote.sh"; }
+      ship_assets() { :; }; drive_install() { :; }; run_secrets_gate() { :; }; bootstrap_admin() { :; }
+      setup_nginx_tls() { :; }; kb_refresh_start() { :; }; gvm_note() { :; }; verify() { :; }
+      "$CMD" >/dev/null 2>&1' )
+  cleanup_fixture
+  awk '/^touch \.env$/ {on=1} on && (/^NPROC=/ || /^step "redamon\.sh update/) {exit} on' \
+    "$T/$1.remote.sh" > "$T/$1.seed.sh"
+}
+# run_seed <cmd> <server .env before>: the server .env after that cmd's seed script.
+run_seed() {
+  rm -rf "$T/app"; mkdir -p "$T/app"; printf '%s' "$2" > "$T/app/.env"
+  ( cd "$T/app" && bash -c 'set -euo pipefail; set -a; source "$1"; set +a; step() { :; }; source "$2"' \
+      _ "$T/$1.deploy.env" "$T/$1.seed.sh" ) >/dev/null 2>&1 || echo "SEED SCRIPT FAILED"
+  cat "$T/app/.env"
+}
+KNOBS='ACCESS_MODE=https-ip
+TLS_MODE=self-signed
+KALI_SANDBOX_PORT_POOL=4600-4609
+KALI_SANDBOX_MAX_CONCURRENT=3
+KALI_SANDBOX_IDLE_MINUTES=45'
+BLANKS='ACCESS_MODE=https-ip
+TLS_MODE=self-signed
+KALI_SANDBOX_PORT_POOL=
+KALI_SANDBOX_MAX_CONCURRENT=
+KALI_SANDBOX_IDLE_MINUTES='
+SERVER=$'AUTH_SECRET=keep-me\nKALI_SANDBOX_PORT_POOL=4500-4509\nKALI_SANDBOX_MAX_CONCURRENT=2\nKALI_SANDBOX_IDLE_MINUTES=10\nHOST_LAN_IP=10.0.0.5\n'
+for cmd in cmd_init cmd_update; do
+  render_seed "$cmd" 203.0.113.5 "$KNOBS"
+  if ! grep -q '^seed' "$T/$cmd.seed.sh"; then
+    bad "$cmd: the seed script is rendered" "$(head -c 200 "$T/$cmd.remote.sh")" "a script with seed lines"
+    continue
+  fi
+  after="$(run_seed "$cmd" "$SERVER")"
+  for kv in KALI_SANDBOX_PORT_POOL=4600-4609 KALI_SANDBOX_MAX_CONCURRENT=3 KALI_SANDBOX_IDLE_MINUTES=45; do
+    eq "$cmd: ${kv%%=*} set locally replaces the server's" "$(grep "^${kv%%=*}=" <<<"$after")" "$kv"
+  done
+  eq "$cmd: HOST_IP, an IPv4 literal, becomes HOST_LAN_IP (the LHOST a target reaches)" \
+     "$(grep '^HOST_LAN_IP=' <<<"$after")" "HOST_LAN_IP=203.0.113.5"
+
+  render_seed "$cmd" 203.0.113.5 "$BLANKS"
+  after="$(run_seed "$cmd" "$SERVER")"
+  eq "$cmd: blank knobs leave the server .env (the app's defaults hold again)" \
+     "$(grep -c '^KALI_SANDBOX_' <<<"$after")" "0"
+  eq "$cmd: and nothing else goes" "$(grep -c '^AUTH_SECRET=keep-me$' <<<"$after")" "1"
+  again="$(run_seed "$cmd" "$after")"
+  eq "$cmd: a second run changes nothing" "$again" "$after"
+
+  render_seed "$cmd" redamon.example "$KNOBS"
+  eq "$cmd: a DNS name in HOST_IP leaves the server's HOST_LAN_IP alone" \
+     "$(run_seed "$cmd" "$SERVER" | grep '^HOST_LAN_IP=')" "HOST_LAN_IP=10.0.0.5"
+  eq "$cmd: and writes none where there was none" \
+     "$(run_seed "$cmd" $'AUTH_SECRET=x\n' | grep -c '^HOST_LAN_IP=')" "0"
+done
+# Before redamon.sh runs: it reads the pool and the caps when it starts the stack.
+eq "cmd_update: the knobs are applied before redamon.sh update" \
+   "$(awk '/^seed_or_unset KALI_SANDBOX_PORT_POOL /{s=NR} /\.\/redamon\.sh update/{if (s) print "before"; else print "after"; exit}' "$T/cmd_update.remote.sh")" "before"
+eq "cmd_init: the knobs are applied before the install" \
+   "$(awk '/^cmd_init\(\) \{/{on=1} on && /^seed_or_unset KALI_SANDBOX_PORT_POOL /{s=1}
+           on && /^  drive_install$/{print (s ? "before" : "after"); exit}' "$DEPLOY")" "before"
+
+echo
+echo "== a malformed sandbox cap or idle time is refused before anything runs =="
+# The orchestrator only logs a value it cannot read, and runs with no cap (or the
+# default idle time), so preflight is the one place a typo can be caught.
+verdict() {  # verdict <KEY=value>: ok | refused
+  printf 'ACCESS_MODE=https-ip\nTLS_MODE=self-signed\nOPERATOR_ALLOW_CIDRS=198.51.100.0/24\n%s\n' "$1" > "$DSH_DIR/$FIXTURE"
+  ( cd "$DSH_DIR" && bash -c '
+      set -uo pipefail
+      source ./deploy.sh status 203.0.113.5 /dev/null ubuntu --env "'"${FIXTURE#.env.}"'" >/dev/null 2>&1 || exit 3
+      ( preflight_validate ) >/dev/null 2>&1 && echo ok || echo refused' 2>/dev/null )
+  cleanup_fixture
+}
+for v in 3 0 007 999999999 ''; do
+  eq "KALI_SANDBOX_MAX_CONCURRENT='$v' is accepted" "$(verdict "KALI_SANDBOX_MAX_CONCURRENT=$v")" ok
+done
+for v in three -1 +5 1.5 1e3 1234567890 '"3 4"'; do
+  eq "KALI_SANDBOX_MAX_CONCURRENT=$v is refused" "$(verdict "KALI_SANDBOX_MAX_CONCURRENT=$v")" refused
+done
+for v in 1 20 '' ; do
+  eq "KALI_SANDBOX_IDLE_MINUTES='$v' is accepted" "$(verdict "KALI_SANDBOX_IDLE_MINUTES=$v")" ok
+done
+for v in 0 twenty -5 20m 1234567890; do
+  eq "KALI_SANDBOX_IDLE_MINUTES=$v is refused" "$(verdict "KALI_SANDBOX_IDLE_MINUTES=$v")" refused
+done
 
 # ------------------------------------------------------------------- hop 4 ---
 echo

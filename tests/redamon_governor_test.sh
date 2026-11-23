@@ -61,6 +61,9 @@ unset REDAMON_MIN_RAM_MB
 STUB_MEM=0   # undetectable -> do not block
 preflight_ram_gate; eq "undetectable RAM does not block" "$?" "0"
 
+# An operator's pin is in the shell from the start of a run, so the gates above,
+# which exported both variables themselves, must not count as this run's.
+_MEM_SELF_EXPORTED=" "
 STUB_MEM=5120; SERVICE_BASELINE_MEM=2g; OS_HEADROOM_MEM=1g  # required 3072
 preflight_ram_gate; eq "custom baseline+headroom passes" "$?" "0"
 unset SERVICE_BASELINE_MEM OS_HEADROOM_MEM
@@ -334,6 +337,48 @@ eq "a second pass in the same process still owns every var" "${#_ALLOC_OWNED[@]}
 
 # --- a host whose RAM cannot be read must FAIL OPEN, never block.
 alloc_at 0; eq "undetectable RAM does not fail" "$?" "0"
+
+echo "== the gate after the dispatch's own exports (install, update, up) =="
+# The dispatch runs export_resource_caps before install, update and up reach their
+# preflight_ram_gate, so both budget variables are exported by then. Read as an
+# operator's pin, they passed every host; the cases above call the gate alone and
+# never see that order. The hook is read from the dispatch, not retyped here.
+DISPATCH_HOOK="$(sed -n '/^case "\${1:-help}" in$/,/^esac$/p' "$REPO_ROOT/redamon.sh" \
+    | grep -E '^[[:space:]]*install\|update\|up\)' \
+    | sed -E 's/^[[:space:]]*install\|update\|up\)[[:space:]]*//; s/[[:space:]]*;;[[:space:]]*$//')"
+eq "the dispatch exports the caps before install, update and up run" \
+    "$([[ "$DISPATCH_HOOK" == *export_resource_caps* ]] && echo yes)" "yes"
+# gate_after_dispatch <MB> [VAR=value ...]: the gate's status in one fresh run, after
+# the hook; each VAR=value is the operator's shell. GATE_ENV is the .env, if any.
+gate_after_dispatch() {
+    local mb="$1"; shift
+    ( fresh_process; STUB_MEM="$mb"
+      rm -f "$MEM_TMP/.env"; [[ -n "${GATE_ENV:-}" ]] && printf '%s\n' "$GATE_ENV" > "$MEM_TMP/.env"
+      local a; for a in "$@"; do export "$a"; done
+      prune_removed_containers() { :; }; _kali_image_tag_once() { :; }; export_host_lan_ip() { :; }
+      eval "$DISPATCH_HOOK"
+      preflight_ram_gate )
+}
+gate_after_dispatch 4096
+eq "a 4GB host is refused" "$?" "1"
+gate_after_dispatch 8192 SERVICES_PCT=95 REDAMON_WEIGHT_KALI=20
+eq "a scan pool that cannot hold one Kali sandbox is refused" "$?" "1"
+gate_after_dispatch 16384
+eq "a 16GB host passes" "$?" "0"
+gate_after_dispatch 5120
+eq "5GB without a pin: the allocator refuses it" "$?" "1"
+gate_after_dispatch 5120 SERVICE_BASELINE_MEM=2g OS_HEADROOM_MEM=1g
+eq "a pin in the shell still takes the pinned branch (5GB, 2g + 1g)" "$?" "0"
+gate_after_dispatch 8192 SERVICE_BASELINE_MEM=12g
+eq "and is still held to the RAM (8GB, a 12g baseline)" "$?" "1"
+# With a managed block already there: on a .env without one, the first run folds
+# such lines into the block as pre-allocator leftovers (_mem_migrate_legacy_pins).
+BLOCK="$_MEM_BLOCK_BEGIN"$'\n'"$_MEM_BLOCK_END"
+GATE_ENV=$'SERVICE_BASELINE_MEM=2g\nOS_HEADROOM_MEM=1g\n'"$BLOCK" gate_after_dispatch 5120
+eq "a pin in .env outside the block takes the pinned branch too" "$?" "0"
+GATE_ENV=$'SERVICE_BASELINE_MEM=12g\n'"$BLOCK" gate_after_dispatch 8192
+eq "with the value read from .env (8GB, a 12g baseline)" "$?" "1"
+rm -f "$MEM_TMP/.env"
 
 echo "== knobs set in .env are honoured (redamon.sh does NOT source .env) =="
 # BUG: every tuning knob was read from the SHELL environment only. .env.example

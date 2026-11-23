@@ -11,9 +11,10 @@
 #     no other service or overlay;
 #   - redamon.sh never writes one (no line of it that is not a comment names one,
 #     but the list of retired keys it removes from .env, the switch's among them);
-#   - the single-host deploy forwards each and seeds it only when the operator set
-#     it: one empty default each, `seed VAR "\${VAR}"` (seed skips an empty value),
-#     and no line that assigns one a value;
+#   - the single-host deploy forwards each and seeds only the operator's own value:
+#     one empty default each, `seed_or_unset VAR "\${VAR}"` (a blank value removes the
+#     key from the server .env, so the orchestrator's default holds again), and no
+#     line that assigns one a value;
 #   - .env.example names each, on commented lines only;
 #   - the contract names exactly these three, so a fourth variable joins this list
 #     on purpose, and the temporary switch KALI_SANDBOX_MODE is named nowhere.
@@ -107,20 +108,22 @@ env_example_violations() {
 }
 
 # deploy.sh: one empty default per variable, a seed of its own value in init and in
-# update, a seed() that skips an empty value, and nothing that gives one a value.
+# update, through a seed_or_unset() that removes the key when the value is blank, and
+# nothing that gives one a value.
 deploy_violations() {
     local v n
     for v in $VARS; do
         n="$(grep -oF ": \"\${$v:=}\"" "$1" | wc -l | tr -d ' ')"
         [[ "$n" == "1" ]] || echo "$v has $n empty default declarations, not 1"
-        n="$(grep -cxF "seed $v \"\\\${$v}\"" "$1")"
+        n="$(grep -cxF "seed_or_unset $v \"\\\${$v}\"" "$1")"
         [[ "$n" == "2" ]] || echo "$v is seeded from its own value $n times, not 2 (init and update)"
     done
     awk '/^[[:space:]]*#/ { next }
          /KALI_SANDBOX_[A-Z0-9_]*=|KALI_SANDBOX_[A-Z0-9_]*:=[^}]|KALI_SANDBOX_MODE/ { print FILENAME ":" FNR ": " $0 }
-         /^seed KALI_SANDBOX_/ && $0 !~ /^seed (KALI_SANDBOX_[A-Z_]+) "\\\$\{KALI_SANDBOX_[A-Z_]+\}"$/ { print FILENAME ":" FNR ": " $0 }' "$1"
-    grep -E '^seed\(\) \{' "$1" | grep -vF '[ -z "\$v" ] && return 0;' | sed 's/^/a seed() that does not skip an empty value: /'
-    [[ -n "$(grep -E '^seed\(\) \{' "$1")" ]] || echo "no seed() found"
+         /^seed[a-z_]* KALI_SANDBOX_/ && $0 !~ /^seed_or_unset (KALI_SANDBOX_[A-Z_]+) "\\\$\{KALI_SANDBOX_[A-Z_]+\}"$/ { print FILENAME ":" FNR ": " $0 }' "$1"
+    grep -E '^seed_or_unset\(\) \{' "$1" | grep -vF 'if [ -z "\$2" ]; then sed -i "/^\$1=/d" .env;' \
+        | sed 's/^/a seed_or_unset() that does not remove a blank key: /'
+    [[ -n "$(grep -E '^seed_or_unset\(\) \{' "$1")" ]] || echo "no seed_or_unset() found"
 }
 
 # The orchestrator mounts each host folder a sandbox binds a part of.
@@ -170,7 +173,7 @@ if [[ "$retired" == *" KALI_SANDBOX_MODE "* || "$retired" == *"(KALI_SANDBOX_MOD
 else
     fail "redamon.sh does not list KALI_SANDBOX_MODE among the keys it removes from .env"
 fi
-report "tooling/deploy/single-host/deploy.sh seeds each only when set" "$(deploy_violations "$DEPLOY_SH")"
+report "tooling/deploy/single-host/deploy.sh seeds each from its own value, and removes it when blank" "$(deploy_violations "$DEPLOY_SH")"
 DEPLOY_ENV="$REPO_ROOT/tooling/deploy/single-host/.env.example"
 if [[ -f "$DEPLOY_ENV" ]]; then
     report "tooling/deploy/single-host/.env.example sets none" \
@@ -194,14 +197,17 @@ expect_caught "an overlay that sets one" "$(overlay_violations "$TMP/overlay.yml
 printf 'cmd_up() {\n    echo "KALI_SANDBOX_IDLE_MINUTES=5" >> .env\n}\n' > "$TMP/script.sh"
 expect_caught "a script that writes one" "$(script_violations "$TMP/script.sh")"
 expect_caught "deploy.sh writing one" "$(deploy_violations "$TMP/script.sh")"
-sed 's|^seed KALI_SANDBOX_IDLE_MINUTES .*|seed KALI_SANDBOX_IDLE_MINUTES 20|' "$DEPLOY_SH" > "$TMP/deploy-pinned.sh"
+sed 's|^seed_or_unset KALI_SANDBOX_IDLE_MINUTES .*|seed_or_unset KALI_SANDBOX_IDLE_MINUTES 20|' "$DEPLOY_SH" > "$TMP/deploy-pinned.sh"
 expect_caught "deploy.sh seeding a fixed value" "$(deploy_violations "$TMP/deploy-pinned.sh")"
 sed 's|: "\${KALI_SANDBOX_PORT_POOL:=}"|: "${KALI_SANDBOX_PORT_POOL:=4500-4509}"|' "$DEPLOY_SH" > "$TMP/deploy-default.sh"
 expect_caught "deploy.sh defaulting one to a value" "$(deploy_violations "$TMP/deploy-default.sh")"
-grep -vE '^seed KALI_SANDBOX_MAX_CONCURRENT ' "$DEPLOY_SH" > "$TMP/deploy-unseeded.sh"
+grep -vE '^seed_or_unset KALI_SANDBOX_MAX_CONCURRENT ' "$DEPLOY_SH" > "$TMP/deploy-unseeded.sh"
 expect_caught "deploy.sh no longer seeding one" "$(deploy_violations "$TMP/deploy-unseeded.sh")"
-sed 's|\[ -z "\\\$v" \] && return 0; ||' "$DEPLOY_SH" > "$TMP/deploy-seedall.sh"
-expect_caught "a seed() that writes an empty value" "$(deploy_violations "$TMP/deploy-seedall.sh")"
+sed 's|^seed_or_unset KALI_SANDBOX_PORT_POOL |seed KALI_SANDBOX_PORT_POOL |' "$DEPLOY_SH" > "$TMP/deploy-keeps.sh"
+expect_caught "deploy.sh seeding one with seed(), which keeps a value blanked locally" "$(deploy_violations "$TMP/deploy-keeps.sh")"
+awk '/^seed_or_unset\(\) \{/ { print "seed_or_unset() { seed \"\\$1\" \"\\$2\"; }"; next } { print }' \
+    "$DEPLOY_SH" > "$TMP/deploy-keepblank.sh"
+expect_caught "a seed_or_unset() that keeps a blank key" "$(deploy_violations "$TMP/deploy-keepblank.sh")"
 printf '# KALI_SANDBOX_MODE=\n' >> "$TMP/env.example.mode"; cat "$ENV_EXAMPLE" >> "$TMP/env.example.mode"
 expect_caught "the removed switch documented again" "$(env_example_violations "$TMP/env.example.mode")"
 sed 's|^# KALI_SANDBOX_IDLE_MINUTES=|KALI_SANDBOX_IDLE_MINUTES=|' "$ENV_EXAMPLE" > "$TMP/env.example"

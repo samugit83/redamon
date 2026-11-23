@@ -90,6 +90,10 @@ done
 BLOCKED=(
     /api/internal/capture-config /api/internal/job-queue/candidates
     /api/internal/scan-schedules/due /api/internal/plugins/reconcile
+    # The per-user sandbox routes: the master key's, and list hands out every sandbox's bearer.
+    /api/internal/agent/sandbox/ensure /api/internal/agent/sandbox/lease
+    /api/internal/agent/sandbox/list /api/internal/agent/sandbox/release
+    /api/internal//agent/sandbox/list /api/internal/agent/%73andbox/list
     /api/%69nternal/capture-config /api//internal/capture-config
     /api/global/tunnel-config /api/global/tunnel-config?x=1 /api/global/tunnel-config/
     /api/global//tunnel-config /api/global/tunnel-config/sync /api/global/tunnel-config/sync/

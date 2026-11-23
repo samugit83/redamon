@@ -3,9 +3,11 @@ Unit tests for the payload-settings prompt (utils.get_session_config_prompt).
 
 Regression cover for issue #180 ("LHOST IP prompts/confirms from AI Agent"):
 when no payload direction is configured the agent must be told that LHOST is the
-HOST machine's LAN IP and that it must NOT auto-detect an IP from inside the
-kali-sandbox container (that container's own `172.x` address is unreachable by
-the target). The reverse/bind branches must keep working unchanged.
+HOST machine's address a target reaches (a deployed server's public IP) and that
+it must NOT auto-detect an IP from inside the kali-sandbox container (that
+container's own `172.x` address is unreachable by the target), and how the pool
+port is opened locally and on a deployed server. The reverse/bind branches must
+keep working unchanged.
 
 Run (inside agent container):
     ./agentic/run_tests.sh tests/test_payload_settings.py
@@ -105,6 +107,15 @@ class AskBranchGuidanceTests(_PoolSandbox):
         self.assertIn(f"use LPORT `{POOL_PORT}`", out)
         self.assertNotIn("host-LAN-IP:LPORT", out)
 
+    def test_ask_branch_says_how_the_pool_port_is_opened_locally_and_when_deployed(self):
+        # A deployed server refuses a pool bound off loopback: revshell-open's forwarders
+        # are its only way in, so a bind address cannot be the one condition named.
+        flat = " ".join(self._render({}).split())
+        self.assertIn("on a local install by giving `KALI_SANDBOX_PORT_POOL` a bind address", flat)
+        self.assertIn("on a deployed server, where the pool stays on loopback, by running "
+                      "`deploy.sh revshell-open`, which forwards it from the server's public IP", flat)
+        self.assertNotIn("only if the operator published the pool on that address", flat)
+
 
 class DetectedHostIpSuggestionTests(_PoolSandbox):
     """HOST_LAN_IP (issue #180): the ask-branch suggests the host's LAN IP, but
@@ -117,8 +128,11 @@ class DetectedHostIpSuggestionTests(_PoolSandbox):
 
     def test_detected_ip_is_suggested_when_set_and_no_tunnel(self):
         out = self._render({}, {"HOST_LAN_IP": "192.168.1.50"})
-        self.assertIn("192.168.1.50", out)
-        self.assertIn("detected LAN IP", out)
+        flat = " ".join(out.split())
+        self.assertIn("RedAmon's address for this host is `192.168.1.50`", flat)
+        # The value is a deployed server's public IP, or else the default route's LAN IP.
+        self.assertIn("the public IP a deployed server was given, else the LAN IP of the default route", flat)
+        self.assertIn("suggest it as LHOST and confirm with the user", flat)
         # Still forbids self-detection from inside the sandbox.
         self.assertIn("DO NOT GUESS OR AUTO-DETECT", out)
         # And no longer the bare "ASK THE USER" fallback line.

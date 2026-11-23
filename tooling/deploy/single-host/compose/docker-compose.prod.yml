@@ -56,3 +56,12 @@ services:
       - "127.0.0.1:${AGENT_PORT:-8090}:8080"          # off 0.0.0.0; nginx proxies /ws/* only
     environment:
       AGENT_CORS_ORIGINS: "${AGENT_CORS_ORIGINS:-}"   # never '*'
+
+  # Inert on this release: the base only builds the Kali image (profile "tools", no
+  # ports). It stays because deploy.sh ships this overlay from the operator's checkout
+  # onto whatever REPO_BRANCH the server runs, and a base older than per-user sandboxes
+  # runs the shared Kali container with 4444 on 0.0.0.0, which Docker's own iptables
+  # rules open past ufw. `!reset []` (Compose 2.24+, host_bootstrap.sh's floor) drops
+  # every publish of that base instead of merging into its list.
+  kali-sandbox:
+    ports: !reset []

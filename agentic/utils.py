@@ -368,9 +368,10 @@ def get_session_config_prompt() -> str:
             2. **BIND** (you connect to target):
                - Requires: Bind port on target (e.g. 4444)""")
 
-        # The reverse-shell LHOST is the HOST's LAN IP, never the container's
-        # 172.x address. redamon.sh detects it on the host and passes it in via
-        # HOST_LAN_IP; suggest it here. Suppressed when a tunnel is configured —
+        # The reverse-shell LHOST is the HOST's address, never the container's
+        # 172.x one. redamon.sh detects it on the host (deploy.sh pins a deployed
+        # server's public IP instead) and passes it in via HOST_LAN_IP; suggest it
+        # here. Suppressed when a tunnel is configured —
         # in that case the ask-branch is a tunnel-is-broken state (an active
         # tunnel makes mode="reverse", not "ask"), and its remedy above is "fix
         # the tunnel", which a LAN-IP suggestion would contradict.
@@ -407,8 +408,9 @@ def _per_user_lhost_hint(sandbox, host_lan_ip: str, tunnel_configured: bool) -> 
             user to turn on a tunnel (Settings → Tunneling: ngrok or chisel), or use
             a BIND payload. Do not suggest the host's LAN IP as LHOST.""")
     if host_lan_ip and not tunnel_configured:
-        suggest = (f"The host's detected LAN IP (default route) is `{host_lan_ip}` — suggest "
-                   "it as LHOST and confirm with the user.")
+        suggest = (f"RedAmon's address for this host is `{host_lan_ip}` (the public IP a "
+                   "deployed server was given, else the LAN IP of the default route, which a "
+                   "target behind NAT may not reach): suggest it as LHOST and confirm with the user.")
     else:
         suggest = "ASK THE USER for it, do not run a command to find it."
     return dedent(f"""\
@@ -418,8 +420,12 @@ def _per_user_lhost_hint(sandbox, host_lan_ip: str, tunnel_configured: bool) -> 
         `hostname -I`) gives the WRONG LHOST. Its reverse-shell port `{pool}` is
         published on the host: use LPORT `{pool}` (the handler listens on `{pool}`
         inside the sandbox), and as LHOST the host's address the target can reach.
-        The port answers from outside only if the operator published the pool on
-        that address (`KALI_SANDBOX_PORT_POOL` with a bind address). {suggest}""")
+        The port answers the target only once the operator has opened it: on a local
+        install by giving `KALI_SANDBOX_PORT_POOL` a bind address the target reaches;
+        on a deployed server, where the pool stays on loopback, by running
+        `deploy.sh revshell-open`, which forwards it from the server's public IP to
+        the engagement's target ranges only. If the user cannot confirm it is open,
+        say so before exploiting. {suggest}""")
 
 
 def _per_user_reverse_note(sandbox, lport) -> str:

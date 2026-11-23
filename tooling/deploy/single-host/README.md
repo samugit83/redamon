@@ -158,9 +158,9 @@ flag it manages. Control KB with `ENABLE_KB` only.
 | Key | Purpose |
 |---|---|
 | `REVSHELL_TARGET_CIDRS` | Scopes the ufw rules `revshell-open` adds for the reverse-shell port pool to your RoE targets. See the Security posture section for how to catch reverse shells (a person's own tunnel, or the pool). |
-| `KALI_SANDBOX_PORT_POOL` | `first-last` (or `127.0.0.1:first-last`), e.g. `4500-4509`: one host port per running Kali sandbox for direct reverse shells, bound on loopback. The deploy refuses any other bind address, a range starting below 1024 or holding more than 100 ports, and a range over any port the host already serves (the loopback-only services, SSH/HTTP/HTTPS and every port the shipped compose files publish). Required by `revshell-open`. Blank -> no pool, no sandbox port published. |
-| `KALI_SANDBOX_MAX_CONCURRENT` | The most Kali sandboxes running at once (one per person and view). Advised on a multi-user server; blank -> only the memory governor limits them. |
-| `KALI_SANDBOX_IDLE_MINUTES` | Minutes without use before a Kali sandbox stops (default 20). |
+| `KALI_SANDBOX_PORT_POOL` | `first-last` (or `127.0.0.1:first-last`), e.g. `4500-4509`: one host port per running Kali sandbox for direct reverse shells, bound on loopback. The deploy refuses any other bind address, a range starting below 1024 or holding more than 100 ports, and a range over any port the host already serves (the loopback-only services, SSH/HTTP/HTTPS and every port the shipped compose files publish). Required by `revshell-open`. Blank -> no pool: `init`/`update` remove the key from the server `.env`, so no sandbox port is published. |
+| `KALI_SANDBOX_MAX_CONCURRENT` | The most Kali sandboxes running at once (one per person and view), a whole number (`0` blocks every new one; the deploy refuses anything else). Advised on a multi-user server; blank -> `init`/`update` remove the key, and only the memory governor limits them. |
+| `KALI_SANDBOX_IDLE_MINUTES` | Minutes without use before a Kali sandbox stops, a whole number of at least 1 (the deploy refuses anything else). Blank -> `init`/`update` remove the key, and the default, 20, holds. |
 | `TUNNELS_ENABLED` | Unused: written to the server `.env`, read by nothing. Tunnels are per person, in each person's own Kali sandbox, behind the `platform:tunnels` permission. |
 
 ### First admin (required for init)
@@ -261,8 +261,8 @@ The agent WebSocket URL is **baked into the webapp image at build time**
 | `./deploy.sh ssl-renew` | Renew (certbot) or re-install (provided) the cert + reload nginx. | no |
 | `./deploy.sh down` | Stop the stack, keep volumes/images. | no |
 | `./deploy.sh logs [service]` | Tail `docker compose logs -f` for a service (default `agent`). A person's Kali sandbox is not a compose service: on the host, find it with `docker ps --filter label=redamon.sandbox=1` and read it with `docker logs <container>`. | no |
-| `./deploy.sh revshell-open` | Per-engagement: expose every port of `KALI_SANDBOX_PORT_POOL` to `REVSHELL_TARGET_CIDRS` via one host socat forwarder per port (fails closed on reboot). Refuses without a pool. | no |
-| `./deploy.sh revshell-close` | Tear every forwarder down (also the single `4444` one of a host opened before per-user sandboxes) and remove their ufw rules. | no |
+| `./deploy.sh revshell-open` | Per-engagement: expose every port of `KALI_SANDBOX_PORT_POOL` to `REVSHELL_TARGET_CIDRS` via one host socat forwarder per port (fails closed on reboot). Refuses without a pool, and while the server's app `.env` holds no pool or another one (run `update` first). | no |
+| `./deploy.sh revshell-close` | Tear every forwarder down (also the single `4444` one of a host opened before per-user sandboxes) and delete every ufw rule an open tagged `redamon-revshell`, for any pool or CIDR, and every `4444` allow rule (the release before per-user sandboxes tagged none). | no |
 
 Connection fields can be overridden positionally, e.g.
 `./deploy.sh init 1.2.3.4 ~/.ssh/redamon.pem ubuntu`. Use `--env NAME` to select
@@ -419,8 +419,12 @@ Putting it on a public IP invalidates that, so the deploy closes the gap:
     source scoping actually applies - a plain ufw rule on a Docker-published port would be
     bypassed by Docker's own iptables chains. A host **reboot drops the forwarders**, so the
     pool fails closed. Each person's LPORT is their own sandbox's pool port, which the agent
-    names when it suggests LHOST/LPORT; LHOST is the host's public IP. The msf handlers are
-    unauthenticated, so they are exposed only to `REVSHELL_TARGET_CIDRS`, never the world.
+    names when it suggests LHOST/LPORT; LHOST is the host's public IP. `init` and `update`
+    write `HOST_IP` to the server `.env` as `HOST_LAN_IP` when it is an IPv4 address, so the
+    agent and the project settings suggest that address (detected on the host, it would be
+    the private one behind a cloud's NAT); with a DNS name in `HOST_IP`, give LHOST yourself.
+    The msf handlers are unauthenticated, so they are exposed only to
+    `REVSHELL_TARGET_CIDRS`, never the world.
 
   Never run a world-open pool and a tunnel at once.
 - **The AI attack-surface judge (Ollama, `11434`)** has no authentication of its own. The
@@ -453,9 +457,10 @@ loopback re-bind is ever wrong (e.g. a stray `docker compose up` that republishe
 listeners, opened to your targets only by `revshell-open`), or `11434` (the AI attack-surface
 judge, Ollama) — all are loopback-bound and reached only through nginx on `443`, or not at all
 from outside the host. The Kali sandboxes' MCP, progress, tunnel-manager and PTY ports are not
-published at all. Opening `8090` would expose the agent's unauthenticated WebSockets (including the
-anonymous **root PTY** `/ws/kali-terminal`) and its REST surface directly, bypassing nginx and
-its session gate. The browser reaches the agent's WebSockets at `wss://<domain>/ws/…` on `443`
+published at all. Opening `8090` would expose the agent directly, bypassing nginx and its
+session gate: its WebSockets (the root PTY `/ws/kali-terminal` among them) still demand a
+signed ws-ticket and a same-origin request, but its unauthenticated REST routes (`/sessions/*`,
+`/files`, `/docs`) would answer anyone. The browser reaches the agent's WebSockets at `wss://<domain>/ws/…` on `443`
 (nginx → `127.0.0.1:8090`), so `8090` never needs to be publicly reachable.
 
 > **nginx runs on the host, not in a container.** It sits **only at the edge** (80/443),
@@ -474,10 +479,11 @@ its session gate. The browser reaches the agent's WebSockets at `wss://<domain>/
 3. Watch: teardown -> host bootstrap -> hardening -> clone + overlay -> `redamon.sh install`
    (30-60 min build) -> secrets gate -> admin bootstrap -> nginx + TLS -> verify.
 4. Verification asserts loopback binds (3000/8090 on 127.0.0.1 only), datastores, the
-   orchestrator, 4444 (kept in the list so a leftover publish is caught), every port of
-   `KALI_SANDBOX_PORT_POOL` and the Ollama judge (11434, while an AI attack-surface scan runs)
-   never off-loopback, container health (it lists the running Kali sandboxes and fails while
-   a shared `redamon-kali` container still runs), an admin exists, and
+   orchestrator, 4444 (kept in the list so a leftover publish is caught), every port of the
+   `KALI_SANDBOX_PORT_POOL` in the server's app `.env` and the Ollama judge (11434, while an
+   AI attack-surface scan runs) never off-loopback, container health (it lists the running
+   Kali sandboxes and fails while a shared `redamon-kali` container still runs), that the
+   Kali image is the per-user one (it warns otherwise), an admin exists, and
    `https://<domain>/api/health` -> 200.
 5. Log in at `https://<domain>/`.
 
@@ -548,12 +554,38 @@ add their addresses to `OPERATOR_ALLOW_CIDRS` (and, under `GATE_MODE=basic_auth`
 Basic-auth login) before you send an invite, or the link never reaches the app. The rendered nginx also closes `/api/internal/` and the tunnel config paths
 (404); the same `update` re-renders it.
 
-Rollback is manual: `git reset --hard <prev>` on the host checkout, then `./deploy.sh update`.
+Rollback is manual, and `./deploy.sh update` cannot do it: `redamon.sh update` pulls
+`REPO_BRANCH` forward first, so a checkout reset to an older commit comes straight back to the
+newest one. Check out the older commit in the checkout on the server and rebuild it with
+`./redamon.sh install`, exporting what the deploy passes to its own install (`COMPOSE_FILE`
+with the overlay, `DOMAIN`, `WEBAPP_NODE_ENV`, `NEXT_PUBLIC_AGENT_WS_URL`,
+`AGENT_CORS_ORIGINS`). Going back past per-user sandboxes, the overlay already on the server
+gives the old shared Kali container no host port, so `4444` stays closed; check the same
+release out in your local checkout before the next `deploy.sh` run, so its overlay and its
+`revshell-*` verbs match the app again.
+
 Rolling back past the release that added AI Navigator applies the older schema with
 `db push --accept-data-loss`, which **drops** `navigator_threads`, `navigator_messages`,
 `navigator_project_policies` and `InstanceSettings.navigator_enabled`: every AI Navigator
 conversation and every owner's "AI Navigator for collaborators" choice is lost (re-upgrading
 recreates them empty and off). Take a database backup before upgrading to keep them.
+
+### Hosts deployed before per-user sandboxes
+
+The first `update` onto per-user Kali sandboxes replaces the shared `redamon-kali` container:
+
+- Keep your local checkout (it ships the overlay, the modules and the nginx config) and
+  `REPO_BRANCH` (the code the server builds) on the same release. The overlay gives the old
+  shared container no host port, so a mismatch does not leave `4444` public, but `verify` then
+  reports the shared container still running and `revshell-open` has nothing to forward to.
+- Set `KALI_SANDBOX_PORT_POOL` before the `update` if you catch reverse shells without a
+  tunnel, and `KALI_SANDBOX_MAX_CONCURRENT` on a server several people use (each sandbox
+  reserves 1 GiB; without a cap only memory limits them).
+- Shells open in `redamon-kali` end at the `update`, which removes the container once every
+  image is built. A Kali build that fails keeps it, and `deploy.sh update` then stops as
+  failed: run it again.
+- If an engagement was open, run `./deploy.sh revshell-close` once: it stops the old `4444`
+  forwarder and deletes its ufw rules, which carried no tag.
 
 ## Troubleshooting and FAQ
 
@@ -594,7 +626,8 @@ application `.env`.
 | `APP_DIR` | `COMPOSE_PROJECT_NAME` (do not change between init/update) |
 | `ADMIN_*` | first-admin creation on init |
 | `NVD_API_KEY`, `KB_EMBEDDING_*`, `TUNNELS_ENABLED`, `OSV_DB_*` | appended to the server `.env` |
-| `KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_MAX_CONCURRENT`, `KALI_SANDBOX_IDLE_MINUTES` | appended to the server `.env` only when set (the orchestrator reads them) |
+| `KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_MAX_CONCURRENT`, `KALI_SANDBOX_IDLE_MINUTES` | written to the server `.env` when set, removed from it when blank (the orchestrator reads them) |
+| `HOST_IP` (an IPv4 address) | `HOST_LAN_IP` in the server `.env`, the LHOST the agent suggests |
 
 Intentionally hands-off (redamon.sh owns these; the deploy only verifies): `AUTH_SECRET`,
 `INTERNAL_API_KEY`, `SCANNER_API_KEY`, `ORCHESTRATOR_API_KEY`, `MCP_AUTH_TOKEN`,

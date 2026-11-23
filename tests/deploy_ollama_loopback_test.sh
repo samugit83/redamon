@@ -14,6 +14,12 @@
 #
 # Static checks, then the verify step's own loop, cut out of deploy.sh, run
 # against listening-socket tables for each binding Docker can produce.
+#
+# verify's other port checks too, cut out of the remote script verify() renders
+# against a stubbed SSH: the reverse-shell pool is the SERVER's (its sandboxes
+# publish that one, not the laptop's), read one key at a time so no secret is
+# printed; the 4444 hint tells a Docker publish (an app older than the deploy
+# assets) from the old socat forwarder; and the Kali image is the per-user one.
 # =============================================================================
 set -uo pipefail
 
@@ -65,6 +71,94 @@ eq "judge on every IPv4 interface"       "$(verdict $'127.0.0.1:5432\n0.0.0.0:11
 eq "judge on every IPv6 interface"       "$(verdict $'[::]:11434')" fail
 eq "judge on the bare public address"    "$(verdict $'203.0.113.7:11434')" fail
 eq "a port that only ends like 11434"    "$(verdict $'0.0.0.0:111434')" pass
+
+echo
+echo "== verify checks the server's port pool, and prints none of its .env =="
+DSH_DIR="$REPO_ROOT/tooling/deploy/single-host"
+FIXTURE=".env.verifypool$$"
+W="$(mktemp -d)"
+trap 'rm -rf "$W"; rm -f "$DSH_DIR/$FIXTURE"' EXIT
+mkdir -p "$W/srv/redamon"
+printf 'AUTH_SECRET=SENTINEL-auth\nKALI_SANDBOX_PORT_POOL="127.0.0.1:4600-4602"\nPOSTGRES_PASSWORD=SENTINEL-pg\n' \
+    > "$W/srv/redamon/.env"
+# This laptop's .env names another pool: the server's is the one its sandboxes publish.
+printf 'ACCESS_MODE=https-ip\nTLS_MODE=self-signed\nKALI_SANDBOX_PORT_POOL=4500-4509\n' > "$DSH_DIR/$FIXTURE"
+# verify() for real, with SSH run locally against $W/srv as the remote $HOME, the
+# remote script captured instead of sent, and the public probes answering nothing.
+VOUT="$( cd "$DSH_DIR" && W="$W" bash -c '
+    set -uo pipefail
+    source ./deploy.sh status 203.0.113.5 /dev/null ubuntu --env "'"${FIXTURE#.env.}"'" >/dev/null 2>&1 || exit 3
+    ssh_stub() { printf "%s\n" "$*" >> "$W/ssh.log"; HOME="$W/srv" bash -c "$*"; }
+    SSH=ssh_stub
+    remote() { cat > "$W/verify.sh"; }
+    curl() { echo 000; }
+    verify' 2>&1 )"
+rm -f "$DSH_DIR/$FIXTURE"
+if [[ -s "$W/verify.sh" ]]; then ok "verify rendered its remote script"
+else bad "verify rendered its remote script" "${VOUT:0:200}" "a captured script"; fi
+eq "the pool loop names the server's ports" \
+    "$(grep -cxE 'for p in 4600 4601 4602 ?; do' "$W/verify.sh")" "1"
+eq "and not the laptop's" "$(grep -c '^for p in 4500' "$W/verify.sh")" "0"
+eq "the server is asked for that one key only" \
+    "$(grep -vc "^grep -m1 '^KALI_SANDBOX_PORT_POOL=' " "$W/ssh.log" 2>/dev/null)" "0"
+case "$VOUT$(cat "$W/verify.sh")" in
+    *SENTINEL*) bad "no value of the server's .env is printed or sent" "a SENTINEL value" "none" ;;
+    *) ok "no value of the server's .env is printed or sent" ;;
+esac
+
+# The pool loop as rendered, after the internal-ports loop.
+POOL_LOOP="$(awk '/^for p in 5432 /{seen=1; next} seen && /^for p in /{on=1} on {print} on && /^done$/{exit}' "$W/verify.sh")"
+pool_verdict() {  # pool_verdict <ss Local Address column>
+    local LB="$1" rc=0 db_bad=0
+    err() { :; }
+    eval "$POOL_LOOP" 2>/dev/null
+    [[ "$rc" -eq 0 ]] && echo pass || echo fail
+}
+eq "a server pool port on loopback passes"     "$(pool_verdict $'127.0.0.1:4601')" pass
+eq "a server pool port off loopback fails"     "$(pool_verdict $'0.0.0.0:4601')" fail
+eq "a port of the laptop's pool is not judged" "$(pool_verdict $'0.0.0.0:4505')" pass
+
+echo
+echo "== verify's 4444 hint names the likely cause =="
+HINT="$(awk '/^if printf .*4444/{on=1} on {print} on && /^fi$/{exit}' "$W/verify.sh")"
+hint() {  # hint <ss Local Address column> <containers publishing 4444>
+    local LB="$1" PUB="$2" REPO_BRANCH=master
+    info() { printf '%s\n' "$*"; }
+    sg() { [[ "$3" == *"publish=4444"* ]] && printf '%s\n' "$PUB"; return 0; }
+    eval "$HINT"
+}
+out="$(hint $'0.0.0.0:4444' redamon-kali)"
+for want in "published by redamon-kali" "older than these deploy assets" "REPO_BRANCH=master" \
+            "revshell-close cannot remove a Docker publish"; do
+    case "$out" in *"$want"*) ok "a Docker publish of 4444: '$want'" ;;
+                   *) bad "a Docker publish of 4444: '$want'" "${out:-<nothing>}" "$want" ;; esac
+done
+out="$(hint $'203.0.113.7:4444' '')"
+case "$out" in *"'./deploy.sh revshell-close' removes it"*) ok "a host listener on 4444 is the old forwarder" ;;
+               *) bad "a host listener on 4444 is the old forwarder" "${out:-<nothing>}" "revshell-close removes it" ;; esac
+eq "4444 on loopback only: no hint" "$(hint $'127.0.0.1:4444' redamon-kali)" ""
+
+echo
+echo "== verify warns when the Kali image is not the per-user one =="
+LABEL="$(awk '/^labels=/{on=1} on {print} on && /^fi$/{exit}' "$W/verify.sh")"
+label() {  # label <the image's labels as JSON, or nothing for no image>: the verdict line
+    local L="$1"
+    warn() { printf 'WARN %s\n' "$*"; }
+    success() { printf 'OK %s\n' "$*"; }
+    sg() { [[ -n "$L" ]] && printf '%s\n' "$L"; }
+    eval "$LABEL"
+}
+eq "the per-user image (empty stamp) passes" \
+    "$(label '{"maintainer":"RedAmon Project","redamon.msf_refresh":""}' | cut -c1-3)" "OK "
+eq "a refreshed one too" "$(label '{"redamon.msf_refresh":"20261101"}' | cut -c1-3)" "OK "
+case "$(label '{"maintainer":"RedAmon Project"}')" in
+    "WARN "*"was not rebuilt"*) ok "the old shared image (no label) warns that it was not rebuilt" ;;
+    *) bad "the old shared image warns" "$(label '{"maintainer":"RedAmon Project"}')" "WARN ... not rebuilt" ;;
+esac
+case "$(label '')" in
+    "WARN "*) ok "no image warns" ;;
+    *) bad "no image warns" "$(label '')" "WARN" ;;
+esac
 
 echo
 echo "deploy_ollama_loopback: $PASS passed, $FAIL failed"

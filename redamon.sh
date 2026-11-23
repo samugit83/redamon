@@ -345,10 +345,13 @@ preflight_ram_gate() {
     local required_mb baseline_mb headroom_mb
     if [[ -n "${REDAMON_MIN_RAM_MB:-}" ]]; then
         required_mb="${REDAMON_MIN_RAM_MB//[^0-9]/}"
-    elif [[ -n "${SERVICE_BASELINE_MEM:-}" || -n "${OS_HEADROOM_MEM:-}" ]]; then
-        # An operator pinned the budget: honour it verbatim.
-        baseline_mb="$(_size_to_mb "${SERVICE_BASELINE_MEM:-6g}")"; [[ -z "$baseline_mb" ]] && baseline_mb=6144
-        headroom_mb="$(_size_to_mb "${OS_HEADROOM_MEM:-2g}")";      [[ -z "$headroom_mb" ]] && headroom_mb=2048
+    elif _mem_pinned SERVICE_BASELINE_MEM || _mem_pinned OS_HEADROOM_MEM; then
+        # An operator pinned the budget: honour it verbatim. Not a bare test of the
+        # variables: the dispatch exports both before any command reaches this gate,
+        # and reading that as a pin left the allocator's refusals below unreachable.
+        # _env_knob, because a pin in .env is not in this shell.
+        baseline_mb="$(_size_to_mb "$(_env_knob SERVICE_BASELINE_MEM)")"; [[ -z "$baseline_mb" ]] && baseline_mb=6144
+        headroom_mb="$(_size_to_mb "$(_env_knob OS_HEADROOM_MEM)")";      [[ -z "$headroom_mb" ]] && headroom_mb=2048
         required_mb=$(( baseline_mb + headroom_mb ))
     else
         # Ask the ALLOCATOR whether this host can actually satisfy the software
@@ -697,6 +700,31 @@ _MEM_SELF_EXPORTED=" "
 _mem_self_exported() {
     case "$_MEM_SELF_EXPORTED" in *" $1 "*) return 0 ;; esac
     return 1
+}
+
+# cmd_update re-execs the script it just pulled, and that process inherits every
+# variable the old script's dispatch exported (KALI_MEM too, from releases that
+# sized a shared Kali container). _MEM_SELF_EXPORTED starts empty here, so each
+# would read as an operator pin: this run would keep the old split, call KALI_MEM
+# ignored, and write an empty managed block. The old dispatch wrote the same values
+# into the block just before the exec, so a value equal to the block's is the
+# parent's and is dropped. A pin is never in the block (the block omits what is
+# pinned), so a shell value the block does not hold, and any pin in .env, stay.
+_mem_forget_parent_exports() {
+    [[ -n "${REDAMON_UPDATE_FROM:-}" ]] || return 0
+    local env_file="$SCRIPT_DIR/.env" key val
+    [[ -r "$env_file" ]] || return 0
+    while IFS='=' read -r key val; do
+        [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+        if [[ -n "${!key:-}" && "${!key}" == "$val" ]]; then
+            unset "$key"
+        fi
+    done < <(awk -v b="$_MEM_BLOCK_BEGIN" -v e="$_MEM_BLOCK_END" '
+        $0 == b { inblk = 1; next }
+        $0 == e { inblk = 0; next }
+        inblk && /^[A-Za-z_][A-Za-z0-9_]*=/ { print }
+    ' "$env_file")
+    return 0
 }
 
 # Compute the allocation. Exports every *_MEM / NEO4J_* var that is not pinned.
@@ -4217,14 +4245,28 @@ cmd_update() {
         fi
 
         if [[ "$old_head" == "$new_head" ]]; then
+            # The shared container outlives only a checkout that no update finished: a
+            # manual `git pull`, or an earlier update whose Kali build failed. Its images
+            # then predate the code, and converging the services here would recreate
+            # them from those images against the new compose file.
+            if _shared_kali_present; then
+                error "Nothing to pull, but the images predate this checkout: the shared Kali container redamon-kali"
+                error "  is still here, so the code came from a manual git pull (or an earlier update whose Kali build failed)."
+                error "  Rebuild the agent and webapp images and the Kali image, then start the stack (it removes redamon-kali):"
+                error "    docker compose build agent webapp"
+                error "    docker compose --profile tools build kali-sandbox"
+                error "    ./redamon.sh up"
+                exit 1
+            fi
             success "Already up to date (v$(get_version))."
             if [[ "$preview_only" == true ]]; then
                 info "Nothing to preview: there is no new version to apply."
             else
-                # A release pulled earlier, or by hand: the same end state as an update.
-                _retire_shared_kali
                 _ensure_pentest_net
                 _update_apply_env
+                # A completed update, so the daily Metasploit refresh too: sandboxes
+                # run with Metasploit's own auto-update off.
+                _kali_msf_refresh
             fi
             return
         fi
@@ -4325,11 +4367,22 @@ cmd_update() {
     # Rebuild tool-profile images. A tool image is build-only (not a running core
     # service), so a failure here must NOT abort the rest of the update (core
     # services, broker, auth key). Warn and continue; the existing tool image keeps
-    # working until its build is fixed.
+    # working until its build is fixed. The Kali image is the exception at the end:
+    # every person's sandbox starts from it and speaks the new release's protocol,
+    # so the update still finishes but fails, and the shared container stays.
+    local kali_build_failed=false
     if [[ ${#rebuild_tools[@]} -gt 0 ]]; then
         info "Rebuilding tool images: ${rebuild_tools[*]}"
         if ! compose_build --profile tools build "${rebuild_tools[@]}"; then
             warn "One or more tool images failed to build (${rebuild_tools[*]}); continuing with the core update. Re-run the build later: docker compose --profile tools build ${rebuild_tools[*]}"
+            # The status does not name the image that failed, and a failed batch skips
+            # the batches after it: building the Kali image alone settles it, a cache
+            # hit when it did build. No prune: it would drop the partial cache of the
+            # image that failed, which its retry resumes from.
+            if [[ " ${rebuild_tools[*]} " == *" kali-sandbox "* ]] \
+                && ! REDAMON_NO_AUTO_PRUNE=1 compose_build --profile tools build kali-sandbox; then
+                kali_build_failed=true
+            fi
         fi
     fi
 
@@ -4394,9 +4447,10 @@ cmd_update() {
         docker image prune -f >/dev/null 2>&1 || true
     fi
 
-    # Only now: every image is built and the operator has not said no, so an update
-    # that stops earlier leaves the shared container (and its sessions) running.
-    _retire_shared_kali
+    # Only now: the images are built and the operator has not said no, so an update
+    # that stops earlier leaves the shared container (and its sessions) running. So
+    # does one whose Kali image did not build: no sandbox could start from it yet.
+    [[ "$kali_build_failed" == true ]] || _retire_shared_kali
     _ensure_pentest_net
 
     # Restart rebuilt core services (tool images are build-only, not running).
@@ -4511,8 +4565,10 @@ cmd_update() {
     if _service_running webapp; then
         plugins_converge || exit 1
     fi
-    # Everything the release changed is built and applied; what remains is a health check.
-    rm -f "$UPDATE_PENDING_FILE"
+    # Everything the release changed is built and applied; what remains is a health
+    # check. Not the Kali image when it failed: the marker stays, so the next `update`
+    # builds it and finishes this one.
+    [[ "$kali_build_failed" == true ]] || rm -f "$UPDATE_PENDING_FILE"
 
     # An update that leaves the stack down must not report success. This is the
     # exact gap the v6.1.1 -> v6.4.1 field report hit: the update finished, said
@@ -4525,12 +4581,17 @@ cmd_update() {
         exit 1
     fi
 
-    _kali_msf_refresh
+    [[ "$kali_build_failed" == true ]] || _kali_msf_refresh   # not a third build of what just failed twice
 
     echo ""
-    success "Updated to v${new_version}!"
+    if [[ "$kali_build_failed" != true ]]; then
+        success "Updated to v${new_version}!"
+    else
+        warn "Updated to v${new_version}, all but the Kali sandbox image (see the end of this output)."
+    fi
     if [[ ${#rebuild_core[@]} -gt 0 || ${#rebuild_tools[@]} -gt 0 ]]; then
         local rebuilt_list="${rebuild_core[*]:+${rebuild_core[*]} }${rebuild_tools[*]}"
+        [[ "$kali_build_failed" == true ]] && rebuilt_list="${rebuilt_list/kali-sandbox/kali-sandbox (failed)}"
         echo -e "  ${CYAN}Rebuilt:${NC}  ${rebuilt_list}"
     fi
     if [[ ${#restart_only[@]} -gt 0 ]]; then
@@ -4570,6 +4631,16 @@ cmd_update() {
     _reconcile_capture_if_running
     # ...and start it if it was down (a stack recreate leaves the pair stopped).
     ensure_capture_proxy_running
+
+    # Last, so the deploy (and anyone scripting this) cannot read the update as done.
+    if [[ "$kali_build_failed" == true ]]; then
+        echo ""
+        error "The Kali sandbox image did not build: each person's sandbox starts from the previous image (none starts"
+        error "  where there was none), and the shared Kali container redamon-kali, if this host still has it, was kept."
+        error "  The build's own output says why: docker compose --profile tools build kali-sandbox"
+        error "  Once it builds, run ./redamon.sh update again: it builds the image and finishes this update."
+        exit 1
+    fi
 }
 
 # Per-user sandboxes start with Metasploit's auto-update off and take its modules
@@ -5846,15 +5917,19 @@ _REMOVED_CONTAINERS=(redamon-gvm-postgres-init)
 # --preview, and this one must outlive both (the sessions still open in it end
 # when it goes). The exact name only, never a per-user sandbox.
 _retire_shared_kali() {
-    command -v docker >/dev/null 2>&1 || return 0
-    # Only this checkout's: a container name is daemon-wide, so another stack's (a
-    # test stack, a second clone) must survive a command run here.
-    [[ "$(docker container inspect -f '{{.Name}} {{index .Config.Labels "com.docker.compose.project"}}' \
-        redamon-kali 2>/dev/null)" == "/redamon-kali $(compose_project_name)" ]] || return 0
+    _shared_kali_present || return 0
     info "Removing the shared Kali container redamon-kali: each person now gets their own sandbox (sessions still open in it end now)"
     docker rm -f redamon-kali >/dev/null 2>&1 \
         || warn "Could not remove redamon-kali; remove it by hand: docker rm -f redamon-kali"
     return 0
+}
+
+# Only this checkout's: a container name is daemon-wide, so another stack's (a test
+# stack, a second clone) is never taken for it.
+_shared_kali_present() {
+    command -v docker >/dev/null 2>&1 || return 1
+    [[ "$(docker container inspect -f '{{.Name}} {{index .Config.Labels "com.docker.compose.project"}}' \
+        redamon-kali 2>/dev/null)" == "/redamon-kali $(compose_project_name)" ]]
 }
 
 # The orchestrator starts the capture proxy on the pentest network and the labs name
@@ -5906,15 +5981,20 @@ _ensure_pentest_net() {
 # Knobs of the shared Kali container that nothing reads any more. An operator's
 # line stays where it is (a roll-back needs it, and --preview writes nothing) and is
 # named once per run; KALI_MEM is the allocator's to name (_mem_note_ignored_pool_pins).
-_RETIRED_KALI_KEYS=(KALI_SANDBOX_MODE KALI_PIDS KALI_CPUS)
+# The *_HOST_PORT keys moved the host side of that container's published ports.
+_RETIRED_KALI_KEYS=(KALI_SANDBOX_MODE KALI_PIDS KALI_CPUS MSF_PROGRESS_HOST_PORT HYDRA_PROGRESS_HOST_PORT NGROK_API_HOST_PORT)
 _RETIRED_KALI_NOTED=""
 _env_note_retired_kali_keys() {
-    local env_file="$SCRIPT_DIR/.env" key
+    local env_file="$SCRIPT_DIR/.env" key why
     [[ -f "$env_file" && -z "$_RETIRED_KALI_NOTED" ]] || return 0
     _RETIRED_KALI_NOTED=1
     for key in "${_RETIRED_KALI_KEYS[@]}"; do
         grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=[[:space:]]*[^[:space:]]" "$env_file" 2>/dev/null || continue
-        info "${key} in .env is ignored: each person's Kali sandbox has fixed limits and no mode switch"
+        case "$key" in
+            *_HOST_PORT) why="it moved a port of the shared Kali container, and no person's sandbox publishes that port" ;;
+            *) why="each person's Kali sandbox has fixed limits and no mode switch" ;;
+        esac
+        info "${key} in .env is ignored: ${why}"
     done
     return 0
 }
@@ -5991,7 +6071,7 @@ esac
 # Running it here also means the .env block is written BEFORE any `docker compose
 # up` in those commands reads it.
 case "${1:-help}" in
-    install|update|up) _env_note_retired_kali_keys; export_resource_caps; prune_removed_containers; _kali_image_tag_once ;;
+    install|update|up) _env_note_retired_kali_keys; _mem_forget_parent_exports; export_resource_caps; prune_removed_containers; _kali_image_tag_once ;;
 esac
 
 case "${1:-help}" in

@@ -61,6 +61,68 @@ else
   fail "prod overlay no longer supplies NEXT_PUBLIC_AGENT_WS_URL"
 fi
 
+echo "== on an older base, the prod overlay publishes nothing off loopback =="
+# deploy.sh ships the overlay from the operator's checkout onto whatever REPO_BRANCH the
+# server runs. A base older than per-user sandboxes runs the shared Kali container with
+# 4444 on every address, which Docker opens past ufw. The base is inline rather than a
+# git tag's file: an input the checkout may lack would fail the gate.
+CANNOT=""
+OVERLAY="$REPO_ROOT/tooling/deploy/single-host/compose/docker-compose.prod.yml"
+OLD_BASE='services:
+  webapp:
+    image: busybox
+    ports:
+      - "${WEBAPP_PORT:-3000}:3000"
+  agent:
+    image: busybox
+    ports:
+      - "${AGENT_PORT:-8090}:8080"
+  kali-sandbox:
+    image: busybox
+    container_name: redamon-kali
+    ports:
+      - "127.0.0.1:${MCP_NETWORK_RECON_PORT:-8000}:8000"
+      - "4444:4444"
+      - "127.0.0.1:${NGROK_API_HOST_PORT:-4040}:4040"
+'
+# publishes <compose -f args...>: "<service> <host_ip or *>:<port>" per publish, or RENDER
+# FAILED. The base comes in on stdin and the env file is /dev/null: a snap-packaged
+# docker cannot read this script's private /tmp, and the checkout's .env never takes part.
+publishes() {
+  ( cd "$REPO_ROOT" && printf '%s' "$OLD_BASE" | env -u COMPOSE_FILE -u COMPOSE_PROFILES \
+      "$docker_bin" compose --env-file /dev/null -p deploy-oldbase -f - "$@" config --format json 2>/dev/null ) \
+    | python3 -c '
+import json, sys
+for name, svc in sorted(json.load(sys.stdin)["services"].items()):
+    for p in svc.get("ports") or []:
+        host, port = p.get("host_ip") or "*", p.get("published")
+        print(f"{name} {host}:{port}")
+' 2>/dev/null || echo "RENDER FAILED"
+}
+if docker_bin="$(type -P docker)" && "$docker_bin" compose version >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  alone="$(publishes)"
+  grep -qx 'kali-sandbox \*:4444' <<<"$alone" \
+    && pass "the older base alone publishes 4444 on every address (the hazard)" \
+    || fail "the older base alone publishes 4444 on every address (got: $(tr '\n' ' ' <<<"$alone"))"
+  merged="$(publishes -f "$OVERLAY")"
+  if [[ "$merged" == "RENDER FAILED" ]]; then
+    fail "the older base + the prod overlay renders"
+  else
+    pass "the older base + the prod overlay renders"
+    off="$(grep -vE ' (127\.0\.0\.1|::1):[0-9]+$' <<<"$merged" | grep . || true)"
+    [[ -z "$off" ]] && pass "with the overlay nothing is published off loopback" \
+      || fail "with the overlay nothing is published off loopback (got: $(tr '\n' ' ' <<<"$off"))"
+    grep -q '^kali-sandbox ' <<<"$merged" \
+      && fail "the shared Kali container publishes nothing at all ($(grep '^kali-sandbox ' <<<"$merged" | tr '\n' ' '))" \
+      || pass "the shared Kali container publishes nothing at all"
+    grep -qx 'webapp 127.0.0.1:3000' <<<"$merged" && grep -qx 'agent 127.0.0.1:8090' <<<"$merged" \
+      && pass "the webapp and the agent stay on loopback" \
+      || fail "the webapp and the agent stay on loopback (got: $(tr '\n' ' ' <<<"$merged"))"
+  fi
+else
+  CANNOT="docker compose and python3 are needed to render the overlay on an older base"
+fi
+
 echo "== operator app-config reaches the server .env (all three plumbing points) =="
 # Every key here is read by the app from the server-side .env. deploy.sh needs it
 # (1) defaulted so `set -u` cannot kill the run, (2) in build_deploy_env's export
@@ -77,7 +139,8 @@ for k in NVD_API_KEY TUNNELS_ENABLED \
   grep -qE ": \"\\\$\{${k}:=" "$DEPLOY"         || miss="${miss} default"
   awk -v k="$k" '/^build_deploy_env\(\)/,/^}/ { if ($0 ~ k) found=1 } END { exit !found }' "$DEPLOY" \
                                                 || miss="${miss} deploy.env-export"
-  grep -qE "^seed ${k} " "$DEPLOY"              || miss="${miss} seed"
+  # seed_or_unset: a blank value removes the key, for the knobs whose blank means default.
+  grep -qE "^seed(_or_unset)? ${k} " "$DEPLOY"  || miss="${miss} seed"
   [ -z "$miss" ] && pass "$k plumbed (default + export + seed)" || fail "$k missing:${miss}"
 done
 
@@ -95,6 +158,30 @@ awk '/^cmd_update\(\)/,/^}/' "$DEPLOY" | grep -qE "^seed MCP_SERVER_ENABLED " \
 awk '/^cmd_update\(\)/,/^}/' "$DEPLOY" | grep -q "up -d webapp" \
   && pass "cmd_update recreates the webapp so a changed .env applies" \
   || fail "cmd_update never recreates the webapp (a seeded value would not take effect)"
+
+echo "== a failed redamon.sh update fails the deploy's update =="
+# redamon.sh refuses an update whose images predate the checkout, and stops after a
+# failed Kali build. cmd_update runs for real, sourced, with the server's script
+# failing as those do: the run must end as a failure before the gate, nginx and verify.
+DSH_DIR="$REPO_ROOT/tooling/deploy/single-host"
+FIXTURE=".env.updatefail$$"
+printf 'ACCESS_MODE=https-ip\nTLS_MODE=self-signed\n' > "$DSH_DIR/$FIXTURE"
+UPD="$( cd "$DSH_DIR" && bash -c '
+    source ./deploy.sh status 203.0.113.5 /dev/null ubuntu --env "'"${FIXTURE#.env.}"'" >/dev/null 2>&1 || exit 3
+    ship_assets() { :; }
+    remote() { if grep -q "\./redamon\.sh update" ; then return 1; fi; }
+    run_secrets_gate() { echo "AFTER: secrets gate"; }; setup_nginx_tls() { echo "AFTER: nginx"; }
+    verify() { echo "AFTER: verify"; }
+    cmd_update; echo "rc=$?"' 2>&1 )"; UPD_RC=$?
+rm -f "$DSH_DIR/$FIXTURE"
+[[ "$UPD_RC" -ne 0 && "$UPD" != *"UPDATE complete"* ]] \
+  && pass "the run fails (rc=$UPD_RC) and never says UPDATE complete" \
+  || fail "the run fails and never says UPDATE complete (rc=$UPD_RC)"
+[[ "$UPD" == *"UPDATE failed on the server"* ]] \
+  && pass "it says the server's update failed" || fail "it says the server's update failed"
+[[ "$UPD" != *"AFTER:"* ]] \
+  && pass "nothing after it runs (secrets gate, nginx, verify)" \
+  || fail "nothing after it runs ($(grep '^AFTER:' <<<"$UPD" | tr '\n' ' '))"
 
 echo "== the nginx renderer receives its own MCP inputs =="
 # _mcp_gate_block reads these on the REMOTE host. They must cross the SSH
@@ -131,3 +218,5 @@ echo
 echo "-----------------------------------------"
 printf 'Deploy source-integrity suite: \033[0;32m%d passed\033[0m, ' "$PASS"
 if [[ $FAIL -gt 0 ]]; then printf '\033[0;31m%d failed\033[0m\n' "$FAIL"; exit 1; else printf '%d failed\n' "$FAIL"; fi
+# 77: the gate's "cannot run" code (redamon.sh _TEST_SHELL_CANNOT_RUN), after any failure.
+[[ -z "$CANNOT" ]] || { echo "CANNOT RUN: $CANNOT"; exit 77; }

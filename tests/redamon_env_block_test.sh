@@ -195,6 +195,89 @@ hasnt "$D/.env" '^WEBAPP_MEM=1m$'  "the truncated block's stale value is gone"
 has  "$D/.env" '^POSTGRES_PASSWORD=keepme$' "content before a truncated block survives"
 rm -rf "$D"
 
+echo "== the update re-exec'd after a pull recomputes what its parent exported =="
+# cmd_update execs the script it just pulled, and that process inherits everything
+# the old script's dispatch exported. Taken for operator pins, those kept the old
+# split, wrote an EMPTY block, and called an inherited KALI_MEM ignored. Each run
+# below is the dispatch's own hook, read from redamon.sh, in a fresh process.
+HOOK="$(sed -n '/^case "\${1:-help}" in$/,/^esac$/p' "$REPO_ROOT/redamon.sh" \
+    | grep -E '^[[:space:]]*install\|update\|up\)' \
+    | sed -E 's/^[[:space:]]*install\|update\|up\)[[:space:]]*//; s/[[:space:]]*;;[[:space:]]*$//')"
+# The hook, then THEN (a command string) in the same process, with the info lines.
+DISPATCH='
+    set -uo pipefail
+    source ./redamon.sh
+    set +e
+    info(){ echo "INFO $*"; }; warn(){ :; }; error(){ :; }; success(){ :; }
+    detect_build_resources(){ BUILD_MEM_MB="$MEMSTUB"; BUILD_NCPU=4; BUILD_RES_SOURCE=stub; }
+    export_cpu_caps(){ :; }; export_host_lan_ip(){ :; }
+    prune_removed_containers(){ :; }; _kali_image_tag_once(){ :; }
+    is_gvm_enabled(){ return 1; }; is_kbase_enabled(){ return 1; }
+    SCRIPT_DIR="$ENVDIR"
+    export BURST_FACTOR=1.75
+    eval "$HOOK"
+    eval "${THEN:-:}"
+'
+export HOOK DISPATCH
+# dispatch <dir> <MB> [VAR=value ...]: one run, with VAR=value in its environment.
+dispatch() {
+    local dir="$1" mem="$2"; shift 2
+    ( cd "$REPO_ROOT" && env MEMSTUB="$mem" ENVDIR="$dir" "$@" bash -c "$DISPATCH" 2>&1 )
+}
+# A parent run hands over to the re-exec'd update the way cmd_update does: it exports
+# REDAMON_UPDATE_FROM and runs the script again, with everything it exported.
+REEXEC='export REDAMON_UPDATE_FROM=oldhead; THEN="$CHILD_THEN" bash -c "$DISPATCH"'
+CHILD_THEN='echo "CHILD WEBAPP_MEM=${WEBAPP_MEM:-} SERVICE_BASELINE_MEM=${SERVICE_BASELINE_MEM:-}"'
+export CHILD_THEN
+
+D="$(newdir)"; F="$(newdir)"
+run_alloc "$F" 16384                                    # what a plain run writes
+dispatch "$D" 16384 >/dev/null                          # the parent's block
+parent="$(cksum < "$D/.env")"
+out="$(dispatch "$D" 16384 THEN="$REEXEC")"
+eq "the re-exec'd update writes the block its parent wrote" "$(cksum < "$D/.env")" "$parent"
+has "$D/.env" '^WEBAPP_MEM=[0-9]+m$' "the block is not empty"
+eq "it holds what a plain run computes" "$(grep '^SERVICE_BASELINE_MEM=' "$D/.env")" "$(grep '^SERVICE_BASELINE_MEM=' "$F/.env")"
+rm -rf "$D"
+
+# The parent is an older release: Kali was a service, so the services pool was
+# bigger and KALI_MEM was exported and written.
+D="$(newdir)"
+OLD=(WEBAPP_MEM=1111m AGENT_MEM=1111m NEO4J_MEM=3333m KALI_MEM=1617m SERVICE_BASELINE_MEM=9798m OS_HEADROOM_MEM=1310m)
+{ printf 'POSTGRES_PASSWORD=keepme\n%s\n' "$BEGIN_MARK"; printf '%s\n' "${OLD[@]}"; printf '%s\n' "$END_MARK"; } > "$D/.env"
+out="$(dispatch "$D" 16384 REDAMON_UPDATE_FROM=oldhead "${OLD[@]}" THEN="$CHILD_THEN")"
+eq "the old release's SERVICE_BASELINE_MEM is recomputed" "$(grep '^SERVICE_BASELINE_MEM=' "$D/.env")" "$(grep '^SERVICE_BASELINE_MEM=' "$F/.env")"
+eq "and so is WEBAPP_MEM" "$(grep '^WEBAPP_MEM=' "$D/.env")" "$(grep '^WEBAPP_MEM=' "$F/.env")"
+has_out() { if grep -qF -- "$2" <<<"$out"; then ok "$1"; else bad "$1" "absent" "$2"; fi; }
+hasnt_out() { if grep -qF -- "$2" <<<"$out"; then bad "$1" "present" "absent: $2"; else ok "$1"; fi; }
+has_out "the update runs on the new values" "CHILD WEBAPP_MEM=$(grep '^WEBAPP_MEM=' "$F/.env" | cut -d= -f2) SERVICE_BASELINE_MEM=$(grep '^SERVICE_BASELINE_MEM=' "$F/.env" | cut -d= -f2)"
+hasnt "$D/.env" '^KALI_MEM=' "the block drops KALI_MEM"
+hasnt_out "the parent's KALI_MEM is not called an ignored pin" "KALI_MEM is set but ignored"
+has "$D/.env" '^POSTGRES_PASSWORD=keepme$' "content outside the block survives"
+rm -rf "$D"
+
+# The operator's pins pass through the handover untouched.
+D="$(newdir)"
+run_alloc "$D" 16384
+printf 'AGENT_MEM=3g\n' >> "$D/.env"                    # a pin in .env, outside the block
+out="$(dispatch "$D" 16384 WEBAPP_MEM=9g KALI_MEM=6g THEN="$REEXEC")"
+has_out "a shell pin survives the handover" "CHILD WEBAPP_MEM=9g "
+hasnt "$D/.env" '^WEBAPP_MEM=' "and stays out of the block"
+eq "a .env pin stays the only assignment" "$(grep -c '^AGENT_MEM=' "$D/.env")" "1"
+has "$D/.env" '^AGENT_MEM=3g$' "with its value"
+has "$D/.env" '^NEO4J_MEM=[0-9]+m$' "every unpinned var is still in the block"
+eq "an operator's KALI_MEM is still called ignored, once per run" "$(grep -c 'KALI_MEM is set but ignored' <<<"$out")" "2"
+rm -rf "$D"
+
+# Outside an update's re-exec nothing is forgotten: the shell holding the block's own
+# value is an operator's pin, as before.
+D="$(newdir)"
+run_alloc "$D" 16384
+web="$(grep '^WEBAPP_MEM=' "$D/.env" | cut -d= -f2)"
+dispatch "$D" 16384 WEBAPP_MEM="$web" >/dev/null
+hasnt "$D/.env" '^WEBAPP_MEM=' "without REDAMON_UPDATE_FROM a shell value equal to the block's stays a pin"
+rm -rf "$D" "$F"
+
 echo "== an undetectable host leaves .env alone =="
 D="$(newdir)"
 printf 'POSTGRES_PASSWORD=keepme\n' > "$D/.env"

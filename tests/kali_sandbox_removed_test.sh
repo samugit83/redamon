@@ -7,7 +7,8 @@
 #
 #   - compose: `kali-sandbox` is build-only (`profiles: ["tools"]` and the image
 #     tag; the service name stays because an older deploy overlay still names it);
-#     no compose file publishes 4444; the agent has no MCP_*_URL,
+#     an overlay names it only with an empty `ports: !reset []` (the prod overlay's,
+#     for an older base); no compose file publishes 4444; the agent has no MCP_*_URL,
 #     KALI_TERMINAL_WS_URL, MCP_AUTH_TOKEN or `depends_on: kali-sandbox`; the
 #     webapp has no TUNNEL_AUTH_TOKEN; the orchestrator no KALI_SANDBOX_MODE;
 #   - no code dials a `kali-sandbox` address (agentic/, webapp/src, mcp/servers);
@@ -16,11 +17,13 @@
 #     `_REMOVED_CONTAINERS` does not name redamon-kali;
 #   - `_retire_shared_kali` runs in install, up, up dev and down before compose,
 #     and in update only after every build and after the preview's answer (an
-#     `update --preview`, an operator's no and a disk-gate stop leave it alone);
+#     `update --preview`, an operator's no, a disk-gate stop and a Kali image that
+#     did not build leave it alone; an update with nothing to pull refuses while it
+#     is still here, and `up` removes it);
 #   - the update map: mcp/kali-sandbox/ and mcp/requirements.txt rebuild the tool
 #     image, mcp/servers/ rebuilds and restarts nothing, a missing image is built;
 #   - `_kali_msf_refresh`: once a day, its own stamp, a failed build only warns,
-#     never in --preview or an update with nothing to pull, never the full gate;
+#     never in --preview or after a failed Kali build, never the full gate;
 #   - the deploy overlay of the previous release (tests/fixtures/
 #     deploy_overlay_v7.9.0/, a verbatim copy) still renders against this base.
 #
@@ -74,9 +77,12 @@ import re, sys, yaml
 
 class Loader(yaml.SafeLoader):
     pass
+class Reset(list):
+    """A `!reset` sequence, so the overlay's one allowed Kali stanza can be told apart."""
+
 Loader.add_multi_constructor("!", lambda l, s, n: (
     l.construct_mapping(n) if isinstance(n, yaml.MappingNode)
-    else l.construct_sequence(n) if isinstance(n, yaml.SequenceNode)
+    else (Reset if s == "reset" else list)(l.construct_sequence(n)) if isinstance(n, yaml.SequenceNode)
     else l.construct_scalar(n)))
 
 def env_names(env):
@@ -132,8 +138,13 @@ for i, path in enumerate([base] + overlays):
         print(f"{name}: webapp still has TUNNEL_AUTH_TOKEN")
     if "KALI_SANDBOX_MODE" in env_names((services.get("recon-orchestrator") or {}).get("environment")):
         print(f"{name}: recon-orchestrator still has KALI_SANDBOX_MODE")
+    # The one stanza an overlay may hold: an empty `ports: !reset []`, which keeps an
+    # older base's shared container off every host port (the prod overlay's).
     if i and "kali-sandbox" in services:
-        print(f"{name}: the overlay still re-lists kali-sandbox")
+        kali = services["kali-sandbox"]
+        if not (isinstance(kali, dict) and set(kali) == {"ports"}
+                and type(kali["ports"]) is Reset and not kali["ports"]):
+            print(f"{name}: the overlay re-lists kali-sandbox beyond an empty `ports: !reset []`")
     if not i:
         kali = services.get("kali-sandbox")
         if not isinstance(kali, dict):
@@ -173,6 +184,14 @@ expect_caught "a planted 4444 publish is caught" "$(grep 4444 <<< "$planted")"
 expect_caught "a planted agent MCP_AUTH_TOKEN is caught" "$(grep MCP_AUTH_TOKEN <<< "$planted")"
 printf 'services:\n  kali-sandbox:\n    ports: !override\n      - "127.0.0.1:4444:4444"\n' > "$TMP/overlay.yml"
 expect_caught "an overlay re-listing kali-sandbox is caught" "$(compose_violations "$COMPOSE" "$TMP/overlay.yml")"
+printf 'services:\n  kali-sandbox:\n    ports: !reset []\n' > "$TMP/overlay.yml"
+report "an overlay's empty \`ports: !reset []\` for kali-sandbox is allowed" "$(compose_violations "$COMPOSE" "$TMP/overlay.yml")"
+for planted in '    ports: !override []' '    ports: []' '    ports: !reset []\n    image: busybox' \
+               '    ports: !reset\n      - "127.0.0.1:8000:8000"' '    profiles: ["tools"]'; do
+    printf 'services:\n  kali-sandbox:\n%b\n' "$planted" > "$TMP/overlay.yml"
+    expect_caught "but not: $(printf '%b' "$planted" | tr -s ' \n' ' ' | sed 's/^ //')" \
+        "$(compose_violations "$COMPOSE" "$TMP/overlay.yml")"
+done
 
 python3 - "$REPO_ROOT/mcp/docker-compose.yml" > "$TMP/standalone.txt" <<'PY'
 import sys, yaml
@@ -648,13 +667,16 @@ ascending "every other build gets an empty stamp, whatever .env or the caller sa
 run_update --preview
 assert_eq "not in --preview" "$(grep -cE "$MSF" "$W/calls.log")" "0"
 : > "$W/calls.log"
-OUT="$( (source "$W/stubs.sh"; set -euo pipefail; unset REDAMON_UPDATE_FROM; STUB_PULL_MOVES=false cmd_update) 2>&1 </dev/null)"
+OUT="$( (source "$W/stubs.sh"; set -euo pipefail; unset REDAMON_UPDATE_FROM; STUB_SHARED=0 STUB_PULL_MOVES=false cmd_update) 2>&1 </dev/null)"
 assert_contains "nothing to pull: the update says so" "$OUT" "Already up to date"
-assert_eq "and refreshes nothing" "$(grep -cE "$MSF" "$W/calls.log")" "0"
-assert_eq "and still retires the shared container" "$(grep -cE "$RM" "$W/calls.log")" "1"
+assert_eq "and refreshes Metasploit like any completed update" "$(grep -cE "$MSF" "$W/calls.log")" "1"
+# Beside this checkout's redamon-kali the images predate the code (a manual git pull,
+# or an earlier failed Kali build): refused, and the container is left for `up`.
 : > "$W/calls.log"
-OUT="$( (source "$W/stubs.sh"; set -euo pipefail; unset REDAMON_UPDATE_FROM; STUB_RUNNING="" STUB_PULL_MOVES=false cmd_update) 2>&1 </dev/null)"
-assert_eq "even with the stack down" "$(grep -cE "$RM" "$W/calls.log")" "1"
+OUT="$( (source "$W/stubs.sh"; set -euo pipefail; unset REDAMON_UPDATE_FROM; STUB_PULL_MOVES=false cmd_update) 2>&1 </dev/null)"; RC=$?
+assert_eq "nothing to pull beside this checkout's redamon-kali: refused" "$RC" "1"
+assert_contains "and it names the Kali rebuild" "$OUT" "docker compose --profile tools build kali-sandbox"
+assert_eq "and redamon-kali is left for up to remove" "$(grep -cE "$RM" "$W/calls.log")" "0"
 : > "$W/calls.log"
 OUT="$( (source "$W/stubs.sh"; set -euo pipefail; unset REDAMON_UPDATE_FROM; STUB_SHARED_PROJECT=other STUB_PULL_MOVES=false cmd_update) 2>&1 </dev/null)"
 assert_eq "but never another compose project's" "$(grep -cE "$RM" "$W/calls.log")" "0"
